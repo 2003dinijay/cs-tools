@@ -431,6 +431,9 @@ export default function NoveraChatPage(): JSX.Element {
       if (actions.some((a) => a.type === NoveraActionType.SolutionWorked)) {
         setIsInputDisabled(true);
       }
+      if (pending?.payload?.token_warning === "session_limit_reached") {
+        setIsInputDisabled(true);
+      }
     }
   }, [setShowRichText]);
 
