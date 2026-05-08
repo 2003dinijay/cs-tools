@@ -51,10 +51,7 @@ import type {
   UpdateHistoryTabProps,
   UpdateHistoryTimelineItemProps,
 } from "@features/project-details/types/projectDetailsComponents";
-import {
-  formatBackendTimestampForDisplay,
-  parseBackendTimestamp,
-} from "@utils/dateTime";
+import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 
 /**
  * Displays update history timeline and allows adding/editing/deleting updates.
@@ -108,7 +105,9 @@ export default function UpdateHistoryTab({
   }, [productName, productVersion, productUpdateLevels]);
 
   const sortedUpdates = useMemo(() => {
-    return [...updates].sort((a, b) => (b.updateLevel ?? 0) - (a.updateLevel ?? 0));
+    return [...updates].sort(
+      (a, b) => (b.updateLevel ?? 0) - (a.updateLevel ?? 0),
+    );
   }, [updates]);
 
   const sortedLevels = useMemo(() => {
@@ -127,7 +126,8 @@ export default function UpdateHistoryTab({
   }, [sortedLevels]);
 
   const handleFormChange =
-    (field: keyof UpdateHistoryFormData) => (e: ChangeEvent<HTMLInputElement>) => {
+    (field: keyof UpdateHistoryFormData) =>
+    (e: ChangeEvent<HTMLInputElement>) => {
       const value = e.target.value;
       setForm((prev) => ({ ...prev, [field]: value }));
     };
@@ -426,7 +426,9 @@ export default function UpdateHistoryTab({
                 disabled={isSaving}
                 slotProps={{
                   inputLabel: { shrink: true },
-                  input: { inputProps: { max: new Date().toISOString().split("T")[0] } },
+                  input: {
+                    inputProps: { max: new Date().toISOString().split("T")[0] },
+                  },
                 }}
               />
             </Box>
@@ -650,7 +652,11 @@ function TimelineItem({
                   disabled={isSaving}
                   slotProps={{
                     inputLabel: { shrink: true },
-                    input: { inputProps: { max: new Date().toISOString().split("T")[0] } },
+                    input: {
+                      inputProps: {
+                        max: new Date().toISOString().split("T")[0],
+                      },
+                    },
                   }}
                   sx={{
                     "& .MuiInputBase-root": { bgcolor: "background.paper" },
