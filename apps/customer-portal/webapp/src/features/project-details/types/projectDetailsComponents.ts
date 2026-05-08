@@ -265,6 +265,7 @@ export type UpdateHistoryFormData = {
 export type UpdateHistoryTimelineItemProps = {
   update: ProductUpdate;
   isEditing: boolean;
+  isLatest: boolean;
   onEdit: () => void;
   onDelete: () => void;
   onSave: (edited: ProductUpdate) => void;
@@ -272,6 +273,7 @@ export type UpdateHistoryTimelineItemProps = {
   formatDate: (dateStr: string) => string;
   isSaving: boolean;
   availableUpdateLevels: number[];
+  editAvailableUpdateLevels: number[];
   showUpdateLevelSkeleton: boolean;
   showEditFormSkeleton: boolean;
 };
