@@ -2786,11 +2786,11 @@ paths:
           description: InternalServerError
         "403":
           description: Forbidden
-  /projects/{id}/instances/usages/stats:
+  /projects/{id}/instances/stats/usages:
     post:
       summary: Search instance usage stats for a specific project based on provided
         filters.
-      operationId: postProjectsIdInstancesUsagesStats
+      operationId: postProjectsIdInstancesStatsUsages
       parameters:
       - name: id
         in: path
@@ -2820,11 +2820,11 @@ paths:
           description: InternalServerError
         "403":
           description: Forbidden
-  /deployments/{id}/instances/usages/stats:
+  /deployments/{id}/instances/stats/usages:
     post:
       summary: Search instance usage stats for a specific deployment based on provided
         filters.
-      operationId: postDeploymentsIdInstancesUsagesStats
+      operationId: postDeploymentsIdInstancesStatsUsages
       parameters:
       - name: id
         in: path
@@ -2854,11 +2854,11 @@ paths:
           description: InternalServerError
         "403":
           description: Forbidden
-  /deployments/products/{id}/instances/usages/stats:
+  /deployments/products/{id}/instances/stats/usages:
     post:
       summary: Search instance usage stats for a specific deployed product based on
         provided filters.
-      operationId: postDeploymentsProductsIdInstancesUsagesStats
+      operationId: postDeploymentsProductsIdInstancesStatsUsages
       parameters:
       - name: id
         in: path
@@ -2888,11 +2888,11 @@ paths:
           description: InternalServerError
         "403":
           description: Forbidden
-  /projects/{id}/instances/metrics/stats:
+  /projects/{id}/instances/stats/metrics:
     post:
       summary: Search instance metrics stats for a specific project based on provided
         filters.
-      operationId: postProjectsIdInstancesMetricsStats
+      operationId: postProjectsIdInstancesStatsMetrics
       parameters:
       - name: id
         in: path
@@ -2922,11 +2922,11 @@ paths:
           description: InternalServerError
         "403":
           description: Forbidden
-  /deployments/{id}/instances/metrics/stats:
+  /deployments/{id}/instances/stats/metrics:
     post:
       summary: Search instance metrics stats for a specific deployment based on provided
         filters.
-      operationId: postDeploymentsIdInstancesMetricsStats
+      operationId: postDeploymentsIdInstancesStatsMetrics
       parameters:
       - name: id
         in: path
@@ -2956,11 +2956,11 @@ paths:
           description: InternalServerError
         "403":
           description: Forbidden
-  /deployments/products/{id}/instances/metrics/stats:
+  /deployments/products/{id}/instances/stats/metrics:
     post:
       summary: Search instance metrics stats for a specific deployed product based
         on provided filters.
-      operationId: postDeploymentsProductsIdInstancesMetricsStats
+      operationId: postDeploymentsProductsIdInstancesStatsMetrics
       parameters:
       - name: id
         in: path
