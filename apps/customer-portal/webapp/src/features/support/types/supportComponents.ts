@@ -458,6 +458,7 @@ export type ChatInputProps = {
   resetTrigger?: number;
   forceRichText?: boolean;
   disabled?: boolean;
+  typingDisabled?: boolean;
 };
 
 export type ChatHeaderProps = {

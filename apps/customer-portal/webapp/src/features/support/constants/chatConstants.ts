@@ -29,3 +29,5 @@ export const CHAT_TYPING_CHARS_PER_TICK = 6;
 export const VISIBILITY_EVENT_LISTENER = "visibilitychange";
 
 export const CHAT_MAX_CHARS = 4000;
+
+export const TOKEN_WARNING_SESSION_LIMIT_REACHED = "session_limit_reached";

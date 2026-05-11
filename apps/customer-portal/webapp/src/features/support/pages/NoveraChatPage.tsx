@@ -49,6 +49,7 @@ import {
   CHAT_TYPING_INTERVAL_MS,
   NOVERA_ANALYZING_PLACEHOLDER_TEXT,
   NOVERA_INITIAL_WELCOME_TEXT,
+  TOKEN_WARNING_SESSION_LIMIT_REACHED,
 } from "@features/support/constants/chatConstants";
 import {
   formatChatHistoryForClassification,
@@ -432,7 +433,7 @@ export default function NoveraChatPage(): JSX.Element {
       if (actions.some((a) => a.type === NoveraActionType.SolutionWorked)) {
         setIsInputDisabled(true);
       }
-      if (pending?.payload?.token_warning === "session_limit_reached") {
+      if (pending?.payload?.token_warning === TOKEN_WARNING_SESSION_LIMIT_REACHED) {
         setIsTypingDisabled(true);
       }
     }
