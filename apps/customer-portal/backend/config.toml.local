@@ -7,7 +7,8 @@ csEntityBaseUrl = "<base_url>"
     scopes = ["<scopes>"]
 
 [customer_portal.authorization.authorizedRoles]
-    userRole  = "<authorized_role>"
+    adminRole = "<authorized_role>"
+    scimGroupManagementRole = "<authorized_role>"
 
 [customer_portal.scim]
 scimOperationsServiceUrl = "<base_url>"
