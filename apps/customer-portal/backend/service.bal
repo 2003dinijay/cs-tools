@@ -5595,14 +5595,12 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
         return <http:Ok>{body: mapCaseActivitySummaryResponse(response)};
     }
 
-    # Add users to an external group via the SCIM operations service.
+    # Add users to a group via the SCIM operations service.
     #
-    # + group - Display name of the external group
-    # + payload - Request payload containing user emails
+    # + payload - Request payload containing group name and user emails
     # + return - Response with added/failed users or error response
-    resource function post groups/[string group]/users(http:RequestContext ctx, scim:AddUsersToGroupRequest payload)
-        returns scim:AddUsersToGroupResponse|http:BadRequest|http:NotFound|http:Unauthorized|http:Forbidden|
-        http:InternalServerError {
+    resource function post users/groups(http:RequestContext ctx, scim:AddUsersToGroupRequest payload)
+        returns scim:AddUsersToGroupResponse|http:BadRequest|http:NotFound|http:InternalServerError {
 
         authorization:UserInfoPayload|error userInfo = ctx.getWithType(authorization:HEADER_USER_INFO);
         if userInfo is error {
@@ -5630,26 +5628,13 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
             };
         }
 
-        scim:AddUsersToGroupResponse|error response = scim:addUsersToExternalGroup(group, payload);
+        string group = payload.group;
+        scim:AddUsersToGroupPayload scimPayload = {emails: payload.emails};
+        scim:AddUsersToGroupResponse|error response = scim:addUsersToExternalGroup(group, scimPayload);
         if response is error {
             int statusCode = getStatusCode(response);
-            if statusCode == http:STATUS_UNAUTHORIZED {
-                log:printWarn(string `User: ${userInfo.userId} is not authorized to add users to group: ${group}`);
-                return <http:Unauthorized>{
-                    body: {
-                        message: ERR_MSG_UNAUTHORIZED_ACCESS
-                    }
-                };
-            }
-            if statusCode == http:STATUS_FORBIDDEN {
-                log:printWarn(string `User: ${userInfo.userId} is forbidden from adding users to group: ${group}`);
-                return <http:Forbidden>{
-                    body: {
-                        message: "You do not have permission to add users to this group."
-                    }
-                };
-            }
             if statusCode == http:STATUS_NOT_FOUND {
+                log:printWarn(string `Group '${group}' was not found.`);
                 return <http:NotFound>{
                     body: {
                         message: string `Group '${group}' was not found.`

@@ -80,8 +80,16 @@ public type Phone record {|
     string mobile?;
 |};
 
-# Request payload for adding users to an external group.
+# Request payload for adding users to a group.
 public type AddUsersToGroupRequest record {|
+    # Display name of the group
+    string group;
+    # Array of user email addresses to add to the group
+    string[] emails;
+|};
+
+# Payload for the SCIM add-users-to-group operation.
+public type AddUsersToGroupPayload record {|
     # Array of user email addresses to add to the group
     string[] emails;
 |};
