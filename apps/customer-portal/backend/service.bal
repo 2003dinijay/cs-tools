@@ -5641,20 +5641,21 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
         if response is error {
             int statusCode = getStatusCode(response);
             if statusCode == http:STATUS_NOT_FOUND {
-                string notFoundMsg = string `Group '${payload.group}' is not found.`;
-                log:printWarn(notFoundMsg);
+                string customError = string `Group '${payload.group}' is not found.`;
+                log:printWarn(customError);
                 return <http:NotFound>{
                     body: {
-                        message: notFoundMsg
+                        message: customError
                     }
                 };
             }
             if statusCode == http:STATUS_BAD_REQUEST {
-                log:printWarn(string `Invalid request while adding users to the provided group. ${
-                        extractErrorMessage(response)}`);
+                string customError = string `Invalid request while adding users to the provided group. ${
+                        extractErrorMessage(response)}`;
+                log:printWarn(customError);
                 return <http:BadRequest>{
                     body: {
-                        message: extractErrorMessage(response)
+                        message: customError
                     }
                 };
             }
