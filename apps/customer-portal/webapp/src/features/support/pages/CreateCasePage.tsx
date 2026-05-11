@@ -249,7 +249,6 @@ export default function CreateCasePage(): JSX.Element {
   const hasClassificationAppliedRef = useRef(false);
   const skipDescriptionOnChangeRef = useRef(false);
   const classificationDescriptionRef = useRef<string>("");
-  const [isClassificationApplied, setIsClassificationApplied] = useState(false);
   const [isDeploymentManuallySet, setIsDeploymentManuallySet] = useState(false);
   const [isProductManuallySet, setIsProductManuallySet] = useState(false);
   const [isIssueTypeFromClassification, setIsIssueTypeFromClassification] =
@@ -629,7 +628,6 @@ export default function CreateCasePage(): JSX.Element {
     const severityLabel = classificationResponse.severityLevel?.trim();
 
     hasClassificationAppliedRef.current = true;
-    setIsClassificationApplied(true);
 
     if (deploymentLabel) setClassificationDeploymentLabel(deploymentLabel);
     if (productLabel) setClassificationProductLabel(productLabel);
@@ -645,13 +643,9 @@ export default function CreateCasePage(): JSX.Element {
 
     const severityMapping: Record<string, string> = {
       [CaseSeverityLevel.S0]: CaseSeverity.CATASTROPHIC,
-      S0: CaseSeverity.CATASTROPHIC,
       [CaseSeverityLevel.S1]: CaseSeverity.CRITICAL,
-      S1: CaseSeverity.CRITICAL,
       [CaseSeverityLevel.S2]: CaseSeverity.HIGH,
-      S2: CaseSeverity.HIGH,
       [CaseSeverityLevel.S3]: CaseSeverity.MEDIUM,
-      S3: CaseSeverity.MEDIUM,
       [CaseSeverityLevel.S4]: CaseSeverity.LOW,
       S4: CaseSeverity.LOW,
     };
