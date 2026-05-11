@@ -587,8 +587,7 @@ const Toolbar = ({
               size="small"
               value="left"
               selected={
-                elementAlign === "left" ||
-                (elementAlign === "" && hasContent)
+                elementAlign === "left" || (elementAlign === "" && hasContent)
               }
               onClick={() => onFormatAlign("left")}
             >
@@ -838,7 +837,11 @@ const Toolbar = ({
             <Typography
               component="span"
               variant="caption"
-              sx={{ color: "text.secondary", whiteSpace: "nowrap", lineHeight: 1.4 }}
+              sx={{
+                color: "text.secondary",
+                whiteSpace: "nowrap",
+                lineHeight: 1.4,
+              }}
             >
               <Typography component="span" variant="caption" fontWeight={600}>
                 Shift+Enter
@@ -853,12 +856,12 @@ const Toolbar = ({
             <Typography
               component="span"
               variant="caption"
-              sx={{ color: "text.secondary", whiteSpace: "nowrap", lineHeight: 1.4 }}
+              sx={{
+                color: "text.secondary",
+                whiteSpace: "nowrap",
+                lineHeight: 1.4,
+              }}
             >
-              <Typography component="span" variant="caption" fontWeight={600}>
-                Shift+Enter
-              </Typography>
-              {" or "}
               <Typography component="span" variant="caption" fontWeight={600}>
                 Ctrl+Enter
               </Typography>

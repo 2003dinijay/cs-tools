@@ -235,7 +235,6 @@ export default function ActivityCommentInput({
             placeholder="Write a comment..."
             onSubmitKeyDown={handleSend}
             enterToSubmit={false}
-            shiftEnterToSubmit={true}
             onAttachmentClick={handleAttachmentClick}
             attachments={attachments.map((a) => a.file)}
             onAttachmentRemove={handleAttachmentRemove}

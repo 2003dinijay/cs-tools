@@ -61,6 +61,8 @@ export function stripLightModeInlineStyles(html: string): string {
           )
         )
           return false;
+        if (/^color\s*:/.test(normalized) && isDarkColor(normalized))
+          return false;
         return true;
       });
       const cleaned = filtered.join(";").replace(/;+$/, "").trim();
@@ -68,4 +70,30 @@ export function stripLightModeInlineStyles(html: string): string {
       return `style="${cleaned}"`;
     },
   );
+}
+
+function isDarkColor(colorDecl: string): boolean {
+  // Named dark colors
+  if (/^color\s*:\s*(black|#000(000)?|#1[0-9a-f]{5}|#2[0-9a-f]{5})\s*$/.test(colorDecl))
+    return true;
+  // rgb(r, g, b) where all channels are below 100 (dark)
+  const rgbMatch = colorDecl.match(/^color\s*:\s*rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*$/);
+  if (rgbMatch) {
+    const [, r, g, b] = rgbMatch.map(Number);
+    return r < 100 && g < 100 && b < 100;
+  }
+  // 3-digit or 6-digit hex colors that are dark (luminance heuristic)
+  const hex3 = colorDecl.match(/^color\s*:\s*#([0-9a-f]{3})\s*$/);
+  if (hex3) {
+    const [rv, gv, bv] = hex3[1].split("").map((c) => parseInt(c + c, 16));
+    return rv < 100 && gv < 100 && bv < 100;
+  }
+  const hex6 = colorDecl.match(/^color\s*:\s*#([0-9a-f]{6})\s*$/);
+  if (hex6) {
+    const rv = parseInt(hex6[1].slice(0, 2), 16);
+    const gv = parseInt(hex6[1].slice(2, 4), 16);
+    const bv = parseInt(hex6[1].slice(4, 6), 16);
+    return rv < 100 && gv < 100 && bv < 100;
+  }
+  return false;
 }
