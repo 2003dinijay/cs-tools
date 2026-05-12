@@ -16,14 +16,14 @@
 
 import ballerina/http;
 
-configurable string productConsumptionBaseUrl = ?;
+configurable string productConsumptionTrackingBaseUrl = ?;
 configurable ClientCredentialsOauth2Config clientCredentialsOauth2Config = ?;
 
 @display {
     label: "Product Consumption Tracking",
     id: "product-consumption-tracking"
 }
-final http:Client productConsumptionTrackingClient = check new (productConsumptionBaseUrl, {
+final http:Client productConsumptionTrackingClient = check new (productConsumptionTrackingBaseUrl, {
     auth: {...clientCredentialsOauth2Config},
     httpVersion: http:HTTP_1_1,
     http1Settings: {keepAlive: http:KEEPALIVE_NEVER},
