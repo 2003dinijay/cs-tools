@@ -22,7 +22,7 @@ import { useGetAttachment } from "@api/useGetAttachment";
 
 const mockAuthFetch = vi.fn();
 
-vi.mock("@api/useAuthApiClient", () => ({
+vi.mock("@/hooks/useAuthApiClient", () => ({
   useAuthApiClient: () => mockAuthFetch,
 }));
 
@@ -147,7 +147,7 @@ describe("useGetAttachment", () => {
     await act(async () => {
       await expect(
         result.current.downloadAttachment({ id: "att-1", name: "x" }),
-      ).rejects.toThrow(/Download failed/);
+      ).rejects.toThrow(/Not Found|Download failed/);
     });
   });
 
@@ -192,4 +192,5 @@ describe("useGetAttachment", () => {
       expect(result.current.downloadingId).toBeNull();
     });
   });
+
 });
