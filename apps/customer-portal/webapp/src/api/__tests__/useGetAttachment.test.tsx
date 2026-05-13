@@ -152,7 +152,7 @@ describe("useGetAttachment", () => {
   });
 
   it("should expose downloadingId while request is pending", async () => {
-    let resolveFetch: (value: Response) => void = () => {};
+    let resolveFetch: (value: Response) => void = () => { };
     const pending = new Promise<Response>((r) => {
       resolveFetch = r;
     });
@@ -192,5 +192,4 @@ describe("useGetAttachment", () => {
       expect(result.current.downloadingId).toBeNull();
     });
   });
-
 });

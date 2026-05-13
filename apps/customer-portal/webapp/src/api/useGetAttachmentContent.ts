@@ -1,3 +1,19 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { useAuthApiClient } from "@/hooks/useAuthApiClient";
@@ -30,9 +46,7 @@ function getFilenameFromContentDisposition(
   if (!contentDisposition) return null;
 
   // Handles: filename="a.txt" and filename*=UTF-8''a%20b.txt
-  const utf8Star = contentDisposition.match(
-    /filename\*\s*=\s*UTF-8''([^;]+)/i,
-  );
+  const utf8Star = contentDisposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
   if (utf8Star?.[1]) {
     try {
       return decodeURIComponent(utf8Star[1].trim().replace(/^"|"$/g, ""));
@@ -154,7 +168,11 @@ export function useGetAttachmentContent(): UseGetAttachmentContentResult {
   const authFetch = useAuthApiClient();
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
-  const mutation = useMutation<void, Error, DownloadBackendAttachmentContentInput>({
+  const mutation = useMutation<
+    void,
+    Error,
+    DownloadBackendAttachmentContentInput
+  >({
     mutationFn: (input) =>
       downloadAttachmentContentThroughBackend(authFetch, input),
     onMutate: (variables) => setDownloadingId(variables.id),
@@ -167,4 +185,3 @@ export function useGetAttachmentContent(): UseGetAttachmentContentResult {
     downloadingId,
   };
 }
-
