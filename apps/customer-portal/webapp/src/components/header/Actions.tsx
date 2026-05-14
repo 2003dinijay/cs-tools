@@ -28,6 +28,7 @@ import { useErrorPageContext } from "@context/error-page/ErrorPageContext";
 
 interface ActionsProps {
   showUserProfile?: boolean;
+  hideGetHelp?: boolean;
 }
 
 /**
@@ -38,6 +39,7 @@ interface ActionsProps {
  */
 export default function Actions({
   showUserProfile = true,
+  hideGetHelp = false,
 }: ActionsProps): JSX.Element {
   const location = useLocation();
   const { isProjectSuspended } = useErrorPageContext();
@@ -46,8 +48,8 @@ export default function Actions({
 
   return (
     <HeaderUI.Actions>
-      {/* Get Help dropdown (before theme switcher, not on project hub, public landing page, or suspended project) */}
-      {!isProjectHub && !isPublicLandingPage && !isProjectSuspended && <GetHelpDropdown />}
+      {/* Get Help dropdown (before theme switcher, not on project hub, public landing page, suspended project, or portal access error) */}
+      {!isProjectHub && !isPublicLandingPage && !isProjectSuspended && !hideGetHelp && <GetHelpDropdown />}
       {/* theme switcher */}
       <ColorSchemeToggle />
       {/* header action divider */}
