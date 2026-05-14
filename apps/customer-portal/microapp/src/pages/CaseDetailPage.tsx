@@ -300,6 +300,7 @@ export default function CaseDetailPage() {
       />
 
       <AttachmentPreviewDialog
+        key={previewAttachment?.id}
         open={Boolean(previewAttachment)}
         attachment={previewAttachment}
         onClose={handlePreviewClose}
