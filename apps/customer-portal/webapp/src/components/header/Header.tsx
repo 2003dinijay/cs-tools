@@ -138,7 +138,7 @@ export default function Header({ onToggleSidebar, hideProjectControls = false }:
       {/* header spacer */}
       <HeaderUI.Spacer />
       {/* header action buttons */}
-      <Actions />
+      <Actions hideGetHelp={hideProjectControls} />
     </HeaderUI>
   );
 }
