@@ -6029,6 +6029,8 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
         }
         return <http:Ok>{body: mapCaseActivitySummaryResponse(response)};
     }
+
+    // TODO: Add POST /users/groups — expose scim:addUsersToExternalGroup behind auth once team finalizes customer portal build and Asgardeo groups.
 }
 
 # WebSocket service to proxy messages between the browser and the upstream Python AI chat agent for real-time communication in chat sessions.
