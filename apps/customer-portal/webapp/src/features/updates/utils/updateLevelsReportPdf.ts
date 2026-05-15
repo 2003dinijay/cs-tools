@@ -131,10 +131,14 @@ export function parseFileList(raw: string | null | undefined): string[] {
 
 /**
  * Strips HTML tags and decodes common HTML entities, returning plain text
- * suitable for PDF rendering.
+ * suitable for PDF rendering. Block-level closing tags are replaced with
+ * newlines first so that section boundaries are preserved for parsers like
+ * parseDescriptionSections that rely on newline-anchored regex matching.
  */
 export function stripHtmlTags(html: string): string {
   return html
+    .replace(/<\/(p|div|li|h[1-6]|blockquote|tr)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<[^>]+>/g, "")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
@@ -142,7 +146,8 @@ export function stripHtmlTags(html: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&nbsp;/g, " ")
-    .replace(/\s{2,}/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
