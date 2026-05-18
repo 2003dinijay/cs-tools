@@ -132,6 +132,19 @@ export default function AppLayout({ children }: AppLayoutProps): JSX.Element {
   const isSidebarOverlay = isMidSizeTouchViewport;
   const isSidebarOpen = isSidebarOverlay && !shellState.sidebarCollapsed;
 
+  // Collapse sidebar when entering overlay mode so the drawer does not open unexpectedly.
+  const previousIsSidebarOverlay = useRef(isSidebarOverlay);
+  useEffect(() => {
+    if (
+      !previousIsSidebarOverlay.current &&
+      isSidebarOverlay &&
+      !shellState.sidebarCollapsed
+    ) {
+      shellActions.toggleSidebar();
+    }
+    previousIsSidebarOverlay.current = isSidebarOverlay;
+  }, [isSidebarOverlay, shellState.sidebarCollapsed, shellActions]);
+
   // Close overlay drawer after navigation only (not when the user opens it).
   const previousPathname = useRef(location.pathname);
   useEffect(() => {

@@ -47,6 +47,7 @@ interface HeaderProps {
  */
 export default function Header({
   onToggleSidebar,
+  collapsed = false,
   hideProjectControls = false,
 }: HeaderProps): JSX.Element {
   const navigate = useNavigate();
@@ -71,7 +72,7 @@ export default function Header({
     isError,
   } = useInfiniteProjects({
     pageSize: 20,
-    enabled: !isProjectHub,
+    enabled: !isProjectHub && !hideProjectControls,
   });
 
   // Flatten all pages for selected-project lookup and excludeS0 check
@@ -180,7 +181,10 @@ export default function Header({
             }}
           >
             {!isProjectHub && !hideProjectControls && (
-              <HeaderUI.Toggle collapsed={false} onToggle={onToggleSidebar} />
+              <HeaderUI.Toggle
+                collapsed={collapsed}
+                onToggle={onToggleSidebar}
+              />
             )}
             <Box sx={{ minWidth: 0, flex: "0 1 auto" }}>
               <Brand isNavigationDisabled={totalRecords <= 1} />
@@ -229,7 +233,7 @@ export default function Header({
       ) : (
         <>
           {!isProjectHub && !hideProjectControls && (
-            <HeaderUI.Toggle collapsed={false} onToggle={onToggleSidebar} />
+            <HeaderUI.Toggle collapsed={collapsed} onToggle={onToggleSidebar} />
           )}
           <Box sx={{ minWidth: 0, flex: "0 1 auto" }}>
             <Brand isNavigationDisabled={totalRecords <= 1} />

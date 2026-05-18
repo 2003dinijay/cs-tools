@@ -14,8 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import AppShellLayout from "@layouts/AppShellLayout";
 
 describe("AppShellLayout", () => {
@@ -39,6 +39,8 @@ describe("AppShellLayout", () => {
   });
 
   it("should render overlay drawer instead of inline sidebar when sidebarOverlay is true", () => {
+    const onSidebarClose = vi.fn();
+
     render(
       <AppShellLayout
         header={<div>Header</div>}
@@ -46,7 +48,7 @@ describe("AppShellLayout", () => {
         footer={<footer>Footer</footer>}
         sidebarOverlay
         sidebarOpen
-        onSidebarClose={() => undefined}
+        onSidebarClose={onSidebarClose}
       >
         <div>Page</div>
       </AppShellLayout>,
@@ -55,6 +57,12 @@ describe("AppShellLayout", () => {
     expect(screen.getByTestId("app-sidebar-drawer")).toBeInTheDocument();
     expect(screen.getByTestId("app-sidebar-backdrop")).toBeInTheDocument();
     expect(screen.getByTestId("sidebar-region")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("app-sidebar-backdrop"));
+    expect(onSidebarClose).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onSidebarClose).toHaveBeenCalledTimes(2);
   });
 
   it("should omit sidebar slot when not provided", () => {

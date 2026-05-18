@@ -15,18 +15,32 @@
 // under the License.
 
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DeviceType, MobileOs } from "@/types/mobileDevice";
 import MobileAppPromptPage from "@components/mobile-app/MobileAppPromptPage";
+import { getMobileAppStoreUrl } from "@config/mobileAppConfig";
 
-vi.mock("@config/mobileAppConfig", () => ({
-  getMobileAppStoreUrl: (os: string) =>
+const mockGetMobileAppStoreUrl = vi.hoisted(() =>
+  vi.fn((os: string) =>
     os === "ios"
       ? "https://apps.apple.com/app/example"
       : "https://play.google.com/store/apps/details?id=example",
+  ),
+);
+
+vi.mock("@config/mobileAppConfig", () => ({
+  getMobileAppStoreUrl: mockGetMobileAppStoreUrl,
 }));
 
 describe("MobileAppPromptPage", () => {
+  beforeEach(() => {
+    mockGetMobileAppStoreUrl.mockImplementation((os: string) =>
+      os === "ios"
+        ? "https://apps.apple.com/app/example"
+        : "https://play.google.com/store/apps/details?id=example",
+    );
+  });
+
   it("should show micro app instructions", () => {
     render(
       <MobileAppPromptPage
@@ -68,6 +82,23 @@ describe("MobileAppPromptPage", () => {
       "https://play.google.com/store/apps/details?id=example",
     );
     expect(link).toHaveTextContent("Get it on Google Play");
+  });
+
+  it("should show fallback when the store URL is not configured", () => {
+    vi.mocked(getMobileAppStoreUrl).mockReturnValueOnce(undefined);
+
+    render(
+      <MobileAppPromptPage
+        device={{ os: MobileOs.Ios, deviceType: DeviceType.Phone }}
+      />,
+    );
+
+    expect(
+      screen.getByText(/download link is not configured/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("mobile-app-download-button"),
+    ).toBeNull();
   });
 
   it("should not offer a continue-in-browser option", () => {
