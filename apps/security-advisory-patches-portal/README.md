@@ -133,7 +133,6 @@ Missing/invalid JWT or wrong groups → **403** / **500** as returned by the JWT
 
 The `path` query must be the **share-relative** path Azure expects (folder names, spaces, casing). The SPA maps lowercase **kebab-case** directory segments in the URL to that shape before calling `/file`; you can also send the literal path with **`%20`** for spaces (e.g. `Security%20Patches/...`).
 
-
 ### 5.5 Webapp configuration (`config.js`)
 
 The app loads `public/config.js` before the bundle. Define `window.config` with at least:
@@ -167,12 +166,13 @@ npm install
 npm start
 ```
 
-Default dev server **3000**.
+Default dev server **`http://localhost:3000`**. Register that origin in your Asgardeo SPA app (redirect URLs and allowed origins as required), for example `http://localhost:3000/` with a trailing slash so it matches `AUTH_SIGN_IN_REDIRECT_URL` / `AUTH_SIGN_OUT_REDIRECT_URL` in `public/config.js`. You can also add **`http://127.0.0.1:3000/`** if you open the app via `127.0.0.1`. This repo assumes local dev uses **localhost only**, not a custom hostname in `/etc/hosts`.
 
-1. **Add localhost redirects** in the Asgardeo SPA app (`http://localhost:3000/`, `http://127.0.0.1:3000/`) and keep testing at `http://localhost:3000`—simplest.
+### 5.6 Production authentication note
 
+The backend validates **`x-jwt-assertion`** with `ballerina/jwt` and checks Asgardeo **`groups`** against `authorizedRoles` (see `backend/modules/authorization/authorization.bal`). Still restrict network access (VPN, private link, gateway) as defense in depth.
 
-### 5.8 Troubleshooting
+### 5.7 Troubleshooting
 
 | Symptom | Things to check |
 |--------|------------------|

@@ -14,14 +14,6 @@ function hasJsxRuntime() {
 }
 
 module.exports = function override(config, env) {
-  // Allow opening the dev server via a custom hostname (e.g. patches.wso2.com in /etc/hosts → 127.0.0.1).
-  if (env === 'development' && config.devServer) {
-    config.devServer = {
-      ...config.devServer,
-      allowedHosts: 'all',
-    };
-  }
-
   config.resolve = {
     ...config.resolve,
     alias: {

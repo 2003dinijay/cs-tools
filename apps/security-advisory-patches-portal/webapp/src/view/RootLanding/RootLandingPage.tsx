@@ -48,8 +48,8 @@ const RootLandingPage: React.FC<RootLandingPageProps> = ({ username, onLogout })
             <code>.pdf</code> (for example <code>/patches/your-doc.pdf</code> or another path your team uses).
           </Typography>
           <Typography variant="body1" color="text.secondary" paragraph>
-            Paste that full URL into the address bar after the hostname (for example{' '}
-            <code>patches.wso2.com</code>), or sign out below and open the link from your email again.
+            Paste that full URL into the address bar (for example{' '}
+            <code>patches.wso2.com/patches/your-doc.pdf</code>), or sign out below and open the link from your email again.
           </Typography>
           <Typography variant="body2" color="text.secondary">
             Signing out and opening your link again is the most reliable way to reach the right document.
