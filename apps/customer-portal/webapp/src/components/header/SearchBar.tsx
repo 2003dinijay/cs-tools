@@ -359,12 +359,9 @@ export default function SearchBar({
         maxWidth: fillAvailableWidth
           ? "100%"
           : { xs: "100%", md: 380, lg: 420, xl: 560 },
-        ...(fillAvailableWidth
-          ? { width: "100%" }
-          : {
-              minWidth: { md: 200, lg: 240, xl: 360 },
-              width: { lg: "100%", xl: "100%" },
-            }),
+        ...(!fillAvailableWidth && {
+          minWidth: { md: 200, lg: 240, xl: 360 },
+        }),
       }}
     >
       <TextField
