@@ -116,8 +116,9 @@ service http:InterceptableService / on new http:Listener(9090) {
         }
         string filePath = decodedPath;
 
-        if !filePath.matches(re `${ALLOWED_PATH_PATTERN}`) {
-            log:printError(string `Invalid path format: ${filePath}`);
+        error? pathValidation = file_storage:validatePath(filePath);
+        if pathValidation is error {
+            log:printError(string `Invalid path format: ${filePath}`, pathValidation);
             return <http:BadRequest>{
                 body: {message: ERR_MSG_INVALID_PATH}
             };

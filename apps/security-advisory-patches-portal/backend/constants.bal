@@ -25,7 +25,3 @@ const string ERR_MSG_FILE_NOT_FOUND = "File or directory path not found in file 
 
 # Message for `GET /file` when the `path` query is missing, malformed, or fails percent-decoding.
 const string ERR_MSG_INVALID_PATH = "Invalid path format";
-
-# Allowlist regex for the `path` query: letters, digits, hyphen, underscore, dot, literal space, slash, `%`, hex digits.
-# Avoids `\\s` so control characters (e.g. CR/LF) cannot pass and reach response headers.
-const string ALLOWED_PATH_PATTERN = "^[-a-zA-Z0-9_. %/A-Fa-f]+$";

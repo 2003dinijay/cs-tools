@@ -75,7 +75,7 @@ Use Portal, Storage Explorer, AzCopy, or automation—same as any Azure Files wo
 
 ### 4.3 Naming and path rules
 
-The backend validates `path` with an allowlist-style pattern (alphanumeric, hyphen, underscore, dot, space, slash, URL-encoded segments). Prefer stable paths so emailed links stay valid.
+The backend validates `path` using the same segment rules as the file-storage module (no `..`, no control characters, sane length) before calling Azure.
 
 ### 4.4 When updates appear
 
@@ -170,14 +170,14 @@ Default dev server **`http://localhost:3000`**. Register that origin in your Asg
 
 ### 5.6 Production authentication note
 
-The backend validates **`x-jwt-assertion`** with `ballerina/jwt` and checks Asgardeo **`groups`** against `authorizedRoles` (see `backend/modules/authorization/authorization.bal`). Still restrict network access (VPN, private link, gateway) as defense in depth.
+The backend reads **`x-jwt-assertion`** (JWT decode) and checks Asgardeo **`groups`** against `authorizedRoles` (see `backend/modules/authorization/authorization.bal`). Still restrict network access (VPN, private link, gateway) as defense in depth.
 
 ### 5.7 Troubleshooting
 
 | Symptom | Things to check |
 |--------|------------------|
 | Backend won’t start | Share name, credentials, firewall |
-| 400 on `/file` | Path characters outside allowed pattern; or missing user context after auth |
+| 400 on `/file` | Path fails segment validation (e.g. `..`, empty segment); or missing user context after auth |
 | 403 on `/file` | User not in `advisoryPatchesReaderRole` group; ID token missing `groups` |
 | 500 “Missing invoker info header” | SPA not sending `x-jwt-assertion` (see `apiService.ts`) |
 | 500 “Malformed Invoker info object!” | Decode the ID token: it must include **`email`** and **`groups`**. Use scopes **`openid`**, **`email`**, **`groups`** in `webapp/src/config/config.ts`; in Asgardeo enable those attributes on the app and assign the user to a group matching `advisoryPatchesReaderRole` |
