@@ -10,9 +10,9 @@ This guide explains how the **Security Advisory Patches Portal** fits together: 
 |------|-------------|
 | **Content publisher** | Upload or update PDFs (and folders) in the configured **Azure File Share** (Azure Portal, Storage Explorer, AzCopy, automation). |
 | **End user (e.g. customer)** | Sign in with **Asgardeo** and open the **PDF link** you were sent (path ends with **`.pdf`**). |
-| **Developer / operator** | Configure Azure credentials and share name, run or deploy the backend and webapp, tune `config.js` and gateway CORS for each environment. |
+| **Developer / operator** | Configure Azure credentials and share name, run or deploy the backend and webapp, tune `config.js`. |
 
-The webapp does **not** upload files to Azure. Publishing is always done **outside** the portal.
+The webapp does **not** upload files to Azure. Publishing is always done **outside** via Azure Portal.
 
 ---
 
@@ -108,8 +108,8 @@ The next successful fetch loads the **current** bytes from Azure (reload the pag
 advisoryPatchesReaderRole = "<Asgardeo-group-name>"
 ```
 
-- Set `advisoryPatchesReaderRole` to the **exact** string that appears in the ID token **`groups`** array (same pattern as [`webapps/backend-template`](../../webapps/backend-template)).
-- For `/file`, the SPA sends the Asgardeo **ID token** on **`x-jwt-assertion`** (see [`webapps/webapp-template/src/utils/apiService.ts`](../../webapps/webapp-template/src/utils/apiService.ts)). OIDC scopes are set in `webapp/src/config/config.ts` to **`openid`**, **`email`**, and **`groups`** (same as the webapp template) so the ID token includes **`email`** and **`groups`** for `CustomJwtPayload`.
+- Set `advisoryPatchesReaderRole` to the **exact** string that appears in the ID token **`groups`** array.
+- For `/file`, the SPA sends the Asgardeo **ID token** on **`x-jwt-assertion`**. OIDC scopes are set in `webapp/src/config/config.ts` to **`openid`**, **`email`**, and **`groups`** so the ID token includes **`email`** and **`groups`** for `CustomJwtPayload`.
 - **`GET /health`** does **not** require a JWT (liveness / probes). **`OPTIONS`** preflight is also allowed without JWT.
 
 **File share** (same `security_advisories_fileshare.file_storage` tables as before). Then run:
@@ -133,11 +133,8 @@ Missing/invalid JWT or wrong groups → **403** / **500** as returned by the JWT
 
 The `path` query must be the **share-relative** path Azure expects (folder names, spaces, casing). The SPA maps lowercase **kebab-case** directory segments in the URL to that shape before calling `/file`; you can also send the literal path with **`%20`** for spaces (e.g. `Security%20Patches/...`).
 
-### 5.5 CORS
 
-This Ballerina package does **not** set `Access-Control-*` headers. In production, configure CORS (and allow **`x-jwt-assertion`** if the SPA is on another origin) at your **API gateway**, reverse proxy, or CDN in front of the service. For local dev you can use a small proxy (for example `npm` `setupProxy`) or run browser with relaxed security only for testing.
-
-### 5.6 Webapp configuration (`config.js`)
+### 5.5 Webapp configuration (`config.js`)
 
 The app loads `public/config.js` before the bundle. Define `window.config` with at least:
 
@@ -145,7 +142,7 @@ The app loads `public/config.js` before the bundle. Define `window.config` with 
 |-----|---------|
 | `APP_NAME` | Title context |
 | `ASGARDEO_BASE_URL` | Asgardeo server URL |
-| `ASGARDEO_CLIENT_ID` | OIDC client ID |
+| `ASGARDEO_CLIENT_ID` | Asgardeo client ID |
 | `AUTH_SIGN_IN_REDIRECT_URL` | Post-login redirect URI (typically site root `/`) |
 | `AUTH_SIGN_OUT_REDIRECT_URL` | Post-logout redirect |
 | `BACKEND_BASE_URL` | API origin for `/health` and `/file` |
@@ -172,35 +169,8 @@ npm start
 
 Default dev server **3000**.
 
-#### Using `patches.wso2.com` (or another hostname) on your machine
-
-You do **not** need that hostname for routing—the app only cares about paths such as `/patches/…/*.pdf`. Asgardeo **does** compare redirect URIs exactly, so if production uses `https://patches.wso2.com/` but your dev Asgardeo app only lists `http://localhost:3000/`, use one of these:
-
 1. **Add localhost redirects** in the Asgardeo SPA app (`http://localhost:3000/`, `http://127.0.0.1:3000/`) and keep testing at `http://localhost:3000`—simplest.
 
-2. **Match production hostname locally**:
-
-   - Map the name to your loopback interface (macOS/Linux: edit `/etc/hosts` as admin):
-
-     ```text
-     127.0.0.1 patches.wso2.com
-     ```
-
-   - Start the webapp bound to that host so the browser URL matches what you register in Asgardeo:
-
-     ```bash
-     npm run start:patches-host
-     ```
-
-     Then open **`http://patches.wso2.com:3000/`** (not `https` unless you terminate TLS locally).
-
-   - Set `AUTH_SIGN_IN_REDIRECT_URL` and `AUTH_SIGN_OUT_REDIRECT_URL` in `public/config.js` to **`http://patches.wso2.com:3000/`** (same origin + port + trailing slash as in Asgardeo).
-
-   - In Asgardeo, add **`http://patches.wso2.com:3000`** as an allowed redirect URL.
-
-### 5.7 Production authentication note
-
-The backend validates **`x-jwt-assertion`** with `ballerina/jwt` and checks Asgardeo **`groups`** against `authorizedRoles` (see `backend/modules/authorization/authorization.bal`). Still restrict network access (VPN, private link, gateway) as defense in depth.
 
 ### 5.8 Troubleshooting
 
