@@ -155,6 +155,7 @@ export type CaseListItem = AuditMetadata & {
   assignedEngineer: string | IdLabelRef | null;
   project: IdLabelRef;
   issueType: IdLabelRef | null;
+  engagementType?: IdLabelRef | null;
   deployedProduct: IdLabelRef | null;
   deployment: IdLabelRef | null;
   severity: IdLabelRef | null;
@@ -219,6 +220,7 @@ export type CaseDetails = AuditMetadata & {
   relatedCase: IdLabelRef | null;
   conversation: IdLabelRef | null;
   issueType: IdLabelRef | null;
+  engagementType?: IdLabelRef | null;
   catalog?: IdLabelRef | null;
   catalogItem?: IdLabelRef | null;
   variables?: CaseVariable[];
