@@ -38,10 +38,10 @@ import { useLocation, useNavigate, useParams } from "react-router";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import useGetProjectCases from "@api/useGetProjectCases";
 import useGetProjectFilters from "@api/useGetProjectFilters";
-import useGetChangeRequests from "@features/operations/api/useGetChangeRequests";
+import { useGetChangeRequestsInfinite } from "@features/operations/api/useGetChangeRequests";
 import type { CaseListItem } from "@features/support/types/cases";
 import type { ChangeRequestItem } from "@features/operations/types/changeRequests";
-import ListSkeleton from "@components/list-view/ListSkeleton";
+import SearchResultSkeleton from "@components/header/SearchResultSkeleton";
 import SearchCaseCard from "@components/header/SearchCaseCard";
 import SearchChangeRequestCard from "@components/header/SearchChangeRequestCard";
 import { getOperationsNavSegment } from "@features/operations/utils/operationsPages";
@@ -129,13 +129,16 @@ export default function SearchBar({
     [debouncedQuery],
   );
 
-  const { data, isLoading, isError } = useGetProjectCases(
-    effectiveProjectId,
-    baseRequest,
-    {
-      enabled: !!effectiveProjectId && debouncedQuery.length > 0,
-    },
-  );
+  const {
+    data,
+    isLoading,
+    isError,
+    fetchNextPage: fetchNextCasesPage,
+    hasNextPage: hasNextCasesPage,
+    isFetchingNextPage: isFetchingNextCasesPage,
+  } = useGetProjectCases(effectiveProjectId, baseRequest, {
+    enabled: !!effectiveProjectId && debouncedQuery.length > 0,
+  });
 
   const rawCases = useMemo(
     () => (data?.pages?.flatMap((p) => p.cases ?? []) ?? []) as CaseListItem[],
@@ -167,22 +170,20 @@ export default function SearchBar({
     data: changeRequestData,
     isLoading: isChangeRequestLoading,
     isError: isChangeRequestError,
-  } = useGetChangeRequests(
-    effectiveProjectId,
-    changeRequestSearchRequest,
-    0,
-    10,
-    {
-      enabled:
-        !!effectiveProjectId &&
-        debouncedQuery.length > 0 &&
-        changeRequestStateKeys.length > 0,
-    },
-  );
+    fetchNextPage: fetchNextChangeRequestsPage,
+    hasNextPage: hasNextChangeRequestsPage,
+    isFetchingNextPage: isFetchingNextChangeRequestsPage,
+  } = useGetChangeRequestsInfinite(effectiveProjectId, changeRequestSearchRequest, {
+    enabled:
+      !!effectiveProjectId &&
+      debouncedQuery.length > 0 &&
+      changeRequestStateKeys.length > 0,
+  });
 
   const changeRequests = useMemo(
-    () => changeRequestData?.changeRequests ?? [],
-    [changeRequestData?.changeRequests],
+    () =>
+      changeRequestData?.pages?.flatMap((p) => p.changeRequests ?? []) ?? [],
+    [changeRequestData?.pages],
   );
 
   const handleCaseClick = useCallback(
@@ -212,6 +213,28 @@ export default function SearchBar({
   );
 
   const dropdownRef = useRef<HTMLDivElement | null>(null);
+
+  const handleDropdownScroll = useCallback(
+    (event: React.UIEvent<HTMLDivElement>) => {
+      const { scrollHeight, scrollTop, clientHeight } = event.currentTarget;
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+      if (distanceFromBottom > 24) return;
+      if (hasNextCasesPage && !isFetchingNextCasesPage) fetchNextCasesPage();
+      if (hasNextChangeRequestsPage && !isFetchingNextChangeRequestsPage)
+        fetchNextChangeRequestsPage();
+    },
+    [
+      hasNextCasesPage,
+      isFetchingNextCasesPage,
+      fetchNextCasesPage,
+      hasNextChangeRequestsPage,
+      isFetchingNextChangeRequestsPage,
+      fetchNextChangeRequestsPage,
+    ],
+  );
+
+  const isFetchingNextPage =
+    isFetchingNextCasesPage || isFetchingNextChangeRequestsPage;
 
   const showDropdown =
     isDropdownOpen && (searchValue.length > 0 || debouncedQuery.length > 0);
@@ -248,6 +271,7 @@ export default function SearchBar({
     <Paper
       data-testid="header-search-dropdown"
       elevation={3}
+      onScroll={handleDropdownScroll}
       sx={{
         position: "fixed",
         top: dropdownLayout.top,
@@ -273,7 +297,7 @@ export default function SearchBar({
         </Box>
       ) : isAnyLoading ? (
         <Box sx={{ p: 2 }}>
-          <ListSkeleton />
+          <SearchResultSkeleton count={10} />
         </Box>
       ) : shouldShowError ? (
         <Box
@@ -330,6 +354,11 @@ export default function SearchBar({
               />
             ))}
           </Stack>
+          {isFetchingNextPage && (
+            <Box sx={{ pt: 2 }}>
+              <SearchResultSkeleton count={10} />
+            </Box>
+          )}
         </Box>
       )}
     </Paper>
