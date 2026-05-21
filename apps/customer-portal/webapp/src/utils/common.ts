@@ -72,6 +72,12 @@ export function stripLightModeInlineStyles(html: string): string {
   );
 }
 
+/** DOMPurify config for backend description/body HTML: strips tables and code blocks. */
+export const DESCRIPTION_PURIFY_CONFIG = {
+  FORBID_TAGS: ["table", "thead", "tbody", "tfoot", "tr", "th", "td", "colgroup", "col", "code", "pre"],
+  FORBID_CONTENTS: ["table", "thead", "tbody", "tfoot", "tr", "th", "td", "colgroup", "col", "code", "pre"],
+};
+
 function isDarkColor(colorDecl: string): boolean {
   // Named dark colors
   if (/^color\s*:\s*(black|#000(000)?|#1[0-9a-f]{5}|#2[0-9a-f]{5})\s*$/.test(colorDecl))
