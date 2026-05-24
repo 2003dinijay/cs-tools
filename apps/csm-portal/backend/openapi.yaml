@@ -341,6 +341,7 @@ components:
 
     UserUpdatePayload:
       type: object
+      minProperties: 1
       properties:
         phoneNumber:
           type: string

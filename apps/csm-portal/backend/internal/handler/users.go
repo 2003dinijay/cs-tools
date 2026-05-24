@@ -18,6 +18,7 @@ package handler
 
 import (
 	"context"
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -114,6 +115,11 @@ func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusBadRequest, errMsgReadBody)
+		return
+	}
+
+	if len(bytes.TrimSpace(body)) == 0 {
+		writeError(w, http.StatusBadRequest, "At least one field must be provided for update.")
 		return
 	}
 
