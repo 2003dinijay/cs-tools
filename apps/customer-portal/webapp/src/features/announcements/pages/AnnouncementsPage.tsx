@@ -67,7 +67,7 @@ export default function AnnouncementsPage(): JSX.Element {
   const [filters, setFilters] = useSessionState<AnnouncementFilterValues>(`${sessionPrefix}-filters`, {}, undefined, { popOnly: true });
   const [sortField, setSortField] = useSessionState<AnnouncementSortField>(
     `${sessionPrefix}-sortField`,
-    AnnouncementSortField.CreatedOn,
+    AnnouncementSortField.UpdatedOn,
     isValidAnnouncementSortField,
     { popOnly: true },
   );
