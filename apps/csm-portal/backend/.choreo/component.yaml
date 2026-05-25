@@ -1,4 +1,4 @@
-schemaVersion: 1
+schemaVersion: 1.2
 
 endpoints:
   - name: csm-portal-api
