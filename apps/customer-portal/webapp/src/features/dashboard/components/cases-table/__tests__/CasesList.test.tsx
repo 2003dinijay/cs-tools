@@ -107,6 +107,7 @@ describe("CasesList", () => {
         title: "Test Case 1",
         number: "CS-001",
         assignedEngineer: "John Doe",
+        createdBy: "Jane Smith",
         severity: { id: 1, label: "High" },
         status: { id: 1, label: "Open" },
         project: { id: "p1", name: "Project 1" },
@@ -194,6 +195,8 @@ describe("CasesList", () => {
       />,
     );
 
+    expect(screen.getByText("Created by")).toBeInTheDocument();
+    expect(screen.getByText("Jane Smith")).toBeInTheDocument();
     expect(screen.getByText("Test Case 1")).toBeInTheDocument();
     expect(screen.getByText("ID: CS-001")).toBeInTheDocument();
     expect(screen.getByText("Test Case 2")).toBeInTheDocument();
