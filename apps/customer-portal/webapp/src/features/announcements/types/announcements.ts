@@ -22,7 +22,7 @@ export type { AnnouncementFilterValues };
 
 /** API `sortBy.field` for announcements list. */
 export enum AnnouncementSortField {
-  CreatedOn = "createdOn",
+  UpdatedOn = "updatedOn",
   State = "state",
 }
 
