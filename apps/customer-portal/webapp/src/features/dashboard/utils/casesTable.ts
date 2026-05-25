@@ -31,6 +31,7 @@ import {
   CaseStatus,
 } from "@features/support/constants/supportConstants";
 import type { NavigateFunction } from "react-router";
+import { DashboardCasesViewMode } from "@features/dashboard/types/casesTable";
 
 /**
  * Returns the Oxygen ui color path for a given severity label.
@@ -168,4 +169,22 @@ export function navigateToProjectCaseDetail(
   caseId: string,
 ): void {
   navigate(`/projects/${projectId}/support/cases/${caseId}`);
+}
+
+/**
+ * Maps TabBar tab id to dashboard cases view mode.
+ *
+ * @param tabId - Tab id from `DASHBOARD_CASES_VIEW_TABS`.
+ * @returns {DashboardCasesViewMode} View mode for case search `createdByMe`.
+ */
+export function parseDashboardCasesViewMode(
+  tabId: string,
+): DashboardCasesViewMode {
+  switch (tabId) {
+    case DashboardCasesViewMode.MY:
+      return DashboardCasesViewMode.MY;
+    case DashboardCasesViewMode.ALL:
+    default:
+      return DashboardCasesViewMode.ALL;
+  }
 }
