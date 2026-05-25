@@ -47,9 +47,9 @@ export function parseEngagementsSortField(value: string): EngagementsSortField {
     case EngagementsSortField.State:
       return value;
     case EngagementsSortField.Severity:
-      return EngagementsSortField.CreatedOn;
+      return EngagementsSortField.UpdatedOn;
     default:
-      return EngagementsSortField.CreatedOn;
+      return EngagementsSortField.UpdatedOn;
   }
 }
 
@@ -70,7 +70,7 @@ export function buildEngagementSearchRequest(
 ): Omit<CaseSearchRequest, "pagination"> {
   const normalizedSortField =
     sortField === EngagementsSortField.Severity
-      ? EngagementsSortField.CreatedOn
+      ? EngagementsSortField.UpdatedOn
       : sortField;
 
   return {
