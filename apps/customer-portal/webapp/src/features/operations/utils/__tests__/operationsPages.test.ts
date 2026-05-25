@@ -196,6 +196,12 @@ describe("buildChangeRequestSearchRequest", () => {
     expect(req.filters?.stateKeys).not.toContain(-4);
     expect(req.filters?.stateKeys).not.toContain(-3);
   });
+
+  it("sorts by updatedOn descending", () => {
+    const req = buildChangeRequestSearchRequest({}, "", false, false, false, allStates);
+    expect(req.sortBy?.field).toBe("updatedOn");
+    expect(req.sortBy?.order).toBe("desc");
+  });
 });
 
 describe("resolveChangeRequestFilterListOptions", () => {
@@ -245,12 +251,12 @@ describe("buildServiceRequestsPageCaseSearchRequest", () => {
     const req = buildServiceRequestsPageCaseSearchRequest(
       {},
       "",
-      ServiceRequestCaseSortField.CreatedOn,
+      ServiceRequestCaseSortField.UpdatedOn,
       SortOrder.DESC,
       false,
     );
     expect(req.filters?.caseTypes).toEqual([CaseType.SERVICE_REQUEST]);
-    expect(req.sortBy?.field).toBe("createdOn");
+    expect(req.sortBy?.field).toBe("updatedOn");
   });
 
   it("does not send severity filter", () => {
@@ -264,7 +270,7 @@ describe("buildServiceRequestsPageCaseSearchRequest", () => {
     expect(req.filters?.severityId).toBeUndefined();
   });
 
-  it("normalizes legacy Severity sort field to CreatedOn in API payload", () => {
+  it("normalizes legacy Severity sort field to UpdatedOn in API payload", () => {
     const req = buildServiceRequestsPageCaseSearchRequest(
       {},
       "",
@@ -272,7 +278,7 @@ describe("buildServiceRequestsPageCaseSearchRequest", () => {
       SortOrder.DESC,
       false,
     );
-    expect(req.sortBy?.field).toBe(ServiceRequestCaseSortField.CreatedOn);
+    expect(req.sortBy?.field).toBe(ServiceRequestCaseSortField.UpdatedOn);
   });
 });
 
