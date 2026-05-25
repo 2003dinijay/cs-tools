@@ -268,7 +268,7 @@ export const CHANGE_REQUESTS_LIST_PLACEHOLDER = "Not Available";
 
 export const CHANGE_REQUESTS_LIST_SR_PREFIX = "SR:";
 
-export const CHANGE_REQUESTS_LIST_CREATED_PREFIX = "Created:";
+export const CHANGE_REQUESTS_LIST_UPDATED_PREFIX = "Updated:";
 
 export const CHANGE_REQUESTS_LIST_SERVICE_OUTAGE_LABEL = "Service Outage";
 
@@ -328,13 +328,13 @@ export type ServiceRequestSortFieldOption = {
 export const SERVICE_REQUESTS_SORT_FIELD_OPTIONS: ServiceRequestSortFieldOption[] =
   [
     {
-      value: ServiceRequestCaseSortField.CreatedOn,
-      label: "Created on",
+      value: ServiceRequestCaseSortField.UpdatedOn,
+      label: "Updated on",
       kind: "chronological",
     },
     {
-      value: ServiceRequestCaseSortField.UpdatedOn,
-      label: "Updated on",
+      value: ServiceRequestCaseSortField.CreatedOn,
+      label: "Created on",
       kind: "chronological",
     },
     {

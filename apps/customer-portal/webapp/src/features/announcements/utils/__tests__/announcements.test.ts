@@ -35,7 +35,7 @@ describe("buildAnnouncementCaseSearchRequest", () => {
     expect(req.filters?.caseTypes).toEqual([CaseType.ANNOUNCEMENT]);
     expect(req.filters?.statusIds).toEqual([5]);
     expect(req.filters?.searchQuery).toBe("hello");
-    expect(req.sortBy?.field).toBe("createdOn");
+    expect(req.sortBy?.field).toBe("updatedOn");
     expect(req.sortBy?.order).toBe(SortOrder.ASC);
   });
 

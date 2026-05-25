@@ -27,6 +27,7 @@ import type {
 } from "@features/operations/types/changeRequests";
 import {
   ChangeRequestFilterDefinitionId,
+  ChangeRequestSortField,
   type ChangeRequestFilterOption,
 } from "@features/operations/types/changeRequests";
 import {
@@ -34,7 +35,8 @@ import {
   ServiceRequestCaseSortField,
 } from "@features/operations/types/serviceRequests";
 import { ChangeRequestStates } from "@features/operations/constants/operationsConstants";
-import type { MetadataItem, SortOrder } from "@/types/common";
+import { SortOrder } from "@/types/common";
+import type { MetadataItem } from "@/types/common";
 
 /**
  * Resolves `operations` vs `support` from the current pathname.
@@ -222,6 +224,10 @@ export function buildChangeRequestSearchRequest(
       stateKeys,
       impactKey: filters.impactId ? Number(filters.impactId) : undefined,
     },
+    sortBy: {
+      field: ChangeRequestSortField.UpdatedOn,
+      order: SortOrder.DESC,
+    },
   };
 }
 
@@ -284,7 +290,7 @@ export function buildServiceRequestsPageCaseSearchRequest(
 ): Omit<CaseSearchRequest, "pagination"> {
   const normalizedSortField =
     sortField === ServiceRequestCaseSortField.Severity
-      ? ServiceRequestCaseSortField.CreatedOn
+      ? ServiceRequestCaseSortField.UpdatedOn
       : sortField;
 
   const resolvedStatusIds: number[] | undefined = filters.statusId

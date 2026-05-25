@@ -94,7 +94,7 @@ export default function SupportPage(): JSX.Element {
         caseTypes: [CaseType.DEFAULT_CASE],
         statusIds: nonClosedStatusIds,
       },
-      sortBy: { field: "createdOn", order: SortOrder.DESC },
+      sortBy: { field: "updatedOn", order: SortOrder.DESC },
     },
     0,
     SUPPORT_OVERVIEW_CASES_LIMIT,

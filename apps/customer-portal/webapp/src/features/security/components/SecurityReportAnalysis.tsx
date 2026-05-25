@@ -107,7 +107,7 @@ const SecurityReportAnalysis = ({ fixedStatusIds, fixedClosedDateRange }: Securi
   const [filters, setFilters] = useSessionState<AllCasesFilterValues>(`${sessionPrefix}-filters`, {}, undefined, { popOnly: true });
   const [sortField, setSortField] = useSessionState<SecurityReportCaseSortField>(
     `${sessionPrefix}-sortField`,
-    SecurityReportCaseSortField.createdOn,
+    SecurityReportCaseSortField.updatedOn,
     isValidSecuritySortField,
     { popOnly: true },
   );

@@ -88,7 +88,7 @@ export default function AllCasesPage(): JSX.Element {
   const [isFiltersOpen, setIsFiltersOpen] = useState(
     () => hasListSearchOrFilters(searchTerm, filters),
   );
-  const [sortField, setSortField] = useSessionState<"createdOn" | "updatedOn" | "severity" | "state">(`${sessionPrefix}-sortField`, "createdOn", undefined, { popOnly: true });
+  const [sortField, setSortField] = useSessionState<"createdOn" | "updatedOn" | "severity" | "state">(`${sessionPrefix}-sortField`, "updatedOn", undefined, { popOnly: true });
   const [sortOrder, setSortOrder] = useSessionState<SortOrder>(`${sessionPrefix}-sortOrder`, SortOrder.DESC, undefined, { popOnly: true });
   const [page, setPage] = useSessionState<number>(`${sessionPrefix}-page`, 1, undefined, { popOnly: true });
   const [rowsPerPage, setRowsPerPage] = useSessionState<number>(`${sessionPrefix}-rowsPerPage`, 10, undefined, { popOnly: true });
@@ -369,8 +369,8 @@ export default function AllCasesPage(): JSX.Element {
         totalCount={totalItems}
         entityLabel="cases"
         sortFieldOptions={[
-          { value: "createdOn", label: "Created on" },
           { value: "updatedOn", label: "Updated on" },
+          { value: "createdOn", label: "Created on" },
           { value: "severity", label: "Severity", kind: "ordinal" as const },
           { value: "state", label: "Status", kind: "ordinal" as const },
         ]}
