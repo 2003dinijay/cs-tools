@@ -35,6 +35,7 @@ import {
 } from "@features/support/utils/support";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { getSeverityLegendColor } from "@features/dashboard/utils/dashboard";
+import { formatCasesTableCaseIdentifier } from "@features/dashboard/utils/casesTable";
 import ErrorIndicator from "@components/error-indicator/ErrorIndicator";
 import CasesTableSkeleton from "@features/dashboard/components/cases-table/CasesTableSkeleton";
 import EmptyIcon from "@components/empty-state/EmptyIcon";
@@ -209,7 +210,10 @@ const CasesList = ({
                               variant="caption"
                               color="text.secondary"
                             >
-                              ID: {row.number}
+                              {formatCasesTableCaseIdentifier(
+                                row.number,
+                                row.internalId,
+                              )}
                             </Typography>
                           </Box>
                         </TableCell>

@@ -106,6 +106,7 @@ describe("CasesList", () => {
         createdOn: "2024-01-01 10:00:00",
         title: "Test Case 1",
         number: "CS-001",
+        internalId: "INT-001",
         assignedEngineer: "John Doe",
         createdBy: "Jane Smith",
         severity: { id: 1, label: "High" },
@@ -198,7 +199,7 @@ describe("CasesList", () => {
     expect(screen.getByText("Created by")).toBeInTheDocument();
     expect(screen.getByText("Jane Smith")).toBeInTheDocument();
     expect(screen.getByText("Test Case 1")).toBeInTheDocument();
-    expect(screen.getByText("ID: CS-001")).toBeInTheDocument();
+    expect(screen.getByText("ID: CS-001 | INT-001")).toBeInTheDocument();
     expect(screen.getByText("Test Case 2")).toBeInTheDocument();
     expect(screen.getByText("ID: CS-002")).toBeInTheDocument();
     expect(screen.getAllByTestId("table-row")).toHaveLength(3); // 1 header + 2 data rows
