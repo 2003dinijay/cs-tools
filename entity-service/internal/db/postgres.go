@@ -13,17 +13,39 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+// Package db manages the PostgreSQL connection pool for the entity service.
 package db
 
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const (
+	poolMaxConns        int32         = 20               // maximum open connections in the pool
+	poolMinConns        int32         = 2                // connections kept warm when idle
+	poolMaxConnLifetime time.Duration = 30 * time.Minute // rotate connections to avoid stale server-side state
+	poolMaxConnIdleTime time.Duration = 5 * time.Minute  // release unused connections back to the OS
+)
+
+// NewPool creates a pgxpool connection pool for the given DSN, pings the
+// database to confirm connectivity, and returns the pool ready for use.
+// The caller is responsible for calling pool.Close on shutdown.
 func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse pool config: %w", err)
+	}
+
+	cfg.MaxConns = poolMaxConns
+	cfg.MinConns = poolMinConns
+	cfg.MaxConnLifetime = poolMaxConnLifetime
+	cfg.MaxConnIdleTime = poolMaxConnIdleTime
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create pool: %w", err)
 	}
