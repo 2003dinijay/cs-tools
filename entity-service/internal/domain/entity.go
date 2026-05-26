@@ -70,3 +70,48 @@ type SearchUsersResponse struct {
 	Offset  int    `json:"offset"`
 	HasMore bool   `json:"hasMore"`
 }
+
+// AccountTier represents the subscription tier of an account.
+type AccountTier string
+
+const (
+	// AccountTierBasic is the standard subscription tier.
+	AccountTierBasic AccountTier = "basic"
+	// AccountTierEnterprise is the premium subscription tier.
+	AccountTierEnterprise AccountTier = "enterprise"
+)
+
+// Account represents a customer account as stored in the database.
+// TechnicalOwnerID, Region, and DeactivationDate are optional.
+type Account struct {
+	ID                  string      `json:"id"`
+	SfID                string      `json:"sfId"`
+	Name                string      `json:"name"`
+	Tier                AccountTier `json:"tier"`
+	Region              *string     `json:"region,omitempty"`
+	ActivationDate      time.Time   `json:"activationDate"`
+	DeactivationDate    *time.Time  `json:"deactivationDate,omitempty"`
+	OwnerID             string      `json:"ownerId"`
+	TechnicalOwnerID    *string     `json:"technicalOwnerId,omitempty"`
+	AgentEnabled        bool        `json:"agentEnabled"`
+	KbReferencesEnabled bool        `json:"kbReferencesEnabled"`
+	CreatedAt           time.Time   `json:"createdAt"`
+	UpdatedAt           time.Time   `json:"updatedAt"`
+}
+
+// SearchAccountsRequest is the input for an account search operation.
+// SearchQuery is matched case-insensitively against name and sf_id.
+type SearchAccountsRequest struct {
+	Pagination  Pagination `json:"pagination"`
+	SearchQuery string     `json:"searchQuery"`
+}
+
+// SearchAccountsResponse is the paginated result of an account search.
+// HasMore is true when additional pages are available beyond the current offset.
+type SearchAccountsResponse struct {
+	Accounts []Account `json:"accounts"`
+	Total    int       `json:"total"`
+	Limit    int       `json:"limit"`
+	Offset   int       `json:"offset"`
+	HasMore  bool      `json:"hasMore"`
+}

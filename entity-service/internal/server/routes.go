@@ -31,14 +31,19 @@ import (
 // registers all routes, and wraps the mux with the middleware chain:
 // Recovery → Logger → Timeout.
 func NewRouter(db *pgxpool.Pool) http.Handler {
-	repo := repository.NewUserRepository(db)
-	svc := service.NewUserService(repo)
-	userHandler := handler.NewUserHandler(svc)
+	userRepo := repository.NewUserRepository(db)
+	userSvc := service.NewUserService(userRepo)
+	userHandler := handler.NewUserHandler(userSvc)
+
+	accountRepo := repository.NewAccountRepository(db)
+	accountSvc := service.NewAccountService(accountRepo)
+	accountHandler := handler.NewAccountHandler(accountSvc)
 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handler.HealthCheck)
 	mux.HandleFunc("POST /users/search", userHandler.SearchUsers)
+	mux.HandleFunc("POST /accounts/search", accountHandler.SearchAccounts)
 
 	return middleware.Recovery(
 		middleware.Logger(
