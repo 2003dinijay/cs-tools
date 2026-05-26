@@ -18,14 +18,9 @@
 package handler
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"io"
-	"log"
 	"net/http"
 
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
@@ -41,40 +36,16 @@ func NewAccountHandler(svc service.AccountService) *AccountHandler {
 }
 
 // SearchAccounts handles POST /accounts/search.
-// It decodes a SearchAccountsRequest from the request body and writes a
-// paginated SearchAccountsResponse as JSON. Validation errors produce 400;
-// timeouts produce 408; all other errors produce 500.
 func (h *AccountHandler) SearchAccounts(w http.ResponseWriter, r *http.Request) {
 	var req domain.SearchAccountsRequest
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		apierror.WriteJSON(w, http.StatusBadRequest, "invalid request body")
+	if !decodeRequest(w, r, &req) {
 		return
 	}
-	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		apierror.WriteJSON(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
 	resp, err := h.svc.SearchAccounts(r.Context(), req)
 	if err != nil {
-		var ve *apierror.ValidationError
-		switch {
-		case errors.As(err, &ve):
-			apierror.WriteJSON(w, http.StatusBadRequest, ve.Error())
-		case errors.Is(err, context.DeadlineExceeded):
-			apierror.WriteJSON(w, http.StatusRequestTimeout, "request timeout")
-		case errors.Is(err, context.Canceled):
-			w.WriteHeader(499)
-			log.Printf("request canceled: %s %s", r.Method, r.URL.Path)
-		default:
-			apierror.WriteJSON(w, http.StatusInternalServerError, "internal server error")
-		}
+		writeServiceError(w, r, err)
 		return
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }

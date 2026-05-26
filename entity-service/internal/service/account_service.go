@@ -19,9 +19,7 @@ package service
 
 import (
 	"context"
-	"unicode/utf8"
 
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
@@ -37,17 +35,11 @@ func NewAccountService(repo repository.AccountRepository) AccountService {
 
 // SearchAccounts implements AccountService.
 func (s *accountService) SearchAccounts(ctx context.Context, req domain.SearchAccountsRequest) (domain.SearchAccountsResponse, error) {
-	if req.Pagination.Limit <= 0 {
-		req.Pagination.Limit = defaultLimit
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchAccountsResponse{}, err
 	}
-	if req.Pagination.Limit > maxLimit {
-		return domain.SearchAccountsResponse{}, &apierror.ValidationError{Msg: "limit cannot exceed 100"}
-	}
-	if req.Pagination.Offset < 0 {
-		req.Pagination.Offset = 0
-	}
-	if utf8.RuneCountInString(req.SearchQuery) > maxSearchQueryLen {
-		return domain.SearchAccountsResponse{}, &apierror.ValidationError{Msg: "searchQuery cannot exceed 200 characters"}
+	if err := validateSearchQuery(req.SearchQuery); err != nil {
+		return domain.SearchAccountsResponse{}, err
 	}
 	accounts, total, err := s.repo.SearchAccounts(ctx, req)
 	if err != nil {

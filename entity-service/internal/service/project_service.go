@@ -19,9 +19,7 @@ package service
 
 import (
 	"context"
-	"unicode/utf8"
 
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
@@ -37,17 +35,11 @@ func NewProjectService(repo repository.ProjectRepository) ProjectService {
 
 // SearchProjects implements ProjectService.
 func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchProjectsRequest) (domain.SearchProjectsResponse, error) {
-	if req.Pagination.Limit <= 0 {
-		req.Pagination.Limit = defaultLimit
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchProjectsResponse{}, err
 	}
-	if req.Pagination.Limit > maxLimit {
-		return domain.SearchProjectsResponse{}, &apierror.ValidationError{Msg: "limit cannot exceed 100"}
-	}
-	if req.Pagination.Offset < 0 {
-		req.Pagination.Offset = 0
-	}
-	if utf8.RuneCountInString(req.SearchQuery) > maxSearchQueryLen {
-		return domain.SearchProjectsResponse{}, &apierror.ValidationError{Msg: "searchQuery cannot exceed 200 characters"}
+	if err := validateSearchQuery(req.SearchQuery); err != nil {
+		return domain.SearchProjectsResponse{}, err
 	}
 
 	projects, total, err := s.repo.SearchProjects(ctx, req)

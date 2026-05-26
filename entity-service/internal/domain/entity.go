@@ -53,12 +53,10 @@ type Pagination struct {
 }
 
 // SearchUsersRequest is the input for a user search operation.
-// SearchQuery is matched case-insensitively against first name, last name,
-// username, and email. UserType narrows results to a single user class.
+// SearchQuery is matched case-insensitively against username and email.
 type SearchUsersRequest struct {
 	Pagination  Pagination `json:"pagination"`
 	SearchQuery string     `json:"searchQuery"`
-	UserType    *UserType  `json:"userType,omitempty"`
 }
 
 // SearchUsersResponse is the paginated result of a user search.
