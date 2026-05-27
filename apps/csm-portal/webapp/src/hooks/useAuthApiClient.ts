@@ -35,17 +35,33 @@ function resolveRequestUrl(input: RequestInfo | URL): URL {
 }
 
 function buildRequestHeaders(
+  input: RequestInfo | URL,
   options: RequestInit | undefined,
   token: string,
 ): Headers {
-  const headers = new Headers(options?.headers);
+  // When `input` is a Request, `init.headers` on the outer fetch call REPLACES
+  // the request's headers wholesale — it does not merge. Seed the headers from
+  // the Request and let any explicit option-level headers override.
+  const headers =
+    input instanceof Request ? new Headers(input.headers) : new Headers();
+  if (options?.headers) {
+    new Headers(options.headers).forEach((value, key) => {
+      headers.set(key, value);
+    });
+  }
+
   headers.set("Authorization", `Bearer ${token}`);
   if (!headers.has("Accept")) {
     headers.set("Accept", "application/json");
   }
 
-  const method = options?.method?.toUpperCase() || "GET";
-  const body = options?.body;
+  // Inherit method/body from the Request when callers omit them in `options`.
+  const method =
+    options?.method?.toUpperCase() ||
+    (input instanceof Request ? input.method.toUpperCase() : "GET");
+  const body =
+    options?.body ?? (input instanceof Request ? input.body : undefined);
+
   if (["POST", "PUT", "PATCH"].includes(method) && body) {
     const isNonJsonType =
       body instanceof FormData ||
@@ -88,7 +104,7 @@ export function useAuthApiClient() {
 
       return fetch(input, {
         ...options,
-        headers: buildRequestHeaders(options, token),
+        headers: buildRequestHeaders(input, options, token),
       });
     },
     [getAccessToken],
