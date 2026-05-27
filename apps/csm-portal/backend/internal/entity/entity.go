@@ -46,3 +46,15 @@ func (c *Client) GetCase(ctx context.Context, caseID string) ([]byte, error) {
 func (c *Client) SearchUsers(ctx context.Context, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, "/users/search", body)
 }
+
+// SearchAccounts calls POST /accounts/search on the entity service.
+// Response is returned as raw JSON; field filtering to the portal shape is deferred.
+func (c *Client) SearchAccounts(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/accounts/search", body)
+}
+
+// SearchProjects calls POST /projects/search on the entity service.
+// Response is returned as raw JSON; field filtering to the portal shape is deferred.
+func (c *Client) SearchProjects(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/projects/search", body)
+}
