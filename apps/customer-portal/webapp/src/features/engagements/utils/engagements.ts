@@ -76,7 +76,7 @@ export function buildEngagementSearchRequest(
   return {
     filters: {
       caseTypes: [CaseType.ENGAGEMENT],
-      statusIds: filters.statusId ? [Number(filters.statusId)] : undefined,
+      statusIds: filters.statusIds?.length ? filters.statusIds.map(Number) : undefined,
       issueId: filters.issueTypes ? Number(filters.issueTypes) : undefined,
       deploymentId: filters.deploymentId || undefined,
       searchQuery: searchTerm.trim() || undefined,
