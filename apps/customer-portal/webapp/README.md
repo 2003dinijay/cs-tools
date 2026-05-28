@@ -55,7 +55,6 @@ Register a **Single Page Application** in your identity provider and align these
 |-------------|------------|
 | Allowed callback URLs | `CUSTOMER_PORTAL_AUTH_SIGN_IN_REDIRECT_URL` |
 | Allowed logout URLs | `CUSTOMER_PORTAL_AUTH_SIGN_OUT_REDIRECT_URL` |
-| Grant type | Authorization code (PKCE) |
 
 For local development, use `http://localhost:3000` for both redirect URLs unless you change the Vite dev server port.
 
