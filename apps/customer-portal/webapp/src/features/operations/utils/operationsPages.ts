@@ -297,8 +297,8 @@ export function buildServiceRequestsPageCaseSearchRequest(
       ? ServiceRequestCaseSortField.UpdatedOn
       : sortField;
 
-  const resolvedStatusIds: number[] | undefined = filters.statusId
-    ? [Number(filters.statusId)]
+  const resolvedStatusIds: number[] | undefined = filters.statusIds?.length
+    ? filters.statusIds.map(Number)
     : outstandingStatusIds?.length
       ? outstandingStatusIds
       : undefined;

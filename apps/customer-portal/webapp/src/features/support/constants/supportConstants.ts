@@ -425,9 +425,10 @@ export const ALL_CONVERSATIONS_FILTER_DEFINITIONS: AllConversationsFilterDefinit
  */
 export const ALL_CASES_FILTER_DEFINITIONS: AllCasesFilterDefinition[] = [
   {
-    filterKey: "statusId",
+    filterKey: "statusIds",
     id: "status",
     metadataKey: "caseStates",
+    multiSelect: true,
   },
   {
     filterKey: "severityId",
@@ -497,9 +498,10 @@ export const ANNOUNCEMENT_STAT_CONFIGS: SupportStatConfig<AnnouncementStatKey>[]
  */
 export const ANNOUNCEMENT_FILTER_DEFINITIONS: AnnouncementFilterDefinition[] = [
   {
-    filterKey: "statusId",
+    filterKey: "statusIds",
     id: "status",
     metadataKey: "caseStates",
+    multiSelect: true,
   },
 ];
 

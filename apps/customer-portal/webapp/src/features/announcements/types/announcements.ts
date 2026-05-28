@@ -61,7 +61,7 @@ export type AnnouncementListProps = {
 export type AnnouncementsFiltersProps = {
   filters: AnnouncementFilterValues;
   filterMetadata: CaseMetadataResponse | undefined;
-  onFilterChange: (field: string, value: string) => void;
+  onFilterChange: (field: string, value: string | string[]) => void;
   disabled?: boolean;
 };
 
@@ -72,7 +72,7 @@ export type AnnouncementsSearchBarProps = {
   onFiltersToggle: () => void;
   filters: AnnouncementFilterValues;
   filterMetadata: CaseMetadataResponse | undefined;
-  onFilterChange: (field: string, value: string) => void;
+  onFilterChange: (field: string, value: string | string[]) => void;
   onClearFilters: () => void;
   filtersDisabled?: boolean;
 };

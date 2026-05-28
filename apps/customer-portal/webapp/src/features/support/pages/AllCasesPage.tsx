@@ -120,15 +120,15 @@ export default function AllCasesPage(): JSX.Element {
   const { data: filterMetadata } = useGetProjectFilters(projectId || "");
 
   // When navigating from Dashboard with ?statusFilter=resolved, force the Closed status into the filter
-  // so the list only shows resolved cases. We guard on "already equals closed id" rather than "any truthy
-  // statusId" to avoid skipping the update when a prior session filter is a different status.
+  // so the list only shows resolved cases. We guard on "already contains closed id" rather than "any truthy
+  // statusIds" to avoid skipping the update when a prior session filter is a different status.
   useEffect(() => {
     if (statusFilter !== "resolved" || !filterMetadata?.caseStates) return;
     const closedState = filterMetadata.caseStates.find((s) => s.label === CaseStatus.CLOSED);
-    if (closedState && filters.statusId !== String(closedState.id)) {
-      setFilters((prev) => ({ ...prev, statusId: String(closedState.id) }));
+    if (closedState && !filters.statusIds?.includes(String(closedState.id))) {
+      setFilters((prev) => ({ ...prev, statusIds: [String(closedState.id)] }));
     }
-  }, [statusFilter, filterMetadata, filters.statusId, setFilters]);
+  }, [statusFilter, filterMetadata, filters.statusIds, setFilters]);
 
   // Fetch deployments for the deployment filter (10 at a time)
   const deploymentsQuery = usePostProjectDeploymentsSearchInfinite(
@@ -146,7 +146,7 @@ export default function AllCasesPage(): JSX.Element {
       filters: {
         caseTypes: [CaseType.DEFAULT_CASE],
         ...buildDashboardCaseSearchFilters({
-          statusId: filters.statusId,
+          statusIds: filters.statusIds as string[] | undefined,
           severityId: filters.severityId,
           issueTypes: filters.issueTypes,
           deploymentId: permissions.hasDeployments
@@ -251,10 +251,12 @@ export default function AllCasesPage(): JSX.Element {
     setPage(1);
   };
 
-  const handleFilterChange = (field: string, value: string) => {
+  const handleFilterChange = (field: string, value: string | string[]) => {
     setFilters((prev) => ({
       ...prev,
-      [field]: value || undefined,
+      [field]: Array.isArray(value)
+        ? (value.length === 0 ? undefined : value)
+        : (value || undefined),
     }));
     setPage(1);
   };

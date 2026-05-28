@@ -53,7 +53,7 @@ export type EngagementsListSectionProps = {
   onFiltersToggle: () => void;
   filters: AllCasesFilterValues;
   filterMetadata: CaseMetadataResponse | undefined;
-  onFilterChange: (field: string, value: string) => void;
+  onFilterChange: (field: string, value: string | string[]) => void;
   onClearFilters: () => void;
   hideFiltersButton?: boolean;
   isStatFiltered?: boolean;

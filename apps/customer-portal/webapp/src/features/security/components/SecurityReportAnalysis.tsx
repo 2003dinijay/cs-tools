@@ -126,7 +126,7 @@ const SecurityReportAnalysis = ({ fixedStatusIds, fixedClosedDateRange }: Securi
           viewMode === SecurityReportViewMode.MY ? true : undefined,
         statusIds: fixedStatusIds !== undefined
           ? (fixedStatusIds.length > 0 ? fixedStatusIds : undefined)
-          : (filters.statusId ? [Number(filters.statusId)] : undefined),
+          : (filters.statusIds?.length ? filters.statusIds.map(Number) : undefined),
         severityId: filters.severityId ? Number(filters.severityId) : undefined,
         issueId: filters.issueTypes ? Number(filters.issueTypes) : undefined,
         deploymentId: filters.deploymentId || undefined,
@@ -206,8 +206,13 @@ const SecurityReportAnalysis = ({ fixedStatusIds, fixedClosedDateRange }: Securi
     setPage(1);
   };
 
-  const handleFilterChange = (field: string, value: string) => {
-    setFilters((prev) => ({ ...prev, [field]: value || undefined }));
+  const handleFilterChange = (field: string, value: string | string[]) => {
+    setFilters((prev) => ({
+      ...prev,
+      [field]: Array.isArray(value)
+        ? (value.length === 0 ? undefined : value)
+        : (value || undefined),
+    }));
     setPage(1);
   };
 

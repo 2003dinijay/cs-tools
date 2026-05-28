@@ -252,10 +252,12 @@ export function useEngagementsPageState() {
     setPage(1);
   };
 
-  const handleFilterChange = (field: string, value: string) => {
+  const handleFilterChange = (field: string, value: string | string[]) => {
     setFilters((prev) => ({
       ...prev,
-      [field]: value || undefined,
+      [field]: Array.isArray(value)
+        ? (value.length === 0 ? undefined : value)
+        : (value || undefined),
     }));
     setPage(1);
   };
@@ -299,7 +301,7 @@ export function useEngagementsPageState() {
     }
     setFixedStatusIds(ids);
     setActiveStatKey(key);
-    setFilters((prev) => ({ ...prev, statusId: undefined }));
+    setFilters((prev) => ({ ...prev, statusIds: undefined }));
     setPage(1);
   };
 

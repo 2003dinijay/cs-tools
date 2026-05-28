@@ -28,14 +28,14 @@ export interface ListSearchPanelProps {
   isFiltersOpen: boolean;
   onFiltersToggle: () => void;
   filters: {
-    statusId?: string;
+    statusIds?: string[];
     severityId?: string;
     issueTypes?: string;
     deploymentId?: string;
   };
   filterMetadata: CaseMetadataResponse | undefined;
   deployments?: ProjectDeploymentItem[];
-  onFilterChange: (field: string, value: string) => void;
+  onFilterChange: (field: string, value: string | string[]) => void;
   onClearFilters: () => void;
   excludeS0?: boolean;
   restrictSeverityToLow?: boolean;
@@ -87,7 +87,7 @@ export default function ListSearchPanel({
   const filtersForCount = {
     ...filters,
     ...(hideSeverityFilter ? { severityId: undefined } : {}),
-    ...(hideStatusFilter ? { statusId: undefined } : {}),
+    ...(hideStatusFilter ? { statusIds: undefined } : {}),
     ...(hideDeploymentFilter ? { deploymentId: undefined } : {}),
     ...(hideCategoryFilter ? { issueTypes: undefined } : {}),
     ...excluded,

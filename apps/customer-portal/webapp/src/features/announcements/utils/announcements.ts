@@ -52,7 +52,7 @@ export function buildAnnouncementCaseSearchRequest(
   return {
     filters: {
       caseTypes: [CaseType.ANNOUNCEMENT],
-      statusIds: filters.statusId ? [Number(filters.statusId)] : undefined,
+      statusIds: filters.statusIds?.length ? filters.statusIds.map(Number) : undefined,
       searchQuery: searchTerm.trim() || undefined,
     },
     sortBy: {

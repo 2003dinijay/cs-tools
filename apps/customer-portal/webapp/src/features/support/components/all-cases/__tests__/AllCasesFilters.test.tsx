@@ -30,7 +30,7 @@ describe("ListFilters", () => {
   const theme = createTheme();
   const mockOnFilterChange = vi.fn();
   const defaultFilters = {
-    statusId: "",
+    statusIds: [] as string[],
     severityId: "",
     issueTypes: "",
     deploymentId: "",
@@ -97,7 +97,7 @@ describe("ListFilters", () => {
     const option = await screen.findByText("Open");
     fireEvent.click(option);
 
-    // Filter key for Status is 'statusId'
-    expect(mockOnFilterChange).toHaveBeenCalledWith("statusId", "1");
+    // Filter key for Status is 'statusIds' (multi-select — value is an array)
+    expect(mockOnFilterChange).toHaveBeenCalledWith("statusIds", expect.arrayContaining(["1"]));
   });
 });

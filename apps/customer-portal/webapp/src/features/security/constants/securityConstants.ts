@@ -134,8 +134,9 @@ export const SECURITY_REPORT_ENTITY_LABEL = "reports";
 export const SECURITY_REPORT_FILTER_DEFINITIONS: FilterDefinition[] = [
   {
     id: "status",
-    filterKey: "statusId",
+    filterKey: "statusIds",
     metadataKey: "caseStates",
+    multiSelect: true,
   },
 ];
 

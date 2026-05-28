@@ -265,10 +265,10 @@ export default function ChangeRequestsPage(): JSX.Element {
     setPage(1);
   };
 
-  const handleFilterChange = (field: string, value: string) => {
+  const handleFilterChange = (field: string, value: string | string[]) => {
     setFilters((prev) => ({
       ...prev,
-      [field]: value || undefined,
+      [field]: Array.isArray(value) ? (value.length === 0 ? undefined : value[0]) : (value || undefined),
     }));
     setPage(1);
   };
