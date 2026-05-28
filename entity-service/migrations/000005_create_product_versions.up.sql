@@ -1,4 +1,4 @@
-CREATE TYPE current_support_status AS ENUM (
+CREATE TYPE current_support_status_enum AS ENUM (
     'discontinued',
     'extended',
     'deprecated',
@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS product_versions (
     id                                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     product_id                          UUID        NOT NULL REFERENCES products(id),
     version                             TEXT        NOT NULL,
-    current_support_status              current_support_status NOT NULL,
+    current_support_status              current_support_status_enum NOT NULL,
     release_date                        DATE        NOT NULL,
     support_eol_date                    DATE,
     earliest_possible_support_eol_date  DATE,
