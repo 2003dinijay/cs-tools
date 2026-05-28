@@ -305,9 +305,9 @@ export type CaseMetadataResponse = {
 export type AllCasesFilterValues = {
   [key: string]: string | string[] | undefined;
   statusIds?: string[];
-  severityId?: string;
+  severityIds?: string[];
   issueTypes?: string;
-  deploymentId?: string;
+  deploymentIds?: string[];
   engagementTypeKey?: string;
 };
 
@@ -359,8 +359,8 @@ export type CreateCaseResponse = AuditMetadata & {
 // Filter type for searching cases.
 export type CaseSearchFilters = {
   issueId?: number;
-  deploymentId?: string;
-  severityId?: number;
+  deploymentIds?: string[];
+  severityIds?: number[];
   statusId?: number;
   statusIds?: number[];
   searchQuery?: string;
