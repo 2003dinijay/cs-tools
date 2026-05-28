@@ -199,12 +199,19 @@ export function downloadCaseListCsv(
   variant: CaseListCsvExportVariant,
   filenamePrefix: string,
   projectId?: string,
+  projectName?: string,
 ): void {
   const content =
     variant === "allCases"
       ? buildAllCasesListCsv(cases)
       : buildCaseListExportCsv(cases);
-  downloadCsvFile(buildCaseListCsvFilename(filenamePrefix, projectId), content);
+  const datePart = new Date().toISOString().slice(0, 10);
+  const namePart = projectName
+    ? `-${projectName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")}`
+    : projectId
+      ? `-${projectId}`
+      : "";
+  downloadCsvFile(`${filenamePrefix}${namePart}-${datePart}.csv`, content);
 }
 
 /**
@@ -248,6 +255,7 @@ export function downloadCaseListPdf(
   variant: CaseListCsvExportVariant,
   filenamePrefix: string,
   projectId?: string,
+  projectName?: string,
 ): void {
   const headers =
     variant === "allCases"
@@ -258,8 +266,15 @@ export function downloadCaseListPdf(
       ? mapCasesToCsvRows(cases)
       : mapCaseListExportCsvRows(cases);
   const datePart = new Date().toISOString().slice(0, 10);
-  const projectPart = projectId ? `-${projectId}` : "";
-  const filename = `${filenamePrefix}${projectPart}-${datePart}.pdf`;
-  const title = `${filenamePrefix.replace(/-/g, " ")} — ${datePart}`;
+  const namePart = projectName
+    ? `-${projectName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")}`
+    : projectId
+      ? `-${projectId}`
+      : "";
+  const filename = `${filenamePrefix}${namePart}-${datePart}.pdf`;
+  const label = filenamePrefix.replace(/-/g, " ");
+  const title = projectName
+    ? `${label} — ${projectName} — ${datePart}`
+    : `${label} — ${datePart}`;
   downloadPdfFile(filename, title, headers, rows, CASE_PDF_COLUMN_STYLES);
 }

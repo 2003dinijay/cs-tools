@@ -296,6 +296,7 @@ export default function AllCasesPage(): JSX.Element {
   const downloadResultsButton = projectId ? (
     <AllCasesCsvExportButton
       projectId={projectId}
+      projectName={project?.name}
       caseSearchRequest={caseSearchRequest}
       prefetchedCases={loadedCasesForExport}
       totalRecords={totalItems}
