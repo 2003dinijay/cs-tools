@@ -16,6 +16,7 @@
 
 import type { JSX } from "react";
 import {
+  Checkbox,
   Divider,
   FormControl,
   Grid,
@@ -74,7 +75,7 @@ export default function EngagementsListSection({
   resultsBarRightContent,
 }: EngagementsListSectionProps): JSX.Element {
   const activeFiltersCount = countListSearchAndFilters(searchTerm, {
-    statusId: filters.statusId,
+    statusIds: filters.statusIds,
     engagementTypeKey: filters.engagementTypeKey,
   });
 
@@ -101,19 +102,25 @@ export default function EngagementsListSection({
                   <FormControl fullWidth size="small">
                     <InputLabel id="eng-status-label">Status</InputLabel>
                     <Select
+                      multiple
                       labelId="eng-status-label"
-                      value={filters.statusId ?? ""}
+                      value={filters.statusIds ?? []}
                       label="Status"
-                      onChange={(e: SelectChangeEvent<string>) =>
-                        onFilterChange("statusId", e.target.value)
+                      onChange={(e: SelectChangeEvent<string[]>) =>
+                        onFilterChange("statusIds", e.target.value as string[])
                       }
+                      renderValue={(selected) => {
+                        if (!Array.isArray(selected) || selected.length === 0) return "";
+                        if (selected.length === 1) {
+                          return filterMetadata.caseStates?.find((s) => s.id === selected[0])?.label ?? selected[0];
+                        }
+                        return `${selected.length} statuses selected`;
+                      }}
                     >
-                      <MenuItem value="">
-                        <Typography variant="body2">All Statuses</Typography>
-                      </MenuItem>
                       {filterMetadata.caseStates.map((s) => (
                         <MenuItem key={s.id} value={s.id}>
-                          <Typography variant="body2">{s.label}</Typography>
+                          <Checkbox checked={(filters.statusIds ?? []).includes(s.id)} size="small" />
+                          <Typography variant="body2" sx={{ ml: 1 }}>{s.label}</Typography>
                         </MenuItem>
                       ))}
                     </Select>
