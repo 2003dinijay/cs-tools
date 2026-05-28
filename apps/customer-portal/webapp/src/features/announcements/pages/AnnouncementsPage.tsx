@@ -121,8 +121,13 @@ export default function AnnouncementsPage(): JSX.Element {
     setPage(1);
   };
 
-  const handleFilterChange = (field: string, value: string) => {
-    setFilters((prev) => ({ ...prev, [field]: value || undefined }));
+  const handleFilterChange = (field: string, value: string | string[]) => {
+    setFilters((prev) => ({
+      ...prev,
+      [field]: Array.isArray(value)
+        ? (value.length === 0 ? undefined : value)
+        : (value || undefined),
+    }));
     setPage(1);
   };
 
