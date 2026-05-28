@@ -43,12 +43,22 @@ func NewRouter(db *pgxpool.Pool) http.Handler {
 	projectSvc := service.NewProjectService(projectRepo)
 	projectHandler := handler.NewProjectHandler(projectSvc)
 
+	productRepo := repository.NewProductRepository(db)
+	productSvc := service.NewProductService(productRepo)
+	productHandler := handler.NewProductHandler(productSvc)
+
+	productVersionRepo := repository.NewProductVersionRepository(db)
+	productVersionSvc := service.NewProductVersionService(productVersionRepo)
+	productVersionHandler := handler.NewProductVersionHandler(productVersionSvc)
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handler.HealthCheck)
 	mux.HandleFunc("POST /users/search", userHandler.SearchUsers)
 	mux.HandleFunc("POST /accounts/search", accountHandler.SearchAccounts)
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
+	mux.HandleFunc("POST /products/search", productHandler.SearchProducts)
+	mux.HandleFunc("POST /product-versions/search", productVersionHandler.SearchProductVersions)
 
 	return middleware.Recovery(
 		middleware.Logger(
