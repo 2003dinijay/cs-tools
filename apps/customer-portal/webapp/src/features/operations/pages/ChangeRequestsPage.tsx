@@ -24,15 +24,13 @@ import {
   type ChangeEvent,
 } from "react";
 import { useSessionState } from "@hooks/useSessionState";
-import { Box, Button, CircularProgress, Divider, Stack } from "@wso2/oxygen-ui";
-import { Download } from "@wso2/oxygen-ui-icons-react";
+import { Box, Divider, Stack } from "@wso2/oxygen-ui";
 import type { ChangeRequestFilterValues, ChangeRequestItem } from "@features/operations/types/changeRequests";
 import useGetProjectDetails from "@api/useGetProjectDetails";
 import useGetProjectFilters from "@api/useGetProjectFilters";
 import useGetChangeRequests, {
   useGetChangeRequestsInfinite,
 } from "@features/operations/api/useGetChangeRequests";
-import { useGetProjectChangeRequestStats } from "@features/operations/api/useGetProjectChangeRequestStats";
 import { CHANGE_REQUEST_FILTER_DEFINITIONS } from "@features/operations/constants/operationsConstants";
 import ListPageHeader from "@components/list-view/ListPageHeader";
 import ListSearchBar from "@components/list-view/ListSearchBar";
@@ -43,7 +41,6 @@ import ListPagination from "@components/list-view/ListPagination";
 import ChangeRequestsList from "@features/operations/components/change-requests/ChangeRequestsList";
 import ChangeRequestsCalendarView from "@features/operations/components/change-requests/ChangeRequestsCalendarView";
 import TabBar from "@components/tab-bar/TabBar";
-import { generateChangeRequestsSchedulePdf } from "@features/operations/utils/changeRequestsSchedulePdf";
 import { SortOrder } from "@/types/common";
 import { hasListSearchOrFilters, countListSearchAndFilters } from "@features/support/utils/support";
 import {
@@ -53,8 +50,6 @@ import {
 } from "@features/operations/types/changeRequests";
 import {
   CHANGE_REQUESTS_ENTITY_LABEL,
-  CHANGE_REQUESTS_EXPORT_EXPORTING_LABEL,
-  CHANGE_REQUESTS_EXPORT_SCHEDULE_LABEL,
   CHANGE_REQUESTS_PAGE_DESCRIPTION,
   CHANGE_REQUESTS_PAGE_DESCRIPTION_ACTION_REQUIRED,
   CHANGE_REQUESTS_PAGE_DESCRIPTION_OUTSTANDING,
@@ -121,16 +116,8 @@ export default function ChangeRequestsPage(): JSX.Element {
     undefined,
     { popOnly: true },
   );
-  const [isExporting, setIsExporting] = useState(false);
 
   const { data: filterMetadata } = useGetProjectFilters(projectId || "");
-
-  const {
-    data: stats,
-    isLoading: isStatsLoading,
-  } = useGetProjectChangeRequestStats(projectId || "", {
-    enabled: !!projectId,
-  });
 
   const changeRequestSearchRequest = useMemo(() => {
     const isPresetMode = outstandingOnly || actionRequired || scheduledOnly;
@@ -190,19 +177,19 @@ export default function ChangeRequestsPage(): JSX.Element {
       enabled:
         !!projectId &&
         !!filterMetadata &&
-        (viewMode === ChangeRequestsViewMode.Calendar || isExporting),
+        viewMode === ChangeRequestsViewMode.Calendar,
     },
   );
 
   useEffect(() => {
     if (
-      (viewMode === ChangeRequestsViewMode.Calendar || isExporting) &&
+      viewMode === ChangeRequestsViewMode.Calendar &&
       hasNextPage &&
       !isFetchingNextPage
     ) {
       void fetchNextPage();
     }
-  }, [viewMode, isExporting, hasNextPage, isFetchingNextPage, fetchNextPage]);
+  }, [viewMode, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   const changeRequests = useMemo(() => {
     if (viewMode === ChangeRequestsViewMode.List) {
@@ -221,40 +208,6 @@ export default function ChangeRequestsPage(): JSX.Element {
     viewMode === ChangeRequestsViewMode.List
       ? listData?.totalRecords || 0
       : infiniteData?.pages[0]?.totalRecords || 0;
-
-  useEffect(() => {
-    if (!isExporting) return;
-    if (isInfiniteError) {
-      queueMicrotask(() => {
-        setIsExporting(false);
-      });
-      return;
-    }
-    if (
-      !isInfiniteLoading &&
-      !isStatsLoading &&
-      !hasNextPage &&
-      !isFetchingNextPage &&
-      infiniteData &&
-      stats
-    ) {
-      const allChangeRequests =
-        flattenChangeRequestInfinitePages(infiniteData.pages) || [];
-      generateChangeRequestsSchedulePdf(allChangeRequests, stats);
-      queueMicrotask(() => {
-        setIsExporting(false);
-      });
-    }
-  }, [
-    isExporting,
-    isInfiniteLoading,
-    isInfiniteError,
-    isStatsLoading,
-    hasNextPage,
-    isFetchingNextPage,
-    infiniteData,
-    stats,
-  ]);
 
   const handlePageChange = (_event: ChangeEvent<unknown>, value: number) => {
     setPage(value);
@@ -300,10 +253,6 @@ export default function ChangeRequestsPage(): JSX.Element {
     );
   };
 
-  const handleExportSchedule = () => {
-    setIsExporting(true);
-  };
-
   const listHasRefinement = hasListSearchOrFilters(searchTerm, filters);
   const hideSearchPanel =
     outstandingOnly || actionRequired || scheduledOnly;
@@ -337,28 +286,6 @@ export default function ChangeRequestsPage(): JSX.Element {
         : CHANGE_REQUEST_FILTER_DEFINITIONS,
     [outstandingOnly, actionRequired, scheduledOnly],
   );
-  const exportButton = (
-    <Button
-      variant="contained"
-      color="warning"
-      size="small"
-      onClick={handleExportSchedule}
-      startIcon={
-        isExporting ? (
-          <CircularProgress size={16} sx={{ color: "white" }} />
-        ) : (
-          <Download />
-        )
-      }
-      disabled={isExporting}
-      sx={{ mt: { xs: 0, sm: 4 } }}
-    >
-      {isExporting
-        ? CHANGE_REQUESTS_EXPORT_EXPORTING_LABEL
-        : CHANGE_REQUESTS_EXPORT_SCHEDULE_LABEL}
-    </Button>
-  );
-
   return (
     <Stack spacing={3}>
       <ListPageHeader
@@ -382,7 +309,6 @@ export default function ChangeRequestsPage(): JSX.Element {
         }
         backLabel={OPERATIONS_LIST_BACK_LABEL}
         onBack={() => (returnTo ? navigate(returnTo) : navigate(".."))}
-        actions={exportButton}
       />
 
       {hideSearchPanel ? (
