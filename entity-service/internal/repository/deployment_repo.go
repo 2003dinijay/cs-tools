@@ -51,20 +51,20 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	where := "WHERE 1=1"
 
 	if len(req.ProjectIDs) > 0 {
-		// Cast to text to avoid uuid vs text[] type mismatch with pgx-encoded text arrays.
-		where += fmt.Sprintf(" AND project_id::text = ANY($%d)", argIdx)
+		// Cast the parameter to uuid[] so the column stays uncast and idx_deployments_project_id is usable.
+		where += fmt.Sprintf(" AND project_id = ANY($%d::uuid[])", argIdx)
 		filterArgs = append(filterArgs, req.ProjectIDs)
 		argIdx++
 	}
 
 	if len(req.DeploymentTypeKeys) > 0 {
 		// Convert []DeploymentType to []string — pgx has no codec for named string types.
-		// Cast to text to avoid deployment_type_enum vs text[] mismatch.
+		// Cast the parameter to deployment_type_enum[] so the column stays uncast and idx_deployments_type is usable.
 		typeStrings := make([]string, len(req.DeploymentTypeKeys))
 		for i, t := range req.DeploymentTypeKeys {
 			typeStrings[i] = string(t)
 		}
-		where += fmt.Sprintf(" AND type::text = ANY($%d)", argIdx)
+		where += fmt.Sprintf(" AND type = ANY($%d::deployment_type_enum[])", argIdx)
 		filterArgs = append(filterArgs, typeStrings)
 		argIdx++
 	}
