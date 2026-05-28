@@ -82,7 +82,7 @@ export default function AllCasesPage(): JSX.Element {
   const [searchTerm, setSearchTerm] = useSessionState(`${sessionPrefix}-search`, "", undefined, { popOnly: true });
   const [filters, setFilters] = useSessionState<AllCasesFilterValues>(
     `${sessionPrefix}-filters`,
-    initialSeverityId ? { severityId: initialSeverityId } : {},
+    initialSeverityId ? { severityIds: [initialSeverityId] } : {},
     undefined,
     { popOnly: true },
   );
@@ -147,17 +147,17 @@ export default function AllCasesPage(): JSX.Element {
         caseTypes: [CaseType.DEFAULT_CASE],
         ...buildDashboardCaseSearchFilters({
           statusIds: filters.statusIds as string[] | undefined,
-          severityId: filters.severityId,
+          severityIds: filters.severityIds as string[] | undefined,
           issueTypes: filters.issueTypes,
-          deploymentId: permissions.hasDeployments
-            ? filters.deploymentId || undefined
+          deploymentIds: permissions.hasDeployments
+            ? (filters.deploymentIds as string[] | undefined)
             : undefined,
           searchQuery: searchTerm,
           createdByMe: createdByMe || undefined,
           caseStates: filterMetadata?.caseStates,
           isDashboardSeverityNavigation:
             (isDashboardSeverityNavigation &&
-              filters.severityId === initialSeverityId) ||
+              filters.severityIds?.includes(initialSeverityId ?? "")) ||
             statusFilter === "active",
         }),
         ...(statusFilter === "resolved" ? getLast30DaysUtcRange() : {}),
@@ -291,7 +291,7 @@ export default function AllCasesPage(): JSX.Element {
     setPage(1);
   };
 
-  // Note: deploymentId is ignored in API request when user lacks permissions.
+  // Note: deploymentIds are ignored in API request when user lacks permissions.
 
   const listHasRefinement = hasListSearchOrFilters(searchTerm, filters);
 
@@ -378,8 +378,8 @@ export default function AllCasesPage(): JSX.Element {
           hideDeploymentFilter={!permissions.hasDeployments}
           isProjectContextLoading={isProjectContextLoading}
           excludeFromCount={
-            initialSeverityId && filters.severityId === initialSeverityId
-              ? ["severityId"]
+            initialSeverityId && filters.severityIds?.includes(initialSeverityId)
+              ? ["severityIds"]
               : []
           }
         />
