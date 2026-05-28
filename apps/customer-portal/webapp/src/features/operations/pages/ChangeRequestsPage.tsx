@@ -305,33 +305,26 @@ export default function ChangeRequestsPage(): JSX.Element {
   const listHasRefinement = hasListSearchOrFilters(searchTerm, filters);
   const hideSearchPanel =
     outstandingOnly || actionRequired || scheduledOnly;
-  const showDownloadResults =
-    listHasRefinement ||
-    outstandingOnly ||
-    actionRequired ||
-    scheduledOnly ||
-    searchTerm.trim().length > 0;
 
-  const downloadResultsButton =
-    showDownloadResults && projectId ? (
-      <ChangeRequestsCsvExportButton
-        projectId={projectId}
-        searchRequest={changeRequestSearchRequest}
-        prefetchedItems={
-          viewMode === ChangeRequestsViewMode.List
-            ? changeRequests
-            : flattenChangeRequestInfinitePages(infiniteData?.pages)
-        }
-        totalRecords={totalRecords}
-        disabled={
-          isLoading ||
-          isError ||
-          totalRecords === 0 ||
-          (viewMode === ChangeRequestsViewMode.Calendar &&
-            (hasNextPage || isFetchingNextPage))
-        }
-      />
-    ) : null;
+  const downloadResultsButton = projectId ? (
+    <ChangeRequestsCsvExportButton
+      projectId={projectId}
+      searchRequest={changeRequestSearchRequest}
+      prefetchedItems={
+        viewMode === ChangeRequestsViewMode.List
+          ? changeRequests
+          : flattenChangeRequestInfinitePages(infiniteData?.pages)
+      }
+      totalRecords={totalRecords}
+      disabled={
+        isLoading ||
+        isError ||
+        totalRecords === 0 ||
+        (viewMode === ChangeRequestsViewMode.Calendar &&
+          (hasNextPage || isFetchingNextPage))
+      }
+    />
+  ) : null;
   const visibleFilterDefinitions = useMemo(
     () =>
       outstandingOnly || actionRequired || scheduledOnly
@@ -400,7 +393,6 @@ export default function ChangeRequestsPage(): JSX.Element {
           onFiltersToggle={() => setIsFiltersOpen(!isFiltersOpen)}
           activeFiltersCount={countListSearchAndFilters("", filters)}
           onClearFilters={handleClearFilters}
-          actionsBeforeClearFilters={downloadResultsButton}
           filtersContent={
             <ListFiltersPanel
               filterDefinitions={visibleFilterDefinitions}
@@ -426,7 +418,7 @@ export default function ChangeRequestsPage(): JSX.Element {
         onSortOrderChange={handleSortChange}
         rightContent={
           <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            {hideSearchPanel ? downloadResultsButton : null}
+            {downloadResultsButton}
             <TabBar
               tabs={CHANGE_REQUESTS_VIEW_TABS_CONFIG}
               activeTab={viewMode}
