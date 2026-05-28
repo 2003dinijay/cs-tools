@@ -237,3 +237,49 @@ type SearchProductVersionsResponse struct {
 	Offset          int              `json:"offset"`
 	HasMore         bool             `json:"hasMore"`
 }
+
+// DeploymentType classifies the environment role of a deployment.
+type DeploymentType string
+
+const (
+	DeploymentTypePrimaryProduction DeploymentType = "primary_production"
+	DeploymentTypeStaging           DeploymentType = "staging"
+	DeploymentTypeQA                DeploymentType = "qa"
+	DeploymentTypeStress            DeploymentType = "stress"
+	DeploymentTypeUAT               DeploymentType = "uat"
+	DeploymentTypeDevelopment       DeploymentType = "development"
+)
+
+// Deployment represents a project deployment environment as stored in the database.
+// Description is optional and omitted from JSON when absent.
+type Deployment struct {
+	ID          string         `json:"id"`
+	ProjectID   string         `json:"projectId"`
+	Name        string         `json:"name"`
+	Type        DeploymentType `json:"type"`
+	Description *string        `json:"description,omitempty"`
+	CreatedBy   string         `json:"createdBy"`
+	CreatedAt   time.Time      `json:"createdAt"`
+	UpdatedAt   time.Time      `json:"updatedAt"`
+}
+
+// SearchDeploymentsRequest is the input for a deployment search operation.
+// All filter fields are optional. ProjectIDs scopes results to specific projects;
+// DeploymentTypeKeys filters by deployment type; SearchQuery is matched
+// case-insensitively against name.
+type SearchDeploymentsRequest struct {
+	Pagination         Pagination       `json:"pagination"`
+	SearchQuery        string           `json:"searchQuery"`
+	ProjectIDs         []string         `json:"projectIds"`
+	DeploymentTypeKeys []DeploymentType `json:"deploymentTypeKeys"`
+}
+
+// SearchDeploymentsResponse is the paginated result of a deployment search.
+// HasMore is true when additional pages are available beyond the current offset.
+type SearchDeploymentsResponse struct {
+	Deployments []Deployment `json:"deployments"`
+	Total       int          `json:"total"`
+	Limit       int          `json:"limit"`
+	Offset      int          `json:"offset"`
+	HasMore     bool         `json:"hasMore"`
+}
