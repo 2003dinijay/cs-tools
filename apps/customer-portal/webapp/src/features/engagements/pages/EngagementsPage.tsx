@@ -83,23 +83,17 @@ export default function EngagementsPage(): JSX.Element {
 
   const showSimplifiedView = isStatFiltered || isChartNavigation;
 
-  const showDownloadResults =
-    listHasRefinement ||
-    showSimplifiedView ||
-    searchTerm.trim().length > 0;
-
-  const downloadResultsButton =
-    showDownloadResults && projectId ? (
-      <CaseListCsvExportButton
-        projectId={projectId}
-        caseSearchRequest={engagementSearchRequest}
-        filenamePrefix="engagements"
-        prefetchedCases={loadedCasesForExport}
-        totalRecords={totalItems}
-        disabled={!hasCasesResponse || isCasesError || totalItems === 0}
-        emptyMessage="No engagements to export for the current search or filters."
-      />
-    ) : null;
+  const downloadResultsButton = projectId ? (
+    <CaseListCsvExportButton
+      projectId={projectId}
+      caseSearchRequest={engagementSearchRequest}
+      filenamePrefix="engagements"
+      prefetchedCases={loadedCasesForExport}
+      totalRecords={totalItems}
+      disabled={!hasCasesResponse || isCasesError || totalItems === 0}
+      emptyMessage="No engagements to export for the current search or filters."
+    />
+  ) : null;
 
   return (
     <Stack spacing={3}>
@@ -169,12 +163,7 @@ export default function EngagementsPage(): JSX.Element {
         rowsPerPage={rowsPerPage}
         onPageChange={handlePageChange}
         onRowsPerPageChange={handleRowsPerPageChange}
-        actionsBeforeClearFilters={
-          showSimplifiedView ? undefined : downloadResultsButton
-        }
-        resultsBarRightContent={
-          showSimplifiedView ? downloadResultsButton : undefined
-        }
+        resultsBarRightContent={downloadResultsButton}
       />
     </Stack>
   );
