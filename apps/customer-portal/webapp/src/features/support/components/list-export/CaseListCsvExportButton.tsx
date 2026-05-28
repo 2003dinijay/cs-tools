@@ -14,20 +14,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Button, CircularProgress } from "@wso2/oxygen-ui";
-import { Download } from "@wso2/oxygen-ui-icons-react";
-import { useCallback, useRef, useState, type JSX } from "react";
+import { Button, CircularProgress, Menu, MenuItem } from "@wso2/oxygen-ui";
+import { ChevronDown, Download } from "@wso2/oxygen-ui-icons-react";
+import { useCallback, useRef, useState, type JSX, type MouseEvent } from "react";
 import { useAuthApiClient } from "@hooks/useAuthApiClient";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { fetchProjectCaseSearchResults } from "@features/support/api/fetchProjectCaseSearchResults";
 import type { CaseListItem, CaseSearchRequest } from "@features/support/types/cases";
 import {
   downloadCaseListCsv,
+  downloadCaseListPdf,
   type CaseListCsvExportVariant,
 } from "@features/support/utils/casesCsvExport";
 
 export type CaseListCsvExportButtonProps = {
   projectId: string;
+  projectName?: string;
   caseSearchRequest: Omit<CaseSearchRequest, "pagination">;
   filenamePrefix: string;
   exportVariant?: CaseListCsvExportVariant;
@@ -37,6 +39,8 @@ export type CaseListCsvExportButtonProps = {
   emptyMessage?: string;
 };
 
+type ExportFormat = "csv" | "pdf";
+
 /**
  * Button that exports the current case list search/filter result set as CSV.
  *
@@ -45,6 +49,7 @@ export type CaseListCsvExportButtonProps = {
  */
 export default function CaseListCsvExportButton({
   projectId,
+  projectName,
   caseSearchRequest,
   filenamePrefix,
   exportVariant = "withType",
@@ -55,75 +60,97 @@ export default function CaseListCsvExportButton({
 }: CaseListCsvExportButtonProps): JSX.Element {
   const authFetch = useAuthApiClient();
   const { showError } = useErrorBanner();
-  const [isExporting, setIsExporting] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<ExportFormat | null>(null);
   const isExportingRef = useRef(false);
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
-  const handleDownload = useCallback(async () => {
-    if (!projectId || isExportingRef.current) {
-      return;
+  const isExporting = exportingFormat !== null;
+
+  const handleOpen = (event: MouseEvent<HTMLElement>) => {
+    if (!isExporting) {
+      setAnchorEl(event.currentTarget);
     }
-    isExportingRef.current = true;
-    setIsExporting(true);
-    try {
-      const needsFullFetch =
-        totalRecords > 0 && prefetchedCases.length < totalRecords;
+  };
 
-      const cases = needsFullFetch
-        ? await fetchProjectCaseSearchResults(
-            authFetch,
-            projectId,
-            caseSearchRequest,
-          )
-        : prefetchedCases.length > 0
-          ? prefetchedCases
-          : await fetchProjectCaseSearchResults(
-              authFetch,
-              projectId,
-              caseSearchRequest,
-            );
+  const handleClose = () => setAnchorEl(null);
 
-      if (cases.length === 0) {
-        showError(emptyMessage);
-        return;
+  const handleExport = useCallback(
+    async (format: ExportFormat) => {
+      if (!projectId || isExportingRef.current) return;
+      handleClose();
+      isExportingRef.current = true;
+      setExportingFormat(format);
+      try {
+        const needsFullFetch =
+          totalRecords > 0 && prefetchedCases.length < totalRecords;
+        const cases = needsFullFetch
+          ? await fetchProjectCaseSearchResults(authFetch, projectId, caseSearchRequest)
+          : prefetchedCases.length > 0
+            ? prefetchedCases
+            : await fetchProjectCaseSearchResults(authFetch, projectId, caseSearchRequest);
+
+        if (cases.length === 0) {
+          showError(emptyMessage);
+          return;
+        }
+
+        if (format === "csv") {
+          downloadCaseListCsv(cases, exportVariant, filenamePrefix, projectId, projectName);
+        } else {
+          downloadCaseListPdf(cases, exportVariant, filenamePrefix, projectId, projectName);
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to export results.";
+        showError(message);
+      } finally {
+        isExportingRef.current = false;
+        setExportingFormat(null);
       }
+    },
+    [
+      authFetch,
+      caseSearchRequest,
+      emptyMessage,
+      exportVariant,
+      filenamePrefix,
+      prefetchedCases,
+      projectId,
+      projectName,
+      showError,
+      totalRecords,
+    ],
+  );
 
-      downloadCaseListCsv(cases, exportVariant, filenamePrefix, projectId);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to download results.";
-      showError(message);
-    } finally {
-      isExportingRef.current = false;
-      setIsExporting(false);
-    }
-  }, [
-    authFetch,
-    caseSearchRequest,
-    emptyMessage,
-    exportVariant,
-    filenamePrefix,
-    prefetchedCases,
-    projectId,
-    showError,
-    totalRecords,
-  ]);
+  const isDisabled = disabled || isExporting || !projectId;
 
   return (
-    <Button
-      type="button"
-      variant="outlined"
-      size="small"
-      onClick={() => void handleDownload()}
-      disabled={disabled || isExporting || !projectId}
-      startIcon={
-        isExporting ? (
-          <CircularProgress size={16} color="inherit" />
-        ) : (
-          <Download size={16} />
-        )
-      }
-    >
-      {isExporting ? "Downloading results..." : "Download Results"}
-    </Button>
+    <>
+      <Button
+        type="button"
+        variant="outlined"
+        size="small"
+        onClick={handleOpen}
+        disabled={isDisabled}
+        startIcon={
+          isExporting ? (
+            <CircularProgress size={16} color="inherit" />
+          ) : (
+            <Download size={16} />
+          )
+        }
+        endIcon={<ChevronDown size={16} />}
+      >
+        {isExporting ? "Exporting..." : "Export"}
+      </Button>
+      <Menu anchorEl={anchorEl} open={Boolean(anchorEl)} onClose={handleClose}>
+        <MenuItem onClick={() => void handleExport("csv")}>
+          Export to CSV
+        </MenuItem>
+        <MenuItem onClick={() => void handleExport("pdf")}>
+          Export to PDF
+        </MenuItem>
+      </Menu>
+    </>
   );
 }

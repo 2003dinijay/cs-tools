@@ -292,23 +292,17 @@ export default function AllCasesPage(): JSX.Element {
   // Note: deploymentId is ignored in API request when user lacks permissions.
 
   const listHasRefinement = hasListSearchOrFilters(searchTerm, filters);
-  const showCsvExport =
-    listHasRefinement ||
-    createdByMe ||
-    statusFilter != null ||
-    isDashboardSeverityNavigation ||
-    searchTerm.trim().length > 0;
 
-  const downloadResultsButton =
-    showCsvExport && projectId ? (
-      <AllCasesCsvExportButton
-        projectId={projectId}
-        caseSearchRequest={caseSearchRequest}
-        prefetchedCases={loadedCasesForExport}
-        totalRecords={totalItems}
-        disabled={!hasCasesResponse || isCasesError || totalItems === 0}
-      />
-    ) : null;
+  const downloadResultsButton = projectId ? (
+    <AllCasesCsvExportButton
+      projectId={projectId}
+      projectName={project?.name}
+      caseSearchRequest={caseSearchRequest}
+      prefetchedCases={loadedCasesForExport}
+      totalRecords={totalItems}
+      disabled={!hasCasesResponse || isCasesError || totalItems === 0}
+    />
+  ) : null;
 
   const hideSearchPanel = statusFilter != null || isDashboardSeverityNavigation;
 
@@ -386,7 +380,6 @@ export default function AllCasesPage(): JSX.Element {
               ? ["severityId"]
               : []
           }
-          actionsBeforeClearFilters={downloadResultsButton}
         />
       )}
 
@@ -408,7 +401,7 @@ export default function AllCasesPage(): JSX.Element {
         }
         sortOrder={sortOrder}
         onSortOrderChange={handleSortChange}
-        rightContent={hideSearchPanel ? downloadResultsButton : undefined}
+        rightContent={downloadResultsButton}
       />
 
       <ListItems

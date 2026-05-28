@@ -22,6 +22,7 @@ import {
   stripHtml,
 } from "@features/support/utils/support";
 import { buildCsvContent, downloadCsvFile } from "@utils/csv";
+import { downloadPdfFile } from "@utils/pdf";
 
 export const ALL_CASES_CSV_HEADERS = [
   "Number",
@@ -198,12 +199,19 @@ export function downloadCaseListCsv(
   variant: CaseListCsvExportVariant,
   filenamePrefix: string,
   projectId?: string,
+  projectName?: string,
 ): void {
   const content =
     variant === "allCases"
       ? buildAllCasesListCsv(cases)
       : buildCaseListExportCsv(cases);
-  downloadCsvFile(buildCaseListCsvFilename(filenamePrefix, projectId), content);
+  const datePart = new Date().toISOString().slice(0, 10);
+  const namePart = projectName
+    ? `-${projectName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")}`
+    : projectId
+      ? `-${projectId}`
+      : "";
+  downloadCsvFile(`${filenamePrefix}${namePart}-${datePart}.csv`, content);
 }
 
 /**
@@ -217,4 +225,56 @@ export function downloadAllCasesListCsv(
   projectId?: string,
 ): void {
   downloadCaseListCsv(cases, "allCases", "cases", projectId);
+}
+
+/**
+ * Downloads case list rows as a PDF file.
+ *
+ * @param cases - Cases to export.
+ * @param variant - Column set (all cases includes severity; withType includes type).
+ * @param filenamePrefix - Download file prefix.
+ * @param projectId - Project id for filename.
+ */
+// Col widths (mm) for 9-column case table on A4 landscape (269mm usable):
+// Number(22) WSO2CaseID(28) State(22) ShortDesc(72) Severity/Type(20)
+// CreatedBy(30) AssignedTo(30) Updated(23) Created(22)
+const CASE_PDF_COLUMN_STYLES = {
+  0: { cellWidth: 22 },
+  1: { cellWidth: 28 },
+  2: { cellWidth: 22 },
+  3: { cellWidth: 72 },
+  4: { cellWidth: 20 },
+  5: { cellWidth: 30 },
+  6: { cellWidth: 30 },
+  7: { cellWidth: 23 },
+  8: { cellWidth: 22 },
+} as const;
+
+export function downloadCaseListPdf(
+  cases: CaseListItem[],
+  variant: CaseListCsvExportVariant,
+  filenamePrefix: string,
+  projectId?: string,
+  projectName?: string,
+): void {
+  const headers =
+    variant === "allCases"
+      ? [...ALL_CASES_CSV_HEADERS]
+      : [...CASE_LIST_EXPORT_CSV_HEADERS];
+  const rows =
+    variant === "allCases"
+      ? mapCasesToCsvRows(cases)
+      : mapCaseListExportCsvRows(cases);
+  const datePart = new Date().toISOString().slice(0, 10);
+  const namePart = projectName
+    ? `-${projectName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")}`
+    : projectId
+      ? `-${projectId}`
+      : "";
+  const filename = `${filenamePrefix}${namePart}-${datePart}.pdf`;
+  const label = filenamePrefix.replace(/-/g, " ");
+  const title = projectName
+    ? `${label} — ${projectName} — ${datePart}`
+    : `${label} — ${datePart}`;
+  downloadPdfFile(filename, title, headers, rows, CASE_PDF_COLUMN_STYLES);
 }

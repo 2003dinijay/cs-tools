@@ -14,9 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Button, CircularProgress } from "@wso2/oxygen-ui";
-import { Download } from "@wso2/oxygen-ui-icons-react";
-import { useCallback, useRef, useState, type JSX } from "react";
+import { Button, CircularProgress, Menu, MenuItem } from "@wso2/oxygen-ui";
+import { ChevronDown, Download } from "@wso2/oxygen-ui-icons-react";
+import { useCallback, useRef, useState, type JSX, type MouseEvent } from "react";
 import { useAuthApiClient } from "@hooks/useAuthApiClient";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { fetchChangeRequestSearchResults } from "@features/operations/api/fetchChangeRequestSearchResults";
@@ -24,10 +24,16 @@ import type {
   ChangeRequestItem,
   ChangeRequestSearchRequest,
 } from "@features/operations/types/changeRequests";
-import { downloadChangeRequestsCsv } from "@features/operations/utils/changeRequestsCsvExport";
+import {
+  downloadChangeRequestsCsv,
+  downloadChangeRequestsPdf,
+} from "@features/operations/utils/changeRequestsCsvExport";
+
+type ExportFormat = "csv" | "pdf";
 
 export type ChangeRequestsCsvExportButtonProps = {
   projectId: string;
+  projectName?: string;
   searchRequest: Omit<ChangeRequestSearchRequest, "pagination">;
   prefetchedItems?: ChangeRequestItem[];
   totalRecords?: number;
@@ -42,6 +48,7 @@ export type ChangeRequestsCsvExportButtonProps = {
  */
 export default function ChangeRequestsCsvExportButton({
   projectId,
+  projectName,
   searchRequest,
   prefetchedItems = [],
   totalRecords = 0,
@@ -49,74 +56,86 @@ export default function ChangeRequestsCsvExportButton({
 }: ChangeRequestsCsvExportButtonProps): JSX.Element {
   const authFetch = useAuthApiClient();
   const { showError } = useErrorBanner();
-  const [isExporting, setIsExporting] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<ExportFormat | null>(null);
   const isExportingRef = useRef(false);
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
-  const handleDownload = useCallback(async () => {
-    if (!projectId || isExportingRef.current) {
-      return;
+  const isExporting = exportingFormat !== null;
+
+  const handleOpen = (event: MouseEvent<HTMLElement>) => {
+    if (!isExporting) {
+      setAnchorEl(event.currentTarget);
     }
-    isExportingRef.current = true;
-    setIsExporting(true);
-    try {
-      const needsFullFetch =
-        totalRecords > 0 && prefetchedItems.length < totalRecords;
+  };
 
-      const items = needsFullFetch
-        ? await fetchChangeRequestSearchResults(
-            authFetch,
-            projectId,
-            searchRequest,
-          )
-        : prefetchedItems.length > 0
-          ? prefetchedItems
-          : await fetchChangeRequestSearchResults(
-              authFetch,
-              projectId,
-              searchRequest,
-            );
+  const handleClose = () => setAnchorEl(null);
 
-      if (items.length === 0) {
-        showError(
-          "No change requests to export for the current search or filters.",
-        );
-        return;
+  const handleExport = useCallback(
+    async (format: ExportFormat) => {
+      if (!projectId || isExportingRef.current) return;
+      handleClose();
+      isExportingRef.current = true;
+      setExportingFormat(format);
+      try {
+        const needsFullFetch =
+          totalRecords > 0 && prefetchedItems.length < totalRecords;
+        const items = needsFullFetch
+          ? await fetchChangeRequestSearchResults(authFetch, projectId, searchRequest)
+          : prefetchedItems.length > 0
+            ? prefetchedItems
+            : await fetchChangeRequestSearchResults(authFetch, projectId, searchRequest);
+
+        if (items.length === 0) {
+          showError("No change requests to export for the current search or filters.");
+          return;
+        }
+
+        if (format === "csv") {
+          downloadChangeRequestsCsv(items, projectId, projectName);
+        } else {
+          downloadChangeRequestsPdf(items, projectId, projectName);
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to export results.";
+        showError(message);
+      } finally {
+        isExportingRef.current = false;
+        setExportingFormat(null);
       }
+    },
+    [authFetch, prefetchedItems, projectId, projectName, searchRequest, showError, totalRecords],
+  );
 
-      downloadChangeRequestsCsv(items, projectId);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to download results.";
-      showError(message);
-    } finally {
-      isExportingRef.current = false;
-      setIsExporting(false);
-    }
-  }, [
-    authFetch,
-    prefetchedItems,
-    projectId,
-    searchRequest,
-    showError,
-    totalRecords,
-  ]);
+  const isDisabled = disabled || isExporting || !projectId;
 
   return (
-    <Button
-      type="button"
-      variant="outlined"
-      size="small"
-      onClick={() => void handleDownload()}
-      disabled={disabled || isExporting || !projectId}
-      startIcon={
-        isExporting ? (
-          <CircularProgress size={16} color="inherit" />
-        ) : (
-          <Download size={16} />
-        )
-      }
-    >
-      {isExporting ? "Downloading results..." : "Download Results"}
-    </Button>
+    <>
+      <Button
+        type="button"
+        variant="outlined"
+        size="small"
+        onClick={handleOpen}
+        disabled={isDisabled}
+        startIcon={
+          isExporting ? (
+            <CircularProgress size={16} color="inherit" />
+          ) : (
+            <Download size={16} />
+          )
+        }
+        endIcon={<ChevronDown size={16} />}
+      >
+        {isExporting ? "Exporting..." : "Export"}
+      </Button>
+      <Menu anchorEl={anchorEl} open={Boolean(anchorEl)} onClose={handleClose}>
+        <MenuItem onClick={() => void handleExport("csv")}>
+          Export to CSV
+        </MenuItem>
+        <MenuItem onClick={() => void handleExport("pdf")}>
+          Export to PDF
+        </MenuItem>
+      </Menu>
+    </>
   );
 }
