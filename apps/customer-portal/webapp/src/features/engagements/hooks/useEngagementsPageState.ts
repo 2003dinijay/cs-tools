@@ -360,6 +360,7 @@ export function useEngagementsPageState() {
 
   return {
     projectId,
+    projectName: project?.name,
     engagementSearchRequest,
     loadedCasesForExport,
     hasCasesResponse,
