@@ -29,9 +29,9 @@ export interface ListSearchPanelProps {
   onFiltersToggle: () => void;
   filters: {
     statusIds?: string[];
-    severityId?: string;
+    severityIds?: string[];
     issueTypes?: string;
-    deploymentId?: string;
+    deploymentIds?: string[];
   };
   filterMetadata: CaseMetadataResponse | undefined;
   deployments?: ProjectDeploymentItem[];
@@ -86,9 +86,9 @@ export default function ListSearchPanel({
   const excluded = Object.fromEntries(excludeFromCount.map((k) => [k, undefined]));
   const filtersForCount = {
     ...filters,
-    ...(hideSeverityFilter ? { severityId: undefined } : {}),
+    ...(hideSeverityFilter ? { severityIds: undefined } : {}),
     ...(hideStatusFilter ? { statusIds: undefined } : {}),
-    ...(hideDeploymentFilter ? { deploymentId: undefined } : {}),
+    ...(hideDeploymentFilter ? { deploymentIds: undefined } : {}),
     ...(hideCategoryFilter ? { issueTypes: undefined } : {}),
     ...excluded,
   };
