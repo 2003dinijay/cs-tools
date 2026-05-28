@@ -57,3 +57,11 @@ type ProductService interface {
 	// indicates an infrastructure failure.
 	SearchProducts(ctx context.Context, req domain.SearchProductsRequest) (domain.SearchProductsResponse, error)
 }
+
+// ProductVersionService defines the operations available on the product version entity.
+type ProductVersionService interface {
+	// SearchProductVersions returns a paginated list of product versions filtered
+	// by product_id and optionally by version string. A ValidationError is returned
+	// for invalid input; any other error indicates an infrastructure failure.
+	SearchProductVersions(ctx context.Context, req domain.SearchProductVersionsRequest) (domain.SearchProductVersionsResponse, error)
+}
