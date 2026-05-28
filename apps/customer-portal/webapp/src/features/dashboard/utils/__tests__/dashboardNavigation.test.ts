@@ -52,14 +52,14 @@ describe("buildDashboardCaseSearchFilters", () => {
     expect(
       buildDashboardCaseSearchFilters({
         statusIds: ["10"],
-        severityId: "11",
+        severityIds: ["11"],
         searchQuery: " test ",
       }),
     ).toEqual({
       statusIds: [10],
-      severityId: 11,
+      severityIds: [11],
       issueId: undefined,
-      deploymentId: undefined,
+      deploymentIds: undefined,
       searchQuery: "test",
       createdByMe: undefined,
     });
@@ -68,7 +68,7 @@ describe("buildDashboardCaseSearchFilters", () => {
   it("uses outstanding statusIds for dashboard severity navigation", () => {
     expect(
       buildDashboardCaseSearchFilters({
-        severityId: "11",
+        severityIds: ["11"],
         isDashboardSeverityNavigation: true,
         caseStates: [
           { id: "1", label: "Open" },
@@ -78,9 +78,9 @@ describe("buildDashboardCaseSearchFilters", () => {
       }),
     ).toEqual({
       statusIds: [1, 1006],
-      severityId: 11,
+      severityIds: [11],
       issueId: undefined,
-      deploymentId: undefined,
+      deploymentIds: undefined,
       searchQuery: undefined,
       createdByMe: undefined,
     });
