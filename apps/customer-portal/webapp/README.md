@@ -91,7 +91,7 @@ Open [http://localhost:3000](http://localhost:3000). The dev server uses port **
 
 ### How runtime config works
 
-```
+```text
 index.html
   └── <script src="/config.js">     ← sets window.config
         └── React app (src/config/*) ← reads window.config at startup
@@ -248,7 +248,7 @@ Because config is runtime-only, you can promote the same `dist/` artifact across
 
 ## Project Structure
 
-```
+```text
 webapp/
 ├── public/
 │   ├── config.js.example    # Documented config template (commit this)
