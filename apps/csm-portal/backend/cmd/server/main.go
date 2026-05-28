@@ -45,6 +45,7 @@ func main() {
 	accountHandler := handler.NewAccountHandler(entityClient)
 	projectHandler := handler.NewProjectHandler(entityClient)
 	productHandler := handler.NewProductHandler(entityClient)
+	deploymentHandler := handler.NewDeploymentHandler(entityClient)
 
 	updatesCfg := updates.Config{
 		BaseURL:      mustEnv("UPDATES_BASE_URL"),
@@ -91,6 +92,7 @@ func main() {
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
 	mux.HandleFunc("POST /products/search", productHandler.SearchProducts)
 	mux.HandleFunc("POST /product/{id}/versions/search", productHandler.SearchProductVersions)
+	mux.HandleFunc("POST /deployments/search", deploymentHandler.SearchDeployments)
 
 	addr := envOrDefault("PORT", ":8080")
 	slog.Info("starting csm-portal backend", "addr", addr)
