@@ -49,3 +49,11 @@ type ProjectService interface {
 	// indicates an infrastructure failure.
 	SearchProjects(ctx context.Context, req domain.SearchProjectsRequest) (domain.SearchProjectsResponse, error)
 }
+
+// ProductService defines the operations available on the product entity.
+type ProductService interface {
+	// SearchProducts returns a paginated list of products that match the filters
+	// in req. A ValidationError is returned for invalid input; any other error
+	// indicates an infrastructure failure.
+	SearchProducts(ctx context.Context, req domain.SearchProductsRequest) (domain.SearchProductsResponse, error)
+}

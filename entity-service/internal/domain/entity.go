@@ -158,3 +158,39 @@ type SearchProjectsResponse struct {
 	Offset   int       `json:"offset"`
 	HasMore  bool      `json:"hasMore"`
 }
+
+// ProductClass classifies a product as either a standalone software or a managed service.
+type ProductClass string
+
+const (
+	// ProductClassSoftware identifies installable or deployable software products.
+	ProductClassSoftware ProductClass = "software"
+	// ProductClassService identifies managed-service or SaaS products.
+	ProductClassService ProductClass = "service"
+)
+
+// Product represents a WSO2 product entry as stored in the database.
+type Product struct {
+	ID        string       `json:"id"`
+	Name      string       `json:"name"`
+	Class     ProductClass `json:"class"`
+	CreatedAt time.Time    `json:"createdAt"`
+	UpdatedAt time.Time    `json:"updatedAt"`
+}
+
+// SearchProductsRequest is the input for a product search operation.
+// SearchQuery is matched case-insensitively against name.
+type SearchProductsRequest struct {
+	Pagination  Pagination `json:"pagination"`
+	SearchQuery string     `json:"searchQuery"`
+}
+
+// SearchProductsResponse is the paginated result of a product search.
+// HasMore is true when additional pages are available beyond the current offset.
+type SearchProductsResponse struct {
+	Products []Product `json:"products"`
+	Total    int       `json:"total"`
+	Limit    int       `json:"limit"`
+	Offset   int       `json:"offset"`
+	HasMore  bool      `json:"hasMore"`
+}
