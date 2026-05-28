@@ -54,6 +54,6 @@ public type UserInfoPayload record {|
 public type AppRoles record {|
     # Role for an Admin
     string adminRole;
-    # Asgardeo group allowed to call `POST /users/groups` (SCIM add users to external group).
+    # Role for a Security Advisory Patches Admin
     string securityAdvisoryPatchesAdminRole;
 |};

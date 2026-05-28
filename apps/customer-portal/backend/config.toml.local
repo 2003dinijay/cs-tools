@@ -8,7 +8,7 @@ csEntityBaseUrl = "<base_url>"
 
 [customer_portal.authorization.authorizedRoles]
     userRole  = "<authorized_role>"
-    securityAdvisoryPatchesAdminRole = "<asgardeo_group_for_scim_post_users_groups>"
+    securityAdvisoryPatchesAdminRole = "<authorized_role>"
 
 [customer_portal.scim]
 scimOperationsServiceUrl = "<base_url>"
