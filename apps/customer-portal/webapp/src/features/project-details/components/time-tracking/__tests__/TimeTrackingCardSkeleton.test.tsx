@@ -16,11 +16,11 @@
 
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
+import TimeTrackingCardSkeleton from "@features/project-details/components/time-tracking/TimeTrackingCardSkeleton";
 
-describe("ProjectCardSkeleton", () => {
+describe("TimeTrackingCardSkeleton", () => {
   it("renders skeleton placeholders", () => {
-    const { container } = render(<ProjectCardSkeleton />);
+    const { container } = render(<TimeTrackingCardSkeleton />);
     expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
   });
 });

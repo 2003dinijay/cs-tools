@@ -14,13 +14,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
+import ProjectMetadataSecondaryRow from "@features/project-details/components/project-overview/project-information/ProjectMetadataSecondaryRow";
 
-describe("ProjectCardSkeleton", () => {
-  it("renders skeleton placeholders", () => {
-    const { container } = render(<ProjectCardSkeleton />);
-    expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
+describe("ProjectMetadataSecondaryRow", () => {
+  it("renders go live date label", () => {
+    render(
+      <ProjectMetadataSecondaryRow
+        goLivePlanDate="Jun 1, 2024"
+        onboardingStatus="In Progress"
+        isLoading={false}
+        isError={false}
+      />,
+    );
+    expect(screen.getByText("Go Live Date")).toBeInTheDocument();
+    expect(screen.getByText("Jun 1, 2024")).toBeInTheDocument();
   });
 });

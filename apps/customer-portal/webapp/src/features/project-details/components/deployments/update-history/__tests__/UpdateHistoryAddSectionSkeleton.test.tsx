@@ -16,11 +16,11 @@
 
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
+import UpdateHistoryAddSectionSkeleton from "@features/project-details/components/deployments/update-history/UpdateHistoryAddSectionSkeleton";
 
-describe("ProjectCardSkeleton", () => {
+describe("UpdateHistoryAddSectionSkeleton", () => {
   it("renders skeleton placeholders", () => {
-    const { container } = render(<ProjectCardSkeleton />);
+    const { container } = render(<UpdateHistoryAddSectionSkeleton />);
     expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
   });
 });

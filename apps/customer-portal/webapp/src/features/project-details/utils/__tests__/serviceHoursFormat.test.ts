@@ -14,13 +14,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
+import { PROJECT_DETAILS_NOT_AVAILABLE_DISPLAY } from "@features/project-details/constants/projectDetailsConstants";
+import { formatServiceHoursAllocationDisplay } from "@features/project-details/utils/serviceHoursFormat";
 
-describe("ProjectCardSkeleton", () => {
-  it("renders skeleton placeholders", () => {
-    const { container } = render(<ProjectCardSkeleton />);
-    expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
+describe("formatServiceHoursAllocationDisplay", () => {
+  it("returns not available when both values are missing", () => {
+    expect(formatServiceHoursAllocationDisplay(undefined, undefined)).toBe(
+      PROJECT_DETAILS_NOT_AVAILABLE_DISPLAY,
+    );
+  });
+
+  it("formats consumed/total with percentage", () => {
+    expect(formatServiceHoursAllocationDisplay(1.5, 4)).toMatch(/\(38%\)/);
   });
 });

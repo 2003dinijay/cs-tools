@@ -14,13 +14,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import DeploymentCardToolbar from "@features/project-details/components/deployments/deployment-card/DeploymentCardToolbar";
 
-describe("ProjectCardSkeleton", () => {
-  it("renders skeleton placeholders", () => {
-    const { container } = render(<ProjectCardSkeleton />);
-    expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
+describe("DeploymentCardToolbar", () => {
+  it("renders edit and delete actions", () => {
+    render(
+      <DeploymentCardToolbar
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        isDeleteDisabled={false}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Edit deployment" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete deployment" })).toBeInTheDocument();
   });
 });

@@ -14,13 +14,25 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
+import AnnouncementsFilters from "@features/announcements/components/AnnouncementsFilters";
 
-describe("ProjectCardSkeleton", () => {
-  it("renders skeleton placeholders", () => {
-    const { container } = render(<ProjectCardSkeleton />);
-    expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
+describe("AnnouncementsFilters", () => {
+  it("renders status filter label from definitions", () => {
+    render(
+      <AnnouncementsFilters
+        filters={{}}
+        filterMetadata={{
+          caseStates: [
+            { id: "1", label: "Open" },
+            { id: "3", label: "Published" },
+          ],
+          severities: [],
+        }}
+        onFilterChange={() => {}}
+      />,
+    );
+    expect(screen.getAllByText("Status").length).toBeGreaterThan(0);
   });
 });

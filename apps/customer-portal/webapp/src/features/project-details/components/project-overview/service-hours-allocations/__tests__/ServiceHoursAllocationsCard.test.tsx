@@ -14,13 +14,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
+import ServiceHoursAllocationsCard from "@features/project-details/components/project-overview/service-hours-allocations/ServiceHoursAllocationsCard";
 
-describe("ProjectCardSkeleton", () => {
-  it("renders skeleton placeholders", () => {
-    const { container } = render(<ProjectCardSkeleton />);
-    expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
+describe("ServiceHoursAllocationsCard", () => {
+  it("renders service hours allocations heading", () => {
+    render(
+      <ServiceHoursAllocationsCard
+        project={{ consumedQueryHours: 1, totalQueryHours: 4 } as never}
+        isLoading={false}
+        isError={false}
+      />,
+    );
+    expect(screen.getByText("Service Hours Allocations")).toBeInTheDocument();
+    expect(screen.getByText("Query Hours")).toBeInTheDocument();
   });
 });

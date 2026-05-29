@@ -14,13 +14,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
+import ProjectMetadataPrimaryRow from "@features/project-details/components/project-overview/project-information/ProjectMetadataPrimaryRow";
 
-describe("ProjectCardSkeleton", () => {
-  it("renders skeleton placeholders", () => {
-    const { container } = render(<ProjectCardSkeleton />);
-    expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
+describe("ProjectMetadataPrimaryRow", () => {
+  it("renders created date and support tier labels", () => {
+    render(
+      <ProjectMetadataPrimaryRow
+        createdDate="Jan 1, 2024"
+        supportTier="Premium"
+        isLoading={false}
+        isError={false}
+      />,
+    );
+    expect(screen.getByText("Created Date")).toBeInTheDocument();
+    expect(screen.getByText("Premium")).toBeInTheDocument();
   });
 });

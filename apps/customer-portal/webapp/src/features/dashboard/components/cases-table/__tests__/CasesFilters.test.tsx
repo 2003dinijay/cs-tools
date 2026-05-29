@@ -14,13 +14,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
+import CasesFilters from "@features/dashboard/components/cases-table/CasesFilters";
 
-describe("ProjectCardSkeleton", () => {
-  it("renders skeleton placeholders", () => {
-    const { container } = render(<ProjectCardSkeleton />);
-    expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
+describe("CasesFilters", () => {
+  it("renders filter field labels", () => {
+    render(
+      <CasesFilters
+        filters={{}}
+        filterFields={[
+          {
+            id: "severityId",
+            label: "Severity",
+            type: "select",
+            options: [{ value: "1", label: "S1" }],
+          },
+        ]}
+        onFilterChange={() => {}}
+      />,
+    );
+    expect(screen.getAllByText("Severity").length).toBeGreaterThan(0);
   });
 });

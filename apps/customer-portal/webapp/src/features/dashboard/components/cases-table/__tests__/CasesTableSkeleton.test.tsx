@@ -14,13 +14,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
+import CasesTableSkeleton from "@features/dashboard/components/cases-table/CasesTableSkeleton";
 
-describe("ProjectCardSkeleton", () => {
-  it("renders skeleton placeholders", () => {
-    const { container } = render(<ProjectCardSkeleton />);
-    expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
+describe("CasesTableSkeleton", () => {
+  it("renders skeleton rows for the requested page size", () => {
+    render(
+      <table>
+        <tbody>
+          <CasesTableSkeleton rowsPerPage={3} />
+        </tbody>
+      </table>,
+    );
+    expect(screen.getByTestId("cases-skeleton")).toBeInTheDocument();
   });
 });

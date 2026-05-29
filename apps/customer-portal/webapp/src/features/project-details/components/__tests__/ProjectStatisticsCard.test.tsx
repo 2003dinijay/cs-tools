@@ -14,13 +14,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
+import ProjectStatisticsCard from "@features/project-details/components/ProjectStatisticsCard";
 
-describe("ProjectCardSkeleton", () => {
-  it("renders skeleton placeholders", () => {
-    const { container } = render(<ProjectCardSkeleton />);
-    expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
+describe("ProjectStatisticsCard", () => {
+  it("renders project statistics heading", () => {
+    render(
+      <ProjectStatisticsCard
+        stats={{ activeChats: 2, deployments: 1 } as never}
+        isLoading={false}
+        isError={false}
+      />,
+    );
+    expect(screen.getByText("Project Statistics")).toBeInTheDocument();
+    expect(screen.getByText("Active Chats")).toBeInTheDocument();
   });
 });

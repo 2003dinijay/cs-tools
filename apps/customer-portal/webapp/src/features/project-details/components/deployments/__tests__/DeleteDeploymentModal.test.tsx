@@ -14,13 +14,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import DeleteDeploymentModal from "@features/project-details/components/deployments/DeleteDeploymentModal";
 
-describe("ProjectCardSkeleton", () => {
-  it("renders skeleton placeholders", () => {
-    const { container } = render(<ProjectCardSkeleton />);
-    expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
+describe("DeleteDeploymentModal", () => {
+  it("renders confirmation when open", () => {
+    render(
+      <DeleteDeploymentModal
+        open
+        deployment={{ name: "Production" } as never}
+        onClose={vi.fn()}
+        onConfirm={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Confirm Action")).toBeInTheDocument();
+    expect(screen.getByText(/Production/)).toBeInTheDocument();
   });
 });
