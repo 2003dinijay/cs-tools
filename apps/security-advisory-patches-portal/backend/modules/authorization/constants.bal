@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-# HTTP header carrying the Asgardeo ID token for the Ballerina JWT interceptor.
+# HTTP header carrying the Asgardeo ID token.
 public const JWT_ASSERTION_HEADER = "x-jwt-assertion";
 
 # `http:RequestContext` attribute key for the decoded JWT payload after the interceptor succeeds.
