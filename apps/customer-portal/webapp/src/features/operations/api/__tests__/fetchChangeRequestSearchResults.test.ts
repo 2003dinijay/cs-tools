@@ -52,7 +52,7 @@ describe("fetchChangeRequestSearchResults", () => {
       authFetch,
       "proj-1",
       {
-        sortBy: { field: ChangeRequestSortField.CREATED_ON, order: SortOrder.DESC },
+        sortBy: { field: ChangeRequestSortField.CreatedOn, order: SortOrder.DESC },
       },
       1,
     );
@@ -71,7 +71,7 @@ describe("fetchChangeRequestSearchResults", () => {
 
     await expect(
       fetchChangeRequestSearchResults(authFetch, "proj-1", {
-        sortBy: { field: ChangeRequestSortField.CREATED_ON, order: SortOrder.DESC },
+        sortBy: { field: ChangeRequestSortField.CreatedOn, order: SortOrder.DESC },
       }),
     ).rejects.toThrow("failed");
   });

@@ -85,7 +85,7 @@ describe("resolveAnnouncementListFilterOptions", () => {
     const options = resolveAnnouncementListFilterOptions(
       {
         id: "statusIds",
-        label: "Status",
+        filterKey: "statusIds",
         metadataKey: AnnouncementFilterMetadataKey.CaseStates,
         useLabelAsValue: false,
       },
@@ -106,10 +106,10 @@ describe("buildAnnouncementsFilterSelectOptions", () => {
     const options = buildAnnouncementsFilterSelectOptions(
       {
         id: "severityId",
-        label: "Severity",
+        filterKey: "severityId",
         metadataKey: AnnouncementFilterMetadataKey.Severities,
         useLabelAsValue: false,
-      },
+      } as never,
       {
         severities: [{ id: "10", label: "1 - Critical" }],
       } as never,
