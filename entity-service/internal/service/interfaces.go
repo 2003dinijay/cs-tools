@@ -73,3 +73,11 @@ type DeploymentService interface {
 	// returned for invalid input; any other error indicates an infrastructure failure.
 	SearchDeployments(ctx context.Context, req domain.SearchDeploymentsRequest) (domain.SearchDeploymentsResponse, error)
 }
+
+// DeployedProductService defines the operations available on the deployed_products entity.
+type DeployedProductService interface {
+	// SearchDeployedProducts returns a paginated list of deployed products filtered by
+	// optional deployment IDs. A ValidationError is returned for invalid input; any other
+	// error indicates an infrastructure failure.
+	SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) (domain.SearchDeployedProductsResponse, error)
+}

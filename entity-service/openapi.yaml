@@ -149,7 +149,7 @@ paths:
           required: true
           schema:
             type: string
-          description: The product ID whose versions are being searched.
+          description: Product UUID.
       requestBody:
         required: true
         content:
@@ -178,7 +178,7 @@ paths:
 
   /deployments/search:
     post:
-      summary: Search deployments by name, project, or deployment type.
+      summary: Search deployments by name, project IDs, or deployment type.
       operationId: searchDeployments
       requestBody:
         required: true
@@ -188,11 +188,41 @@ paths:
               $ref: '#/components/schemas/SearchDeploymentsRequest'
       responses:
         "200":
-          description: Deployments matching the search query.
+          description: Deployments matching the filters.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchDeploymentsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /deployed-products/search:
+    post:
+      summary: Search deployed products by deployment IDs.
+      operationId: searchDeployedProducts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchDeployedProductsRequest'
+      responses:
+        "200":
+          description: Deployed products matching the filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchDeployedProductsResponse'
         "400":
           description: Bad request.
           content:
@@ -405,7 +435,7 @@ components:
           $ref: '#/components/schemas/Pagination'
         searchQuery:
           type: string
-          description: Case-insensitive match against name.
+          description: Case-insensitive match against product name.
 
     Product:
       type: object
@@ -502,12 +532,12 @@ components:
           $ref: '#/components/schemas/Pagination'
         searchQuery:
           type: string
-          description: Case-insensitive match against name.
+          description: Case-insensitive match against deployment name.
         projectIds:
           type: array
           items:
             type: string
-          description: Scope results to specific project IDs.
+          description: Filter by project UUIDs.
         deploymentTypeKeys:
           type: array
           items:
@@ -519,7 +549,7 @@ components:
               - stress
               - uat
               - development
-          description: Filter by deployment type.
+          description: Filter by deployment types.
 
     Deployment:
       type: object
@@ -558,6 +588,52 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Deployment'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    SearchDeployedProductsRequest:
+      type: object
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        deploymentIds:
+          type: array
+          items:
+            type: string
+          description: Filter by deployment UUIDs.
+
+    DeployedProduct:
+      type: object
+      properties:
+        id:
+          type: string
+        deploymentId:
+          type: string
+        productId:
+          type: string
+        productVersionId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    SearchDeployedProductsResponse:
+      type: object
+      properties:
+        deployedProducts:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeployedProduct'
         total:
           type: integer
         limit:
