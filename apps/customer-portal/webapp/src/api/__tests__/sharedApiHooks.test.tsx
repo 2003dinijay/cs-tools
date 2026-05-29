@@ -140,8 +140,8 @@ describe("shared API hooks", () => {
     const data: InfiniteData<SearchProjectsResponse> = {
       pageParams: [0],
       pages: [
-        { projects: [{ id: "1", name: "A" } as never], totalRecords: 2 },
-        { projects: [{ id: "2", name: "B" } as never], totalRecords: 2 },
+        { projects: [{ id: "1", name: "A" } as never], totalRecords: 2, offset: 0, limit: 10 },
+        { projects: [{ id: "2", name: "B" } as never], totalRecords: 2, offset: 10, limit: 10 },
       ],
     };
 

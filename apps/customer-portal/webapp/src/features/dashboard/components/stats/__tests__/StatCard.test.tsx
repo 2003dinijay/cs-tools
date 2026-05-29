@@ -28,6 +28,7 @@ describe("StatCard", () => {
         value="12"
         icon={<Activity size={20} />}
         iconColor="primary"
+        tooltipText="Open cases tooltip"
         isLoading={false}
         isError={false}
       />,
@@ -48,6 +49,7 @@ describe("StatCard", () => {
           direction: TrendDirection.UP,
           color: TrendColor.SUCCESS,
         }}
+        tooltipText="Resolved cases tooltip"
         isLoading={false}
         isError={false}
       />,
