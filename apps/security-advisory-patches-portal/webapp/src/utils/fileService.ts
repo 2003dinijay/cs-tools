@@ -20,7 +20,7 @@ import { AppConfig } from '@src/config/config';
 
 /**
  * Download advisory bytes from `GET /files/{id}` where **`id`** is `encodeURIComponent(shareRelativePath)`.
- * The shared `APIService` must attach the Asgardeo ID token on `Authorization` and `x-jwt-assertion`.
+ * The shared `APIService` attaches the Asgardeo ID token as `Authorization: Bearer`.
  */
 export const downloadSecurityAdvisory = async (path: string): Promise<Blob> => {
   const id = encodeURIComponent(path);
