@@ -90,13 +90,19 @@ vi.mock("../CasesTableSkeleton", () => ({
   ),
 }));
 
-vi.mock("@features/support/utils/support", () => ({
-  formatValue: (v: unknown) => (v ? String(v) : "--"),
-  getInitials: () => "JD",
-  getSeverityColor: () => "error.main",
-  getStatusColor: () => "#000",
-  mapSeverityToDisplay: (l: string) => l || "--",
-}));
+vi.mock("@features/support/utils/support", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@features/support/utils/support")
+  >();
+  return {
+    ...actual,
+    formatValue: (v: unknown) => (v ? String(v) : "--"),
+    getInitials: () => "JD",
+    getSeverityColor: () => "error.main",
+    getStatusColor: () => "#000",
+    mapSeverityToDisplay: (l: string) => l || "--",
+  };
+});
 
 describe("CasesList", () => {
   const mockData = {

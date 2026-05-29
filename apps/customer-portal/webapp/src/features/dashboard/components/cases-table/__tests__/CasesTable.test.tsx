@@ -26,6 +26,7 @@ const mockNavigate = vi.fn();
 // Mock dependencies
 vi.mock("react-router", () => ({
   useNavigate: () => mockNavigate,
+  useLocation: () => ({ pathname: "/projects/p1/dashboard", state: null }),
 }));
 
 vi.mock("@api/useGetProjectCasesPage");
