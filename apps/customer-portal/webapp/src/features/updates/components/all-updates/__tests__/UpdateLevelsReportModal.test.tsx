@@ -60,7 +60,7 @@ const rawData = {
 describe("UpdateLevelsReportModal", () => {
   it("does not render when report data is null", () => {
     const { container } = render(
-      <UpdateLevelsReportModal open reportData={null} rawData={null} onClose={vi.fn()} />,
+      <UpdateLevelsReportModal open reportData={null} rawData={undefined} onClose={vi.fn()} />,
     );
     expect(container.firstChild).toBeNull();
   });

@@ -22,6 +22,7 @@ describe("ProjectCardStats", () => {
   it("renders outstanding and active chat counts", () => {
     render(
       <ProjectCardStats
+        date="2026-01-01"
         outstandingCount={10}
         activeChatsCount={5}
         actionRequiredCount={2}
@@ -38,6 +39,7 @@ describe("ProjectCardStats", () => {
   it("renders error indicators when isError is true", () => {
     render(
       <ProjectCardStats
+        date="2026-01-01"
         outstandingCount={0}
         activeChatsCount={0}
         actionRequiredCount={0}
@@ -51,6 +53,7 @@ describe("ProjectCardStats", () => {
   it("renders skeletons when isLoading is true", () => {
     const { container } = render(
       <ProjectCardStats
+        date="2026-01-01"
         outstandingCount={0}
         activeChatsCount={0}
         actionRequiredCount={0}

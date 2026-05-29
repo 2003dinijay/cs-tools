@@ -28,7 +28,7 @@ describe("useAuthApiClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getIdTokenMock.mockResolvedValue("token-abc");
-    global.fetch = vi.fn().mockResolvedValue({ ok: true }) as typeof fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true }) as typeof fetch;
   });
 
   it("adds bearer and JSON content-type for POST bodies", async () => {
@@ -39,7 +39,7 @@ describe("useAuthApiClient", () => {
     });
 
     expect(getIdTokenMock).toHaveBeenCalled();
-    expect(global.fetch).toHaveBeenCalledWith(
+    expect(globalThis.fetch).toHaveBeenCalledWith(
       "https://api.test/resource",
       expect.objectContaining({
         method: "POST",
@@ -47,7 +47,7 @@ describe("useAuthApiClient", () => {
       }),
     );
 
-    const headers = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1]
+    const headers = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1]
       .headers as Headers;
     expect(headers.get("Authorization")).toBe("Bearer token-abc");
     expect(headers.get("Content-Type")).toBe("application/json");

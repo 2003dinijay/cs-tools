@@ -50,7 +50,7 @@ describe("sumUsageEntryTransactions", () => {
         { period: "2024-01", counts: { TRANSACTION_COUNT: 10 } },
         { period: "2024-02", counts: { TRANSACTION_COUNT: 5 } },
       ],
-    } as InstanceUsageEntry;
+    } as unknown as InstanceUsageEntry;
     expect(sumUsageEntryTransactions(entry)).toBe(15);
   });
 });
@@ -67,7 +67,7 @@ describe("buildUsageTrendFromUsages", () => {
       {
         periodSummaries: [{ period: "2024-01", counts: { API_CALLS: 1 } }],
       },
-    ] as InstanceUsageEntry[];
+    ] as unknown as InstanceUsageEntry[];
 
     const trend = buildUsageTrendFromUsages(usages, "API_CALLS", (p) => p);
     expect(trend).toEqual([
