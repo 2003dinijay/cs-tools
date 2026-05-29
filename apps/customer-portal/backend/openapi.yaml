@@ -3594,12 +3594,23 @@ components:
           type: integer
           description: Issue ID
           format: int64
+        issueIds:
+          type: array
+          description: Issue IDs
+          items:
+            type: integer
+            format: int64
         statusIds:
           type: array
           description: Status IDs
           items:
             type: integer
             format: int64
+        createdBy:
+          type: array
+          description: Emails of users involved in the case
+          items:
+            type: string
         caseTypes:
           type: array
           description: List of case types

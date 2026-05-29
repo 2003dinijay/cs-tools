@@ -434,6 +434,8 @@ public type CaseSearchFilters record {|
     int[] issueTypeKeys?;
     # State key
     int[] stateKeys?;
+    # Email of the user who is involved in the case
+    string[] createdBy?;
     # Severity key
     int severityKey?;
     # List of case severity keys

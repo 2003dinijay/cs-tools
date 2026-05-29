@@ -34,14 +34,14 @@ configurable string[] restrictedChangeRequestStateIds = ["-3", "-4", "-5"];
 public isolated function searchCases(string idToken, string projectId, types:CaseSearchPayload payload)
     returns types:CaseSearchResponse|error {
 
-    int? issueId = payload.filters?.issueId;
     entity:CaseSearchPayload searchPayload = {
         filters: {
             projectIds: [projectId],
             searchQuery: payload.filters?.searchQuery,
-            issueTypeKeys: issueId != () ? [issueId] : (),
+            issueTypeKeys: payload.filters?.issueIds,
             severityKey: payload.filters?.severityId,
             severityKeys: payload.filters?.severityIds,
+            createdBy: payload.filters?.createdBy,
             caseTypes: payload.filters?.caseTypes,
             stateKeys: payload.filters?.statusIds,
             deploymentId: payload.filters?.deploymentId,

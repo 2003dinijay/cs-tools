@@ -54,8 +54,12 @@ public type CaseSearchFilters record {|
     string searchQuery?;
     # Issue ID
     int issueId?;
+    # Issue IDs
+    int[] issueIds?;
     # Status IDs
     int[] statusIds?;
+    # Emails of users involved in the case
+    string[] createdBy?;
     # List of case types
     entity:CaseType[] caseTypes?;
     # Severity ID
