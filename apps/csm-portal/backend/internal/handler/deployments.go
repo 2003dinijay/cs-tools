@@ -33,6 +33,9 @@ func injectDeploymentID(body []byte, deploymentID string) ([]byte, error) {
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, err
 	}
+	if m == nil {
+		m = make(map[string]json.RawMessage)
+	}
 	ids, err := json.Marshal([]string{deploymentID})
 	if err != nil {
 		return nil, err
@@ -111,6 +114,10 @@ func (h *DeploymentHandler) SearchDeployedProducts(w http.ResponseWriter, r *htt
 	}
 
 	deploymentID := r.PathValue("id")
+	if deploymentID == "" {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)

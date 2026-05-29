@@ -151,6 +151,26 @@ func TestSearchDeployedProducts(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
+	t.Run("handles JSON null body as empty object without panic", func(t *testing.T) {
+		h := NewDeploymentHandler(&mockEntityDeploymentClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/deployments/dep-1/products/search", strings.NewReader(`null`)))
+		r.SetPathValue("id", "dep-1")
+		w := httptest.NewRecorder()
+		h.SearchDeployedProducts(w, r)
+		assertStatus(t, w, http.StatusOK)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects missing deployment id", func(t *testing.T) {
+		h := NewDeploymentHandler(&mockEntityDeploymentClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/deployments//products/search", strings.NewReader(`{}`)))
+		w := httptest.NewRecorder()
+		h.SearchDeployedProducts(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
 	t.Run("injects deploymentId and returns 200 with response", func(t *testing.T) {
 		const deploymentID = "dep-1"
 		var capturedBody []byte
