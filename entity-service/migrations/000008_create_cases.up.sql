@@ -16,6 +16,15 @@ CREATE TYPE case_state_enum AS ENUM (
   'closed'
 );
 
+CREATE TYPE case_issue_type_enum AS ENUM (
+  'error',
+  'partial_outage',
+  'performance_degradation',
+  'question',
+  'security_or_compliance',
+  'total_outage'
+);
+
 CREATE TABLE cases (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   number              VARCHAR UNIQUE NOT NULL,
@@ -26,7 +35,8 @@ CREATE TABLE cases (
   deployed_product_id UUID NOT NULL REFERENCES deployed_products(id),
   subject             VARCHAR NOT NULL,
   description         TEXT NOT NULL,
-  priority            case_priority_enum,
+  priority            case_priority_enum NOT NULL,
+  issue_type          case_issue_type_enum NOT NULL,
   state               case_state_enum NOT NULL,
   created_at          TIMESTAMP DEFAULT NOW(),
   updated_at          TIMESTAMP DEFAULT NOW(),
@@ -106,6 +116,7 @@ CREATE INDEX idx_cases_deployment_id       ON cases(deployment_id);
 CREATE INDEX idx_cases_deployed_product_id ON cases(deployed_product_id);
 CREATE INDEX idx_cases_priority            ON cases(priority);
 CREATE INDEX idx_cases_state               ON cases(state);
+CREATE INDEX idx_cases_issue_type          ON cases(issue_type);
 
 -- Sort indexes
 CREATE INDEX idx_cases_created_at          ON cases(created_at);
@@ -113,8 +124,9 @@ CREATE INDEX idx_cases_updated_at          ON cases(updated_at);
 CREATE INDEX idx_cases_closed_at           ON cases(closed_at);
 
 -- Composite indexes
-CREATE INDEX idx_cases_project_state       ON cases(project_id, state);
-CREATE INDEX idx_cases_priority_state      ON cases(priority, state);
+CREATE INDEX idx_cases_project_state         ON cases(project_id, state);
+CREATE INDEX idx_cases_priority_state        ON cases(priority, state);
+CREATE INDEX idx_cases_priority_issue_type   ON cases(priority, issue_type);
 
 -- Trigram indexes for ILIKE search on subject, number, wso2_id
 CREATE INDEX idx_cases_subject_trgm  ON cases USING GIN (subject  gin_trgm_ops);

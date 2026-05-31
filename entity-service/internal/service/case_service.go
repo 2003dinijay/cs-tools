@@ -63,6 +63,15 @@ var validCasePriority = map[domain.CasePriority]bool{
 	domain.CasePriorityLow:          true,
 }
 
+var validCaseIssueType = map[domain.CaseIssueType]bool{
+	domain.CaseIssueTypeError:                  true,
+	domain.CaseIssueTypePartialOutage:          true,
+	domain.CaseIssueTypePerformanceDegradation: true,
+	domain.CaseIssueTypeQuestion:               true,
+	domain.CaseIssueTypeSecurityOrCompliance:   true,
+	domain.CaseIssueTypeTotalOutage:            true,
+}
+
 // SearchCases implements CaseService.
 func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesRequest) (domain.SearchCasesResponse, error) {
 	if err := normalizePagination(&req.Pagination); err != nil {
@@ -89,6 +98,11 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	for _, p := range req.PriorityKeys {
 		if !validCasePriority[p] {
 			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "priorityKeys contains invalid value: " + string(p)}
+		}
+	}
+	for _, it := range req.IssueTypeKeys {
+		if !validCaseIssueType[it] {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "issueTypeKeys contains invalid value: " + string(it)}
 		}
 	}
 

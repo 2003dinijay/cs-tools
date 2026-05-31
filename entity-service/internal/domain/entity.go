@@ -312,6 +312,18 @@ type SearchDeployedProductsResponse struct {
 	HasMore          bool              `json:"hasMore"`
 }
 
+// CaseIssueType classifies the nature of a support case.
+type CaseIssueType string
+
+const (
+	CaseIssueTypeError                  CaseIssueType = "error"
+	CaseIssueTypePartialOutage          CaseIssueType = "partial_outage"
+	CaseIssueTypePerformanceDegradation CaseIssueType = "performance_degradation"
+	CaseIssueTypeQuestion               CaseIssueType = "question"
+	CaseIssueTypeSecurityOrCompliance   CaseIssueType = "security_or_compliance"
+	CaseIssueTypeTotalOutage            CaseIssueType = "total_outage"
+)
+
 // CasePriority represents the urgency level of a support case.
 type CasePriority string
 
@@ -371,8 +383,9 @@ type Case struct {
 	DeployedProductID string       `json:"deployedProductId"`
 	Subject           string       `json:"subject"`
 	Description       string       `json:"description"`
-	Priority          *CasePriority `json:"priority,omitempty"`
-	State             CaseState    `json:"state"`
+	Priority          CasePriority  `json:"priority"`
+	IssueType         CaseIssueType `json:"issueType"`
+	State             CaseState     `json:"state"`
 	CreatedAt         time.Time    `json:"createdAt"`
 	UpdatedAt         time.Time    `json:"updatedAt"`
 	ClosedAt          *time.Time   `json:"closedAt,omitempty"`
@@ -387,9 +400,10 @@ type SearchCasesRequest struct {
 	ProjectIDs          []string       `json:"projectIds"`
 	DeploymentIDs       []string       `json:"deploymentIds"`
 	DeployedProductIDs  []string       `json:"deployedProductIds"`
-	StateKeys           []CaseState    `json:"stateKeys"`
-	PriorityKeys        []CasePriority `json:"priorityKeys"`
-	SortBy              CaseSort       `json:"sortBy"`
+	StateKeys           []CaseState     `json:"stateKeys"`
+	PriorityKeys        []CasePriority  `json:"priorityKeys"`
+	IssueTypeKeys       []CaseIssueType `json:"issueTypeKeys"`
+	SortBy              CaseSort        `json:"sortBy"`
 }
 
 // SearchCasesResponse is the paginated result of a case search.

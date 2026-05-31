@@ -88,6 +88,16 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
+	if len(req.IssueTypeKeys) > 0 {
+		issueTypeStrings := make([]string, len(req.IssueTypeKeys))
+		for i, it := range req.IssueTypeKeys {
+			issueTypeStrings[i] = string(it)
+		}
+		where += fmt.Sprintf(" AND issue_type = ANY($%d::case_issue_type_enum[])", argIdx)
+		filterArgs = append(filterArgs, issueTypeStrings)
+		argIdx++
+	}
+
 	if req.SearchQuery != "" {
 		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(req.SearchQuery)
 		pattern := "%" + escaped + "%"
@@ -103,7 +113,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 
 	dataQuery := fmt.Sprintf(
 		`SELECT id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
-		        subject, description, priority, state, created_at, updated_at, closed_at
+		        subject, description, priority, issue_type, state, created_at, updated_at, closed_at
 		 FROM cases %s
 		 ORDER BY %s %s NULLS LAST, id
 		 LIMIT $%d OFFSET $%d`,
@@ -136,7 +146,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			if err := rows.Scan(
 				&c.ID, &c.Number, &c.Wso2ID, &c.CreatedBy,
 				&c.ProjectID, &c.DeploymentID, &c.DeployedProductID,
-				&c.Subject, &c.Description, &c.Priority, &c.State,
+				&c.Subject, &c.Description, &c.Priority, &c.IssueType, &c.State,
 				&c.CreatedAt, &c.UpdatedAt, &c.ClosedAt,
 			); err != nil {
 				return fmt.Errorf("scan case: %w", err)

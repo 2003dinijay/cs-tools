@@ -708,6 +708,12 @@ components:
             type: string
             enum: [catastrophic, critical, high, medium, low]
           description: Filter by case priorities.
+        issueTypeKeys:
+          type: array
+          items:
+            type: string
+            enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
+          description: Filter by case issue types.
         sortBy:
           type: object
           properties:
@@ -743,8 +749,10 @@ components:
           type: string
         priority:
           type: string
-          nullable: true
           enum: [catastrophic, critical, high, medium, low]
+        issueType:
+          type: string
+          enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
         state:
           type: string
           enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
