@@ -56,7 +56,7 @@ func TestCreateCase(t *testing.T) {
 	const resolvedUserID = "entity-user-uuid-42"
 
 	userSearchOK := func(_ context.Context, _ []byte) ([]byte, error) {
-		return []byte(`{"users":[{"id":"` + resolvedUserID + `"}],"total":1}`), nil
+		return []byte(`{"users":[{"id":"` + resolvedUserID + `","email":"agent@example.com"}],"total":1}`), nil
 	}
 
 	t.Run("requires authenticated user", func(t *testing.T) {
@@ -114,13 +114,17 @@ func TestCreateCase(t *testing.T) {
 		if err := json.Unmarshal(sent["createdBy"], &gotID); err != nil || gotID != resolvedUserID {
 			t.Errorf("upstream createdBy = %q, want %q", gotID, resolvedUserID)
 		}
+		var gotProjectID string
+		if err := json.Unmarshal(sent["projectId"], &gotProjectID); err != nil || gotProjectID != "proj-1" {
+			t.Errorf("upstream projectId = %q, want \"proj-1\" (original fields must be preserved)", gotProjectID)
+		}
 		resp := decodeJSON[map[string]any](t, w)
 		if resp["id"] != "case-1" {
 			t.Errorf("response id = %v, want case-1", resp["id"])
 		}
 	})
 
-	t.Run("returns 401 when user not found in entity service", func(t *testing.T) {
+	t.Run("returns 403 when user not found in entity service", func(t *testing.T) {
 		client := &mockEntityCaseClient{
 			searchUsersFn: func(_ context.Context, _ []byte) ([]byte, error) {
 				return []byte(`{"users":[],"total":0}`), nil
@@ -130,8 +134,23 @@ func TestCreateCase(t *testing.T) {
 		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(validPayload)))
 		w := httptest.NewRecorder()
 		h.CreateCase(w, r)
-		assertStatus(t, w, http.StatusUnauthorized)
-		assertErrorMessage(t, w, ErrMsgUnauthorized)
+		assertStatus(t, w, http.StatusForbidden)
+		assertErrorMessage(t, w, ErrMsgForbidden)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("returns 403 when search result email does not match token email", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			searchUsersFn: func(_ context.Context, _ []byte) ([]byte, error) {
+				return []byte(`{"users":[{"id":"other-uuid","email":"alice-admin@example.com"}],"total":1}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(validPayload)))
+		w := httptest.NewRecorder()
+		h.CreateCase(w, r)
+		assertStatus(t, w, http.StatusForbidden)
+		assertErrorMessage(t, w, ErrMsgForbidden)
 		assertContentType(t, w, "application/json")
 	})
 

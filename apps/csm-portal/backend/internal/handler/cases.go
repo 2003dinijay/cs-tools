@@ -45,13 +45,15 @@ func resolveUserID(ctx context.Context, entity entityCaseClient, email string) (
 	}
 	var result struct {
 		Users []struct {
-			ID string `json:"id"`
+			ID    string `json:"id"`
+			Email string `json:"email"`
 		} `json:"users"`
 	}
 	if err := json.Unmarshal(resp, &result); err != nil {
 		return "", err
 	}
-	if len(result.Users) == 0 {
+	// Verify exact email match — SearchUsers may perform fuzzy/prefix search.
+	if len(result.Users) == 0 || result.Users[0].Email != email {
 		return "", errUserNotFound
 	}
 	return result.Users[0].ID, nil
@@ -145,7 +147,8 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 	userID, err := resolveUserID(r.Context(), h.entity, user.Email)
 	if err != nil {
 		if errors.Is(err, errUserNotFound) {
-			writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+			// Token is valid but the entity service has no record for this user — 403, not 401.
+			writeError(w, http.StatusForbidden, ErrMsgForbidden)
 			return
 		}
 		slog.ErrorContext(r.Context(), "resolveUserID failed", "email", user.Email, "err", err)
@@ -166,6 +169,12 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(result, &created); err == nil && created.ID != "" {
+		w.Header().Set("Location", "/cases/"+created.ID)
+	}
 	writeJSON(w, http.StatusCreated, result)
 }
 
