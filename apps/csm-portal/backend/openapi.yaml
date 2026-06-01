@@ -35,6 +35,10 @@ paths:
       responses:
         "201":
           description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Case'
         "400":
           description: BadRequest
           content:
@@ -43,10 +47,34 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "401":
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
 
   /cases/{id}:
     get:
@@ -135,6 +163,10 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -174,6 +206,10 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -213,6 +249,10 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -252,6 +292,10 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -310,6 +354,10 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -356,6 +404,10 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -402,6 +454,10 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -441,6 +497,10 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -487,6 +547,10 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -518,6 +582,10 @@ paths:
           description: Unauthorized
         "413":
           description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
 
@@ -537,46 +605,37 @@ components:
     CaseCreatePayload:
       type: object
       required:
-        - type
         - projectId
         - deploymentId
+        - deployedProductId
+        - subject
+        - description
+        - priority
+        - issueType
       properties:
-        type:
-          type: string
-          description: Case type (e.g. DEFAULT_CASE, SERVICE_REQUEST, SECURITY_REPORT_ANALYSIS)
         projectId:
           type: string
-          description: Project ID
+          description: UUID of the project this case belongs to
         deploymentId:
           type: string
-          description: Deployment ID
+          description: UUID of the deployment this case relates to
         deployedProductId:
           type: string
-          description: Deployed product ID
-        title:
+          description: UUID of the deployed product this case relates to
+        subject:
           type: string
-          description: Case title (required for DEFAULT_CASE and SECURITY_REPORT_ANALYSIS)
+          description: Short summary of the issue
         description:
           type: string
-          description: Case description
-        issueTypeKey:
-          type: integer
-          description: Issue type key (required for DEFAULT_CASE)
-        severityKey:
-          type: integer
-          description: Severity key (required for DEFAULT_CASE)
-        relatedCaseId:
+          description: Full description of the issue
+        priority:
           type: string
-          description: Related case ID
-        conversationId:
+          enum: [catastrophic, critical, high, medium, low]
+          description: Urgency level of the case
+        issueType:
           type: string
-          description: Conversation ID
-        catalogId:
-          type: string
-          description: Catalog ID (required for SERVICE_REQUEST)
-        catalogItemId:
-          type: string
-          description: Catalog item ID (required for SERVICE_REQUEST)
+          enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
+          description: Nature of the issue
 
     ProjectCaseSearchPayload:
       type: object

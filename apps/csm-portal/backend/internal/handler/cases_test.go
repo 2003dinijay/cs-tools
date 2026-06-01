@@ -51,9 +51,17 @@ func upstreamErrors(fallback string) []upstreamErrorCase {
 // ----- CreateCase -----
 
 func TestCreateCase(t *testing.T) {
+	// createdBy is NOT in the payload — it is resolved server-side via users/search.
+	const validPayload = `{"projectId":"proj-1","deploymentId":"dep-1","deployedProductId":"dp-1","subject":"Login failure","description":"Users cannot log in","priority":"high","issueType":"error"}`
+	const resolvedUserID = "entity-user-uuid-42"
+
+	userSearchOK := func(_ context.Context, _ []byte) ([]byte, error) {
+		return []byte(`{"users":[{"id":"` + resolvedUserID + `","email":"agent@example.com"}],"total":1}`), nil
+	}
+
 	t.Run("requires authenticated user", func(t *testing.T) {
 		h := NewCaseHandler(&mockEntityCaseClient{})
-		r := httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(`{}`))
+		r := httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(validPayload))
 		w := httptest.NewRecorder()
 		h.CreateCase(w, r)
 		assertStatus(t, w, http.StatusUnauthorized)
@@ -71,24 +79,44 @@ func TestCreateCase(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
-	t.Run("forwards body to upstream and returns 201 with response", func(t *testing.T) {
-		const reqPayload = `{"title":"Fix login bug","priority":"high"}`
+	t.Run("rejects invalid JSON body", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(`not-json`)))
+		w := httptest.NewRecorder()
+		h.CreateCase(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("resolves createdBy from users/search and injects it", func(t *testing.T) {
 		var capturedBody []byte
 		client := &mockEntityCaseClient{
+			searchUsersFn: userSearchOK,
 			createCaseFn: func(_ context.Context, body []byte) ([]byte, error) {
 				capturedBody = body
-				return []byte(`{"id":"case-1","title":"Fix login bug"}`), nil
+				return []byte(`{"id":"case-1","subject":"Login failure","state":"open"}`), nil
 			},
 		}
 		h := NewCaseHandler(client)
-		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(reqPayload)))
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(validPayload)))
 		w := httptest.NewRecorder()
 		h.CreateCase(w, r)
 
 		assertStatus(t, w, http.StatusCreated)
 		assertContentType(t, w, "application/json")
-		if string(capturedBody) != reqPayload {
-			t.Errorf("upstream received body %q, want %q", capturedBody, reqPayload)
+
+		var sent map[string]json.RawMessage
+		if err := json.Unmarshal(capturedBody, &sent); err != nil {
+			t.Fatalf("upstream received invalid JSON: %v", err)
+		}
+		var gotID string
+		if err := json.Unmarshal(sent["createdBy"], &gotID); err != nil || gotID != resolvedUserID {
+			t.Errorf("upstream createdBy = %q, want %q", gotID, resolvedUserID)
+		}
+		var gotProjectID string
+		if err := json.Unmarshal(sent["projectId"], &gotProjectID); err != nil || gotProjectID != "proj-1" {
+			t.Errorf("upstream projectId = %q, want \"proj-1\" (original fields must be preserved)", gotProjectID)
 		}
 		resp := decodeJSON[map[string]any](t, w)
 		if resp["id"] != "case-1" {
@@ -96,17 +124,63 @@ func TestCreateCase(t *testing.T) {
 		}
 	})
 
-	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
+	t.Run("returns 403 when user not found in entity service", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			searchUsersFn: func(_ context.Context, _ []byte) ([]byte, error) {
+				return []byte(`{"users":[],"total":0}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(validPayload)))
+		w := httptest.NewRecorder()
+		h.CreateCase(w, r)
+		assertStatus(t, w, http.StatusForbidden)
+		assertErrorMessage(t, w, ErrMsgForbidden)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("returns 403 when search result email does not match token email", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			searchUsersFn: func(_ context.Context, _ []byte) ([]byte, error) {
+				return []byte(`{"users":[{"id":"other-uuid","email":"alice-admin@example.com"}],"total":1}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(validPayload)))
+		w := httptest.NewRecorder()
+		h.CreateCase(w, r)
+		assertStatus(t, w, http.StatusForbidden)
+		assertErrorMessage(t, w, ErrMsgForbidden)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("returns 500 when user lookup fails", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			searchUsersFn: func(_ context.Context, _ []byte) ([]byte, error) {
+				return nil, errors.New("entity service unavailable")
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(validPayload)))
+		w := httptest.NewRecorder()
+		h.CreateCase(w, r)
+		assertStatus(t, w, http.StatusInternalServerError)
+		assertErrorMessage(t, w, ErrMsgInternal)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("upstream errors on create are mapped correctly", func(t *testing.T) {
 		for _, tc := range upstreamErrors("Failed to create case.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
+					searchUsersFn: userSearchOK,
 					createCaseFn: func(_ context.Context, _ []byte) ([]byte, error) {
 						return nil, tc.err
 					},
 				}
 				h := NewCaseHandler(client)
-				r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(`{}`)))
+				r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(validPayload)))
 				w := httptest.NewRecorder()
 				h.CreateCase(w, r)
 				assertStatus(t, w, tc.wantCode)
