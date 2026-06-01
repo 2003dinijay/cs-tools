@@ -296,6 +296,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: RequestEntityTooLarge
         "500":
@@ -568,6 +580,7 @@ components:
 
     ProjectCaseSearchPayload:
       type: object
+      nullable: true
       description: Case search payload for a project-scoped search. The project ID is taken from the URL path; any projectIds in the body are ignored.
       properties:
         pagination:
