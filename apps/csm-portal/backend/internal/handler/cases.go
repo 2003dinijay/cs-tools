@@ -26,6 +26,24 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
+// injectCreatedBy merges the authenticated user's ID into a JSON request body as createdBy.
+// Any caller-supplied createdBy is overridden to prevent spoofing.
+func injectCreatedBy(body []byte, userID string) ([]byte, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	if m == nil {
+		m = make(map[string]json.RawMessage)
+	}
+	id, err := json.Marshal(userID)
+	if err != nil {
+		return nil, err
+	}
+	m["createdBy"] = id
+	return json.Marshal(m)
+}
+
 // injectProjectID merges a project ID into a JSON request body as projectIds: [id].
 func injectProjectID(body []byte, projectID string) ([]byte, error) {
 	var m map[string]json.RawMessage
@@ -66,18 +84,14 @@ func NewCaseHandler(entity entityCaseClient) *CaseHandler {
 const maxRequestBodyBytes = 1 << 20
 
 // CreateCase handles POST /cases.
+// The authenticated user's ID is injected as createdBy before forwarding to
+// the entity service; any caller-supplied createdBy is overridden.
 func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
 		return
 	}
-
-	// TODO: Decode the request body into a typed CaseCreatePayload and run
-	// field-level validation (required fields, enum values, etc.).
-
-	// TODO: Apply CSM portal business rules before forwarding to entity
-	// (e.g. restrict allowed case types, enforce project membership).
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
@@ -90,15 +104,24 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.entity.CreateCase(r.Context(), body)
+	if !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	entityBody, err := injectCreatedBy(body, user.UserID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.CreateCase(r.Context(), entityBody)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity CreateCase failed", "userID", user.UserID, "err", err)
 		mapUpstreamError(w, err, "Failed to create case.")
 		return
 	}
 
-	// TODO: Unmarshal result into a typed CaseCreateResponse and transform it
-	// to the CSM portal response shape before writing.
 	writeJSON(w, http.StatusCreated, result)
 }
 

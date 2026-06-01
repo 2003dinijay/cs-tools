@@ -51,9 +51,11 @@ func upstreamErrors(fallback string) []upstreamErrorCase {
 // ----- CreateCase -----
 
 func TestCreateCase(t *testing.T) {
+	const validPayload = `{"projectId":"proj-1","deploymentId":"dep-1","deployedProductId":"dp-1","subject":"Login failure","description":"Users cannot log in","priority":"high","issueType":"error"}`
+
 	t.Run("requires authenticated user", func(t *testing.T) {
 		h := NewCaseHandler(&mockEntityCaseClient{})
-		r := httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(`{}`))
+		r := httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(validPayload))
 		w := httptest.NewRecorder()
 		h.CreateCase(w, r)
 		assertStatus(t, w, http.StatusUnauthorized)
@@ -71,28 +73,70 @@ func TestCreateCase(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
-	t.Run("forwards body to upstream and returns 201 with response", func(t *testing.T) {
-		const reqPayload = `{"title":"Fix login bug","priority":"high"}`
+	t.Run("rejects invalid JSON body", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(`not-json`)))
+		w := httptest.NewRecorder()
+		h.CreateCase(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("injects createdBy from auth user and returns 201 with response", func(t *testing.T) {
 		var capturedBody []byte
 		client := &mockEntityCaseClient{
 			createCaseFn: func(_ context.Context, body []byte) ([]byte, error) {
 				capturedBody = body
-				return []byte(`{"id":"case-1","title":"Fix login bug"}`), nil
+				return []byte(`{"id":"case-1","subject":"Login failure","state":"open"}`), nil
 			},
 		}
 		h := NewCaseHandler(client)
-		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(reqPayload)))
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(validPayload)))
 		w := httptest.NewRecorder()
 		h.CreateCase(w, r)
 
 		assertStatus(t, w, http.StatusCreated)
 		assertContentType(t, w, "application/json")
-		if string(capturedBody) != reqPayload {
-			t.Errorf("upstream received body %q, want %q", capturedBody, reqPayload)
+
+		var sent map[string]json.RawMessage
+		if err := json.Unmarshal(capturedBody, &sent); err != nil {
+			t.Fatalf("upstream received invalid JSON: %v", err)
 		}
+		var createdBy string
+		if err := json.Unmarshal(sent["createdBy"], &createdBy); err != nil || createdBy != testUser.UserID {
+			t.Errorf("upstream createdBy = %q, want %q", createdBy, testUser.UserID)
+		}
+
 		resp := decodeJSON[map[string]any](t, w)
 		if resp["id"] != "case-1" {
 			t.Errorf("response id = %v, want case-1", resp["id"])
+		}
+	})
+
+	t.Run("auth user id overrides any caller-supplied createdBy", func(t *testing.T) {
+		var capturedBody []byte
+		client := &mockEntityCaseClient{
+			createCaseFn: func(_ context.Context, body []byte) ([]byte, error) {
+				capturedBody = body
+				return []byte(`{"id":"case-2","state":"open"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		spoofed := `{"projectId":"proj-1","deploymentId":"dep-1","deployedProductId":"dp-1","subject":"S","description":"D","priority":"low","issueType":"question","createdBy":"attacker-uuid"}`
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(spoofed)))
+		w := httptest.NewRecorder()
+		h.CreateCase(w, r)
+
+		assertStatus(t, w, http.StatusCreated)
+
+		var sent map[string]json.RawMessage
+		if err := json.Unmarshal(capturedBody, &sent); err != nil {
+			t.Fatalf("upstream received invalid JSON: %v", err)
+		}
+		var createdBy string
+		if err := json.Unmarshal(sent["createdBy"], &createdBy); err != nil || createdBy != testUser.UserID {
+			t.Errorf("upstream createdBy = %q, want %q (auth ID must win)", createdBy, testUser.UserID)
 		}
 	})
 
@@ -106,7 +150,7 @@ func TestCreateCase(t *testing.T) {
 					},
 				}
 				h := NewCaseHandler(client)
-				r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(`{}`)))
+				r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(validPayload)))
 				w := httptest.NewRecorder()
 				h.CreateCase(w, r)
 				assertStatus(t, w, tc.wantCode)
