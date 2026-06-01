@@ -18,12 +18,30 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
+
+// injectProjectID merges a project ID into a JSON request body as projectIds: [id].
+func injectProjectID(body []byte, projectID string) ([]byte, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	if m == nil {
+		m = make(map[string]json.RawMessage)
+	}
+	ids, err := json.Marshal([]string{projectID})
+	if err != nil {
+		return nil, err
+	}
+	m["projectIds"] = ids
+	return json.Marshal(m)
+}
 
 // entityCaseClient abstracts the entity service operations used by CaseHandler,
 // allowing the handler to be tested independently of the real HTTP client.
@@ -84,18 +102,20 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, result)
 }
 
-// SearchCases handles POST /cases/search.
-func (h *CaseHandler) SearchCases(w http.ResponseWriter, r *http.Request) {
+// SearchProjectCases handles POST /projects/{id}/cases/search.
+// It enforces the project scope by injecting projectIds: [id] into the entity request.
+func (h *CaseHandler) SearchProjectCases(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
 		return
 	}
 
-	// TODO: Decode the request body into a typed CaseSearchPayload and validate.
-
-	// TODO: Inject agent-specific filters into the search payload before forwarding
-	// (e.g. restrict results to the agent's assigned projects or queues).
+	projectID := r.PathValue("id")
+	if projectID == "" {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
@@ -108,15 +128,24 @@ func (h *CaseHandler) SearchCases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.entity.SearchCases(r.Context(), body)
+	if !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	entityBody, err := injectProjectID(body, projectID)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "entity SearchCases failed", "userID", user.UserID, "err", err)
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.SearchCases(r.Context(), entityBody)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity SearchCases failed", "userID", user.UserID, "projectID", projectID, "err", err)
 		mapUpstreamError(w, err, "Failed to search cases.")
 		return
 	}
 
-	// TODO: Unmarshal result into a typed CaseSearchResponse and transform it
-	// to the CSM portal response shape before writing.
 	writeJSON(w, http.StatusOK, result)
 }
 
