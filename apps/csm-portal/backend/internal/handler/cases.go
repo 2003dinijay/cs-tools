@@ -19,12 +19,60 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
+
+var errUserNotFound = errors.New("authenticated user not found in entity service")
+
+// resolveUserID looks up the entity-service UUID for the given email via users/search.
+// TODO: remove once DB-level auth propagates the entity UUID directly through the token.
+func resolveUserID(ctx context.Context, entity entityCaseClient, email string) (string, error) {
+	body, err := json.Marshal(map[string]any{
+		"searchQuery": email,
+		"pagination":  map[string]any{"limit": 1, "offset": 0},
+	})
+	if err != nil {
+		return "", err
+	}
+	resp, err := entity.SearchUsers(ctx, body)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		Users []struct {
+			ID string `json:"id"`
+		} `json:"users"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return "", err
+	}
+	if len(result.Users) == 0 {
+		return "", errUserNotFound
+	}
+	return result.Users[0].ID, nil
+}
+
+// injectCreatedBy merges createdBy into a JSON request body.
+func injectCreatedBy(body []byte, userID string) ([]byte, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	if m == nil {
+		m = make(map[string]json.RawMessage)
+	}
+	id, err := json.Marshal(userID)
+	if err != nil {
+		return nil, err
+	}
+	m["createdBy"] = id
+	return json.Marshal(m)
+}
 
 // injectProjectID merges a project ID into a JSON request body as projectIds: [id].
 func injectProjectID(body []byte, projectID string) ([]byte, error) {
@@ -49,6 +97,7 @@ type entityCaseClient interface {
 	CreateCase(ctx context.Context, body []byte) ([]byte, error)
 	SearchCases(ctx context.Context, body []byte) ([]byte, error)
 	GetCase(ctx context.Context, caseID string) ([]byte, error)
+	SearchUsers(ctx context.Context, body []byte) ([]byte, error)
 }
 
 // CaseHandler handles HTTP requests for case operations, delegating to the
@@ -66,9 +115,10 @@ func NewCaseHandler(entity entityCaseClient) *CaseHandler {
 const maxRequestBodyBytes = 1 << 20
 
 // CreateCase handles POST /cases.
-// TODO: createdBy is currently supplied by the client. Once DB-level auth is
-// in place it will be injected server-side from the authenticated user and
-// removed from the request payload.
+// createdBy is resolved server-side by looking up the authenticated user's email
+// in the entity service and injecting the UUID into the request body.
+// TODO: remove the users/search lookup once DB-level auth propagates the entity
+// UUID directly through the token claims.
 func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -92,9 +142,26 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.entity.CreateCase(r.Context(), body)
+	userID, err := resolveUserID(r.Context(), h.entity, user.Email)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "entity CreateCase failed", "userID", user.UserID, "err", err)
+		if errors.Is(err, errUserNotFound) {
+			writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+			return
+		}
+		slog.ErrorContext(r.Context(), "resolveUserID failed", "email", user.Email, "err", err)
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+
+	entityBody, err := injectCreatedBy(body, userID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.CreateCase(r.Context(), entityBody)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity CreateCase failed", "userID", userID, "err", err)
 		mapUpstreamError(w, err, "Failed to create case.")
 		return
 	}
