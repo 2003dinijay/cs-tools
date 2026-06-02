@@ -33,6 +33,7 @@ export type TableFilter = {
   options?: string[] | SelectOption[];
   placeholder?: string;
   multiSelect?: boolean;
+  isLoading?: boolean;
   onLoadMore?: () => void;
   hasMore?: boolean;
   isFetchingMore?: boolean;
@@ -96,6 +97,7 @@ export type CasesTableFilterValues = {
   statusIds?: string[];
   severityIds?: string[];
   issueTypes?: string | string[] | number;
+  createdBy?: string[];
   deploymentIds?: string[];
 };
 
