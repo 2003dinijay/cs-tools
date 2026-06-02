@@ -154,7 +154,8 @@ export default function ProjectSuspendedNoticePage({
           {(project.suspendedOn ?? project.endDate) && (
             <>
               <Divider />
-              <Box sx={{ px: 3, py: 3, bgcolor: "action.hover" }}>
+              <Box sx={{ px: 3, py: 3, bgcolor: "action.hover", display: "flex", alignItems: "flex-start", gap: 1.5 }}>
+                <AlertCircle size={18} style={{ marginTop: 2, flexShrink: 0, color: "var(--oxygen-palette-error-main, #f59e0b)" }} />
                 <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.75 }}>
                   This project was suspended on{" "}
                   <Typography component="span" variant="body2" fontWeight={600} color="text.primary">
