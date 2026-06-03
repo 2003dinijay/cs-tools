@@ -258,7 +258,7 @@ public type UpdatedProject record {|
 |};
 
 # Email validation regex pattern.
-@constraint:String { pattern: re `^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$` }
+@constraint:String { pattern: re `^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$` }
 public type Email string;
 
 # Payload for creating a case.
