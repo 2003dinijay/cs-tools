@@ -97,6 +97,7 @@ func injectProjectID(body []byte, projectID string) ([]byte, error) {
 // allowing the handler to be tested independently of the real HTTP client.
 type entityCaseClient interface {
 	CreateCase(ctx context.Context, body []byte) ([]byte, error)
+	CreateCaseComment(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	SearchCases(ctx context.Context, body []byte) ([]byte, error)
 	GetCase(ctx context.Context, caseID string) ([]byte, error)
 	SearchUsers(ctx context.Context, body []byte) ([]byte, error)
@@ -175,6 +176,64 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(result, &created); err == nil && created.ID != "" {
 		w.Header().Set("Location", "/cases/"+created.ID)
 	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// CreateCaseComment handles POST /cases/{id}/comments.
+// createdBy is resolved server-side from the authenticated user's email.
+func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	caseID := r.PathValue("id")
+	if caseID == "" {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		if _, ok := err.(*http.MaxBytesError); ok {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
+		return
+	}
+
+	if !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	userID, err := resolveUserID(r.Context(), h.entity, user.Email)
+	if err != nil {
+		if errors.Is(err, errUserNotFound) {
+			writeError(w, http.StatusForbidden, ErrMsgForbidden)
+			return
+		}
+		slog.ErrorContext(r.Context(), "resolveUserID failed", "email", user.Email, "err", err)
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+
+	entityBody, err := injectCreatedBy(body, userID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.CreateCaseComment(r.Context(), caseID, entityBody)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity CreateCaseComment failed", "userID", userID, "caseID", caseID, "err", err)
+		mapUpstreamError(w, err, "Failed to create case comment.")
+		return
+	}
+
 	writeJSON(w, http.StatusCreated, result)
 }
 

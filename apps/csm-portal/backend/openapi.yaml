@@ -97,6 +97,62 @@ paths:
         "500":
           description: InternalServerError
 
+  /cases/{id}/comments:
+    post:
+      summary: Create a comment on a case.
+      operationId: postCasesIdComments
+      parameters:
+        - name: id
+          in: path
+          description: ID of the case
+          required: true
+          schema:
+            type: string
+      requestBody:
+        description: Case comment creation payload
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseCommentCreatePayload'
+        required: true
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseComment'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /updates/product-update-levels:
     get:
       summary: Get product update levels.
@@ -1263,3 +1319,35 @@ components:
           type: integer
           minimum: 1
           default: 10
+
+    CaseCommentCreatePayload:
+      type: object
+      required:
+        - commentType
+        - body
+      properties:
+        commentType:
+          type: string
+          enum: [work_note, comment, activity]
+          description: work_note is restricted to internal users; activity to internal and system users
+        body:
+          type: string
+          description: Comment text
+
+    CaseComment:
+      type: object
+      properties:
+        id:
+          type: string
+        caseId:
+          type: string
+        commentType:
+          type: string
+          enum: [work_note, comment, activity]
+        body:
+          type: string
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
