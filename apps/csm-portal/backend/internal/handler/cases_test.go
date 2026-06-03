@@ -191,6 +191,153 @@ func TestCreateCase(t *testing.T) {
 	})
 }
 
+// ----- CreateCaseComment -----
+
+func TestCreateCaseComment(t *testing.T) {
+	const validPayload = `{"commentType":"comment","body":"Looking into this now."}`
+	const resolvedUserID = "entity-user-uuid-42"
+
+	userSearchOK := func(_ context.Context, _ []byte) ([]byte, error) {
+		return []byte(`{"users":[{"id":"` + resolvedUserID + `","email":"agent@example.com"}],"total":1}`), nil
+	}
+
+	t.Run("requires authenticated user", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusUnauthorized)
+		assertErrorMessage(t, w, ErrMsgUnauthorized)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects empty case ID", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases//comments", strings.NewReader(validPayload)))
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects body exceeding 1 MiB", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(strings.Repeat("x", maxRequestBodyBytes+1))))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusRequestEntityTooLarge)
+		assertErrorMessage(t, w, ErrMsgTooLarge)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects invalid JSON body", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(`not-json`)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("resolves createdBy server-side and forwards to upstream", func(t *testing.T) {
+		var capturedCaseID string
+		var capturedBody []byte
+		client := &mockEntityCaseClient{
+			searchUsersFn: userSearchOK,
+			createCaseCommentFn: func(_ context.Context, caseID string, body []byte) ([]byte, error) {
+				capturedCaseID = caseID
+				capturedBody = body
+				return []byte(`{"id":"comment-1","caseId":"case-1","commentType":"comment","body":"Looking into this now.","createdBy":"` + resolvedUserID + `","createdAt":"2026-06-03T00:00:00Z"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+
+		assertStatus(t, w, http.StatusCreated)
+		assertContentType(t, w, "application/json")
+
+		if capturedCaseID != "case-1" {
+			t.Errorf("upstream received caseID %q, want %q", capturedCaseID, "case-1")
+		}
+
+		var sent map[string]json.RawMessage
+		if err := json.Unmarshal(capturedBody, &sent); err != nil {
+			t.Fatalf("upstream received invalid JSON: %v", err)
+		}
+		var gotID string
+		if err := json.Unmarshal(sent["createdBy"], &gotID); err != nil || gotID != resolvedUserID {
+			t.Errorf("upstream createdBy = %q, want %q", gotID, resolvedUserID)
+		}
+
+		resp := decodeJSON[map[string]any](t, w)
+		if resp["id"] != "comment-1" {
+			t.Errorf("response id = %v, want comment-1", resp["id"])
+		}
+	})
+
+	t.Run("returns 403 when user not found in entity service", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			searchUsersFn: func(_ context.Context, _ []byte) ([]byte, error) {
+				return []byte(`{"users":[],"total":0}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusForbidden)
+		assertErrorMessage(t, w, ErrMsgForbidden)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("returns 500 when user lookup fails", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			searchUsersFn: func(_ context.Context, _ []byte) ([]byte, error) {
+				return nil, errors.New("entity service unavailable")
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusInternalServerError)
+		assertErrorMessage(t, w, ErrMsgInternal)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
+		for _, tc := range upstreamErrors("Failed to create case comment.") {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				client := &mockEntityCaseClient{
+					searchUsersFn: userSearchOK,
+					createCaseCommentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+						return nil, tc.err
+					},
+				}
+				h := NewCaseHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
+				r.SetPathValue("id", "case-1")
+				w := httptest.NewRecorder()
+				h.CreateCaseComment(w, r)
+				assertStatus(t, w, tc.wantCode)
+				assertErrorMessage(t, w, tc.wantMsg)
+				assertContentType(t, w, "application/json")
+			})
+		}
+	})
+}
+
 // ----- SearchProjectCases -----
 
 func TestSearchProjectCases(t *testing.T) {
