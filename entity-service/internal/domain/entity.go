@@ -28,6 +28,8 @@ const (
 	UserTypeInternal UserType = "internal"
 	// UserTypeCustomer identifies end-customer users.
 	UserTypeCustomer UserType = "customer"
+	// UserTypeSystem identifies automated system actors.
+	UserTypeSystem UserType = "system"
 )
 
 // User represents a single user entity as stored in the database.
