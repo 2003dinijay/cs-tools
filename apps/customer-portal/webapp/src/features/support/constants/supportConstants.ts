@@ -193,7 +193,12 @@ export const ALLOWED_INLINE_IMAGE_TYPES = [
 ] as const;
 
 // Allowed file extensions for inline image uploads (used in accept attribute and validation).
-export const ALLOWED_INLINE_IMAGE_EXTENSIONS = ["png", "jpeg", "jpg", "webp"];
+export const ALLOWED_INLINE_IMAGE_EXTENSIONS = [
+  "png",
+  "jpeg",
+  "jpg",
+  "webp",
+] as const;
 
 // Initial limit for case attachments list.
 export const CASE_ATTACHMENTS_INITIAL_LIMIT = 50;
