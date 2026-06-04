@@ -185,6 +185,16 @@ export const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
 // Maximum allowed embedded image size in bytes (10MB for base64 images in rich text).
 export const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
 
+// Allowed MIME types for inline image uploads in the rich text editor.
+export const ALLOWED_INLINE_IMAGE_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+] as const;
+
+// Allowed file extensions for inline image uploads (used in accept attribute and validation).
+export const ALLOWED_INLINE_IMAGE_EXTENSIONS = ["png", "jpeg", "jpg", "webp"];
+
 // Initial limit for case attachments list.
 export const CASE_ATTACHMENTS_INITIAL_LIMIT = 50;
 
