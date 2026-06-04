@@ -246,7 +246,7 @@ const Toolbar = ({
         !ALLOWED_INLINE_IMAGE_TYPES.includes(
           file.type as (typeof ALLOWED_INLINE_IMAGE_TYPES)[number],
         ) ||
-        !ALLOWED_INLINE_IMAGE_EXTENSIONS.includes(ext)
+        !(ALLOWED_INLINE_IMAGE_EXTENSIONS as readonly string[]).includes(ext)
       ) {
         showError(
           `Image "${file.name}" has an unsupported format. Allowed formats: ${ALLOWED_INLINE_IMAGE_EXTENSIONS.join(", ")}.`,
