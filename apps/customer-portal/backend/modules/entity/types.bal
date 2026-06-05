@@ -359,7 +359,7 @@ public type UpdatedCase record {|
     # Case type information
     ReferenceTableItem? 'type;
     # Watch list users
-    WatchList[]? watchList;
+    WatchList[]? watchList?;
     json...;
 |};
 
