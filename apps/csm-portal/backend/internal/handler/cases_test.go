@@ -604,12 +604,12 @@ func TestGetCase(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
-	t.Run("passes case ID to upstream and returns 200 with response", func(t *testing.T) {
+	t.Run("passes case ID to upstream and returns 200 with next_states injected", func(t *testing.T) {
 		var capturedID string
 		client := &mockEntityCaseClient{
 			getCaseFn: func(_ context.Context, caseID string) ([]byte, error) {
 				capturedID = caseID
-				return []byte(`{"id":"case-42","title":"Deployment failure"}`), nil
+				return []byte(`{"id":"case-42","state":"open"}`), nil
 			},
 		}
 		h := NewCaseHandler(client)
@@ -626,6 +626,51 @@ func TestGetCase(t *testing.T) {
 		resp := decodeJSON[map[string]any](t, w)
 		if resp["id"] != "case-42" {
 			t.Errorf("response id = %v, want case-42", resp["id"])
+		}
+		ns, ok := resp["next_states"].([]any)
+		if !ok || len(ns) != 1 || ns[0] != caseStateWorkInProgress {
+			t.Errorf("next_states = %v, want [%s]", resp["next_states"], caseStateWorkInProgress)
+		}
+	})
+
+	t.Run("next_states reflects current state", func(t *testing.T) {
+		cases := []struct {
+			state    string
+			wantNext []string
+		}{
+			{caseStateOpen, []string{caseStateWorkInProgress}},
+			{caseStateWorkInProgress, []string{caseStateWaitingOnWSO2, caseStateAwaitingInfo, caseStateSolutionProposed, caseStateClosed}},
+			{caseStateWaitingOnWSO2, []string{caseStateWorkInProgress}},
+			{caseStateAwaitingInfo, []string{caseStateWaitingOnWSO2}},
+			{caseStateReopened, []string{caseStateWaitingOnWSO2}},
+			{caseStateSolutionProposed, []string{caseStateClosed, caseStateWaitingOnWSO2}},
+			{caseStateClosed, []string{}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.state, func(t *testing.T) {
+				t.Parallel()
+				body, _ := json.Marshal(map[string]string{"id": "case-1", "state": tc.state})
+				client := &mockEntityCaseClient{
+					getCaseFn: func(_ context.Context, _ string) ([]byte, error) { return body, nil },
+				}
+				h := NewCaseHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodGet, "/cases/case-1", nil))
+				r.SetPathValue("id", "case-1")
+				w := httptest.NewRecorder()
+				h.GetCase(w, r)
+
+				assertStatus(t, w, http.StatusOK)
+				resp := decodeJSON[map[string]any](t, w)
+				got, _ := resp["next_states"].([]any)
+				if len(got) != len(tc.wantNext) {
+					t.Fatalf("next_states = %v, want %v", got, tc.wantNext)
+				}
+				for i, v := range got {
+					if v != tc.wantNext[i] {
+						t.Errorf("next_states[%d] = %v, want %v", i, v, tc.wantNext[i])
+					}
+				}
+			})
 		}
 	})
 

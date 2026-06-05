@@ -346,7 +346,12 @@ func (h *CaseHandler) GetCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Unmarshal result into a typed CaseResponse and transform it
-	// to the CSM portal response shape before writing.
+	result, err = injectNextStates(result)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "failed to inject next_states", "userID", user.UserID, "caseID", caseID, "err", err)
+		writeError(w, http.StatusInternalServerError, "Failed to process case details.")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, result)
 }

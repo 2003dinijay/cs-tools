@@ -988,6 +988,18 @@ components:
         closedAt:
           type: string
           format: date-time
+        next_states:
+          type: array
+          readOnly: true
+          items:
+            type: string
+            enum:
+              - open
+              - work_in_progress
+              - waiting_on_wso2
+              - awaiting_info
+              - solution_proposed
+              - closed
 
     UpdateDescriptionRequest:
       type: object
