@@ -65,6 +65,7 @@ export function CaseDetailsSection({
   isSeverityAutoDetected = false,
   isTitleFromChat = false,
   isDescriptionFromConversation = false,
+  children,
 }: CaseDetailsSectionProps): JSX.Element {
   const titleReadOnly = isTitleDisabled;
   const titleLength = title.trim().length;
@@ -582,6 +583,11 @@ export function CaseDetailsSection({
           </Grid>
         )}
       </Box>
+      {children && (
+        <Box sx={{ mt: 3 }}>
+          {children}
+        </Box>
+      )}
     </Paper>
   );
 }

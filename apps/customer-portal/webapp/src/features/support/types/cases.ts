@@ -239,6 +239,7 @@ export type CaseDetails = AuditMetadata & {
   engineerEmail: string | null;
   findingsResolved: number | null;
   findingsTotal: number | null;
+  watchList?: Array<{ id?: string; userName?: string; name?: string; email?: string }> | null;
 };
 
 // Item type for a single case comment.
@@ -387,7 +388,8 @@ export type CaseClassificationRequest = SharedEnvContext & {
 
 // Request type for patching a case.
 export type PatchCaseRequest = {
-  stateKey: number;
+  stateKey?: number;
+  watchList?: string[];
 };
 
 // Request type for creating a support case.
@@ -403,4 +405,5 @@ export type CreateCaseRequest = {
   title: string;
   relatedCaseId?: string;
   conversationId?: string;
+  watchList?: string[];
 };

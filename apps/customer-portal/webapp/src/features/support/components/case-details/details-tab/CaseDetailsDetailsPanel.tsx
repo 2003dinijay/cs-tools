@@ -16,10 +16,12 @@
 
 import type { CaseDetailsDetailsPanelProps } from "@features/support/types/supportComponents";
 import {
+  Autocomplete,
   Box,
   Button,
   Chip,
   Stack,
+  TextField,
   Typography,
   alpha,
   useTheme,
@@ -35,9 +37,14 @@ import {
   Mail,
   FileText,
   ExternalLink,
+  Pencil,
 } from "@wso2/oxygen-ui-icons-react";
-import { type JSX } from "react";
+import { type JSX, useState, useMemo } from "react";
 import { Link, useLocation, useParams } from "react-router";
+import useGetProjectContacts from "@features/settings/api/useGetProjectContacts";
+import { usePatchCase } from "@features/support/api/usePatchCase";
+import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
+import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
 import DOMPurify from "dompurify";
 import { DESCRIPTION_PURIFY_CONFIG } from "@utils/common";
 import { getSeverityLegendColor } from "@features/dashboard/utils/dashboard";
@@ -69,10 +76,48 @@ export default function CaseDetailsDetailsPanel({
   error,
   isEngagement = false,
   isServiceRequest = false,
+  projectId: propProjectId,
+  caseId = "",
 }: CaseDetailsDetailsPanelProps): JSX.Element {
   const theme = useTheme();
-  const { projectId = "" } = useParams<{ projectId: string }>();
+  const { projectId: paramProjectId = "" } = useParams<{ projectId: string }>();
+  const projectId = propProjectId ?? paramProjectId;
   const location = useLocation();
+
+  const [isEditingWatchList, setIsEditingWatchList] = useState(false);
+  const [pendingWatchList, setPendingWatchList] = useState<string[]>([]);
+
+  const { data: contactsData, isLoading: isContactsLoading } = useGetProjectContacts(projectId);
+  const contactOptions = useMemo(
+    () => (contactsData ?? []).map((c) => ({
+      label: `${c.firstName} ${c.lastName}`.trim() || c.email,
+      value: c.email,
+    })),
+    [contactsData],
+  );
+
+  const { showError } = useErrorBanner();
+  const { showSuccess } = useSuccessBanner();
+  const { mutate: patchCase, isPending: isPatchPending } = usePatchCase(projectId, caseId);
+
+  const handleEditWatchList = () => {
+    setPendingWatchList(
+      (data?.watchList ?? []).map((w) => w.email ?? w.userName ?? w.name ?? "").filter(Boolean),
+    );
+    setIsEditingWatchList(true);
+  };
+
+  const handleSaveWatchList = () => {
+    patchCase({ watchList: pendingWatchList }, {
+      onSuccess: () => {
+        setIsEditingWatchList(false);
+        showSuccess("Watch list updated successfully");
+      },
+      onError: () => {
+        showError("Failed to update watch list. Please try again.");
+      },
+    });
+  };
   const basePath = location.pathname.includes("/operations/")
     ? "operations"
     : "support";
@@ -551,6 +596,95 @@ export default function CaseDetailsDetailsPanel({
             </>
           )}
         </Box>
+      </CaseDetailsCard>
+
+      {/* Section 5: Watch List */}
+      <CaseDetailsCard
+        title="Watch List"
+        icon={<Mail size={20} aria-hidden />}
+        rightAction={
+          !isEditingWatchList ? (
+            <Button
+              variant="text"
+              size="small"
+              startIcon={<Pencil size={14} />}
+              onClick={handleEditWatchList}
+              disabled={!caseId}
+              sx={{ minHeight: "unset", p: 0, textTransform: "none" }}
+            >
+              Edit
+            </Button>
+          ) : (
+            <Stack direction="row" spacing={1}>
+              <Button
+                variant="text"
+                size="small"
+                onClick={() => setIsEditingWatchList(false)}
+                sx={{ minHeight: "unset", p: 0, textTransform: "none" }}
+                disabled={isPatchPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="text"
+                size="small"
+                color="primary"
+                onClick={handleSaveWatchList}
+                sx={{ minHeight: "unset", p: 0, textTransform: "none" }}
+                loading={isPatchPending}
+              >
+                Save
+              </Button>
+            </Stack>
+          )
+        }
+      >
+        {isEditingWatchList ? (
+          <Autocomplete
+            multiple
+            loading={isContactsLoading}
+            loadingText="Loading..."
+            options={contactOptions}
+            getOptionLabel={(option) => option.label}
+            value={contactOptions.filter((o) => pendingWatchList.includes(o.value))}
+            onChange={(_event, newValue) => {
+              setPendingWatchList(newValue.map((o) => o.value));
+            }}
+            isOptionEqualToValue={(option, val) => option.value === val.value}
+            renderTags={(tagValue, getTagProps) =>
+              tagValue.map((option, index) => {
+                const { key, ...tagProps } = getTagProps({ index });
+                return <Chip key={key} label={option.label} size="small" {...tagProps} />;
+              })
+            }
+            renderInput={(params) => (
+              <TextField {...params} placeholder="Add watchers..." size="small" />
+            )}
+          />
+        ) : data?.watchList && data.watchList.length > 0 ? (
+          <Stack direction="row" flexWrap="wrap" gap={1}>
+            {data.watchList.map((watcher, index) => {
+              const label = watcher.name ?? watcher.userName ?? watcher.email ?? "";
+              const key = watcher.id ?? watcher.email ?? watcher.userName ?? String(index);
+              return (
+                <Chip
+                  key={key}
+                  label={label}
+                  size="small"
+                  variant="outlined"
+                  sx={{
+                    borderColor: "transparent",
+                    bgcolor: "action.hover",
+                    height: 24,
+                    fontSize: "0.75rem",
+                  }}
+                />
+              );
+            })}
+          </Stack>
+        ) : (
+          <Typography variant="body2" color="text.secondary">No watchers added</Typography>
+        )}
       </CaseDetailsCard>
     </Stack>
   );
