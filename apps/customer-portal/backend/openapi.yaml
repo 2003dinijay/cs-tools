@@ -6195,7 +6195,6 @@ components:
       - type
       - updatedBy
       - updatedOn
-      - watchList
       type: object
       properties:
         id:
