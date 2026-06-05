@@ -609,7 +609,7 @@ export default function CaseDetailsDetailsPanel({
               size="small"
               startIcon={<Pencil size={14} />}
               onClick={handleEditWatchList}
-              disabled={!caseId}
+              disabled={!caseId || data?.status?.label?.toLowerCase() === "closed"}
               sx={{ minHeight: "unset", p: 0, textTransform: "none" }}
             >
               Edit
