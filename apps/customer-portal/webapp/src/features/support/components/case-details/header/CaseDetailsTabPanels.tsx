@@ -86,6 +86,8 @@ export default function CaseDetailsTabPanels({
           error={error}
           isEngagement={isEngagement}
           isServiceRequest={isServiceRequest}
+          projectId={projectId}
+          caseId={caseId}
         />
       );
     case 2:

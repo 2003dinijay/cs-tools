@@ -70,6 +70,7 @@ export function CaseDetailsSection({
   isSeverityAutoDetected = false,
   isTitleFromChat = false,
   isDescriptionFromConversation = false,
+  children,
 }: CaseDetailsSectionProps): JSX.Element {
   const { showError } = useErrorBanner();
   const titleReadOnly = isTitleDisabled;
@@ -595,6 +596,11 @@ export function CaseDetailsSection({
           </Grid>
         )}
       </Box>
+      {children && (
+        <Box sx={{ mt: 3 }}>
+          {children}
+        </Box>
+      )}
     </Paper>
   );
 }

@@ -172,7 +172,7 @@ public isolated function validateCaseUpdatePayload(CaseUpdatePayload payload) re
     boolean hasWatchList = payload.watchList !is ();
 
     if !hasStateKey && !hasWatchList {
-        return "Invalid payload. At least one of status or watch list should be provided for case update.";
+        return "Either stateKey or watchList must be provided.";
     }
 
     if hasStateKey && payload.stateKey != caseStateIds.closed && payload.stateKey != caseStateIds.reopened &&

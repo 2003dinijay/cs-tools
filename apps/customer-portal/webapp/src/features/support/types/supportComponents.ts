@@ -72,6 +72,8 @@ export type CaseDetailsDetailsPanelProps = {
   error?: unknown;
   isEngagement?: boolean;
   isServiceRequest?: boolean;
+  projectId?: string;
+  caseId?: string;
 };
 
 export type CaseDetailsSectionProps = {
@@ -102,6 +104,7 @@ export type CaseDetailsSectionProps = {
   isSeverityAutoDetected?: boolean;
   isTitleFromChat?: boolean;
   isDescriptionFromConversation?: boolean;
+  children?: ReactNode;
 };
 
 export type ChatMessageCardProps = {
@@ -179,6 +182,7 @@ export type BasicInformationSectionProps = {
   onLoadMoreProducts?: () => void;
   hasMoreProducts?: boolean;
   isFetchingMoreProducts?: boolean;
+  children?: React.ReactNode;
 };
 
 export type ImageFullscreenModalProps = {

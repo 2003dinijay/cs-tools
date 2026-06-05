@@ -49,6 +49,9 @@ export function usePatchCase(
     mutationFn: async (body: PatchCaseRequest): Promise<PatchCaseResponse> => {
       logger.debug("[usePatchCase] Request:", { caseId, body });
 
+      if (!caseId || !projectId) {
+        throw new Error("Case ID and project ID are required to update a case");
+      }
       if (!isSignedIn || isAuthLoading) {
         throw new Error("User must be signed in to update a case");
       }
@@ -73,16 +76,24 @@ export function usePatchCase(
       logger.debug("[usePatchCase] Case updated:", data);
       return data;
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       const matchesProjectCases = (queryKey: readonly unknown[]): boolean => {
         if (queryKey[0] !== ApiQueryKeys.PROJECT_CASES) return false;
         if (queryKey[1] === "page") return queryKey[2] === projectId;
         return queryKey[1] === projectId;
       };
 
-      queryClient.invalidateQueries({
-        queryKey: [ApiQueryKeys.CASE_DETAILS, projectId, caseId],
-      });
+      const isCaseDetailsQuery = (queryKey: readonly unknown[]) =>
+        queryKey[0] === ApiQueryKeys.CASE_DETAILS && queryKey[2] === caseId;
+
+      queryClient.invalidateQueries({ predicate: (q) => isCaseDetailsQuery(q.queryKey) });
+
+      if (variables.watchList !== undefined) {
+        void queryClient.refetchQueries({
+          predicate: (q) => isCaseDetailsQuery(q.queryKey),
+          type: "active",
+        });
+      }
       queryClient.invalidateQueries({
         queryKey: [ApiQueryKeys.CASES_STATS, projectId],
       });

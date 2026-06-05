@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Button, Grid } from "@wso2/oxygen-ui";
+import { Autocomplete, Box, Button, Chip, Grid, TextField, Typography } from "@wso2/oxygen-ui";
 import { CircleCheck } from "@wso2/oxygen-ui-icons-react";
 import {
   useState,
@@ -28,6 +28,7 @@ import {
 import { useLocation, useNavigate, useParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import useGetProjectFilters from "@api/useGetProjectFilters";
+import useGetProjectContacts from "@features/settings/api/useGetProjectContacts";
 import useGetProjectDetails from "@api/useGetProjectDetails";
 import useGetProjectFeatures from "@api/useGetProjectFeatures";
 import { useAuthApiClient } from "@/hooks/useAuthApiClient";
@@ -158,6 +159,7 @@ export default function CreateCasePage(): JSX.Element {
     useState("");
   type AttachmentItem = { id: string; file: File };
   const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
+  const [watchList, setWatchList] = useState<string[]>([]);
   const attachmentNamesRef = useRef<Map<string, string>>(new Map());
   const attachmentIdCounterRef = useRef(0);
   const [isPreparingAttachments, setIsPreparingAttachments] = useState(false);
@@ -229,6 +231,16 @@ export default function CreateCasePage(): JSX.Element {
       });
     });
   }, [baseProductOptions]);
+
+  const { data: contactsData, isLoading: isContactsLoading, isError: isContactsError } = useGetProjectContacts(projectId || "");
+  const contactOptions = useMemo(
+    () =>
+      (contactsData ?? []).map((c) => ({
+        label: `${c.firstName} ${c.lastName}`.trim() || c.email,
+        value: c.email,
+      })),
+    [contactsData],
+  );
 
   const { showError } = useErrorBanner();
   const { showSuccess } = useSuccessBanner();
@@ -958,6 +970,7 @@ export default function CreateCasePage(): JSX.Element {
       ...(conversationId && {
         conversationId,
       }),
+      ...(watchList.length > 0 && { watchList }),
     };
 
     postCase(payload, {
@@ -1162,7 +1175,38 @@ export default function CreateCasePage(): JSX.Element {
             isSecurityReport={isSecurityReport}
             excludeS0={excludeS0}
             isSeverityDisabled={forceSeverityS4}
-          />
+          >
+            <Autocomplete
+              multiple
+              loading={isContactsLoading}
+              loadingText="Loading..."
+              options={contactOptions}
+              getOptionLabel={(option) => option.label}
+              value={contactOptions.filter((o) => watchList.includes(o.value))}
+              onChange={(_event, newValue) => {
+                setWatchList(newValue.map((o) => o.value));
+              }}
+              isOptionEqualToValue={(option, val) => option.value === val.value}
+              renderTags={(tagValue, getTagProps) =>
+                tagValue.map((option, index) => {
+                  const { key, ...tagProps } = getTagProps({ index });
+                  return (
+                    <Chip key={key} label={option.label} size="small" {...tagProps} />
+                  );
+                })
+              }
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Watch List"
+                  placeholder="Add watchers..."
+                  size="small"
+                  error={isContactsError}
+                  helperText={isContactsError ? "Could not load users. Please refresh and try again." : undefined}
+                />
+              )}
+            />
+          </CaseDetailsSection>
 
           {/* form actions container */}
           <Box sx={{ display: "flex", justifyContent: "right" }}>
