@@ -16,7 +16,7 @@ New upstream services get their own package under `internal/` following the same
 
 ## Commands
 
-```
+```bash
 make setup   # wire up git hooks (once after clone)
 make test    # vet + race-detector tests
 make build   # runs tests then compiles ./cmd/server
@@ -51,9 +51,9 @@ Follow these steps in order:
 
 ## Response shape
 
-- All JSON response fields must use **camelCase** (e.g. `createdAt`, `projectId`, `issueType`)
-- When transforming an upstream response into a typed struct, use `json:"fieldName"` struct tags to enforce this — never return snake_case or PascalCase field names to the frontend
-- The `next_states` field is an exception — it uses snake_case to match the upstream entity service contract
+- For **portal-owned/transformed** responses (typed structs constructed by the portal), all JSON fields must use **camelCase** (e.g. `createdAt`, `projectId`, `issueType`); use `json:"fieldName"` struct tags to enforce this
+- **Raw passthrough** responses may retain upstream field naming as-is — do not reshape them unless there is an explicit requirement to do so
+- The `next_states` field is a documented snake_case exception where the portal constructs the field to match the upstream entity service contract
 
 ## Security
 
