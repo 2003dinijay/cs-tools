@@ -101,6 +101,14 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	return s.repo.CreateCase(ctx, req)
 }
 
+// GetCaseByID implements CaseService.
+func (s *caseService) GetCaseByID(ctx context.Context, id string) (domain.Case, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.Case{}, err
+	}
+	return s.repo.GetCaseByID(ctx, id)
+}
+
 var validCommentType = map[domain.CommentType]bool{
 	domain.CommentTypeWorkNote: true,
 	domain.CommentTypeComment:  true,

@@ -35,6 +35,18 @@ func NewCaseHandler(svc service.CaseService) *CaseHandler {
 	return &CaseHandler{svc: svc}
 }
 
+// GetCase handles GET /cases/{id}.
+func (h *CaseHandler) GetCase(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	c, err := h.svc.GetCaseByID(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(c)
+}
+
 // CreateCase handles POST /cases.
 func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 	var req domain.CreateCaseRequest
