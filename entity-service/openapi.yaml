@@ -1093,13 +1093,55 @@ components:
         deployedProduct:
           $ref: '#/components/schemas/DeployedProductRef'
 
+    CaseSearchView:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+        wso2Id:
+          type: string
+        subject:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+          enum: [catastrophic, critical, high, medium, low]
+        issueType:
+          type: string
+          enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
+        state:
+          type: string
+          enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        closedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdBy:
+          $ref: '#/components/schemas/UserIDEmailRef'
+        project:
+          $ref: '#/components/schemas/EntityRef'
+        deployment:
+          $ref: '#/components/schemas/EntityRef'
+        deployedProduct:
+          $ref: '#/components/schemas/DeployedProductRef'
+
     SearchCasesResponse:
       type: object
       properties:
         cases:
           type: array
           items:
-            $ref: '#/components/schemas/CaseView'
+            $ref: '#/components/schemas/CaseSearchView'
         total:
           type: integer
         limit:
