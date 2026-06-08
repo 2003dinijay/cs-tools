@@ -99,7 +99,7 @@ func main() {
 	mux.HandleFunc("POST /deployments/{id}/products/search", deploymentHandler.SearchDeployedProducts)
 
 	addr := envOrDefault("PORT", ":8080")
-	slog.Info("starting csm-portal backend", "addr", addr)
+	slog.Info("CSM Portal Backend started", "addr", addr)
 
 	srv := &http.Server{
 		Addr:              addr,
