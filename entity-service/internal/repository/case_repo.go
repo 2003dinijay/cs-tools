@@ -322,11 +322,12 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		result := make([]domain.CaseView, 0, req.Pagination.Limit)
 		for rows.Next() {
 			var cv domain.CaseView
+			var ignoredUserID, ignoredEmail string
 			if err := rows.Scan(
 				&cv.ID, &cv.Number, &cv.Wso2ID,
 				&cv.Subject, &cv.Description, &cv.Priority, &cv.IssueType, &cv.State,
 				&cv.CreatedAt, &cv.UpdatedAt, &cv.ClosedAt,
-				&cv.CreatedByDetails.ID, &cv.CreatedByDetails.DisplayName, &cv.CreatedByDetails.UserID, &cv.CreatedByDetails.Email,
+				&cv.CreatedByDetails.ID, &cv.CreatedByDetails.DisplayName, &ignoredUserID, &ignoredEmail,
 				&cv.ProjectDetails.ID, &cv.ProjectDetails.Name,
 				&cv.DeploymentDetails.ID, &cv.DeploymentDetails.Name,
 				&cv.DeployedProductDetails.ID, &cv.DeployedProductDetails.DisplayName,

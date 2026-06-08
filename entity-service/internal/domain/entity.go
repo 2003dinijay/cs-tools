@@ -398,8 +398,8 @@ type Case struct {
 type UserRef struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
-	UserID      string `json:"userId"`
-	Email       string `json:"email"`
+	UserID      string `json:"userId,omitempty"`
+	Email       string `json:"email,omitempty"`
 }
 
 // EntityRef is a compact reference to a named entity (project or deployment).
