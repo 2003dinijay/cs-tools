@@ -1074,13 +1074,13 @@ components:
           type: string
           format: date-time
           nullable: true
-        createdByDetails:
+        createdBy:
           $ref: '#/components/schemas/UserRef'
-        projectDetails:
+        project:
           $ref: '#/components/schemas/EntityRef'
-        deploymentDetails:
+        deployment:
           $ref: '#/components/schemas/EntityRef'
-        deployedProductDetails:
+        deployedProduct:
           $ref: '#/components/schemas/DeployedProductRef'
 
     SearchCasesResponse:

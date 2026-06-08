@@ -430,10 +430,10 @@ type CaseView struct {
 	CreatedAt              time.Time          `json:"createdAt"`
 	UpdatedAt              time.Time          `json:"updatedAt"`
 	ClosedAt               *time.Time         `json:"closedAt,omitempty"`
-	CreatedByDetails       UserRef            `json:"createdByDetails"`
-	ProjectDetails         EntityRef          `json:"projectDetails"`
-	DeploymentDetails      EntityRef          `json:"deploymentDetails"`
-	DeployedProductDetails DeployedProductRef `json:"deployedProductDetails"`
+	CreatedByDetails       UserRef            `json:"createdBy"`
+	ProjectDetails         EntityRef          `json:"project"`
+	DeploymentDetails      EntityRef          `json:"deployment"`
+	DeployedProductDetails DeployedProductRef `json:"deployedProduct"`
 }
 
 // SearchCasesRequest is the input for a case search operation.
