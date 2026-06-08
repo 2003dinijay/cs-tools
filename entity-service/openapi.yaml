@@ -297,7 +297,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Case'
+                $ref: '#/components/schemas/CaseView'
         "400":
           description: Bad request.
           content:
@@ -965,6 +965,41 @@ components:
               enum: [asc, desc]
               description: Sort direction. Defaults to desc.
 
+    UserRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+          description: firstName + lastName
+        userId:
+          type: string
+          description: Username / login identifier.
+        email:
+          type: string
+          format: email
+
+    EntityRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+
+    DeployedProductRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+          description: Product name combined with version (e.g. "API Manager 4.3.0").
+
     Case:
       type: object
       properties:
@@ -1006,13 +1041,55 @@ components:
           format: date-time
           nullable: true
 
+    CaseView:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+        wso2Id:
+          type: string
+        subject:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+          enum: [catastrophic, critical, high, medium, low]
+        issueType:
+          type: string
+          enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
+        state:
+          type: string
+          enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        closedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdByDetails:
+          $ref: '#/components/schemas/UserRef'
+        projectDetails:
+          $ref: '#/components/schemas/EntityRef'
+        deploymentDetails:
+          $ref: '#/components/schemas/EntityRef'
+        deployedProductDetails:
+          $ref: '#/components/schemas/DeployedProductRef'
+
     SearchCasesResponse:
       type: object
       properties:
         cases:
           type: array
           items:
-            $ref: '#/components/schemas/Case'
+            $ref: '#/components/schemas/CaseView'
         total:
           type: integer
         limit:
