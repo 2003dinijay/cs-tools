@@ -15,6 +15,7 @@
 // under the License.
 
 import { useAsgardeo } from "@asgardeo/react";
+import { ASGARDEO_UNAUTHENTICATED_CODE } from "@constants/apiConstants";
 
 // A custom hook that automatically fetches a fresh ID Token from Asgardeo.
 export function useAuthApiClient() {
@@ -59,7 +60,7 @@ export function useAuthApiClient() {
     return headers;
   };
 
-  const authFetch = async (
+  const attemptFetch = async (
     input: RequestInfo | URL,
     options?: RequestInit,
   ): Promise<Response> => {
@@ -67,11 +68,32 @@ export function useAuthApiClient() {
     if (!token) {
       throw new Error("Unable to retrieve ID token");
     }
-
     return fetch(input, {
       ...options,
       headers: buildRequestHeaders(options, token),
     });
+  };
+
+  const authFetch = async (
+    input: RequestInfo | URL,
+    options?: RequestInit,
+  ): Promise<Response> => {
+    try {
+      return await attemptFetch(input, options);
+    } catch (error) {
+      // SPA-AUTH_CLIENT-VM-IV02 means the token was expired when this call ran.
+      // A concurrent call may have already refreshed the token — retry once to pick it up.
+      const isTokenExpiredError =
+        error != null &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error as { code: string }).code === ASGARDEO_UNAUTHENTICATED_CODE;
+
+      if (isTokenExpiredError) {
+        return attemptFetch(input, options);
+      }
+      throw error;
+    }
   };
 
   return authFetch;
