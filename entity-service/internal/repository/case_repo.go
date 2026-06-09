@@ -220,7 +220,7 @@ func (r *caseRepo) UpdateCaseState(ctx context.Context, req domain.UpdateCaseSta
 		UPDATE cases
 		SET state      = $2::case_state_enum,
 		    updated_at = NOW(),
-		    closed_at  = CASE WHEN $2 = 'closed' THEN NOW() ELSE NULL END
+		    closed_at  = CASE WHEN state <> 'closed'::case_state_enum AND $2 = 'closed' THEN NOW() ELSE closed_at END
 		WHERE id = $1
 		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
 		          subject, description, priority, issue_type, state, created_at, updated_at, closed_at`
