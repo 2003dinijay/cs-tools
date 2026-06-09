@@ -126,7 +126,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
     patch:
-      summary: Update the state of a support case.
+      summary: Update the state and/or priority of a support case.
       operationId: patchCasesId
       parameters:
         - name: id
@@ -141,7 +141,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateCaseStateRequest'
+              $ref: '#/components/schemas/UpdateCaseRequest'
       responses:
         "200":
           description: Case updated successfully.
@@ -897,14 +897,21 @@ components:
         message:
           type: string
 
-    UpdateCaseStateRequest:
+    UpdateCaseRequest:
       type: object
-      required: [state]
+      description: At least one of state or priority must be provided.
+      anyOf:
+        - required: [state]
+        - required: [priority]
       properties:
         state:
           type: string
           enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
           description: The new state to transition the case to.
+        priority:
+          type: string
+          enum: [catastrophic, critical, high, medium, low]
+          description: The new priority (severity) of the case.
 
     CaseCreatePayload:
       type: object
