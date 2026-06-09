@@ -229,7 +229,7 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 		SET state      = CASE WHEN $2 <> '' THEN $2::case_state_enum ELSE state END,
 		    priority   = CASE WHEN $3 <> '' THEN $3::case_priority_enum ELSE priority END,
 		    updated_at = NOW(),
-		    closed_at  = CASE WHEN state <> 'closed'::case_state_enum AND $2 = 'closed' THEN NOW() ELSE closed_at END
+		    closed_at  = CASE WHEN $2 = 'closed' THEN NOW() WHEN $2 <> '' AND $2 <> 'closed' THEN NULL ELSE closed_at END
 		WHERE id = $1
 		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
 		          subject, description, priority, issue_type, state, created_at, updated_at, closed_at`

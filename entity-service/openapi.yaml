@@ -932,6 +932,9 @@ components:
     UpdateCaseRequest:
       type: object
       description: At least one of state or priority must be provided.
+      anyOf:
+        - required: [state]
+        - required: [priority]
       properties:
         state:
           type: string
