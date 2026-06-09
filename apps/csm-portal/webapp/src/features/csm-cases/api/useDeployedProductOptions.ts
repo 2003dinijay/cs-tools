@@ -66,11 +66,33 @@ export function useDeployedProductOptions(
         ),
       ];
 
-      const [productsRes, versionLists] = await Promise.all([
-        api.post<BeProductSearchPayload, BeProductSearchResponse>(
-          "/products/search",
-          { pagination: { offset: 0, limit: PRODUCTS_LIMIT } },
-        ),
+      // `/products/search` has no id filter, so page through it collecting
+      // names for the referenced product ids only — stop once every id is
+      // resolved or the catalog is exhausted. Without this, products beyond
+      // the first page collapse to a generic fallback label.
+      const productName = new Map<string, string>();
+      const unresolved = new Set(productIds);
+      const resolveProductNames = async (): Promise<void> => {
+        for (let offset = 0; unresolved.size > 0; offset += PRODUCTS_LIMIT) {
+          const res = await api.post<
+            BeProductSearchPayload,
+            BeProductSearchResponse
+          >("/products/search", {
+            pagination: { offset, limit: PRODUCTS_LIMIT },
+          });
+          const page = res.products ?? [];
+          for (const p of page) {
+            if (unresolved.has(p.id)) {
+              productName.set(p.id, p.name ?? p.id);
+              unresolved.delete(p.id);
+            }
+          }
+          if (page.length < PRODUCTS_LIMIT) break;
+        }
+      };
+
+      const [, versionLists] = await Promise.all([
+        resolveProductNames(),
         Promise.all(
           productIds.map((pid) =>
             api
@@ -86,16 +108,18 @@ export function useDeployedProductOptions(
         ),
       ]);
 
-      const productName = new Map(
-        (productsRes.products ?? []).map((p) => [p.id, p.name ?? p.id]),
-      );
       const versionLabel = new Map<string, string>();
       for (const versions of versionLists) {
         for (const v of versions) versionLabel.set(v.id, v.version ?? "");
       }
 
       return deployed.map((d) => {
-        const name = (d.productId && productName.get(d.productId)) || "Product";
+        // Fall back to the product id (not a generic "Product") so distinct
+        // unresolved products stay distinguishable in the selector.
+        const name =
+          (d.productId && productName.get(d.productId)) ||
+          d.productId ||
+          "Product";
         const ver =
           (d.productVersionId && versionLabel.get(d.productVersionId)) || "";
         return { id: d.id, label: ver ? `${name} ${ver}` : name };

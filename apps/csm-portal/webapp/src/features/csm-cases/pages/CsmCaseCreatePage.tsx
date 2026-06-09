@@ -73,6 +73,16 @@ export default function CsmCaseCreatePage(): JSX.Element {
   const deployedProducts = useDeployedProductOptions(deploymentId || undefined);
   const postCase = usePostCsmCase();
 
+  // When a selector query fails the form becomes non-completable, so surface it
+  // with an explicit retry rather than leaving an empty dropdown.
+  const hasOptionsError =
+    projects.isError || deployments.isError || deployedProducts.isError;
+  const retryOptions = (): void => {
+    if (projects.isError) void projects.refetch();
+    if (deployments.isError) void deployments.refetch();
+    if (deployedProducts.isError) void deployedProducts.refetch();
+  };
+
   const canSubmit = useMemo(
     () =>
       !!projectId &&
@@ -140,6 +150,24 @@ export default function CsmCaseCreatePage(): JSX.Element {
       </Typography>
 
       <Card variant="outlined" sx={{ p: 3 }}>
+        {hasOptionsError && (
+          <Box
+            sx={{
+              mb: 2,
+              display: "flex",
+              alignItems: "center",
+              gap: 1.5,
+              flexWrap: "wrap",
+            }}
+          >
+            <Typography variant="body2" color="error.main">
+              Some dropdown options failed to load.
+            </Typography>
+            <Button size="small" variant="outlined" onClick={retryOptions}>
+              Retry
+            </Button>
+          </Box>
+        )}
         <Grid container spacing={2.5}>
           <Grid size={{ xs: 12, md: 4 }}>
             <FormControl fullWidth size="small" required>

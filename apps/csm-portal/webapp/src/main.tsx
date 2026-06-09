@@ -37,7 +37,11 @@ hydrateMockModeFromStorage();
 if (typeof window !== "undefined") {
   try {
     const entry = window.location.pathname + window.location.search;
-    const isOauthCallback = /[?&](code|state)=/.test(window.location.search);
+    // Only the OAuth callback carries BOTH `code` and `state`; requiring both
+    // avoids misclassifying legitimate deep links that happen to use a business
+    // `state` (or `code`) query param and dropping their post-login restore.
+    const params = new URLSearchParams(window.location.search);
+    const isOauthCallback = params.has("code") && params.has("state");
     if (entry !== "/" && !isOauthCallback) {
       window.sessionStorage.setItem("post_login_redirect", entry);
     }

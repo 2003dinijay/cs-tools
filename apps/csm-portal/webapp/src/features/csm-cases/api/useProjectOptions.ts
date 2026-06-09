@@ -31,11 +31,18 @@ export function useProjectOptions(): UseQueryResult<BeProject[], Error> {
   return useQuery<BeProject[], Error>({
     queryKey: ["csm-case-create-projects"],
     queryFn: async (): Promise<BeProject[]> => {
-      const res = await api.post<
-        BeProjectSearchPayload,
-        BeProjectSearchResponse
-      >("/projects/search", { pagination: { offset: 0, limit: PAGE_LIMIT } });
-      return res.projects ?? [];
+      // Page through so projects beyond the first page are still selectable.
+      const all: BeProject[] = [];
+      for (let offset = 0; ; offset += PAGE_LIMIT) {
+        const res = await api.post<
+          BeProjectSearchPayload,
+          BeProjectSearchResponse
+        >("/projects/search", { pagination: { offset, limit: PAGE_LIMIT } });
+        const page = res.projects ?? [];
+        all.push(...page);
+        if (page.length < PAGE_LIMIT) break;
+      }
+      return all;
     },
     staleTime: 60_000,
   });

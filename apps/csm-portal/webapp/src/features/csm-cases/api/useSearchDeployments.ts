@@ -38,14 +38,21 @@ export function useSearchDeployments(
   return useQuery<BeDeployment[], Error>({
     queryKey: [ApiQueryKeys.DEPLOYMENTS, projectId ?? ""],
     queryFn: async (): Promise<BeDeployment[]> => {
-      const res = await api.post<
-        BeDeploymentSearchPayload,
-        BeDeploymentSearchResponse
-      >("/deployments/search", {
-        projectIds: projectId ? [projectId] : [],
-        pagination: { offset: 0, limit: PAGE_LIMIT },
-      });
-      return res.deployments ?? [];
+      // Page through so deployments beyond the first page stay selectable.
+      const all: BeDeployment[] = [];
+      for (let offset = 0; ; offset += PAGE_LIMIT) {
+        const res = await api.post<
+          BeDeploymentSearchPayload,
+          BeDeploymentSearchResponse
+        >("/deployments/search", {
+          projectIds: projectId ? [projectId] : [],
+          pagination: { offset, limit: PAGE_LIMIT },
+        });
+        const page = res.deployments ?? [];
+        all.push(...page);
+        if (page.length < PAGE_LIMIT) break;
+      }
+      return all;
     },
     enabled: !!projectId,
     staleTime: 60_000,

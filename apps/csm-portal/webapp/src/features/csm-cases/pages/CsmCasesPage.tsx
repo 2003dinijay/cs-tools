@@ -25,6 +25,7 @@ import CasesFilterBar, {
 } from "@features/csm-cases/components/CasesFilterBar";
 import CasesList from "@features/csm-cases/components/CasesList";
 import { useGetCsmCases } from "@features/csm-cases/api/useGetCsmCases";
+import { useProjectOptions } from "@features/csm-cases/api/useProjectOptions";
 import { useDirectoryUsers } from "@api/useDirectoryUsers";
 import type { CsmCaseRow } from "@features/csm-cases/types/csmCases";
 import {
@@ -86,6 +87,7 @@ export default function CsmCasesPage(): JSX.Element {
   );
 
   const { data, isLoading, isError } = useGetCsmCases(filters);
+  const { data: projectDirectory } = useProjectOptions();
   const { data: directoryUsers } = useDirectoryUsers();
   const { showError } = useErrorBanner();
   const hasShownErrorRef = useRef(false);
@@ -117,17 +119,27 @@ export default function CsmCasesPage(): JSX.Element {
   }, [directoryUsers]);
 
   // Project filter is id-based (sends projectIds server-side), so options carry
-  // id + name. Derived from the loaded cases (which embed projectId +
-  // projectName) so it works in both LIVE and MOCK without an extra fetch.
+  // id + name. The list is sourced from the full project directory rather than
+  // the loaded cases: once a project is selected the result set is
+  // server-filtered to it, so deriving options from `data.cases` would collapse
+  // the selector to the chosen project and block adding a second one. Loaded
+  // cases backfill the list (covers MOCK mode, where the directory is empty),
+  // and selected ids are always kept visible.
   const availableProjects = useMemo(() => {
     const byId = new Map<string, string>();
+    (projectDirectory ?? []).forEach((p) => byId.set(p.id, p.name || p.id));
     (data?.cases ?? []).forEach((c) => {
-      if (c.projectId) byId.set(c.projectId, c.projectName || c.projectId);
+      if (c.projectId && !byId.has(c.projectId)) {
+        byId.set(c.projectId, c.projectName || c.projectId);
+      }
+    });
+    filters.projects.forEach((id) => {
+      if (!byId.has(id)) byId.set(id, id);
     });
     return Array.from(byId, ([id, name]) => ({ id, name })).sort((a, b) =>
       a.name.localeCompare(b.name),
     );
-  }, [data?.cases]);
+  }, [projectDirectory, data?.cases, filters.projects]);
 
   const availableProducts = useMemo(() => {
     const set = new Set<string>();
