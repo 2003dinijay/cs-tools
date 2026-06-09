@@ -21,6 +21,7 @@ import ErrorLayout from "@layouts/ErrorLayout";
 import CsmComingSoonPage from "@features/csm-coming-soon/pages/CsmComingSoonPage";
 import CsmDashboardPage from "@features/csm-dashboard/pages/CsmDashboardPage";
 import CsmCasesPage from "@features/csm-cases/pages/CsmCasesPage";
+import CsmCaseCreatePage from "@features/csm-cases/pages/CsmCaseCreatePage";
 import CsmCaseDetailPage from "@features/csm-cases/pages/CsmCaseDetailPage";
 import CsmAdminLayout from "@features/csm-admin/pages/CsmAdminLayout";
 import CsmUsersPage from "@features/csm-users/pages/CsmUsersPage";
@@ -112,6 +113,7 @@ export default function App(): JSX.Element {
 
                 <Route path="dashboard" element={<CsmDashboardPage />} />
                 <Route path="cases" element={<CsmCasesPage />} />
+                <Route path="cases/new" element={<CsmCaseCreatePage />} />
                 <Route path="cases/:caseId" element={<CsmCaseDetailPage />} />
 
                 {/* WIP placeholders for top-level features awaiting BFF support */}
