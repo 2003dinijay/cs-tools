@@ -270,6 +270,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
   useEffect(() => {
     const hash = location.hash?.replace(/^#/, "");
     if (!hash) return;
+    // Permalink: a URL fragment forces the Activities tab. Effect-driven so it
+    // also fires when the hash changes while already on the page.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs active tab to URL hash
     setActiveTab("activities");
     // Track every timer (outer + both nested resets) so the cleanup can cancel
     // all of them on unmount / hash change — the inner resets were previously
