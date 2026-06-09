@@ -28,6 +28,24 @@ if (typeof window !== "undefined") {
 // mounts, so the first render of every data hook reads the correct flag.
 hydrateMockModeFromStorage();
 
+// Capture the entry deep link at module load — before React, routing, or the
+// Asgardeo SDK run — so it can be restored after the IdP round-trip even when
+// the SDK restores the session synchronously (in which case ProtectedRoute's
+// `onSignIn` never fires and the SDK navigates straight to `afterSignInUrl`).
+// AuthGuard reads/clears `post_login_redirect` once signed in. Skip the bare
+// root and the OAuth callback (which carries `?code=&state=`).
+if (typeof window !== "undefined") {
+  try {
+    const entry = window.location.pathname + window.location.search;
+    const isOauthCallback = /[?&](code|state)=/.test(window.location.search);
+    if (entry !== "/" && !isOauthCallback) {
+      window.sessionStorage.setItem("post_login_redirect", entry);
+    }
+  } catch {
+    /* sessionStorage may be unavailable; deep-link restore is best-effort. */
+  }
+}
+
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <AppWithConfig />

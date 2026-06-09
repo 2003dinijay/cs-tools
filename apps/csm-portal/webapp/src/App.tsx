@@ -36,6 +36,17 @@ import { SuccessBannerProvider } from "@context/success-banner/SuccessBannerCont
 import { LoaderProvider } from "@context/linear-loader/LoaderContext";
 import { ErrorPageProvider } from "@context/error-page/ErrorPageContext";
 
+/**
+ * Landing for `/`. Defers to AuthGuard's post-login deep-link restore when a
+ * redirect is pending (rendering nothing so it doesn't race the restore);
+ * otherwise sends the user to the default `/accounts` landing. A pure read of
+ * sessionStorage — AuthGuard owns clearing the key.
+ */
+function RootLanding(): JSX.Element | null {
+  const pending = sessionStorage.getItem("post_login_redirect");
+  return pending ? null : <Navigate to="/accounts" replace />;
+}
+
 export default function App(): JSX.Element {
   return (
     <LoaderProvider>
@@ -69,7 +80,7 @@ export default function App(): JSX.Element {
               />
 
               <Route element={<AuthGuard />}>
-                <Route path="/" element={<Navigate to="/accounts" replace />} />
+                <Route path="/" element={<RootLanding />} />
 
                 {/* BFF-backed pages (entity-service search endpoints) */}
                 <Route path="accounts" element={<CsmAccountsPage />} />

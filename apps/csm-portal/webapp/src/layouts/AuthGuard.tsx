@@ -42,15 +42,21 @@ export default function AuthGuard(): JSX.Element {
   const location = useLocation();
   const navigate = useNavigate();
 
+  // After login, restore the saved deep link. The key is cleared ONLY once we
+  // actually arrive at the target — so it survives the Asgardeo SDK reloading
+  // the page to `afterSignInUrl` ("/") after the callback, which would
+  // otherwise drop us on the default `/accounts` landing. The default `/`
+  // landing is deferred to RootLanding in App.tsx while a redirect is pending.
   useEffect(() => {
-    if (isSignedIn) {
-      const redirect = sessionStorage.getItem(POST_LOGIN_REDIRECT_KEY);
-      if (redirect) {
-        sessionStorage.removeItem(POST_LOGIN_REDIRECT_KEY);
-        void navigate(redirect, { replace: true });
-      }
+    if (!isSignedIn) return;
+    const redirect = sessionStorage.getItem(POST_LOGIN_REDIRECT_KEY);
+    if (!redirect) return;
+    if (location.pathname + location.search === redirect) {
+      sessionStorage.removeItem(POST_LOGIN_REDIRECT_KEY);
+    } else {
+      void navigate(redirect, { replace: true });
     }
-  }, [isSignedIn, navigate]);
+  }, [isSignedIn, navigate, location.pathname, location.search]);
 
   return (
     <ProtectedRoute
