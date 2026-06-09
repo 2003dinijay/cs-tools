@@ -15,6 +15,7 @@
 // under the License.
 
 import { useAsgardeo } from "@asgardeo/react";
+import { ASGARDEO_UNAUTHENTICATED_CODE } from "@constants/apiConstants";
 
 // A custom hook that automatically fetches a fresh ID Token from Asgardeo.
 export function useAuthApiClient() {
@@ -86,7 +87,7 @@ export function useAuthApiClient() {
         error != null &&
         typeof error === "object" &&
         "code" in error &&
-        (error as { code: string }).code === "SPA-AUTH_CLIENT-VM-IV02";
+        (error as { code: string }).code === ASGARDEO_UNAUTHENTICATED_CODE;
 
       if (isTokenExpiredError) {
         return attemptFetch(input, options);
