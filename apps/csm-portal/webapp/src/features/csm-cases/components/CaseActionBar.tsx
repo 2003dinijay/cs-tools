@@ -104,13 +104,13 @@ const PRIMARY_BY_STATE: Record<CaseState, PrimaryAction[]> = {
     {
       action: "request_info",
       label: "Request info",
-      color: "warning",
+      color: "primary",
       icon: <Inbox size={16} />,
     },
     {
       action: "wait_on_wso2",
       label: "Wait on WSO2",
-      color: "warning",
+      color: "primary",
       icon: <Clock size={16} />,
     },
   ],
@@ -147,7 +147,7 @@ const PRIMARY_BY_STATE: Record<CaseState, PrimaryAction[]> = {
     {
       action: "close_no_response",
       label: "Close (no response)",
-      color: "warning",
+      color: "primary",
       icon: <CheckCircle size={16} />,
       confirm: {
         title: "Close without a customer response?",
@@ -187,7 +187,7 @@ const PRIMARY_BY_STATE: Record<CaseState, PrimaryAction[]> = {
 const REOPEN_ACTION: PrimaryAction = {
   action: "reopen",
   label: "Reopen",
-  color: "warning",
+  color: "primary",
   icon: <RotateCcw size={16} />,
   tooltip: "Lead-only: reopen a closed case for an exceptional follow-up.",
   confirm: {
