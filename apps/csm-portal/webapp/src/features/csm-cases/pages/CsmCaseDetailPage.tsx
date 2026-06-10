@@ -42,6 +42,7 @@ import { useLocation, useNavigate, useParams } from "react-router";
 import { useGetCsmCaseDetail } from "@features/csm-cases/api/useGetCsmCaseDetail";
 import { usePatchCsmCase } from "@features/csm-cases/api/usePatchCsmCase";
 import type { BeCaseState } from "@api/backend/types";
+import { beStateFromUi } from "@api/backend/mappers";
 import {
   useGetCsmCaseComments,
   usePostCsmCaseComment,
@@ -68,6 +69,7 @@ import {
   SEVERITY_COLOR,
   SEVERITY_LABEL,
   SLA_CLOCK_LABEL,
+  STATE_COLOR,
   STATE_LABEL,
   formatTimeToBreach,
 } from "@features/csm-dashboard/utils/abtDashboard";
@@ -77,6 +79,7 @@ import type {
   CsmCaseComment,
   CsmCaseDetail,
 } from "@features/csm-cases/types/csmCases";
+import type { CaseState } from "@features/csm-dashboard/types/abtDashboard";
 
 function MetaCell({
   label,
@@ -228,21 +231,21 @@ function findVerticalScrollAncestor(el: HTMLElement): HTMLElement {
  */
 function buildDescriptionComment(c: CsmCaseDetail): CsmCaseComment | null {
   if (!c.description?.trim()) return null;
-  const escaped = c.description
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\n\n+/g, "</p><p>")
-    .replace(/\n/g, "<br>");
   const createdMs = new Date(c.createdAt).getTime();
   const at = new Date(createdMs + 1000).toISOString();
+  // The creator may be a WSO2 engineer (case logged in the CSM portal) or a
+  // customer (customer portal). Infer from the email domain so the badge isn't
+  // always "Customer".
+  const isWso2 = (c.createdByEmail ?? "").toLowerCase().endsWith("@wso2.com");
   return {
     id: `description`,
     caseId: c.id,
     authorName:
       c.createdBy || c.customerContext.primaryContact || c.customer,
-    authorRole: "customer",
-    bodyHtml: `<p>${escaped}</p>`,
+    authorRole: isWso2 ? "wso2_engineer" : "customer",
+    // The description is rich HTML (authored in the case-create editor, same as
+    // comments); the comment bubble sanitizes it with DOMPurify before render.
+    bodyHtml: c.description,
     createdAt: at,
   };
 }
@@ -362,9 +365,18 @@ export default function CsmCaseDetailPage(): JSX.Element {
   }, [data, recordView]);
 
   const onAction = useCallback(
-    (action: CaseLifecycleAction | { secondary: string }) => {
+    (
+      action: CaseLifecycleAction | { secondary: string },
+      // Target state supplied by the action bar, taken straight from the case's
+      // backend `nextStates`. It is authoritative for the PATCH: the action name
+      // (e.g. `resume_work`) maps to different states depending on the source
+      // state, so we never re-derive the target from the action alone.
+      nextState?: CaseState,
+    ) => {
       if (typeof action === "string") {
-        const targetState = LIFECYCLE_TARGET_STATE[action];
+        const targetState = nextState
+          ? beStateFromUi(nextState)
+          : LIFECYCLE_TARGET_STATE[action];
         if (targetState) {
           // Real state transition via PATCH /cases/{id}; the detail + list
           // queries refetch on success so the new state shows.
@@ -476,6 +488,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const c = data;
   const isClosed = c.state === "closed";
   const breached = c.minutesToBreach < 0;
+  // The backend carries no SLA timing yet (LIVE detail leaves slaClocks empty
+  // and minutesToBreach at 0). Without this guard the header SLA chip reads
+  // `0 <= 60` and paints every open case orange ("Ack · 0m left"), which is
+  // both wrong and the main source of orange on the screen. Only show SLA
+  // affordances when we actually have clock data (mock, and LIVE once wired).
+  const hasSlaData = c.slaClocks.length > 0;
   const canReopenClosed = (claims?.groups ?? []).some((g) =>
     LEAD_REOPEN_ROLES.has(g),
   );
@@ -572,7 +590,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             <Chip
               size="small"
               label={STATE_LABEL[c.state]}
-              color={isClosed ? "success" : "primary"}
+              color={STATE_COLOR[c.state]}
               sx={{ fontWeight: 600 }}
             />
             <Chip
@@ -580,7 +598,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               label={TIER_LABEL[c.customerContext.tier]}
               color={TIER_COLOR[c.customerContext.tier]}
             />
-            {!isClosed && (
+            {!isClosed && hasSlaData && (
               <Chip
                 size="small"
                 variant="outlined"

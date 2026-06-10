@@ -22,6 +22,7 @@ import MyQueueSection from "@features/csm-dashboard/components/MyQueueSection";
 import SlaAtRiskSection from "@features/csm-dashboard/components/SlaAtRiskSection";
 import CustomerSummarySection from "@features/csm-dashboard/components/CustomerSummarySection";
 import RecentActivitySection from "@features/csm-dashboard/components/RecentActivitySection";
+import CaseCountsMatrix from "@features/csm-dashboard/components/CaseCountsMatrix";
 import { useGetCsmDashboard } from "@features/csm-dashboard/api/useGetCsmDashboard";
 import {
   DASHBOARD_OPTIONS,
@@ -38,7 +39,9 @@ import {
  * are mocks for UX iteration only.
  */
 export default function CsmDashboardPage(): JSX.Element {
-  const [scope, setScope] = useState<DashboardScope>("my_abt");
+  // ABT scoping is not implemented yet, so default to (and stay on)
+  // all-customers; the My ABT / All customers toggle is disabled in the header.
+  const [scope, setScope] = useState<DashboardScope>("all_customers");
   const [dashboardKey, setDashboardKey] = useState<DashboardKey>("engineer");
   const { data, isLoading, isError } = useGetCsmDashboard(scope);
   const { showError } = useErrorBanner();
@@ -70,6 +73,7 @@ export default function CsmDashboardPage(): JSX.Element {
       />
       {dashboardKey === "engineer" ? (
         <>
+          <CaseCountsMatrix />
           <Box
             sx={{
               display: "grid",

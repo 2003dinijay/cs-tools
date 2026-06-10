@@ -21,6 +21,7 @@ import ErrorLayout from "@layouts/ErrorLayout";
 import CsmComingSoonPage from "@features/csm-coming-soon/pages/CsmComingSoonPage";
 import CsmDashboardPage from "@features/csm-dashboard/pages/CsmDashboardPage";
 import CsmCasesPage from "@features/csm-cases/pages/CsmCasesPage";
+import CsmCaseCreatePage from "@features/csm-cases/pages/CsmCaseCreatePage";
 import CsmCaseDetailPage from "@features/csm-cases/pages/CsmCaseDetailPage";
 import CsmAdminLayout from "@features/csm-admin/pages/CsmAdminLayout";
 import CsmUsersPage from "@features/csm-users/pages/CsmUsersPage";
@@ -34,6 +35,17 @@ import { ErrorBannerProvider } from "@context/error-banner/ErrorBannerContext";
 import { SuccessBannerProvider } from "@context/success-banner/SuccessBannerContext";
 import { LoaderProvider } from "@context/linear-loader/LoaderContext";
 import { ErrorPageProvider } from "@context/error-page/ErrorPageContext";
+
+/**
+ * Landing for `/`. Defers to AuthGuard's post-login deep-link restore when a
+ * redirect is pending (rendering nothing so it doesn't race the restore);
+ * otherwise sends the user to the default `/dashboard` landing. A pure read of
+ * sessionStorage — AuthGuard owns clearing the key.
+ */
+function RootLanding(): JSX.Element | null {
+  const pending = sessionStorage.getItem("post_login_redirect");
+  return pending ? null : <Navigate to="/dashboard" replace />;
+}
 
 export default function App(): JSX.Element {
   return (
@@ -68,7 +80,7 @@ export default function App(): JSX.Element {
               />
 
               <Route element={<AuthGuard />}>
-                <Route path="/" element={<Navigate to="/accounts" replace />} />
+                <Route path="/" element={<RootLanding />} />
 
                 {/* BFF-backed pages (entity-service search endpoints) */}
                 <Route path="accounts" element={<CsmAccountsPage />} />
@@ -112,6 +124,7 @@ export default function App(): JSX.Element {
 
                 <Route path="dashboard" element={<CsmDashboardPage />} />
                 <Route path="cases" element={<CsmCasesPage />} />
+                <Route path="cases/new" element={<CsmCaseCreatePage />} />
                 <Route path="cases/:caseId" element={<CsmCaseDetailPage />} />
 
                 {/* WIP placeholders for top-level features awaiting BFF support */}

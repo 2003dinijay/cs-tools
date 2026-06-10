@@ -49,6 +49,12 @@ export interface CsmCaseRow {
   slaClockType: SlaClockType;
   // Minutes until breach (negative = already breached).
   minutesToBreach: number;
+  /**
+   * Whether SLA timing is actually known for this row. The backend has no SLA
+   * data yet, so LIVE rows set this false and the list renders a neutral "—"
+   * instead of a misleading orange "0m left". Absent/true → render the clock.
+   */
+  hasSla?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -208,8 +214,10 @@ export interface CsmCaseDetail extends CsmCaseRow {
   assignmentGroup: string;
   /** States this case may transition into next, per the backend. */
   nextStates?: CaseState[];
-  /** Customer-side person who opened the case. */
+  /** Display name of the person who opened the case. */
   createdBy?: string;
+  /** Email of the creator — used to tell a WSO2 engineer from a customer. */
+  createdByEmail?: string;
   customerContext: CaseCustomerContext;
   productContext: CaseProductContext;
   slaClocks: CaseSlaClock[];
