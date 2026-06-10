@@ -120,6 +120,7 @@ export default function CaseDetailsDetailsPanel({
     patchCase({ watchList: optimisticList }, {
       onSuccess: () => {
         setIsEditingWatchList(false);
+        setSavedWatchList(null);
         showSuccess("Watch list updated successfully");
       },
       onError: () => {
