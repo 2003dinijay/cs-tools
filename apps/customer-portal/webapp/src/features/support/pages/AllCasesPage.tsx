@@ -166,6 +166,10 @@ export default function AllCasesPage(): JSX.Element {
             statusFilter === "active",
         }),
         ...(statusFilter === "resolved" ? getLast30DaysUtcRange() : {}),
+        ...(filters.startCreatedDate ? { startCreatedDate: filters.startCreatedDate } : {}),
+        ...(filters.endCreatedDate ? { endCreatedDate: filters.endCreatedDate } : {}),
+        ...(filters.startUpdatedDate ? { startUpdatedDate: filters.startUpdatedDate } : {}),
+        ...(filters.endUpdatedDate ? { endUpdatedDate: filters.endUpdatedDate } : {}),
       },
       sortBy: {
         field: sortField,
