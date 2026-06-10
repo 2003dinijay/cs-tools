@@ -16,14 +16,13 @@
 
 import { type JSX, lazy, Suspense } from "react";
 import { BrowserRouter } from "react-router";
-import { OxygenUIThemeProvider } from "@wso2/oxygen-ui";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import { AsgardeoProvider } from "@asgardeo/react";
-import { themeConfig } from "@config/themeConfig";
 import { loggerConfig } from "@config/loggerConfig";
 import LoggerProvider from "@context/logger/LoggerProvider";
 import { MockModeProvider } from "@context/mock-mode/MockModeContext";
+import { ThemePreferenceProvider } from "@context/theme/ThemePreferenceContext";
 import { authConfig } from "@config/authConfig";
 
 // React-Query devtools ship from a devDependency and must not enter the
@@ -87,7 +86,7 @@ export default function AppWithConfig(): JSX.Element {
     >
       <BrowserRouter>
         <LoggerProvider config={loggerConfig}>
-          <OxygenUIThemeProvider theme={themeConfig}>
+          <ThemePreferenceProvider>
             <QueryClientProvider client={queryClient}>
               <MockModeProvider>
                 <App />
@@ -98,7 +97,7 @@ export default function AppWithConfig(): JSX.Element {
                 </Suspense>
               )}
             </QueryClientProvider>
-          </OxygenUIThemeProvider>
+          </ThemePreferenceProvider>
         </LoggerProvider>
       </BrowserRouter>
     </AsgardeoProvider>

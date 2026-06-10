@@ -24,6 +24,7 @@ import type { JSX } from "react";
 import { useAsgardeo } from "@asgardeo/react";
 import UserProfile from "@components/header/UserProfile";
 import MockModeToggle from "@components/header/MockModeToggle";
+import ThemeSelect from "@components/header/ThemeSelect";
 
 export default function Actions(): JSX.Element {
   const { isSignedIn } = useAsgardeo();
@@ -31,6 +32,7 @@ export default function Actions(): JSX.Element {
   return (
     <HeaderUI.Actions>
       <MockModeToggle />
+      <ThemeSelect />
       <ColorSchemeToggle />
       <Divider
         orientation="vertical"

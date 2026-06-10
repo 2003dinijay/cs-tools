@@ -13,6 +13,9 @@ window.config = {
   // CSM_PORTAL_BACKEND_BASE_URL: "https://<choreo-org-id>-az-stg.prod.wdt.choreoapis.dev/<key>/csm-portal-backend/v1.0",
   CSM_PORTAL_BACKEND_BASE_URL: "<your-backend-base-url>",
 
+  // Default Oxygen UI theme. One of: "acrylicOrange", "acrylicPurple",
+  // "choreo", "classic", "highContrast". Users can override this at runtime via
+  // the header theme dropdown (the choice is persisted per browser).
   CSM_PORTAL_THEME: "acrylicOrange",
   CSM_PORTAL_LOG_LEVEL: "ERROR",
 
