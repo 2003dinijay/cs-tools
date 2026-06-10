@@ -179,7 +179,7 @@ const EDGE_OVERRIDES: Partial<
       label: "Start work",
       color: "primary",
       icon: <Play size={16} />,
-      tooltip: "Assigns this case to you and moves it to Work in progress.",
+      tooltip: "Moves this case to Work in progress.",
     },
   },
   awaiting_info: {
