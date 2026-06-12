@@ -18,6 +18,7 @@ import { type JSX, lazy, Suspense } from "react";
 import { BrowserRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
+import AppErrorBoundary from "@components/error/AppErrorBoundary";
 import { AsgardeoProvider } from "@asgardeo/react";
 import { loggerConfig } from "@config/loggerConfig";
 import LoggerProvider from "@context/logger/LoggerProvider";
@@ -88,9 +89,11 @@ export default function AppWithConfig(): JSX.Element {
         <LoggerProvider config={loggerConfig}>
           <ThemePreferenceProvider>
             <QueryClientProvider client={queryClient}>
-              <MockModeProvider>
-                <App />
-              </MockModeProvider>
+              <AppErrorBoundary>
+                <MockModeProvider>
+                  <App />
+                </MockModeProvider>
+              </AppErrorBoundary>
               {ReactQueryDevtools && (
                 <Suspense fallback={null}>
                   <ReactQueryDevtools initialIsOpen={false} />
