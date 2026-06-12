@@ -277,7 +277,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // without name claims still attributes the comment to the right person.
   const engineerName =
     claims?.name ||
-    [claims?.given_name, claims?.family_name].filter(Boolean).join(" ") ||
+    [claims?.given_name, claims?.family_name].filter(Boolean).join(" ").trim() ||
     claims?.email?.split("@")[0] ||
     "Unknown engineer";
   const { showError } = useErrorBanner();

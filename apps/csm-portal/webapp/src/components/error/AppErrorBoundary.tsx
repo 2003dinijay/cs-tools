@@ -38,14 +38,17 @@ export default class AppErrorBoundary extends Component<
 > {
   state: AppErrorBoundaryState = { hasError: false };
 
+  /** Flip to the fallback UI when a descendant throws during render. */
   static getDerivedStateFromError(): AppErrorBoundaryState {
     return { hasError: true };
   }
 
+  /** Log the captured error and component stack to the console sink. */
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
     console.error("Unhandled render error:", error, errorInfo.componentStack);
   }
 
+  /** Render the children, or the recovery screen once an error is caught. */
   render(): ReactNode {
     if (!this.state.hasError) {
       return this.props.children;
