@@ -179,6 +179,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "422":
+          description: The requested state transition is not permitted by the case state machine.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: Internal server error.
           content:

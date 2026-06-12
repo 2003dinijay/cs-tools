@@ -613,6 +613,9 @@ func TestPatchCase(t *testing.T) {
 		var capturedID string
 		var capturedBody []byte
 		client := &mockEntityCaseClient{
+			getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+				return []byte(`{"id":"` + testCaseID + `","state":"open"}`), nil
+			},
 			patchCaseFn: func(_ context.Context, caseID string, body []byte) ([]byte, error) {
 				capturedID = caseID
 				capturedBody = body
@@ -658,11 +661,67 @@ func TestPatchCase(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects invalid state transition", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+				// current state is closed (terminal — no valid transitions)
+				return []byte(`{"id":"` + testCaseID + `","state":"closed"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/cases/"+testCaseID, strings.NewReader(`{"state":"work_in_progress"}`)))
+		r.SetPathValue("id", testCaseID)
+		w := httptest.NewRecorder()
+		h.PatchCase(w, r)
+		assertStatus(t, w, http.StatusUnprocessableEntity)
+		assertErrorMessage(t, w, ErrMsgInvalidTransition)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("allows priority-only update without state validation", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			patchCaseFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				return []byte(`{"id":"` + testCaseID + `","state":"open","priority":"high"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/cases/"+testCaseID, strings.NewReader(`{"priority":"high"}`)))
+		r.SetPathValue("id", testCaseID)
+		w := httptest.NewRecorder()
+		h.PatchCase(w, r)
+		assertStatus(t, w, http.StatusOK)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("GetCase failure during state validation is mapped correctly", func(t *testing.T) {
+		for _, tc := range upstreamErrors("Failed to retrieve current case state.") {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				client := &mockEntityCaseClient{
+					getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+						return nil, tc.err
+					},
+				}
+				h := NewCaseHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodPatch, "/cases/"+testCaseID, strings.NewReader(validPayload)))
+				r.SetPathValue("id", testCaseID)
+				w := httptest.NewRecorder()
+				h.PatchCase(w, r)
+				assertStatus(t, w, tc.wantCode)
+				assertErrorMessage(t, w, tc.wantMsg)
+				assertContentType(t, w, "application/json")
+			})
+		}
+	})
+
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
 		for _, tc := range upstreamErrors("Failed to update case.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
+					getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+						return []byte(`{"id":"` + testCaseID + `","state":"open"}`), nil
+					},
 					patchCaseFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
 						return nil, tc.err
 					},
