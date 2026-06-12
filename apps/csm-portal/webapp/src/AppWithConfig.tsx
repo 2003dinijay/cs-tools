@@ -19,6 +19,7 @@ import { BrowserRouter } from "react-router";
 import { OxygenUIThemeProvider } from "@wso2/oxygen-ui";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
+import AppErrorBoundary from "@components/error/AppErrorBoundary";
 import { AsgardeoProvider } from "@asgardeo/react";
 import { themeConfig } from "@config/themeConfig";
 import { loggerConfig } from "@config/loggerConfig";
@@ -89,9 +90,11 @@ export default function AppWithConfig(): JSX.Element {
         <LoggerProvider config={loggerConfig}>
           <OxygenUIThemeProvider theme={themeConfig}>
             <QueryClientProvider client={queryClient}>
-              <MockModeProvider>
-                <App />
-              </MockModeProvider>
+              <AppErrorBoundary>
+                <MockModeProvider>
+                  <App />
+                </MockModeProvider>
+              </AppErrorBoundary>
               {ReactQueryDevtools && (
                 <Suspense fallback={null}>
                   <ReactQueryDevtools initialIsOpen={false} />

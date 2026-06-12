@@ -98,10 +98,6 @@ function MetaCell({
   );
 }
 
-// TODO: replace with the engineer name from useGetUserDetails once the
-// `firstName`/`lastName` shape from the CSM backend is wired.
-const CURRENT_ENGINEER_NAME = "Sajith Ekanayaka";
-
 // Reopening a closed case is a lead-only override. We match the lead role from
 // the ID-token group claims.
 // TODO(authz): confirm the exact Asgardeo group(s)/role(s) that designate a
@@ -276,6 +272,14 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const patchCase = usePatchCsmCase(caseId);
   const recordView = useRecordRecentView();
   const claims = useIdTokenClaims();
+  // Display name for comments authored in this session, resolved from the
+  // signed-in user's ID token. Falls back to the email local part so a token
+  // without name claims still attributes the comment to the right person.
+  const engineerName =
+    claims?.name ||
+    [claims?.given_name, claims?.family_name].filter(Boolean).join(" ") ||
+    claims?.email?.split("@")[0] ||
+    "Unknown engineer";
   const { showError } = useErrorBanner();
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [activeTab, setActiveTab] = useState<CaseTabId>("activities");
@@ -747,7 +751,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   await postComment.mutateAsync({
                     caseId,
                     bodyHtml,
-                    authorName: CURRENT_ENGINEER_NAME,
+                    authorName: engineerName,
                     internal,
                   });
                   // Collapse only on success; on error the input keeps its

@@ -72,12 +72,17 @@ function emptyMatrix(): CaseCountsMatrix {
  * `POST /cases/search` (up to {@link MAX_PAGES} pages of {@link PAGE_LIMIT}) and
  * tallies client-side. `truncated` flags when the real total exceeds the
  * sample. MOCK mode tallies the seeded cases.
+ *
+ * Keyed under its own root (not `CSM_CASES`) so case create/patch mutations,
+ * which invalidate the `CSM_CASES` prefix, do not re-trigger this up-to-500-row
+ * fan-out. The matrix is a sampled approximation; `staleTime` plus
+ * refetch-on-mount keeps it fresh enough on the dashboard.
  */
 export function useCaseCountsMatrix(): UseQueryResult<CaseCountsMatrix, Error> {
   const api = useBackendApi();
 
   return useQuery<CaseCountsMatrix, Error>({
-    queryKey: [ApiQueryKeys.CSM_CASES, "counts-matrix"],
+    queryKey: [ApiQueryKeys.CSM_CASE_COUNTS],
     queryFn: async (): Promise<CaseCountsMatrix> => {
       const matrix = emptyMatrix();
 
