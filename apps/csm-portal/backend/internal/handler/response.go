@@ -30,9 +30,10 @@ const (
 	ErrMsgForbidden    = "Access to the requested resource is forbidden!"
 	ErrMsgNotFound     = "The requested resource was not found!"
 	ErrMsgBadRequest   = "Invalid request payload."
-	ErrMsgTooLarge     = "Request body too large."
-	ErrMsgInternal     = "An internal server error occurred. Please try again later."
-	errMsgReadBody     = "Failed to read request body."
+	ErrMsgTooLarge          = "Request body too large."
+	ErrMsgInternal          = "An internal server error occurred. Please try again later."
+	ErrMsgInvalidTransition = "Invalid state transition."
+	errMsgReadBody          = "Failed to read request body."
 )
 
 // errorBody is the JSON error payload format matching the customer-portal pattern.

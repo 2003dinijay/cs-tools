@@ -50,6 +50,17 @@ func nextStates(state string) []string {
 	}
 }
 
+// isValidStateTransition reports whether transitioning from the current state to
+// the requested state is permitted by the case state machine.
+func isValidStateTransition(from, to string) bool {
+	for _, s := range nextStates(from) {
+		if s == to {
+			return true
+		}
+	}
+	return false
+}
+
 // injectNextStates parses raw case JSON returned by the entity service, derives
 // the valid next states from the "state" field, and returns the JSON with a
 // "nextStates" key appended.

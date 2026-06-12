@@ -335,6 +335,31 @@ func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate state transition before forwarding to the entity service.
+	var patch struct {
+		State *string `json:"state"`
+	}
+	if err := json.Unmarshal(body, &patch); err == nil && patch.State != nil {
+		current, err := h.entity.GetCase(r.Context(), caseID)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "entity GetCase failed during state validation", "userID", user.UserID, "caseID", caseID, "err", err)
+			mapUpstreamError(w, err, "Failed to retrieve current case state.")
+			return
+		}
+		var currentCase struct {
+			State string `json:"state"`
+		}
+		if err := json.Unmarshal(current, &currentCase); err != nil {
+			slog.ErrorContext(r.Context(), "failed to parse current case state", "userID", user.UserID, "caseID", caseID, "err", err)
+			writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+			return
+		}
+		if !isValidStateTransition(currentCase.State, *patch.State) {
+			writeError(w, http.StatusBadRequest, ErrMsgInvalidTransition)
+			return
+		}
+	}
+
 	result, err := h.entity.PatchCase(r.Context(), caseID, body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity PatchCase failed", "userID", user.UserID, "caseID", caseID, "err", err)
