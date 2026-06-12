@@ -81,27 +81,21 @@ export function priorityFromSeverity(severity: Severity): BeCasePriority {
 }
 
 /**
- * The backend state list and the UI state list overlap except for the trailing
- * "ed" on `reopened`. Normalise both directions.
+ * The UI and backend state vocabularies are identical (`CaseState` ===
+ * `BeCaseState`), so these are identity maps. They survive as the single API
+ * boundary and, deliberately, pass an *unknown* backend state straight through
+ * rather than collapsing it to a known one: a state the frontend has not been
+ * taught about must still reach the UI so it can render with a humanized label
+ * (see `stateLabel`/`stateColor`). That is what lets the backend introduce a new
+ * state with no frontend change. Only a genuinely absent value defaults to
+ * `open`.
  */
-export function uiStateFromBe(state: BeCaseState | undefined): CaseState {
-  switch (state) {
-    case "reopened":
-      return "reopen";
-    case "open":
-    case "work_in_progress":
-    case "waiting_on_wso2":
-    case "awaiting_info":
-    case "solution_proposed":
-    case "closed":
-      return state;
-    default:
-      return "open";
-  }
+export function uiStateFromBe(state: string | undefined): CaseState {
+  return (state ?? "open") as CaseState;
 }
 
 export function beStateFromUi(state: CaseState): BeCaseState {
-  return state === "reopen" ? "reopened" : (state as BeCaseState);
+  return state;
 }
 
 // ---------------------------------------------------------------------------

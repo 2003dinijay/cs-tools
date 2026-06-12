@@ -50,9 +50,9 @@ describe("priorityFromSeverity", () => {
 });
 
 describe("uiStateFromBe / beStateFromUi", () => {
-  it("normalises reopened <-> reopen across the boundary", () => {
-    expect(uiStateFromBe("reopened")).toBe("reopen");
-    expect(beStateFromUi("reopen")).toBe("reopened");
+  it("passes reopened through unchanged (UI and backend now share the spelling)", () => {
+    expect(uiStateFromBe("reopened")).toBe("reopened");
+    expect(beStateFromUi("reopened")).toBe("reopened");
   });
 
   it("passes through shared states unchanged", () => {
@@ -61,6 +61,7 @@ describe("uiStateFromBe / beStateFromUi", () => {
       "work_in_progress",
       "waiting_on_wso2",
       "awaiting_info",
+      "reopened",
       "solution_proposed",
       "closed",
     ] as const) {
@@ -69,8 +70,15 @@ describe("uiStateFromBe / beStateFromUi", () => {
     }
   });
 
-  it("defaults an unknown/undefined backend state to open", () => {
+  it("defaults an absent backend state to open", () => {
     expect(uiStateFromBe(undefined)).toBe("open");
+  });
+
+  it("passes an unknown backend state through so the UI can render it", () => {
+    // A state the frontend has not been taught about must still reach the UI
+    // (it renders with a humanized label) rather than being collapsed to a
+    // known state — that is what lets the backend add a state with no FE change.
+    expect(uiStateFromBe("pending_review")).toBe("pending_review");
   });
 });
 

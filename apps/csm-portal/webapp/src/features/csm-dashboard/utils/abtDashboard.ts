@@ -46,7 +46,7 @@ export const STATE_LABEL: Record<CaseState, string> = {
   solution_proposed: "Solution proposed",
   awaiting_info: "Awaiting info",
   waiting_on_wso2: "Waiting on WSO2",
-  reopen: "Reopened",
+  reopened: "Reopened",
   closed: "Closed",
 };
 
@@ -55,7 +55,7 @@ export const STATE_LABEL: Record<CaseState, string> = {
 // brand orange (the old `isClosed ? "success" : "primary"`, which also failed
 // WCAG contrast). The four buckets:
 //   info (blue)    = active, on us, normal      -> open, work_in_progress
-//   warning (amber)= active, on us, elevated    -> waiting_on_wso2, reopen
+//   warning (amber)= active, on us, elevated    -> waiting_on_wso2, reopened
 //   default (grey) = waiting on the customer     -> solution_proposed, awaiting_info
 //   success (green)= done                        -> closed
 // All four roles have a dark `contrastText` in this theme, so filled chips pass
@@ -68,11 +68,45 @@ export const STATE_COLOR: Record<
   open: "info",
   work_in_progress: "info",
   waiting_on_wso2: "warning",
-  reopen: "warning",
+  reopened: "warning",
   solution_proposed: "default",
   awaiting_info: "default",
   closed: "success",
 };
+
+/**
+ * Title-case an unknown backend state key for display, e.g.
+ * `pending_review` -> "Pending review". This is the fallback that lets a state
+ * the frontend has not been taught about still render with a readable label,
+ * so introducing a new case state on the backend needs no frontend change.
+ */
+export function humanizeState(state: string): string {
+  if (!state) return "Unknown";
+  const words = state.split("_").filter(Boolean);
+  return words
+    .map((w, i) => (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+/**
+ * Display label for a case state. Uses the curated label for known states and
+ * gracefully degrades to a humanized key for any state the frontend does not
+ * recognize (backend/frontend rollout skew, or a newly added state).
+ */
+export function stateLabel(state: string): string {
+  return STATE_LABEL[state as CaseState] ?? humanizeState(state);
+}
+
+/**
+ * Status-chip colour for a case state, defaulting to the neutral `default`
+ * (grey) for any unrecognized state so a new state renders without styling
+ * having to be added on the frontend first.
+ */
+export function stateColor(
+  state: string,
+): "info" | "warning" | "success" | "default" {
+  return STATE_COLOR[state as CaseState] ?? "default";
+}
 
 export const SLA_CLOCK_LABEL: Record<SlaClockType, string> = {
   ack: "Ack",

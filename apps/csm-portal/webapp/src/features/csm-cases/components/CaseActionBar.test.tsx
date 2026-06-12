@@ -124,17 +124,42 @@ describe("CaseActionBar — nextStates-driven buttons", () => {
     expect(onAction).toHaveBeenCalledWith("close", "closed");
   });
 
-  it("falls back to the known graph when nextStates is absent", () => {
+  it("renders no lifecycle buttons when nextStates is absent (no client-side graph)", () => {
+    // The bar is driven solely by the backend `nextStates`; there is no longer a
+    // duplicated client-side fallback graph, so an absent field yields only the
+    // state-independent "More" overflow.
     render(
       <CaseActionBar
         caseDetail={caseInState("work_in_progress", undefined)}
         onAction={() => {}}
       />,
     );
-    expect(screen.getByRole("button", { name: /solution proposed/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /awaiting info/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /waiting on wso2/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^closed$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /solution proposed/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /awaiting info/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /waiting on wso2/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^closed$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /more/i })).toBeInTheDocument();
+  });
+
+  it("renders a usable button for a state it has no curated config for", () => {
+    // Rollout skew / a newly added backend state: the bar must still render the
+    // transition (humanized label, neutral styling) and dispatch correctly,
+    // rather than building a broken button — so a new state needs no FE change.
+    const onAction = vi.fn();
+    render(
+      <CaseActionBar
+        caseDetail={caseInState("work_in_progress", [
+          "pending_review" as CaseState,
+        ])}
+        onAction={onAction}
+      />,
+    );
+    const button = screen.getByRole("button", { name: /pending review/i });
+    expect(button).toBeInTheDocument();
+    // The generic transition action drives only the toast; the PATCH target is
+    // the backend state itself, so the transition still works.
+    fireEvent.click(button);
+    expect(onAction).toHaveBeenCalledWith("transition", "pending_review");
   });
 
   it("shows no state-change buttons when nextStates is empty (terminal case)", () => {
