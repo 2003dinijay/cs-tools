@@ -65,8 +65,11 @@ type snProjectPagination struct {
 	Offset int `json:"offset"`
 }
 
-// snCreatedOnLayout is the time format used by the Choreo API.
+// snCreatedOnLayout is the datetime format used by the Choreo API.
 const snCreatedOnLayout = "2006-01-02 15:04:05"
+
+// snDateLayout is the date-only format used by the Choreo API for start/end dates.
+const snDateLayout = "2006-01-02"
 
 type snProjectService struct {
 	client     *snclient.Client
@@ -138,9 +141,105 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 	}, nil
 }
 
-// GetProjectByID implements ProjectService by delegating to the postgres service.
-func (s *snProjectService) GetProjectByID(ctx context.Context, id string) (domain.Project, error) {
-	return s.pgFallback.GetProjectByID(ctx, id)
+// snProjectDetailsResponse mirrors the Choreo GET /projects/{id} response.
+type snProjectDetailsResponse struct {
+	ID        string           `json:"id"`
+	Name      string           `json:"name"`
+	Key       string           `json:"key"`
+	SfID      string           `json:"sfId"`
+	CreatedOn string           `json:"createdOn"`
+	StartDate string           `json:"startDate"`
+	EndDate   string           `json:"endDate"`
+	Type      snProjectType    `json:"type"`
+	Account   snProjectAccount `json:"account"`
+}
+
+type snProjectAccount struct {
+	ID                  string  `json:"id"`
+	Name                string  `json:"name"`
+	ActivationDate      *string `json:"activationDate"`
+	SupportTier         string  `json:"supportTier"`
+	Region              *string `json:"region"`
+	OwnerEmail          string  `json:"ownerEmail"`
+	TechnicalOwnerEmail *string `json:"technicalOwnerEmail"`
+	HasAgent            bool    `json:"hasAgent"`
+	HasKbReferences     bool    `json:"hasKbReferences"`
+}
+
+// GetProjectByID implements ProjectService by calling the Choreo GET /projects/{id} endpoint.
+// SN sys_ids are 32-char hex strings, not UUIDs, so no UUID validation is applied here.
+func (s *snProjectService) GetProjectByID(ctx context.Context, id string) (domain.ProjectDetailsView, error) {
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.ProjectDetailsView{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	raw, err := s.client.Get(ctx, "/projects/"+id, token)
+	if err != nil {
+		return domain.ProjectDetailsView{}, err
+	}
+
+	var sn snProjectDetailsResponse
+	if err := json.Unmarshal(raw, &sn); err != nil {
+		return domain.ProjectDetailsView{}, fmt.Errorf("sn projects: parse detail response: %w", err)
+	}
+
+	createdOn, err := time.Parse(snCreatedOnLayout, sn.CreatedOn)
+	if err != nil {
+		return domain.ProjectDetailsView{}, fmt.Errorf("sn projects: parse createdOn %q: %w", sn.CreatedOn, err)
+	}
+
+	startDate, err := time.Parse(snDateLayout, sn.StartDate)
+	if err != nil {
+		return domain.ProjectDetailsView{}, fmt.Errorf("sn projects: parse startDate %q: %w", sn.StartDate, err)
+	}
+
+	endDate, err := time.Parse(snDateLayout, sn.EndDate)
+	if err != nil {
+		return domain.ProjectDetailsView{}, fmt.Errorf("sn projects: parse endDate %q: %w", sn.EndDate, err)
+	}
+
+	subType, err := snTypeNameToSubscriptionType(sn.Type.Name)
+	if err != nil {
+		return domain.ProjectDetailsView{}, fmt.Errorf("sn projects: project %q: %w", sn.ID, err)
+	}
+
+	var activationDate *time.Time
+	if sn.Account.ActivationDate != nil && *sn.Account.ActivationDate != "" {
+		t, err := time.Parse(snDateLayout, *sn.Account.ActivationDate)
+		if err != nil {
+			return domain.ProjectDetailsView{}, fmt.Errorf("sn projects: parse account activationDate %q: %w", *sn.Account.ActivationDate, err)
+		}
+		activationDate = &t
+	}
+
+	var technicalOwnerID *string
+	if sn.Account.TechnicalOwnerEmail != nil && *sn.Account.TechnicalOwnerEmail != "" {
+		technicalOwnerID = sn.Account.TechnicalOwnerEmail
+	}
+
+	return domain.ProjectDetailsView{
+		ID:               sn.ID,
+		SfID:             sn.SfID,
+		Name:             sn.Name,
+		Key:              sn.Key,
+		SubscriptionType: subType,
+		StartDate:        startDate,
+		EndDate:          endDate,
+		CreatedOn:        createdOn,
+		UpdatedOn:        createdOn,
+		Account: domain.ProjectAccountRef{
+			ID:                  sn.Account.ID,
+			Name:                sn.Account.Name,
+			ActivationDate:      activationDate,
+			Tier:                sn.Account.SupportTier,
+			Region:              sn.Account.Region,
+			OwnerID:             sn.Account.OwnerEmail,
+			TechnicalOwnerID:    technicalOwnerID,
+			AgentEnabled:        sn.Account.HasAgent,
+			KbReferencesEnabled: sn.Account.HasKbReferences,
+		},
+	}, nil
 }
 
 // validSubscriptionTypes is the set of known SubscriptionType enum values.
