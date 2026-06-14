@@ -145,17 +145,46 @@ const (
 
 // Project represents a customer project linked to an account.
 type Project struct {
-	ID               string         `json:"id"`
-	AccountID        string         `json:"accountId"`
-	SfID             string         `json:"sfId"`
-	Name             string         `json:"name"`
-	Key              string         `json:"key"`
+	ID               string           `json:"id"`
+	AccountID        string           `json:"accountId"`
+	SfID             string           `json:"sfId"`
+	Name             string           `json:"name"`
+	Key              string           `json:"key"`
 	SubscriptionType SubscriptionType `json:"subscriptionType"`
-	ClosureStatus    *ClosureStatus `json:"closureStatus,omitempty"`
-	StartDate        time.Time      `json:"startDate"`
-	EndDate          time.Time      `json:"endDate"`
-	CreatedAt        time.Time      `json:"createdAt"`
-	UpdatedAt        time.Time      `json:"updatedAt"`
+	ClosureStatus    *ClosureStatus   `json:"closureStatus,omitempty"`
+	StartDate        time.Time        `json:"startDate"`
+	EndDate          time.Time        `json:"endDate"`
+	CreatedAt        time.Time        `json:"createdAt"`
+	UpdatedAt        time.Time        `json:"updatedAt"`
+}
+
+// ProjectAccountRef is the embedded account summary returned in project detail responses.
+type ProjectAccountRef struct {
+	ID                  string     `json:"id"`
+	Name                string     `json:"name"`
+	ActivationDate      *time.Time `json:"activationDate,omitempty"`
+	Tier                string     `json:"tier"`
+	Region              *string    `json:"region,omitempty"`
+	OwnerID             string     `json:"ownerId"`
+	TechnicalOwnerID    *string    `json:"technicalOwnerId,omitempty"`
+	AgentEnabled        bool       `json:"agentEnabled"`
+	KbReferencesEnabled bool       `json:"kbReferencesEnabled"`
+}
+
+// ProjectDetailsView is the enriched response shape for GET /projects/{id}.
+// It embeds the linked account and uses createdOn/updatedOn for consistency
+// with the ProjectView search result.
+type ProjectDetailsView struct {
+	ID               string            `json:"id"`
+	Account          ProjectAccountRef `json:"account"`
+	SfID             string            `json:"sfId"`
+	Name             string            `json:"name"`
+	Key              string            `json:"key"`
+	SubscriptionType SubscriptionType  `json:"subscriptionType"`
+	StartDate        time.Time         `json:"startDate"`
+	EndDate          time.Time         `json:"endDate"`
+	CreatedOn        time.Time         `json:"createdOn"`
+	UpdatedOn        time.Time         `json:"updatedOn"`
 }
 
 // SearchProjectsRequest is the input for a project search operation.

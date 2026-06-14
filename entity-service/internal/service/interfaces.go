@@ -51,9 +51,9 @@ type ProjectService interface {
 	// in req. A ValidationError is returned for invalid input; any other error
 	// indicates an infrastructure failure.
 	SearchProjects(ctx context.Context, req domain.SearchProjectsRequest) (domain.SearchProjectsResponse, error)
-	// GetProjectByID returns the project with the given UUID. A ValidationError is
-	// returned for a malformed UUID; a NotFoundError if no project matches.
-	GetProjectByID(ctx context.Context, id string) (domain.Project, error)
+	// GetProjectByID returns the enriched project detail with the linked account.
+	// A ValidationError is returned for a malformed UUID; a NotFoundError if no project matches.
+	GetProjectByID(ctx context.Context, id string) (domain.ProjectDetailsView, error)
 }
 
 // ProductService defines the operations available on the product entity.
