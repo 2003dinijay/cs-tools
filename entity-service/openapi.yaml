@@ -1051,7 +1051,7 @@ components:
           $ref: '#/components/schemas/Pagination'
         searchQuery:
           type: string
-          description: Case-insensitive match against subject, number, and wso2_id.
+          description: Case-insensitive match against subject, number, and internal_id.
         projectIds:
           type: array
           items:
@@ -1149,7 +1149,7 @@ components:
           type: string
         number:
           type: string
-        wso2Id:
+        internalId:
           type: string
         createdBy:
           type: string
@@ -1191,7 +1191,7 @@ components:
           format: uuid
         number:
           type: string
-        wso2Id:
+        internalId:
           type: string
         subject:
           type: string
@@ -1233,7 +1233,7 @@ components:
           format: uuid
         number:
           type: string
-        wso2Id:
+        internalId:
           type: string
         subject:
           type: string

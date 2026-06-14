@@ -26,12 +26,12 @@ CREATE TYPE case_issue_type_enum AS ENUM (
 );
 
 CREATE SEQUENCE cases_number_seq START 1 INCREMENT 1;
-CREATE SEQUENCE cases_wso2_id_seq START 1 INCREMENT 1;
+CREATE SEQUENCE cases_internal_id_seq START 1 INCREMENT 1;
 
 CREATE TABLE cases (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  number              VARCHAR UNIQUE NOT NULL DEFAULT 'CASE-' || LPAD(nextval('cases_number_seq')::TEXT, 3, '0'),
-  wso2_id             VARCHAR UNIQUE NOT NULL DEFAULT 'WSO2-' || LPAD(nextval('cases_wso2_id_seq')::TEXT, 3, '0'),
+  number              VARCHAR UNIQUE NOT NULL DEFAULT LPAD(nextval('cases_number_seq')::TEXT, 9, '0'),
+  internal_id         VARCHAR UNIQUE NOT NULL DEFAULT LPAD(nextval('cases_internal_id_seq')::TEXT, 9, '0'),
   created_by          UUID NOT NULL REFERENCES users(id),
   project_id          UUID NOT NULL REFERENCES projects(id),
   deployment_id       UUID NOT NULL REFERENCES deployments(id),
@@ -131,7 +131,7 @@ CREATE INDEX idx_cases_project_state         ON cases(project_id, state);
 CREATE INDEX idx_cases_priority_state        ON cases(priority, state);
 CREATE INDEX idx_cases_priority_issue_type   ON cases(priority, issue_type);
 
--- Trigram indexes for ILIKE search on subject, number, wso2_id
+-- Trigram indexes for ILIKE search on subject, number, internal_id
 CREATE INDEX idx_cases_subject_trgm  ON cases USING GIN (subject  gin_trgm_ops);
 CREATE INDEX idx_cases_number_trgm   ON cases USING GIN (number   gin_trgm_ops);
-CREATE INDEX idx_cases_wso2_id_trgm  ON cases USING GIN (wso2_id  gin_trgm_ops);
+CREATE INDEX idx_cases_internal_id_trgm  ON cases USING GIN (internal_id  gin_trgm_ops);

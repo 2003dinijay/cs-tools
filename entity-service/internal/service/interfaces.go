@@ -90,7 +90,7 @@ type DeployedProductService interface {
 
 // CaseService defines the operations available on the cases entity.
 type CaseService interface {
-	// CreateCase creates a new case with auto-generated id, number, and wso2_id.
+	// CreateCase creates a new case with auto-generated id, number, and internal_id.
 	// State defaults to open. A ValidationError is returned for invalid input.
 	CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
 	// GetCaseByID returns the enriched case view for the given UUID. A

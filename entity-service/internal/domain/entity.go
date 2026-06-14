@@ -352,12 +352,12 @@ type SearchDeploymentsResponse struct {
 
 // DeployedProduct represents a product (and optional version) associated with a deployment.
 type DeployedProduct struct {
-	ID               string     `json:"id"`
-	DeploymentID     string     `json:"deploymentId"`
-	ProductID        string     `json:"productId"`
-	ProductVersionID *string    `json:"productVersionId"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
+	ID               string    `json:"id"`
+	DeploymentID     string    `json:"deploymentId"`
+	ProductID        string    `json:"productId"`
+	ProductVersionID *string   `json:"productVersionId"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 // DeployedProductVersionRef is the version sub-object in a DeployedProductView.
@@ -465,7 +465,7 @@ type CaseSort struct {
 type Case struct {
 	ID                string        `json:"id"`
 	Number            string        `json:"number"`
-	Wso2ID            string        `json:"wso2Id"`
+	InternalID        string        `json:"internalId"`
 	CreatedBy         string        `json:"createdBy"`
 	ProjectID         string        `json:"projectId"`
 	DeploymentID      string        `json:"deploymentId"`
@@ -513,7 +513,7 @@ type DeployedProductRef struct {
 type CaseView struct {
 	ID                     string             `json:"id"`
 	Number                 string             `json:"number"`
-	Wso2ID                 string             `json:"wso2Id"`
+	InternalID             string             `json:"internalId"`
 	Subject                string             `json:"subject"`
 	Description            string             `json:"description"`
 	Priority               CasePriority       `json:"priority"`
@@ -529,18 +529,18 @@ type CaseView struct {
 }
 
 // SearchCasesRequest is the input for a case search operation.
-// SearchQuery is matched case-insensitively against subject, number, and wso2_id.
+// SearchQuery is matched case-insensitively against subject, number, and internal_id.
 // All filter slices are optional. SortBy defaults to created_at.
 type SearchCasesRequest struct {
-	Pagination          Pagination     `json:"pagination"`
-	SearchQuery         string         `json:"searchQuery"`
-	ProjectIDs          []string       `json:"projectIds"`
-	DeploymentIDs       []string       `json:"deploymentIds"`
-	DeployedProductIDs  []string       `json:"deployedProductIds"`
-	StateKeys           []CaseState     `json:"stateKeys"`
-	PriorityKeys        []CasePriority  `json:"priorityKeys"`
-	IssueTypeKeys       []CaseIssueType `json:"issueTypeKeys"`
-	SortBy              CaseSort        `json:"sortBy"`
+	Pagination         Pagination      `json:"pagination"`
+	SearchQuery        string          `json:"searchQuery"`
+	ProjectIDs         []string        `json:"projectIds"`
+	DeploymentIDs      []string        `json:"deploymentIds"`
+	DeployedProductIDs []string        `json:"deployedProductIds"`
+	StateKeys          []CaseState     `json:"stateKeys"`
+	PriorityKeys       []CasePriority  `json:"priorityKeys"`
+	IssueTypeKeys      []CaseIssueType `json:"issueTypeKeys"`
+	SortBy             CaseSort        `json:"sortBy"`
 }
 
 // SearchCaseView is the enriched read representation of a case returned in search
@@ -548,7 +548,7 @@ type SearchCasesRequest struct {
 type SearchCaseView struct {
 	ID                     string             `json:"id"`
 	Number                 string             `json:"number"`
-	Wso2ID                 string             `json:"wso2Id"`
+	InternalID             string             `json:"internalId"`
 	Subject                string             `json:"subject"`
 	Description            string             `json:"description"`
 	Priority               CasePriority       `json:"priority"`
@@ -582,16 +582,16 @@ type UpdateCaseRequest struct {
 }
 
 // CreateCaseRequest is the input for creating a new case.
-// id, number, and wso2_id are auto-generated; state defaults to open.
+// id, number, and internal_id are auto-generated; state defaults to open.
 type CreateCaseRequest struct {
-	CreatedBy          string        `json:"createdBy"`
-	ProjectID          string        `json:"projectId"`
-	DeploymentID       string        `json:"deploymentId"`
-	DeployedProductID  string        `json:"deployedProductId"`
-	Subject            string        `json:"subject"`
-	Description        string        `json:"description"`
-	Priority           CasePriority  `json:"priority"`
-	IssueType          CaseIssueType `json:"issueType"`
+	CreatedBy         string        `json:"createdBy"`
+	ProjectID         string        `json:"projectId"`
+	DeploymentID      string        `json:"deploymentId"`
+	DeployedProductID string        `json:"deployedProductId"`
+	Subject           string        `json:"subject"`
+	Description       string        `json:"description"`
+	Priority          CasePriority  `json:"priority"`
+	IssueType         CaseIssueType `json:"issueType"`
 }
 
 // CommentType classifies the type of a case comment.
