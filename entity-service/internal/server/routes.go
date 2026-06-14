@@ -31,7 +31,7 @@ import (
 
 // NewRouter builds the dependency graph (repository → service → handler),
 // registers all routes, and wraps the mux with the middleware chain:
-// Recovery → Logger → Timeout.
+// CorrelationID → Recovery → Logger → UserIDToken → Timeout.
 func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	userRepo := repository.NewUserRepository(db)
 	userSvc := service.NewUserService(userRepo)
@@ -90,10 +90,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	mux.HandleFunc("POST /cases/{id}/comments", caseHandler.CreateCaseComment)
 	mux.HandleFunc("POST /cases/{id}/comments/search", caseHandler.SearchCaseComments)
 
-	return middleware.Recovery(
-		middleware.Logger(
-			middleware.UserIDToken(
-				middleware.Timeout(10 * time.Second)(mux),
+	return middleware.CorrelationID(
+		middleware.Recovery(
+			middleware.Logger(
+				middleware.UserIDToken(
+					middleware.Timeout(10 * time.Second)(mux),
+				),
 			),
 		),
 	)
