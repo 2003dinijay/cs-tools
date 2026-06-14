@@ -115,11 +115,15 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 		if err != nil {
 			return domain.SearchProjectsResponse{}, fmt.Errorf("sn projects: parse createdOn %q: %w", p.CreatedOn, err)
 		}
+		subType, err := snTypeNameToSubscriptionType(p.Type.Name)
+		if err != nil {
+			return domain.SearchProjectsResponse{}, fmt.Errorf("sn projects: project %q: %w", p.ID, err)
+		}
 		views = append(views, domain.ProjectView{
 			ID:               p.ID,
 			Name:             p.Name,
 			Key:              p.Key,
-			SubscriptionType: snTypeNameToSubscriptionType(p.Type.Name),
+			SubscriptionType: subType,
 			CreatedOn:        createdOn,
 		})
 	}
@@ -139,8 +143,26 @@ func (s *snProjectService) GetProjectByID(ctx context.Context, id string) (domai
 	return s.pgFallback.GetProjectByID(ctx, id)
 }
 
+// validSubscriptionTypes is the set of known SubscriptionType enum values.
+var validSubscriptionTypes = map[domain.SubscriptionType]struct{}{
+	domain.SubscriptionTypeDevelopmentSupport:       {},
+	domain.SubscriptionTypeManagedCloudSubscription: {},
+	domain.SubscriptionTypeEvaluationSubscription:   {},
+	domain.SubscriptionTypeSubscription:             {},
+	domain.SubscriptionTypeCloudEvaluationSupport:   {},
+	domain.SubscriptionTypeInternal:                 {},
+	domain.SubscriptionTypePlatformerSubscription:   {},
+	domain.SubscriptionTypeCloudSupport:             {},
+	domain.SubscriptionTypeProfessionalServices:     {},
+}
+
 // snTypeNameToSubscriptionType converts a SN project type name (e.g. "Cloud Support")
-// to the domain SubscriptionType enum (e.g. "cloud_support").
-func snTypeNameToSubscriptionType(name string) domain.SubscriptionType {
-	return domain.SubscriptionType(strings.ToLower(strings.ReplaceAll(name, " ", "_")))
+// to the domain SubscriptionType enum (e.g. "cloud_support"). Returns an error
+// if the converted value is not a known enum value.
+func snTypeNameToSubscriptionType(name string) (domain.SubscriptionType, error) {
+	st := domain.SubscriptionType(strings.ToLower(strings.ReplaceAll(name, " ", "_")))
+	if _, ok := validSubscriptionTypes[st]; !ok {
+		return "", fmt.Errorf("unknown subscription type %q from ServiceNow", name)
+	}
+	return st, nil
 }
