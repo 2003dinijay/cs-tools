@@ -37,6 +37,7 @@ var tokenFetchTimeout = 10 * time.Second
 type ctxKey string
 
 const userIDTokenKey ctxKey = "x-user-id-token"
+const correlationIDKey ctxKey = "x-correlation-id"
 
 // WithUserIDToken returns a copy of ctx carrying the x-user-id-token value to
 // be forwarded on every outgoing entity request.
@@ -46,6 +47,17 @@ func WithUserIDToken(ctx context.Context, token string) context.Context {
 
 func userIDTokenFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(userIDTokenKey).(string)
+	return v
+}
+
+// WithCorrelationID returns a copy of ctx carrying the correlation ID to be
+// forwarded as X-Correlation-ID on every outgoing entity request.
+func WithCorrelationID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, correlationIDKey, id)
+}
+
+func correlationIDFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(correlationIDKey).(string)
 	return v
 }
 
@@ -107,6 +119,9 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 	}
 	if token := userIDTokenFromContext(ctx); token != "" {
 		req.Header.Set("x-user-id-token", token)
+	}
+	if id := correlationIDFromContext(ctx); id != "" {
+		req.Header.Set("X-Correlation-ID", id)
 	}
 
 	resp, err := c.http.Do(req)

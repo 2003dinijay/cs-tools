@@ -35,6 +35,7 @@ import (
 )
 
 func main() {
+	middleware.ConfigureLogger()
 	cfg := entity.Config{
 		BaseURL:      mustEnv("ENTITY_BASE_URL"),
 		TokenURL:     mustEnv("ENTITY_TOKEN_URL"),
@@ -113,7 +114,11 @@ func main() {
 	slog.Info("CSM Portal Backend started", "addr", addr)
 
 	srv := &http.Server{
-		Handler:           middleware.Auth(authCfg)(mux),
+		Handler: middleware.CorrelationID(
+			middleware.Logger(
+				middleware.Auth(authCfg)(mux),
+			),
+		),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

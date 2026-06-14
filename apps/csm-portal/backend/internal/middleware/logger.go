@@ -14,11 +14,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package middleware provides composable HTTP middleware for the entity service.
 package middleware
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -35,13 +34,19 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-// Logger is an HTTP middleware that logs each request's method, path, response
-// status code, and elapsed time.
+// Logger is an HTTP middleware that logs each completed request via slog. The
+// correlation ID is included automatically in every record when ConfigureLogger
+// has been called (it is attached by the ctxHandler from the context).
 func Logger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rw, r)
-		log.Printf("%s %s correlationID=%s status=%d elapsed=%s", r.Method, r.URL.Path, CorrelationIDFromContext(r.Context()), rw.status, time.Since(start))
+		slog.InfoContext(r.Context(), "request completed",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rw.status,
+			"elapsed", time.Since(start).String(),
+		)
 	})
 }
