@@ -164,10 +164,21 @@ function localGatewayConfigPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         if (req.url?.split("?")[0] !== "/config.js") return next();
-        const original = readFileSync(
-          fileURLToPath(new URL("./public/config.js", import.meta.url)),
-          "utf8",
-        );
+        let original: string;
+        try {
+          original = readFileSync(
+            fileURLToPath(new URL("./public/config.js", import.meta.url)),
+            "utf8",
+          );
+        } catch (err) {
+          server.config.logger.error(
+            `[vite] local-gateway: cannot read public/config.js: ${String(err)}`,
+          );
+          res.statusCode = 500;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("Missing or unreadable public/config.js");
+          return;
+        }
         res.setHeader("Content-Type", "text/javascript");
         res.setHeader("Cache-Control", "no-store");
         res.end(original + CONFIG_OVERRIDES);
