@@ -19,6 +19,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -27,10 +28,10 @@ import (
 
 // DeployedProductRepository defines the persistence operations for the deployed_products table.
 type DeployedProductRepository interface {
-	// SearchDeployedProducts returns a filtered, paginated slice of deployed products together
-	// with the total count of matching rows before pagination.
+	// SearchDeployedProducts returns a filtered, paginated slice of enriched deployed-product
+	// views together with the total count of matching rows before pagination.
 	// COUNT and SELECT are executed concurrently on separate pool connections.
-	SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProduct, int, error)
+	SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProductView, int, error)
 }
 
 type deployedProductRepo struct {
@@ -43,31 +44,38 @@ func NewDeployedProductRepository(db *pgxpool.Pool) DeployedProductRepository {
 }
 
 // SearchDeployedProducts implements DeployedProductRepository.
-func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProduct, int, error) {
+func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProductView, int, error) {
 	filterArgs := []any{}
 	argIdx := 1
 
 	where := "WHERE 1=1"
 
 	if len(req.DeploymentIDs) > 0 {
-		where += fmt.Sprintf(" AND deployment_id = ANY($%d::uuid[])", argIdx)
+		where += fmt.Sprintf(" AND dp.deployment_id = ANY($%d::uuid[])", argIdx)
 		filterArgs = append(filterArgs, req.DeploymentIDs)
 		argIdx++
 	}
 
-	countQuery := "SELECT COUNT(*) FROM deployed_products " + where
+	countQuery := "SELECT COUNT(*) FROM deployed_products dp " + where
 
 	dataQuery := fmt.Sprintf(
-		`SELECT id, deployment_id, product_id, product_version_id, created_at, updated_at
-		 FROM deployed_products %s
-		 ORDER BY created_at DESC, id
+		`SELECT dp.id, dp.created_at, dp.updated_at,
+		        d.id, d.name,
+		        p.id, p.name,
+		        pv.id, pv.version, pv.release_date, pv.support_eol_date
+		 FROM deployed_products dp
+		 JOIN deployments d      ON dp.deployment_id      = d.id
+		 JOIN products p         ON dp.product_id         = p.id
+		 LEFT JOIN product_versions pv ON dp.product_version_id = pv.id
+		 %s
+		 ORDER BY dp.created_at DESC, dp.id
 		 LIMIT $%d OFFSET $%d`,
 		where, argIdx, argIdx+1,
 	)
 	dataArgs := append(append([]any{}, filterArgs...), req.Pagination.Limit, req.Pagination.Offset)
 
 	var total int
-	var deployedProducts []domain.DeployedProduct
+	var deployedProducts []domain.DeployedProductView
 
 	eg, egCtx := errgroup.WithContext(ctx)
 
@@ -85,14 +93,27 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 		}
 		defer rows.Close()
 
-		result := make([]domain.DeployedProduct, 0, req.Pagination.Limit)
+		result := make([]domain.DeployedProductView, 0, req.Pagination.Limit)
 		for rows.Next() {
-			var dp domain.DeployedProduct
+			var dp domain.DeployedProductView
+			// Version fields are nullable (LEFT JOIN).
+			var pvID, pvName *string
+			var pvReleaseDate, pvEoLDate *time.Time
 			if err := rows.Scan(
-				&dp.ID, &dp.DeploymentID, &dp.ProductID, &dp.ProductVersionID,
-				&dp.CreatedAt, &dp.UpdatedAt,
+				&dp.ID, &dp.CreatedOn, &dp.UpdatedOn,
+				&dp.Deployment.ID, &dp.Deployment.Name,
+				&dp.Product.ID, &dp.Product.Name,
+				&pvID, &pvName, &pvReleaseDate, &pvEoLDate,
 			); err != nil {
 				return fmt.Errorf("scan deployed product: %w", err)
+			}
+			if pvID != nil {
+				dp.Version = &domain.DeployedProductVersionRef{
+					ID:             *pvID,
+					Name:           *pvName,
+					ReleasedDate:   pvReleaseDate,
+					SupportEoLDate: pvEoLDate,
+				}
 			}
 			result = append(result, dp)
 		}

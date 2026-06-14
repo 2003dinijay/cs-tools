@@ -351,7 +351,6 @@ type SearchDeploymentsResponse struct {
 }
 
 // DeployedProduct represents a product (and optional version) associated with a deployment.
-// ProductVersionID is optional and omitted from JSON when absent.
 type DeployedProduct struct {
 	ID               string     `json:"id"`
 	DeploymentID     string     `json:"deploymentId"`
@@ -359,6 +358,29 @@ type DeployedProduct struct {
 	ProductVersionID *string    `json:"productVersionId"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
+}
+
+// DeployedProductVersionRef is the version sub-object in a DeployedProductView.
+type DeployedProductVersionRef struct {
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	ReleasedDate   *time.Time `json:"releasedDate"`
+	SupportEoLDate *time.Time `json:"supportEoLDate"`
+}
+
+// DeployedProductView is the enriched search result for a deployed product.
+// It embeds deployment, product, and version as named refs and uses createdOn/updatedOn naming.
+// Cores, TPS, and Category are SN-only fields; they are always null for the Postgres path.
+type DeployedProductView struct {
+	ID         string                     `json:"id"`
+	Deployment EntityRef                  `json:"deployment"`
+	Product    EntityRef                  `json:"product"`
+	Version    *DeployedProductVersionRef `json:"version"`
+	Cores      *string                    `json:"cores"`
+	TPS        *string                    `json:"tps"`
+	Category   *string                    `json:"category"`
+	CreatedOn  time.Time                  `json:"createdOn"`
+	UpdatedOn  time.Time                  `json:"updatedOn"`
 }
 
 // SearchDeployedProductsRequest is the input for a deployed-product search operation.
@@ -371,11 +393,11 @@ type SearchDeployedProductsRequest struct {
 // SearchDeployedProductsResponse is the paginated result of a deployed-product search.
 // HasMore is true when additional pages are available beyond the current offset.
 type SearchDeployedProductsResponse struct {
-	DeployedProducts []DeployedProduct `json:"deployedProducts"`
-	Total            int               `json:"total"`
-	Limit            int               `json:"limit"`
-	Offset           int               `json:"offset"`
-	HasMore          bool              `json:"hasMore"`
+	DeployedProducts []DeployedProductView `json:"deployedProducts"`
+	Total            int                   `json:"total"`
+	Limit            int                   `json:"limit"`
+	Offset           int                   `json:"offset"`
+	HasMore          bool                  `json:"hasMore"`
 }
 
 // CaseIssueType classifies the nature of a support case.
