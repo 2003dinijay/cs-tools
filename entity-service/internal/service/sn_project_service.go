@@ -92,7 +92,7 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
-		return domain.SearchProjectsResponse{}, &apierror.ValidationError{Msg: "x-user-id-token header is required"}
+		return domain.SearchProjectsResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
 	}
 
 	payload := snSearchProjectsPayload{
