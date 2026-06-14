@@ -18,6 +18,7 @@
 package config
 
 import (
+	"fmt"
 	"net/url"
 	"os"
 )
@@ -70,6 +71,22 @@ func getEnvOrDefault(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+// Validate checks that the configuration is self-consistent. It returns an
+// error if DATA_SOURCE is an unrecognised value, or if SN_BASE_URL is missing
+// when DATA_SOURCE=servicenow.
+func (c *Config) Validate() error {
+	switch c.DataSource {
+	case DataSourcePostgres, DataSourceServiceNow:
+		// valid
+	default:
+		return fmt.Errorf("invalid DATA_SOURCE %q: must be %q or %q", c.DataSource, DataSourcePostgres, DataSourceServiceNow)
+	}
+	if c.DataSource == DataSourceServiceNow && c.SNBaseURL == "" {
+		return fmt.Errorf("SN_BASE_URL is required when DATA_SOURCE=servicenow")
+	}
+	return nil
 }
 
 // DSN constructs a PostgreSQL connection string from the config fields.

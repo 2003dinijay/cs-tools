@@ -38,6 +38,9 @@ func main() {
 	}
 
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("invalid configuration: %v", err)
+	}
 
 	pool, err := db.NewPoolIfNeeded(cfg)
 	if err != nil {
