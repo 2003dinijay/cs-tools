@@ -22,6 +22,16 @@ import (
 	"os"
 )
 
+// DataSource identifies which backend the service reads from.
+type DataSource string
+
+const (
+	// DataSourcePostgres uses the local PostgreSQL database.
+	DataSourcePostgres DataSource = "postgres"
+	// DataSourceServiceNow uses the Choreo ServiceNow API.
+	DataSourceServiceNow DataSource = "servicenow"
+)
+
 // Config holds all environment-driven settings for the service.
 type Config struct {
 	DBHost     string
@@ -31,6 +41,11 @@ type Config struct {
 	DBName     string
 	DBSSLMode  string
 	ServerPort string
+	// DataSource controls which backend is used. Defaults to "postgres".
+	DataSource DataSource
+	// SNBaseURL is the base URL for the Choreo ServiceNow API
+	// Required when DataSource is "servicenow".
+	SNBaseURL string
 }
 
 // Load reads configuration from environment variables and returns a populated
@@ -45,6 +60,8 @@ func Load() *Config {
 		DBName:     os.Getenv("DB_NAME"),
 		DBSSLMode:  os.Getenv("DB_SSLMODE"),
 		ServerPort: getEnvOrDefault("SERVER_PORT", "8080"),
+		DataSource: DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
+		SNBaseURL:  os.Getenv("SN_BASE_URL"),
 	}
 }
 
