@@ -23,14 +23,7 @@ import {
   Typography,
   useTheme,
 } from "@wso2/oxygen-ui";
-import {
-  Building,
-  FolderOpen,
-  Headset,
-  History,
-  Pin,
-  PinOff,
-} from "@wso2/oxygen-ui-icons-react";
+import { History, Pin, PinOff } from "@wso2/oxygen-ui-icons-react";
 import {
   useCallback,
   useEffect,
@@ -49,34 +42,20 @@ import {
   type RecentView,
   type RecentViewKind,
 } from "@features/csm-recent/hooks/useRecentViews";
+import { KIND_LABEL, KIND_ORDER, kindIcon } from "@features/csm-recent/kindMeta";
 import RelativeTime from "@components/RelativeTime";
 
 const PANEL_WIDTH = 360;
 
-const KIND_LABEL: Record<RecentViewKind, string> = {
-  case: "Cases",
-  project: "Projects",
-  account: "Accounts",
-};
-
-const KIND_ORDER: RecentViewKind[] = ["case", "project", "account"];
-
-function kindIcon(kind: RecentViewKind): JSX.Element {
-  switch (kind) {
-    case "case":
-      return <Headset size={16} />;
-    case "project":
-      return <FolderOpen size={16} />;
-    case "account":
-      return <Building size={16} />;
-  }
-}
-
-function groupByKind(entries: RecentView[]): Record<RecentViewKind, RecentView[]> {
+function groupByKind(
+  entries: RecentView[],
+): Record<RecentViewKind, RecentView[]> {
   const out: Record<RecentViewKind, RecentView[]> = {
     case: [],
     project: [],
     account: [],
+    search: [],
+    page: [],
   };
   for (const e of entries) out[e.kind].push(e);
   return out;
@@ -128,11 +107,11 @@ export default function RecentViewsButton(): JSX.Element {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open]);
 
-  const pinned = useMemo(() => recents.filter((e) => e.pinned), [recents]);
-  const grouped = useMemo(
-    () => groupByKind(recents.filter((e) => !e.pinned)),
-    [recents],
-  );
+  // Pinned entries surface as tabs in the top nav bar (PinnedTabs) AND stay in
+  // the history list here — pinning promotes an item into the working set
+  // without removing it from "recently viewed". The per-row toggle reflects the
+  // pinned state (Unpin vs Pin to top nav bar).
+  const grouped = useMemo(() => groupByKind(recents), [recents]);
 
   const handleSelect = (entry: RecentView) => {
     setOpen(false);
@@ -172,13 +151,15 @@ export default function RecentViewsButton(): JSX.Element {
           </Typography>
         )}
       </Box>
-      <Tooltip title={entry.pinned ? "Unpin" : "Pin to working set"}>
+      <Tooltip
+        title={entry.pinned ? "Unpin from top nav bar" : "Pin to top nav bar"}
+      >
         <IconButton
           size="small"
           aria-label={
             entry.pinned
-              ? `Unpin ${entry.title}`
-              : `Pin ${entry.title} to working set`
+              ? `Unpin ${entry.title} from top nav bar`
+              : `Pin ${entry.title} to top nav bar`
           }
           // Stop the row's navigate; pinning must not leave the panel.
           onClick={(e) => {
@@ -260,35 +241,8 @@ export default function RecentViewsButton(): JSX.Element {
         {recents.length === 0 && (
           <Box sx={{ px: 1.5, py: 2.5, textAlign: "center" }}>
             <Typography variant="body2" color="text.secondary">
-              No recent items. Open a case, project, or account to start tracking history. Pin the ones you are actively working to keep them here.
+              No recent items. Open a case, project, or account to start tracking history, then pin the ones you are actively working to keep them in the top nav bar.
             </Typography>
-          </Box>
-        )}
-
-        {pinned.length > 0 && (
-          <Box>
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 0.5,
-                px: 1.5,
-                py: 0.5,
-                bgcolor: "background.default",
-                borderBottom: 1,
-                borderColor: "divider",
-              }}
-            >
-              <Pin size={12} />
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{ fontWeight: 600 }}
-              >
-                Pinned · working set
-              </Typography>
-            </Box>
-            {pinned.map(renderRow)}
           </Box>
         )}
 

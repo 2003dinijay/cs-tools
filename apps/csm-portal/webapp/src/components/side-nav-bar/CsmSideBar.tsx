@@ -15,20 +15,9 @@
 // under the License.
 
 import { Box, Chip, Link, Sidebar } from "@wso2/oxygen-ui";
-import {
-  Briefcase,
-  Building,
-  ChartColumn,
-  Clock,
-  Cog,
-  FolderOpen,
-  Headset,
-  RefreshCw,
-  Settings,
-  Shield,
-} from "@wso2/oxygen-ui-icons-react";
-import { type ComponentType, type JSX } from "react";
+import { type JSX } from "react";
 import { Link as NavigateLink, useLocation } from "react-router";
+import { CSM_NAV_ITEMS, navItemForPath } from "@config/csmNavItems";
 
 interface CsmSideBarProps {
   collapsed: boolean;
@@ -37,35 +26,9 @@ interface CsmSideBarProps {
   onToggleExpand?: (id: string) => void;
 }
 
-interface CsmNavItem {
-  id: string;
-  label: string;
-  path: string;
-  icon: ComponentType<{ size?: number | string }>;
-  wip?: boolean;
-}
-
-const CSM_NAV_ITEMS: CsmNavItem[] = [
-  { id: "dashboard", label: "Dashboard", path: "/dashboard", icon: ChartColumn },
-  { id: "cases", label: "Cases", path: "/cases", icon: Headset },
-  { id: "operations", label: "Operations", path: "/operations", icon: Cog },
-  { id: "engagements", label: "Engagements", path: "/engagements", icon: Briefcase },
-  { id: "updates", label: "Updates", path: "/updates", icon: RefreshCw },
-  { id: "security-center", label: "Security center", path: "/security-center", icon: Shield },
-  { id: "time-cards", label: "Time cards", path: "/time-cards", icon: Clock },
-  { id: "accounts", label: "Accounts", path: "/accounts", icon: Building },
-  { id: "projects", label: "Projects", path: "/projects", icon: FolderOpen },
-  { id: "admin", label: "Administration", path: "/admin", icon: Settings },
-];
-
 function pickActiveId(pathname: string): string {
   if (pathname === "/" || pathname === "") return "accounts";
-  for (const item of CSM_NAV_ITEMS) {
-    if (pathname === item.path || pathname.startsWith(`${item.path}/`)) {
-      return item.id;
-    }
-  }
-  return "accounts";
+  return navItemForPath(pathname)?.id ?? "accounts";
 }
 
 export default function CsmSideBar({

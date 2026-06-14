@@ -363,7 +363,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
     recordView({
       kind: "case",
       id: data.id,
-      title: `${data.caseNumber} · ${data.subject}`,
+      // Show the WSO2 case id (not the CS case number) as the recent/pinned
+      // label — it is the id engineers and customers reference.
+      title: `${data.wso2CaseId} · ${data.subject}`,
       subtitle: `${data.customer} · ${data.projectName}`,
       href: `/cases/${data.id}`,
     });

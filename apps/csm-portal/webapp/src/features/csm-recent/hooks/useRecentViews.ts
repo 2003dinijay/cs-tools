@@ -16,12 +16,19 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-export type RecentViewKind = "case" | "project" | "account";
+export type RecentViewKind =
+  | "case"
+  | "project"
+  | "account"
+  | "search"
+  | "page";
 
 const RECENT_VIEW_KINDS: readonly RecentViewKind[] = [
   "case",
   "project",
   "account",
+  "search",
+  "page",
 ];
 
 function isRecentViewKind(v: unknown): v is RecentViewKind {
