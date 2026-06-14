@@ -126,14 +126,13 @@ paths:
           required: true
           schema:
             type: string
-            format: uuid
       responses:
         "200":
           description: The project with the given ID.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Project'
+                $ref: '#/components/schemas/ProjectDetailsView'
         "400":
           description: Bad request.
           content:
@@ -155,7 +154,7 @@ paths:
 
   /projects/search:
     post:
-      summary: Search projects by name, project key, or subscription type.
+      summary: Search projects by name, key, or subscription type.
       operationId: searchProjects
       requestBody:
         required: true
@@ -660,13 +659,34 @@ components:
           type: string
           description: Case-insensitive match against name, key, and subscription_type.
 
-    Project:
+    ProjectAccountRef:
       type: object
       properties:
         id:
           type: string
-        accountId:
+        name:
           type: string
+        activationDate:
+          type: string
+          format: date-time
+          nullable: true
+        tier:
+          type: string
+        region:
+          type: string
+          nullable: true
+        agentEnabled:
+          type: boolean
+        kbReferencesEnabled:
+          type: boolean
+
+    ProjectDetailsView:
+      type: object
+      properties:
+        id:
+          type: string
+        account:
+          $ref: '#/components/schemas/ProjectAccountRef'
         sfId:
           type: string
         name:
@@ -685,26 +705,41 @@ components:
             - platformer_subscription
             - cloud_support
             - professional_services
-        closureStatus:
-          type: string
-          nullable: true
-          enum:
-            - notify
-            - closed
-            - open
-            - read_only
-            - restricted
-            - suspended
         startDate:
           type: string
           format: date-time
         endDate:
           type: string
           format: date-time
-        createdAt:
+        createdOn:
           type: string
           format: date-time
-        updatedAt:
+        updatedOn:
+          type: string
+          format: date-time
+
+    ProjectView:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        key:
+          type: string
+        subscriptionType:
+          type: string
+          enum:
+            - development_support
+            - managed_cloud_subscription
+            - evaluation_subscription
+            - subscription
+            - cloud_evaluation_support
+            - internal
+            - platformer_subscription
+            - cloud_support
+            - professional_services
+        createdOn:
           type: string
           format: date-time
 
@@ -714,7 +749,7 @@ components:
         projects:
           type: array
           items:
-            $ref: '#/components/schemas/Project'
+            $ref: '#/components/schemas/ProjectView'
         total:
           type: integer
         limit:
