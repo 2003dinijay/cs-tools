@@ -40,8 +40,8 @@ type User struct {
 	FirstName string    `json:"firstName"`
 	LastName  string    `json:"lastName"`
 	Email     string    `json:"email"`
-	Phone     *string   `json:"phone,omitempty"`
-	Timezone  *string   `json:"timezone,omitempty"`
+	Phone     *string   `json:"phone"`
+	Timezone  *string   `json:"timezone"`
 	UserType  UserType  `json:"userType"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -88,11 +88,11 @@ type Account struct {
 	SfID                string      `json:"sfId"`
 	Name                string      `json:"name"`
 	Tier                AccountTier `json:"tier"`
-	Region              *string     `json:"region,omitempty"`
+	Region              *string     `json:"region"`
 	ActivationDate      time.Time   `json:"activationDate"`
-	DeactivationDate    *time.Time  `json:"deactivationDate,omitempty"`
+	DeactivationDate    *time.Time  `json:"deactivationDate"`
 	OwnerID             string      `json:"ownerId"`
-	TechnicalOwnerID    *string     `json:"technicalOwnerId,omitempty"`
+	TechnicalOwnerID    *string     `json:"technicalOwnerId"`
 	AgentEnabled        bool        `json:"agentEnabled"`
 	KbReferencesEnabled bool        `json:"kbReferencesEnabled"`
 	CreatedAt           time.Time   `json:"createdAt"`
@@ -151,7 +151,7 @@ type Project struct {
 	Name             string           `json:"name"`
 	Key              string           `json:"key"`
 	SubscriptionType SubscriptionType `json:"subscriptionType"`
-	ClosureStatus    *ClosureStatus   `json:"closureStatus,omitempty"`
+	ClosureStatus    *ClosureStatus   `json:"closureStatus"`
 	StartDate        time.Time        `json:"startDate"`
 	EndDate          time.Time        `json:"endDate"`
 	CreatedAt        time.Time        `json:"createdAt"`
@@ -162,11 +162,11 @@ type Project struct {
 type ProjectAccountRef struct {
 	ID                  string     `json:"id"`
 	Name                string     `json:"name"`
-	ActivationDate      *time.Time `json:"activationDate,omitempty"`
+	ActivationDate      *time.Time `json:"activationDate"`
 	Tier                string     `json:"tier"`
-	Region              *string    `json:"region,omitempty"`
+	Region              *string    `json:"region"`
 	OwnerID             string     `json:"ownerId"`
-	TechnicalOwnerID    *string    `json:"technicalOwnerId,omitempty"`
+	TechnicalOwnerID    *string    `json:"technicalOwnerId"`
 	AgentEnabled        bool       `json:"agentEnabled"`
 	KbReferencesEnabled bool       `json:"kbReferencesEnabled"`
 }
@@ -268,8 +268,8 @@ type ProductVersion struct {
 	Version                        string        `json:"version"`
 	CurrentSupportStatus           SupportStatus `json:"currentSupportStatus"`
 	ReleaseDate                    time.Time     `json:"releaseDate"`
-	SupportEOLDate                 *time.Time    `json:"supportEolDate,omitempty"`
-	EarliestPossibleSupportEOLDate *time.Time    `json:"earliestPossibleSupportEolDate,omitempty"`
+	SupportEOLDate                 *time.Time    `json:"supportEolDate"`
+	EarliestPossibleSupportEOLDate *time.Time    `json:"earliestPossibleSupportEolDate"`
 	CreatedAt                      time.Time     `json:"createdAt"`
 	UpdatedAt                      time.Time     `json:"updatedAt"`
 }
@@ -312,7 +312,7 @@ type Deployment struct {
 	ProjectID   string         `json:"projectId"`
 	Name        string         `json:"name"`
 	Type        DeploymentType `json:"type"`
-	Description *string        `json:"description,omitempty"`
+	Description *string        `json:"description"`
 	CreatedBy   string         `json:"createdBy"`
 	CreatedAt   time.Time      `json:"createdAt"`
 	UpdatedAt   time.Time      `json:"updatedAt"`
@@ -345,7 +345,7 @@ type DeployedProduct struct {
 	ID               string     `json:"id"`
 	DeploymentID     string     `json:"deploymentId"`
 	ProductID        string     `json:"productId"`
-	ProductVersionID *string    `json:"productVersionId,omitempty"`
+	ProductVersionID *string    `json:"productVersionId"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
 }
@@ -444,15 +444,15 @@ type Case struct {
 	State             CaseState     `json:"state"`
 	CreatedAt         time.Time     `json:"createdAt"`
 	UpdatedAt         time.Time     `json:"updatedAt"`
-	ClosedAt          *time.Time    `json:"closedAt,omitempty"`
+	ClosedAt          *time.Time    `json:"closedAt"`
 }
 
 // UserRef is a reference to a user with key display fields.
 type UserRef struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
-	UserID      string `json:"userId,omitempty"`
-	Email       string `json:"email,omitempty"`
+	UserID      string `json:"userId"`
+	Email       string `json:"email"`
 }
 
 // UserIDEmailRef is a compact user reference carrying only id and email.
@@ -488,7 +488,7 @@ type CaseView struct {
 	State                  CaseState          `json:"state"`
 	CreatedAt              time.Time          `json:"createdAt"`
 	UpdatedAt              time.Time          `json:"updatedAt"`
-	ClosedAt               *time.Time         `json:"closedAt,omitempty"`
+	ClosedAt               *time.Time         `json:"closedAt"`
 	CreatedByDetails       UserRef            `json:"createdBy"`
 	ProjectDetails         EntityRef          `json:"project"`
 	DeploymentDetails      EntityRef          `json:"deployment"`
@@ -523,7 +523,7 @@ type SearchCaseView struct {
 	State                  CaseState          `json:"state"`
 	CreatedAt              time.Time          `json:"createdAt"`
 	UpdatedAt              time.Time          `json:"updatedAt"`
-	ClosedAt               *time.Time         `json:"closedAt,omitempty"`
+	ClosedAt               *time.Time         `json:"closedAt"`
 	CreatedBy              UserIDEmailRef     `json:"createdBy"`
 	ProjectDetails         EntityRef          `json:"project"`
 	DeploymentDetails      EntityRef          `json:"deployment"`
