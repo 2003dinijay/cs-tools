@@ -178,8 +178,8 @@ export function useGetCsmCases(
         const accountId = projectAccount.get(projectId) ?? "";
         return {
           id: c.id,
-          caseNumber: c.number ?? c.id,
-          wso2CaseId: c.wso2Id ?? c.id,
+          caseNumber: c.number,
+          wso2CaseId: c.wso2Id,
           subject: c.subject ?? "(no subject)",
           customer: accountName.get(accountId) ?? "—",
           accountId,

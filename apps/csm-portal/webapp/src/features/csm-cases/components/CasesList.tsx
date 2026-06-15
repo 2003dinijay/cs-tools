@@ -25,6 +25,7 @@ import {
 } from "@features/csm-dashboard/utils/abtDashboard";
 import RelativeTime from "@components/RelativeTime";
 import SeverityChip from "@components/SeverityChip";
+import { caseIdLabel } from "@features/csm-cases/utils/caseIdentity";
 import type { CsmCaseRow } from "@features/csm-cases/types/csmCases";
 
 interface CasesListProps {
@@ -159,7 +160,16 @@ export default function CasesList({
             >
               <Box sx={{ minWidth: 0 }}>
                 <Typography variant="body2" noWrap>
-                  <strong>{c.caseNumber}</strong> · {c.subject}
+                  {caseIdLabel(c) ? (
+                    <>
+                      <Box component="strong" sx={{ fontFamily: "monospace" }}>
+                        {caseIdLabel(c)}
+                      </Box>{" "}
+                      · {c.subject}
+                    </>
+                  ) : (
+                    c.subject
+                  )}
                 </Typography>
                 <Typography variant="caption" color="text.secondary" noWrap>
                   {c.projectName}

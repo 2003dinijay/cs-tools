@@ -56,7 +56,7 @@ function applyFilters(cases: CsmCaseRow[], f: CasesFilters): CsmCaseRow[] {
     if (f.projects.length && !f.projects.includes(c.projectId)) return false;
     if (f.products.length && !f.products.includes(c.product)) return false;
     if (q) {
-      const hay = `${c.caseNumber} ${c.subject} ${c.customer} ${c.projectName} ${c.assignee} ${c.product}`.toLowerCase();
+      const hay = `${c.caseNumber ?? ""} ${c.wso2CaseId ?? ""} ${c.subject} ${c.customer} ${c.projectName} ${c.assignee} ${c.product}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;

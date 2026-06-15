@@ -46,8 +46,8 @@ function detailFromBeCase(
   const product = c.deployedProduct?.displayName ?? "—";
   return {
     id: c.id,
-    caseNumber: c.number ?? c.id,
-    wso2CaseId: c.wso2Id ?? c.id,
+    caseNumber: c.number,
+    wso2CaseId: c.wso2Id,
     subject: c.subject ?? "(no subject)",
     customer,
     accountId: account?.id ?? "",
