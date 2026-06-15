@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CORRELATION_ID_HEADER,
   getErrorReferenceId,
@@ -32,6 +32,33 @@ describe("newCorrelationId", () => {
   it("returns a distinct value each call", () => {
     const ids = new Set(Array.from({ length: 100 }, () => newCorrelationId()));
     expect(ids.size).toBe(100);
+  });
+});
+
+describe("newCorrelationId fallbacks", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses getRandomValues when randomUUID is unavailable", () => {
+    let calls = 0;
+    vi.stubGlobal("crypto", {
+      getRandomValues: (arr: Uint8Array) => {
+        // Deterministic, varied fill; the generator sets the version/variant
+        // bits itself, so any byte values still yield a well-formed UUID v4.
+        for (let i = 0; i < arr.length; i += 1) arr[i] = (i * 37 + calls) & 0xff;
+        calls += 1;
+        return arr;
+      },
+    });
+    expect(newCorrelationId()).toMatch(UUID_V4);
+    // Distinct seeds across calls produce distinct IDs.
+    expect(newCorrelationId()).not.toBe(newCorrelationId());
+  });
+
+  it("falls back to a non-crypto UUID when Web Crypto is unavailable", () => {
+    vi.stubGlobal("crypto", undefined);
+    expect(newCorrelationId()).toMatch(UUID_V4);
   });
 });
 
