@@ -373,7 +373,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Case'
+                $ref: '#/components/schemas/CreateCaseResponse'
         "400":
           description: Bad request.
           content:
@@ -1022,17 +1022,17 @@ components:
 
     CreateCaseRequest:
       type: object
-      required: [createdBy, projectId, deploymentId, deployedProductId, subject, description, priority, issueType]
+      required: [projectId, deploymentId, deployedProductId, subject, description, priority, issueType]
       properties:
-        createdBy:
-          type: string
-          description: UUID of the user creating the case.
         projectId:
           type: string
+          format: uuid
         deploymentId:
           type: string
+          format: uuid
         deployedProductId:
           type: string
+          format: uuid
         subject:
           type: string
         description:
@@ -1043,6 +1043,28 @@ components:
         issueType:
           type: string
           enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
+
+    CreateCaseResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        case:
+          type: object
+          properties:
+            id:
+              type: string
+            internalId:
+              type: string
+            number:
+              type: string
+            createdBy:
+              type: string
+            createdOn:
+              type: string
+              format: date-time
+            state:
+              type: string
 
     SearchCasesRequest:
       type: object
@@ -1103,15 +1125,47 @@ components:
         id:
           type: string
           format: uuid
-        displayName:
+          nullable: true
+        name:
           type: string
-          description: firstName + lastName
+          description: firstName + lastName (null for ServiceNow data source)
+          nullable: true
         userId:
           type: string
-          description: Username / login identifier.
+          description: Username / login identifier (null for ServiceNow data source)
+          nullable: true
         email:
           type: string
           format: email
+
+    AssignedEngineerRef:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+
+    CaseNumberRef:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+        number:
+          type: string
+
+    AccountRef:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
 
     UserIDEmailRef:
       type: object
@@ -1206,16 +1260,12 @@ components:
         state:
           type: string
           enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
-        createdAt:
+        createdOn:
           type: string
           format: date-time
-        updatedAt:
+        updatedOn:
           type: string
           format: date-time
-        closedAt:
-          type: string
-          format: date-time
-          nullable: true
         createdBy:
           $ref: '#/components/schemas/UserRef'
         project:
@@ -1224,6 +1274,16 @@ components:
           $ref: '#/components/schemas/EntityRef'
         deployedProduct:
           $ref: '#/components/schemas/DeployedProductRef'
+        product:
+          $ref: '#/components/schemas/EntityRef'
+        assignedEngineer:
+          $ref: '#/components/schemas/AssignedEngineerRef'
+        parentCase:
+          $ref: '#/components/schemas/CaseNumberRef'
+        relatedCase:
+          $ref: '#/components/schemas/CaseNumberRef'
+        account:
+          $ref: '#/components/schemas/AccountRef'
 
     CaseSearchView:
       type: object
@@ -1248,16 +1308,12 @@ components:
         state:
           type: string
           enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
-        createdAt:
+        createdOn:
           type: string
           format: date-time
-        updatedAt:
+        updatedOn:
           type: string
           format: date-time
-        closedAt:
-          type: string
-          format: date-time
-          nullable: true
         createdBy:
           $ref: '#/components/schemas/UserIDEmailRef'
         project:
