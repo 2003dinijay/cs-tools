@@ -20,7 +20,6 @@ import { Link as RouterLink } from "react-router";
 import { stateColor, stateLabel } from "@features/csm-dashboard/utils/abtDashboard";
 import RelativeTime from "@components/RelativeTime";
 import SeverityChip from "@components/SeverityChip";
-import { caseIdLabel } from "@features/csm-cases/utils/caseIdentity";
 import type { CsmCaseRow } from "@features/csm-cases/types/csmCases";
 
 interface CasesListProps {
@@ -29,16 +28,18 @@ interface CasesListProps {
 }
 
 const HEADER_CELLS: { label: string; align?: "left" | "right" }[] = [
-  { label: "Case" },
-  { label: "Customer" },
+  { label: "Case ID" },
+  { label: "Subject" },
   { label: "Product" },
   { label: "Severity" },
   { label: "State" },
   { label: "Updated", align: "right" },
 ];
 
+// Subject gets the lion's share of the row; the ids sit in their own narrow
+// column so a long subject no longer has to share one cell with them.
 const GRID =
-  "minmax(280px, 2.5fr) minmax(140px, 1fr) minmax(140px, 1fr) auto minmax(120px, 1fr) auto";
+  "minmax(120px, 0.9fr) minmax(280px, 3fr) minmax(140px, 1fr) auto minmax(110px, 1fr) auto";
 
 export default function CasesList({
   cases,
@@ -147,26 +148,48 @@ export default function CasesList({
                 "&:last-of-type": { borderBottom: 0 },
               }}
             >
+              {/* Case ids: WSO2 internal id on top, CS number beneath. Never
+                  the UUID. "—" when the case has neither yet. */}
+              <Box sx={{ minWidth: 0 }}>
+                {c.wso2CaseId && (
+                  <Typography
+                    variant="body2"
+                    noWrap
+                    sx={{ fontFamily: "monospace", fontWeight: 600 }}
+                  >
+                    {c.wso2CaseId}
+                  </Typography>
+                )}
+                {c.caseNumber && (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    noWrap
+                    sx={{ fontFamily: "monospace", display: "block" }}
+                  >
+                    {c.caseNumber}
+                  </Typography>
+                )}
+                {!c.wso2CaseId && !c.caseNumber && (
+                  <Typography variant="body2" color="text.secondary">
+                    —
+                  </Typography>
+                )}
+              </Box>
+              {/* Subject (the widest column) + project for context. */}
               <Box sx={{ minWidth: 0 }}>
                 <Typography variant="body2" noWrap>
-                  {caseIdLabel(c) ? (
-                    <>
-                      <Box component="strong" sx={{ fontFamily: "monospace" }}>
-                        {caseIdLabel(c)}
-                      </Box>{" "}
-                      · {c.subject}
-                    </>
-                  ) : (
-                    c.subject
-                  )}
+                  {c.subject}
                 </Typography>
-                <Typography variant="caption" color="text.secondary" noWrap>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  noWrap
+                  sx={{ display: "block" }}
+                >
                   {c.projectName}
                 </Typography>
               </Box>
-              <Typography variant="body2" noWrap>
-                {c.customer}
-              </Typography>
               <Typography variant="body2" noWrap>
                 {c.product}
               </Typography>
