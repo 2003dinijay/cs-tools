@@ -33,6 +33,7 @@ const (
 	ErrMsgTooLarge          = "Request body too large."
 	ErrMsgInternal          = "An internal server error occurred. Please try again later."
 	ErrMsgInvalidTransition = "Invalid state transition."
+	ErrMsgInvalidUUID       = "Invalid UUID format."
 	errMsgReadBody          = "Failed to read request body."
 )
 

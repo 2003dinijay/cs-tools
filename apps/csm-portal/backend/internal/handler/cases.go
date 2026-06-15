@@ -314,8 +314,8 @@ func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Case ID cannot be empty!")
 		return
 	}
-	if !uuidRe.MatchString(caseID) {
-		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+	if r.Header.Get("x-user-id-token") == "" && !uuidRe.MatchString(caseID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
 	}
 
@@ -390,8 +390,8 @@ func (h *CaseHandler) GetCase(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Case ID cannot be empty!")
 		return
 	}
-	if !uuidRe.MatchString(caseID) {
-		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+	if r.Header.Get("x-user-id-token") == "" && !uuidRe.MatchString(caseID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
 	}
 

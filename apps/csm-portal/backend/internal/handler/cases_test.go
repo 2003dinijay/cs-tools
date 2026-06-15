@@ -588,7 +588,7 @@ func TestPatchCase(t *testing.T) {
 		w := httptest.NewRecorder()
 		h.PatchCase(w, r)
 		assertStatus(t, w, http.StatusBadRequest)
-		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertErrorMessage(t, w, ErrMsgInvalidUUID)
 		assertContentType(t, w, "application/json")
 	})
 
@@ -781,7 +781,7 @@ func TestGetCase(t *testing.T) {
 		w := httptest.NewRecorder()
 		h.GetCase(w, r)
 		assertStatus(t, w, http.StatusBadRequest)
-		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertErrorMessage(t, w, ErrMsgInvalidUUID)
 		assertContentType(t, w, "application/json")
 	})
 
