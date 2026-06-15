@@ -592,6 +592,30 @@ func TestPatchCase(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
+	t.Run("allows non-UUID case ID when x-user-id-token is present", func(t *testing.T) {
+		var capturedID string
+		client := &mockEntityCaseClient{
+			getCaseFn: func(_ context.Context, caseID string) ([]byte, error) {
+				capturedID = caseID
+				return []byte(`{"id":"sn-123","state":"open"}`), nil
+			},
+			patchCaseFn: func(_ context.Context, caseID string, _ []byte) ([]byte, error) {
+				capturedID = caseID
+				return []byte(`{"id":"sn-123","state":"work_in_progress"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/cases/sn-123", strings.NewReader(validPayload)))
+		r.SetPathValue("id", "sn-123")
+		r.Header.Set("x-user-id-token", "token-value")
+		w := httptest.NewRecorder()
+		h.PatchCase(w, r)
+		assertStatus(t, w, http.StatusOK)
+		if capturedID != "sn-123" {
+			t.Errorf("upstream received caseID %q, want %q", capturedID, "sn-123")
+		}
+	})
+
 	t.Run("rejects body exceeding 1 MiB", func(t *testing.T) {
 		h := NewCaseHandler(&mockEntityCaseClient{})
 		r := withUser(httptest.NewRequest(http.MethodPatch, "/cases/"+testCaseID, strings.NewReader(strings.Repeat("x", maxRequestBodyBytes+1))))
@@ -783,6 +807,26 @@ func TestGetCase(t *testing.T) {
 		assertStatus(t, w, http.StatusBadRequest)
 		assertErrorMessage(t, w, ErrMsgInvalidUUID)
 		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("allows non-UUID case ID when x-user-id-token is present", func(t *testing.T) {
+		var capturedID string
+		client := &mockEntityCaseClient{
+			getCaseFn: func(_ context.Context, caseID string) ([]byte, error) {
+				capturedID = caseID
+				return []byte(`{"id":"sn-123","state":"open"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodGet, "/cases/sn-123", nil))
+		r.SetPathValue("id", "sn-123")
+		r.Header.Set("x-user-id-token", "token-value")
+		w := httptest.NewRecorder()
+		h.GetCase(w, r)
+		assertStatus(t, w, http.StatusOK)
+		if capturedID != "sn-123" {
+			t.Errorf("upstream received caseID %q, want %q", capturedID, "sn-123")
+		}
 	})
 
 	type getCaseResp struct {
