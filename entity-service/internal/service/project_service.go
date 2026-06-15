@@ -68,9 +68,9 @@ func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchPr
 }
 
 // GetProjectByID implements ProjectService.
-func (s *projectService) GetProjectByID(ctx context.Context, id string) (domain.Project, error) {
+func (s *projectService) GetProjectByID(ctx context.Context, id string) (domain.ProjectDetailsView, error) {
 	if err := validateUUIDs("id", []string{id}); err != nil {
-		return domain.Project{}, err
+		return domain.ProjectDetailsView{}, err
 	}
 	return s.repo.GetProjectByID(ctx, id)
 }

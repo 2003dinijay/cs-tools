@@ -35,9 +35,9 @@ type ProjectRepository interface {
 	// with the total count of matching rows before pagination.
 	// COUNT and SELECT are executed concurrently on separate pool connections.
 	SearchProjects(ctx context.Context, req domain.SearchProjectsRequest) ([]domain.Project, int, error)
-	// GetProjectByID returns the project with the given UUID, or a NotFoundError
-	// if no such project exists.
-	GetProjectByID(ctx context.Context, id string) (domain.Project, error)
+	// GetProjectByID returns the enriched project detail with the linked account,
+	// or a NotFoundError if no such project exists.
+	GetProjectByID(ctx context.Context, id string) (domain.ProjectDetailsView, error)
 }
 
 type projectRepo struct {
@@ -126,21 +126,27 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 }
 
 // GetProjectByID implements ProjectRepository.
-func (r *projectRepo) GetProjectByID(ctx context.Context, id string) (domain.Project, error) {
-	var p domain.Project
+func (r *projectRepo) GetProjectByID(ctx context.Context, id string) (domain.ProjectDetailsView, error) {
+	var v domain.ProjectDetailsView
 	err := r.db.QueryRow(ctx,
-		`SELECT id, account_id, sf_id, name, key, subscription_type, closure_status,
-		        start_date, end_date, created_at, updated_at
-		 FROM projects WHERE id = $1`, id,
+		`SELECT p.id, p.sf_id, p.name, p.key, p.subscription_type,
+		        p.start_date, p.end_date, p.created_at, p.updated_at,
+		        a.id, a.name, a.activation_date, a.tier::TEXT, a.region,
+		        a.agent_enabled, a.kb_references_enabled
+		 FROM projects p
+		 JOIN accounts a ON p.account_id = a.id
+		 WHERE p.id = $1`, id,
 	).Scan(
-		&p.ID, &p.AccountID, &p.SfID, &p.Name, &p.Key, &p.SubscriptionType, &p.ClosureStatus,
-		&p.StartDate, &p.EndDate, &p.CreatedAt, &p.UpdatedAt,
+		&v.ID, &v.SfID, &v.Name, &v.Key, &v.SubscriptionType,
+		&v.StartDate, &v.EndDate, &v.CreatedOn, &v.UpdatedOn,
+		&v.Account.ID, &v.Account.Name, &v.Account.ActivationDate, &v.Account.Tier, &v.Account.Region,
+		&v.Account.AgentEnabled, &v.Account.KbReferencesEnabled,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Project{}, &apierror.NotFoundError{Msg: "project not found"}
+		return domain.ProjectDetailsView{}, &apierror.NotFoundError{Msg: "project not found"}
 	}
 	if err != nil {
-		return domain.Project{}, fmt.Errorf("get project by id: %w", err)
+		return domain.ProjectDetailsView{}, fmt.Errorf("get project by id: %w", err)
 	}
-	return p, nil
+	return v, nil
 }

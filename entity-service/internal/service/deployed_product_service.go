@@ -42,16 +42,16 @@ func (s *deployedProductService) SearchDeployedProducts(ctx context.Context, req
 		return domain.SearchDeployedProductsResponse{}, err
 	}
 
-	deployedProducts, total, err := s.repo.SearchDeployedProducts(ctx, req)
+	views, total, err := s.repo.SearchDeployedProducts(ctx, req)
 	if err != nil {
 		return domain.SearchDeployedProductsResponse{}, err
 	}
 
 	return domain.SearchDeployedProductsResponse{
-		DeployedProducts: deployedProducts,
+		DeployedProducts: views,
 		Total:            total,
 		Limit:            req.Pagination.Limit,
 		Offset:           req.Pagination.Offset,
-		HasMore:          req.Pagination.Offset+len(deployedProducts) < total,
+		HasMore:          req.Pagination.Offset+len(views) < total,
 	}, nil
 }

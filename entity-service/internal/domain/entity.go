@@ -40,8 +40,8 @@ type User struct {
 	FirstName string    `json:"firstName"`
 	LastName  string    `json:"lastName"`
 	Email     string    `json:"email"`
-	Phone     *string   `json:"phone,omitempty"`
-	Timezone  *string   `json:"timezone,omitempty"`
+	Phone     *string   `json:"phone"`
+	Timezone  *string   `json:"timezone"`
 	UserType  UserType  `json:"userType"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -88,11 +88,11 @@ type Account struct {
 	SfID                string      `json:"sfId"`
 	Name                string      `json:"name"`
 	Tier                AccountTier `json:"tier"`
-	Region              *string     `json:"region,omitempty"`
+	Region              *string     `json:"region"`
 	ActivationDate      time.Time   `json:"activationDate"`
-	DeactivationDate    *time.Time  `json:"deactivationDate,omitempty"`
+	DeactivationDate    *time.Time  `json:"deactivationDate"`
 	OwnerID             string      `json:"ownerId"`
-	TechnicalOwnerID    *string     `json:"technicalOwnerId,omitempty"`
+	TechnicalOwnerID    *string     `json:"technicalOwnerId"`
 	AgentEnabled        bool        `json:"agentEnabled"`
 	KbReferencesEnabled bool        `json:"kbReferencesEnabled"`
 	CreatedAt           time.Time   `json:"createdAt"`
@@ -145,21 +145,48 @@ const (
 
 // Project represents a customer project linked to an account.
 type Project struct {
-	ID               string         `json:"id"`
-	AccountID        string         `json:"accountId"`
-	SfID             string         `json:"sfId"`
-	Name             string         `json:"name"`
-	Key              string         `json:"key"`
+	ID               string           `json:"id"`
+	AccountID        string           `json:"accountId"`
+	SfID             string           `json:"sfId"`
+	Name             string           `json:"name"`
+	Key              string           `json:"key"`
 	SubscriptionType SubscriptionType `json:"subscriptionType"`
-	ClosureStatus    *ClosureStatus `json:"closureStatus,omitempty"`
-	StartDate        time.Time      `json:"startDate"`
-	EndDate          time.Time      `json:"endDate"`
-	CreatedAt        time.Time      `json:"createdAt"`
-	UpdatedAt        time.Time      `json:"updatedAt"`
+	ClosureStatus    *ClosureStatus   `json:"closureStatus"`
+	StartDate        time.Time        `json:"startDate"`
+	EndDate          time.Time        `json:"endDate"`
+	CreatedAt        time.Time        `json:"createdAt"`
+	UpdatedAt        time.Time        `json:"updatedAt"`
+}
+
+// ProjectAccountRef is the embedded account summary returned in project detail responses.
+type ProjectAccountRef struct {
+	ID                  string     `json:"id"`
+	Name                string     `json:"name"`
+	ActivationDate      *time.Time `json:"activationDate"`
+	Tier                string     `json:"tier"`
+	Region              *string    `json:"region"`
+	AgentEnabled        bool       `json:"agentEnabled"`
+	KbReferencesEnabled bool       `json:"kbReferencesEnabled"`
+}
+
+// ProjectDetailsView is the enriched response shape for GET /projects/{id}.
+// It embeds the linked account and uses createdOn/updatedOn for consistency
+// with the ProjectView search result.
+type ProjectDetailsView struct {
+	ID               string            `json:"id"`
+	Account          ProjectAccountRef `json:"account"`
+	SfID             string            `json:"sfId"`
+	Name             string            `json:"name"`
+	Key              string            `json:"key"`
+	SubscriptionType SubscriptionType  `json:"subscriptionType"`
+	StartDate        time.Time         `json:"startDate"`
+	EndDate          time.Time         `json:"endDate"`
+	CreatedOn        time.Time         `json:"createdOn"`
+	UpdatedOn        time.Time         `json:"updatedOn"`
 }
 
 // SearchProjectsRequest is the input for a project search operation.
-// SearchQuery is matched case-insensitively against name, project_key, and subscription_type.
+// SearchQuery is matched case-insensitively against name, key, and subscription_type.
 type SearchProjectsRequest struct {
 	Pagination  Pagination `json:"pagination"`
 	SearchQuery string     `json:"searchQuery"`
@@ -239,8 +266,8 @@ type ProductVersion struct {
 	Version                        string        `json:"version"`
 	CurrentSupportStatus           SupportStatus `json:"currentSupportStatus"`
 	ReleaseDate                    time.Time     `json:"releaseDate"`
-	SupportEOLDate                 *time.Time    `json:"supportEolDate,omitempty"`
-	EarliestPossibleSupportEOLDate *time.Time    `json:"earliestPossibleSupportEolDate,omitempty"`
+	SupportEOLDate                 *time.Time    `json:"supportEolDate"`
+	EarliestPossibleSupportEOLDate *time.Time    `json:"earliestPossibleSupportEolDate"`
 	CreatedAt                      time.Time     `json:"createdAt"`
 	UpdatedAt                      time.Time     `json:"updatedAt"`
 }
@@ -277,16 +304,29 @@ const (
 )
 
 // Deployment represents a project deployment environment as stored in the database.
-// Description is optional and omitted from JSON when absent.
 type Deployment struct {
 	ID          string         `json:"id"`
 	ProjectID   string         `json:"projectId"`
 	Name        string         `json:"name"`
 	Type        DeploymentType `json:"type"`
-	Description *string        `json:"description,omitempty"`
+	Description *string        `json:"description"`
 	CreatedBy   string         `json:"createdBy"`
 	CreatedAt   time.Time      `json:"createdAt"`
 	UpdatedAt   time.Time      `json:"updatedAt"`
+}
+
+// DeploymentView is the enriched search result for a deployment. It embeds
+// project and createdBy as named refs and uses createdOn/updatedOn naming.
+type DeploymentView struct {
+	ID          string         `json:"id"`
+	Number      string         `json:"number"`
+	Name        string         `json:"name"`
+	Type        DeploymentType `json:"type"`
+	Description *string        `json:"description"`
+	CreatedBy   *EntityRef     `json:"createdBy"`
+	Project     EntityRef      `json:"project"`
+	CreatedOn   time.Time      `json:"createdOn"`
+	UpdatedOn   time.Time      `json:"updatedOn"`
 }
 
 // SearchDeploymentsRequest is the input for a deployment search operation.
@@ -303,22 +343,44 @@ type SearchDeploymentsRequest struct {
 // SearchDeploymentsResponse is the paginated result of a deployment search.
 // HasMore is true when additional pages are available beyond the current offset.
 type SearchDeploymentsResponse struct {
-	Deployments []Deployment `json:"deployments"`
-	Total       int          `json:"total"`
-	Limit       int          `json:"limit"`
-	Offset      int          `json:"offset"`
-	HasMore     bool         `json:"hasMore"`
+	Deployments []DeploymentView `json:"deployments"`
+	Total       int              `json:"total"`
+	Limit       int              `json:"limit"`
+	Offset      int              `json:"offset"`
+	HasMore     bool             `json:"hasMore"`
 }
 
 // DeployedProduct represents a product (and optional version) associated with a deployment.
-// ProductVersionID is optional and omitted from JSON when absent.
 type DeployedProduct struct {
-	ID               string     `json:"id"`
-	DeploymentID     string     `json:"deploymentId"`
-	ProductID        string     `json:"productId"`
-	ProductVersionID *string    `json:"productVersionId,omitempty"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
+	ID               string    `json:"id"`
+	DeploymentID     string    `json:"deploymentId"`
+	ProductID        string    `json:"productId"`
+	ProductVersionID *string   `json:"productVersionId"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+// DeployedProductVersionRef is the version sub-object in a DeployedProductView.
+type DeployedProductVersionRef struct {
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	ReleasedDate   *time.Time `json:"releasedDate"`
+	SupportEoLDate *time.Time `json:"supportEoLDate"`
+}
+
+// DeployedProductView is the enriched search result for a deployed product.
+// It embeds deployment, product, and version as named refs and uses createdOn/updatedOn naming.
+// Cores, TPS, and Category are SN-only fields; they are always null for the Postgres path.
+type DeployedProductView struct {
+	ID         string                     `json:"id"`
+	Deployment EntityRef                  `json:"deployment"`
+	Product    EntityRef                  `json:"product"`
+	Version    *DeployedProductVersionRef `json:"version"`
+	Cores      *string                    `json:"cores"`
+	TPS        *string                    `json:"tps"`
+	Category   *string                    `json:"category"`
+	CreatedOn  time.Time                  `json:"createdOn"`
+	UpdatedOn  time.Time                  `json:"updatedOn"`
 }
 
 // SearchDeployedProductsRequest is the input for a deployed-product search operation.
@@ -331,11 +393,11 @@ type SearchDeployedProductsRequest struct {
 // SearchDeployedProductsResponse is the paginated result of a deployed-product search.
 // HasMore is true when additional pages are available beyond the current offset.
 type SearchDeployedProductsResponse struct {
-	DeployedProducts []DeployedProduct `json:"deployedProducts"`
-	Total            int               `json:"total"`
-	Limit            int               `json:"limit"`
-	Offset           int               `json:"offset"`
-	HasMore          bool              `json:"hasMore"`
+	DeployedProducts []DeployedProductView `json:"deployedProducts"`
+	Total            int                   `json:"total"`
+	Limit            int                   `json:"limit"`
+	Offset           int                   `json:"offset"`
+	HasMore          bool                  `json:"hasMore"`
 }
 
 // CaseIssueType classifies the nature of a support case.
@@ -403,7 +465,7 @@ type CaseSort struct {
 type Case struct {
 	ID                string        `json:"id"`
 	Number            string        `json:"number"`
-	Wso2ID            string        `json:"wso2Id"`
+	InternalID        string        `json:"internalId"`
 	CreatedBy         string        `json:"createdBy"`
 	ProjectID         string        `json:"projectId"`
 	DeploymentID      string        `json:"deploymentId"`
@@ -415,15 +477,15 @@ type Case struct {
 	State             CaseState     `json:"state"`
 	CreatedAt         time.Time     `json:"createdAt"`
 	UpdatedAt         time.Time     `json:"updatedAt"`
-	ClosedAt          *time.Time    `json:"closedAt,omitempty"`
+	ClosedAt          *time.Time    `json:"closedAt"`
 }
 
 // UserRef is a reference to a user with key display fields.
 type UserRef struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
-	UserID      string `json:"userId,omitempty"`
-	Email       string `json:"email,omitempty"`
+	UserID      string `json:"userId"`
+	Email       string `json:"email"`
 }
 
 // UserIDEmailRef is a compact user reference carrying only id and email.
@@ -451,7 +513,7 @@ type DeployedProductRef struct {
 type CaseView struct {
 	ID                     string             `json:"id"`
 	Number                 string             `json:"number"`
-	Wso2ID                 string             `json:"wso2Id"`
+	InternalID             string             `json:"internalId"`
 	Subject                string             `json:"subject"`
 	Description            string             `json:"description"`
 	Priority               CasePriority       `json:"priority"`
@@ -459,7 +521,7 @@ type CaseView struct {
 	State                  CaseState          `json:"state"`
 	CreatedAt              time.Time          `json:"createdAt"`
 	UpdatedAt              time.Time          `json:"updatedAt"`
-	ClosedAt               *time.Time         `json:"closedAt,omitempty"`
+	ClosedAt               *time.Time         `json:"closedAt"`
 	CreatedByDetails       UserRef            `json:"createdBy"`
 	ProjectDetails         EntityRef          `json:"project"`
 	DeploymentDetails      EntityRef          `json:"deployment"`
@@ -467,18 +529,18 @@ type CaseView struct {
 }
 
 // SearchCasesRequest is the input for a case search operation.
-// SearchQuery is matched case-insensitively against subject, number, and wso2_id.
+// SearchQuery is matched case-insensitively against subject, number, and internal_id.
 // All filter slices are optional. SortBy defaults to created_at.
 type SearchCasesRequest struct {
-	Pagination          Pagination     `json:"pagination"`
-	SearchQuery         string         `json:"searchQuery"`
-	ProjectIDs          []string       `json:"projectIds"`
-	DeploymentIDs       []string       `json:"deploymentIds"`
-	DeployedProductIDs  []string       `json:"deployedProductIds"`
-	StateKeys           []CaseState     `json:"stateKeys"`
-	PriorityKeys        []CasePriority  `json:"priorityKeys"`
-	IssueTypeKeys       []CaseIssueType `json:"issueTypeKeys"`
-	SortBy              CaseSort        `json:"sortBy"`
+	Pagination         Pagination      `json:"pagination"`
+	SearchQuery        string          `json:"searchQuery"`
+	ProjectIDs         []string        `json:"projectIds"`
+	DeploymentIDs      []string        `json:"deploymentIds"`
+	DeployedProductIDs []string        `json:"deployedProductIds"`
+	StateKeys          []CaseState     `json:"stateKeys"`
+	PriorityKeys       []CasePriority  `json:"priorityKeys"`
+	IssueTypeKeys      []CaseIssueType `json:"issueTypeKeys"`
+	SortBy             CaseSort        `json:"sortBy"`
 }
 
 // SearchCaseView is the enriched read representation of a case returned in search
@@ -486,7 +548,7 @@ type SearchCasesRequest struct {
 type SearchCaseView struct {
 	ID                     string             `json:"id"`
 	Number                 string             `json:"number"`
-	Wso2ID                 string             `json:"wso2Id"`
+	InternalID             string             `json:"internalId"`
 	Subject                string             `json:"subject"`
 	Description            string             `json:"description"`
 	Priority               CasePriority       `json:"priority"`
@@ -494,7 +556,7 @@ type SearchCaseView struct {
 	State                  CaseState          `json:"state"`
 	CreatedAt              time.Time          `json:"createdAt"`
 	UpdatedAt              time.Time          `json:"updatedAt"`
-	ClosedAt               *time.Time         `json:"closedAt,omitempty"`
+	ClosedAt               *time.Time         `json:"closedAt"`
 	CreatedBy              UserIDEmailRef     `json:"createdBy"`
 	ProjectDetails         EntityRef          `json:"project"`
 	DeploymentDetails      EntityRef          `json:"deployment"`
@@ -520,16 +582,16 @@ type UpdateCaseRequest struct {
 }
 
 // CreateCaseRequest is the input for creating a new case.
-// id, number, and wso2_id are auto-generated; state defaults to open.
+// id, number, and internal_id are auto-generated; state defaults to open.
 type CreateCaseRequest struct {
-	CreatedBy          string        `json:"createdBy"`
-	ProjectID          string        `json:"projectId"`
-	DeploymentID       string        `json:"deploymentId"`
-	DeployedProductID  string        `json:"deployedProductId"`
-	Subject            string        `json:"subject"`
-	Description        string        `json:"description"`
-	Priority           CasePriority  `json:"priority"`
-	IssueType          CaseIssueType `json:"issueType"`
+	CreatedBy         string        `json:"createdBy"`
+	ProjectID         string        `json:"projectId"`
+	DeploymentID      string        `json:"deploymentId"`
+	DeployedProductID string        `json:"deployedProductId"`
+	Subject           string        `json:"subject"`
+	Description       string        `json:"description"`
+	Priority          CasePriority  `json:"priority"`
+	IssueType         CaseIssueType `json:"issueType"`
 }
 
 // CommentType classifies the type of a case comment.
