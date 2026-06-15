@@ -92,7 +92,7 @@ type DeployedProductService interface {
 type CaseService interface {
 	// CreateCase creates a new case with auto-generated id, number, and internal_id.
 	// State defaults to open. A ValidationError is returned for invalid input.
-	CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
+	CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error)
 	// GetCaseByID returns the enriched case view for the given UUID. A
 	// ValidationError is returned for a malformed UUID; a NotFoundError if no case matches.
 	GetCaseByID(ctx context.Context, id string) (domain.CaseView, error)
