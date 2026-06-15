@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
@@ -314,8 +315,8 @@ func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Case ID cannot be empty!")
 		return
 	}
-	if !uuidRe.MatchString(caseID) {
-		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+	if strings.TrimSpace(r.Header.Get("x-user-id-token")) == "" && !uuidRe.MatchString(caseID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
 	}
 
@@ -390,8 +391,8 @@ func (h *CaseHandler) GetCase(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Case ID cannot be empty!")
 		return
 	}
-	if !uuidRe.MatchString(caseID) {
-		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+	if strings.TrimSpace(r.Header.Get("x-user-id-token")) == "" && !uuidRe.MatchString(caseID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
 	}
 
