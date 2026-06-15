@@ -952,11 +952,11 @@ components:
           type: string
         releasedDate:
           type: string
-          format: date
+          format: date-time
           nullable: true
         supportEoLDate:
           type: string
-          format: date
+          format: date-time
           nullable: true
 
     DeployedProductView:
