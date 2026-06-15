@@ -15,7 +15,7 @@
 // under the License.
 
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { ApiQueryKeys } from "@constants/apiConstants";
+import { ApiQueryKeys, BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
 import type {
   BeDeployment,
@@ -23,7 +23,7 @@ import type {
   BeDeploymentSearchResponse,
 } from "@api/backend/types";
 
-const PAGE_LIMIT = 100; // backend caps pagination limit at 100
+const PAGE_LIMIT = BE_MAX_PAGE_LIMIT;
 
 /**
  * Deployments belonging to a project, via `POST /deployments/search`

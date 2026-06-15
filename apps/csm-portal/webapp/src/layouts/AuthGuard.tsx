@@ -19,8 +19,7 @@ import { useAsgardeo } from "@asgardeo/react";
 import { ProtectedRoute } from "@asgardeo/react-router";
 import { useLocation, useNavigate } from "react-router";
 import AppLayout from "@layouts/AppLayout";
-
-const POST_LOGIN_REDIRECT_KEY = "post_login_redirect";
+import { POST_LOGIN_REDIRECT_KEY } from "@layouts/postLoginRedirect";
 
 /**
  * AuthGuard renders AppLayout (header/footer) so loading state is visible
@@ -42,11 +41,14 @@ export default function AuthGuard(): JSX.Element {
   const location = useLocation();
   const navigate = useNavigate();
 
-  // After login, restore the saved deep link. The key is cleared ONLY once we
-  // actually arrive at the target — so it survives the Asgardeo SDK reloading
-  // the page to `afterSignInUrl` ("/") after the callback, which would
-  // otherwise drop us on the default `/accounts` landing. The default `/`
-  // landing is deferred to RootLanding in App.tsx while a redirect is pending.
+  // After login, restore the saved deep link so it survives the Asgardeo SDK
+  // reloading the page to `afterSignInUrl` ("/") after the callback (which would
+  // otherwise drop us on the default landing). The key is consumed by
+  // PostLoginRedirectConsumer once we arrive at the target — that consumer runs
+  // above <Routes> so it also clears the key for routes AuthGuard never mounts
+  // (e.g. the 404 page); clearing here would strand the key on a dead deep link
+  // and bounce the next `/` visit back to it. The default `/` landing is
+  // deferred to RootLanding in App.tsx while a redirect is pending.
   useEffect(() => {
     if (!isSignedIn) return;
     const redirect = sessionStorage.getItem(POST_LOGIN_REDIRECT_KEY);
@@ -54,9 +56,7 @@ export default function AuthGuard(): JSX.Element {
     // Compare (and restore) the full location including the hash, so anchor
     // permalinks like `/cases/:id#description` are honoured, not stripped.
     const here = location.pathname + location.search + location.hash;
-    if (here === redirect) {
-      sessionStorage.removeItem(POST_LOGIN_REDIRECT_KEY);
-    } else {
+    if (here !== redirect) {
       void navigate(redirect, { replace: true });
     }
   }, [isSignedIn, navigate, location.pathname, location.search, location.hash]);

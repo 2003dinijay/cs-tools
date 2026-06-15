@@ -17,6 +17,10 @@
 import { type JSX, lazy } from "react";
 import { Navigate, Route, Routes } from "react-router";
 import AuthGuard from "@layouts/AuthGuard";
+import {
+  POST_LOGIN_REDIRECT_KEY,
+  PostLoginRedirectConsumer,
+} from "@layouts/postLoginRedirect";
 import ErrorLayout from "@layouts/ErrorLayout";
 import CsmComingSoonPage from "@features/csm-coming-soon/pages/CsmComingSoonPage";
 import Error401Page from "@components/error/Error401Page";
@@ -69,7 +73,7 @@ const CsmUpdatesPage = lazy(
  * sessionStorage — AuthGuard owns clearing the key.
  */
 function RootLanding(): JSX.Element | null {
-  const pending = sessionStorage.getItem("post_login_redirect");
+  const pending = sessionStorage.getItem(POST_LOGIN_REDIRECT_KEY);
   return pending ? null : <Navigate to="/dashboard" replace />;
 }
 
@@ -79,6 +83,7 @@ export default function App(): JSX.Element {
       <ErrorBannerProvider>
         <SuccessBannerProvider>
           <ErrorPageProvider>
+            <PostLoginRedirectConsumer />
             <Routes>
               <Route
                 path="/401"

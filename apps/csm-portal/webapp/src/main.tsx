@@ -19,6 +19,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import AppWithConfig from "./AppWithConfig";
 import { hydrateMockModeFromStorage } from "@context/mock-mode/MockModeContext";
+import { POST_LOGIN_REDIRECT_KEY } from "@layouts/postLoginRedirect";
 
 if (typeof window !== "undefined") {
   (window as unknown as { Prism: typeof Prism }).Prism = Prism;
@@ -46,7 +47,7 @@ if (typeof window !== "undefined") {
     const params = new URLSearchParams(window.location.search);
     const isOauthCallback = params.has("code") && params.has("state");
     if (entry !== "/" && !isOauthCallback) {
-      window.sessionStorage.setItem("post_login_redirect", entry);
+      window.sessionStorage.setItem(POST_LOGIN_REDIRECT_KEY, entry);
     }
   } catch {
     /* sessionStorage may be unavailable; deep-link restore is best-effort. */

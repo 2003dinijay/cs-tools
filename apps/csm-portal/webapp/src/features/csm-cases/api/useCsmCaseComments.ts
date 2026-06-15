@@ -22,7 +22,7 @@ import {
   type UseQueryResult,
 } from "@tanstack/react-query";
 import { useLogger } from "@hooks/useLogger";
-import { ApiQueryKeys } from "@constants/apiConstants";
+import { ApiQueryKeys, BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { isMockMode, useBackendApi } from "@api/backend/client";
 import type {
   BeCaseComment,
@@ -42,14 +42,14 @@ import type { CsmCaseComment } from "@features/csm-cases/types/csmCases";
 
 const MOCK_LATENCY_MS = 150;
 
-/** Page size used by the comments list. Capped at 100 by the BE. */
-const COMMENTS_PAGE_LIMIT = 100;
+/** Page size used by the comments list. Capped by the BE; see BE_MAX_PAGE_LIMIT. */
+const COMMENTS_PAGE_LIMIT = BE_MAX_PAGE_LIMIT;
 
 /**
  * Load all comments on a case. In LIVE mode calls
- * `POST /cases/{id}/comments/search` with a wide page (limit=100). If a case
- * exceeds that, switch consumers to an explicit pagination wrapper rather
- * than chasing pages here.
+ * `POST /cases/{id}/comments/search` with a single wide page (limit capped at
+ * BE_MAX_PAGE_LIMIT). If a case exceeds that, switch consumers to an explicit
+ * pagination wrapper rather than chasing pages here.
  */
 export function useGetCsmCaseComments(
   caseId: string | undefined,
