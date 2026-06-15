@@ -69,8 +69,8 @@ type snCaseLabel struct {
 }
 
 type snCaseIssueType struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID    json.Number `json:"id"`
+	Label string      `json:"label"`
 }
 
 // snCaseSearchPayload is the Choreo POST /cases/search request body.
@@ -222,13 +222,26 @@ func snCaseStateLabelToEnum(state *snCaseState) (domain.CaseState, error) {
 	return "", fmt.Errorf("unknown case state %q from ServiceNow", state.Label)
 }
 
+// snSeverityLabel extracts the priority word from SN severity labels like
+// "Low (P4)", "2 - High", "3 - Moderate" → "low", "high", "medium".
+var snSeverityLabelMap = map[string]domain.CasePriority{
+	"catastrophic": domain.CasePriorityCatastrophic,
+	"critical":     domain.CasePriorityCritical,
+	"high":         domain.CasePriorityHigh,
+	"moderate":     domain.CasePriorityMedium,
+	"medium":       domain.CasePriorityMedium,
+	"low":          domain.CasePriorityLow,
+}
+
 func snSeverityToPriority(severity *snCaseLabel) domain.CasePriority {
 	if severity == nil {
 		return ""
 	}
-	p := domain.CasePriority(strings.ToLower(severity.Label))
-	if validCasePriority[p] {
-		return p
+	// Labels arrive as e.g. "Low (P4)" or "2 - High"; scan words for a known priority.
+	for _, word := range strings.Fields(severity.Label) {
+		if p, ok := snSeverityLabelMap[strings.ToLower(strings.Trim(word, "(),"))]; ok {
+			return p
+		}
 	}
 	return ""
 }
@@ -237,7 +250,8 @@ func snIssueTypeToEnum(issueType *snCaseIssueType) domain.CaseIssueType {
 	if issueType == nil {
 		return ""
 	}
-	it := domain.CaseIssueType(strings.ToLower(strings.ReplaceAll(issueType.ID, " ", "_")))
+	// SN sends issueType.name as the human label e.g. "Error", "Total Outage".
+	it := domain.CaseIssueType(strings.ToLower(strings.ReplaceAll(issueType.Label, " ", "_")))
 	if validCaseIssueType[it] {
 		return it
 	}
