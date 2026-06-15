@@ -15,7 +15,7 @@
 // under the License.
 
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { ApiQueryKeys } from "@constants/apiConstants";
+import { ApiQueryKeys, BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useBackendApi, type BackendApi } from "@api/backend/client";
 import type {
   BeProject,
@@ -23,10 +23,11 @@ import type {
   BeProjectSearchResponse,
 } from "@api/backend/types";
 
-const PAGE_LIMIT = 100; // backend caps pagination limit at 100
+const PAGE_LIMIT = BE_MAX_PAGE_LIMIT;
 // Cap the scan so a large project catalog can't fire unbounded sequential
-// requests (~2000 projects covered).
-const MAX_PAGES = 20;
+// requests (~2000 projects covered). Doubled from 20 when the page limit halved
+// to BE_MAX_PAGE_LIMIT, so the scan ceiling (pages * limit) is unchanged.
+const MAX_PAGES = 40;
 
 /**
  * Query options for the full project directory, via `POST /projects/search`.

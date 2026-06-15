@@ -15,7 +15,7 @@
 // under the License.
 
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { ApiQueryKeys } from "@constants/apiConstants";
+import { ApiQueryKeys, BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { isMockMode, useBackendApi } from "@api/backend/client";
 import { severityFromPriority, uiStateFromBe } from "@api/backend/mappers";
 import type {
@@ -28,8 +28,8 @@ import type {
   Severity,
 } from "@features/csm-dashboard/types/abtDashboard";
 
-const PAGE_LIMIT = 100; // backend caps pagination limit at 100
-const MAX_PAGES = 5; // bound the fan-out (≤500 cases sampled for the matrix)
+const PAGE_LIMIT = BE_MAX_PAGE_LIMIT;
+const MAX_PAGES = 10; // bound the fan-out (≤500 cases sampled for the matrix); doubled from 5 when the page limit halved to BE_MAX_PAGE_LIMIT
 
 export const MATRIX_SEVERITIES: Severity[] = ["S0", "S1", "S2", "S3", "S4"];
 export const MATRIX_STATES: CaseState[] = [

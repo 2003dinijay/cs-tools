@@ -20,7 +20,7 @@ import {
   type UseQueryResult,
 } from "@tanstack/react-query";
 import { useLogger } from "@hooks/useLogger";
-import { ApiQueryKeys } from "@constants/apiConstants";
+import { ApiQueryKeys, BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { isMockMode, useBackendApi, type BackendApi } from "@api/backend/client";
 import {
   beStateFromUi,
@@ -46,11 +46,13 @@ import type {
 const MOCK_LATENCY_MS = 200;
 
 /** Page size for the cross-project case list (server-side filtering TBD). */
-const CASES_PAGE_LIMIT = 100;
+const CASES_PAGE_LIMIT = BE_MAX_PAGE_LIMIT;
 /** Page size for the account name lookup (customer column). */
-const LOOKUP_PAGE_LIMIT = 100; // backend caps pagination limit at 100
+const LOOKUP_PAGE_LIMIT = BE_MAX_PAGE_LIMIT;
 // Cap the account scan the same way useProjectOptions caps the project scan.
-const LOOKUP_MAX_PAGES = 20;
+// Doubled from 20 when the page limit halved to BE_MAX_PAGE_LIMIT, so the total
+// scan ceiling (pages * limit) is unchanged.
+const LOOKUP_MAX_PAGES = 40;
 
 /**
  * Query options for the account-name lookup (`POST /accounts/search`). Kept as

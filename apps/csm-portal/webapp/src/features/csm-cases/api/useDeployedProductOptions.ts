@@ -15,7 +15,7 @@
 // under the License.
 
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { ApiQueryKeys } from "@constants/apiConstants";
+import { ApiQueryKeys, BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
 import type {
   BeDeployedProductSearchPayload,
@@ -26,8 +26,8 @@ import type {
   BeProductVersionSearchResponse,
 } from "@api/backend/types";
 
-const PAGE_LIMIT = 100;
-const PRODUCTS_LIMIT = 100; // backend caps pagination limit at 100
+const PAGE_LIMIT = BE_MAX_PAGE_LIMIT;
+const PRODUCTS_LIMIT = BE_MAX_PAGE_LIMIT;
 // Bound the catalog scan: if referenced product ids can't be resolved (deleted
 // or bad data), don't page through an unbounded catalog. ~2000 products covered.
 const MAX_CATALOG_PAGES = 20;

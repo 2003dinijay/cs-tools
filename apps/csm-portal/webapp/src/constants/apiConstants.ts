@@ -14,6 +14,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+/**
+ * Maximum pagination `limit` the backend currently accepts on search endpoints.
+ * TEMPORARY: the backend hard-caps the limit at 50 — requests with a larger
+ * value are rejected, so every search payload must stay at or below this. Was
+ * 100. Raise this back once the backend lifts the cap; it is the single point
+ * of revert for that change.
+ */
+export const BE_MAX_PAGE_LIMIT = 50;
+
 // Constants for API-related query keys.
 export const ApiQueryKeys = {
   PROJECTS: "projects",

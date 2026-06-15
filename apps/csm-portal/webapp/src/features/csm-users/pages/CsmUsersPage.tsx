@@ -36,7 +36,8 @@ import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
 import type { SearchUsersRequest } from "@features/csm-users/types/csmUsers";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
-const ROWS_PER_PAGE_OPTIONS = [10, 20, 50, 100];
+// 100 dropped: the backend rejects pagination limits above 50 (BE_MAX_PAGE_LIMIT).
+const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
 
 export default function CsmUsersPage(): JSX.Element {
   const [searchInput, setSearchInput] = useState("");

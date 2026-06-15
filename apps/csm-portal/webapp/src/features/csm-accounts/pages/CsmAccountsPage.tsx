@@ -36,7 +36,8 @@ import { useSearchAccounts } from "@features/csm-accounts/api/useSearchAccounts"
 import type { SearchAccountsRequest } from "@features/csm-accounts/types/csmAccounts";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
-const ROWS_PER_PAGE_OPTIONS = [10, 20, 50, 100];
+// 100 dropped: the backend rejects pagination limits above 50 (BE_MAX_PAGE_LIMIT).
+const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
 
 function formatDate(value?: string | null): string {
   if (!value) return "—";
