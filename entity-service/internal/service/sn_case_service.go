@@ -423,8 +423,105 @@ func (s *snCaseService) CreateCaseComment(ctx context.Context, req domain.Create
 	}, nil
 }
 
+type snCommentFilters struct {
+	Type string `json:"type,omitempty"`
+}
+
+type snSearchCommentsPayload struct {
+	ReferenceID   string             `json:"referenceId"`
+	ReferenceType string             `json:"referenceType"`
+	Filters       *snCommentFilters  `json:"filters,omitempty"`
+	Pagination    snProjectPagination `json:"pagination"`
+}
+
+type snComment struct {
+	ID                  string `json:"id"`
+	ReferenceID         string `json:"referenceId"`
+	Content             string `json:"content"`
+	Type                string `json:"type"`
+	CreatedOn           string `json:"createdOn"`
+	CreatedBy           string `json:"createdBy"`
+	CreatedByFirstName  string `json:"createdByFirstName"`
+	CreatedByLastName   string `json:"createdByLastName"`
+	CreatedByFullName   string `json:"createdByFullName"`
+}
+
+type snSearchCommentsResponse struct {
+	Comments     []snComment `json:"comments"`
+	Offset       int         `json:"offset"`
+	Limit        int         `json:"limit"`
+	TotalRecords int         `json:"totalRecords"`
+}
+
+var snCommentTypeMap = map[domain.CommentType]string{
+	domain.CommentTypeComment:  "comments",
+	domain.CommentTypeWorkNote: "work_note",
+}
+
 func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.SearchCaseCommentsRequest) (domain.SearchCaseCommentsResponse, error) {
-	return s.pgFallback.SearchCaseComments(ctx, req)
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchCaseCommentsResponse{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.SearchCaseCommentsResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	payload := snSearchCommentsPayload{
+		ReferenceID:   uuidToSysid(req.CaseID),
+		ReferenceType: "case",
+		Pagination:    snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
+	}
+	if req.Filters != nil && req.Filters.Type != nil {
+		if snType, ok := snCommentTypeMap[*req.Filters.Type]; ok {
+			payload.Filters = &snCommentFilters{Type: snType}
+		}
+	}
+
+	raw, err := s.client.Post(ctx, "/comments/search", token, payload)
+	if err != nil {
+		return domain.SearchCaseCommentsResponse{}, err
+	}
+
+	var snResp snSearchCommentsResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.SearchCaseCommentsResponse{}, fmt.Errorf("sn search comments: parse response: %w", err)
+	}
+
+	comments := make([]domain.CaseComment, 0, len(snResp.Comments))
+	for _, c := range snResp.Comments {
+		createdAt, err := time.Parse(snCreatedOnLayout, c.CreatedOn)
+		if err != nil {
+			return domain.SearchCaseCommentsResponse{}, fmt.Errorf("sn search comments: parse createdOn %q: %w", c.CreatedOn, err)
+		}
+		commentType := domain.CommentTypeComment
+		if c.Type == "work_note" {
+			commentType = domain.CommentTypeWorkNote
+		}
+		comments = append(comments, domain.CaseComment{
+			ID:      sysidToUUID(c.ID),
+			CaseID:  sysidToUUID(c.ReferenceID),
+			Type:    commentType,
+			Content: c.Content,
+			CreatedBy: domain.CommentUserRef{
+				ID:        c.CreatedBy,
+				FirstName: c.CreatedByFirstName,
+				LastName:  c.CreatedByLastName,
+				FullName:  c.CreatedByFullName,
+			},
+			CreatedAt: createdAt,
+		})
+	}
+
+	total := snResp.TotalRecords
+	return domain.SearchCaseCommentsResponse{
+		Comments: comments,
+		Total:    total,
+		Limit:    req.Pagination.Limit,
+		Offset:   req.Pagination.Offset,
+		HasMore:  req.Pagination.Offset+len(comments) < total,
+	}, nil
 }
 
 func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, error) {
