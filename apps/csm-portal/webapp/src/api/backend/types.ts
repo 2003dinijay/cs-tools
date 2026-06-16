@@ -417,13 +417,24 @@ export interface BeProductVersionSearchResponse extends BeSearchResponseBase {
 // Deployed products (deployment ↔ product link)
 // ---------------------------------------------------------------------------
 
+/** Product version as embedded in a deployed-product record. */
+export interface BeDeployedProductVersion {
+  id: string;
+  name: string;
+  releasedDate?: string | null;
+  supportEoLDate?: string | null;
+}
+
 export interface BeDeployedProduct {
   id: string;
-  deploymentId?: string;
-  productId?: string;
-  productVersionId?: string;
-  createdAt?: string;
-  updatedAt?: string;
+  deployment?: BeEntityRef;
+  product?: BeEntityRef;
+  version?: BeDeployedProductVersion | null;
+  cores?: number | null;
+  tps?: number | null;
+  category?: string | null;
+  createdOn?: string;
+  updatedOn?: string;
 }
 
 export interface BeDeployedProductSearchPayload {
