@@ -354,8 +354,73 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	return cv, nil
 }
 
-func (s *snCaseService) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
-	return s.pgFallback.CreateCaseComment(ctx, req)
+type snCreateCommentPayload struct {
+	ReferenceID   string `json:"referenceId"`
+	ReferenceType string `json:"referenceType"`
+	Type          string `json:"type"`
+	Content       string `json:"content"`
+}
+
+type snCreateCommentResponse struct {
+	Message string `json:"message"`
+	Comment struct {
+		ID        string `json:"id"`
+		CreatedOn string `json:"createdOn"`
+		CreatedBy string `json:"createdBy"`
+	} `json:"comment"`
+}
+
+func (s *snCaseService) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
+	if !validCommentType[req.Type] {
+		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "type contains invalid value: " + string(req.Type)}
+	}
+	if req.Content == "" {
+		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "content is required"}
+	}
+	if req.Type == domain.CommentTypeActivity {
+		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "type 'activity' is not supported for ServiceNow"}
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.CreateCaseCommentResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	snType := string(req.Type)
+	if req.Type == domain.CommentTypeComment {
+		snType = "comments"
+	}
+
+	payload := snCreateCommentPayload{
+		ReferenceID:   uuidToSysid(req.CaseID),
+		ReferenceType: "case",
+		Type:          snType,
+		Content:       req.Content,
+	}
+
+	raw, err := s.client.Post(ctx, "/comments", token, payload)
+	if err != nil {
+		return domain.CreateCaseCommentResponse{}, err
+	}
+
+	var snResp snCreateCommentResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.CreateCaseCommentResponse{}, fmt.Errorf("sn create comment: parse response: %w", err)
+	}
+
+	createdOn, err := time.Parse(snCreatedOnLayout, snResp.Comment.CreatedOn)
+	if err != nil {
+		return domain.CreateCaseCommentResponse{}, fmt.Errorf("sn create comment: parse createdOn %q: %w", snResp.Comment.CreatedOn, err)
+	}
+
+	return domain.CreateCaseCommentResponse{
+		Message: snResp.Message,
+		Comment: domain.CaseCommentDetail{
+			ID:        snResp.Comment.ID,
+			CreatedOn: createdOn,
+			CreatedBy: snResp.Comment.CreatedBy,
+		},
+	}, nil
 }
 
 func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.SearchCaseCommentsRequest) (domain.SearchCaseCommentsResponse, error) {

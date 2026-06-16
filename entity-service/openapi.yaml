@@ -1341,7 +1341,7 @@ components:
 
     CreateCaseCommentRequest:
       type: object
-      required: [type, content, createdBy]
+      required: [type, content]
       properties:
         type:
           type: string
@@ -1349,9 +1349,6 @@ components:
           description: work_note is restricted to internal users; activity to internal and system users.
         content:
           type: string
-        createdBy:
-          type: string
-          description: UUID of the user creating the comment.
 
     CaseComment:
       type: object
