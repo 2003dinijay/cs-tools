@@ -1341,17 +1341,14 @@ components:
 
     CreateCaseCommentRequest:
       type: object
-      required: [commentType, body, createdBy]
+      required: [type, content]
       properties:
-        commentType:
+        type:
           type: string
           enum: [work_note, comment, activity]
           description: work_note is restricted to internal users; activity to internal and system users.
-        body:
+        content:
           type: string
-        createdBy:
-          type: string
-          description: UUID of the user creating the comment.
 
     CaseComment:
       type: object
@@ -1360,10 +1357,10 @@ components:
           type: string
         caseId:
           type: string
-        commentType:
+        type:
           type: string
           enum: [work_note, comment, activity]
-        body:
+        content:
           type: string
         createdBy:
           type: string

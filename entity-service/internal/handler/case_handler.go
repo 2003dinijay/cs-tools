@@ -86,14 +86,14 @@ func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	req.CaseID = r.PathValue("id")
-	comment, err := h.svc.CreateCaseComment(r.Context(), req)
+	resp, err := h.svc.CreateCaseComment(r.Context(), req)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(comment)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // SearchCaseComments handles POST /cases/{id}/comments/search.

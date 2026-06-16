@@ -645,19 +645,32 @@ const (
 type CaseComment struct {
 	ID          string      `json:"id"`
 	CaseID      string      `json:"caseId"`
-	CommentType CommentType `json:"commentType"`
-	Body        string      `json:"body"`
-	CreatedBy   string      `json:"createdBy"`
-	CreatedAt   time.Time   `json:"createdAt"`
+	Type      CommentType `json:"type"`
+	Content   string      `json:"content"`
+	CreatedBy string      `json:"createdBy"`
+	CreatedAt time.Time   `json:"createdAt"`
 }
 
 // CreateCaseCommentRequest is the input for creating a new case comment.
 // CaseID is populated from the URL path parameter and is not part of the JSON body.
 type CreateCaseCommentRequest struct {
-	CaseID      string      `json:"-"`
-	CommentType CommentType `json:"commentType"`
-	Body        string      `json:"body"`
-	CreatedBy   string      `json:"createdBy"`
+	CaseID    string      `json:"-"`
+	CreatedBy string      `json:"-"`
+	Type      CommentType `json:"type"`
+	Content   string      `json:"content"`
+}
+
+// CreateCaseCommentResponse is the response for creating a new case comment.
+type CreateCaseCommentResponse struct {
+	Message string            `json:"message"`
+	Comment CaseCommentDetail `json:"comment"`
+}
+
+// CaseCommentDetail holds the core fields returned after creating a comment.
+type CaseCommentDetail struct {
+	ID        string    `json:"id"`
+	CreatedOn time.Time `json:"createdOn"`
+	CreatedBy string    `json:"createdBy"`
 }
 
 // SearchCaseCommentsRequest is the input for listing comments on a case.

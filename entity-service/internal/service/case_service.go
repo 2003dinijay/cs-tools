@@ -163,20 +163,41 @@ var validCommentType = map[domain.CommentType]bool{
 }
 
 // CreateCaseComment implements CaseService.
-func (s *caseService) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+func (s *caseService) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
 	if err := validateUUIDs("caseId", []string{req.CaseID}); err != nil {
-		return domain.CaseComment{}, err
+		return domain.CreateCaseCommentResponse{}, err
 	}
-	if err := validateUUIDs("createdBy", []string{req.CreatedBy}); err != nil {
-		return domain.CaseComment{}, err
+	if !validCommentType[req.Type] {
+		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "type contains invalid value: " + string(req.Type)}
 	}
-	if !validCommentType[req.CommentType] {
-		return domain.CaseComment{}, &apierror.ValidationError{Msg: "commentType contains invalid value: " + string(req.CommentType)}
+	if req.Content == "" {
+		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "content is required"}
 	}
-	if req.Body == "" {
-		return domain.CaseComment{}, &apierror.ValidationError{Msg: "body is required"}
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.CreateCaseCommentResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
 	}
-	return s.repo.CreateCaseComment(ctx, req)
+	email, err := emailFromJWT(token)
+	if err != nil {
+		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
+	}
+	user, err := s.userRepo.GetUserByEmail(ctx, email)
+	if err != nil {
+		return domain.CreateCaseCommentResponse{}, err
+	}
+	req.CreatedBy = user.ID
+	c, err := s.repo.CreateCaseComment(ctx, req)
+	if err != nil {
+		return domain.CreateCaseCommentResponse{}, err
+	}
+	return domain.CreateCaseCommentResponse{
+		Message: "Comment created successfully",
+		Comment: domain.CaseCommentDetail{
+			ID:        c.ID,
+			CreatedOn: c.CreatedAt,
+			CreatedBy: user.Email,
+		},
+	}, nil
 }
 
 // SearchCaseComments implements CaseService.

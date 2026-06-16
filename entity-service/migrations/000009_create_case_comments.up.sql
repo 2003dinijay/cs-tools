@@ -5,12 +5,12 @@ CREATE TYPE comment_type_enum AS ENUM (
 );
 
 CREATE TABLE case_comments (
-  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  case_id      UUID NOT NULL REFERENCES cases(id),
-  comment_type comment_type_enum NOT NULL,
-  body         TEXT NOT NULL,
-  created_by   TEXT NOT NULL REFERENCES users(id),
-  created_at   TIMESTAMP DEFAULT NOW()
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  case_id    UUID NOT NULL REFERENCES cases(id),
+  type       comment_type_enum NOT NULL,
+  content    TEXT NOT NULL,
+  created_by TEXT NOT NULL REFERENCES users(id),
+  created_at TIMESTAMP DEFAULT NOW()
 );
 
 -- This function checks if a user has one of the allowed user types. It can be used in triggers or other functions to enforce access control based on user type.
@@ -42,7 +42,7 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION check_work_note_creator()
 RETURNS TRIGGER AS $$
 BEGIN
-  IF NEW.comment_type = 'work_note' THEN
+  IF NEW.type = 'work_note' THEN
     PERFORM assert_user_type_enum(
       NEW.created_by,
       ARRAY['internal']::user_type_enum[],
@@ -56,7 +56,7 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION check_activity_creator()
 RETURNS TRIGGER AS $$
 BEGIN
-  IF NEW.comment_type = 'activity' THEN
+  IF NEW.type = 'activity' THEN
     PERFORM assert_user_type_enum(
       NEW.created_by,
       ARRAY['internal', 'system']::user_type_enum[],
@@ -81,6 +81,6 @@ CREATE TRIGGER trg_check_activity_creator
 
 CREATE INDEX idx_case_comments_case_id    ON case_comments(case_id);
 CREATE INDEX idx_case_comments_created_by ON case_comments(created_by);
-CREATE INDEX idx_case_comments_type       ON case_comments(comment_type);
+CREATE INDEX idx_case_comments_type       ON case_comments(type);
 CREATE INDEX idx_case_comments_case_time  ON case_comments(case_id, created_at DESC);
-CREATE INDEX idx_case_comments_case_type  ON case_comments(case_id, comment_type);
+CREATE INDEX idx_case_comments_case_type  ON case_comments(case_id, type);
