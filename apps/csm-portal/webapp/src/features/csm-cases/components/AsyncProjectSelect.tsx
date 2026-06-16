@@ -54,7 +54,10 @@ export default function AsyncProjectSelect({
   const debounced = useDebouncedValue(searchTerm, 300);
   const query = debounced.trim();
 
-  const { data, isFetching } = useProjectSearch(query, query.length > 0);
+  const { data, isFetching, isError } = useProjectSearch(
+    query,
+    query.length > 0,
+  );
 
   // Captured at selection time so the field stays labelled once the search
   // results change to a different term.
@@ -102,18 +105,27 @@ export default function AsyncProjectSelect({
       noOptionsText={
         query.length === 0
           ? "Type to search projects…"
-          : isFetching
-            ? "Searching…"
-            : "No projects found"
+          : isError
+            ? "Could not load projects"
+            : isFetching
+              ? "Searching…"
+              : "No projects found"
       }
-      renderInput={(params) => (
-        <TextField
-          {...params}
-          label={label}
-          required={required}
-          placeholder={value ? undefined : "Type a project…"}
-        />
-      )}
+      renderInput={(params) => {
+        const failed = query.length > 0 && isError;
+        return (
+          <TextField
+            {...params}
+            label={label}
+            required={required}
+            placeholder={value ? undefined : "Type a project…"}
+            error={failed}
+            helperText={
+              failed ? "Project search failed. Type to retry." : undefined
+            }
+          />
+        );
+      }}
     />
   );
 }
