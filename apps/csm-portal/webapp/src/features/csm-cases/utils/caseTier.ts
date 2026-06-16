@@ -15,24 +15,36 @@
 // under the License.
 
 import type { CustomerTier } from "@features/csm-cases/types/csmCases";
+import type { SemanticRole } from "@components/SemanticChip";
 
 // Single source of truth for how a customer tier is labelled and coloured.
 // Lives in its own module (not a component file) so the header chip-row, the
 // meta band, and the Customer widget can all share it without tripping the
 // react-refresh "components-only export" rule.
-export const TIER_LABEL: Record<CustomerTier, string> = {
-  basic: "Basic",
-  enterprise: "Enterprise",
-};
+//
+// Tier is free-form (PG `basic|enterprise` for native cases, raw ServiceNow
+// support tiers like "Enterprise" for SN-sourced ones), so these tolerate any
+// string and fall back instead of assuming a closed set.
+
+/** Title-case a raw tier token, e.g. "managed_cloud" → "Managed Cloud". */
+function titleCase(s: string): string {
+  return s
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
+
+/** Human label for a tier; "—" when unset, otherwise the title-cased value. */
+export function tierLabel(tier: CustomerTier | undefined): string {
+  const t = (tier ?? "").trim();
+  return t ? titleCase(t) : "—";
+}
 
 // Tier is metadata, not an action, so it must not wear the brand accent
 // (`primary`/orange) — that fails WCAG contrast (white-on-#F87643 ~ 2.7:1) and
-// would paint case headers orange. basic renders neutral; enterprise takes a
-// contrast-safe semantic role (its contrastText is dark in this theme).
-export const TIER_COLOR: Record<
-  CustomerTier,
-  "default" | "info" | "success" | "warning"
-> = {
-  basic: "default",
-  enterprise: "info",
-};
+// would paint case headers orange. Enterprise takes a contrast-safe semantic
+// role; everything else (incl. unknown tiers) renders neutral.
+export function tierColor(tier: CustomerTier | undefined): SemanticRole {
+  return (tier ?? "").trim().toLowerCase() === "enterprise" ? "info" : "default";
+}

@@ -113,10 +113,21 @@ export interface BeDeployedProductRef {
 }
 
 /**
+ * Account summary embedded in the CaseView. `type` is the account/support tier
+ * (e.g. "Enterprise"); it is a free-form string, not the PG `basic|enterprise`
+ * enum, because ServiceNow-sourced cases pass their support tier through as-is.
+ */
+export interface BeCaseAccountRef {
+  id: string;
+  name?: string;
+  type?: string;
+}
+
+/**
  * `GET /cases/{id}` response — the rich CaseView. Unlike {@link BeCase} (the
  * flat create/legacy shape), it embeds the related entities as objects, so the
- * UI gets project / deployment / deployed-product / reporter names without any
- * extra lookups.
+ * UI gets account / project / deployment / deployed-product / reporter names
+ * without any extra lookups.
  */
 export interface BeCaseView {
   id: string;
@@ -130,6 +141,7 @@ export interface BeCaseView {
   state?: BeCaseState;
   nextStates?: BeCaseState[];
   createdBy?: BeUserRef;
+  account?: BeCaseAccountRef;
   project?: BeEntityRef;
   deployment?: BeEntityRef;
   deployedProduct?: BeDeployedProductRef;
@@ -335,35 +347,6 @@ export interface BeProject {
   endDate?: string;
   createdAt?: string;
   updatedAt?: string;
-}
-
-/** Account summary embedded in the project-detail response. */
-export interface BeProjectAccountRef {
-  id: string;
-  name?: string;
-  tier?: BeAccountTier;
-  region?: string;
-  activationDate?: string | null;
-  agentEnabled?: boolean;
-  kbReferencesEnabled?: boolean;
-}
-
-/**
- * `GET /projects/{id}` response. Unlike the search shape ({@link BeProject}),
- * it embeds the linked `account` (id + name + tier + region), so the case
- * detail can resolve the customer and tier without a separate account lookup.
- */
-export interface BeProjectDetail {
-  id: string;
-  account?: BeProjectAccountRef;
-  sfId?: string;
-  name?: string;
-  key?: string;
-  subscriptionType?: BeSubscriptionType;
-  startDate?: string;
-  endDate?: string;
-  createdOn?: string;
-  updatedOn?: string;
 }
 
 export interface BeProjectSearchPayload {
