@@ -170,8 +170,8 @@ func (s *caseService) CreateCaseComment(ctx context.Context, req domain.CreateCa
 	if err := validateUUIDs("createdBy", []string{req.CreatedBy}); err != nil {
 		return domain.CaseComment{}, err
 	}
-	if !validCommentType[req.CommentType] {
-		return domain.CaseComment{}, &apierror.ValidationError{Msg: "commentType contains invalid value: " + string(req.CommentType)}
+	if !validCommentType[req.Type] {
+		return domain.CaseComment{}, &apierror.ValidationError{Msg: "type contains invalid value: " + string(req.Type)}
 	}
 	if req.Body == "" {
 		return domain.CaseComment{}, &apierror.ValidationError{Msg: "body is required"}

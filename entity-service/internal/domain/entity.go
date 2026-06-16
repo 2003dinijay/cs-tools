@@ -645,17 +645,17 @@ const (
 type CaseComment struct {
 	ID          string      `json:"id"`
 	CaseID      string      `json:"caseId"`
-	CommentType CommentType `json:"commentType"`
-	Body        string      `json:"body"`
-	CreatedBy   string      `json:"createdBy"`
-	CreatedAt   time.Time   `json:"createdAt"`
+	Type      CommentType `json:"type"`
+	Body      string      `json:"body"`
+	CreatedBy string      `json:"createdBy"`
+	CreatedAt time.Time   `json:"createdAt"`
 }
 
 // CreateCaseCommentRequest is the input for creating a new case comment.
 // CaseID is populated from the URL path parameter and is not part of the JSON body.
 type CreateCaseCommentRequest struct {
-	CaseID      string      `json:"-"`
-	CommentType CommentType `json:"commentType"`
+	CaseID string      `json:"-"`
+	Type   CommentType `json:"type"`
 	Body        string      `json:"body"`
 	CreatedBy   string      `json:"createdBy"`
 }
