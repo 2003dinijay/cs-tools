@@ -14,10 +14,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Link, Sidebar } from "@wso2/oxygen-ui";
+import { Box, Link, Sidebar, Typography } from "@wso2/oxygen-ui";
 import { type JSX } from "react";
 import { Link as NavigateLink, useLocation } from "react-router";
 import { CSM_NAV_ITEMS, navItemForPath } from "@config/csmNavItems";
+
+const COMPANY_NAME = "WSO2 LLC";
+const TERMS_OF_SERVICE_URL = "https://wso2.com/terms-of-use/";
+const PRIVACY_POLICY_URL = "https://wso2.com/privacy-policy/";
 
 interface CsmSideBarProps {
   collapsed: boolean;
@@ -71,6 +75,49 @@ export default function CsmSideBar({
           ))}
         </Sidebar.Category>
       </Sidebar.Nav>
+
+      {/* Legal footer lives at the bottom of the left rail so the main content
+          area keeps its full height for meaningful work. Hidden when the rail
+          is collapsed — the legal text won't fit the narrow rail. */}
+      {!collapsed && (
+        <Sidebar.Footer showDivider>
+          <Box
+            sx={{
+              px: 2,
+              py: 1.5,
+              display: "flex",
+              flexDirection: "column",
+              gap: 0.5,
+            }}
+          >
+            <Typography variant="caption" color="text.secondary">
+              © {new Date().getFullYear()} {COMPANY_NAME}. All rights reserved.
+            </Typography>
+            <Box sx={{ display: "flex", flexWrap: "wrap", columnGap: 1.5, rowGap: 0.25 }}>
+              <Link
+                href={TERMS_OF_SERVICE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                variant="caption"
+                color="text.secondary"
+                underline="hover"
+              >
+                Terms & Conditions
+              </Link>
+              <Link
+                href={PRIVACY_POLICY_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                variant="caption"
+                color="text.secondary"
+                underline="hover"
+              >
+                Privacy Policy
+              </Link>
+            </Box>
+          </Box>
+        </Sidebar.Footer>
+      )}
     </Sidebar>
   );
 }

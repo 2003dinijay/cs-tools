@@ -88,7 +88,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	deployedProductHandler := handler.NewDeployedProductHandler(activeDeployedProductSvc)
 
 	caseRepo := repository.NewCaseRepository(db)
-	pgCaseSvc := service.NewCaseService(caseRepo)
+	pgCaseSvc := service.NewCaseService(caseRepo, userRepo)
 	var activeCaseSvc service.CaseService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseSvc)

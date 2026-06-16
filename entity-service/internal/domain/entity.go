@@ -602,10 +602,27 @@ type UpdateCaseRequest struct {
 	Priority *CasePriority `json:"priority"`
 }
 
+// CreateCaseResponse is the unified response for POST /cases across all data sources.
+type CreateCaseResponse struct {
+	Message string            `json:"message"`
+	Case    CreateCaseDetails `json:"case"`
+}
+
+// CreateCaseDetails carries the key fields of a newly created case.
+type CreateCaseDetails struct {
+	ID         string    `json:"id"`
+	InternalID string    `json:"internalId"`
+	Number     string    `json:"number"`
+	CreatedBy  string    `json:"createdBy"`
+	CreatedOn  time.Time `json:"createdOn"`
+	State      string    `json:"state"`
+}
+
 // CreateCaseRequest is the input for creating a new case.
 // id, number, and internal_id are auto-generated; state defaults to open.
+// CreatedBy is not accepted from the request body and will be wired from auth context later.
 type CreateCaseRequest struct {
-	CreatedBy         string        `json:"createdBy"`
+	CreatedBy         string        `json:"-"`
 	ProjectID         string        `json:"projectId"`
 	DeploymentID      string        `json:"deploymentId"`
 	DeployedProductID string        `json:"deployedProductId"`

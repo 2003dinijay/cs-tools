@@ -62,6 +62,7 @@ import {
   WatchersWidget,
 } from "@features/csm-cases/components/CaseDetailWidgets";
 import { TIER_COLOR, TIER_LABEL } from "@features/csm-cases/utils/caseTier";
+import { caseIdLabel } from "@features/csm-cases/utils/caseIdentity";
 import { useRecordRecentView } from "@features/csm-recent/hooks/useRecentViews";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
@@ -73,6 +74,7 @@ import {
 } from "@features/csm-dashboard/utils/abtDashboard";
 import RelativeTime from "@components/RelativeTime";
 import SeverityChip from "@components/SeverityChip";
+import { parseBackendTimestamp } from "@utils/dateTime";
 import type {
   CaseLifecycleAction,
   CsmCaseComment,
@@ -228,8 +230,13 @@ function findVerticalScrollAncestor(el: HTMLElement): HTMLElement {
  */
 function buildDescriptionComment(c: CsmCaseDetail): CsmCaseComment | null {
   if (!c.description?.trim()) return null;
-  const createdMs = new Date(c.createdAt).getTime();
-  const at = new Date(createdMs + 1000).toISOString();
+  // `createdAt` may be missing or in a format a bare `new Date()` can't parse,
+  // which made the old raw `.toISOString()` throw and crash the page. Parse
+  // safely; offset 1s when valid, else fall back to the raw value.
+  const created = parseBackendTimestamp(c.createdAt);
+  const at = created
+    ? new Date(created.getTime() + 1000).toISOString()
+    : c.createdAt;
   // The creator may be a WSO2 engineer (case logged in the CSM portal) or a
   // customer (customer portal). Infer from the email domain so the badge isn't
   // always "Customer".
@@ -363,9 +370,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
     recordView({
       kind: "case",
       id: data.id,
-      // Show the WSO2 case id (not the CS case number) as the recent/pinned
-      // label — it is the id engineers and customers reference.
-      title: `${data.wso2CaseId} · ${data.subject}`,
+      // Lead with the human case id(s) (WSO2 id / CS number, never the UUID) as
+      // the recent/pinned label — what engineers and customers reference. Falls
+      // back to the subject alone when a case has no human id yet.
+      title: caseIdLabel(data)
+        ? `${caseIdLabel(data)} · ${data.subject}`
+        : data.subject,
       subtitle: `${data.customer} · ${data.projectName}`,
       href: `/cases/${data.id}`,
     });
@@ -575,15 +585,26 @@ export default function CsmCaseDetailPage(): JSX.Element {
               lineHeight: 1.2,
             }}
           >
-            <Box component="span" sx={{ color: "text.secondary" }}>
-              {c.wso2CaseId}
-            </Box>
-            <Box component="span" sx={{ color: "text.disabled", mx: 0.25 }}>
-              /
-            </Box>
-            <Box component="span" sx={{ color: "text.primary" }}>
-              {c.caseNumber}
-            </Box>
+            {c.wso2CaseId && (
+              <Box component="span" sx={{ color: "text.secondary" }}>
+                {c.wso2CaseId}
+              </Box>
+            )}
+            {c.wso2CaseId && c.caseNumber && (
+              <Box component="span" sx={{ color: "text.disabled", mx: 0.25 }}>
+                /
+              </Box>
+            )}
+            {c.caseNumber && (
+              <Box component="span" sx={{ color: "text.primary" }}>
+                {c.caseNumber}
+              </Box>
+            )}
+            {!c.wso2CaseId && !c.caseNumber && (
+              <Box component="span" sx={{ color: "text.disabled" }}>
+                —
+              </Box>
+            )}
           </Typography>
 
           {/* Status group (severity, lifecycle state, SLA) kept visually
@@ -808,16 +829,23 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   <Skeleton key={i} variant="rectangular" height={56} />
                 ))}
               </Box>
-            ) : isCommentsError ? (
-              <Typography variant="body2" color="error">
-                Could not load comments.
-              </Typography>
             ) : (
-              <CaseActivitiesFeed
-                comments={safeComments}
-                audit={c.audit}
-                attachments={c.attachments}
-              />
+              // A comments failure shouldn't blank the timeline — the
+              // description, audit, and attachments loaded fine. Show them with
+              // an inline notice.
+              <>
+                {isCommentsError && (
+                  <Typography variant="body2" color="error">
+                    Could not load comments. Showing the rest of the activity —
+                    reload to try again.
+                  </Typography>
+                )}
+                <CaseActivitiesFeed
+                  comments={safeComments}
+                  audit={c.audit}
+                  attachments={c.attachments}
+                />
+              </>
             )}
           </Card>
         </Box>
@@ -844,14 +872,14 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 gap: 2,
               }}
             >
-              <MetaCell label="Case ID">
+              <MetaCell label="Case number">
                 <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
-                  {c.caseNumber}
+                  {c.caseNumber ?? "—"}
                 </Typography>
               </MetaCell>
               <MetaCell label="WSO2 case ID">
                 <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
-                  {c.wso2CaseId}
+                  {c.wso2CaseId ?? "—"}
                 </Typography>
               </MetaCell>
               <MetaCell label="Created">

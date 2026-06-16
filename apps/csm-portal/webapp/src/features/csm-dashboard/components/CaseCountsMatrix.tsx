@@ -15,7 +15,6 @@
 // under the License.
 
 import {
-  Box,
   Link,
   Skeleton,
   Table,
@@ -61,19 +60,26 @@ function CountCell({
   bold?: boolean;
 }): JSX.Element {
   return (
-    <TableCell align="center" sx={{ fontWeight: bold ? 700 : 400 }}>
+    <TableCell align="center">
       {value > 0 ? (
         <Link
           component={RouterLink}
           to={href}
           underline="hover"
           color="inherit"
-          sx={{ fontWeight: "inherit" }}
+          sx={{
+            // Larger, heavier numbers so the counts read at a glance from across
+            // the dashboard, not just on close inspection.
+            fontSize: bold ? "1.35rem" : "1.2rem",
+            fontWeight: bold ? 700 : 600,
+            lineHeight: 1,
+          }}
         >
           {value}
         </Link>
       ) : (
-        <Typography component="span" variant="body2" color="text.secondary">
+        // Zeros stay small and muted so the eye lands on the cells that matter.
+        <Typography component="span" variant="body2" color="text.disabled">
           0
         </Typography>
       )}
@@ -158,13 +164,6 @@ export default function CaseCountsMatrix(): JSX.Element {
               </TableRow>
             </TableBody>
           </Table>
-          {data.truncated && (
-            <Box sx={{ mt: 1 }}>
-              <Typography variant="caption" color="text.secondary">
-                Sampled the first {data.total} cases; totals may be higher.
-              </Typography>
-            </Box>
-          )}
         </TableContainer>
       )}
     </SectionCard>

@@ -95,17 +95,6 @@ type snCaseIssueType struct {
 	Label string      `json:"label"`
 }
 
-// snCreateCasePayload is the SN integration service POST /cases request body.
-type snCreateCasePayload struct {
-	ProjectID         string `json:"projectId"`
-	DeploymentID      string `json:"deploymentId"`
-	DeployedProductID string `json:"deployedProductId"`
-	Subject           string `json:"subject"`
-	Description       string `json:"description"`
-	Priority          string `json:"priority,omitempty"`
-	IssueType         string `json:"issueType,omitempty"`
-}
-
 // snCaseSearchPayload is the Choreo POST /cases/search request body.
 type snCaseSearchPayload struct {
 	Filters    snCaseFilters       `json:"filters,omitempty"`
@@ -118,6 +107,70 @@ type snCaseFilters struct {
 	ProjectIDs         []string `json:"projectIds,omitempty"`
 	DeploymentIDs      []string `json:"deploymentIds,omitempty"`
 	DeployedProductIDs []string `json:"deployedProductIds,omitempty"`
+	StateKeys          []int    `json:"stateKeys,omitempty"`
+	SeverityKeys       []int    `json:"severityKeys,omitempty"`
+	IssueTypeKeys      []int    `json:"issueTypeKeys,omitempty"`
+}
+
+// snStateIDMap maps domain CaseState enums to SN numeric state IDs.
+var snStateIDMap = map[domain.CaseState]int{
+	domain.CaseStateOpen:             1,
+	domain.CaseStateWorkInProgress:   10,
+	domain.CaseStateAwaitingInfo:     18,
+	domain.CaseStateWaitingOnWSO2:    1003,
+	domain.CaseStateSolutionProposed: 6,
+	domain.CaseStateClosed:           3,
+	domain.CaseStateReopened:         1006,
+}
+
+// snSeverityIDMap maps domain CasePriority enums to SN numeric severity IDs.
+// CasePriorityCatastrophic is intentionally absent: ServiceNow's severity scale
+// only goes up to Critical (P1=10) and has no catastrophic equivalent.
+var snSeverityIDMap = map[domain.CasePriority]int{
+	domain.CasePriorityCritical: 10,
+	domain.CasePriorityHigh:     11,
+	domain.CasePriorityMedium:   12,
+	domain.CasePriorityLow:      13,
+}
+
+// snIssueTypeIDMap maps domain CaseIssueType enums to SN numeric issue type IDs.
+var snIssueTypeIDMap = map[domain.CaseIssueType]int{
+	domain.CaseIssueTypeTotalOutage:            1,
+	domain.CaseIssueTypePartialOutage:          2,
+	domain.CaseIssueTypePerformanceDegradation: 3,
+	domain.CaseIssueTypeQuestion:               4,
+	domain.CaseIssueTypeSecurityOrCompliance:   5,
+	domain.CaseIssueTypeError:                  6,
+}
+
+func domainStatesToSNIDs(states []domain.CaseState) []int {
+	ids := make([]int, 0, len(states))
+	for _, s := range states {
+		if id, ok := snStateIDMap[s]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func domainPrioritiesToSNIDs(priorities []domain.CasePriority) []int {
+	ids := make([]int, 0, len(priorities))
+	for _, p := range priorities {
+		if id, ok := snSeverityIDMap[p]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func domainIssueTypesToSNIDs(issueTypes []domain.CaseIssueType) []int {
+	ids := make([]int, 0, len(issueTypes))
+	for _, it := range issueTypes {
+		if id, ok := snIssueTypeIDMap[it]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 type snCaseService struct {
@@ -131,64 +184,99 @@ func NewServiceNowCaseService(client *integrationservice.Client, pgFallback Case
 	return &snCaseService{client: client, pgFallback: pgFallback}
 }
 
-func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
+// snPriorityID maps domain CasePriority to the ServiceNow severity choice-list value.
+var snPriorityID = map[domain.CasePriority]int{
+	domain.CasePriorityCatastrophic: 14,
+	domain.CasePriorityCritical:     10,
+	domain.CasePriorityHigh:         11,
+	domain.CasePriorityMedium:       12,
+	domain.CasePriorityLow:          13,
+}
+
+// snIssueTypeID maps domain CaseIssueType to the ServiceNow issue-type choice-list value.
+var snIssueTypeID = map[domain.CaseIssueType]int{
+	domain.CaseIssueTypeTotalOutage:            1,
+	domain.CaseIssueTypePartialOutage:          2,
+	domain.CaseIssueTypePerformanceDegradation: 3,
+	domain.CaseIssueTypeQuestion:               4,
+	domain.CaseIssueTypeSecurityOrCompliance:   5,
+	domain.CaseIssueTypeError:                  6,
+}
+
+type snCreateCasePayload struct {
+	Type              string `json:"type"`
+	ProjectID         string `json:"projectId"`
+	DeploymentID      string `json:"deploymentId"`
+	DeployedProductID string `json:"deployedProductId"`
+	Title             string `json:"title"`
+	Description       string `json:"description"`
+	SeverityKey       int    `json:"severityKey"`
+	IssueTypeKey      int    `json:"issueTypeKey"`
+}
+
+type snCreateCaseResponse struct {
+	Message string `json:"message"`
+	Case    struct {
+		ID         string       `json:"id"`
+		InternalID string       `json:"internalId"`
+		Number     string       `json:"number"`
+		CreatedBy  string       `json:"createdBy"`
+		CreatedOn  string       `json:"createdOn"`
+		State      *snCaseState `json:"state"`
+	} `json:"case"`
+}
+
+func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+	if err := validateCreateCaseRequest(req); err != nil {
+		return domain.CreateCaseResponse{}, err
+	}
+
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
-		return domain.Case{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+		return domain.CreateCaseResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
 	}
 
 	payload := snCreateCasePayload{
+		Type:              "default_case",
 		ProjectID:         uuidToSysid(req.ProjectID),
 		DeploymentID:      uuidToSysid(req.DeploymentID),
 		DeployedProductID: uuidToSysid(req.DeployedProductID),
-		Subject:           req.Subject,
+		Title:             req.Subject,
 		Description:       req.Description,
-		Priority:          string(req.Priority),
-		IssueType:         string(req.IssueType),
+		SeverityKey:       snPriorityID[req.Priority],
+		IssueTypeKey:      snIssueTypeID[req.IssueType],
 	}
 
 	raw, err := s.client.Post(ctx, "/cases", token, payload)
 	if err != nil {
-		return domain.Case{}, err
+		return domain.CreateCaseResponse{}, err
 	}
 
-	var c snCase
-	if err := json.Unmarshal(raw, &c); err != nil {
-		return domain.Case{}, fmt.Errorf("sn create case: parse response: %w", err)
+	var snResp snCreateCaseResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.CreateCaseResponse{}, fmt.Errorf("sn create case: parse response: %w", err)
 	}
 
-	createdOn, err := time.Parse(snCreatedOnLayout, c.CreatedOn)
+	createdOn, err := time.Parse(snCreatedOnLayout, snResp.Case.CreatedOn)
 	if err != nil {
-		return domain.Case{}, fmt.Errorf("sn create case: parse createdOn %q: %w", c.CreatedOn, err)
-	}
-	updatedOn := createdOn
-	if c.UpdatedOn != nil && *c.UpdatedOn != "" {
-		updatedOn, err = time.Parse(snCreatedOnLayout, *c.UpdatedOn)
-		if err != nil {
-			return domain.Case{}, fmt.Errorf("sn create case: parse updatedOn %q: %w", *c.UpdatedOn, err)
-		}
+		return domain.CreateCaseResponse{}, fmt.Errorf("sn create case: parse createdOn %q: %w", snResp.Case.CreatedOn, err)
 	}
 
-	state, err := snCaseStateLabelToEnum(c.State)
-	if err != nil {
-		return domain.Case{}, fmt.Errorf("sn create case %q: %w", c.ID, err)
+	stateLabel := ""
+	if snResp.Case.State != nil {
+		stateLabel = snResp.Case.State.Label
 	}
 
-	return domain.Case{
-		ID:                sysidToUUID(c.ID),
-		Number:            c.Number,
-		InternalID:        c.InternalID,
-		CreatedBy:         c.CreatedBy,
-		ProjectID:         sysidToUUID(c.Project.ID),
-		DeploymentID:      sysidToUUID(c.Deployment.ID),
-		DeployedProductID: sysidToUUID(c.DeployedProduct.ID),
-		Subject:           c.Title,
-		Description:       c.Description,
-		Priority:          snSeverityToPriority(c.Severity),
-		IssueType:         snIssueTypeToEnum(c.IssueType),
-		State:             state,
-		CreatedAt:         createdOn,
-		UpdatedAt:         updatedOn,
+	return domain.CreateCaseResponse{
+		Message: snResp.Message,
+		Case: domain.CreateCaseDetails{
+			ID:         sysidToUUID(snResp.Case.ID),
+			InternalID: snResp.Case.InternalID,
+			Number:     snResp.Case.Number,
+			CreatedBy:  snResp.Case.CreatedBy,
+			CreatedOn:  createdOn,
+			State:      stateLabel,
+		},
 	}, nil
 }
 
@@ -299,6 +387,9 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 			ProjectIDs:         uuidsToSysids(req.ProjectIDs),
 			DeploymentIDs:      uuidsToSysids(req.DeploymentIDs),
 			DeployedProductIDs: uuidsToSysids(req.DeployedProductIDs),
+			StateKeys:          domainStatesToSNIDs(req.StateKeys),
+			SeverityKeys:       domainPrioritiesToSNIDs(req.PriorityKeys),
+			IssueTypeKeys:      domainIssueTypesToSNIDs(req.IssueTypeKeys),
 		},
 		Pagination: snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
 	}
