@@ -195,13 +195,26 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 
 // SearchCaseComments implements CaseRepository.
 func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCaseCommentsRequest) ([]domain.CaseComment, int, error) {
-	const countQuery = `SELECT COUNT(*) FROM case_comments WHERE case_id = $1`
-	const dataQuery = `
-		SELECT id, case_id, type, content, created_by, created_at
-		FROM case_comments
-		WHERE case_id = $1
-		ORDER BY created_at DESC, id
-		LIMIT $2 OFFSET $3`
+	args := []any{req.CaseID}
+	typeFilter := ""
+	if req.Filters != nil && req.Filters.Type != nil {
+		args = append(args, string(*req.Filters.Type))
+		typeFilter = fmt.Sprintf(" AND cc.type = $%d::comment_type_enum", len(args))
+	}
+
+	countQuery := `SELECT COUNT(*) FROM case_comments cc WHERE cc.case_id = $1` + typeFilter
+	dataQuery := fmt.Sprintf(`
+		SELECT cc.id, cc.case_id, cc.type, cc.content,
+		       u.id, u.first_name, u.last_name,
+		       TRIM(u.first_name || ' ' || u.last_name) AS full_name,
+		       cc.created_at
+		FROM case_comments cc
+		JOIN users u ON u.id = cc.created_by
+		WHERE cc.case_id = $1%s
+		ORDER BY cc.created_at DESC, cc.id
+		LIMIT $%d OFFSET $%d`, typeFilter, len(args)+1, len(args)+2)
+
+	dataArgs := append(args, req.Pagination.Limit, req.Pagination.Offset)
 
 	var total int
 	var comments []domain.CaseComment
@@ -209,14 +222,14 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 	eg, egCtx := errgroup.WithContext(ctx)
 
 	eg.Go(func() error {
-		if err := r.db.QueryRow(egCtx, countQuery, req.CaseID).Scan(&total); err != nil {
+		if err := r.db.QueryRow(egCtx, countQuery, args...).Scan(&total); err != nil {
 			return fmt.Errorf("count case comments: %w", err)
 		}
 		return nil
 	})
 
 	eg.Go(func() error {
-		rows, err := r.db.Query(egCtx, dataQuery, req.CaseID, req.Pagination.Limit, req.Pagination.Offset)
+		rows, err := r.db.Query(egCtx, dataQuery, dataArgs...)
 		if err != nil {
 			return fmt.Errorf("query case comments: %w", err)
 		}
@@ -225,7 +238,11 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 		result := make([]domain.CaseComment, 0, req.Pagination.Limit)
 		for rows.Next() {
 			var c domain.CaseComment
-			if err := rows.Scan(&c.ID, &c.CaseID, &c.Type, &c.Content, &c.CreatedBy, &c.CreatedAt); err != nil {
+			if err := rows.Scan(
+				&c.ID, &c.CaseID, &c.Type, &c.Content,
+				&c.CreatedBy.ID, &c.CreatedBy.FirstName, &c.CreatedBy.LastName,
+				&c.CreatedBy.FullName, &c.CreatedAt,
+			); err != nil {
 				return fmt.Errorf("scan case comment: %w", err)
 			}
 			result = append(result, c)

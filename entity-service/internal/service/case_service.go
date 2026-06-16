@@ -208,6 +208,9 @@ func (s *caseService) SearchCaseComments(ctx context.Context, req domain.SearchC
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchCaseCommentsResponse{}, err
 	}
+	if req.Filters != nil && req.Filters.Type != nil && !validCommentType[*req.Filters.Type] {
+		return domain.SearchCaseCommentsResponse{}, &apierror.ValidationError{Msg: "filters.type contains invalid value: " + string(*req.Filters.Type)}
+	}
 	comments, total, err := s.repo.SearchCaseComments(ctx, req)
 	if err != nil {
 		return domain.SearchCaseCommentsResponse{}, err

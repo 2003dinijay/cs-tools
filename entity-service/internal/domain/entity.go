@@ -641,14 +641,22 @@ const (
 	CommentTypeActivity CommentType = "activity"
 )
 
+// CommentUserRef holds user details embedded in a case comment response.
+type CommentUserRef struct {
+	ID        string `json:"id"`
+	FirstName string `json:"firstName"`
+	LastName  string `json:"lastName"`
+	FullName  string `json:"fullName"`
+}
+
 // CaseComment represents a comment on a support case.
 type CaseComment struct {
-	ID          string      `json:"id"`
-	CaseID      string      `json:"caseId"`
-	Type      CommentType `json:"type"`
-	Content   string      `json:"content"`
-	CreatedBy string      `json:"createdBy"`
-	CreatedAt time.Time   `json:"createdAt"`
+	ID        string         `json:"id"`
+	CaseID    string         `json:"caseId"`
+	Type      CommentType    `json:"type"`
+	Content   string         `json:"content"`
+	CreatedBy CommentUserRef `json:"createdBy"`
+	CreatedAt time.Time      `json:"createdOn"`
 }
 
 // CreateCaseCommentRequest is the input for creating a new case comment.
@@ -676,8 +684,14 @@ type CaseCommentDetail struct {
 // SearchCaseCommentsRequest is the input for listing comments on a case.
 // CaseID is populated from the URL path parameter and is not part of the JSON body.
 type SearchCaseCommentsRequest struct {
-	CaseID     string     `json:"-"`
-	Pagination Pagination `json:"pagination"`
+	CaseID     string      `json:"-"`
+	Filters    *CommentFilters `json:"filters"`
+	Pagination Pagination  `json:"pagination"`
+}
+
+// CommentFilters holds optional filter criteria for searching case comments.
+type CommentFilters struct {
+	Type *CommentType `json:"type"`
 }
 
 // SearchCaseCommentsResponse is the paginated result of a case comment search.
