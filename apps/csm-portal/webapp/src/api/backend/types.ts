@@ -148,6 +148,22 @@ export interface BeCaseCreatePayload {
   issueType: BeCaseIssueType;
 }
 
+/** The case summary embedded in the `POST /cases` success envelope. */
+export interface BeCreatedCase {
+  id: string;
+  internalId?: string;
+  number?: string;
+  createdBy?: string;
+  createdOn?: string;
+  state?: string;
+}
+
+/** `POST /cases` response: a message plus the created case. */
+export interface BeCaseCreateResponse {
+  message?: string;
+  case: BeCreatedCase;
+}
+
 /**
  * Request body for `PATCH /cases/{id}`. At least one of `state` / `priority`
  * must be set (mirrors the entity `UpdateCaseRequest`).
