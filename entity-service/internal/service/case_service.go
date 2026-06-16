@@ -19,44 +19,19 @@ package service
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
-	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 type caseService struct {
-	repo     repository.CaseRepository
-	userRepo repository.UserRepository
+	repo repository.CaseRepository
 }
 
-// NewCaseService constructs a CaseService backed by the given repositories.
-func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepository) CaseService {
-	return &caseService{repo: repo, userRepo: userRepo}
-}
-
-// jwtEmailClaim extracts the "email" claim from a JWT without verifying the
-// signature (the BFF already verified it before forwarding).
-func jwtEmailClaim(token string) string {
-	parts := strings.SplitN(token, ".", 3)
-	if len(parts) < 2 {
-		return ""
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return ""
-	}
-	var claims struct {
-		Email string `json:"email"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return ""
-	}
-	return claims.Email
+// NewCaseService constructs a CaseService backed by the given repository.
+func NewCaseService(repo repository.CaseRepository) CaseService {
+	return &caseService{repo: repo}
 }
 
 var validCaseSortField = map[domain.CaseSortField]bool{
@@ -99,17 +74,6 @@ var validCaseIssueType = map[domain.CaseIssueType]bool{
 
 // CreateCase implements CaseService.
 func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
-	if req.CreatedBy == "" {
-		email := jwtEmailClaim(middleware.UserIDTokenFromContext(ctx))
-		if email == "" {
-			return domain.Case{}, &apierror.ValidationError{Msg: "createdBy is required and could not be resolved from the user token"}
-		}
-		u, err := s.userRepo.GetUserByEmail(ctx, email)
-		if err != nil {
-			return domain.Case{}, &apierror.ValidationError{Msg: "creating user not found"}
-		}
-		req.CreatedBy = u.ID
-	}
 	if err := validateUUIDs("createdBy", []string{req.CreatedBy}); err != nil {
 		return domain.Case{}, err
 	}

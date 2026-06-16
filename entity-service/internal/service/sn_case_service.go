@@ -95,6 +95,17 @@ type snCaseIssueType struct {
 	Label string      `json:"label"`
 }
 
+// snCreateCasePayload is the SN integration service POST /cases request body.
+type snCreateCasePayload struct {
+	ProjectID         string `json:"projectId"`
+	DeploymentID      string `json:"deploymentId"`
+	DeployedProductID string `json:"deployedProductId"`
+	Subject           string `json:"subject"`
+	Description       string `json:"description"`
+	Priority          string `json:"priority,omitempty"`
+	IssueType         string `json:"issueType,omitempty"`
+}
+
 // snCaseSearchPayload is the Choreo POST /cases/search request body.
 type snCaseSearchPayload struct {
 	Filters    snCaseFilters       `json:"filters,omitempty"`
@@ -121,7 +132,64 @@ func NewServiceNowCaseService(client *integrationservice.Client, pgFallback Case
 }
 
 func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
-	return s.pgFallback.CreateCase(ctx, req)
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.Case{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	payload := snCreateCasePayload{
+		ProjectID:         uuidToSysid(req.ProjectID),
+		DeploymentID:      uuidToSysid(req.DeploymentID),
+		DeployedProductID: uuidToSysid(req.DeployedProductID),
+		Subject:           req.Subject,
+		Description:       req.Description,
+		Priority:          string(req.Priority),
+		IssueType:         string(req.IssueType),
+	}
+
+	raw, err := s.client.Post(ctx, "/cases", token, payload)
+	if err != nil {
+		return domain.Case{}, err
+	}
+
+	var c snCase
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return domain.Case{}, fmt.Errorf("sn create case: parse response: %w", err)
+	}
+
+	createdOn, err := time.Parse(snCreatedOnLayout, c.CreatedOn)
+	if err != nil {
+		return domain.Case{}, fmt.Errorf("sn create case: parse createdOn %q: %w", c.CreatedOn, err)
+	}
+	updatedOn := createdOn
+	if c.UpdatedOn != nil && *c.UpdatedOn != "" {
+		updatedOn, err = time.Parse(snCreatedOnLayout, *c.UpdatedOn)
+		if err != nil {
+			return domain.Case{}, fmt.Errorf("sn create case: parse updatedOn %q: %w", *c.UpdatedOn, err)
+		}
+	}
+
+	state, err := snCaseStateLabelToEnum(c.State)
+	if err != nil {
+		return domain.Case{}, fmt.Errorf("sn create case %q: %w", c.ID, err)
+	}
+
+	return domain.Case{
+		ID:                sysidToUUID(c.ID),
+		Number:            c.Number,
+		InternalID:        c.InternalID,
+		CreatedBy:         c.CreatedBy,
+		ProjectID:         sysidToUUID(c.Project.ID),
+		DeploymentID:      sysidToUUID(c.Deployment.ID),
+		DeployedProductID: sysidToUUID(c.DeployedProduct.ID),
+		Subject:           c.Title,
+		Description:       c.Description,
+		Priority:          snSeverityToPriority(c.Severity),
+		IssueType:         snIssueTypeToEnum(c.IssueType),
+		State:             state,
+		CreatedAt:         createdOn,
+		UpdatedAt:         updatedOn,
+	}, nil
 }
 
 func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {

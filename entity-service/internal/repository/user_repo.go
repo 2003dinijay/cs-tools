@@ -21,13 +21,10 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
 )
@@ -40,8 +37,6 @@ type UserRepository interface {
 	// connections, so total may differ by at most one write from the page —
 	// this is acceptable for search-style pagination.
 	SearchUsers(ctx context.Context, req domain.SearchUsersRequest) ([]domain.User, int, error)
-	// GetUserByEmail returns the user whose email exactly matches the given value.
-	GetUserByEmail(ctx context.Context, email string) (domain.User, error)
 }
 
 type userRepo struct {
@@ -51,25 +46,6 @@ type userRepo struct {
 // NewUserRepository constructs a UserRepository backed by the given connection pool.
 func NewUserRepository(db *pgxpool.Pool) UserRepository {
 	return &userRepo{db: db}
-}
-
-// GetUserByEmail implements UserRepository.
-func (r *userRepo) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
-	const q = `SELECT id, user_name, first_name, last_name, email, phone, timezone, user_type, created_at, updated_at
-	           FROM users WHERE email = $1 LIMIT 1`
-	var u domain.User
-	err := r.db.QueryRow(ctx, q, email).Scan(
-		&u.ID, &u.UserName, &u.FirstName, &u.LastName,
-		&u.Email, &u.Phone, &u.Timezone, &u.UserType,
-		&u.CreatedAt, &u.UpdatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.User{}, &apierror.NotFoundError{Msg: "user not found"}
-		}
-		return domain.User{}, fmt.Errorf("get user by email: %w", err)
-	}
-	return u, nil
 }
 
 // SearchUsers implements UserRepository.
