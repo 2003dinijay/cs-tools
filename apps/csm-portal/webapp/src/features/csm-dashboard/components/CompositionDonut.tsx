@@ -103,7 +103,6 @@ export default function CompositionDonut({
               width: DONUT_SIZE,
               height: DONUT_SIZE,
               flexShrink: 0,
-              "& *:focus": { outline: "none" },
             }}
           >
             <PieChart
