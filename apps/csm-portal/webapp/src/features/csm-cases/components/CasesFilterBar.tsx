@@ -61,6 +61,7 @@ import type {
 } from "@features/csm-dashboard/types/abtDashboard";
 import { STATE_LABEL } from "@features/csm-dashboard/utils/abtDashboard";
 import {
+  countActiveFilters,
   readCasesFiltersFromUrl,
   writeCasesFiltersToUrl,
 } from "@features/csm-cases/utils/casesFiltersUrl";
@@ -71,6 +72,7 @@ import {
   useSavedFilterViews,
 } from "@features/csm-cases/utils/savedFilterViews";
 import { isMockMode } from "@api/backend/client";
+import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
 
 export type SlaFilter = "any" | "breached" | "at_risk";
 
@@ -138,21 +140,6 @@ const SLA_OPTIONS: { value: SlaFilter; label: string }[] = [
   { value: "breached", label: "Breached" },
 ];
 
-/**
- * Count the filters that have non-default values. Search is included
- * separately so the badge correctly reflects "search + N filters".
- */
-function countActiveFilters(f: CasesFilters): number {
-  let n = 0;
-  if (f.search.trim()) n += 1;
-  if (f.severities.length) n += 1;
-  if (f.states.length) n += 1;
-  if (f.sla !== "any") n += 1;
-  if (f.assignees.length) n += 1;
-  if (f.projects.length) n += 1;
-  if (f.products.length) n += 1;
-  return n;
-}
 
 /** Pretty-print an assignee value (handle the @me sentinel). */
 function assigneeLabel(value: string): string {
@@ -439,12 +426,10 @@ export default function CasesFilterBar({
     [],
   );
 
-  // Project filter is id-based: options are project ids, displayed by name.
-  const projectIdOptions = useMemo(
-    () => availableProjects.map((p) => p.id),
-    [availableProjects],
-  );
-  const projectNameById = useMemo(
+  // Project filter searches the backend as you type rather than loading the
+  // whole catalogue. `availableProjects` (projects on the loaded cases) only
+  // seeds chip labels for already-selected ids before a search runs.
+  const projectNameSeed = useMemo(
     () => new Map(availableProjects.map((p) => [p.id, p.name])),
     [availableProjects],
   );
@@ -718,6 +703,9 @@ export default function CasesFilterBar({
               </Tooltip>
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
+              {/* Static option list for now. Once the backend supports assignee
+                  search/filtering, switch this to a type-ahead like
+                  AsyncProjectMultiSelect rather than loading every user. */}
               <Tooltip title={beUnsupported ? beUnsupportedReason : ""}>
                 <Box>
                   <SearchableMultiSelect
@@ -738,15 +726,10 @@ export default function CasesFilterBar({
               </Tooltip>
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
-              <SearchableMultiSelect
-                id="cases-filter-project"
-                label="Project"
-                placeholder="Type a project…"
+              <AsyncProjectMultiSelect
                 values={filters.projects}
-                options={projectIdOptions}
-                formatOption={(id) => projectNameById.get(id) ?? id}
-                getOptionSearchText={(id) => projectNameById.get(id) ?? id}
                 onChange={(next) => onChange({ ...filters, projects: next })}
+                nameSeed={projectNameSeed}
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>

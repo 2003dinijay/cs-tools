@@ -107,12 +107,15 @@ function accountOptionsQueryOptions(api: BackendApi) {
  * seeded dataset is filtered, sorted and sliced client-side here.
  *
  * `page` is zero-based (matching MUI `TablePagination`); `pageSize` is the row
- * limit (≤ {@link BE_MAX_PAGE_LIMIT}).
+ * limit (≤ {@link BE_MAX_PAGE_LIMIT}). With no filters the backend sorts by
+ * last-updated descending, so the cases page loads the most recently updated
+ * cases on arrival. `enabled` is an optional escape hatch to suspend the fetch.
  */
 export function useGetCsmCases(
   filters: CasesFilters,
   page: number,
   pageSize: number,
+  enabled = true,
 ): UseQueryResult<CsmCasesListResponse, Error> {
   const logger = useLogger();
   const api = useBackendApi();
@@ -242,6 +245,7 @@ export function useGetCsmCases(
         hasMore: casesResponse.hasMore ?? false,
       };
     },
+    enabled,
     staleTime: 30_000,
   });
 }

@@ -38,7 +38,6 @@ import IdleTimeoutProvider from "@providers/IdleTimeoutProvider";
 import GlobalNotificationBanner from "@components/notification-banner/GlobalNotificationBanner";
 import HtmlAnnouncementBanner from "@components/announcement-banner/HtmlAnnouncementBanner";
 import TopBanner from "@components/top-banner/TopBanner";
-import Footer from "@components/footer/Footer";
 import Header from "@components/header/Header";
 import CsmSideBar from "@components/side-nav-bar/CsmSideBar";
 import RouteSuspenseFallback from "@components/route-fallback/RouteSuspenseFallback";
@@ -219,10 +218,6 @@ export default function AppLayout({ children }: AppLayoutProps): JSX.Element {
               </Box>
             </Box>
           </AppShell.Main>
-
-          <AppShell.Footer>
-            <Footer />
-          </AppShell.Footer>
         </AppShell>
       </Box>
     </IdleTimeoutProvider>
