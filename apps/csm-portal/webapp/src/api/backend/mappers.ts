@@ -102,39 +102,35 @@ export function beStateFromUi(state: CaseState): BeCaseState {
 // Comments
 // ---------------------------------------------------------------------------
 
-function htmlFromPlain(body: string): string {
-  const escaped = body
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    // Normalise CRLF/CR to a single break so Windows line endings don't leave
-    // stray \r artifacts in the rendered HTML.
-    .replace(/\r\n?|\n/g, "<br/>");
-  return `<p>${escaped}</p>`;
-}
-
 export function commentTypeFromInternal(
   internal: boolean,
 ): BeCreatableCommentType {
   return internal ? "work_note" : "comment";
 }
 
+/** Best display name from the comment author block, falling back to the id. */
+function authorDisplayName(author: BeCaseComment["createdBy"]): string {
+  if (!author) return "Unknown";
+  const full = author.fullName?.trim();
+  if (full) return full;
+  const composed = [author.firstName, author.lastName]
+    .filter((p) => p && p.trim())
+    .join(" ")
+    .trim();
+  return composed || author.id || "Unknown";
+}
+
 export function uiCommentFromBe(comment: BeCaseComment): CsmCaseComment {
   const role: CsmCommentAuthorRole =
-    comment.commentType === "work_note"
-      ? "wso2_engineer"
-      : comment.commentType === "activity"
-        ? "system"
-        : "wso2_engineer";
+    comment.type === "activity" ? "system" : "wso2_engineer";
   return {
     id: comment.id,
     caseId: comment.caseId,
-    // BE returns a user id; the UI shows whatever it gets. A future user
-    // lookup can hydrate this to a display name without changing the shape.
-    authorName: comment.createdBy,
+    authorName: authorDisplayName(comment.createdBy),
     authorRole: role,
-    bodyHtml: htmlFromPlain(comment.body),
-    createdAt: comment.createdAt,
-    internal: comment.commentType === "work_note",
+    // `content` is already rich-text HTML; the bubble sanitises it on render.
+    bodyHtml: comment.content ?? "",
+    createdAt: comment.createdOn,
+    internal: comment.type === "work_note",
   };
 }

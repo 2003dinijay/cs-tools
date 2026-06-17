@@ -125,9 +125,9 @@ export function usePostCsmCaseComment(): UseMutationResult<
       }
 
       const payload: BeCaseCommentCreatePayload = {
-        commentType: commentTypeFromInternal(input.internal ?? false),
-        // BE stores plain text. Strip simple HTML so we don't double-escape on read.
-        body: input.bodyHtml.replace(/<\/?[^>]+>/g, "").trim(),
+        type: commentTypeFromInternal(input.internal ?? false),
+        // BE stores rich-text HTML; send the editor output as-is.
+        content: input.bodyHtml,
       };
       const created = await api.post<
         BeCaseCommentCreatePayload,
