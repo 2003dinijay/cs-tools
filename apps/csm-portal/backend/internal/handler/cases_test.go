@@ -68,9 +68,9 @@ func TestCreateCase(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
-	t.Run("rejects body exceeding 1 MiB", func(t *testing.T) {
+	t.Run("rejects body exceeding 10 MiB case limit", func(t *testing.T) {
 		h := NewCaseHandler(&mockEntityCaseClient{})
-		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(strings.Repeat("x", maxRequestBodyBytes+1))))
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(strings.Repeat("x", maxCaseBodyBytes+1))))
 		w := httptest.NewRecorder()
 		h.CreateCase(w, r)
 		assertStatus(t, w, http.StatusRequestEntityTooLarge)
@@ -212,10 +212,65 @@ func TestCreateCaseComment(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
+	const ongoingCase = `{"state":"work_in_progress","workState":"ongoing"}`
+
+	t.Run("rejects comment when state is not work_in_progress", func(t *testing.T) {
+		for _, state := range []string{"open", "waiting_on_wso2", "closed"} {
+			state := state
+			t.Run(state, func(t *testing.T) {
+				client := &mockEntityCaseClient{
+					getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+						return []byte(`{"state":"` + state + `","workState":null}`), nil
+					},
+				}
+				h := NewCaseHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
+				r.SetPathValue("id", "case-1")
+				w := httptest.NewRecorder()
+				h.CreateCaseComment(w, r)
+				assertStatus(t, w, http.StatusConflict)
+				assertErrorMessage(t, w, ErrMsgCommentNotAllowed)
+			})
+		}
+	})
+
+	t.Run("rejects comment when work_state is not ongoing", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+				return []byte(`{"state":"work_in_progress","workState":"on_hold"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusConflict)
+		assertErrorMessage(t, w, ErrMsgCommentNotAllowed)
+	})
+
+	t.Run("rejects comment when workState is absent", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+				return []byte(`{"state":"work_in_progress"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusConflict)
+		assertErrorMessage(t, w, ErrMsgCommentNotAllowed)
+	})
+
 	t.Run("forwards body to entity and returns response", func(t *testing.T) {
 		var capturedCaseID string
 		var capturedBody []byte
 		client := &mockEntityCaseClient{
+			getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+				return []byte(ongoingCase), nil
+			},
 			createCaseCommentFn: func(_ context.Context, caseID string, body []byte) ([]byte, error) {
 				capturedCaseID = caseID
 				capturedBody = body
@@ -250,6 +305,9 @@ func TestCreateCaseComment(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
+					getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+						return []byte(ongoingCase), nil
+					},
 					createCaseCommentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
 						return nil, tc.err
 					},
@@ -411,7 +469,7 @@ func TestSearchCases(t *testing.T) {
 		}
 		h := NewCaseHandler(client)
 		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/search",
-			strings.NewReader(`{"projectIds":["proj-1"],"stateKeys":["open"],"pagination":{"limit":10,"offset":0}}`)))
+			strings.NewReader(`{"filters":{"projectIds":["proj-1"],"stateKeys":["open"]},"pagination":{"limit":10,"offset":0}}`)))
 		w := httptest.NewRecorder()
 		h.SearchCases(w, r)
 
@@ -422,9 +480,13 @@ func TestSearchCases(t *testing.T) {
 		if err := json.Unmarshal(capturedBody, &sent); err != nil {
 			t.Fatalf("upstream received invalid JSON: %v", err)
 		}
+		var filters map[string]json.RawMessage
+		if err := json.Unmarshal(sent["filters"], &filters); err != nil {
+			t.Fatalf("upstream filters field invalid JSON: %v", err)
+		}
 		var ids []string
-		if err := json.Unmarshal(sent["projectIds"], &ids); err != nil || len(ids) != 1 || ids[0] != "proj-1" {
-			t.Errorf("upstream projectIds = %v, want [\"proj-1\"]", ids)
+		if err := json.Unmarshal(filters["projectIds"], &ids); err != nil || len(ids) != 1 || ids[0] != "proj-1" {
+			t.Errorf("upstream filters.projectIds = %v, want [\"proj-1\"]", ids)
 		}
 
 		resp := decodeJSON[map[string]any](t, w)
@@ -443,7 +505,7 @@ func TestSearchCases(t *testing.T) {
 		}
 		h := NewCaseHandler(client)
 		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/search",
-			strings.NewReader(`{"stateKeys":["open"],"pagination":{"limit":10,"offset":0}}`)))
+			strings.NewReader(`{"filters":{"stateKeys":["open"]},"pagination":{"limit":10,"offset":0}}`)))
 		w := httptest.NewRecorder()
 		h.SearchCases(w, r)
 
@@ -452,8 +514,12 @@ func TestSearchCases(t *testing.T) {
 		if err := json.Unmarshal(capturedBody, &sent); err != nil {
 			t.Fatalf("upstream received invalid JSON: %v", err)
 		}
-		if _, exists := sent["projectIds"]; exists {
-			t.Errorf("upstream body unexpectedly contains projectIds: %s", sent["projectIds"])
+		var filters map[string]json.RawMessage
+		if err := json.Unmarshal(sent["filters"], &filters); err != nil {
+			t.Fatalf("upstream filters field invalid JSON: %v", err)
+		}
+		if _, exists := filters["projectIds"]; exists {
+			t.Errorf("upstream filters unexpectedly contains projectIds: %s", filters["projectIds"])
 		}
 	})
 

@@ -68,6 +68,9 @@ func NewCaseHandler(entity entityCaseClient) *CaseHandler {
 // maxRequestBodyBytes caps incoming request bodies at 1 MiB to prevent memory DoS.
 const maxRequestBodyBytes = 1 << 20
 
+// maxCaseBodyBytes caps case-create bodies at 10 MiB to accommodate rich descriptions.
+const maxCaseBodyBytes = 10 << 20
+
 // maxCommentBodyBytes caps comment-create bodies at 10 MiB. Comments can carry
 // inline images as base64 data URIs, which inflate raw image size by ~33%, so
 // a 1 MiB global cap rejects images well under ServiceNow's own limit.
@@ -106,7 +109,7 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, maxCaseBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		if _, ok := err.(*http.MaxBytesError); ok {
@@ -173,6 +176,26 @@ func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) 
 
 	if !json.Valid(body) {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	current, err := h.entity.GetCase(r.Context(), caseID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity GetCase failed during comment guard", "userID", user.UserID, "caseID", caseID, "err", err)
+		mapUpstreamError(w, err, "Failed to create case comment.")
+		return
+	}
+	var currentCase struct {
+		State     string  `json:"state"`
+		WorkState *string `json:"workState"`
+	}
+	if err := json.Unmarshal(current, &currentCase); err != nil {
+		slog.ErrorContext(r.Context(), "failed to parse case state for comment guard", "userID", user.UserID, "caseID", caseID, "err", err)
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+	if currentCase.State != "work_in_progress" || currentCase.WorkState == nil || *currentCase.WorkState != "ongoing" {
+		writeError(w, http.StatusConflict, ErrMsgCommentNotAllowed)
 		return
 	}
 
