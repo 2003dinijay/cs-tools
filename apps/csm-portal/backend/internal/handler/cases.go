@@ -65,6 +65,11 @@ func NewCaseHandler(entity entityCaseClient) *CaseHandler {
 // maxRequestBodyBytes caps incoming request bodies at 1 MiB to prevent memory DoS.
 const maxRequestBodyBytes = 1 << 20
 
+// maxCommentBodyBytes caps comment-create bodies at 10 MiB. Comments can carry
+// inline images as base64 data URIs, which inflate raw image size by ~33%, so
+// a 1 MiB global cap rejects images well under ServiceNow's own limit.
+const maxCommentBodyBytes = 10 << 20
+
 // CreateCase handles POST /cases.
 func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
@@ -127,7 +132,7 @@ func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, maxCommentBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		if _, ok := err.(*http.MaxBytesError); ok {
