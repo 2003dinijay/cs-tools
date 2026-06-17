@@ -95,7 +95,7 @@ export interface BeCase {
 /** A referenced user, as embedded in case views (not just an id string). */
 export interface BeUserRef {
   id: string;
-  displayName?: string;
+  name?: string;
   userId?: string;
   email?: string;
 }
@@ -141,6 +141,8 @@ export interface BeCaseView {
   state?: BeCaseState;
   nextStates?: BeCaseState[];
   createdBy?: BeUserRef;
+  /** The CS engineer the case is assigned to; null when unassigned. */
+  assignedEngineer?: BeEntityRef | null;
   account?: BeCaseAccountRef;
   project?: BeEntityRef;
   deployment?: BeEntityRef;
@@ -237,21 +239,31 @@ export interface BeCaseSearchResponse extends BeSearchResponseBase {
 
 export type BeCaseCommentType = "work_note" | "comment" | "activity";
 
+/** Author block embedded in a comment; the BE hydrates it from the user store. */
+export interface BeCaseCommentAuthor {
+  id: string;
+  firstName?: string;
+  lastName?: string;
+  fullName?: string;
+}
+
 export interface BeCaseComment {
   id: string;
   caseId: string;
-  commentType: BeCaseCommentType;
-  body: string;
-  createdBy: string;
-  createdAt: string;
+  type: BeCaseCommentType;
+  /** Rich-text HTML body (sanitised at render time). */
+  content: string;
+  createdBy: BeCaseCommentAuthor;
+  createdOn: string;
 }
 
 /** Comment types a client may create. `activity` is system-generated only. */
 export type BeCreatableCommentType = Exclude<BeCaseCommentType, "activity">;
 
 export interface BeCaseCommentCreatePayload {
-  commentType: BeCreatableCommentType;
-  body: string;
+  type: BeCreatableCommentType;
+  /** Rich-text HTML body. */
+  content: string;
 }
 
 export interface BeCaseCommentSearchPayload {

@@ -93,50 +93,55 @@ describe("uiCommentFromBe", () => {
   const base: BeCaseComment = {
     id: "c1",
     caseId: "case1",
-    commentType: "comment",
-    body: "hello",
-    createdBy: "user-123",
-    createdAt: "2026-06-01T10:00:00Z",
+    type: "comment",
+    content: "<p>hello</p>",
+    createdBy: {
+      id: "user@wso2.com",
+      firstName: "Ada",
+      lastName: "Lovelace",
+      fullName: "Ada Lovelace ⓦ",
+    },
+    createdOn: "2026-06-01T10:00:00Z",
   };
 
   it("wraps a public comment as a wso2_engineer, non-internal bubble", () => {
     const ui = uiCommentFromBe(base);
     expect(ui.authorRole).toBe("wso2_engineer");
     expect(ui.internal).toBe(false);
-    expect(ui.authorName).toBe("user-123");
+    expect(ui.authorName).toBe("Ada Lovelace ⓦ");
     expect(ui.bodyHtml).toBe("<p>hello</p>");
+    expect(ui.createdAt).toBe("2026-06-01T10:00:00Z");
   });
 
   it("marks a work_note as internal", () => {
-    const ui = uiCommentFromBe({ ...base, commentType: "work_note" });
+    const ui = uiCommentFromBe({ ...base, type: "work_note" });
     expect(ui.authorRole).toBe("wso2_engineer");
     expect(ui.internal).toBe(true);
   });
 
   it("renders an activity entry as a system author", () => {
-    const ui = uiCommentFromBe({ ...base, commentType: "activity" });
+    const ui = uiCommentFromBe({ ...base, type: "activity" });
     expect(ui.authorRole).toBe("system");
     expect(ui.internal).toBe(false);
   });
 
-  it("escapes HTML-special characters and converts newlines (htmlFromPlain)", () => {
+  it("passes through the HTML content untouched (sanitised at render)", () => {
     const ui = uiCommentFromBe({
       ...base,
-      body: 'a & b < c > d\nsecond <script>',
+      content: '<p>a &amp; b</p><img src=x onerror="alert(1)">',
     });
-    expect(ui.bodyHtml).toBe(
-      "<p>a &amp; b &lt; c &gt; d<br/>second &lt;script&gt;</p>",
-    );
-    // No raw angle brackets survive the escape.
-    expect(ui.bodyHtml).not.toContain("<script>");
+    expect(ui.bodyHtml).toBe('<p>a &amp; b</p><img src=x onerror="alert(1)">');
   });
 
-  it("normalises CRLF/CR line endings to a single break (no \\r artifacts)", () => {
-    const ui = uiCommentFromBe({
-      ...base,
-      body: "line1\r\nline2\rline3\nline4",
-    });
-    expect(ui.bodyHtml).toBe("<p>line1<br/>line2<br/>line3<br/>line4</p>");
-    expect(ui.bodyHtml).not.toContain("\r");
+  it("falls back from fullName to first+last, then id", () => {
+    expect(
+      uiCommentFromBe({
+        ...base,
+        createdBy: { id: "x@wso2.com", firstName: "Grace", lastName: "Hopper" },
+      }).authorName,
+    ).toBe("Grace Hopper");
+    expect(
+      uiCommentFromBe({ ...base, createdBy: { id: "x@wso2.com" } }).authorName,
+    ).toBe("x@wso2.com");
   });
 });
