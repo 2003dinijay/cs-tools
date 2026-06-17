@@ -33,7 +33,7 @@ import (
 // snCasesResponse mirrors the Choreo POST /cases/search response.
 type snCasesResponse struct {
 	Cases        []snCase `json:"cases"`
-	TotalRecords int      `json:"totalRecords"`
+	TotalRecords int      `json:"total"`
 	Offset       int      `json:"offset"`
 	Limit        int      `json:"limit"`
 }
@@ -741,7 +741,7 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
-	if err := validateSearchQuery(req.SearchQuery); err != nil {
+	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
 
@@ -753,13 +753,13 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 	payload := snCaseSearchPayload{
 		Filters: snCaseFilters{
 			CaseTypes:          []string{"default_case"},
-			SearchQuery:        req.SearchQuery,
-			ProjectIDs:         uuidsToSysids(req.ProjectIDs),
-			DeploymentIDs:      uuidsToSysids(req.DeploymentIDs),
-			DeployedProductIDs: uuidsToSysids(req.DeployedProductIDs),
-			StateKeys:          domainStatesToSNIDs(req.StateKeys),
-			SeverityKeys:       domainPrioritiesToSNIDs(req.PriorityKeys),
-			IssueTypeKeys:      domainIssueTypesToSNIDs(req.IssueTypeKeys),
+			SearchQuery:        req.Filters.SearchQuery,
+			ProjectIDs:         uuidsToSysids(req.Filters.ProjectIDs),
+			DeploymentIDs:      uuidsToSysids(req.Filters.DeploymentIDs),
+			DeployedProductIDs: uuidsToSysids(req.Filters.DeployedProductIDs),
+			StateKeys:          domainStatesToSNIDs(req.Filters.StateKeys),
+			SeverityKeys:       domainPrioritiesToSNIDs(req.Filters.PriorityKeys),
+			IssueTypeKeys:      domainIssueTypesToSNIDs(req.Filters.IssueTypeKeys),
 		},
 		Pagination: snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
 	}
