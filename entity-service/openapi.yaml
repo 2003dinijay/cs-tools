@@ -1206,11 +1206,9 @@ components:
             state:
               type: string
 
-    SearchCasesRequest:
+    SearchCasesFilters:
       type: object
       properties:
-        pagination:
-          $ref: '#/components/schemas/Pagination'
         searchQuery:
           type: string
           description: Case-insensitive match against subject, number, and internal_id.
@@ -1247,6 +1245,12 @@ components:
             type: string
             enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
           description: Filter by case issue types.
+
+    SearchCasesRequest:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/SearchCasesFilters'
         sortBy:
           type: object
           properties:
@@ -1258,6 +1262,8 @@ components:
               type: string
               enum: [asc, desc]
               description: Sort direction. Defaults to desc.
+        pagination:
+          $ref: '#/components/schemas/Pagination'
 
     UserRef:
       type: object

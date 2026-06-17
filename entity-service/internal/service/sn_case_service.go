@@ -99,7 +99,19 @@ type snCaseIssueType struct {
 // snCaseSearchPayload is the Choreo POST /cases/search request body.
 type snCaseSearchPayload struct {
 	Filters    snCaseFilters       `json:"filters,omitempty"`
+	SortBy     *snCaseSort         `json:"sortBy,omitempty"`
 	Pagination snProjectPagination `json:"pagination"`
+}
+
+type snCaseSort struct {
+	Field string `json:"field"`
+	Order string `json:"order"`
+}
+
+// snSortFieldMap maps domain CaseSortField values to SN field names.
+var snSortFieldMap = map[domain.CaseSortField]string{
+	domain.CaseSortFieldCreatedAt: "createdOn",
+	domain.CaseSortFieldUpdatedAt: "updatedOn",
 }
 
 type snCaseFilters struct {
@@ -740,7 +752,7 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
-	if err := validateSearchQuery(req.SearchQuery); err != nil {
+	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
 
@@ -749,17 +761,31 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		return domain.SearchCasesResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
 	}
 
+	var snSortBy *snCaseSort
+	if req.SortBy.Field != "" {
+		snField, ok := snSortFieldMap[req.SortBy.Field]
+		if !ok {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "sortBy.field " + string(req.SortBy.Field) + " is not supported by ServiceNow"}
+		}
+		order := string(req.SortBy.Order)
+		if order == "" {
+			order = "desc"
+		}
+		snSortBy = &snCaseSort{Field: snField, Order: order}
+	}
+
 	payload := snCaseSearchPayload{
 		Filters: snCaseFilters{
 			CaseTypes:          []string{"default_case"},
-			SearchQuery:        req.SearchQuery,
-			ProjectIDs:         uuidsToSysids(req.ProjectIDs),
-			DeploymentIDs:      uuidsToSysids(req.DeploymentIDs),
-			DeployedProductIDs: uuidsToSysids(req.DeployedProductIDs),
-			StateKeys:          domainStatesToSNIDs(req.StateKeys),
-			SeverityKeys:       domainPrioritiesToSNIDs(req.PriorityKeys),
-			IssueTypeKeys:      domainIssueTypesToSNIDs(req.IssueTypeKeys),
+			SearchQuery:        req.Filters.SearchQuery,
+			ProjectIDs:         uuidsToSysids(req.Filters.ProjectIDs),
+			DeploymentIDs:      uuidsToSysids(req.Filters.DeploymentIDs),
+			DeployedProductIDs: uuidsToSysids(req.Filters.DeployedProductIDs),
+			StateKeys:          domainStatesToSNIDs(req.Filters.StateKeys),
+			SeverityKeys:       domainPrioritiesToSNIDs(req.Filters.PriorityKeys),
+			IssueTypeKeys:      domainIssueTypesToSNIDs(req.Filters.IssueTypeKeys),
 		},
+		SortBy:     snSortBy,
 		Pagination: snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
 	}
 

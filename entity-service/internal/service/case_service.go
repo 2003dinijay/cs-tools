@@ -245,30 +245,30 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
-	if err := validateSearchQuery(req.SearchQuery); err != nil {
+	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
-	if err := validateUUIDs("projectIds", req.ProjectIDs); err != nil {
+	if err := validateUUIDs("projectIds", req.Filters.ProjectIDs); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
-	if err := validateUUIDs("deploymentIds", req.DeploymentIDs); err != nil {
+	if err := validateUUIDs("deploymentIds", req.Filters.DeploymentIDs); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
-	if err := validateUUIDs("deployedProductIds", req.DeployedProductIDs); err != nil {
+	if err := validateUUIDs("deployedProductIds", req.Filters.DeployedProductIDs); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
 
-	for _, s := range req.StateKeys {
+	for _, s := range req.Filters.StateKeys {
 		if !validCaseState[s] {
 			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "stateKeys contains invalid value: " + string(s)}
 		}
 	}
-	for _, p := range req.PriorityKeys {
+	for _, p := range req.Filters.PriorityKeys {
 		if !validCasePriority[p] {
 			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "priorityKeys contains invalid value: " + string(p)}
 		}
 	}
-	for _, it := range req.IssueTypeKeys {
+	for _, it := range req.Filters.IssueTypeKeys {
 		if !validCaseIssueType[it] {
 			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "issueTypeKeys contains invalid value: " + string(it)}
 		}

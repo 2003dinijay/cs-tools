@@ -548,11 +548,8 @@ type CaseView struct {
 	AccountDetails         *AccountRef          `json:"account"`
 }
 
-// SearchCasesRequest is the input for a case search operation.
-// SearchQuery is matched case-insensitively against subject, number, and internal_id.
-// All filter slices are optional. SortBy defaults to created_at.
-type SearchCasesRequest struct {
-	Pagination         Pagination      `json:"pagination"`
+// SearchCasesFilters holds all optional filter criteria for a case search.
+type SearchCasesFilters struct {
 	SearchQuery        string          `json:"searchQuery"`
 	ProjectIDs         []string        `json:"projectIds"`
 	DeploymentIDs      []string        `json:"deploymentIds"`
@@ -560,7 +557,14 @@ type SearchCasesRequest struct {
 	StateKeys          []CaseState     `json:"stateKeys"`
 	PriorityKeys       []CasePriority  `json:"priorityKeys"`
 	IssueTypeKeys      []CaseIssueType `json:"issueTypeKeys"`
-	SortBy             CaseSort        `json:"sortBy"`
+}
+
+// SearchCasesRequest is the input for a case search operation.
+// All filter fields are optional and nested under Filters. SortBy defaults to created_at.
+type SearchCasesRequest struct {
+	Filters    SearchCasesFilters `json:"filters"`
+	SortBy     CaseSort           `json:"sortBy"`
+	Pagination Pagination         `json:"pagination"`
 }
 
 // SearchCaseView is the enriched read representation of a case returned in search

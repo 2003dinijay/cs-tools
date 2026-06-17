@@ -304,27 +304,27 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 
 	where := "WHERE 1=1"
 
-	if len(req.ProjectIDs) > 0 {
+	if len(req.Filters.ProjectIDs) > 0 {
 		where += fmt.Sprintf(" AND c.project_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.ProjectIDs)
+		filterArgs = append(filterArgs, req.Filters.ProjectIDs)
 		argIdx++
 	}
 
-	if len(req.DeploymentIDs) > 0 {
+	if len(req.Filters.DeploymentIDs) > 0 {
 		where += fmt.Sprintf(" AND c.deployment_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.DeploymentIDs)
+		filterArgs = append(filterArgs, req.Filters.DeploymentIDs)
 		argIdx++
 	}
 
-	if len(req.DeployedProductIDs) > 0 {
+	if len(req.Filters.DeployedProductIDs) > 0 {
 		where += fmt.Sprintf(" AND c.deployed_product_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.DeployedProductIDs)
+		filterArgs = append(filterArgs, req.Filters.DeployedProductIDs)
 		argIdx++
 	}
 
-	if len(req.StateKeys) > 0 {
-		stateStrings := make([]string, len(req.StateKeys))
-		for i, s := range req.StateKeys {
+	if len(req.Filters.StateKeys) > 0 {
+		stateStrings := make([]string, len(req.Filters.StateKeys))
+		for i, s := range req.Filters.StateKeys {
 			stateStrings[i] = string(s)
 		}
 		where += fmt.Sprintf(" AND c.state = ANY($%d::case_state_enum[])", argIdx)
@@ -332,9 +332,9 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.PriorityKeys) > 0 {
-		priorityStrings := make([]string, len(req.PriorityKeys))
-		for i, p := range req.PriorityKeys {
+	if len(req.Filters.PriorityKeys) > 0 {
+		priorityStrings := make([]string, len(req.Filters.PriorityKeys))
+		for i, p := range req.Filters.PriorityKeys {
 			priorityStrings[i] = string(p)
 		}
 		where += fmt.Sprintf(" AND c.priority = ANY($%d::case_priority_enum[])", argIdx)
@@ -342,9 +342,9 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.IssueTypeKeys) > 0 {
-		issueTypeStrings := make([]string, len(req.IssueTypeKeys))
-		for i, it := range req.IssueTypeKeys {
+	if len(req.Filters.IssueTypeKeys) > 0 {
+		issueTypeStrings := make([]string, len(req.Filters.IssueTypeKeys))
+		for i, it := range req.Filters.IssueTypeKeys {
 			issueTypeStrings[i] = string(it)
 		}
 		where += fmt.Sprintf(" AND c.issue_type = ANY($%d::case_issue_type_enum[])", argIdx)
@@ -352,8 +352,8 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if req.SearchQuery != "" {
-		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(req.SearchQuery)
+	if req.Filters.SearchQuery != "" {
+		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(req.Filters.SearchQuery)
 		pattern := "%" + escaped + "%"
 		where += fmt.Sprintf(` AND (c.subject ILIKE $%d ESCAPE '\' OR c.number ILIKE $%d ESCAPE '\' OR c.internal_id ILIKE $%d ESCAPE '\')`, argIdx, argIdx, argIdx)
 		filterArgs = append(filterArgs, pattern)
