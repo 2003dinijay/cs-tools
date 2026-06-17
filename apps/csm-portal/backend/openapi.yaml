@@ -248,6 +248,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: Conflict — comment posting is not allowed in the current case state (case must be work_in_progress with work_state ongoing).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: RequestEntityTooLarge
           content:
@@ -1296,6 +1302,13 @@ components:
         updatedAt:
           type: string
           format: date-time
+        workState:
+          type: string
+          nullable: true
+          enum:
+            - ongoing
+            - on_hold
+          description: Sub-state of work_in_progress. Null when state is not work_in_progress.
         closedAt:
           type: string
           format: date-time

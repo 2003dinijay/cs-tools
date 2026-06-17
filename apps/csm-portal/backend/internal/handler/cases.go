@@ -179,6 +179,26 @@ func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	current, err := h.entity.GetCase(r.Context(), caseID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity GetCase failed during comment guard", "userID", user.UserID, "caseID", caseID, "err", err)
+		mapUpstreamError(w, err, "Failed to create case comment.")
+		return
+	}
+	var currentCase struct {
+		State     string  `json:"state"`
+		WorkState *string `json:"workState"`
+	}
+	if err := json.Unmarshal(current, &currentCase); err != nil {
+		slog.ErrorContext(r.Context(), "failed to parse case state for comment guard", "userID", user.UserID, "caseID", caseID, "err", err)
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+	if currentCase.State != "work_in_progress" || currentCase.WorkState == nil || *currentCase.WorkState != "ongoing" {
+		writeError(w, http.StatusConflict, ErrMsgCommentNotAllowed)
+		return
+	}
+
 	result, err := h.entity.CreateCaseComment(r.Context(), caseID, body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity CreateCaseComment failed", "userID", user.UserID, "caseID", caseID, "err", err)

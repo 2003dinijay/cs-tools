@@ -212,10 +212,65 @@ func TestCreateCaseComment(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
+	const ongoingCase = `{"state":"work_in_progress","workState":"ongoing"}`
+
+	t.Run("rejects comment when state is not work_in_progress", func(t *testing.T) {
+		for _, state := range []string{"open", "waiting_on_wso2", "closed"} {
+			state := state
+			t.Run(state, func(t *testing.T) {
+				client := &mockEntityCaseClient{
+					getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+						return []byte(`{"state":"` + state + `","workState":null}`), nil
+					},
+				}
+				h := NewCaseHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
+				r.SetPathValue("id", "case-1")
+				w := httptest.NewRecorder()
+				h.CreateCaseComment(w, r)
+				assertStatus(t, w, http.StatusConflict)
+				assertErrorMessage(t, w, ErrMsgCommentNotAllowed)
+			})
+		}
+	})
+
+	t.Run("rejects comment when work_state is not ongoing", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+				return []byte(`{"state":"work_in_progress","workState":"on_hold"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusConflict)
+		assertErrorMessage(t, w, ErrMsgCommentNotAllowed)
+	})
+
+	t.Run("rejects comment when workState is absent", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+				return []byte(`{"state":"work_in_progress"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusConflict)
+		assertErrorMessage(t, w, ErrMsgCommentNotAllowed)
+	})
+
 	t.Run("forwards body to entity and returns response", func(t *testing.T) {
 		var capturedCaseID string
 		var capturedBody []byte
 		client := &mockEntityCaseClient{
+			getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+				return []byte(ongoingCase), nil
+			},
 			createCaseCommentFn: func(_ context.Context, caseID string, body []byte) ([]byte, error) {
 				capturedCaseID = caseID
 				capturedBody = body
@@ -250,6 +305,9 @@ func TestCreateCaseComment(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
+					getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+						return []byte(ongoingCase), nil
+					},
 					createCaseCommentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
 						return nil, tc.err
 					},
