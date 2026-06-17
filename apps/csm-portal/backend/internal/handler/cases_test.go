@@ -68,9 +68,9 @@ func TestCreateCase(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
-	t.Run("rejects body exceeding 1 MiB", func(t *testing.T) {
+	t.Run("rejects body exceeding 10 MiB case limit", func(t *testing.T) {
 		h := NewCaseHandler(&mockEntityCaseClient{})
-		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(strings.Repeat("x", maxRequestBodyBytes+1))))
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(strings.Repeat("x", maxCaseBodyBytes+1))))
 		w := httptest.NewRecorder()
 		h.CreateCase(w, r)
 		assertStatus(t, w, http.StatusRequestEntityTooLarge)
