@@ -85,12 +85,15 @@ func decodeJSON[T any](t *testing.T, w *httptest.ResponseRecorder) T {
 // ----- mock entity case client -----
 
 type mockEntityCaseClient struct {
-	createCaseFn          func(ctx context.Context, body []byte) ([]byte, error)
-	patchCaseFn           func(ctx context.Context, caseID string, body []byte) ([]byte, error)
-	createCaseCommentFn   func(ctx context.Context, caseID string, body []byte) ([]byte, error)
-	searchCaseCommentsFn  func(ctx context.Context, caseID string, body []byte) ([]byte, error)
-	searchCasesFn         func(ctx context.Context, body []byte) ([]byte, error)
-	getCaseFn             func(ctx context.Context, caseID string) ([]byte, error)
+	createCaseFn                func(ctx context.Context, body []byte) ([]byte, error)
+	patchCaseFn                 func(ctx context.Context, caseID string, body []byte) ([]byte, error)
+	createCaseCommentFn         func(ctx context.Context, caseID string, body []byte) ([]byte, error)
+	searchCaseCommentsFn        func(ctx context.Context, caseID string, body []byte) ([]byte, error)
+	searchCasesFn               func(ctx context.Context, body []byte) ([]byte, error)
+	getCaseFn                   func(ctx context.Context, caseID string) ([]byte, error)
+	createCaseAttachmentFn      func(ctx context.Context, caseID string, body []byte) ([]byte, error)
+	searchCaseAttachmentsFn     func(ctx context.Context, caseID string, body []byte) ([]byte, error)
+	getCaseAttachmentContentFn  func(ctx context.Context, caseID, attachmentID string) ([]byte, string, error)
 }
 
 func (m *mockEntityCaseClient) CreateCase(ctx context.Context, body []byte) ([]byte, error) {
@@ -135,6 +138,26 @@ func (m *mockEntityCaseClient) GetCase(ctx context.Context, caseID string) ([]by
 	return []byte(`{}`), nil
 }
 
+func (m *mockEntityCaseClient) CreateCaseAttachment(ctx context.Context, caseID string, body []byte) ([]byte, error) {
+	if m.createCaseAttachmentFn != nil {
+		return m.createCaseAttachmentFn(ctx, caseID, body)
+	}
+	return []byte(`{}`), nil
+}
+
+func (m *mockEntityCaseClient) SearchCaseAttachments(ctx context.Context, caseID string, body []byte) ([]byte, error) {
+	if m.searchCaseAttachmentsFn != nil {
+		return m.searchCaseAttachmentsFn(ctx, caseID, body)
+	}
+	return []byte(`{"attachments":[],"total":0,"limit":20,"offset":0,"hasMore":false}`), nil
+}
+
+func (m *mockEntityCaseClient) GetCaseAttachmentContent(ctx context.Context, caseID, attachmentID string) ([]byte, string, error) {
+	if m.getCaseAttachmentContentFn != nil {
+		return m.getCaseAttachmentContentFn(ctx, caseID, attachmentID)
+	}
+	return []byte(`fake-content`), "image/png", nil
+}
 
 // ----- mock updates client -----
 
