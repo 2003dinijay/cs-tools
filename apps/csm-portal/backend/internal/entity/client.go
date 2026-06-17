@@ -146,3 +146,45 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 
 	return respBody, nil
 }
+
+// doBinary executes an authenticated GET request against the entity service and
+// returns the raw response body together with the upstream Content-Type header.
+// Use this instead of do for endpoints that return non-JSON binary content.
+func (c *Client) doBinary(ctx context.Context, path string) (body []byte, contentType string, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("entity: build request GET %s: %w", path, err)
+	}
+	if token := userIDTokenFromContext(ctx); token != "" {
+		req.Header.Set("x-user-id-token", token)
+	}
+	if id := correlationIDFromContext(ctx); id != "" {
+		req.Header.Set("X-Correlation-ID", id)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("entity: GET %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("entity: read response body: %w", err)
+	}
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		const maxErrBody = 256
+		excerpt := respBody
+		if len(excerpt) > maxErrBody {
+			excerpt = excerpt[:maxErrBody]
+		}
+		return nil, "", &apierror.Error{StatusCode: resp.StatusCode, Body: string(excerpt)}
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	return respBody, ct, nil
+}

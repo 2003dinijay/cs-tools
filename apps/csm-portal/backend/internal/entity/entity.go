@@ -112,3 +112,21 @@ func (c *Client) SearchDeployments(ctx context.Context, body []byte) ([]byte, er
 func (c *Client) SearchDeployedProducts(ctx context.Context, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, "/deployed-products/search", body)
 }
+
+// CreateCaseAttachment calls POST /cases/{id}/attachments on the entity service.
+// Response is returned as raw JSON.
+func (c *Client) CreateCaseAttachment(ctx context.Context, caseID string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, fmt.Sprintf("/cases/%s/attachments", url.PathEscape(caseID)), body)
+}
+
+// SearchCaseAttachments calls POST /cases/{id}/attachments/search on the entity service.
+// Response is returned as raw JSON.
+func (c *Client) SearchCaseAttachments(ctx context.Context, caseID string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, fmt.Sprintf("/cases/%s/attachments/search", url.PathEscape(caseID)), body)
+}
+
+// GetCaseAttachmentContent calls GET /cases/{case_id}/attachments/{attachment_id}/content
+// and returns the raw binary body with its Content-Type.
+func (c *Client) GetCaseAttachmentContent(ctx context.Context, caseID, attachmentID string) ([]byte, string, error) {
+	return c.doBinary(ctx, fmt.Sprintf("/cases/%s/attachments/%s/content", url.PathEscape(caseID), url.PathEscape(attachmentID)))
+}

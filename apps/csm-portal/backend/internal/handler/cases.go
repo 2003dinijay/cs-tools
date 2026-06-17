@@ -49,6 +49,9 @@ type entityCaseClient interface {
 	SearchCaseComments(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	SearchCases(ctx context.Context, body []byte) ([]byte, error)
 	GetCase(ctx context.Context, caseID string) ([]byte, error)
+	CreateCaseAttachment(ctx context.Context, caseID string, body []byte) ([]byte, error)
+	SearchCaseAttachments(ctx context.Context, caseID string, body []byte) ([]byte, error)
+	GetCaseAttachmentContent(ctx context.Context, caseID, attachmentID string) ([]byte, string, error)
 }
 
 // CaseHandler handles HTTP requests for case operations, delegating to the
@@ -69,6 +72,31 @@ const maxRequestBodyBytes = 1 << 20
 // inline images as base64 data URIs, which inflate raw image size by ~33%, so
 // a 1 MiB global cap rejects images well under ServiceNow's own limit.
 const maxCommentBodyBytes = 10 << 20
+
+// maxAttachmentBodyBytes caps attachment-create bodies at 15 MiB. The entity
+// service enforces a 10 MB decoded file limit; base64 encoding inflates that
+// to ~13.3 MB of encoded data plus JSON overhead.
+const maxAttachmentBodyBytes = 15 << 20
+
+// safeAttachmentTypes is the allowlist of Content-Type values that may be
+// served inline. Anything not in this set is coerced to application/octet-stream
+// to prevent a stored-XSS attack via a crafted upstream Content-Type (e.g.
+// text/html). All responses also carry Content-Disposition: attachment and
+// X-Content-Type-Options: nosniff regardless of type.
+var safeAttachmentTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/gif":  true,
+	"image/webp": true,
+	"application/pdf":          true,
+	"text/plain":               true,
+	"application/zip":          true,
+	"application/x-zip-compressed": true,
+	"application/msword":       true,
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": true,
+	"application/vnd.ms-excel": true,
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":       true,
+}
 
 // CreateCase handles POST /cases.
 func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +259,123 @@ func (h *CaseHandler) SearchCases(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// CreateCaseAttachment handles POST /cases/{id}/attachments.
+func (h *CaseHandler) CreateCaseAttachment(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	caseID := r.PathValue("id")
+	if caseID == "" || !uuidRe.MatchString(caseID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		if _, ok := err.(*http.MaxBytesError); ok {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
+		return
+	}
+
+	if !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.CreateCaseAttachment(r.Context(), caseID, body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity CreateCaseAttachment failed", "userID", user.UserID, "caseID", caseID, "err", err)
+		mapUpstreamError(w, err, "Failed to create case attachment.")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// SearchCaseAttachments handles POST /cases/{id}/attachments/search.
+func (h *CaseHandler) SearchCaseAttachments(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	caseID := r.PathValue("id")
+	if caseID == "" || !uuidRe.MatchString(caseID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		if _, ok := err.(*http.MaxBytesError); ok {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
+		return
+	}
+
+	if !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.SearchCaseAttachments(r.Context(), caseID, body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity SearchCaseAttachments failed", "userID", user.UserID, "caseID", caseID, "err", err)
+		mapUpstreamError(w, err, "Failed to search case attachments.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// GetCaseAttachmentContent handles GET /cases/{case_id}/attachments/{attachment_id}/content.
+func (h *CaseHandler) GetCaseAttachmentContent(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	caseID := r.PathValue("case_id")
+	attachmentID := r.PathValue("attachment_id")
+	if caseID == "" || !uuidRe.MatchString(caseID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+	if attachmentID == "" || !uuidRe.MatchString(attachmentID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	content, contentType, err := h.entity.GetCaseAttachmentContent(r.Context(), caseID, attachmentID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity GetCaseAttachmentContent failed", "userID", user.UserID, "caseID", caseID, "attachmentID", attachmentID, "err", err)
+		mapUpstreamError(w, err, "Failed to retrieve attachment content.")
+		return
+	}
+
+	// Strip Content-Type parameters (e.g. charset) before the allowlist check.
+	ct := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	if !safeAttachmentTypes[ct] {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Disposition", "attachment")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(content)
 }
 
 // PatchCase handles PATCH /cases/{id}.
