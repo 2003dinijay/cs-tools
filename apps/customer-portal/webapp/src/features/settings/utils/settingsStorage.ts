@@ -18,6 +18,10 @@ const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
 const LAST_SELECTED_PROJECT_ID_KEY = "last_selected_project_id";
 const LAST_SELECTED_PROJECT_KEY = "last_selected_project";
 const NOVERA_CHAT_ENABLED_KEY = "novera_chat_enabled";
+const FONT_SIZE_KEY = "font_size";
+
+export type FontSizeOption = "small" | "medium" | "large" | "xlarge";
+const FONT_SIZE_DEFAULT: FontSizeOption = "medium";
 
 export interface LastSelectedProject {
   id: string;
@@ -234,5 +238,40 @@ export function consumePendingCaseDetailsTab(): string | null {
     return tab;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Reads the preferred font size from localStorage. Defaults to "medium".
+ *
+ * @returns {FontSizeOption} The persisted font size option.
+ */
+export function getFontSize(): FontSizeOption {
+  try {
+    const stored = localStorage.getItem(FONT_SIZE_KEY);
+    if (
+      stored === "small" ||
+      stored === "medium" ||
+      stored === "large" ||
+      stored === "xlarge"
+    ) {
+      return stored;
+    }
+    return FONT_SIZE_DEFAULT;
+  } catch {
+    return FONT_SIZE_DEFAULT;
+  }
+}
+
+/**
+ * Persists the preferred font size to localStorage.
+ *
+ * @param {FontSizeOption} size - The font size option to persist.
+ */
+export function setFontSize(size: FontSizeOption): void {
+  try {
+    localStorage.setItem(FONT_SIZE_KEY, size);
+  } catch {
+    return;
   }
 }
