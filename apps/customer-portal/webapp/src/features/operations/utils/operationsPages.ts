@@ -314,6 +314,10 @@ export function buildServiceRequestsPageCaseSearchRequest(
         : undefined,
       searchQuery: searchTerm.trim() || undefined,
       createdByMe: createdByMe || undefined,
+      startCreatedDate: filters.startCreatedDate,
+      endCreatedDate: filters.endCreatedDate,
+      startUpdatedDate: filters.startUpdatedDate,
+      endUpdatedDate: filters.endUpdatedDate,
     },
     sortBy: {
       field: normalizedSortField,
