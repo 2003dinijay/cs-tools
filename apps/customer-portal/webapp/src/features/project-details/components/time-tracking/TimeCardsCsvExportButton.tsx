@@ -56,7 +56,9 @@ export default function TimeCardsCsvExportButton({
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
   const isExporting = exportingFormat !== null;
-  const filenamePrefix = projectName?.replace(/\s+/g, "-").toLowerCase() ?? projectId;
+  const filenamePrefix = projectName?.trim()
+    ? projectName.trim().replace(/\s+/g, "-").toLowerCase()
+    : projectId;
 
   const handleOpen = (event: MouseEvent<HTMLElement>) => {
     if (!isExporting) setAnchorEl(event.currentTarget);
