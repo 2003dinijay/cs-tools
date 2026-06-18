@@ -21,6 +21,7 @@ import {
   KeyRound,
   Monitor,
   Shield,
+  Type,
   Users,
 } from "@wso2/oxygen-ui-icons-react";
 import { colors } from "@wso2/oxygen-ui";
@@ -56,7 +57,29 @@ export const SETTINGS_PAGE_TABS = [
     label: "Registry Tokens",
     icon: KeyRound,
   },
+  {
+    id: SettingsPageTabId.DISPLAY,
+    label: "Display",
+    icon: Type,
+  },
 ] as const;
+
+export const SETTINGS_DISPLAY_HEADER_TITLE = "Display Preferences";
+
+export const SETTINGS_DISPLAY_HEADER_BODY =
+  "Customize the appearance of the portal. Changes apply immediately and are saved to your browser.";
+
+export const SETTINGS_DISPLAY_FONT_SIZE_TITLE = "Font Size";
+
+export const SETTINGS_DISPLAY_FONT_SIZE_DESCRIPTION =
+  "Adjust the text size across the portal";
+
+export const SETTINGS_DISPLAY_FONT_SIZE_OPTIONS = [
+  { id: "small" as const, label: "Small", size: "13px", description: "Compact view" },
+  { id: "medium" as const, label: "Default", size: "16px", description: "Standard view" },
+  { id: "large" as const, label: "Large", size: "18px", description: "Comfortable view" },
+  { id: "xlarge" as const, label: "Extra Large", size: "20px", description: "Accessible view" },
+];
 
 export const SETTINGS_PROJECT_NOT_FOUND_MESSAGE =
   "Project not found. Please select a project.";

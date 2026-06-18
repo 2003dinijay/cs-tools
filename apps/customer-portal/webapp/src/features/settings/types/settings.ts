@@ -20,11 +20,12 @@ import type { ProjectContact } from "@features/settings/types/users";
 import type { RegistryToken } from "@features/settings/types/registryTokens";
 import type { RegistryTokenType } from "@features/settings/types/registryTokens";
 
-/** Main Settings page tabs (User Management, AI, Registry Tokens). */
+/** Main Settings page tabs (User Management, AI, Registry Tokens, Display). */
 export enum SettingsPageTabId {
   USERS = "users",
   AI = "ai",
   REGISTRY_TOKENS = "registryTokens",
+  DISPLAY = "display",
 }
 
 /** Registry Tokens sub-tabs (User vs Service token lists). */

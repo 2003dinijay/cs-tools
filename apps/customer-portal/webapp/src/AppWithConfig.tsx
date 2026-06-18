@@ -24,6 +24,7 @@ import { AsgardeoProvider } from "@asgardeo/react";
 import { themeConfig } from "@config/themeConfig";
 import { loggerConfig } from "@config/loggerConfig";
 import LoggerProvider from "@context/logger/LoggerProvider";
+import { FontSizeProvider } from "@context/font-size/FontSizeContext";
 import MobileAppGate from "@providers/MobileAppGate";
 import { authConfig } from "@config/authConfig";
 
@@ -101,12 +102,14 @@ export default function AppWithConfig(): JSX.Element {
                 },
               }}
             />
-            <QueryClientProvider client={queryClient}>
-              <MobileAppGate>
-                <App />
-              </MobileAppGate>
-              <ReactQueryDevtools initialIsOpen={false} />
-            </QueryClientProvider>
+            <FontSizeProvider>
+              <QueryClientProvider client={queryClient}>
+                <MobileAppGate>
+                  <App />
+                </MobileAppGate>
+                <ReactQueryDevtools initialIsOpen={false} />
+              </QueryClientProvider>
+            </FontSizeProvider>
           </OxygenUIThemeProvider>
         </LoggerProvider>
       </BrowserRouter>

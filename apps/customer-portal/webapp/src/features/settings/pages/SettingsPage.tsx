@@ -21,6 +21,7 @@ import useGetUserDetails from "@features/settings/api/useGetUserDetails";
 import useGetProjectDetails from "@api/useGetProjectDetails";
 import TabBar from "@components/tab-bar/TabBar";
 import SettingsAiAssistant from "@features/settings/components/SettingsAiAssistant";
+import SettingsDisplay from "@features/settings/components/SettingsDisplay";
 import SettingsUserManagement from "@features/settings/components/SettingsUserManagement";
 import SettingsRegistryTokens from "@features/settings/components/SettingsRegistryTokens";
 import {
@@ -129,6 +130,7 @@ export default function SettingsPage(): JSX.Element {
           isRestricted={isRestricted}
         />
       )}
+      {displayTab === SettingsPageTabId.DISPLAY && <SettingsDisplay />}
     </Box>
   );
 }
