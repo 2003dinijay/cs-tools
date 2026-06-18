@@ -52,6 +52,7 @@ type snCase struct {
 	DeployedProduct  snCaseDeployedProduct `json:"deployedProduct"`
 	Product          *snCaseEntityRef      `json:"product"`
 	State            *snCaseState          `json:"state"`
+	WorkState        *snCaseLabel          `json:"workState"`
 	Severity         *snCaseLabel          `json:"severity"`
 	IssueType        *snCaseIssueType      `json:"issueType"`
 	AssignedEngineer *snCaseEntityRef      `json:"assignedEngineer"`
@@ -334,6 +335,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		Priority:    snSeverityToPriority(c.Severity),
 		IssueType:   snIssueTypeToEnum(c.IssueType),
 		State:       state,
+		WorkState:   snWorkStateLabelToEnum(c.WorkState),
 		CreatedOn:   createdOn,
 		UpdatedOn:   updatedOn,
 		CreatedByDetails: domain.UserRef{
@@ -544,8 +546,145 @@ func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.Searc
 	}, nil
 }
 
-func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, error) {
-	return s.pgFallback.UpdateCase(ctx, req)
+type snUpdateCasePayload struct {
+	StateKey      *int     `json:"stateKey,omitempty"`
+	SeverityKey   *int     `json:"severityKey,omitempty"`
+	WatchList     []string `json:"watchList,omitempty"`
+	AssigneeEmail *string  `json:"assigneeEmail,omitempty"`
+}
+
+type snUpdateCaseResponse struct {
+	Message string `json:"message"`
+	Case    struct {
+		ID        string        `json:"id"`
+		UpdatedOn string        `json:"updatedOn"`
+		UpdatedBy string        `json:"updatedBy"`
+		State     *snCaseState  `json:"state"`
+		Severity  *snCaseLabel  `json:"severity"`
+		WatchList []struct {
+			ID       string `json:"id"`
+			UserName string `json:"userName"`
+			Name     string `json:"name"`
+			Email    string `json:"email"`
+		} `json:"watchList"`
+		AssignedTo *struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"assignedTo"`
+	} `json:"case"`
+}
+
+func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
+	if err := validateUUIDs("id", []string{req.ID}); err != nil {
+		return domain.UpdateCaseResponse{}, err
+	}
+
+	fieldCount := 0
+	if req.State != nil {
+		fieldCount++
+	}
+	if req.Priority != nil {
+		fieldCount++
+	}
+	if len(req.WatchList) > 0 {
+		fieldCount++
+	}
+	if req.AssigneeEmail != nil {
+		fieldCount++
+	}
+	if fieldCount == 0 {
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "at least one of state, priority, watchList, or assigneeEmail must be provided"}
+	}
+	if fieldCount > 1 {
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "only one of state, priority, watchList, or assigneeEmail may be provided per request"}
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.UpdateCaseResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	payload := snUpdateCasePayload{}
+	if req.State != nil {
+		if !validCaseState[*req.State] {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "state contains invalid value: " + string(*req.State)}
+		}
+		id, ok := snStateIDMap[*req.State]
+		if !ok {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "state " + string(*req.State) + " is not supported by ServiceNow"}
+		}
+		payload.StateKey = &id
+	}
+	if req.Priority != nil {
+		if !validCasePriority[*req.Priority] {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "priority contains invalid value: " + string(*req.Priority)}
+		}
+		id, ok := snSeverityIDMap[*req.Priority]
+		if !ok {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "priority " + string(*req.Priority) + " is not supported by ServiceNow"}
+		}
+		payload.SeverityKey = &id
+	}
+	if len(req.WatchList) > 0 {
+		payload.WatchList = req.WatchList
+	}
+	if req.AssigneeEmail != nil {
+		payload.AssigneeEmail = req.AssigneeEmail
+	}
+
+	raw, err := s.client.Patch(ctx, "/cases/"+uuidToSysid(req.ID), token, payload)
+	if err != nil {
+		return domain.UpdateCaseResponse{}, err
+	}
+
+	var snResp snUpdateCaseResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.UpdateCaseResponse{}, fmt.Errorf("sn update case: parse response: %w", err)
+	}
+
+	updatedOn, err := time.Parse(snCreatedOnLayout, snResp.Case.UpdatedOn)
+	if err != nil {
+		return domain.UpdateCaseResponse{}, fmt.Errorf("sn update case: parse updatedOn %q: %w", snResp.Case.UpdatedOn, err)
+	}
+
+	resp := domain.UpdateCaseResponse{
+		Message: snResp.Message,
+		Case: domain.UpdatedCase{
+			ID:        sysidToUUID(snResp.Case.ID),
+			UpdatedOn: updatedOn,
+			UpdatedBy: snResp.Case.UpdatedBy,
+		},
+	}
+
+	if snResp.Case.State != nil {
+		state, err := snCaseStateLabelToEnum(snResp.Case.State)
+		if err == nil {
+			resp.Case.State = state
+		}
+	}
+	if snResp.Case.Severity != nil {
+		resp.Case.Priority = snSeverityToPriority(snResp.Case.Severity)
+	}
+	if snResp.Case.AssignedTo != nil {
+		resp.Case.AssignedTo = &domain.AssignedEngineerRef{
+			ID:   sysidToUUID(snResp.Case.AssignedTo.ID),
+			Name: snResp.Case.AssignedTo.Name,
+		}
+	}
+	if len(snResp.Case.WatchList) > 0 {
+		wl := make([]domain.WatchListUser, 0, len(snResp.Case.WatchList))
+		for _, u := range snResp.Case.WatchList {
+			wl = append(wl, domain.WatchListUser{
+				ID:       sysidToUUID(u.ID),
+				UserName: u.UserName,
+				Name:     u.Name,
+				Email:    u.Email,
+			})
+		}
+		resp.Case.WatchList = wl
+	}
+
+	return resp, nil
 }
 
 type snCreateAttachmentPayload struct {
@@ -828,6 +967,7 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 			Priority:               snSeverityToPriority(c.Severity),
 			IssueType:              snIssueTypeToEnum(c.IssueType),
 			State:                  state,
+			WorkState:              snWorkStateLabelToEnum(c.WorkState),
 			CreatedOn:              createdOn,
 			UpdatedOn:              updatedOn,
 			CreatedBy:              domain.UserIDEmailRef{Email: c.CreatedBy},
@@ -902,4 +1042,17 @@ func snIssueTypeToEnum(issueType *snCaseIssueType) domain.CaseIssueType {
 		return it
 	}
 	return ""
+}
+
+func snWorkStateLabelToEnum(ws *snCaseLabel) *domain.CaseWorkState {
+	if ws == nil {
+		return nil
+	}
+	v := domain.CaseWorkState(strings.ToLower(ws.Label))
+	switch v {
+	case domain.CaseWorkStateOngoing, domain.CaseWorkStatePaused:
+		return &v
+	default:
+		return nil
+	}
 }
