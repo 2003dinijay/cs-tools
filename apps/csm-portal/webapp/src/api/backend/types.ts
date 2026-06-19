@@ -188,18 +188,20 @@ export interface BeCaseCreateResponse {
 
 /**
  * Request body for `PATCH /cases/{id}` (mirrors the entity `UpdateCaseRequest`).
- * **Exactly one** of `state` / `priority` / `assigneeEmail` / `watchList` must
- * be set per call — the backend rejects zero or more than one. `assigneeEmail`
- * and `watchList` are supported **only** for the ServiceNow data source.
+ * **Exactly one** of `state` / `priority` / `assigneeEmail` / `watchList` is
+ * sent per call — the backend rejects zero or more than one. Encoded as a
+ * discriminated union (each variant `?: never`s the others) so the
+ * exactly-one-field contract is enforced at compile time, not just in docs.
+ * `assigneeEmail` and `watchList` are supported **only** for the ServiceNow
+ * data source.
  */
-export interface BeCaseUpdatePayload {
-  state?: BeCaseState;
-  priority?: BeCasePriority;
+export type BeCaseUpdatePayload =
+  | { state: BeCaseState; priority?: never; assigneeEmail?: never; watchList?: never }
+  | { state?: never; priority: BeCasePriority; assigneeEmail?: never; watchList?: never }
   /** Email of the engineer to assign (ServiceNow only). */
-  assigneeEmail?: string;
+  | { state?: never; priority?: never; assigneeEmail: string; watchList?: never }
   /** Full replacement watch list as emails (ServiceNow only). */
-  watchList?: string[];
-}
+  | { state?: never; priority?: never; assigneeEmail?: never; watchList: string[] };
 
 /** A user in the case watch list, as echoed by `PATCH /cases/{id}`. */
 export interface BeWatchListUser {

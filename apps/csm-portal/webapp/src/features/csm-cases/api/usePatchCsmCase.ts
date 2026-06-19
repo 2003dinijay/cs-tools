@@ -52,10 +52,10 @@ export function usePatchCsmCase(
       }
       if (isMockMode()) {
         await new Promise((r) => setTimeout(r, MOCK_LATENCY_MS));
-        return {
-          message: "Case updated (mock).",
-          case: { id: caseId, state: input.state, priority: input.priority },
-        };
+        // The success handler ignores the body and refetches, so the mock only
+        // needs the id. (Echoing input.state/priority would not type-check
+        // against the single-field union and isn't used anyway.)
+        return { message: "Case updated (mock).", case: { id: caseId } };
       }
       return api.patch<BeCaseUpdatePayload, BeUpdateCaseResponse>(
         `/cases/${encodeURIComponent(caseId)}`,

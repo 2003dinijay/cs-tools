@@ -51,14 +51,21 @@ describe("publicCommentGateReason", () => {
     expect(publicCommentGateReason("work_in_progress", "ongoing")).toBeNull();
   });
 
-  it("gives a resume hint (mentioning work notes) for a paused case", () => {
-    const reason = publicCommentGateReason("work_in_progress", "paused");
-    expect(reason).toMatch(/paused/i);
-    expect(reason).toMatch(/work note/i);
+  it("gives a resume hint for a paused case", () => {
+    expect(publicCommentGateReason("work_in_progress", "paused")).toMatch(
+      /paused/i,
+    );
   });
 
   it("gives an in-progress hint for other states", () => {
     expect(publicCommentGateReason("open", null)).toMatch(/in progress/i);
     expect(publicCommentGateReason("closed", null)).toMatch(/in progress/i);
+  });
+
+  it("does not promise a work-note fallback (pending the backend exemption)", () => {
+    expect(publicCommentGateReason("open", null)).not.toMatch(/work note/i);
+    expect(publicCommentGateReason("work_in_progress", "paused")).not.toMatch(
+      /work note/i,
+    );
   });
 });

@@ -36,8 +36,11 @@ export function caseAcceptsPublicComments(
 /**
  * Human-readable reason a **public comment** cannot be posted right now, or
  * `null` when it can. When set, the composer locks to work-note mode and shows
- * this as the hint, so the engineer understands why their entry is saved as an
- * internal note rather than sent to the customer. Does not apply to work notes.
+ * this as the hint so the engineer understands why a customer reply is
+ * unavailable. Intentionally does not promise that a work note will save — that
+ * depends on the backend exempting work notes from the in-progress guard
+ * (pending follow-up); copy stays non-committal until then. Does not gate work
+ * notes.
  */
 export function publicCommentGateReason(
   state: CaseState | undefined,
@@ -45,9 +48,9 @@ export function publicCommentGateReason(
 ): string | null {
   if (caseAcceptsPublicComments(state, workState)) return null;
   if (state === "work_in_progress" && workState === "paused") {
-    return "This case is paused — customer replies are disabled. This will be saved as an internal work note; resume work to reply.";
+    return "This case is paused — customer replies are disabled. Resume work to reply to the customer.";
   }
-  return "Customer replies are disabled unless the case is actively in progress. This will be saved as an internal work note.";
+  return "Customer replies are disabled unless the case is actively in progress.";
 }
 
 /** Short label for the work sub-state chip on the case header / list. */
