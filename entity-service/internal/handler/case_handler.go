@@ -189,3 +189,18 @@ func (h *CaseHandler) SearchServiceRequests(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// SearchSecurityReportAnalysis handles POST /security-report-analyses/search.
+func (h *CaseHandler) SearchSecurityReportAnalysis(w http.ResponseWriter, r *http.Request) {
+	var req domain.SearchSecurityReportAnalysisRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.SearchSecurityReportAnalysis(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
