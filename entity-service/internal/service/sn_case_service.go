@@ -660,10 +660,10 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		fieldCount++
 	}
 	if fieldCount == 0 {
-		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "at least one of state, priority, workState, watchList, or assigneeEmail must be provided"}
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "at least one of stateKey, priorityKey, workStateKey, watchList, or assigneeEmail must be provided"}
 	}
 	if fieldCount > 1 {
-		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "only one of state, priority, workState, watchList, or assigneeEmail may be provided per request"}
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "only one of stateKey, priorityKey, workStateKey, watchList, or assigneeEmail may be provided per request"}
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
@@ -674,7 +674,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	payload := snUpdateCasePayload{}
 	if req.State != nil {
 		if !validCaseState[*req.State] {
-			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "state contains invalid value: " + string(*req.State)}
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "stateKey contains invalid value: " + string(*req.State)}
 		}
 		id, ok := snStateIDMap[*req.State]
 		if !ok {
@@ -684,7 +684,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	}
 	if req.Priority != nil {
 		if !validCasePriority[*req.Priority] {
-			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "priority contains invalid value: " + string(*req.Priority)}
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "priorityKey contains invalid value: " + string(*req.Priority)}
 		}
 		id, ok := snSeverityIDMap[*req.Priority]
 		if !ok {
@@ -694,7 +694,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	}
 	if req.WorkState != nil {
 		if !validCaseWorkState[*req.WorkState] {
-			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workState contains invalid value: " + string(*req.WorkState)}
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workStateKey contains invalid value: " + string(*req.WorkState)}
 		}
 		id, ok := snWorkStateIDMap[*req.WorkState]
 		if !ok {
