@@ -63,10 +63,9 @@ type snServiceRequestCase struct {
 	Catalog          *snCaseEntityRef           `json:"catalog"`
 	CatalogItem      *snCaseEntityRef           `json:"catalogItem"`
 	AssignedTeam     *snCaseEntityRef           `json:"assignedTeam"`
-	AssignedEngineer *snCaseEntityRef           `json:"assignedEngineer"`
+	AssignedEngineer *snAssignedEngineerRef      `json:"assignedEngineer"`
 	ParentCase       *snCaseRef                 `json:"parentCase"`
 	RelatedCase      *snCaseRef                 `json:"relatedCase"`
-	Conversation     *snCaseEntityRef           `json:"conversation"`
 }
 
 type snServiceRequestWorkState struct {
@@ -91,7 +90,7 @@ type snCase struct {
 	WorkState        *snCaseLabel          `json:"workState"`
 	Severity         *snCaseLabel          `json:"severity"`
 	IssueType        *snCaseIssueType      `json:"issueType"`
-	AssignedEngineer *snCaseEntityRef      `json:"assignedEngineer"`
+	AssignedEngineer *snAssignedEngineerRef `json:"assignedEngineer"`
 	ParentCase       *snCaseRef            `json:"parentCase"`
 	RelatedCase      *snCaseRef            `json:"relatedCase"`
 	Account          *snCaseAccount        `json:"account"`
@@ -111,6 +110,12 @@ type snCaseDeployedProduct struct {
 type snCaseRef struct {
 	ID     string `json:"id"`
 	Number string `json:"number"`
+}
+
+type snAssignedEngineerRef struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Email *string `json:"email"`
 }
 
 type snCaseAccount struct {
@@ -404,7 +409,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		cv.ProductDetails = domain.EntityRef{ID: sysidToUUID(c.Product.ID), Name: c.Product.Name}
 	}
 	if c.AssignedEngineer != nil {
-		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name}
+		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
 	}
 	if c.ParentCase != nil {
 		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number}
@@ -1047,6 +1052,10 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 			DeploymentDetails:      domain.EntityRef{ID: sysidToUUID(c.Deployment.ID), Name: c.Deployment.Name},
 			DeployedProductDetails: domain.DeployedProductRef{ID: sysidToUUID(c.DeployedProduct.ID), DisplayName: strings.TrimSpace(c.DeployedProduct.Name + " " + c.DeployedProduct.Version)},
 		})
+		if c.AssignedEngineer != nil {
+			v := &views[len(views)-1]
+			v.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
+		}
 	}
 
 	total := snResp.TotalRecords
@@ -1235,8 +1244,7 @@ func (s *snCaseService) SearchServiceRequests(ctx context.Context, req domain.Se
 			view.AssignedTeam = &ref
 		}
 		if c.AssignedEngineer != nil {
-			ref := domain.EntityRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name}
-			view.AssignedEngineer = &ref
+			view.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
 		}
 		if c.ParentCase != nil {
 			ref := domain.EntityRef{ID: sysidToUUID(c.ParentCase.ID), Name: c.ParentCase.Number}
@@ -1246,10 +1254,6 @@ func (s *snCaseService) SearchServiceRequests(ctx context.Context, req domain.Se
 			ref := domain.EntityRef{ID: sysidToUUID(c.RelatedCase.ID), Name: c.RelatedCase.Number}
 			view.RelatedCase = &ref
 		}
-		if c.Conversation != nil {
-			ref := domain.EntityRef{ID: sysidToUUID(c.Conversation.ID), Name: c.Conversation.Name}
-			view.Conversation = &ref
-		}
 		if c.WorkState != nil {
 			view.WorkState = &domain.ServiceRequestWorkStateRef{ID: c.WorkState.ID, Label: c.WorkState.Label}
 		}
@@ -1257,7 +1261,7 @@ func (s *snCaseService) SearchServiceRequests(ctx context.Context, req domain.Se
 	}
 
 	return domain.SearchServiceRequestsResponse{
-		Cases:        views,
+		ServiceRequests: views,
 		TotalRecords: snResp.TotalRecords,
 		Offset:       req.Pagination.Offset,
 		Limit:        req.Pagination.Limit,

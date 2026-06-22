@@ -1407,6 +1407,9 @@ components:
           type: string
         name:
           type: string
+        email:
+          type: string
+          nullable: true
 
     CaseNumberRef:
       type: object
@@ -1601,6 +1604,9 @@ components:
           description: Timestamp when the case was closed. null if not yet closed.
         createdBy:
           $ref: '#/components/schemas/UserIDEmailRef'
+        assignedEngineer:
+          nullable: true
+          $ref: '#/components/schemas/AssignedEngineerRef'
         project:
           $ref: '#/components/schemas/EntityRef'
         deployment:
@@ -1609,9 +1615,6 @@ components:
           $ref: '#/components/schemas/DeployedProductRef'
         product:
           $ref: '#/components/schemas/EntityRef'
-        assignedEngineer:
-          nullable: true
-          $ref: '#/components/schemas/AssignedEngineerRef'
         parentCase:
           nullable: true
           $ref: '#/components/schemas/CaseNumberRef'
@@ -1896,7 +1899,7 @@ components:
         deployedProduct:
           $ref: '#/components/schemas/EntityRef'
         assignedEngineer:
-          $ref: '#/components/schemas/EntityRef'
+          $ref: '#/components/schemas/AssignedEngineerRef'
           nullable: true
         parentCase:
           $ref: '#/components/schemas/EntityRef'
@@ -1904,14 +1907,11 @@ components:
         relatedCase:
           $ref: '#/components/schemas/EntityRef'
           nullable: true
-        conversation:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
 
     SearchServiceRequestsResponse:
       type: object
       properties:
-        cases:
+        serviceRequests:
           type: array
           items:
             $ref: '#/components/schemas/ServiceRequestView'
