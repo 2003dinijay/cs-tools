@@ -313,8 +313,8 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 		DeployedProductID: uuidToSysid(req.DeployedProductID),
 		Title:             req.Subject,
 		Description:       req.Description,
-		SeverityKey:       snPriorityID[req.Priority],
-		IssueTypeKey:      snIssueTypeID[req.IssueType],
+		SeverityKey:       snPriorityID[req.PriorityKey],
+		IssueTypeKey:      snIssueTypeID[req.IssueTypeKey],
 	}
 
 	raw, err := s.client.Post(ctx, "/cases", token, payload)
@@ -442,14 +442,14 @@ type snCreateCommentResponse struct {
 }
 
 func (s *snCaseService) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
-	if !validCommentType[req.Type] {
-		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "type contains invalid value: " + string(req.Type)}
+	if !validCommentType[req.TypeKey] {
+		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "typeKey contains invalid value: " + string(req.TypeKey)}
 	}
 	if req.Content == "" {
 		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "content is required"}
 	}
-	if req.Type == domain.CommentTypeActivity {
-		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "type 'activity' is not supported for ServiceNow"}
+	if req.TypeKey == domain.CommentTypeActivity {
+		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "typeKey 'activity' is not supported for ServiceNow"}
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
@@ -457,7 +457,7 @@ func (s *snCaseService) CreateCaseComment(ctx context.Context, req domain.Create
 		return domain.CreateCaseCommentResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
 	}
 
-	snType := snCommentTypeMap[req.Type]
+	snType := snCommentTypeMap[req.TypeKey]
 
 	payload := snCreateCommentPayload{
 		ReferenceID:   uuidToSysid(req.CaseID),
@@ -541,11 +541,11 @@ func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.Searc
 		ReferenceType: "case",
 		Pagination:    snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
 	}
-	if req.Filters != nil && req.Filters.Type != nil {
-		snType, ok := snCommentTypeMap[*req.Filters.Type]
+	if req.Filters != nil && req.Filters.TypeKey != nil {
+		snType, ok := snCommentTypeMap[*req.Filters.TypeKey]
 		if !ok {
 			return domain.SearchCaseCommentsResponse{}, &apierror.ValidationError{
-				Msg: "filters.type is not supported for ServiceNow: " + string(*req.Filters.Type),
+				Msg: "filters.typeKey is not supported for ServiceNow: " + string(*req.Filters.TypeKey),
 			}
 		}
 		payload.Filters = &snCommentFilters{Type: snType}
@@ -606,8 +606,15 @@ func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.Searc
 type snUpdateCasePayload struct {
 	StateKey      *int     `json:"stateKey,omitempty"`
 	SeverityKey   *int     `json:"severityKey,omitempty"`
+	WorkStateKey  *int     `json:"workStateKey,omitempty"`
 	WatchList     []string `json:"watchList,omitempty"`
 	AssigneeEmail *string  `json:"assigneeEmail,omitempty"`
+}
+
+// snWorkStateIDMap maps domain CaseWorkState enums to SN numeric work state IDs.
+var snWorkStateIDMap = map[domain.CaseWorkState]int{
+	domain.CaseWorkStateOngoing: 1,
+	domain.CaseWorkStatePaused:  2,
 }
 
 type snUpdateCaseResponse struct {
@@ -637,10 +644,13 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	}
 
 	fieldCount := 0
-	if req.State != nil {
+	if req.StateKey != nil {
 		fieldCount++
 	}
-	if req.Priority != nil {
+	if req.PriorityKey != nil {
+		fieldCount++
+	}
+	if req.WorkStateKey != nil {
 		fieldCount++
 	}
 	if len(req.WatchList) > 0 {
@@ -650,10 +660,10 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		fieldCount++
 	}
 	if fieldCount == 0 {
-		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "at least one of state, priority, watchList, or assigneeEmail must be provided"}
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "at least one of stateKey, priorityKey, workStateKey, watchList, or assigneeEmail must be provided"}
 	}
 	if fieldCount > 1 {
-		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "only one of state, priority, watchList, or assigneeEmail may be provided per request"}
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "only one of stateKey, priorityKey, workStateKey, watchList, or assigneeEmail may be provided per request"}
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
@@ -662,25 +672,35 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	}
 
 	payload := snUpdateCasePayload{}
-	if req.State != nil {
-		if !validCaseState[*req.State] {
-			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "state contains invalid value: " + string(*req.State)}
+	if req.StateKey != nil {
+		if !validCaseState[*req.StateKey] {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "stateKey contains invalid value: " + string(*req.StateKey)}
 		}
-		id, ok := snStateIDMap[*req.State]
+		id, ok := snStateIDMap[*req.StateKey]
 		if !ok {
-			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "state " + string(*req.State) + " is not supported by ServiceNow"}
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "state " + string(*req.StateKey) + " is not supported by ServiceNow"}
 		}
 		payload.StateKey = &id
 	}
-	if req.Priority != nil {
-		if !validCasePriority[*req.Priority] {
-			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "priority contains invalid value: " + string(*req.Priority)}
+	if req.PriorityKey != nil {
+		if !validCasePriority[*req.PriorityKey] {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "priorityKey contains invalid value: " + string(*req.PriorityKey)}
 		}
-		id, ok := snSeverityIDMap[*req.Priority]
+		id, ok := snSeverityIDMap[*req.PriorityKey]
 		if !ok {
-			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "priority " + string(*req.Priority) + " is not supported by ServiceNow"}
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "priority " + string(*req.PriorityKey) + " is not supported by ServiceNow"}
 		}
 		payload.SeverityKey = &id
+	}
+	if req.WorkStateKey != nil {
+		if !validCaseWorkState[*req.WorkStateKey] {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workStateKey contains invalid value: " + string(*req.WorkStateKey)}
+		}
+		id, ok := snWorkStateIDMap[*req.WorkStateKey]
+		if !ok {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workState " + string(*req.WorkStateKey) + " is not supported by ServiceNow"}
+		}
+		payload.WorkStateKey = &id
 	}
 	if len(req.WatchList) > 0 {
 		payload.WatchList = req.WatchList
