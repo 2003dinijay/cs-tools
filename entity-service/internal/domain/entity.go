@@ -680,6 +680,58 @@ type SearchServiceRequestsResponse struct {
 	Limit        int                  `json:"limit"`
 }
 
+// SearchSecurityReportAnalysisFilters holds optional filter criteria for a security-report-analysis search.
+// This endpoint is only supported for the ServiceNow data source.
+type SearchSecurityReportAnalysisFilters struct {
+	ProjectIDs       []string   `json:"projectIds"`
+	SearchQuery      string     `json:"searchQuery"`
+	StateKeys        []int      `json:"stateKeys"`
+	ClosedStartDate  *time.Time `json:"closedStartDate"`
+	ClosedEndDate    *time.Time `json:"closedEndDate"`
+	StartCreatedDate *time.Time `json:"startCreatedDate"`
+	EndCreatedDate   *time.Time `json:"endCreatedDate"`
+	StartUpdatedDate *time.Time `json:"startUpdatedDate"`
+	EndUpdatedDate   *time.Time `json:"endUpdatedDate"`
+	DeploymentIDs    []string   `json:"deploymentIds"`
+	CreatedBy        []string   `json:"createdBy"`
+	CreatedByMe      bool       `json:"createdByMe"`
+}
+
+// SearchSecurityReportAnalysisRequest is the input for POST /security-report-analysis/search.
+type SearchSecurityReportAnalysisRequest struct {
+	Filters    SearchSecurityReportAnalysisFilters `json:"filters"`
+	SortBy     CaseSort                            `json:"sortBy"`
+	Pagination Pagination                          `json:"pagination"`
+}
+
+// SecurityReportAnalysisView is the enriched representation of a security report analysis returned in search results.
+type SecurityReportAnalysisView struct {
+	ID               string               `json:"id"`
+	InternalID       string               `json:"internalId"`
+	Number           string               `json:"number"`
+	CreatedOn        string               `json:"createdOn"`
+	CreatedBy        string               `json:"createdBy"`
+	Title            *string              `json:"title"`
+	Description      *string              `json:"description"`
+	State            string               `json:"state"`
+	WorkState        *string              `json:"workState"`
+	Product          *EntityRef           `json:"product"`
+	Project          EntityRef            `json:"project"`
+	Deployment       EntityRef            `json:"deployment"`
+	DeployedProduct  EntityRef            `json:"deployedProduct"`
+	AssignedEngineer *AssignedEngineerRef `json:"assignedEngineer"`
+	ParentCase       *EntityRef           `json:"parentCase"`
+	RelatedCase      *EntityRef           `json:"relatedCase"`
+}
+
+// SearchSecurityReportAnalysisResponse is the paginated result of a security-report-analysis search.
+type SearchSecurityReportAnalysisResponse struct {
+	SecurityReportAnalyses []SecurityReportAnalysisView `json:"securityReportAnalyses"`
+	TotalRecords           int                          `json:"totalRecords"`
+	Offset                 int                          `json:"offset"`
+	Limit                  int                          `json:"limit"`
+}
+
 // UpdateCaseRequest is the input for PATCH /cases/{id}.
 // Exactly one of State, Priority, WorkState, WatchList, or AssigneeEmail must be provided.
 // WatchList and AssigneeEmail are only supported for the ServiceNow data source.
