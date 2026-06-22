@@ -668,7 +668,6 @@ type ServiceRequestView struct {
 	AssignedEngineer *EntityRef                  `json:"assignedEngineer"`
 	ParentCase       *EntityRef                  `json:"parentCase"`
 	RelatedCase      *EntityRef                  `json:"relatedCase"`
-	Conversation     *EntityRef                  `json:"conversation"`
 }
 
 // SearchServiceRequestsResponse is the paginated result of a service-request search.

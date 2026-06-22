@@ -66,7 +66,6 @@ type snServiceRequestCase struct {
 	AssignedEngineer *snCaseEntityRef           `json:"assignedEngineer"`
 	ParentCase       *snCaseRef                 `json:"parentCase"`
 	RelatedCase      *snCaseRef                 `json:"relatedCase"`
-	Conversation     *snCaseEntityRef           `json:"conversation"`
 }
 
 type snServiceRequestWorkState struct {
@@ -1245,10 +1244,6 @@ func (s *snCaseService) SearchServiceRequests(ctx context.Context, req domain.Se
 		if c.RelatedCase != nil {
 			ref := domain.EntityRef{ID: sysidToUUID(c.RelatedCase.ID), Name: c.RelatedCase.Number}
 			view.RelatedCase = &ref
-		}
-		if c.Conversation != nil {
-			ref := domain.EntityRef{ID: sysidToUUID(c.Conversation.ID), Name: c.Conversation.Name}
-			view.Conversation = &ref
 		}
 		if c.WorkState != nil {
 			view.WorkState = &domain.ServiceRequestWorkStateRef{ID: c.WorkState.ID, Label: c.WorkState.Label}

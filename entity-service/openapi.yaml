@@ -1904,9 +1904,7 @@ components:
         relatedCase:
           $ref: '#/components/schemas/EntityRef'
           nullable: true
-        conversation:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
+
 
     SearchServiceRequestsResponse:
       type: object
