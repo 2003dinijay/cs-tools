@@ -1261,24 +1261,24 @@ components:
     UpdateCaseRequest:
       type: object
       description: |
-        Exactly one of `state`, `priority`, `workState`, `watchList`, or `assigneeEmail` must be provided.
+        Exactly one of `stateKey`, `priorityKey`, `workStateKey`, `watchList`, or `assigneeEmail` must be provided.
         `watchList` and `assigneeEmail` are supported only for the ServiceNow data source.
       oneOf:
-        - required: [state]
-        - required: [priority]
-        - required: [workState]
+        - required: [stateKey]
+        - required: [priorityKey]
+        - required: [workStateKey]
         - required: [watchList]
         - required: [assigneeEmail]
       properties:
-        state:
+        stateKey:
           type: string
           enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, solution_proposed, closed]
           description: The new state to transition the case to.
-        priority:
+        priorityKey:
           type: string
           enum: [catastrophic, critical, high, medium, low]
           description: The new priority (severity) of the case.
-        workState:
+        workStateKey:
           type: string
           enum: [ongoing, paused]
           description: The new work sub-state of the case. Only applicable when the case state is work_in_progress.
@@ -1351,7 +1351,7 @@ components:
 
     CreateCaseRequest:
       type: object
-      required: [projectId, deploymentId, deployedProductId, subject, description, priority, issueType]
+      required: [projectId, deploymentId, deployedProductId, subject, description, priorityKey, issueTypeKey]
       properties:
         projectId:
           type: string
@@ -1366,10 +1366,10 @@ components:
           type: string
         description:
           type: string
-        priority:
+        priorityKey:
           type: string
           enum: [catastrophic, critical, high, medium, low]
-        issueType:
+        issueTypeKey:
           type: string
           enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
 
@@ -1720,9 +1720,9 @@ components:
 
     CreateCaseCommentRequest:
       type: object
-      required: [type, content]
+      required: [typeKey, content]
       properties:
-        type:
+        typeKey:
           type: string
           enum: [work_note, comment, activity]
           description: work_note is restricted to internal users; activity to internal and system users.
@@ -1750,6 +1750,12 @@ components:
     SearchCaseCommentsRequest:
       type: object
       properties:
+        filters:
+          type: object
+          properties:
+            typeKey:
+              type: string
+              enum: [work_note, comment, activity]
         pagination:
           $ref: '#/components/schemas/Pagination'
 
