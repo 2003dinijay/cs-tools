@@ -498,8 +498,9 @@ type UserRef struct {
 
 // AssignedEngineerRef is a compact reference to an assigned support engineer.
 type AssignedEngineerRef struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Email *string `json:"email"`
 }
 
 // CaseNumberRef is a compact reference to a case carrying its human-readable number.
@@ -601,10 +602,11 @@ type SearchCaseView struct {
 	CreatedOn              time.Time          `json:"createdOn"`
 	UpdatedOn              time.Time          `json:"updatedOn"`
 	ClosedOn               *time.Time         `json:"closedOn"`
-	CreatedBy              UserIDEmailRef     `json:"createdBy"`
-	ProjectDetails         EntityRef          `json:"project"`
-	DeploymentDetails      EntityRef          `json:"deployment"`
-	DeployedProductDetails DeployedProductRef `json:"deployedProduct"`
+	CreatedBy              UserIDEmailRef       `json:"createdBy"`
+	AssignedEngineer       *AssignedEngineerRef `json:"assignedEngineer"`
+	ProjectDetails         EntityRef            `json:"project"`
+	DeploymentDetails      EntityRef            `json:"deployment"`
+	DeployedProductDetails DeployedProductRef   `json:"deployedProduct"`
 }
 
 // SearchCasesResponse is the paginated result of a case search.
@@ -665,7 +667,7 @@ type ServiceRequestView struct {
 	Project          EntityRef                   `json:"project"`
 	Deployment       EntityRef                   `json:"deployment"`
 	DeployedProduct  EntityRef                   `json:"deployedProduct"`
-	AssignedEngineer *EntityRef                  `json:"assignedEngineer"`
+	AssignedEngineer *AssignedEngineerRef        `json:"assignedEngineer"`
 	ParentCase       *EntityRef                  `json:"parentCase"`
 	RelatedCase      *EntityRef                  `json:"relatedCase"`
 }
