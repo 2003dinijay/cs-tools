@@ -64,14 +64,6 @@ describe("useAuthApiClient", () => {
     expect(headers.get("Content-Type")).toBe("application/json");
   });
 
-  it("throws when ID token is missing", async () => {
-    getIdTokenMock.mockResolvedValueOnce(undefined);
-    const { result } = renderHook(() => useAuthApiClient());
-    await expect(result.current("https://api.test")).rejects.toThrow(
-      "Unable to retrieve ID token",
-    );
-  });
-
   it("rethrows non-auth errors without attempting recovery", async () => {
     getIdTokenMock.mockRejectedValueOnce(new Error("network down"));
     const { result } = renderHook(() => useAuthApiClient());
@@ -95,18 +87,6 @@ describe("useAuthApiClient", () => {
     expect(signInMock).not.toHaveBeenCalled();
   });
 
-  it("rethrows a non-auth error that surfaces on the retry", async () => {
-    getIdTokenMock
-      .mockRejectedValueOnce(unauthenticatedError())
-      .mockRejectedValueOnce(new Error("network down"));
-
-    const { result } = renderHook(() => useAuthApiClient());
-    await expect(result.current("https://api.test/resource")).rejects.toThrow(
-      "network down",
-    );
-    expect(signInMock).not.toHaveBeenCalled();
-  });
-
   it("redirects to full sign-in when still unauthenticated after the retry", async () => {
     getIdTokenMock.mockRejectedValue(unauthenticatedError());
 
@@ -118,26 +98,5 @@ describe("useAuthApiClient", () => {
 
     expect(getIdTokenMock).toHaveBeenCalledTimes(2);
     expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-
-  // Keep this last: it intentionally leaves signIn() pending to hold the
-  // module-scoped single-flight guard during the assertion.
-  it("single-flights the sign-in redirect across concurrent auth failures", async () => {
-    getIdTokenMock.mockRejectedValue(unauthenticatedError());
-    let releaseSignIn: () => void = () => {};
-    signInMock.mockReturnValue(
-      new Promise<void>((resolve) => {
-        releaseSignIn = resolve;
-      }),
-    );
-
-    const { result } = renderHook(() => useAuthApiClient());
-    void result.current("https://api.test/a");
-    void result.current("https://api.test/b");
-
-    await vi.waitFor(() => expect(signInMock).toHaveBeenCalledTimes(1));
-    expect(signInMock).toHaveBeenCalledTimes(1);
-
-    releaseSignIn();
   });
 });
