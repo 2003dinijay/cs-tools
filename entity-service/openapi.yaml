@@ -1243,8 +1243,14 @@ components:
 
     CreateCaseRequest:
       type: object
-      required: [projectId, deploymentId, deployedProductId, subject, description, severityKey, issueTypeKey]
+      required: [typeKey, projectId, deploymentId, deployedProductId, subject, description, severityKey, issueTypeKey]
       properties:
+        typeKey:
+          type: string
+          enum: [support]
+          description: |
+            Case type. Currently only `support` is accepted for the Postgres data source.
+            For the ServiceNow data source `support` maps to `default_case` in the SN API payload.
         projectId:
           type: string
           format: uuid

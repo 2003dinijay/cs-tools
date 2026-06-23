@@ -701,6 +701,7 @@ type CreateCaseDetails struct {
 // CreatedBy is not accepted from the request body and will be wired from auth context later.
 type CreateCaseRequest struct {
 	CreatedBy         string        `json:"-"`
+	TypeKey           string        `json:"typeKey"`
 	ProjectID         string        `json:"projectId"`
 	DeploymentID      string        `json:"deploymentId"`
 	DeployedProductID string        `json:"deployedProductId"`
