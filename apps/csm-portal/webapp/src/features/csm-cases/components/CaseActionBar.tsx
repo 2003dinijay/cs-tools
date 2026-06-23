@@ -204,16 +204,15 @@ function buildSecondaryItems(caseDetail: CsmCaseDetail): SecondaryItem[] {
   // Pause / resume the work sub-state. Offered only for an in-progress case
   // assigned to the current user — pausing/resuming is the assignee's own
   // workflow control, not something to do to someone else's active case.
-  if (
-    caseDetail.assigneeIsMe &&
-    caseDetail.state === "work_in_progress" &&
-    caseDetail.workState
-  ) {
-    const paused = caseDetail.workState === "paused";
+  if (caseDetail.assigneeIsMe && caseDetail.state === "work_in_progress") {
+    // Only `ongoing` is pausable; anything else (paused OR a null work-state
+    // in-progress case) is resumable — otherwise the only action that can set
+    // `ongoing` would be hidden for null work-state cases.
+    const ongoing = caseDetail.workState === "ongoing";
     items.push({
       key: "toggle_work_state",
-      label: paused ? "Resume work" : "Pause work",
-      icon: paused ? <Play size={16} /> : <PauseCircle size={16} />,
+      label: ongoing ? "Pause work" : "Resume work",
+      icon: ongoing ? <PauseCircle size={16} /> : <Play size={16} />,
       divider: true,
     });
   }

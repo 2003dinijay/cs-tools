@@ -383,18 +383,25 @@ export default function CsmCaseDetailPage(): JSX.Element {
           ? beStateFromUi(nextState)
           : LIFECYCLE_TARGET_STATE[action];
 
-        // Starting (or resuming) work: enforce the single-active-case rule.
-        // 1) look up the engineer's other ongoing cases, 2) move this case to
+        // Starting work: enforce the single-active-case rule.
+        // 1) look up the engineer's other ongoing cases (abort on failure — we
+        //    must not transition without knowing), 2) move this case to
         // work_in_progress, 3) if none ongoing → mark this one ongoing; if some
         // exist → ask before pausing them (handled in onConfirmStartWork).
         if (targetState === "work_in_progress" && data) {
           const caseId = data.id;
           void (async () => {
-            let others: MyOngoingCase[] = [];
+            let others: MyOngoingCase[];
             try {
               others = await findMyOngoingCases(caseId);
-            } catch {
-              // Non-fatal: if the lookup fails, fall through to a plain move.
+            } catch (err) {
+              // Don't proceed blind: marking this ongoing without knowing the
+              // other active cases would break the single-active-case rule.
+              showError(
+                "Couldn't check your other active cases. Please try again.",
+                err,
+              );
+              return;
             }
             try {
               await patchCase.mutateAsync({ stateKey: "work_in_progress" });
@@ -467,35 +474,70 @@ export default function CsmCaseDetailPage(): JSX.Element {
         return;
       }
 
-      // Pause / resume the work sub-state via PATCH { workState } (single-field;
-      // does not touch state or assignee). The action bar only offers this for
-      // an in-progress case assigned to the current user. Pausing disables
-      // customer replies (the composer locks to work-note mode); resuming
-      // re-enables them. The single-active-case invariant (resuming auto-pauses
-      // the engineer's other ongoing case) is a backend follow-up; until then
-      // this is a direct toggle.
+      // Pause / resume the work sub-state via PATCH { workStateKey }. Only for an
+      // in-progress case assigned to the current user. Pausing is a direct
+      // single-field patch. Resuming sets this case `ongoing`, so it runs the
+      // same single-active-case conflict check as starting work — otherwise an
+      // engineer with another ongoing case would end up with two.
       if (action.secondary === "toggle_work_state") {
-        if (!data || data.state !== "work_in_progress" || !data.workState) return;
-        const next = data.workState === "ongoing" ? "paused" : "ongoing";
-        patchCase.mutate(
-          { workStateKey: next },
-          {
-            onSuccess: () =>
-              setFeedback({
-                message:
-                  next === "paused"
-                    ? "Work paused — customer replies are disabled until you resume."
-                    : "Resumed work on this case.",
-                severity: next === "paused" ? "warning" : "info",
-                sticky: true,
-              }),
-            onError: (err) =>
+        if (!data || data.state !== "work_in_progress") return;
+        // Anything other than `ongoing` (paused OR a null work-state) resumes.
+        const resuming = data.workState !== "ongoing";
+
+        if (!resuming) {
+          patchCase.mutate(
+            { workStateKey: "paused" },
+            {
+              onSuccess: () =>
+                setFeedback({
+                  message:
+                    "Work paused — customer replies are disabled until you resume.",
+                  severity: "warning",
+                  sticky: true,
+                }),
+              onError: (err) =>
+                showError(
+                  "Could not update the work state. Please try again.",
+                  err,
+                ),
+            },
+          );
+          return;
+        }
+
+        // Resuming → ongoing: check for other active cases first (abort on
+        // failure), then either mark ongoing or prompt to pause the others.
+        const caseId = data.id;
+        void (async () => {
+          let others: MyOngoingCase[];
+          try {
+            others = await findMyOngoingCases(caseId);
+          } catch (err) {
+            showError(
+              "Couldn't check your other active cases. Please try again.",
+              err,
+            );
+            return;
+          }
+          if (others.length === 0) {
+            try {
+              await patchCase.mutateAsync({ workStateKey: "ongoing" });
+            } catch (err) {
               showError(
-                "Could not update the work state. Please try again.",
+                "Could not resume work on this case. Please try again.",
                 err,
-              ),
-          },
-        );
+              );
+              return;
+            }
+            setFeedback({
+              message: "Resumed work on this case.",
+              severity: "info",
+              sticky: true,
+            });
+            return;
+          }
+          setPauseConflict(others);
+        })();
         return;
       }
 
@@ -530,8 +572,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
   );
 
   // Confirm pausing the engineer's other ongoing case(s) and making this case
-  // the active one. The state was already moved to work_in_progress when the
-  // dialog opened; here we pause each other case then mark this one ongoing.
+  // the active one. By the time the dialog opens this case is already
+  // work_in_progress (whether via start-work or resume); here we pause each
+  // other case then mark this one ongoing.
   const onConfirmStartWork = useCallback(async () => {
     const others = pauseConflict;
     if (!others || !data) return;
@@ -544,8 +587,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
       setFeedback({
         message:
           others.length === 1
-            ? `Paused ${others[0].label} and started work on this case.`
-            : `Paused ${others.length} other ongoing cases and started work on this case.`,
+            ? `Paused ${others[0].label} and made this your active case.`
+            : `Paused ${others.length} other ongoing cases and made this your active case.`,
         severity: "info",
         sticky: true,
       });

@@ -70,6 +70,7 @@ export default function AsyncProjectMultiSelect({
     isFetching,
     isFetchingNextPage,
     hasNextPage,
+    isError,
     fetchNextPage,
   } = useInfiniteProjectSearch(query, open);
 
@@ -145,7 +146,13 @@ export default function AsyncProjectMultiSelect({
         // pick several from one search; clear only on explicit input/clear.
         if (reason === "input" || reason === "clear") setInput(value);
       }}
-      noOptionsText={isFetching ? "Loading projects…" : "No projects found"}
+      noOptionsText={
+        isError
+          ? "Couldn't load projects. Try again."
+          : isFetching
+            ? "Loading projects…"
+            : "No projects found"
+      }
       renderTags={(value, getTagProps) =>
         value.map((option, index) => {
           const { key, ...tagProps } = getTagProps({ index });

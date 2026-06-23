@@ -185,7 +185,7 @@ export interface BeCaseView {
 
 export interface BeCaseCreatePayload {
   /** Case type. The portal only creates `support` cases. */
-  typeKey: BeCaseType;
+  typeKey: "support";
   projectId: string;
   deploymentId: string;
   deployedProductId: string;

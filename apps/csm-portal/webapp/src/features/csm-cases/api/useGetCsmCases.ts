@@ -20,6 +20,7 @@ import {
   type UseQueryResult,
 } from "@tanstack/react-query";
 import { useLogger } from "@hooks/useLogger";
+import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { ApiQueryKeys, BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { isMockMode, useBackendApi, type BackendApi } from "@api/backend/client";
 import {
@@ -120,6 +121,9 @@ export function useGetCsmCases(
   const logger = useLogger();
   const api = useBackendApi();
   const queryClient = useQueryClient();
+  // Signed-in email, to resolve `assigneeIsMe` per row against the assigned
+  // engineer's email. In the key so a late-arriving claim recomputes.
+  const currentUserEmail = useIdTokenClaims()?.email;
 
   const offset = page * pageSize;
   const search = filters.search.trim();
@@ -138,6 +142,7 @@ export function useGetCsmCases(
       filters.sla,
       [...filters.assignees].sort(),
       [...filters.products].sort(),
+      currentUserEmail ?? "",
       page,
       pageSize,
     ],
@@ -211,9 +216,15 @@ export function useGetCsmCases(
           .map((a) => [a.id, a.name as string]),
       );
 
+      const myEmail = currentUserEmail?.toLowerCase();
       const cases: CsmCaseRow[] = (casesResponse.cases ?? []).map((c) => {
         const projectId = c.project?.id ?? "";
         const accountId = projectAccount.get(projectId) ?? "";
+        const assigneeEmail = c.assignedEngineer?.email;
+        const assignee =
+          c.assignedEngineer?.name?.trim() || assigneeEmail || "Unassigned";
+        const assigneeIsMe =
+          !!assigneeEmail && !!myEmail && assigneeEmail.toLowerCase() === myEmail;
         return {
           id: c.id,
           caseNumber: c.number,
@@ -230,9 +241,8 @@ export function useGetCsmCases(
           severity: severityFromPriority(c.severity),
           state: uiStateFromBe(c.state),
           workState: c.workState ?? null,
-          // No assignee field on the backend yet; surfaced as "Unassigned".
-          assignee: "Unassigned",
-          assigneeIsMe: false,
+          assignee,
+          assigneeIsMe,
           slaClockType: "ack",
           minutesToBreach: 0,
           // No SLA data from the backend yet — keep the SLA column neutral

@@ -108,6 +108,9 @@ export function useInfiniteProjectSearch(
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) => {
       if (!lastPage.hasMore) return undefined;
+      // Stop if the last page came back empty: the offset wouldn't advance, so
+      // scroll-fetching would otherwise loop on the same page forever.
+      if ((lastPage.projects?.length ?? 0) === 0) return undefined;
       // Next offset = rows already loaded; robust even if the backend does not
       // echo back the offset we sent.
       return allPages.reduce((n, p) => n + (p.projects?.length ?? 0), 0);
