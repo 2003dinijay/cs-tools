@@ -85,16 +85,21 @@ CREATE TABLE cases (
     ),
 
   CONSTRAINT chk_severity_required_for_support
-    CHECK (type != 'support' OR severity IS NOT NULL),
+    CHECK (
+      (type = 'support' AND severity IS NOT NULL)
+      OR
+      (type != 'support' AND severity IS NULL)
+    ),
 
-  CONSTRAINT chk_severity_null_for_non_support
-    CHECK (type = 'support' OR severity IS NULL),
+  CONSTRAINT chk_engagement_type_only_on_engagement
+    CHECK (
+      (type = 'engagement' AND engagement_type IS NOT NULL)
+      OR
+      (type != 'engagement' AND engagement_type IS NULL)
+    ),
 
-  CONSTRAINT chk_engagement_type_required_for_engagement
-    CHECK (type != 'engagement' OR engagement_type IS NOT NULL),
-
-  CONSTRAINT chk_engagement_type_null_for_non_engagement
-    CHECK (type = 'engagement' OR engagement_type IS NULL)
+  CONSTRAINT chk_announcement_state
+    CHECK (type != 'announcement' OR state IN ('open', 'closed'))
 );
 
 CREATE OR REPLACE FUNCTION check_case_deployment_belongs_to_project()
