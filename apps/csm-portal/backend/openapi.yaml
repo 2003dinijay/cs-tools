@@ -1213,6 +1213,7 @@ components:
     CaseCreatePayload:
       type: object
       required:
+        - typeKey
         - projectId
         - deploymentId
         - deployedProductId
@@ -1221,6 +1222,10 @@ components:
         - severityKey
         - issueTypeKey
       properties:
+        typeKey:
+          type: string
+          enum: [support]
+          description: Case type. Currently only `support` is accepted.
         projectId:
           type: string
           description: UUID of the project this case belongs to
