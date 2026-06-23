@@ -15,6 +15,7 @@
 // under the License.
 
 import type {
+  CurrMinMaxAvg,
   InstanceMetricEntry,
   InstanceUsageEntry,
   UsageTrendRow,
@@ -201,6 +202,128 @@ export function computeUsageHeadlineDeltaSigned(trend: UsageTrendRow[]): {
     headline: formatUsageMetricCount(last),
     delta: `${sign}${pct.toFixed(1)}%`,
     deltaPositive: pct >= 0,
+  };
+}
+
+/**
+ * Computes curr/avg/min/max from a sorted values array.
+ * curr = last value, min/max/avg from all values (ignoring leading zeros only when all are zero).
+ *
+ * @param values - Time-ordered values (oldest → newest).
+ * @returns Summary stats.
+ */
+export function computeSeriesSummary(values: number[]): CurrMinMaxAvg {
+  if (values.length === 0) return { curr: 0, avg: 0, min: 0, max: 0 };
+  const curr = values[values.length - 1];
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const avg = Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+  return { curr, min, max, avg };
+}
+
+/**
+ * Derives per-date counts for instances, products, and environments from metrics.
+ * Returns curr/avg/min/max for each dimension over the selected date range.
+ *
+ * @param metrics - Project-wide instance metric entries.
+ * @returns Summary stats for instances, products, and environments.
+ */
+export function computeOverviewSummaries(metrics: InstanceMetricEntry[]): {
+  instanceSummary: CurrMinMaxAvg;
+  productSummary: CurrMinMaxAvg;
+  environmentSummary: CurrMinMaxAvg;
+} {
+  const dayInstances = new Map<string, Set<string>>();
+  const dayProducts = new Map<string, Set<string>>();
+  const dayEnvironments = new Map<string, Set<string>>();
+
+  for (const m of metrics) {
+    for (const dp of m.dataPoints) {
+      if (!dp.date) continue;
+
+      const instSet = dayInstances.get(dp.date) ?? new Set<string>();
+      instSet.add(m.instanceId);
+      dayInstances.set(dp.date, instSet);
+
+      const prodId = m.deployedProduct?.id ?? m.product?.id;
+      if (prodId) {
+        const prodSet = dayProducts.get(dp.date) ?? new Set<string>();
+        prodSet.add(prodId);
+        dayProducts.set(dp.date, prodSet);
+      }
+
+      const envId = m.deployment?.id;
+      if (envId) {
+        const envSet = dayEnvironments.get(dp.date) ?? new Set<string>();
+        envSet.add(envId);
+        dayEnvironments.set(dp.date, envSet);
+      }
+    }
+  }
+
+  const sortedDates = Array.from(
+    new Set([
+      ...dayInstances.keys(),
+      ...dayProducts.keys(),
+      ...dayEnvironments.keys(),
+    ]),
+  ).sort();
+
+  return {
+    instanceSummary: computeSeriesSummary(
+      sortedDates.map((d) => dayInstances.get(d)?.size ?? 0),
+    ),
+    productSummary: computeSeriesSummary(
+      sortedDates.map((d) => dayProducts.get(d)?.size ?? 0),
+    ),
+    environmentSummary: computeSeriesSummary(
+      sortedDates.map((d) => dayEnvironments.get(d)?.size ?? 0),
+    ),
+  };
+}
+
+/**
+ * Derives instance-count and core-count curr/avg/min/max from metric data points.
+ * Instance count per date = number of distinct instances that have a data point on that date.
+ * Core count per date = sum of coreCount across all data points on that date.
+ *
+ * @param metrics - Instance metric entries for a product or project scope.
+ * @returns Instance and core summaries.
+ */
+export function computeInstanceAndCoreSummary(metrics: InstanceMetricEntry[]): {
+  instanceSummary: CurrMinMaxAvg;
+  coreSummary: CurrMinMaxAvg;
+} {
+  const dayInstances = new Map<string, Set<string>>();
+  const dayCores = new Map<string, number>();
+
+  for (const m of metrics) {
+    for (const dp of m.dataPoints) {
+      if (!dp.date) continue;
+      const instSet = dayInstances.get(dp.date) ?? new Set<string>();
+      instSet.add(m.instanceId);
+      dayInstances.set(dp.date, instSet);
+
+      const cores =
+        dp.coreCount != null
+          ? dp.coreCount
+          : dp.deploymentMetadata?.numberOfCores != null
+            ? Number(dp.deploymentMetadata.numberOfCores)
+            : 0;
+      dayCores.set(dp.date, (dayCores.get(dp.date) ?? 0) + cores);
+    }
+  }
+
+  const sortedDates = Array.from(
+    new Set([...dayInstances.keys(), ...dayCores.keys()]),
+  ).sort();
+
+  const instanceValues = sortedDates.map((d) => dayInstances.get(d)?.size ?? 0);
+  const coreValues = sortedDates.map((d) => dayCores.get(d) ?? 0);
+
+  return {
+    instanceSummary: computeSeriesSummary(instanceValues),
+    coreSummary: computeSeriesSummary(coreValues),
   };
 }
 

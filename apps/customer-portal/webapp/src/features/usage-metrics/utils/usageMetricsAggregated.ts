@@ -92,7 +92,7 @@ export function deriveAggregatedMetrics(
   );
   const b2bTrend = buildUsageTrendFromUsages(
     usages,
-    "TOTAL_B2B_ORGS",
+    "TOTAL_ROOT_ORGS",
     periodLabel,
   );
   const coreTrend = buildDailyCoreTrendFromMetrics(metrics, dateLabel);

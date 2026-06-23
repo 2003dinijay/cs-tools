@@ -21,9 +21,9 @@ import {
   Alert,
   Box,
   Card,
+  Divider,
   Grid,
   Skeleton,
-  StatCard,
   Typography,
   useTheme,
   useMediaQuery,
@@ -51,7 +51,6 @@ import usePostProjectInstancesUsagesSearch from "@features/project-details/api/u
 import usePostProjectInstancesMetricsSearch from "@features/project-details/api/usePostProjectInstancesMetricsSearch";
 import usePostDeploymentInstancesSearch from "@features/project-details/api/usePostDeploymentInstancesSearch";
 import usePostDeploymentInstancesUsagesSearch from "@features/project-details/api/usePostDeploymentInstancesUsagesSearch";
-import useGetProjectUsageStats from "@features/project-details/api/useGetProjectUsageStats";
 import type { UsageAggregatedMetricDefinition } from "@features/project-details/types/usage";
 import type {
   InstanceItem,
@@ -83,11 +82,84 @@ import type {
 } from "@features/usage-metrics/types/usageMetrics";
 import { deriveAggregatedMetrics } from "@features/usage-metrics/utils/usageMetricsAggregated";
 import { getUsageOverviewAccentForTypeId } from "@features/usage-metrics/utils/usageMetricsAccent";
-import { formatUsageMetricCount, sumUsageEntryTransactions } from "@features/project-details/utils/usageMetrics";
+import {
+  computeOverviewSummaries,
+  formatUsageMetricCount,
+  sumUsageEntryTransactions,
+} from "@features/project-details/utils/usageMetrics";
+import type { CurrMinMaxAvg } from "@features/project-details/types/usage";
+import {
+  USAGE_METRICS_STAT_LABEL_AVG,
+  USAGE_METRICS_STAT_LABEL_MIN,
+  USAGE_METRICS_STAT_LABEL_MAX,
+} from "@features/usage-metrics/constants/usageMetricsConstants";
 
 function EnvironmentIcon({ typeId }: { typeId: string }): JSX.Element {
   const color = getUsageOverviewAccentForTypeId(typeId).iconColor;
   return <Server size={20} color={color} />;
+}
+
+// ─── Flat overview summary card (replaces plain StatCard) ────────────────────
+
+function OverviewSummaryCard({
+  label,
+  icon,
+  iconColor,
+  summary,
+  isLoading,
+}: {
+  label: string;
+  icon: JSX.Element;
+  iconColor: string;
+  summary: CurrMinMaxAvg;
+  isLoading: boolean;
+}): JSX.Element {
+  if (isLoading) {
+    return (
+      <Card variant="outlined" sx={{ p: 2 }}>
+        <Skeleton variant="text" width={100} height={20} sx={{ mb: 1 }} />
+        <Skeleton variant="text" width={60} height={36} sx={{ mb: 1.5 }} />
+        <Skeleton variant="rounded" height={28} />
+      </Card>
+    );
+  }
+
+  return (
+    <Card variant="outlined" sx={{ p: 2 }}>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
+        <Box sx={{ color: iconColor, display: "flex" }}>{icon}</Box>
+        <Typography variant="subtitle2" color="text.secondary">
+          {label}
+        </Typography>
+      </Box>
+      <Typography variant="h5" fontWeight={700} sx={{ mb: 1.5 }}>
+        {summary.curr}
+      </Typography>
+      <Divider sx={{ mb: 1.5 }} />
+      <Box
+        sx={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, 1fr)",
+          gap: 1,
+        }}
+      >
+        {[
+          { label: USAGE_METRICS_STAT_LABEL_MIN, value: summary.min },
+          { label: USAGE_METRICS_STAT_LABEL_MAX, value: summary.max },
+          { label: USAGE_METRICS_STAT_LABEL_AVG, value: summary.avg },
+        ].map(({ label: l, value: v }) => (
+          <Box key={l} sx={{ textAlign: "center" }}>
+            <Typography variant="caption" color="text.secondary" display="block">
+              {l}
+            </Typography>
+            <Typography variant="body2" fontWeight={600}>
+              {v}
+            </Typography>
+          </Box>
+        ))}
+      </Box>
+    </Card>
+  );
 }
 
 // ─── Per-deployment expanded product cards (sourced from deployment-scoped APIs) ───
@@ -235,7 +307,7 @@ function DeploymentExpandedView({
     }
 
     return Array.from(productMap.entries()).map(([id, p]) => ({ id, ...p }));
-  }, [instancesData, usagesData, deploymentId]);
+  }, [instancesData, usagesData]);
 
   if (isError) {
     return (
@@ -424,7 +496,8 @@ function deriveMetricSummaries(
     const values = sortedDates.map((d) => stats[d][key] ?? 0);
     const nonZero = values.filter((v) => v > 0);
     if (nonZero.length === 0) continue;
-    const curr = values[values.length - 1] ?? 0;
+    const lastNonZero = [...values].reverse().find((v) => v > 0) ?? 0;
+    const curr = lastNonZero;
     const min = Math.min(...nonZero);
     const max = Math.max(...nonZero);
     const avg = nonZero.reduce((a, b) => a + b, 0) / nonZero.length;
@@ -488,27 +561,18 @@ export default function UsageOverviewPanel({
     isError: metricsError,
   } = usePostProjectInstancesMetricsSearch(projectId, metricsPayload);
 
-  // Project-wide stats — for the 3 top stat cards
-  const {
-    data: statsData,
-    isLoading: statsLoading,
-    isError: statsError,
-  } = useGetProjectUsageStats(projectId);
-
   const isLoading =
     deploymentsLoading ||
     instancesLoading ||
     usagesLoading ||
-    metricsLoading ||
-    statsLoading;
+    metricsLoading;
   const isError =
     deploymentsError ||
     instancesError ||
     usagesError ||
-    metricsError ||
-    statsError;
+    metricsError;
 
-  const isStatCardsLoading = statsLoading;
+  const isStatCardsLoading = metricsLoading;
 
   // ── Data source stats ──────────────────────────────────────────────────────
   const dataSourceStatsPayload = useMemo(
@@ -535,14 +599,19 @@ export default function UsageOverviewPanel({
     return deriveMetricSummaries(dataSourceStatsData.stats);
   }, [dataSourceStatsData]);
 
-  // ── Overview summary stats ─────────────────────────────────────────────────
-  const overviewStats = useMemo(() => {
-    return {
-      environments: statsData?.deploymentCount ?? 0,
-      products: statsData?.deployedProductCount ?? 0,
-      instances: statsData?.instanceCount ?? 0,
-    };
-  }, [statsData]);
+  // ── Overview summary stats (derived from metrics time-series) ─────────────
+  const overviewSummaries = useMemo(() => {
+    const metrics = metricsData?.metrics ?? [];
+    if (metrics.length === 0) {
+      const fallback: CurrMinMaxAvg = { curr: 0, avg: 0, min: 0, max: 0 };
+      return {
+        instanceSummary: fallback,
+        productSummary: fallback,
+        environmentSummary: fallback,
+      };
+    }
+    return computeOverviewSummaries(metrics);
+  }, [metricsData]);
 
   // ── Environment breakdown rows ─────────────────────────────────────────────
   const environmentBreakdown = useMemo((): EnvironmentBreakdownRow[] => {
@@ -618,45 +687,30 @@ export default function UsageOverviewPanel({
         sx={{ width: "100%", minWidth: 0, overflowX: "hidden" }}
       >
         <Grid size={{ xs: 12, sm: 6, lg: 4 }} sx={{ minWidth: 0 }}>
-          <StatCard
+          <OverviewSummaryCard
             label={USAGE_METRICS_STAT_ENVIRONMENTS}
-            value={
-              isStatCardsLoading
-                ? ((
-                    <Skeleton variant="rounded" width={60} height={24} />
-                  ) as unknown as number)
-                : overviewStats.environments
-            }
-            icon={<Layers />}
-            iconColor="info"
+            icon={<Layers size={18} />}
+            iconColor="var(--oxygen-palette-info-main, #0288d1)"
+            summary={overviewSummaries.environmentSummary}
+            isLoading={isStatCardsLoading}
           />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 4 }} sx={{ minWidth: 0 }}>
-          <StatCard
+          <OverviewSummaryCard
             label={USAGE_METRICS_STAT_PRODUCTS}
-            value={
-              isStatCardsLoading
-                ? ((
-                    <Skeleton variant="rounded" width={60} height={24} />
-                  ) as unknown as number)
-                : overviewStats.products
-            }
-            icon={<Package />}
-            iconColor="primary"
+            icon={<Package size={18} />}
+            iconColor="var(--oxygen-palette-primary-main, #8457ad)"
+            summary={overviewSummaries.productSummary}
+            isLoading={isStatCardsLoading}
           />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 4 }} sx={{ minWidth: 0 }}>
-          <StatCard
+          <OverviewSummaryCard
             label={USAGE_METRICS_STAT_INSTANCES}
-            value={
-              isStatCardsLoading
-                ? ((
-                    <Skeleton variant="rounded" width={60} height={24} />
-                  ) as unknown as number)
-                : overviewStats.instances
-            }
-            icon={<ServerIcon />}
-            iconColor="success"
+            icon={<ServerIcon size={18} />}
+            iconColor="var(--oxygen-palette-success-main, #2e7d32)"
+            summary={overviewSummaries.instanceSummary}
+            isLoading={isStatCardsLoading}
           />
         </Grid>
       </Grid>
