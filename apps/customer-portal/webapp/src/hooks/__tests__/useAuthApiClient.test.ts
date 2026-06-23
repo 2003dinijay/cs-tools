@@ -17,17 +17,28 @@
 import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAuthApiClient } from "@hooks/useAuthApiClient";
+import { ASGARDEO_UNAUTHENTICATED_CODE } from "@constants/apiConstants";
 
 const getIdTokenMock = vi.fn();
+const signInMock = vi.fn();
 
 vi.mock("@asgardeo/react", () => ({
-  useAsgardeo: () => ({ getIdToken: getIdTokenMock }),
+  useAsgardeo: () => ({
+    getIdToken: getIdTokenMock,
+    signIn: signInMock,
+  }),
 }));
+
+const unauthenticatedError = () =>
+  Object.assign(new Error("unauthenticated"), {
+    code: ASGARDEO_UNAUTHENTICATED_CODE,
+  });
 
 describe("useAuthApiClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getIdTokenMock.mockResolvedValue("token-abc");
+    signInMock.mockResolvedValue(undefined);
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: true }) as typeof fetch;
   });
 
@@ -59,5 +70,41 @@ describe("useAuthApiClient", () => {
     await expect(result.current("https://api.test")).rejects.toThrow(
       "Unable to retrieve ID token",
     );
+  });
+
+  it("rethrows non-auth errors without attempting recovery", async () => {
+    getIdTokenMock.mockRejectedValueOnce(new Error("network down"));
+    const { result } = renderHook(() => useAuthApiClient());
+
+    await expect(result.current("https://api.test")).rejects.toThrow(
+      "network down",
+    );
+    expect(signInMock).not.toHaveBeenCalled();
+  });
+
+  it("retries once and recovers when the token is refreshed between attempts", async () => {
+    getIdTokenMock
+      .mockRejectedValueOnce(unauthenticatedError())
+      .mockResolvedValue("token-fresh");
+
+    const { result } = renderHook(() => useAuthApiClient());
+    await result.current("https://api.test/resource");
+
+    expect(getIdTokenMock).toHaveBeenCalledTimes(2);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(signInMock).not.toHaveBeenCalled();
+  });
+
+  it("redirects to full sign-in when still unauthenticated after the retry", async () => {
+    getIdTokenMock.mockRejectedValue(unauthenticatedError());
+
+    const { result } = renderHook(() => useAuthApiClient());
+    // The redirect path returns a never-resolving promise while navigating away,
+    // so assert on the side effects rather than awaiting the call.
+    void result.current("https://api.test/resource");
+    await vi.waitFor(() => expect(signInMock).toHaveBeenCalledTimes(1));
+
+    expect(getIdTokenMock).toHaveBeenCalledTimes(2);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });
