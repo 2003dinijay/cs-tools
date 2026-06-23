@@ -3,7 +3,15 @@ CREATE TYPE case_work_state_enum AS ENUM (
   'paused'
 );
 
-CREATE TYPE case_priority_enum AS ENUM (
+CREATE TYPE case_type_enum AS ENUM (
+  'support',
+  'service_request',
+  'security_report_analysis',
+  'announcement',
+  'engagement'
+);
+
+CREATE TYPE case_severity_enum AS ENUM (
   'catastrophic',
   'critical',
   'high',
@@ -30,6 +38,14 @@ CREATE TYPE case_issue_type_enum AS ENUM (
   'total_outage'
 );
 
+CREATE TYPE engagement_type_enum AS ENUM (
+  'migration',
+  'consultancy',
+  'new_feature_improvement',
+  'follow_up',
+  'onboarding'
+);
+
 CREATE SEQUENCE cases_number_seq START 1 INCREMENT 1;
 CREATE SEQUENCE cases_internal_id_seq START 1 INCREMENT 1;
 
@@ -41,11 +57,13 @@ CREATE TABLE cases (
   project_id          UUID NOT NULL REFERENCES projects(id),
   deployment_id       UUID NOT NULL REFERENCES deployments(id),
   deployed_product_id UUID NOT NULL REFERENCES deployed_products(id),
+  type                case_type_enum NOT NULL DEFAULT 'support',
   subject             VARCHAR NOT NULL,
   description         TEXT NOT NULL,
-  priority            case_priority_enum NOT NULL,
+  severity            case_severity_enum NULL,
   issue_type          case_issue_type_enum NOT NULL,
   state               case_state_enum NOT NULL,
+  engagement_type     engagement_type_enum NULL,
   created_at          TIMESTAMP DEFAULT NOW(),
   updated_at          TIMESTAMP DEFAULT NOW(),
   closed_at           TIMESTAMP,
@@ -65,7 +83,24 @@ CREATE TABLE cases (
       (state = 'work_in_progress' AND work_state IS NOT NULL)
       OR
       (state != 'work_in_progress' AND work_state IS NULL)
-    )
+    ),
+
+  CONSTRAINT chk_severity_required_for_support
+    CHECK (
+      (type = 'support' AND severity IS NOT NULL)
+      OR
+      (type != 'support' AND severity IS NULL)
+    ),
+
+  CONSTRAINT chk_engagement_type_only_on_engagement
+    CHECK (
+      (type = 'engagement' AND engagement_type IS NOT NULL)
+      OR
+      (type != 'engagement' AND engagement_type IS NULL)
+    ),
+
+  CONSTRAINT chk_announcement_state
+    CHECK (type != 'announcement' OR state IN ('open', 'closed'))
 );
 
 CREATE OR REPLACE FUNCTION check_case_deployment_belongs_to_project()
@@ -106,24 +141,24 @@ CREATE TRIGGER trg_case_deployed_product_belongs_to_deployment
   BEFORE INSERT OR UPDATE ON cases
   FOR EACH ROW EXECUTE FUNCTION check_case_deployed_product_belongs_to_deployment();
 
-CREATE OR REPLACE FUNCTION check_case_catastrophic_priority()
+CREATE OR REPLACE FUNCTION check_case_catastrophic_severity()
 RETURNS TRIGGER AS $$
 BEGIN
-  IF NEW.priority = 'catastrophic' AND NOT EXISTS (
+  IF NEW.severity = 'catastrophic' AND NOT EXISTS (
     SELECT 1 FROM projects
     WHERE id                = NEW.project_id
       AND subscription_type = 'managed_cloud_subscription'
   ) THEN
     RAISE EXCEPTION
-      'catastrophic priority is only allowed for managed_cloud_subscription projects. project_id % has a different subscription type.', NEW.project_id;
+      'catastrophic severity is only allowed for managed_cloud_subscription projects. project_id % has a different subscription type.', NEW.project_id;
   END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_case_catastrophic_priority
+CREATE TRIGGER trg_case_catastrophic_severity
   BEFORE INSERT OR UPDATE ON cases
-  FOR EACH ROW EXECUTE FUNCTION check_case_catastrophic_priority();
+  FOR EACH ROW EXECUTE FUNCTION check_case_catastrophic_severity();
 
 CREATE OR REPLACE FUNCTION sync_work_state_on_state_change()
 RETURNS TRIGGER AS $$
@@ -147,9 +182,11 @@ CREATE INDEX idx_cases_created_by          ON cases(created_by);
 CREATE INDEX idx_cases_project_id          ON cases(project_id);
 CREATE INDEX idx_cases_deployment_id       ON cases(deployment_id);
 CREATE INDEX idx_cases_deployed_product_id ON cases(deployed_product_id);
-CREATE INDEX idx_cases_priority            ON cases(priority);
+CREATE INDEX idx_cases_type                ON cases(type);
+CREATE INDEX idx_cases_severity            ON cases(severity) WHERE severity IS NOT NULL;
 CREATE INDEX idx_cases_state               ON cases(state);
 CREATE INDEX idx_cases_issue_type          ON cases(issue_type);
+CREATE INDEX idx_cases_engagement_type     ON cases(engagement_type) WHERE engagement_type IS NOT NULL;
 
 -- Sort indexes
 CREATE INDEX idx_cases_created_at          ON cases(created_at);
@@ -158,8 +195,9 @@ CREATE INDEX idx_cases_closed_at           ON cases(closed_at);
 
 -- Composite indexes
 CREATE INDEX idx_cases_project_state         ON cases(project_id, state);
-CREATE INDEX idx_cases_priority_state        ON cases(priority, state);
-CREATE INDEX idx_cases_priority_issue_type   ON cases(priority, issue_type);
+CREATE INDEX idx_cases_type_state            ON cases(type, state);
+CREATE INDEX idx_cases_severity_state        ON cases(severity, state) WHERE severity IS NOT NULL;
+CREATE INDEX idx_cases_severity_issue_type   ON cases(severity, issue_type) WHERE severity IS NOT NULL;
 
 -- work_state indexes
 CREATE UNIQUE INDEX uidx_cases_one_ongoing_per_engineer
@@ -175,6 +213,6 @@ CREATE INDEX idx_cases_engineer_work_state
   WHERE work_state IS NOT NULL;
 
 -- Trigram indexes for ILIKE search on subject, number, internal_id
-CREATE INDEX idx_cases_subject_trgm  ON cases USING GIN (subject  gin_trgm_ops);
-CREATE INDEX idx_cases_number_trgm   ON cases USING GIN (number   gin_trgm_ops);
-CREATE INDEX idx_cases_internal_id_trgm  ON cases USING GIN (internal_id  gin_trgm_ops);
+CREATE INDEX idx_cases_subject_trgm     ON cases USING GIN (subject     gin_trgm_ops);
+CREATE INDEX idx_cases_number_trgm      ON cases USING GIN (number      gin_trgm_ops);
+CREATE INDEX idx_cases_internal_id_trgm ON cases USING GIN (internal_id gin_trgm_ops);

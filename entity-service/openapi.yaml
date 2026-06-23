@@ -318,8 +318,8 @@ paths:
     patch:
       summary: Update a support case.
       description: |
-        Updates exactly one field of the case. Provide exactly one of: `state`, `priority`,
-        `workState`, `watchList`, or `assigneeEmail`. `watchList` and `assigneeEmail` are supported
+        Updates exactly one field of the case. Provide exactly one of: `stateKey`, `severityKey`,
+        `workStateKey`, `watchList`, or `assigneeEmail`. `watchList` and `assigneeEmail` are supported
         only when the ServiceNow data source is active.
       operationId: patchCase
       parameters:
@@ -410,114 +410,6 @@ paths:
                 $ref: '#/components/schemas/SearchCasesResponse'
         "400":
           description: Bad request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "500":
-          description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /service-requests/search:
-    post:
-      summary: Search service requests (ServiceNow data source only).
-      operationId: searchServiceRequests
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SearchServiceRequestsRequest'
-      responses:
-        "200":
-          description: Service requests matching the filters.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SearchServiceRequestsResponse'
-        "400":
-          description: Bad request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Not supported for the Postgres data source.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "500":
-          description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /security-report-analyses/search:
-    post:
-      summary: Search security report analyses (ServiceNow data source only).
-      operationId: searchSecurityReportAnalysis
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SearchSecurityReportAnalysisRequest'
-      responses:
-        "200":
-          description: Security report analyses matching the filters.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SearchSecurityReportAnalysisResponse'
-        "400":
-          description: Bad request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Not supported for the Postgres data source.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "500":
-          description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /engagements/search:
-    post:
-      summary: Search engagements (ServiceNow data source only).
-      operationId: searchEngagements
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SearchEngagementsRequest'
-      responses:
-        "200":
-          description: Engagements matching the filters.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SearchEngagementsResponse'
-        "400":
-          description: Bad request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Not supported for the Postgres data source.
           content:
             application/json:
               schema:
@@ -1261,23 +1153,23 @@ components:
     UpdateCaseRequest:
       type: object
       description: |
-        Exactly one of `stateKey`, `priorityKey`, `workStateKey`, `watchList`, or `assigneeEmail` must be provided.
+        Exactly one of `stateKey`, `severityKey`, `workStateKey`, `watchList`, or `assigneeEmail` must be provided.
         `watchList` and `assigneeEmail` are supported only for the ServiceNow data source.
       oneOf:
         - required: [stateKey]
-        - required: [priorityKey]
+        - required: [severityKey]
         - required: [workStateKey]
         - required: [watchList]
         - required: [assigneeEmail]
       properties:
         stateKey:
           type: string
-          enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, solution_proposed, closed]
+          enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
           description: The new state to transition the case to.
-        priorityKey:
+        severityKey:
           type: string
           enum: [catastrophic, critical, high, medium, low]
-          description: The new priority (severity) of the case.
+          description: The new severity of the case.
         workStateKey:
           type: string
           enum: [ongoing, paused]
@@ -1317,8 +1209,8 @@ components:
           description: Email or display name of the user who performed the update.
         state:
           type: string
-          enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, solution_proposed, closed]
-        priority:
+          enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
+        severity:
           type: string
           enum: [catastrophic, critical, high, medium, low]
         workState:
@@ -1351,7 +1243,7 @@ components:
 
     CreateCaseRequest:
       type: object
-      required: [projectId, deploymentId, deployedProductId, subject, description, priorityKey, issueTypeKey]
+      required: [projectId, deploymentId, deployedProductId, subject, description, severityKey, issueTypeKey]
       properties:
         projectId:
           type: string
@@ -1366,7 +1258,7 @@ components:
           type: string
         description:
           type: string
-        priorityKey:
+        severityKey:
           type: string
           enum: [catastrophic, critical, high, medium, low]
         issueTypeKey:
@@ -1398,6 +1290,14 @@ components:
     SearchCasesFilters:
       type: object
       properties:
+        typeKeys:
+          type: array
+          items:
+            type: string
+            enum: [support, service_request, security_report_analysis, announcement, engagement]
+          description: |
+            Filter by case type. For the ServiceNow data source each value is
+            translated to its SN caseType equivalent (support → default_case).
         searchQuery:
           type: string
           description: Case-insensitive match against subject, number, and internal_id.
@@ -1413,30 +1313,58 @@ components:
             type: string
             format: uuid
           description: Filter by deployment UUIDs.
-        deployedProductIds:
-          type: array
-          items:
-            type: string
-            format: uuid
-          description: Filter by deployed product UUIDs.
         stateKeys:
           type: array
           items:
             type: string
-            enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, solution_proposed, closed]
+            enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
           description: Filter by case states.
-        priorityKeys:
+        severityKeys:
           type: array
           items:
             type: string
             enum: [catastrophic, critical, high, medium, low]
-          description: Filter by case priorities.
+          description: Filter by severity. Only applicable when typeKeys includes support.
         issueTypeKeys:
           type: array
           items:
             type: string
             enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
-          description: Filter by case issue types.
+          description: Filter by issue type.
+        engagementTypeKeys:
+          type: array
+          items:
+            type: string
+            enum: [migration, consultancy, new_feature_improvement, follow_up, onboarding]
+          description: Filter by engagement type. Only applicable when typeKeys includes engagement.
+        closedStartDate:
+          type: string
+          format: date-time
+          description: "Return cases closed on or after this UTC timestamp (YYYY-MM-DDTHH:MM:SSZ)."
+        closedEndDate:
+          type: string
+          format: date-time
+        startCreatedDate:
+          type: string
+          format: date-time
+        endCreatedDate:
+          type: string
+          format: date-time
+        startUpdatedDate:
+          type: string
+          format: date-time
+        endUpdatedDate:
+          type: string
+          format: date-time
+        createdBy:
+          type: array
+          items:
+            type: string
+            format: email
+          description: Filter by creator email addresses.
+        createdByMe:
+          type: boolean
+          description: When true, restrict results to cases created by the authenticated user.
 
     SearchCasesRequest:
       type: object
@@ -1448,8 +1376,8 @@ components:
           properties:
             field:
               type: string
-              enum: [created_at, updated_at, closed_at]
-              description: Column to sort by. Defaults to created_at.
+              enum: [createdOn, updatedOn, severity, state]
+              description: Column to sort by. Defaults to createdOn.
             order:
               type: string
               enum: [asc, desc]
@@ -1558,7 +1486,7 @@ components:
           type: string
         description:
           type: string
-        priority:
+        severity:
           type: string
           enum: [catastrophic, critical, high, medium, low]
         issueType:
@@ -1566,7 +1494,7 @@ components:
           enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
         state:
           type: string
-          enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, solution_proposed, closed]
+          enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
         createdOn:
           type: string
           format: date-time
@@ -1592,7 +1520,7 @@ components:
           type: string
         description:
           type: string
-        priority:
+        severity:
           type: string
           enum: [catastrophic, critical, high, medium, low]
         issueType:
@@ -1600,7 +1528,7 @@ components:
           enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
         state:
           type: string
-          enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, solution_proposed, closed]
+          enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
         workState:
           type: string
           enum: [ongoing, paused]
@@ -1646,61 +1574,77 @@ components:
         id:
           type: string
           format: uuid
-        number:
-          type: string
         internalId:
           type: string
-        subject:
+        number:
           type: string
-        description:
-          type: string
-        priority:
-          type: string
-          enum: [catastrophic, critical, high, medium, low]
-        issueType:
-          type: string
-          enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
-        state:
-          type: string
-          enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, solution_proposed, closed]
-        workState:
-          type: string
-          enum: [ongoing, paused]
-          nullable: true
-          description: Work sub-state, present only when state is work_in_progress.
         createdOn:
           type: string
-          format: date-time
-        updatedOn:
-          type: string
-          format: date-time
-        closedOn:
-          type: string
-          format: date-time
-          nullable: true
-          description: Timestamp when the case was closed. null if not yet closed.
+          description: Creation timestamp. RFC3339 for Postgres; raw SN timestamp string for ServiceNow.
         createdBy:
-          $ref: '#/components/schemas/UserIDEmailRef'
-        assignedEngineer:
+          type: string
+          format: email
+        title:
+          type: string
           nullable: true
-          $ref: '#/components/schemas/AssignedEngineerRef'
+        description:
+          type: string
+          nullable: true
+        issueType:
+          type: string
+          nullable: true
+          description: Issue type enum value (Postgres) or raw SN label (ServiceNow).
+        state:
+          type: string
+          description: State enum value (Postgres) or raw SN label (ServiceNow).
+        severity:
+          type: string
+          nullable: true
+          description: Severity enum value (Postgres) or raw SN label (ServiceNow). Null for non-support cases.
+        catalog:
+          nullable: true
+          $ref: '#/components/schemas/EntityRef'
+          description: Populated for ServiceNow data source only.
+        catalogItem:
+          nullable: true
+          $ref: '#/components/schemas/EntityRef'
+          description: Populated for ServiceNow data source only.
+        assignedTeam:
+          nullable: true
+          $ref: '#/components/schemas/EntityRef'
+        product:
+          nullable: true
+          $ref: '#/components/schemas/EntityRef'
+        engagementType:
+          type: string
+          nullable: true
+          description: Engagement type label. Non-null only when caseType is engagement.
+        workState:
+          type: string
+          nullable: true
+          description: Work sub-state label. Non-null only when state is work_in_progress.
+        caseType:
+          type: string
+          description: Case type value (Postgres) or raw SN caseType name (ServiceNow).
         project:
           $ref: '#/components/schemas/EntityRef'
         deployment:
           $ref: '#/components/schemas/EntityRef'
         deployedProduct:
-          $ref: '#/components/schemas/DeployedProductRef'
-        product:
           $ref: '#/components/schemas/EntityRef'
+        assignedEngineer:
+          nullable: true
+          $ref: '#/components/schemas/AssignedEngineerRef'
         parentCase:
           nullable: true
-          $ref: '#/components/schemas/CaseNumberRef'
+          $ref: '#/components/schemas/EntityRef'
         relatedCase:
           nullable: true
-          $ref: '#/components/schemas/CaseNumberRef'
-        account:
+          $ref: '#/components/schemas/EntityRef'
+        conversation:
           nullable: true
-          $ref: '#/components/schemas/AccountRef'
+          $ref: '#/components/schemas/EntityRef'
+          description: Populated for ServiceNow data source only.
 
     SearchCasesResponse:
       type: object
@@ -1709,14 +1653,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CaseSearchView'
-        total:
-          type: integer
-        limit:
+        totalRecords:
           type: integer
         offset:
           type: integer
-        hasMore:
-          type: boolean
+        limit:
+          type: integer
 
     CreateCaseCommentRequest:
       type: object
@@ -1867,390 +1809,6 @@ components:
           type: integer
         hasMore:
           type: boolean
-
-    SearchServiceRequestsRequest:
-      type: object
-      properties:
-        filters:
-          type: object
-          properties:
-            projectIds:
-              type: array
-              items:
-                type: string
-                format: uuid
-            searchQuery:
-              type: string
-            stateKeys:
-              type: array
-              items:
-                type: integer
-            closedStartDate:
-              type: string
-              format: date-time
-            closedEndDate:
-              type: string
-              format: date-time
-            startCreatedDate:
-              type: string
-              format: date-time
-            endCreatedDate:
-              type: string
-              format: date-time
-            startUpdatedDate:
-              type: string
-              format: date-time
-            endUpdatedDate:
-              type: string
-              format: date-time
-            deploymentIds:
-              type: array
-              items:
-                type: string
-                format: uuid
-            createdBy:
-              type: array
-              items:
-                type: string
-                format: email
-            createdByMe:
-              type: boolean
-        sortBy:
-          type: object
-          required: [field, order]
-          properties:
-            field:
-              type: string
-              enum: [createdOn, updatedOn]
-            order:
-              type: string
-              enum: [asc, desc]
-        pagination:
-          $ref: '#/components/schemas/Pagination'
-
-    ServiceRequestWorkStateRef:
-      type: object
-      properties:
-        id:
-          type: integer
-          nullable: true
-        label:
-          type: string
-
-    ServiceRequestView:
-      type: object
-      properties:
-        id:
-          type: string
-          description: 32-char hex sysid
-        internalId:
-          type: string
-          nullable: true
-        number:
-          type: string
-        createdOn:
-          type: string
-        createdBy:
-          type: string
-        title:
-          type: string
-          nullable: true
-        description:
-          type: string
-          nullable: true
-        state:
-          type: string
-        catalog:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
-        catalogItem:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
-        assignedTeam:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
-        product:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
-        workState:
-          $ref: '#/components/schemas/ServiceRequestWorkStateRef'
-          nullable: true
-        project:
-          $ref: '#/components/schemas/EntityRef'
-        deployment:
-          $ref: '#/components/schemas/EntityRef'
-        deployedProduct:
-          $ref: '#/components/schemas/EntityRef'
-        assignedEngineer:
-          $ref: '#/components/schemas/AssignedEngineerRef'
-          nullable: true
-        parentCase:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
-        relatedCase:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
-
-    SearchServiceRequestsResponse:
-      type: object
-      properties:
-        serviceRequests:
-          type: array
-          items:
-            $ref: '#/components/schemas/ServiceRequestView'
-        totalRecords:
-          type: integer
-        offset:
-          type: integer
-        limit:
-          type: integer
-
-    SearchSecurityReportAnalysisRequest:
-      type: object
-      properties:
-        filters:
-          type: object
-          properties:
-            projectIds:
-              type: array
-              items:
-                type: string
-                format: uuid
-            searchQuery:
-              type: string
-            stateKeys:
-              type: array
-              items:
-                type: integer
-            closedStartDate:
-              type: string
-              format: date-time
-            closedEndDate:
-              type: string
-              format: date-time
-            startCreatedDate:
-              type: string
-              format: date-time
-            endCreatedDate:
-              type: string
-              format: date-time
-            startUpdatedDate:
-              type: string
-              format: date-time
-            endUpdatedDate:
-              type: string
-              format: date-time
-            deploymentIds:
-              type: array
-              items:
-                type: string
-                format: uuid
-            createdBy:
-              type: array
-              items:
-                type: string
-                format: email
-            createdByMe:
-              type: boolean
-        sortBy:
-          type: object
-          required: [field, order]
-          properties:
-            field:
-              type: string
-              enum: [createdOn, updatedOn]
-            order:
-              type: string
-              enum: [asc, desc]
-        pagination:
-          $ref: '#/components/schemas/Pagination'
-
-    SecurityReportAnalysisView:
-      type: object
-      properties:
-        id:
-          type: string
-          description: 32-char hex sysid
-        internalId:
-          type: string
-          nullable: true
-        number:
-          type: string
-        createdOn:
-          type: string
-        createdBy:
-          type: string
-        title:
-          type: string
-          nullable: true
-        description:
-          type: string
-          nullable: true
-        state:
-          type: string
-        workState:
-          type: string
-          nullable: true
-        product:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
-        project:
-          $ref: '#/components/schemas/EntityRef'
-        deployment:
-          $ref: '#/components/schemas/EntityRef'
-        deployedProduct:
-          $ref: '#/components/schemas/EntityRef'
-        assignedEngineer:
-          $ref: '#/components/schemas/AssignedEngineerRef'
-          nullable: true
-        parentCase:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
-        relatedCase:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
-
-    SearchSecurityReportAnalysisResponse:
-      type: object
-      properties:
-        securityReportAnalyses:
-          type: array
-          items:
-            $ref: '#/components/schemas/SecurityReportAnalysisView'
-        totalRecords:
-          type: integer
-        offset:
-          type: integer
-        limit:
-          type: integer
-
-    SearchEngagementsRequest:
-      type: object
-      properties:
-        filters:
-          type: object
-          properties:
-            projectIds:
-              type: array
-              items:
-                type: string
-                format: uuid
-            caseTypes:
-              type: array
-              items:
-                type: string
-            searchQuery:
-              type: string
-            typeKeys:
-              type: array
-              items:
-                type: string
-                enum: [migration, consultancy, new_feature_improvement, follow_up, onboarding]
-            closedStartDate:
-              type: string
-              format: date-time
-            closedEndDate:
-              type: string
-              format: date-time
-            startCreatedDate:
-              type: string
-              format: date-time
-            endCreatedDate:
-              type: string
-              format: date-time
-            startUpdatedDate:
-              type: string
-              format: date-time
-            endUpdatedDate:
-              type: string
-              format: date-time
-            deploymentIds:
-              type: array
-              items:
-                type: string
-                format: uuid
-            createdBy:
-              type: array
-              items:
-                type: string
-                format: uuid
-            createdByMe:
-              type: boolean
-        sortBy:
-          type: object
-          required: [field, order]
-          properties:
-            field:
-              type: string
-              enum: [createdOn, updatedOn]
-            order:
-              type: string
-              enum: [asc, desc]
-        pagination:
-          $ref: '#/components/schemas/Pagination'
-
-    EngagementView:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        internalId:
-          type: string
-          nullable: true
-        number:
-          type: string
-        createdOn:
-          type: string
-        createdBy:
-          type: string
-        title:
-          type: string
-          nullable: true
-        description:
-          type: string
-          nullable: true
-        state:
-          type: string
-        workState:
-          type: string
-          nullable: true
-        type:
-          type: string
-          nullable: true
-          description: Engagement type label returned by ServiceNow (e.g. "Migration", "Consultancy").
-        product:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
-        project:
-          $ref: '#/components/schemas/EntityRef'
-        deployment:
-          $ref: '#/components/schemas/EntityRef'
-        deployedProduct:
-          $ref: '#/components/schemas/EntityRef'
-        assignedEngineer:
-          $ref: '#/components/schemas/AssignedEngineerRef'
-          nullable: true
-        parentCase:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
-        relatedCase:
-          $ref: '#/components/schemas/EntityRef'
-          nullable: true
-
-    SearchEngagementsResponse:
-      type: object
-      properties:
-        engagements:
-          type: array
-          items:
-            $ref: '#/components/schemas/EngagementView'
-        totalRecords:
-          type: integer
-        offset:
-          type: integer
-        limit:
-          type: integer
 
     ErrorResponse:
       type: object
