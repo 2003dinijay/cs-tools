@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -29,6 +30,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
 )
+
 
 // CaseRepository defines the persistence operations for the cases table.
 type CaseRepository interface {
@@ -312,12 +314,26 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 	return c, nil
 }
 
+// pgSortColMap maps domain CaseSortField values to Postgres column expressions.
+var pgSortColMap = map[domain.CaseSortField]string{
+	domain.CaseSortFieldCreatedOn: "c.created_at",
+	domain.CaseSortFieldUpdatedOn: "c.updated_at",
+	domain.CaseSortFieldSeverity:  "c.severity",
+	domain.CaseSortFieldState:     "c.state",
+}
+
 // SearchCases implements CaseRepository.
 func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error) {
 	filterArgs := []any{}
 	argIdx := 1
 
 	where := "WHERE 1=1"
+
+	if len(req.Filters.TypeKeys) > 0 {
+		where += fmt.Sprintf(" AND c.type = ANY($%d::case_type_enum[])", argIdx)
+		filterArgs = append(filterArgs, req.Filters.TypeKeys)
+		argIdx++
+	}
 
 	if len(req.Filters.ProjectIDs) > 0 {
 		where += fmt.Sprintf(" AND c.project_id = ANY($%d::uuid[])", argIdx)
@@ -328,12 +344,6 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	if len(req.Filters.DeploymentIDs) > 0 {
 		where += fmt.Sprintf(" AND c.deployment_id = ANY($%d::uuid[])", argIdx)
 		filterArgs = append(filterArgs, req.Filters.DeploymentIDs)
-		argIdx++
-	}
-
-	if len(req.Filters.DeployedProductIDs) > 0 {
-		where += fmt.Sprintf(" AND c.deployed_product_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Filters.DeployedProductIDs)
 		argIdx++
 	}
 
@@ -349,8 +359,8 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 
 	if len(req.Filters.SeverityKeys) > 0 {
 		severityStrings := make([]string, len(req.Filters.SeverityKeys))
-		for i, p := range req.Filters.SeverityKeys {
-			severityStrings[i] = string(p)
+		for i, s := range req.Filters.SeverityKeys {
+			severityStrings[i] = string(s)
 		}
 		where += fmt.Sprintf(" AND c.severity = ANY($%d::case_severity_enum[])", argIdx)
 		filterArgs = append(filterArgs, severityStrings)
@@ -364,6 +374,16 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		}
 		where += fmt.Sprintf(" AND c.issue_type = ANY($%d::case_issue_type_enum[])", argIdx)
 		filterArgs = append(filterArgs, issueTypeStrings)
+		argIdx++
+	}
+
+	if len(req.Filters.EngagementTypeKeys) > 0 {
+		engTypeStrings := make([]string, len(req.Filters.EngagementTypeKeys))
+		for i, et := range req.Filters.EngagementTypeKeys {
+			engTypeStrings[i] = string(et)
+		}
+		where += fmt.Sprintf(" AND c.engagement_type = ANY($%d::engagement_type_enum[])", argIdx)
+		filterArgs = append(filterArgs, engTypeStrings)
 		argIdx++
 	}
 
@@ -412,7 +432,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	sortCol := "c." + string(req.SortBy.Field)
+	sortCol := pgSortColMap[req.SortBy.Field]
 	sortDir := string(req.SortBy.Order)
 
 	joins := `JOIN users u ON u.id = c.created_by
@@ -420,18 +440,25 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		 JOIN deployments d ON d.id = c.deployment_id
 		 JOIN deployed_products dp ON dp.id = c.deployed_product_id
 		 JOIN products prod ON prod.id = dp.product_id
-		 LEFT JOIN product_versions pv ON pv.id = dp.product_version_id`
+		 LEFT JOIN product_versions pv ON pv.id = dp.product_version_id
+		 LEFT JOIN users ae ON ae.id = c.assigned_engineer
+		 LEFT JOIN cases pc ON pc.id = c.parent_case_id
+		 LEFT JOIN cases rc ON rc.id = c.related_case_id`
 
 	countQuery := "SELECT COUNT(*) FROM cases c " + joins + " " + where
 
 	dataQuery := fmt.Sprintf(
 		`SELECT c.id, c.number, c.internal_id,
-		        c.subject, c.description, c.severity, c.issue_type, c.state, c.work_state,
-		        c.created_at, c.updated_at, c.closed_at,
-		        u.id, u.first_name || ' ' || u.last_name, u.user_name, u.email,
+		        c.type, c.subject, c.description, c.severity, c.issue_type, c.state,
+		        c.engagement_type, c.work_state, c.created_at,
+		        u.email,
 		        p.id, p.name,
 		        d.id, d.name,
-		        dp.id, prod.name || COALESCE(' ' || pv.version, '')
+		        dp.id, prod.name || COALESCE(' ' || pv.version, ''),
+		        prod.id, prod.name,
+		        ae.id, ae.first_name || ' ' || ae.last_name,
+		        pc.id, pc.number,
+		        rc.id, rc.number
 		 FROM cases c %s %s
 		 ORDER BY %s %s NULLS LAST, c.id
 		 LIMIT $%d OFFSET $%d`,
@@ -461,22 +488,45 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		result := make([]domain.SearchCaseView, 0, req.Pagination.Limit)
 		for rows.Next() {
 			var cv domain.SearchCaseView
-			var ignoredDisplayName, ignoredUserID string
-			var workState *string
+			var caseType, subject, description string
+			var severity, issueType, engagementType, workState *string
+			var createdAt time.Time
+			var aeID, aeName *string
+			var pcID, pcNumber *string
+			var rcID, rcNumber *string
+			var prodID, prodName string
 			if err := rows.Scan(
 				&cv.ID, &cv.Number, &cv.InternalID,
-				&cv.Subject, &cv.Description, &cv.Severity, &cv.IssueType, &cv.State, &workState,
-				&cv.CreatedOn, &cv.UpdatedOn, &cv.ClosedOn,
-				&cv.CreatedBy.ID, &ignoredDisplayName, &ignoredUserID, &cv.CreatedBy.Email,
-				&cv.ProjectDetails.ID, &cv.ProjectDetails.Name,
-				&cv.DeploymentDetails.ID, &cv.DeploymentDetails.Name,
-				&cv.DeployedProductDetails.ID, &cv.DeployedProductDetails.DisplayName,
+				&caseType, &subject, &description, &severity, &issueType, &cv.State,
+				&engagementType, &workState, &createdAt,
+				&cv.CreatedBy,
+				&cv.Project.ID, &cv.Project.Name,
+				&cv.Deployment.ID, &cv.Deployment.Name,
+				&cv.DeployedProduct.ID, &cv.DeployedProduct.Name,
+				&prodID, &prodName,
+				&aeID, &aeName,
+				&pcID, &pcNumber,
+				&rcID, &rcNumber,
 			); err != nil {
 				return fmt.Errorf("scan case: %w", err)
 			}
-			if workState != nil {
-				ws := domain.CaseWorkState(*workState)
-				cv.WorkState = &ws
+			cv.CaseType = caseType
+			cv.Title = &subject
+			cv.Description = &description
+			cv.Severity = severity
+			cv.IssueType = issueType
+			cv.EngagementType = engagementType
+			cv.WorkState = workState
+			cv.CreatedOn = createdAt.UTC().Format(time.RFC3339)
+			cv.Product = &domain.EntityRef{ID: prodID, Name: prodName}
+			if aeID != nil {
+				cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: *aeID, Name: *aeName}
+			}
+			if pcID != nil {
+				cv.ParentCase = &domain.EntityRef{ID: *pcID, Name: *pcNumber}
+			}
+			if rcID != nil {
+				cv.RelatedCase = &domain.EntityRef{ID: *rcID, Name: *rcNumber}
 			}
 			result = append(result, cv)
 		}
