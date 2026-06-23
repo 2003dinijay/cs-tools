@@ -38,40 +38,8 @@ type snCasesResponse struct {
 	Limit        int      `json:"limit"`
 }
 
-// snServiceRequestsResponse mirrors the Choreo POST /cases/search response for service_request cases.
-type snServiceRequestsResponse struct {
-	Cases        []snServiceRequestCase `json:"cases"`
-	TotalRecords int                    `json:"totalRecords"`
-	Offset       int                    `json:"offset"`
-	Limit        int                    `json:"limit"`
-}
 
-type snServiceRequestCase struct {
-	ID               string                     `json:"id"`
-	InternalID       string                     `json:"internalId"`
-	Number           string                     `json:"number"`
-	Title            *string                    `json:"title"`
-	Description      *string                    `json:"description"`
-	CreatedOn        string                     `json:"createdOn"`
-	CreatedBy        string                     `json:"createdBy"`
-	State            *snCaseState               `json:"state"`
-	WorkState        *snServiceRequestWorkState `json:"workState"`
-	Project          snCaseEntityRef            `json:"project"`
-	Deployment       snCaseEntityRef            `json:"deployment"`
-	DeployedProduct  snCaseDeployedProduct      `json:"deployedProduct"`
-	Product          *snCaseEntityRef           `json:"product"`
-	Catalog          *snCaseEntityRef           `json:"catalog"`
-	CatalogItem      *snCaseEntityRef           `json:"catalogItem"`
-	AssignedTeam     *snCaseEntityRef           `json:"assignedTeam"`
-	AssignedEngineer *snAssignedEngineerRef      `json:"assignedEngineer"`
-	ParentCase       *snCaseRef                 `json:"parentCase"`
-	RelatedCase      *snCaseRef                 `json:"relatedCase"`
-}
 
-type snServiceRequestWorkState struct {
-	ID    *int   `json:"id"`
-	Label string `json:"label"`
-}
 
 type snCase struct {
 	ID               string                `json:"id"`
@@ -90,6 +58,12 @@ type snCase struct {
 	WorkState        *snCaseLabel          `json:"workState"`
 	Severity         *snCaseLabel          `json:"severity"`
 	IssueType        *snCaseIssueType      `json:"issueType"`
+	EngagementType   *snCaseLabel          `json:"engagementType"`
+	CaseType         *snCaseEntityRef      `json:"caseType"`
+	Catalog          *snCaseEntityRef      `json:"catalog"`
+	CatalogItem      *snCaseEntityRef      `json:"catalogItem"`
+	AssignedTeam     *snCaseEntityRef      `json:"assignedTeam"`
+	Conversation     *snCaseEntityRef      `json:"conversation"`
 	AssignedEngineer *snAssignedEngineerRef `json:"assignedEngineer"`
 	ParentCase       *snCaseRef            `json:"parentCase"`
 	RelatedCase      *snCaseRef            `json:"relatedCase"`
@@ -150,10 +124,31 @@ type snCaseSort struct {
 	Order string `json:"order"`
 }
 
+// snCaseTypeMap maps domain case type strings to the ServiceNow caseType values.
+var snCaseTypeMap = map[string]string{
+	"support":                    "default_case",
+	"service_request":            "service_request",
+	"security_report_analysis":   "security_report_analysis",
+	"announcement":               "announcement",
+	"engagement":                 "engagement",
+}
+
+func domainTypeKeysToSN(typeKeys []string) []string {
+	result := make([]string, 0, len(typeKeys))
+	for _, t := range typeKeys {
+		if sn, ok := snCaseTypeMap[t]; ok {
+			result = append(result, sn)
+		}
+	}
+	return result
+}
+
 // snSortFieldMap maps domain CaseSortField values to SN field names.
 var snSortFieldMap = map[domain.CaseSortField]string{
-	domain.CaseSortFieldCreatedAt: "createdOn",
-	domain.CaseSortFieldUpdatedAt: "updatedOn",
+	domain.CaseSortFieldCreatedOn: "createdOn",
+	domain.CaseSortFieldUpdatedOn: "updatedOn",
+	domain.CaseSortFieldSeverity:  "severity",
+	domain.CaseSortFieldState:     "state",
 }
 
 type snCaseFilters struct {
@@ -182,21 +177,21 @@ var snStateIDMap = map[domain.CaseState]int{
 	domain.CaseStateWorkInProgress:   10,
 	domain.CaseStateAwaitingInfo:     18,
 	domain.CaseStateWaitingOnWSO2:    1003,
+	domain.CaseStateReopened:         1006,
 	domain.CaseStateSolutionProposed: 6,
 	domain.CaseStateClosed:           3,
 }
 
 // snSeverityIDMap maps domain CaseSeverity enums to SN numeric severity IDs.
-// CaseSeverityCatastrophic is intentionally absent: ServiceNow's severity scale
-// only goes up to Critical (P1=10) and has no catastrophic equivalent.
 var snSeverityIDMap = map[domain.CaseSeverity]int{
-	domain.CaseSeverityCritical: 10,
-	domain.CaseSeverityHigh:     11,
-	domain.CaseSeverityMedium:   12,
-	domain.CaseSeverityLow:      13,
+	domain.CaseSeverityCatastrophic: 14,
+	domain.CaseSeverityCritical:     10,
+	domain.CaseSeverityHigh:         11,
+	domain.CaseSeverityMedium:       12,
+	domain.CaseSeverityLow:          13,
 }
 
-// snIssueTypeIDMap maps domain CaseIssueType enums to SN numeric issue type IDs.
+// snIssueTypeIDMap maps domain CaseIssueType enums to SN numeric issue-type IDs.
 var snIssueTypeIDMap = map[domain.CaseIssueType]int{
 	domain.CaseIssueTypeTotalOutage:            1,
 	domain.CaseIssueTypePartialOutage:          2,
@@ -204,6 +199,15 @@ var snIssueTypeIDMap = map[domain.CaseIssueType]int{
 	domain.CaseIssueTypeQuestion:               4,
 	domain.CaseIssueTypeSecurityOrCompliance:   5,
 	domain.CaseIssueTypeError:                  6,
+}
+
+// snEngagementTypeIDMap maps domain EngagementType enums to SN numeric engagement-type IDs.
+var snEngagementTypeIDMap = map[domain.EngagementType]int{
+	domain.EngagementTypeMigration:             1,
+	domain.EngagementTypeConsultancy:           2,
+	domain.EngagementTypeNewFeatureImprovement: 3,
+	domain.EngagementTypeFollowUp:              4,
+	domain.EngagementTypeOnboarding:            5,
 }
 
 func domainStatesToSNIDs(states []domain.CaseState) []int {
@@ -216,10 +220,10 @@ func domainStatesToSNIDs(states []domain.CaseState) []int {
 	return ids
 }
 
-func domainSeveritiesToSNIDs(priorities []domain.CaseSeverity) []int {
-	ids := make([]int, 0, len(priorities))
-	for _, p := range priorities {
-		if id, ok := snSeverityIDMap[p]; ok {
+func domainSeveritiesToSNIDs(severities []domain.CaseSeverity) []int {
+	ids := make([]int, 0, len(severities))
+	for _, s := range severities {
+		if id, ok := snSeverityIDMap[s]; ok {
 			ids = append(ids, id)
 		}
 	}
@@ -235,6 +239,18 @@ func domainIssueTypesToSNIDs(issueTypes []domain.CaseIssueType) []int {
 	}
 	return ids
 }
+
+func domainEngagementTypesToSNIDs(engTypes []domain.EngagementType) []int {
+	ids := make([]int, 0, len(engTypes))
+	for _, et := range engTypes {
+		if id, ok := snEngagementTypeIDMap[et]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+
 
 func formatSNDate(t *time.Time) string {
 	if t == nil {
@@ -254,14 +270,6 @@ func NewServiceNowCaseService(client *integrationservice.Client, pgFallback Case
 	return &snCaseService{client: client, pgFallback: pgFallback}
 }
 
-// snSeverityMap maps domain CaseSeverity to the ServiceNow severity choice-list value.
-var snSeverityMap = map[domain.CaseSeverity]int{
-	domain.CaseSeverityCatastrophic: 14,
-	domain.CaseSeverityCritical:     10,
-	domain.CaseSeverityHigh:         11,
-	domain.CaseSeverityMedium:       12,
-	domain.CaseSeverityLow:          13,
-}
 
 // snIssueTypeID maps domain CaseIssueType to the ServiceNow issue-type choice-list value.
 var snIssueTypeID = map[domain.CaseIssueType]int{
@@ -313,7 +321,7 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 		DeployedProductID: uuidToSysid(req.DeployedProductID),
 		Title:             req.Subject,
 		Description:       req.Description,
-		SeverityKey:       snSeverityMap[req.SeverityKey],
+		SeverityKey:       snSeverityIDMap[req.SeverityKey],
 		IssueTypeKey:      snIssueTypeID[req.IssueTypeKey],
 	}
 
@@ -1003,16 +1011,21 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		snSortBy = &snCaseSort{Field: snField, Order: order}
 	}
 
+	snCaseTypes := domainTypeKeysToSN(req.Filters.TypeKeys)
+	if len(snCaseTypes) == 0 {
+		snCaseTypes = []string{"default_case"}
+	}
+
 	payload := snCaseSearchPayload{
 		Filters: snCaseFilters{
-			CaseTypes:          []string{"default_case"},
+			CaseTypes:          snCaseTypes,
 			SearchQuery:        req.Filters.SearchQuery,
 			ProjectIDs:         uuidsToSysids(req.Filters.ProjectIDs),
 			DeploymentIDs:      uuidsToSysids(req.Filters.DeploymentIDs),
-			DeployedProductIDs: uuidsToSysids(req.Filters.DeployedProductIDs),
 			StateKeys:          domainStatesToSNIDs(req.Filters.StateKeys),
 			SeverityKeys:       domainSeveritiesToSNIDs(req.Filters.SeverityKeys),
 			IssueTypeKeys:      domainIssueTypesToSNIDs(req.Filters.IssueTypeKeys),
+			EngagementTypeKeys: domainEngagementTypesToSNIDs(req.Filters.EngagementTypeKeys),
 			ClosedStartDate:    formatSNDate(req.Filters.ClosedStartDate),
 			ClosedEndDate:      formatSNDate(req.Filters.ClosedEndDate),
 			StartCreatedDate:   formatSNDate(req.Filters.StartCreatedDate),
@@ -1038,55 +1051,97 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 
 	views := make([]domain.SearchCaseView, 0, len(snResp.Cases))
 	for _, c := range snResp.Cases {
-		createdOn, err := time.Parse(snCreatedOnLayout, c.CreatedOn)
-		if err != nil {
-			return domain.SearchCasesResponse{}, fmt.Errorf("sn cases: parse createdOn %q: %w", c.CreatedOn, err)
+		title := c.Title
+		description := c.Description
+		severityLabel := snSeverityLabelStr(c.Severity)
+		issueTypeLabel := snIssueTypeLabelStr(c.IssueType)
+		workStateLabel := snLabelStr(c.WorkState)
+		engagementTypeLabel := snLabelStr(c.EngagementType)
+
+		stateLabel := ""
+		if c.State != nil {
+			stateLabel = c.State.Label
+		}
+		caseType := ""
+		if c.CaseType != nil {
+			caseType = c.CaseType.Name
 		}
 
-		updatedOn := createdOn
-		if c.UpdatedOn != nil && *c.UpdatedOn != "" {
-			updatedOn, err = time.Parse(snCreatedOnLayout, *c.UpdatedOn)
-			if err != nil {
-				return domain.SearchCasesResponse{}, fmt.Errorf("sn cases: parse updatedOn %q: %w", *c.UpdatedOn, err)
-			}
+		cv := domain.SearchCaseView{
+			ID:              sysidToUUID(c.ID),
+			Number:          c.Number,
+			InternalID:      c.InternalID,
+			CreatedOn:       c.CreatedOn,
+			CreatedBy:       c.CreatedBy,
+			Title:           &title,
+			Description:     &description,
+			IssueType:       issueTypeLabel,
+			State:           stateLabel,
+			Severity:        severityLabel,
+			EngagementType:  engagementTypeLabel,
+			WorkState:       workStateLabel,
+			CaseType:        caseType,
+			Project:         domain.EntityRef{ID: sysidToUUID(c.Project.ID), Name: c.Project.Name},
+			Deployment:      domain.EntityRef{ID: sysidToUUID(c.Deployment.ID), Name: c.Deployment.Name},
+			DeployedProduct: domain.EntityRef{ID: sysidToUUID(c.DeployedProduct.ID), Name: strings.TrimSpace(c.DeployedProduct.Name + " " + c.DeployedProduct.Version)},
 		}
-
-		state, err := snCaseStateLabelToEnum(c.State)
-		if err != nil {
-			return domain.SearchCasesResponse{}, fmt.Errorf("sn cases: case %q: %w", c.ID, err)
+		if c.Product != nil {
+			cv.Product = &domain.EntityRef{ID: sysidToUUID(c.Product.ID), Name: c.Product.Name}
 		}
-
-		views = append(views, domain.SearchCaseView{
-			ID:                     sysidToUUID(c.ID),
-			Number:                 c.Number,
-			InternalID:             c.InternalID,
-			Subject:                c.Title,
-			Description:            c.Description,
-			Severity:      snSeverityToSeverity(c.Severity),
-			IssueType:              snIssueTypeToEnum(c.IssueType),
-			State:                  state,
-			WorkState:              snWorkStateLabelToEnum(c.WorkState),
-			CreatedOn:              createdOn,
-			UpdatedOn:              updatedOn,
-			CreatedBy:              domain.UserIDEmailRef{Email: c.CreatedBy},
-			ProjectDetails:         domain.EntityRef{ID: sysidToUUID(c.Project.ID), Name: c.Project.Name},
-			DeploymentDetails:      domain.EntityRef{ID: sysidToUUID(c.Deployment.ID), Name: c.Deployment.Name},
-			DeployedProductDetails: domain.DeployedProductRef{ID: sysidToUUID(c.DeployedProduct.ID), DisplayName: strings.TrimSpace(c.DeployedProduct.Name + " " + c.DeployedProduct.Version)},
-		})
+		if c.Catalog != nil {
+			cv.Catalog = &domain.EntityRef{ID: sysidToUUID(c.Catalog.ID), Name: c.Catalog.Name}
+		}
+		if c.CatalogItem != nil {
+			cv.CatalogItem = &domain.EntityRef{ID: sysidToUUID(c.CatalogItem.ID), Name: c.CatalogItem.Name}
+		}
+		if c.AssignedTeam != nil {
+			cv.AssignedTeam = &domain.EntityRef{ID: sysidToUUID(c.AssignedTeam.ID), Name: c.AssignedTeam.Name}
+		}
+		if c.Conversation != nil {
+			cv.Conversation = &domain.EntityRef{ID: sysidToUUID(c.Conversation.ID), Name: c.Conversation.Name}
+		}
 		if c.AssignedEngineer != nil {
-			v := &views[len(views)-1]
-			v.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
+			cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
 		}
+		if c.ParentCase != nil {
+			cv.ParentCase = &domain.EntityRef{ID: sysidToUUID(c.ParentCase.ID), Name: c.ParentCase.Number}
+		}
+		if c.RelatedCase != nil {
+			cv.RelatedCase = &domain.EntityRef{ID: sysidToUUID(c.RelatedCase.ID), Name: c.RelatedCase.Number}
+		}
+		views = append(views, cv)
 	}
 
-	total := snResp.TotalRecords
 	return domain.SearchCasesResponse{
-		Cases:   views,
-		Total:   total,
-		Limit:   req.Pagination.Limit,
-		Offset:  req.Pagination.Offset,
-		HasMore: req.Pagination.Offset+len(views) < total,
+		Cases:        views,
+		TotalRecords: snResp.TotalRecords,
+		Limit:        req.Pagination.Limit,
+		Offset:       req.Pagination.Offset,
 	}, nil
+}
+
+// snSeverityLabelStr returns the raw SN severity label string, or nil if absent.
+func snSeverityLabelStr(s *snCaseLabel) *string {
+	if s == nil {
+		return nil
+	}
+	return &s.Label
+}
+
+// snIssueTypeLabelStr returns the raw SN issue-type label string, or nil if absent.
+func snIssueTypeLabelStr(it *snCaseIssueType) *string {
+	if it == nil {
+		return nil
+	}
+	return &it.Label
+}
+
+// snLabelStr returns the label of an snCaseLabel, or nil if absent.
+func snLabelStr(l *snCaseLabel) *string {
+	if l == nil {
+		return nil
+	}
+	return &l.Label
 }
 
 // snCaseStateMap maps SN state labels (lowercased) to domain CaseState enums.
