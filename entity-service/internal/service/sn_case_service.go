@@ -314,10 +314,10 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 		return domain.CreateCaseResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
 	}
 
-	snType, ok := snCaseTypeMap[req.TypeKey]
-	if !ok {
-		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "typeKey contains invalid value: " + req.TypeKey}
+	if req.TypeKey != "support" {
+		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "typeKey must be \"support\" for case creation"}
 	}
+	snType := snCaseTypeMap[req.TypeKey]
 
 	payload := snCreateCasePayload{
 		Type:              snType,
