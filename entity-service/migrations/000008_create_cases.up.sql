@@ -39,6 +39,7 @@ CREATE TYPE case_issue_type_enum AS ENUM (
 );
 
 CREATE TYPE engagement_type_enum AS ENUM (
+  'migration',
   'consultancy',
   'new_feature_improvement',
   'follow_up',
