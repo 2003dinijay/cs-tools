@@ -43,6 +43,14 @@ var validCaseSortField = map[domain.CaseSortField]bool{
 	domain.CaseSortFieldState:     true,
 }
 
+var validCaseType = map[string]bool{
+	"support":                  true,
+	"service_request":          true,
+	"security_report_analysis": true,
+	"announcement":             true,
+	"engagement":               true,
+}
+
 var validEngagementType = map[domain.EngagementType]bool{
 	domain.EngagementTypeMigration:             true,
 	domain.EngagementTypeConsultancy:           true,
@@ -305,6 +313,11 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, err
 	}
 
+	for _, t := range req.Filters.TypeKeys {
+		if !validCaseType[t] {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "typeKeys contains invalid value: " + t}
+		}
+	}
 	for _, s := range req.Filters.StateKeys {
 		if !validCaseState[s] {
 			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "stateKeys contains invalid value: " + string(s)}

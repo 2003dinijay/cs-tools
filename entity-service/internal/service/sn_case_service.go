@@ -1011,6 +1011,11 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		snSortBy = &snCaseSort{Field: snField, Order: order}
 	}
 
+	for _, t := range req.Filters.TypeKeys {
+		if _, ok := snCaseTypeMap[t]; !ok {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "typeKeys contains invalid value: " + t}
+		}
+	}
 	snCaseTypes := domainTypeKeysToSN(req.Filters.TypeKeys)
 	if len(snCaseTypes) == 0 {
 		snCaseTypes = []string{"default_case"}
