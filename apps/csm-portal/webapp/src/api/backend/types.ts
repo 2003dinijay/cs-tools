@@ -87,7 +87,7 @@ export type BeCaseState =
  */
 export type BeCaseWorkState = "ongoing" | "paused";
 
-export type BeCaseSortField = "created_at" | "updated_at" | "closed_at";
+export type BeCaseSortField = "createdOn" | "updatedOn" | "severity" | "state";
 
 export interface BeCase {
   id: string;

@@ -170,7 +170,7 @@ export function useGetCsmCases(
       const [casesResponse, projects, accounts] = await Promise.all([
         api.post<BeCaseSearchPayload, BeCaseSearchResponse>("/cases/search", {
           pagination: { offset, limit: pageSize },
-          sortBy: { field: "updated_at", order: "desc" },
+          sortBy: { field: "updatedOn", order: "desc" },
           // Filter fields are nested under `filters` (BE payload restructure).
           filters: {
             ...(search.length > 0 && { searchQuery: search }),
