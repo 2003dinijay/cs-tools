@@ -100,6 +100,9 @@ var validCaseWorkState = map[domain.CaseWorkState]bool{
 // UUID format of ID fields is not checked here — postgres IDs are UUIDs but
 // ServiceNow IDs are opaque hex strings; callers add format checks as needed.
 func validateCreateCaseRequest(req domain.CreateCaseRequest) error {
+	if req.TypeKey == "" {
+		return &apierror.ValidationError{Msg: "typeKey is required"}
+	}
 	if req.ProjectID == "" {
 		return &apierror.ValidationError{Msg: "projectId is required"}
 	}
@@ -128,6 +131,9 @@ func validateCreateCaseRequest(req domain.CreateCaseRequest) error {
 func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
 	if err := validateCreateCaseRequest(req); err != nil {
 		return domain.CreateCaseResponse{}, err
+	}
+	if req.TypeKey != "support" {
+		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "typeKey must be \"support\" for the Postgres data source"}
 	}
 	if err := validateUUIDs("projectId", []string{req.ProjectID}); err != nil {
 		return domain.CreateCaseResponse{}, err
