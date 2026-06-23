@@ -14,7 +14,7 @@ Backend starts at `http://localhost:8080`.
 ## Overview
 
 - Default port: `8080`
-- Runtime: Go `1.23+`
+- Runtime: Go `1.26+`
 - Entry point: `cmd/server/main.go`
 - Authentication:
   - Incoming requests: JWT Bearer token (validated by Choreo gateway + JWKS endpoint); pass as `x-jwt-assertion` header when testing locally
@@ -22,7 +22,7 @@ Backend starts at `http://localhost:8080`.
 
 ## Prerequisites
 
-- Go `1.23+` — [install](https://go.dev/doc/install)
+- Go `1.26+` — [install](https://go.dev/doc/install)
 
 ## Testing
 
@@ -126,15 +126,29 @@ Copy `.env` and fill in the values:
 backend/
 ├── cmd/server/main.go          # Entry point — routes + server startup
 ├── internal/
+│   ├── apierror/               # Typed upstream error types (4xx/5xx passthrough)
 │   ├── entity/
 │   │   ├── client.go           # OAuth2 HTTP client for the entity service
-│   │   └── entity.go           # Entity service operations (cases, ...)
+│   │   └── entity.go           # Entity service operations (cases, accounts, projects, ...)
+│   ├── scim/
+│   │   └── client.go           # OAuth2 HTTP client for the SCIM operations service
 │   ├── updates/
 │   │   ├── client.go           # OAuth2 HTTP client for the updates service
 │   │   └── updates.go          # Updates service operations
+│   ├── middleware/
+│   │   ├── auth.go             # JWT validation; injects UserInfo into context
+│   │   ├── correlation.go      # X-CSM-Correlation-ID propagation + slog enrichment
+│   │   ├── logger.go           # Per-request access log
+│   │   └── security_headers.go # X-Content-Type-Options, CSP, HSTS on every response
 │   └── handler/
 │       ├── cases.go            # HTTP handlers for case endpoints
-│       └── updates.go          # HTTP handlers for updates endpoints
+│       ├── state.go            # Case state machine (nextStates, isValidStateTransition)
+│       ├── accounts.go         # HTTP handlers for account endpoints
+│       ├── deployments.go      # HTTP handlers for deployment endpoints
+│       ├── products.go         # HTTP handlers for product endpoints
+│       ├── projects.go         # HTTP handlers for project endpoints
+│       ├── updates.go          # HTTP handlers for updates endpoints
+│       └── users.go            # HTTP handlers for user endpoints
 ├── .env                        # Local config (git-ignored)
 └── go.mod
 ```
@@ -144,13 +158,52 @@ backend/
 ### Cases
 
 - `POST /cases` — Create a case
-- `POST /cases/search` — Search cases
 - `GET /cases/{id}` — Get case by ID
+- `PATCH /cases/{id}` — Update a case (state, priority, workState, watchList, or assigneeEmail)
+- `POST /cases/search` — Search cases
+- `POST /cases/{id}/comments` — Create a comment on a case
+- `POST /cases/{id}/comments/search` — Search comments on a case
+- `POST /cases/{id}/attachments` — Upload an attachment to a case
+- `POST /cases/{id}/attachments/search` — Search attachments on a case
+- `GET /cases/{case_id}/attachments/{attachment_id}/content` — Download an attachment
+
+### Service Requests
+
+- `POST /service-requests/search` — Search service requests (ServiceNow only)
+
+### Security Report Analyses
+
+- `POST /security-report-analyses/search` — Search security report analyses (ServiceNow only)
+
+### Engagements
+
+- `POST /engagements/search` — Search engagements (ServiceNow only)
 
 ### Users
 
-- `GET /users/me` — Get current user profile (phone number + last password update time from SCIM; other fields TODO pending entity)
-- `PATCH /users/me` — Update current user profile (phone number via SCIM; time zone TODO pending entity)
+- `GET /users/me` — Get current user profile
+- `PATCH /users/me` — Update current user profile (phone number)
+- `POST /users/search` — Search users
+
+### Accounts
+
+- `GET /accounts/{id}` — Get account by ID
+- `POST /accounts/search` — Search accounts
+
+### Projects
+
+- `GET /projects/{id}` — Get project by ID
+- `POST /projects/search` — Search projects
+
+### Products
+
+- `POST /products/search` — Search products
+- `POST /products/{id}/versions/search` — Search product versions
+
+### Deployments
+
+- `POST /deployments/search` — Search deployments
+- `POST /deployments/{id}/products/search` — Search deployed products
 
 ### Updates
 

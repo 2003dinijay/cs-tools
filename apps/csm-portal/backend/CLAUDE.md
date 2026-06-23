@@ -1,6 +1,6 @@
 # CSM Portal Backend
 
-Go HTTP server (`net/http`, Go 1.22+) that acts as a backend-for-frontend (BFF) for the CSM portal. It authenticates callers, forwards requests to upstream services, and shapes responses for the frontend.
+Go HTTP server (`net/http`, Go 1.26+) that acts as a backend-for-frontend (BFF) for the CSM portal. It authenticates callers, forwards requests to upstream services, and shapes responses for the frontend.
 
 ## Middleware chain
 
