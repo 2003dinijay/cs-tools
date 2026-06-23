@@ -271,7 +271,7 @@ export default function ProjectHub(): JSX.Element {
 
   const colsPerRow = isXlUp ? 5 : isLgUp ? 4 : 3;
   // During loading use the cached count so the skeleton mirrors the expected layout.
-  const effectiveCount = isLoading ? totalProjectsRef.current : projects.length;
+  const effectiveCount = isLoading ? cachedTotalProjects : projects.length;
   const isCenteredLayout = !isPartnerListView && effectiveCount <= colsPerRow;
   // When effectiveCount is 0 (first-ever load), fill one full row of skeleton cards.
   const displayCount = effectiveCount === 0 ? colsPerRow : effectiveCount;

@@ -66,6 +66,9 @@ const ProjectListTable = ({
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
 
+  const maxPage = Math.max(0, Math.floor((projects.length - 1) / rowsPerPage));
+  if (page > maxPage) setPage(maxPage);
+
   const paginatedProjects = useMemo(
     () => projects.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage),
     [projects, page, rowsPerPage],
@@ -110,10 +113,15 @@ const ProjectListTable = ({
                   <TableRow
                     key={project.id}
                     hover
+                    tabIndex={0}
                     sx={{ cursor: "pointer" }}
-                    onClick={() =>
-                      navigate(`/projects/${project.id}/dashboard`)
-                    }
+                    onClick={() => navigate(`/projects/${project.id}/dashboard`)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        navigate(`/projects/${project.id}/dashboard`);
+                      }
+                    }}
                   >
                     <TableCell>
                       <Typography variant="body2" fontWeight="medium">
