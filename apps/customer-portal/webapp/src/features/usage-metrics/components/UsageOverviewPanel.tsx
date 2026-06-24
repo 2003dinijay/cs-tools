@@ -397,7 +397,7 @@ function EnvironmentBreakdownAccordion({
     ]);
     const totalTx = usages.reduce((sum, u) => sum + sumUsageEntryTransactions(u), 0);
     return {
-      productCount: depUsagesData ? productIds.size : instances.length,
+      productCount: productIds.size,
       instanceCount: instances.length,
       totalCores: instances.reduce((sum, i) => sum + (i.metadata?.coreCount ?? 0), 0),
       transactionsLabel: formatUsageMetricCount(totalTx),
