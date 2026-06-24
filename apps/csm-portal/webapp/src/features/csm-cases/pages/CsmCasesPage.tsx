@@ -135,15 +135,21 @@ export default function CsmCasesPage(): JSX.Element {
   }, [data?.cases]);
 
   const total = data?.total ?? 0;
-  // If the total shrinks (a background refetch, or rows closing) while we're on
-  // a later page, clamp back to the last valid page so the table never shows an
-  // empty out-of-range page with a misleading range. Adjusting state during
-  // render (React's documented pattern) rather than in an effect: React
-  // re-renders with the corrected page and the hook refetches the right slice.
+  // Clamp to the last valid page when loaded data shrinks (background refetch,
+  // rows closing). Guard on `data !== undefined` so that during the loading
+  // transition — when data is undefined and total falls to 0 — we don't
+  // immediately reset a page > 0 back to 0, which would break Next navigation.
   const lastPage = total === 0 ? 0 : Math.ceil(total / rowsPerPage) - 1;
-  if (page > lastPage) {
+  if (data !== undefined && !data.hasMore && page > lastPage) {
     setPage(lastPage);
   }
+
+  // When hasMore is true the backend guarantees more pages exist, but total may
+  // reflect only the current page's count rather than the full dataset size.
+  // count={-1} tells MUI the total is unknown → keeps Next enabled; Last is
+  // hidden automatically. When hasMore is false, use exact total for accurate
+  // pagination controls.
+  const paginationCount = data?.hasMore ? -1 : total;
 
   // Counts reflect the current page only (the backend exposes no SLA/assignee
   // breakdown across pages); both are inert in LIVE where that data is absent.
@@ -219,7 +225,7 @@ export default function CsmCasesPage(): JSX.Element {
 
       <TablePagination
         component="div"
-        count={total}
+        count={paginationCount}
         page={page}
         onPageChange={(_, newPage) => setPage(newPage)}
         rowsPerPage={rowsPerPage}
