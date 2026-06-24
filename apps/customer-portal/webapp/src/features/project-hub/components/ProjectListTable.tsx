@@ -139,6 +139,9 @@ const ProjectListTable = ({
           size="small"
           onClick={handleExportOpen}
           disabled={isExporting || projects.length === 0}
+          aria-haspopup="menu"
+          aria-expanded={Boolean(exportAnchorEl)}
+          aria-controls="project-list-export-menu"
           startIcon={
             isExporting ? (
               <CircularProgress size={16} color="inherit" />
@@ -151,6 +154,7 @@ const ProjectListTable = ({
           {isExporting ? "Exporting..." : "Export"}
         </Button>
         <Menu
+          id="project-list-export-menu"
           anchorEl={exportAnchorEl}
           open={Boolean(exportAnchorEl)}
           onClose={handleExportClose}
