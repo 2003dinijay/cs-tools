@@ -388,7 +388,7 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 
 	return domain.SearchCasesResponse{
 		Cases:        cases,
-		TotalRecords: total,
+		Total: total,
 		Limit:        req.Pagination.Limit,
 		Offset:       req.Pagination.Offset,
 	}, nil

@@ -634,10 +634,10 @@ type SearchCaseView struct {
 
 // SearchCasesResponse is the paginated result of a case search.
 type SearchCasesResponse struct {
-	Cases        []SearchCaseView `json:"cases"`
-	TotalRecords int              `json:"totalRecords"`
-	Offset       int              `json:"offset"`
-	Limit        int              `json:"limit"`
+	Cases  []SearchCaseView `json:"cases"`
+	Total  int              `json:"total"`
+	Offset int              `json:"offset"`
+	Limit  int              `json:"limit"`
 }
 
 
@@ -939,7 +939,7 @@ type SearchChangeRequestView struct {
 // SearchChangeRequestsResponse is the paginated result of a change request search.
 type SearchChangeRequestsResponse struct {
 	ChangeRequests []SearchChangeRequestView `json:"changeRequests"`
-	TotalRecords   int                       `json:"totalRecords"`
+	Total          int                       `json:"total"`
 	Offset         int                       `json:"offset"`
 	Limit          int                       `json:"limit"`
 }

@@ -344,7 +344,7 @@ func (s *snChangeRequestService) SearchChangeRequests(ctx context.Context, req d
 
 	return domain.SearchChangeRequestsResponse{
 		ChangeRequests: views,
-		TotalRecords:   snResp.TotalRecords,
+		Total:          snResp.TotalRecords,
 		Limit:          req.Pagination.Limit,
 		Offset:         req.Pagination.Offset,
 	}, nil

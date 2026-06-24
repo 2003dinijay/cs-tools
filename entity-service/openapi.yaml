@@ -1689,7 +1689,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CaseSearchView'
-        totalRecords:
+        total:
           type: integer
         offset:
           type: integer
@@ -1964,7 +1964,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SearchChangeRequestView'
-        totalRecords:
+        total:
           type: integer
         offset:
           type: integer
