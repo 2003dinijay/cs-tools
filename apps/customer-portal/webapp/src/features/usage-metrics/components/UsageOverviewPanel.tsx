@@ -361,46 +361,44 @@ function EnvironmentBreakdownAccordion({
 }: EnvironmentBreakdownAccordionProps): JSX.Element {
   const a = getUsageOverviewAccentForTypeId(row.kind);
 
-  // Instances fetched eagerly — needed for collapsed row header counts (product/instance).
-  const { data: depInstancesData } = usePostDeploymentInstancesSearch(row.deploymentId);
-
   const metricsPayload = useMemo(
     () => ({ filters: { startDate: dateRange.startDate, endDate: dateRange.endDate } }),
     [dateRange],
   );
 
-  // Usages only fetched when expanded — avoids N concurrent calls on mount.
+  // Both hooks gated on expanded — avoids N concurrent calls on mount and prevents
+  // API gateway throttling when many accordion rows are rendered simultaneously.
+  const { data: depInstancesData } = usePostDeploymentInstancesSearch(
+    expanded ? row.deploymentId : undefined,
+  );
   const { data: depUsagesData } = usePostDeploymentInstancesUsagesSearch(
     expanded ? row.deploymentId : undefined,
     metricsPayload,
   );
 
   const { productCount, instanceCount, totalCores, transactionsLabel } = useMemo(() => {
-    const instances = depInstancesData?.instances ?? [];
+    if (!expanded || !depInstancesData) {
+      return {
+        productCount: row.productCount,
+        instanceCount: row.instanceCount,
+        totalCores: row.totalCores,
+        transactionsLabel: row.transactionsLabel,
+      };
+    }
+    const instances = depInstancesData.instances ?? [];
     const usages = depUsagesData?.usages ?? [];
     const productIds = new Set([
       ...instances.map((i) => i.deployedProduct?.id ?? i.product?.id).filter(Boolean),
       ...usages.map((u) => u.deployedProduct?.id ?? u.product?.id).filter(Boolean),
     ]);
-    const totalTx = usages.reduce(
-      (sum, u) => sum + sumUsageEntryTransactions(u),
-      0,
-    );
+    const totalTx = usages.reduce((sum, u) => sum + sumUsageEntryTransactions(u), 0);
     return {
-      // productCount needs both instances+usages to be accurate; fall back to
-      // row.productCount until usages have been fetched at least once (React
-      // Query keeps cached usages data even when the query is disabled, so after
-      // the first expansion the count stays stable on collapse).
-      productCount: depInstancesData && depUsagesData ? productIds.size : row.productCount,
-      instanceCount: depInstancesData ? instances.length : row.instanceCount,
-      totalCores: depInstancesData
-        ? instances.reduce((sum, i) => sum + (i.metadata?.coreCount ?? 0), 0)
-        : row.totalCores,
-      transactionsLabel: depUsagesData
-        ? formatUsageMetricCount(totalTx)
-        : row.transactionsLabel,
+      productCount: productIds.size,
+      instanceCount: instances.length,
+      totalCores: instances.reduce((sum, i) => sum + (i.metadata?.coreCount ?? 0), 0),
+      transactionsLabel: formatUsageMetricCount(totalTx),
     };
-  }, [depInstancesData, depUsagesData, row]);
+  }, [expanded, depInstancesData, depUsagesData, row]);
 
   return (
     <Accordion
