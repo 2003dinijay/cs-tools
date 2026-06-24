@@ -135,7 +135,9 @@ export function usePostProjectDeploymentsSearchInfinite(
       return undefined;
     },
     enabled: enabled && !!projectId && isSignedIn && !isAuthLoading,
-    staleTime: 0,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
 
@@ -215,6 +217,8 @@ export function usePostProjectDeploymentsSearchAll(
       return results;
     },
     enabled: enabled && !!projectId && isSignedIn && !isAuthLoading,
-    staleTime: 0,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
