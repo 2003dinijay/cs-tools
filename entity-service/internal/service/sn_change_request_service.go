@@ -352,3 +352,97 @@ func (s *snChangeRequestService) SearchChangeRequests(ctx context.Context, req d
 		Offset:         req.Pagination.Offset,
 	}, nil
 }
+
+// snChangeRequestDetail mirrors the Choreo GET /change-requests/{id} response.
+type snChangeRequestDetail struct {
+	snChangeRequest
+	CreatedBy           string         `json:"createdBy"`
+	Justification       *string        `json:"justification"`
+	ImpactDescription   *string        `json:"impactDescription"`
+	ServiceOutage       *string        `json:"serviceOutage"`
+	CommunicationPlan   *string        `json:"communicationPlan"`
+	RollbackPlan        *string        `json:"rollbackPlan"`
+	TestPlan            *string        `json:"testPlan"`
+	HasCustomerApproved bool           `json:"hasCustomerApproved"`
+	HasCustomerReviewed bool           `json:"hasCustomerReviewed"`
+	ApprovedBy          *snCREntityRef `json:"approvedBy"`
+	ApprovedOn          *string        `json:"approvedOn"`
+}
+
+func (s *snChangeRequestService) GetChangeRequest(ctx context.Context, id string) (domain.ChangeRequest, error) {
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.ChangeRequest{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	raw, err := s.client.Get(ctx, "/change-requests/"+uuidToSysid(id), token)
+	if err != nil {
+		return domain.ChangeRequest{}, err
+	}
+
+	var cr snChangeRequestDetail
+	if err := json.Unmarshal(raw, &cr); err != nil {
+		return domain.ChangeRequest{}, fmt.Errorf("sn get change request: parse response: %w", err)
+	}
+
+	subject := cr.Title
+	description := cr.Description
+
+	updatedOn := cr.CreatedOn
+	if cr.UpdatedOn != nil && *cr.UpdatedOn != "" {
+		updatedOn = *cr.UpdatedOn
+	}
+
+	view := domain.SearchChangeRequestView{
+		ID:             sysidToUUID(cr.ID),
+		Number:         cr.Number,
+		Subject:        &subject,
+		Description:    &description,
+		Project:        domain.EntityRef{ID: sysidToUUID(cr.Project.ID), Name: cr.Project.Name},
+		PlannedStartOn: cr.PlannedStartOn,
+		PlannedEndOn:   cr.PlannedEndOn,
+		Duration:       cr.Duration,
+		Impact:         snCRImpactLabelToString(cr.Impact),
+		State:          snCRStateLabelToString(cr.State),
+		Type:           snCRTypeLabelToString(cr.Type),
+		CreatedOn:      cr.CreatedOn,
+		UpdatedOn:      updatedOn,
+	}
+	if cr.Case != nil {
+		view.Case = &domain.EntityRef{ID: sysidToUUID(cr.Case.ID), Name: cr.Case.Name}
+	}
+	if cr.Deployment != nil {
+		view.Deployment = &domain.EntityRef{ID: sysidToUUID(cr.Deployment.ID), Name: cr.Deployment.Name}
+	}
+	if cr.DeployedProduct != nil {
+		view.DeployedProduct = &domain.EntityRef{ID: sysidToUUID(cr.DeployedProduct.ID), Name: cr.DeployedProduct.Name}
+	}
+	if cr.Product != nil {
+		view.Product = &domain.EntityRef{ID: sysidToUUID(cr.Product.ID), Name: cr.Product.Name}
+	}
+	if cr.AssignedEngineer != nil {
+		view.AssignedEngineer = &domain.EntityRef{ID: sysidToUUID(cr.AssignedEngineer.ID), Name: cr.AssignedEngineer.Name}
+	}
+	if cr.AssignedTeam != nil {
+		view.AssignedTeam = &domain.EntityRef{ID: sysidToUUID(cr.AssignedTeam.ID), Name: cr.AssignedTeam.Name}
+	}
+
+	result := domain.ChangeRequest{
+		SearchChangeRequestView: view,
+		CreatedBy:               cr.CreatedBy,
+		Justification:           cr.Justification,
+		ImpactDescription:       cr.ImpactDescription,
+		ServiceOutage:           cr.ServiceOutage,
+		CommunicationPlan:       cr.CommunicationPlan,
+		RollbackPlan:            cr.RollbackPlan,
+		TestPlan:                cr.TestPlan,
+		HasCustomerApproved:     cr.HasCustomerApproved,
+		HasCustomerReviewed:     cr.HasCustomerReviewed,
+		ApprovedOn:              cr.ApprovedOn,
+	}
+	if cr.ApprovedBy != nil {
+		result.ApprovedBy = &domain.EntityRef{ID: sysidToUUID(cr.ApprovedBy.ID), Name: cr.ApprovedBy.Name}
+	}
+
+	return result, nil
+}
