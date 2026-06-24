@@ -98,8 +98,8 @@ function accountOptionsQueryOptions(api: BackendApi) {
  * cases page already mounts for its filter options.
  *
  * Search and the severity / state / case-type / project / assignee filters are
- * pushed into the search payload (searchQuery / severityKeys / stateKeys /
- * typeKeys / projectIds / assignedTo / assignedToMe) and the BE
+ * pushed into the search payload (searchQuery / severities / states /
+ * types / projectIds / assignedTo / assignedToMe) and the BE
  * paginates the result (`pagination` → `total` / `limit` / `offset` /
  * `hasMore`).
  *
@@ -158,13 +158,13 @@ export function useGetCsmCases(
           filters: {
             ...(search.length > 0 && { searchQuery: search }),
             ...(filters.severities.length > 0 && {
-              severityKeys: filters.severities.map(priorityFromSeverity),
+              severities: filters.severities.map(priorityFromSeverity),
             }),
             ...(filters.states.length > 0 && {
-              stateKeys: filters.states.map(beStateFromUi),
+              states: filters.states.map(beStateFromUi),
             }),
             ...(filters.caseTypes.length > 0 && {
-              typeKeys: filters.caseTypes,
+              types: filters.caseTypes,
             }),
             // `filters.projects` holds project IDs (the filter is id-based).
             ...(filters.projects.length > 0 && {
@@ -214,8 +214,7 @@ export function useGetCsmCases(
           id: c.id,
           caseNumber: c.number,
           wso2CaseId: c.internalId,
-          // Search returns the title under `title` (the GET view uses `subject`).
-          subject: c.title ?? "(no subject)",
+          subject: c.subject ?? "(no subject)",
           customer: accountName.get(accountId) ?? "—",
           accountId,
           projectId,
@@ -225,7 +224,6 @@ export function useGetCsmCases(
           product: c.deployedProduct?.name ?? "—",
           severity: severityFromPriority(c.severity),
           state: uiStateFromBe(c.state),
-          caseType: c.caseType,
           workState: c.workState ?? null,
           assignee,
           assigneeIsMe,

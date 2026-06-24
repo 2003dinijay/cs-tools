@@ -103,8 +103,8 @@ export function useCaseComposition(): UseQueryResult<CaseComposition, Error> {
             countTotal({
               pagination: { offset: 0, limit: 1 },
               filters: {
-                severityKeys: [priorityFromSeverity(sev)],
-                stateKeys: activeStateKeys,
+                severities: [priorityFromSeverity(sev)],
+                states: activeStateKeys,
               },
             }).then((n) => ({ key: sev, n })),
           ),
@@ -114,8 +114,8 @@ export function useCaseComposition(): UseQueryResult<CaseComposition, Error> {
             countTotal({
               pagination: { offset: 0, limit: 1 },
               filters: {
-                stateKeys: [beStateFromUi(st)],
-                severityKeys: allPriorityKeys,
+                states: [beStateFromUi(st)],
+                severities: allPriorityKeys,
               },
             }).then((n) => ({ key: st, n })),
           ),
@@ -123,8 +123,8 @@ export function useCaseComposition(): UseQueryResult<CaseComposition, Error> {
         countTotal({
           pagination: { offset: 0, limit: 1 },
           filters: {
-            stateKeys: [beStateFromUi("closed")],
-            severityKeys: allPriorityKeys,
+            states: [beStateFromUi("closed")],
+            severities: allPriorityKeys,
           },
         }),
       ]);

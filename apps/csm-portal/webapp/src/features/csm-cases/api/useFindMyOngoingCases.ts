@@ -42,7 +42,7 @@ const SEARCH_LIMIT = 50;
  * when starting work on a case.
  *
  * Because the search endpoint exposes neither an assignee nor a work-state
- * filter, this narrows by `stateKeys: [work_in_progress]` server-side and then
+ * filter, this narrows by `states: [work_in_progress]` server-side and then
  * matches `assignedEngineer.email` against the JWT email and `workState ===
  * "ongoing"` client-side (a `null` workState is never ongoing).
  */
@@ -60,7 +60,7 @@ export function useFindMyOngoingCases(): (
       const res = await api.post<BeCaseSearchPayload, BeCaseSearchResponse>(
         "/cases/search",
         {
-          filters: { stateKeys: ["work_in_progress"] },
+          filters: { states: ["work_in_progress"] },
           pagination: { offset: 0, limit: SEARCH_LIMIT },
         },
       );
@@ -75,7 +75,7 @@ export function useFindMyOngoingCases(): (
         )
         .map((c) => ({
           id: c.id,
-          label: c.internalId || c.number || c.title || c.id,
+          label: c.internalId || c.number || c.subject || c.id,
         }));
     },
     [api, myEmail],
