@@ -133,7 +133,7 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 		return domain.CreateCaseResponse{}, err
 	}
 	if req.Type != "support" {
-		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "typeKey must be \"support\" for case creation"}
+		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "type must be \"support\" for case creation"}
 	}
 	if err := validateUUIDs("projectId", []string{req.ProjectID}); err != nil {
 		return domain.CreateCaseResponse{}, err

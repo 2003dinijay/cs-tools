@@ -257,6 +257,9 @@ func (s *snChangeRequestService) SearchChangeRequests(ctx context.Context, req d
 	if req.SortBy.Order != "" && !validChangeRequestSortOrder[req.SortBy.Order] {
 		return domain.SearchChangeRequestsResponse{}, &apierror.ValidationError{Msg: "sortBy.order contains invalid value: " + string(req.SortBy.Order)}
 	}
+	if err := validateUUIDs("projectIds", req.Filters.ProjectIDs); err != nil {
+		return domain.SearchChangeRequestsResponse{}, err
+	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
