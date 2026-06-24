@@ -436,9 +436,11 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 			Email: c.CreatedBy,
 		},
 		ProjectDetails:    domain.EntityRef{ID: sysidToUUID(c.Project.ID), Name: c.Project.Name},
-		DeploymentDetails: domain.EntityRef{ID: sysidToUUID(c.Deployment.ID), Name: c.Deployment.Name},
 	}
 
+	if depID := sysidToUUID(c.Deployment.ID); depID != "" {
+		cv.DeploymentDetails = &domain.EntityRef{ID: depID, Name: c.Deployment.Name}
+	}
 	if dpID := sysidToUUID(c.DeployedProduct.ID); dpID != "" {
 		cv.DeployedProductDetails = &domain.DeployedProductRef{
 			ID:          dpID,
@@ -446,19 +448,29 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		}
 	}
 	if c.Product != nil {
-		cv.ProductDetails = &domain.EntityRef{ID: sysidToUUID(c.Product.ID), Name: c.Product.Name}
+		if id := sysidToUUID(c.Product.ID); id != "" {
+			cv.ProductDetails = &domain.EntityRef{ID: id, Name: c.Product.Name}
+		}
 	}
 	if c.Catalog != nil {
-		cv.Catalog = &domain.EntityRef{ID: sysidToUUID(c.Catalog.ID), Name: c.Catalog.Name}
+		if id := sysidToUUID(c.Catalog.ID); id != "" {
+			cv.Catalog = &domain.EntityRef{ID: id, Name: c.Catalog.Name}
+		}
 	}
 	if c.CatalogItem != nil {
-		cv.CatalogItem = &domain.EntityRef{ID: sysidToUUID(c.CatalogItem.ID), Name: c.CatalogItem.Name}
+		if id := sysidToUUID(c.CatalogItem.ID); id != "" {
+			cv.CatalogItem = &domain.EntityRef{ID: id, Name: c.CatalogItem.Name}
+		}
 	}
 	if c.AssignedTeam != nil {
-		cv.AssignedTeam = &domain.EntityRef{ID: sysidToUUID(c.AssignedTeam.ID), Name: c.AssignedTeam.Name}
+		if id := sysidToUUID(c.AssignedTeam.ID); id != "" {
+			cv.AssignedTeam = &domain.EntityRef{ID: id, Name: c.AssignedTeam.Name}
+		}
 	}
 	if c.Conversation != nil {
-		cv.Conversation = &domain.EntityRef{ID: sysidToUUID(c.Conversation.ID), Name: c.Conversation.Name}
+		if id := sysidToUUID(c.Conversation.ID); id != "" {
+			cv.Conversation = &domain.EntityRef{ID: id, Name: c.Conversation.Name}
+		}
 	}
 	if c.AssignedEngineer != nil {
 		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
@@ -1140,16 +1152,24 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 			cv.DeployedProduct = &domain.EntityRef{ID: dpID, Name: strings.TrimSpace(c.DeployedProduct.Name + " " + c.DeployedProduct.Version)}
 		}
 		if c.Product != nil {
-			cv.Product = &domain.EntityRef{ID: sysidToUUID(c.Product.ID), Name: c.Product.Name}
+			if id := sysidToUUID(c.Product.ID); id != "" {
+				cv.Product = &domain.EntityRef{ID: id, Name: c.Product.Name}
+			}
 		}
 		if c.Catalog != nil {
-			cv.Catalog = &domain.EntityRef{ID: sysidToUUID(c.Catalog.ID), Name: c.Catalog.Name}
+			if id := sysidToUUID(c.Catalog.ID); id != "" {
+				cv.Catalog = &domain.EntityRef{ID: id, Name: c.Catalog.Name}
+			}
 		}
 		if c.CatalogItem != nil {
-			cv.CatalogItem = &domain.EntityRef{ID: sysidToUUID(c.CatalogItem.ID), Name: c.CatalogItem.Name}
+			if id := sysidToUUID(c.CatalogItem.ID); id != "" {
+				cv.CatalogItem = &domain.EntityRef{ID: id, Name: c.CatalogItem.Name}
+			}
 		}
 		if c.AssignedTeam != nil {
-			cv.AssignedTeam = &domain.EntityRef{ID: sysidToUUID(c.AssignedTeam.ID), Name: c.AssignedTeam.Name}
+			if id := sysidToUUID(c.AssignedTeam.ID); id != "" {
+				cv.AssignedTeam = &domain.EntityRef{ID: id, Name: c.AssignedTeam.Name}
+			}
 		}
 		if c.Conversation != nil {
 			cv.Conversation = &domain.EntityRef{ID: sysidToUUID(c.Conversation.ID), Name: c.Conversation.Name}
