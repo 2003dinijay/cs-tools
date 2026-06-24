@@ -37,7 +37,10 @@ import type {
   BeCaseSearchPayload,
   BeCaseSearchResponse,
 } from "@api/backend/types";
-import type { CasesFilters } from "@features/csm-cases/components/CasesFilterBar";
+import {
+  ASSIGNEE_ME_TOKEN,
+  type CasesFilters,
+} from "@features/csm-cases/components/CasesFilterBar";
 import type {
   CsmCaseRow,
   CsmCasesListResponse,
@@ -94,8 +97,9 @@ function accountOptionsQueryOptions(api: BackendApi) {
  * go stale. The project lookup shares `useProjectOptions`' key, which the
  * cases page already mounts for its filter options.
  *
- * Search and the severity / state / project filters are pushed into the search
- * payload (searchQuery / severityKeys / stateKeys / projectIds) and the BE
+ * Search and the severity / state / case-type / project / assignee filters are
+ * pushed into the search payload (searchQuery / severityKeys / stateKeys /
+ * typeKeys / projectIds / assignedTo / assignedToMe) and the BE
  * paginates the result (`pagination` → `total` / `limit` / `offset` /
  * `hasMore`).
  *
@@ -119,6 +123,11 @@ export function useGetCsmCases(
 
   const offset = page * pageSize;
   const search = filters.search.trim();
+  // The assignee filter stores engineer emails plus the `@me` sentinel; `@me`
+  // maps to `assignedToMe` (the BE resolves the caller), the rest to
+  // `assignedTo`. Mirrors the createdBy / createdByMe split.
+  const assignedToMe = filters.assignees.includes(ASSIGNEE_ME_TOKEN);
+  const assignedTo = filters.assignees.filter((a) => a !== ASSIGNEE_ME_TOKEN);
 
   return useQuery<CsmCasesListResponse, Error>({
     // Sort the array filters so selection order doesn't fragment the cache
@@ -128,6 +137,7 @@ export function useGetCsmCases(
       search,
       [...filters.severities].sort(),
       [...filters.states].sort(),
+      [...filters.caseTypes].sort(),
       [...filters.projects].sort(),
       [...filters.assignees].sort(),
       currentUserEmail ?? "",
@@ -153,10 +163,17 @@ export function useGetCsmCases(
             ...(filters.states.length > 0 && {
               stateKeys: filters.states.map(beStateFromUi),
             }),
+            ...(filters.caseTypes.length > 0 && {
+              typeKeys: filters.caseTypes,
+            }),
             // `filters.projects` holds project IDs (the filter is id-based).
             ...(filters.projects.length > 0 && {
               projectIds: filters.projects,
             }),
+            // Assignee filter (assigned engineer, by email). Pending BE support
+            // on `/cases/search`; see BeCaseSearchFilters.assignedTo.
+            ...(assignedTo.length > 0 && { assignedTo }),
+            ...(assignedToMe && { assignedToMe: true }),
           },
         }),
         queryClient.fetchQuery(projectOptionsQueryOptions(api)).catch((err) => {
@@ -208,6 +225,7 @@ export function useGetCsmCases(
           product: c.deployedProduct?.name ?? "—",
           severity: severityFromPriority(c.severity),
           state: uiStateFromBe(c.state),
+          caseType: c.caseType,
           workState: c.workState ?? null,
           assignee,
           assigneeIsMe,

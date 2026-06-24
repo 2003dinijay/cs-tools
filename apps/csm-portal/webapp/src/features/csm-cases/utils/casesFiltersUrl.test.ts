@@ -32,24 +32,26 @@ describe("readCasesFiltersFromUrl", () => {
 
   it("parses a fully-populated query string", () => {
     const params = new URLSearchParams(
-      "q=timeout&severities=S0,S2&states=open,closed&assignees=alice,bob&projects=apim",
+      "q=timeout&severities=S0,S2&states=open,closed&types=support,engagement&assignees=alice@example.com,@me&projects=apim",
     );
     expect(readCasesFiltersFromUrl(params)).toEqual({
       search: "timeout",
       severities: ["S0", "S2"],
       states: ["open", "closed"],
-      assignees: ["alice", "bob"],
+      caseTypes: ["support", "engagement"],
+      assignees: ["alice@example.com", "@me"],
       projects: ["apim"],
     });
   });
 
   it("drops values outside the allowed enums", () => {
     const params = new URLSearchParams(
-      "severities=S0,S9,wat&states=open,nonsense",
+      "severities=S0,S9,wat&states=open,nonsense&types=support,bogus_type",
     );
     const f = readCasesFiltersFromUrl(params);
     expect(f.severities).toEqual(["S0"]);
     expect(f.states).toEqual(["open"]);
+    expect(f.caseTypes).toEqual(["support"]);
   });
 
   it("strips empties and over-long free-form entries", () => {
@@ -70,7 +72,8 @@ describe("writeCasesFiltersToUrl", () => {
       search: "disk full",
       severities: ["S1"],
       states: ["work_in_progress"],
-      assignees: ["carol"],
+      caseTypes: ["service_request"],
+      assignees: ["carol@example.com"],
       projects: ["streaming"],
     };
     const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
