@@ -143,6 +143,7 @@ backend/
 │   └── handler/
 │       ├── cases.go            # HTTP handlers for case endpoints
 │       ├── state.go            # Case state machine (nextStates, isValidStateTransition)
+│       ├── change_requests.go  # HTTP handlers for change-request endpoints
 │       ├── accounts.go         # HTTP handlers for account endpoints
 │       ├── deployments.go      # HTTP handlers for deployment endpoints
 │       ├── products.go         # HTTP handlers for product endpoints
@@ -157,7 +158,7 @@ backend/
 
 ### Cases
 
-- `POST /cases` — Create a case (requires `typeKey: "support"`)
+- `POST /cases` — Create a case (requires `type: "support"`)
 - `GET /cases/{id}` — Get case by ID
 - `PATCH /cases/{id}` — Update a case (state, severity, workState, watchList, or assigneeEmail)
 - `POST /cases/search` — Search cases
@@ -192,6 +193,11 @@ backend/
 
 - `POST /deployments/search` — Search deployments
 - `POST /deployments/{id}/products/search` — Search deployed products
+
+### Change Requests
+
+- `GET /change-requests/{id}` — Get change request by ID (ServiceNow data source only)
+- `POST /change-requests/search` — Search change requests (ServiceNow data source only)
 
 ### Updates
 

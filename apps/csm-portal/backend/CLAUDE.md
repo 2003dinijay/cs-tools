@@ -51,7 +51,7 @@ Follow these steps in order:
 - **Auth**: always check `middleware.UserInfoFromContext(r.Context()) == nil` first → 401
 - **Body size**: cap with `http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)` (1 MiB) before reading
 - **Path params**: guard against empty string after `r.PathValue("id")`; if the param is a UUID, also validate format using the package-level `uuidRe` compiled regex and return 400 on mismatch — fail fast before calling the upstream
-- **Field naming**: case create/patch use `severityKey` (not `priorityKey`); search filters use `severityKeys`; case create requires `typeKey: "support"` (only accepted value currently)
+- **Field naming**: case create/patch use bare names without `Key`/`Keys` suffix — `state`, `severity`, `workState` (PATCH), `type`, `severity`, `issueType` (POST); search filters use `states`, `severities`, `types`, `issueTypes`, `engagementTypes`; deployment search uses `deploymentTypes`; case comments use `type` (not `typeKey`); case create requires `type: "support"` (only accepted value currently)
 - **Upstream errors**: always use `mapUpstreamError(w, err, "<fallback message>")` — never write custom status mappings inline
 - **Response**: return raw `[]byte` with `writeJSON` for simple passthroughs; unmarshal into typed structs only when the response shape needs to change
 

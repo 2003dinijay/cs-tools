@@ -128,8 +128,8 @@ paths:
     patch:
       summary: Update a support case.
       description: |
-        Updates exactly one field of the case. Provide exactly one of: `stateKey`, `severityKey`,
-        `workStateKey`, `watchList`, or `assigneeEmail`. `watchList` and `assigneeEmail` are supported
+        Updates exactly one field of the case. Provide exactly one of: `state`, `severity`,
+        `workState`, `watchList`, or `assigneeEmail`. `watchList` and `assigneeEmail` are supported
         only when the ServiceNow data source is active.
       operationId: patchCasesId
       parameters:
@@ -1100,6 +1100,104 @@ paths:
         "500":
           description: InternalServerError
 
+  /change-requests/{id}:
+    get:
+      summary: Get a single change request by ID (ServiceNow data source only).
+      operationId: getChangeRequest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: UUID of the change request.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeRequestDetail'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /change-requests/search:
+    post:
+      summary: Search change requests (ServiceNow data source only).
+      operationId: postChangeRequestsSearch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeRequestSearchPayload'
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeRequestSearchResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1116,24 +1214,24 @@ components:
     UpdateCaseRequest:
       type: object
       description: |
-        Exactly one of `stateKey`, `severityKey`, `workStateKey`, `watchList`, or `assigneeEmail` must be provided.
+        Exactly one of `state`, `severity`, `workState`, `watchList`, or `assigneeEmail` must be provided.
         `watchList` and `assigneeEmail` are supported only for the ServiceNow data source.
       oneOf:
-        - required: [stateKey]
-        - required: [severityKey]
-        - required: [workStateKey]
+        - required: [state]
+        - required: [severity]
+        - required: [workState]
         - required: [watchList]
         - required: [assigneeEmail]
       properties:
-        stateKey:
+        state:
           type: string
           enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
           description: The new state to transition the case to.
-        severityKey:
+        severity:
           type: string
           enum: [catastrophic, critical, high, medium, low]
           description: The new severity of the case.
-        workStateKey:
+        workState:
           type: string
           enum: [ongoing, paused]
           description: The new work sub-state of the case. Only applicable when the case state is work_in_progress.
@@ -1213,16 +1311,16 @@ components:
     CaseCreatePayload:
       type: object
       required:
-        - typeKey
+        - type
         - projectId
         - deploymentId
         - deployedProductId
         - subject
         - description
-        - severityKey
-        - issueTypeKey
+        - severity
+        - issueType
       properties:
-        typeKey:
+        type:
           type: string
           enum: [support]
           description: Case type. Currently only `support` is accepted.
@@ -1241,11 +1339,11 @@ components:
         description:
           type: string
           description: Full description of the issue
-        severityKey:
+        severity:
           type: string
           enum: [catastrophic, critical, high, medium, low]
           description: Severity level of the case
-        issueTypeKey:
+        issueType:
           type: string
           enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
           description: Nature of the issue
@@ -1253,7 +1351,7 @@ components:
     CaseSearchFilters:
       type: object
       properties:
-        typeKeys:
+        types:
           type: array
           items:
             type: string
@@ -1277,7 +1375,7 @@ components:
           items:
             type: string
           description: Filter by deployment IDs (optional)
-        stateKeys:
+        states:
           type: array
           items:
             type: string
@@ -1290,7 +1388,7 @@ components:
               - solution_proposed
               - closed
           description: Filter by case state (optional)
-        severityKeys:
+        severities:
           type: array
           items:
             type: string
@@ -1301,7 +1399,7 @@ components:
               - medium
               - low
           description: Filter by severity (optional)
-        engagementTypeKeys:
+        engagementTypes:
           type: array
           items:
             type: string
@@ -1312,7 +1410,7 @@ components:
               - follow_up
               - onboarding
           description: Filter by engagement type (optional; only applies to engagement cases)
-        issueTypeKeys:
+        issueTypes:
           type: array
           items:
             type: string
@@ -1932,7 +2030,7 @@ components:
           items:
             type: string
           description: Filter by project IDs (optional)
-        deploymentTypeKeys:
+        deploymentTypes:
           type: array
           items:
             type: string
@@ -2159,10 +2257,10 @@ components:
     CaseCommentCreatePayload:
       type: object
       required:
-        - typeKey
+        - type
         - content
       properties:
-        typeKey:
+        type:
           type: string
           enum: [work_note, comment, activity]
           description: work_note is restricted to internal users; activity to internal and system users
@@ -2465,3 +2563,180 @@ components:
           type: string
         credits:
           type: string
+
+    ChangeRequestSearchPayload:
+      type: object
+      nullable: true
+      properties:
+        filters:
+          type: object
+          properties:
+            projectIds:
+              type: array
+              items:
+                type: string
+                format: uuid
+              description: Filter by project UUIDs (optional)
+            searchQuery:
+              type: string
+              description: Search across subject and number (case-insensitive)
+            states:
+              type: array
+              items:
+                type: string
+                enum:
+                  - customer_approval
+                  - scheduled
+                  - implement
+                  - review
+                  - customer_review
+                  - rollback
+                  - closed
+                  - canceled
+              description: Filter by change request state (optional)
+            impacts:
+              type: array
+              items:
+                type: string
+                enum:
+                  - high
+                  - medium
+                  - low
+              description: Filter by impact level (optional)
+            closedStartDate:
+              type: string
+              format: date-time
+              description: Filter change requests closed on or after this UTC datetime (optional)
+            closedEndDate:
+              type: string
+              format: date-time
+              description: Filter change requests closed on or before this UTC datetime (optional)
+        sortBy:
+          type: object
+          properties:
+            field:
+              type: string
+              enum: [createdOn, updatedOn]
+              default: createdOn
+            order:
+              type: string
+              enum: [asc, desc]
+              default: desc
+        pagination:
+          allOf:
+            - $ref: '#/components/schemas/Pagination'
+            - properties:
+                limit:
+                  default: 20
+                  maximum: 100
+
+    ChangeRequestSearchView:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+        subject:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        project:
+          $ref: '#/components/schemas/EntityRef'
+        case:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+        deployment:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+        deployedProduct:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+        product:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+        assignedEngineer:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+        assignedTeam:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+        plannedStartOn:
+          type: string
+          nullable: true
+        plannedEndOn:
+          type: string
+          nullable: true
+        duration:
+          type: string
+          nullable: true
+        impact:
+          type: string
+          nullable: true
+          description: Impact level (e.g. "high", "medium", "low")
+        state:
+          type: string
+          nullable: true
+          description: Current workflow state (e.g. "scheduled", "closed")
+        type:
+          type: string
+          nullable: true
+          description: Change request type (e.g. "standard", "normal")
+        createdOn:
+          type: string
+        updatedOn:
+          type: string
+
+    ChangeRequestSearchResponse:
+      type: object
+      properties:
+        changeRequests:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChangeRequestSearchView'
+        total:
+          type: integer
+          description: Total number of matching change requests
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    ChangeRequestDetail:
+      allOf:
+        - $ref: '#/components/schemas/ChangeRequestSearchView'
+        - type: object
+          properties:
+            createdBy:
+              type: string
+            justification:
+              type: string
+              nullable: true
+            impactDescription:
+              type: string
+              nullable: true
+            serviceOutage:
+              type: string
+              nullable: true
+            communicationPlan:
+              type: string
+              nullable: true
+            rollbackPlan:
+              type: string
+              nullable: true
+            testPlan:
+              type: string
+              nullable: true
+            hasCustomerApproved:
+              type: boolean
+            hasCustomerReviewed:
+              type: boolean
+            approvedBy:
+              $ref: '#/components/schemas/EntityRef'
+              nullable: true
+            approvedOn:
+              type: string
+              nullable: true
