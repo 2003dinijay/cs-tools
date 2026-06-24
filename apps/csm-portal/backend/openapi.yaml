@@ -1322,8 +1322,8 @@ components:
       properties:
         type:
           type: string
-          enum: [support]
-          description: Case type. Currently only `support` is accepted.
+          enum: [case]
+          description: Case type. Currently only `case` is accepted.
         projectId:
           type: string
           description: UUID of the project this case belongs to
@@ -1356,7 +1356,7 @@ components:
           items:
             type: string
             enum:
-              - support
+              - case
               - service_request
               - security_report_analysis
               - announcement
@@ -1654,6 +1654,14 @@ components:
             - ongoing
             - paused
           description: Sub-state of work_in_progress. Null when state is not work_in_progress.
+        type:
+          type: string
+          nullable: true
+          description: Case type (e.g. case, service_request). Null if not set.
+        engagementType:
+          type: string
+          nullable: true
+          description: Engagement type. Null if not set.
         createdOn:
           type: string
           format: date-time
@@ -1670,11 +1678,33 @@ components:
         project:
           $ref: '#/components/schemas/EntityRef'
         deployment:
-          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
         deployedProduct:
-          $ref: '#/components/schemas/DeployedProductRef'
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/DeployedProductRef'
         product:
-          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
+        catalog:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
+        catalogItem:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
+        assignedTeam:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
+        conversation:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
         assignedEngineer:
           $ref: '#/components/schemas/AssignedEngineerRef'
         parentCase:
@@ -1745,6 +1775,9 @@ components:
             - ongoing
             - paused
           description: Sub-state of work_in_progress. Null when state is not work_in_progress.
+        type:
+          type: string
+          description: Case type (e.g. case, service_request).
         createdOn:
           type: string
           format: date-time
@@ -1761,11 +1794,17 @@ components:
         project:
           $ref: '#/components/schemas/EntityRef'
         deployment:
-          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
         deployedProduct:
-          $ref: '#/components/schemas/DeployedProductRef'
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
         product:
-          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
         assignedEngineer:
           $ref: '#/components/schemas/AssignedEngineerRef'
         parentCase:

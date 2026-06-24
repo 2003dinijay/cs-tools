@@ -158,7 +158,7 @@ backend/
 
 ### Cases
 
-- `POST /cases` — Create a case (requires `type: "support"`)
+- `POST /cases` — Create a case (requires `type: "case"`)
 - `GET /cases/{id}` — Get case by ID
 - `PATCH /cases/{id}` — Update a case (state, severity, workState, watchList, or assigneeEmail)
 - `POST /cases/search` — Search cases

@@ -56,7 +56,7 @@ func upstreamErrors(fallback string) []upstreamErrorCase {
 // ----- CreateCase -----
 
 func TestCreateCase(t *testing.T) {
-	const validPayload = `{"type":"support","projectId":"proj-1","deploymentId":"dep-1","deployedProductId":"dp-1","subject":"Login failure","description":"Users cannot log in","severity":"high","issueType":"error"}`
+	const validPayload = `{"type":"case","projectId":"proj-1","deploymentId":"dep-1","deployedProductId":"dp-1","subject":"Login failure","description":"Users cannot log in","severity":"high","issueType":"error"}`
 
 	t.Run("requires authenticated user", func(t *testing.T) {
 		h := NewCaseHandler(&mockEntityCaseClient{})
