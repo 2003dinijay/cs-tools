@@ -97,6 +97,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc)
 
+	var changeRequestHandler *handler.ChangeRequestHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		changeRequestHandler = handler.NewChangeRequestHandler(service.NewServiceNowChangeRequestService(serviceNowIntegrationServiceClient))
+	}
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handler.HealthCheck)
@@ -119,6 +124,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	mux.HandleFunc("POST /cases/{id}/attachments/search", caseHandler.SearchCaseAttachments)
 	mux.HandleFunc("GET /cases/{case_id}/attachments/{attachment_id}/content", caseHandler.GetCaseAttachmentContent)
 
+	if changeRequestHandler != nil {
+		mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
+	}
 
 	return middleware.CorrelationID(
 		middleware.Recovery(
