@@ -17,6 +17,7 @@
 import { useCallback } from "react";
 import { useBackendApi } from "@api/backend/client";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
+import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import type {
   BeCaseSearchPayload,
   BeCaseSearchResponse,
@@ -30,10 +31,15 @@ export interface MyOngoingCase {
 }
 
 // The case-search API has no assignee or work-state filter, so we narrow by
-// state on the server and match assignee + ongoing on the client. Cap the page
-// at a sane size: an engineer should have very few in-progress cases, and we
-// only need to know whether *another* ongoing one exists.
-const SEARCH_LIMIT = 50;
+// state on the server and match assignee + ongoing on the client. The
+// work_in_progress set is cross-customer, so page through it rather than
+// inspecting only the first page — otherwise the caller's ongoing case could
+// sit beyond the first page and the single-active-case guard would miss it.
+// Page size = the BE's max (requests above it are rejected).
+const SEARCH_LIMIT = BE_MAX_PAGE_LIMIT;
+// Safety bound on the scan (pages * limit) so a pathological dataset can't spin
+// this on-demand check forever.
+const MAX_PAGES = 20;
 
 /**
  * Returns a function that finds the **other** cases the signed-in engineer is
@@ -42,7 +48,7 @@ const SEARCH_LIMIT = 50;
  * when starting work on a case.
  *
  * Because the search endpoint exposes neither an assignee nor a work-state
- * filter, this narrows by `stateKeys: [work_in_progress]` server-side and then
+ * filter, this narrows by `states: [work_in_progress]` server-side and then
  * matches `assignedEngineer.email` against the JWT email and `workState ===
  * "ongoing"` client-side (a `null` workState is never ongoing).
  */
@@ -57,26 +63,32 @@ export function useFindMyOngoingCases(): (
       // Without our email we can't tell which cases are ours; skip the prompt.
       if (!myEmail) return [];
 
-      const res = await api.post<BeCaseSearchPayload, BeCaseSearchResponse>(
-        "/cases/search",
-        {
-          filters: { stateKeys: ["work_in_progress"] },
-          pagination: { offset: 0, limit: SEARCH_LIMIT },
-        },
-      );
-
-      return (res.cases ?? [])
-        .filter(
-          (c) =>
+      const matches: MyOngoingCase[] = [];
+      for (let page = 0; page < MAX_PAGES; page += 1) {
+        const res = await api.post<BeCaseSearchPayload, BeCaseSearchResponse>(
+          "/cases/search",
+          {
+            filters: { states: ["work_in_progress"] },
+            pagination: { offset: page * SEARCH_LIMIT, limit: SEARCH_LIMIT },
+          },
+        );
+        const rows = res.cases ?? [];
+        for (const c of rows) {
+          if (
             c.id !== excludeCaseId &&
             // A null/absent workState is never "ongoing".
             c.workState === "ongoing" &&
-            c.assignedEngineer?.email?.toLowerCase() === myEmail,
-        )
-        .map((c) => ({
-          id: c.id,
-          label: c.internalId || c.number || c.title || c.id,
-        }));
+            c.assignedEngineer?.email?.toLowerCase() === myEmail
+          ) {
+            matches.push({
+              id: c.id,
+              label: c.internalId || c.number || c.subject || c.id,
+            });
+          }
+        }
+        if (rows.length < SEARCH_LIMIT || !(res.hasMore ?? false)) break;
+      }
+      return matches;
     },
     [api, myEmail],
   );

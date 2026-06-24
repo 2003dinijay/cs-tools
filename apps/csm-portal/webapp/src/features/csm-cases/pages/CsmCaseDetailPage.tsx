@@ -404,7 +404,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               return;
             }
             try {
-              await patchCase.mutateAsync({ stateKey: "work_in_progress" });
+              await patchCase.mutateAsync({ state: "work_in_progress" });
             } catch (err) {
               showError(
                 "Could not move the case to Work in progress. Please try again.",
@@ -415,7 +415,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             if (others.length === 0) {
               // No competing case → make this the active (ongoing) one.
               try {
-                await patchCase.mutateAsync({ workStateKey: "ongoing" });
+                await patchCase.mutateAsync({ workState: "ongoing" });
               } catch (err) {
                 showError(
                   "Moved to Work in progress, but could not mark it ongoing.",
@@ -440,7 +440,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           // Real state transition via PATCH /cases/{id}; the detail + list
           // queries refetch on success so the new state shows.
           patchCase.mutate(
-            { stateKey: targetState },
+            { state: targetState },
             {
               onSuccess: () =>
                 setFeedback({
@@ -474,7 +474,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
         return;
       }
 
-      // Pause / resume the work sub-state via PATCH { workStateKey }. Only for an
+      // Pause / resume the work sub-state via PATCH { workState }. Only for an
       // in-progress case assigned to the current user. Pausing is a direct
       // single-field patch. Resuming sets this case `ongoing`, so it runs the
       // same single-active-case conflict check as starting work — otherwise an
@@ -486,7 +486,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
 
         if (!resuming) {
           patchCase.mutate(
-            { workStateKey: "paused" },
+            { workState: "paused" },
             {
               onSuccess: () =>
                 setFeedback({
@@ -521,7 +521,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           }
           if (others.length === 0) {
             try {
-              await patchCase.mutateAsync({ workStateKey: "ongoing" });
+              await patchCase.mutateAsync({ workState: "ongoing" });
             } catch (err) {
               showError(
                 "Could not resume work on this case. Please try again.",
@@ -581,9 +581,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
     setPauseConflict(null);
     try {
       for (const o of others) {
-        await patchCaseById(o.id, { workStateKey: "paused" });
+        await patchCaseById(o.id, { workState: "paused" });
       }
-      await patchCase.mutateAsync({ workStateKey: "ongoing" });
+      await patchCase.mutateAsync({ workState: "ongoing" });
       setFeedback({
         message:
           others.length === 1

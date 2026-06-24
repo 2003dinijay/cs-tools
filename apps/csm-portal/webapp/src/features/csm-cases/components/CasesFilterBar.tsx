@@ -70,33 +70,38 @@ import {
   SUGGESTED_FILTER_VIEWS,
   useSavedFilterViews,
 } from "@features/csm-cases/utils/savedFilterViews";
+import type { BeCaseType } from "@api/backend/types";
+import {
+  ALL_CASE_TYPES,
+  CASE_TYPE_LABEL,
+} from "@features/csm-cases/utils/caseType";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
 
 /** Sentinel used inside `assignees` to mean "the current user". */
 export const ASSIGNEE_ME_TOKEN = "@me";
-/** Literal assignee name used in mock data for unassigned cases. */
-export const ASSIGNEE_UNASSIGNED = "Unassigned";
 
 /**
- * Filter state for the CSM cases list. `severities` / `states` are multi-select
- * arrays driven by fixed enums. `assignees` / `projects` are free-form
- * multi-selects driven by an Autocomplete with type-to-filter: options are
- * derived from the data currently in scope. The `assignees` list accepts the
- * sentinel `@me` (resolves against `assigneeIsMe`) and the literal
- * "Unassigned"; any other entries are matched against `case.assignee` by name.
+ * Filter state for the CSM cases list. `severities` / `states` / `caseTypes`
+ * are multi-select arrays driven by fixed enums; `projects` is an id-based
+ * type-to-search multi-select. `assignees` holds engineer **emails** (the
+ * stable identity the backend filters on) plus the sentinel `@me` (resolves to
+ * the caller via `assignedToMe`). All are pushed into the `/cases/search`
+ * payload server-side.
  */
 export interface CasesFilters {
   search: string;
   severities: Severity[];
   states: CaseState[];
+  /** Case-type filter (BE `typeKeys`). Empty = all types. */
+  caseTypes: BeCaseType[];
+  /** Engineer emails (+ the `@me` sentinel) to filter by assigned engineer. */
   assignees: string[];
   projects: string[];
 }
 
 /**
- * Lightweight user directory entry surfaced in the assignee picker. The
- * filter still stores assignees as bare name strings (plus the `@me` /
- * "Unassigned" sentinels) — `email` is only used for richer rendering.
+ * Lightweight user-directory entry surfaced in the assignee picker. The filter
+ * stores the `email` as the value; the `name` is shown as the option label.
  */
 export interface AssigneeUser {
   name: string;
@@ -124,10 +129,6 @@ const PRIMARY_STATES: CaseState[] = [
   "waiting_on_wso2",
   "closed",
 ];
-/** Pretty-print an assignee value (handle the @me sentinel). */
-function assigneeLabel(value: string): string {
-  return value === ASSIGNEE_ME_TOKEN ? "Me" : value;
-}
 
 interface MultiSelectFieldProps<T extends string> {
   id: string;
@@ -357,6 +358,10 @@ export default function CasesFilterBar({
     () => PRIMARY_STATES.map((s) => ({ value: s, label: STATE_LABEL[s] })),
     [],
   );
+  const caseTypeOptions = useMemo(
+    () => ALL_CASE_TYPES.map((t) => ({ value: t, label: CASE_TYPE_LABEL[t] })),
+    [],
+  );
 
   // Project filter loads the first page of projects on open and pages through
   // the rest on scroll (and narrows as you type) rather than loading the whole
@@ -367,36 +372,40 @@ export default function CasesFilterBar({
     [availableProjects],
   );
 
-  // Pin "@me" and "Unassigned" to the top of the assignee option list, then
-  // every user from the directory (sorted by name, deduped). Pulling from
+  // Assignee options are engineer EMAILS (the value the backend filters on),
+  // pinned after the "@me" sentinel and ordered by display name. Pulling from
   // the user directory rather than only the owners present in loaded cases
   // means typing a name finds anyone, not just people who happen to own one
   // of the currently-listed cases.
-  const assigneeOptions = useMemo(() => {
-    const names = Array.from(
-      new Set(availableAssigneeUsers.map((u) => u.name).filter(Boolean)),
-    ).sort();
-    return [ASSIGNEE_ME_TOKEN, ASSIGNEE_UNASSIGNED, ...names];
-  }, [availableAssigneeUsers]);
-
-  const emailByName = useMemo(() => {
+  const nameByEmail = useMemo(() => {
     const m = new Map<string, string>();
     availableAssigneeUsers.forEach((u) => {
-      if (u.name) m.set(u.name, u.email);
+      if (u.email) m.set(u.email, u.name);
     });
     return m;
   }, [availableAssigneeUsers]);
 
-  const assigneeSecondary = (value: string): string | undefined => {
-    if (value === ASSIGNEE_ME_TOKEN || value === ASSIGNEE_UNASSIGNED) return undefined;
-    return emailByName.get(value);
-  };
+  const assigneeOptions = useMemo(() => {
+    const emails = Array.from(
+      new Set(availableAssigneeUsers.map((u) => u.email).filter(Boolean)),
+    ).sort((a, b) =>
+      (nameByEmail.get(a) ?? a).localeCompare(nameByEmail.get(b) ?? b),
+    );
+    return [ASSIGNEE_ME_TOKEN, ...emails];
+  }, [availableAssigneeUsers, nameByEmail]);
 
-  const assigneeSearchText = (value: string): string => {
-    const label = assigneeLabel(value);
-    const email = emailByName.get(value);
-    return email ? `${label} ${email}` : label;
-  };
+  // Label an assignee value: the @me sentinel reads "Me"; an email resolves to
+  // the engineer's display name (falling back to the raw email).
+  const formatAssignee = (value: string): string =>
+    value === ASSIGNEE_ME_TOKEN ? "Me" : (nameByEmail.get(value) ?? value);
+
+  const assigneeSecondary = (value: string): string | undefined =>
+    value === ASSIGNEE_ME_TOKEN ? undefined : value;
+
+  const assigneeSearchText = (value: string): string =>
+    value === ASSIGNEE_ME_TOKEN
+      ? "Me"
+      : `${nameByEmail.get(value) ?? ""} ${value}`.trim();
 
   return (
     <Paper sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
@@ -571,8 +580,8 @@ export default function CasesFilterBar({
         </DialogActions>
       </Dialog>
 
-      {/* Collapsible filter grid. Severity / state stay as fixed multi-selects;
-          assignee / project are type-to-search Autocompletes. */}
+      {/* Collapsible filter grid. Severity / state / case type are fixed
+          multi-selects; assignee / project are type-to-search Autocompletes. */}
       {isFiltersOpen && (
         <>
           <Divider />
@@ -596,18 +605,29 @@ export default function CasesFilterBar({
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
-              {/* Static option list for now. Once the backend supports assignee
-                  search/filtering, switch this to a type-ahead like
-                  AsyncProjectMultiSelect rather than loading every user. */}
+              <MultiSelectField
+                id="cases-filter-type"
+                label="Case type"
+                values={filters.caseTypes}
+                options={caseTypeOptions}
+                onChange={(next) => onChange({ ...filters, caseTypes: next })}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
+              {/* Disabled until the backend `/cases/search` supports an
+                  assigned-engineer filter. The picker is email-backed and ready
+                  to enable (options labelled by name, `@me` sentinel); the hook
+                  does NOT send any assignee field meanwhile, so the search is
+                  never broken. */}
               <Tooltip title="Assignee filtering is coming soon.">
                 <Box>
                   <SearchableMultiSelect
                     id="cases-filter-assignee"
                     label="Assignee"
-                    placeholder="Search users…"
+                    placeholder="Search engineers…"
                     values={filters.assignees}
                     options={assigneeOptions}
-                    formatOption={assigneeLabel}
+                    formatOption={formatAssignee}
                     getOptionSecondary={assigneeSecondary}
                     getOptionSearchText={assigneeSearchText}
                     onChange={(next) =>

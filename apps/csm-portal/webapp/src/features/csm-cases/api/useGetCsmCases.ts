@@ -94,10 +94,10 @@ function accountOptionsQueryOptions(api: BackendApi) {
  * go stale. The project lookup shares `useProjectOptions`' key, which the
  * cases page already mounts for its filter options.
  *
- * Search and the severity / state / project filters are pushed into the search
- * payload (searchQuery / severityKeys / stateKeys / projectIds) and the BE
- * paginates the result (`pagination` → `total` / `limit` / `offset` /
- * `hasMore`).
+ * Search and the severity / state / case-type / project filters are pushed
+ * into the search payload (searchQuery / severities / states / types /
+ * projectIds) and the BE paginates the result (`pagination` → `total` /
+ * `limit` / `offset` / `hasMore`).
  *
  * `page` is zero-based (matching MUI `TablePagination`); `pageSize` is the row
  * limit (≤ {@link BE_MAX_PAGE_LIMIT}). With no filters the backend sorts by
@@ -122,14 +122,15 @@ export function useGetCsmCases(
 
   return useQuery<CsmCasesListResponse, Error>({
     // Sort the array filters so selection order doesn't fragment the cache
-    // (["S1","S2"] and ["S2","S1"] are the same query).
+    // (["S1","S2"] and ["S2","S1"] are the same query). `assignees` is omitted:
+    // the assignee filter is disabled and not sent, so it never changes results.
     queryKey: [
       ApiQueryKeys.CSM_CASES,
       search,
       [...filters.severities].sort(),
       [...filters.states].sort(),
+      [...filters.caseTypes].sort(),
       [...filters.projects].sort(),
-      [...filters.assignees].sort(),
       currentUserEmail ?? "",
       page,
       pageSize,
@@ -148,15 +149,20 @@ export function useGetCsmCases(
           filters: {
             ...(search.length > 0 && { searchQuery: search }),
             ...(filters.severities.length > 0 && {
-              severityKeys: filters.severities.map(priorityFromSeverity),
+              severities: filters.severities.map(priorityFromSeverity),
             }),
             ...(filters.states.length > 0 && {
-              stateKeys: filters.states.map(beStateFromUi),
+              states: filters.states.map(beStateFromUi),
+            }),
+            ...(filters.caseTypes.length > 0 && {
+              types: filters.caseTypes,
             }),
             // `filters.projects` holds project IDs (the filter is id-based).
             ...(filters.projects.length > 0 && {
               projectIds: filters.projects,
             }),
+            // No assignee filter: `/cases/search` has no assigned-engineer
+            // filter yet, so the (disabled) assignee control sends nothing.
           },
         }),
         queryClient.fetchQuery(projectOptionsQueryOptions(api)).catch((err) => {
@@ -197,8 +203,7 @@ export function useGetCsmCases(
           id: c.id,
           caseNumber: c.number,
           wso2CaseId: c.internalId,
-          // Search returns the title under `title` (the GET view uses `subject`).
-          subject: c.title ?? "(no subject)",
+          subject: c.subject ?? "(no subject)",
           customer: accountName.get(accountId) ?? "—",
           accountId,
           projectId,

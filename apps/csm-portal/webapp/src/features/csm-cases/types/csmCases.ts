@@ -20,6 +20,7 @@ import type {
   Severity,
   SlaClockType,
 } from "@features/csm-dashboard/types/abtDashboard";
+import type { BeCaseType } from "@api/backend/types";
 
 export interface CsmCaseRow {
   /**
@@ -50,6 +51,11 @@ export interface CsmCaseRow {
   product: string;
   severity: Severity;
   state: CaseState;
+  /**
+   * Case type (BE `typeKey` / search `caseType`). Optional: a legacy row may
+   * omit it, in which case the type filter treats it as unmatched.
+   */
+  caseType?: BeCaseType;
   /**
    * Work sub-state of an in-progress case (`ongoing` / `paused`); `null` when
    * the case is not `work_in_progress`. Drives the comment gate and the paused

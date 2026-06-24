@@ -69,7 +69,7 @@ export function useQuickCaseSearch(
         id: c.id,
         caseNumber: c.number,
         wso2CaseId: c.internalId,
-        subject: c.title ?? "(no subject)",
+        subject: c.subject ?? "(no subject)",
       }));
     },
     enabled: q.length >= QUICK_CASE_MIN_QUERY_LEN,

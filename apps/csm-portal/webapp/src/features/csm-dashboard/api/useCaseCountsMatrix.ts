@@ -94,8 +94,8 @@ export function useCaseCountsMatrix(): UseQueryResult<CaseCountsMatrix, Error> {
             .post<BeCaseSearchPayload, BeCaseSearchResponse>("/cases/search", {
               pagination: { offset: 0, limit: 1 },
               filters: {
-                severityKeys: [priorityFromSeverity(severity)],
-                stateKeys: [beStateFromUi(state)],
+                severities: [priorityFromSeverity(severity)],
+                states: [beStateFromUi(state)],
               },
             })
             .then((res) => ({ severity, state, count: res.total ?? 0 })),

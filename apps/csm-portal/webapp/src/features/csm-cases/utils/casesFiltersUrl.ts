@@ -18,12 +18,15 @@ import type {
   CaseState,
   Severity,
 } from "@features/csm-dashboard/types/abtDashboard";
+import type { BeCaseType } from "@api/backend/types";
 import type { CasesFilters } from "@features/csm-cases/components/CasesFilterBar";
+import { ALL_CASE_TYPES } from "@features/csm-cases/utils/caseType";
 
 export const DEFAULT_CASES_FILTERS: CasesFilters = {
   search: "",
   severities: [],
   states: [],
+  caseTypes: [],
   assignees: [],
   projects: [],
 };
@@ -37,6 +40,7 @@ const VALID_STATES: CaseState[] = [
   "waiting_on_wso2",
   "closed",
 ];
+const VALID_CASE_TYPES: BeCaseType[] = ALL_CASE_TYPES;
 
 function parseCsv<T extends string>(raw: string | null, allowed: T[]): T[] {
   if (!raw) return [];
@@ -47,9 +51,9 @@ function parseCsv<T extends string>(raw: string | null, allowed: T[]): T[] {
 }
 
 /**
- * Parse a CSV of free-form strings (used for assignee / project / product
- * names that aren't part of a fixed enum). Empties stripped, length-capped
- * per entry to avoid pathological URL growth.
+ * Parse a CSV of free-form strings (used for assignee / project values that
+ * aren't part of a fixed enum). Empties stripped, length-capped per entry to
+ * avoid pathological URL growth.
  */
 function parseFreeFormCsv(raw: string | null, maxEntryLen = 120): string[] {
   if (!raw) return [];
@@ -66,6 +70,7 @@ export function readCasesFiltersFromUrl(
     search: params.get("q") ?? "",
     severities: parseCsv(params.get("severities"), VALID_SEVERITIES),
     states: parseCsv(params.get("states"), VALID_STATES),
+    caseTypes: parseCsv(params.get("types"), VALID_CASE_TYPES),
     assignees: parseFreeFormCsv(params.get("assignees")),
     projects: parseFreeFormCsv(params.get("projects")),
   };
@@ -80,6 +85,7 @@ export function writeCasesFiltersToUrl(f: CasesFilters): URLSearchParams {
   if (f.search) out.set("q", f.search);
   if (f.severities.length) out.set("severities", f.severities.join(","));
   if (f.states.length) out.set("states", f.states.join(","));
+  if (f.caseTypes.length) out.set("types", f.caseTypes.join(","));
   if (f.assignees.length) out.set("assignees", f.assignees.join(","));
   if (f.projects.length) out.set("projects", f.projects.join(","));
   return out;
@@ -96,6 +102,7 @@ export function countActiveFilters(f: CasesFilters): number {
   if (f.search.trim()) n += 1;
   if (f.severities.length) n += 1;
   if (f.states.length) n += 1;
+  if (f.caseTypes.length) n += 1;
   if (f.assignees.length) n += 1;
   if (f.projects.length) n += 1;
   return n;
