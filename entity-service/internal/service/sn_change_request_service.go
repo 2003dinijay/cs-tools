@@ -190,33 +190,38 @@ var snCRImpactLabelMap = map[string]domain.ChangeRequestImpact{
 	"low":    domain.ChangeRequestImpactLow,
 }
 
-func snCRStateLabelToString(label *snCRLabel) string {
+func snCRStateLabelToString(label *snCRLabel) *string {
 	if label == nil {
-		return ""
+		return nil
 	}
 	if v, ok := snCRStateLabelMap[strings.ToLower(label.Label)]; ok {
-		return string(v)
+		s := string(v)
+		return &s
 	}
-	return label.Label
+	s := label.Label
+	return &s
 }
 
-func snCRImpactLabelToString(label *snCRLabel) string {
+func snCRImpactLabelToString(label *snCRLabel) *string {
 	if label == nil {
-		return ""
+		return nil
 	}
 	for _, word := range strings.Fields(label.Label) {
 		if v, ok := snCRImpactLabelMap[strings.ToLower(strings.Trim(word, "()-"))]; ok {
-			return string(v)
+			s := string(v)
+			return &s
 		}
 	}
-	return label.Label
+	s := label.Label
+	return &s
 }
 
-func snCRTypeLabelToString(label *snCRLabel) string {
+func snCRTypeLabelToString(label *snCRLabel) *string {
 	if label == nil {
-		return ""
+		return nil
 	}
-	return label.Label
+	s := label.Label
+	return &s
 }
 
 type snChangeRequestService struct {
