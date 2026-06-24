@@ -515,7 +515,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			); err != nil {
 				return fmt.Errorf("scan case: %w", err)
 			}
-			cv.CaseType = caseType
+			cv.Type = caseType
 			cv.Subject = &subject
 			cv.Description = &description
 			cv.Severity = severity

@@ -559,7 +559,7 @@ type CaseView struct {
 	IssueType              CaseIssueType        `json:"issueType"`
 	State                  CaseState            `json:"state"`
 	WorkState              *CaseWorkState       `json:"workState"`
-	CaseType               *string              `json:"caseType"`
+	Type                   *string              `json:"type"`
 	EngagementType         *string              `json:"engagementType"`
 	CreatedOn              time.Time            `json:"createdOn"`
 	UpdatedOn              time.Time            `json:"updatedOn"`
@@ -626,7 +626,7 @@ type SearchCaseView struct {
 	Product          *EntityRef           `json:"product"`
 	EngagementType   *string              `json:"engagementType"`
 	WorkState        *string              `json:"workState"`
-	CaseType         string               `json:"caseType"`
+	Type             string               `json:"type"`
 	Project          EntityRef            `json:"project"`
 	Deployment       EntityRef            `json:"deployment"`
 	DeployedProduct  EntityRef            `json:"deployedProduct"`
