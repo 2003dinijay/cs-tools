@@ -48,7 +48,7 @@ export interface BeSearchResponseBase {
 // Cases
 // ---------------------------------------------------------------------------
 
-export type BeCasePriority =
+export type BeCaseSeverity =
   | "catastrophic"
   | "critical"
   | "high"
@@ -63,11 +63,20 @@ export type BeCaseIssueType =
   | "security_or_compliance"
   | "total_outage";
 
+/** Case type (entity `typeKey`). Only `support` is creatable from the portal. */
+export type BeCaseType =
+  | "support"
+  | "service_request"
+  | "security_report_analysis"
+  | "announcement"
+  | "engagement";
+
 export type BeCaseState =
   | "open"
   | "work_in_progress"
   | "waiting_on_wso2"
   | "awaiting_info"
+  | "reopened"
   | "solution_proposed"
   | "closed";
 
@@ -78,7 +87,7 @@ export type BeCaseState =
  */
 export type BeCaseWorkState = "ongoing" | "paused";
 
-export type BeCaseSortField = "created_at" | "updated_at" | "closed_at";
+export type BeCaseSortField = "createdOn" | "updatedOn" | "severity" | "state";
 
 export interface BeCase {
   id: string;
@@ -90,8 +99,9 @@ export interface BeCase {
   deployedProductId?: string;
   subject?: string;
   description?: string;
-  priority?: BeCasePriority;
+  severity?: BeCaseSeverity;
   issueType?: BeCaseIssueType;
+  type?: BeCaseType;
   state?: BeCaseState;
   createdAt?: string;
   updatedAt?: string;
@@ -110,6 +120,18 @@ export interface BeUserRef {
 export interface BeEntityRef {
   id: string;
   name: string;
+}
+
+/**
+ * The assigned CS engineer embedded in case views. Carries `email` so the FE
+ * can tell whether the case is assigned to the signed-in user (the only stable
+ * identity the FE has from the JWT). `email` may be `null` depending on the data
+ * source / endpoint — the GET populates it where available.
+ */
+export interface BeAssignedEngineerRef {
+  id: string;
+  name?: string;
+  email?: string | null;
 }
 
 /** A referenced deployed product (its display name is the product + version). */
@@ -142,15 +164,16 @@ export interface BeCaseView {
   internalId?: string;
   subject?: string;
   description?: string;
-  priority?: BeCasePriority;
+  severity?: BeCaseSeverity;
   issueType?: BeCaseIssueType;
+  type?: BeCaseType;
   state?: BeCaseState;
   /** Work sub-state; only meaningful while `state` is `work_in_progress`. */
   workState?: BeCaseWorkState | null;
   nextStates?: BeCaseState[];
   createdBy?: BeUserRef;
   /** The CS engineer the case is assigned to; null when unassigned. */
-  assignedEngineer?: BeEntityRef | null;
+  assignedEngineer?: BeAssignedEngineerRef | null;
   account?: BeCaseAccountRef;
   project?: BeEntityRef;
   deployment?: BeEntityRef;
@@ -161,13 +184,15 @@ export interface BeCaseView {
 }
 
 export interface BeCaseCreatePayload {
+  /** Case type. The portal only creates `support` cases. */
+  typeKey: "support";
   projectId: string;
   deploymentId: string;
   deployedProductId: string;
   subject: string;
   description: string;
-  priority: BeCasePriority;
-  issueType: BeCaseIssueType;
+  severityKey: BeCaseSeverity;
+  issueTypeKey: BeCaseIssueType;
 }
 
 /** The case summary embedded in the `POST /cases` success envelope. */
@@ -188,20 +213,23 @@ export interface BeCaseCreateResponse {
 
 /**
  * Request body for `PATCH /cases/{id}` (mirrors the entity `UpdateCaseRequest`).
- * **Exactly one** of `state` / `priority` / `assigneeEmail` / `watchList` is
- * sent per call — the backend rejects zero or more than one. Encoded as a
- * discriminated union (each variant `?: never`s the others) so the
- * exactly-one-field contract is enforced at compile time, not just in docs.
- * `assigneeEmail` and `watchList` are supported **only** for the ServiceNow
- * data source.
+ * **Exactly one** of `stateKey` / `severityKey` / `workStateKey` /
+ * `assigneeEmail` / `watchList` is sent per call — the backend rejects zero or
+ * more than one. Encoded as a discriminated union (each variant `?: never`s the
+ * others) so the exactly-one-field contract is enforced at compile time, not
+ * just in docs. `assigneeEmail` and `watchList` are supported **only** for the
+ * ServiceNow data source. `workStateKey` is only accepted while the case is
+ * `work_in_progress`.
  */
 export type BeCaseUpdatePayload =
-  | { state: BeCaseState; priority?: never; assigneeEmail?: never; watchList?: never }
-  | { state?: never; priority: BeCasePriority; assigneeEmail?: never; watchList?: never }
+  | { stateKey: BeCaseState; severityKey?: never; workStateKey?: never; assigneeEmail?: never; watchList?: never }
+  | { stateKey?: never; severityKey: BeCaseSeverity; workStateKey?: never; assigneeEmail?: never; watchList?: never }
+  /** Work sub-state toggle (`ongoing` / `paused`) for an in-progress case. */
+  | { stateKey?: never; severityKey?: never; workStateKey: BeCaseWorkState; assigneeEmail?: never; watchList?: never }
   /** Email of the engineer to assign (ServiceNow only). */
-  | { state?: never; priority?: never; assigneeEmail: string; watchList?: never }
+  | { stateKey?: never; severityKey?: never; workStateKey?: never; assigneeEmail: string; watchList?: never }
   /** Full replacement watch list as emails (ServiceNow only). */
-  | { state?: never; priority?: never; assigneeEmail?: never; watchList: string[] };
+  | { stateKey?: never; severityKey?: never; workStateKey?: never; assigneeEmail?: never; watchList: string[] };
 
 /** A user in the case watch list, as echoed by `PATCH /cases/{id}`. */
 export interface BeWatchListUser {
@@ -217,7 +245,8 @@ export interface BeUpdatedCase {
   updatedOn?: string;
   updatedBy?: string;
   state?: BeCaseState;
-  priority?: BeCasePriority;
+  severity?: BeCaseSeverity;
+  workState?: BeCaseWorkState | null;
   watchList?: BeWatchListUser[];
   assignedTo?: BeEntityRef | null;
 }
@@ -236,10 +265,14 @@ export interface BeCaseSearchFilters {
   /** Optional project filter; omit for a cross-project search. */
   projectIds?: string[];
   deploymentIds?: string[];
-  deployedProductIds?: string[];
+  typeKeys?: BeCaseType[];
   stateKeys?: BeCaseState[];
-  priorityKeys?: BeCasePriority[];
+  severityKeys?: BeCaseSeverity[];
   issueTypeKeys?: BeCaseIssueType[];
+  /** Filter to cases created by these emails. */
+  createdBy?: string[];
+  /** When true, the caller's email (from the JWT) is appended to `createdBy`. */
+  createdByMe?: boolean;
 }
 
 export interface BeCaseSearchPayload {
@@ -263,20 +296,32 @@ export interface BeCaseSearchView {
   number?: string;
   /** Project-scoped WSO2 case reference (customer portal calls this the same). */
   internalId?: string;
-  subject?: string;
+  /**
+   * Case title. NOTE: the search response uses `title` (not `subject` like the
+   * `GET /cases/{id}` CaseView) — a backend naming inconsistency. The BFF
+   * openapi documents this as `subject`, but the entity returns `title`.
+   */
+  title?: string;
   description?: string;
-  priority?: BeCasePriority;
+  severity?: BeCaseSeverity;
   issueType?: BeCaseIssueType;
+  /** Case type (entity `caseType` on the search view). */
+  caseType?: BeCaseType;
   state?: BeCaseState;
   /** Work sub-state; only meaningful while `state` is `work_in_progress`. */
   workState?: BeCaseWorkState | null;
+  /** The CS engineer the case is assigned to; null when unassigned. */
+  assignedEngineer?: BeAssignedEngineerRef | null;
   createdOn?: string;
+  /** Often absent on the search view (unlike the GET view); tolerate it missing. */
   updatedOn?: string;
-  closedAt?: string | null;
-  createdBy?: BeUserRef;
+  /** Created-by is a bare email string here (not a UserRef like the GET view). */
+  createdBy?: string;
   project?: BeEntityRef;
   deployment?: BeEntityRef;
-  deployedProduct?: BeDeployedProductRef;
+  /** Embedded as `{ id, name }` (name already includes the version), not the
+   * `displayName`-shaped ref the GET view uses. */
+  deployedProduct?: BeEntityRef;
 }
 
 export interface BeCaseSearchResponse extends BeSearchResponseBase {

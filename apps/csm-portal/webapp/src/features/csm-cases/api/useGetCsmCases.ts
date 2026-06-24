@@ -20,6 +20,7 @@ import {
   type UseQueryResult,
 } from "@tanstack/react-query";
 import { useLogger } from "@hooks/useLogger";
+import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { ApiQueryKeys, BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { isMockMode, useBackendApi, type BackendApi } from "@api/backend/client";
 import {
@@ -100,7 +101,7 @@ function accountOptionsQueryOptions(api: BackendApi) {
  * cases page already mounts for its filter options.
  *
  * Search and the severity / state / project filters are pushed into the search
- * payload (searchQuery / priorityKeys / stateKeys / projectIds) and the BE
+ * payload (searchQuery / severityKeys / stateKeys / projectIds) and the BE
  * paginates the result (`pagination` → `total` / `limit` / `offset` /
  * `hasMore`). The remaining filters (assignee, SLA, product) have no BE support
  * and are disabled in LIVE; they only do anything in MOCK mode, where the whole
@@ -120,6 +121,9 @@ export function useGetCsmCases(
   const logger = useLogger();
   const api = useBackendApi();
   const queryClient = useQueryClient();
+  // Signed-in email, to resolve `assigneeIsMe` per row against the assigned
+  // engineer's email. In the key so a late-arriving claim recomputes.
+  const currentUserEmail = useIdTokenClaims()?.email;
 
   const offset = page * pageSize;
   const search = filters.search.trim();
@@ -138,6 +142,7 @@ export function useGetCsmCases(
       filters.sla,
       [...filters.assignees].sort(),
       [...filters.products].sort(),
+      currentUserEmail ?? "",
       page,
       pageSize,
     ],
@@ -170,12 +175,12 @@ export function useGetCsmCases(
       const [casesResponse, projects, accounts] = await Promise.all([
         api.post<BeCaseSearchPayload, BeCaseSearchResponse>("/cases/search", {
           pagination: { offset, limit: pageSize },
-          sortBy: { field: "updated_at", order: "desc" },
+          sortBy: { field: "updatedOn", order: "desc" },
           // Filter fields are nested under `filters` (BE payload restructure).
           filters: {
             ...(search.length > 0 && { searchQuery: search }),
             ...(filters.severities.length > 0 && {
-              priorityKeys: filters.severities.map(priorityFromSeverity),
+              severityKeys: filters.severities.map(priorityFromSeverity),
             }),
             ...(filters.states.length > 0 && {
               stateKeys: filters.states.map(beStateFromUi),
@@ -211,25 +216,33 @@ export function useGetCsmCases(
           .map((a) => [a.id, a.name as string]),
       );
 
+      const myEmail = currentUserEmail?.toLowerCase();
       const cases: CsmCaseRow[] = (casesResponse.cases ?? []).map((c) => {
         const projectId = c.project?.id ?? "";
         const accountId = projectAccount.get(projectId) ?? "";
+        const assigneeEmail = c.assignedEngineer?.email;
+        const assignee =
+          c.assignedEngineer?.name?.trim() || assigneeEmail || "Unassigned";
+        const assigneeIsMe =
+          !!assigneeEmail && !!myEmail && assigneeEmail.toLowerCase() === myEmail;
         return {
           id: c.id,
           caseNumber: c.number,
           wso2CaseId: c.internalId,
-          subject: c.subject ?? "(no subject)",
+          // Search returns the title under `title` (the GET view uses `subject`).
+          subject: c.title ?? "(no subject)",
           customer: accountName.get(accountId) ?? "—",
           accountId,
           projectId,
           projectName: c.project?.name ?? "—",
-          product: c.deployedProduct?.displayName ?? "—",
-          severity: severityFromPriority(c.priority),
+          // Search embeds deployedProduct as { id, name } (name includes the
+          // version); the GET view uses a displayName-shaped ref instead.
+          product: c.deployedProduct?.name ?? "—",
+          severity: severityFromPriority(c.severity),
           state: uiStateFromBe(c.state),
           workState: c.workState ?? null,
-          // No assignee field on the backend yet; surfaced as "Unassigned".
-          assignee: "Unassigned",
-          assigneeIsMe: false,
+          assignee,
+          assigneeIsMe,
           slaClockType: "ack",
           minutesToBreach: 0,
           // No SLA data from the backend yet — keep the SLA column neutral

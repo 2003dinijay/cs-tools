@@ -19,6 +19,10 @@ import {
   Button,
   Card,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   IconButton,
   Skeleton,
@@ -40,7 +44,14 @@ import {
 import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { useGetCsmCaseDetail } from "@features/csm-cases/api/useGetCsmCaseDetail";
-import { usePatchCsmCase } from "@features/csm-cases/api/usePatchCsmCase";
+import {
+  usePatchCsmCase,
+  usePatchCsmCaseById,
+} from "@features/csm-cases/api/usePatchCsmCase";
+import {
+  useFindMyOngoingCases,
+  type MyOngoingCase,
+} from "@features/csm-cases/api/useFindMyOngoingCases";
 import type { BeCaseState } from "@api/backend/types";
 import { beStateFromUi } from "@api/backend/mappers";
 import {
@@ -78,11 +89,10 @@ import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import {
   SLA_CLOCK_LABEL,
   formatTimeToBreach,
-  stateColor,
-  stateLabel,
 } from "@features/csm-dashboard/utils/abtDashboard";
 import RelativeTime from "@components/RelativeTime";
 import SeverityChip from "@components/SeverityChip";
+import StateChip from "@components/StateChip";
 import type {
   CaseAttachment,
   CaseLifecycleAction,
@@ -246,6 +256,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const postAttachment = usePostCsmCaseAttachment();
   const downloadAttachment = useDownloadCsmCaseAttachment();
   const patchCase = usePatchCsmCase(caseId);
+  const patchCaseById = usePatchCsmCaseById();
+  const findMyOngoingCases = useFindMyOngoingCases();
   const recordView = useRecordRecentView();
   const claims = useIdTokenClaims();
   // Display name for comments authored in this session, resolved from the
@@ -262,6 +274,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const [metaCollapsed, setMetaCollapsed] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
+  // When starting work would leave the engineer with more than one ongoing case,
+  // hold the other ongoing case(s) here to drive the confirm dialog.
+  const [pauseConflict, setPauseConflict] = useState<MyOngoingCase[] | null>(
+    null,
+  );
   // Email of the signed-in engineer, for the "Assign to me" shortcut.
   const currentUserEmail = claims?.email ?? undefined;
 
@@ -365,11 +382,65 @@ export default function CsmCaseDetailPage(): JSX.Element {
         const targetState = nextState
           ? beStateFromUi(nextState)
           : LIFECYCLE_TARGET_STATE[action];
+
+        // Starting work: enforce the single-active-case rule.
+        // 1) look up the engineer's other ongoing cases (abort on failure — we
+        //    must not transition without knowing), 2) move this case to
+        // work_in_progress, 3) if none ongoing → mark this one ongoing; if some
+        // exist → ask before pausing them (handled in onConfirmStartWork).
+        if (targetState === "work_in_progress" && data) {
+          const caseId = data.id;
+          void (async () => {
+            let others: MyOngoingCase[];
+            try {
+              others = await findMyOngoingCases(caseId);
+            } catch (err) {
+              // Don't proceed blind: marking this ongoing without knowing the
+              // other active cases would break the single-active-case rule.
+              showError(
+                "Couldn't check your other active cases. Please try again.",
+                err,
+              );
+              return;
+            }
+            try {
+              await patchCase.mutateAsync({ stateKey: "work_in_progress" });
+            } catch (err) {
+              showError(
+                "Could not move the case to Work in progress. Please try again.",
+                err,
+              );
+              return;
+            }
+            if (others.length === 0) {
+              // No competing case → make this the active (ongoing) one.
+              try {
+                await patchCase.mutateAsync({ workStateKey: "ongoing" });
+              } catch (err) {
+                showError(
+                  "Moved to Work in progress, but could not mark it ongoing.",
+                  err,
+                );
+                return;
+              }
+              setFeedback({
+                message: LIFECYCLE_TOAST[action],
+                severity: LIFECYCLE_SEVERITY[action],
+                sticky: true,
+              });
+              return;
+            }
+            // Others are ongoing → confirm before pausing them.
+            setPauseConflict(others);
+          })();
+          return;
+        }
+
         if (targetState) {
           // Real state transition via PATCH /cases/{id}; the detail + list
           // queries refetch on success so the new state shows.
           patchCase.mutate(
-            { state: targetState },
+            { stateKey: targetState },
             {
               onSuccess: () =>
                 setFeedback({
@@ -403,6 +474,73 @@ export default function CsmCaseDetailPage(): JSX.Element {
         return;
       }
 
+      // Pause / resume the work sub-state via PATCH { workStateKey }. Only for an
+      // in-progress case assigned to the current user. Pausing is a direct
+      // single-field patch. Resuming sets this case `ongoing`, so it runs the
+      // same single-active-case conflict check as starting work — otherwise an
+      // engineer with another ongoing case would end up with two.
+      if (action.secondary === "toggle_work_state") {
+        if (!data || data.state !== "work_in_progress") return;
+        // Anything other than `ongoing` (paused OR a null work-state) resumes.
+        const resuming = data.workState !== "ongoing";
+
+        if (!resuming) {
+          patchCase.mutate(
+            { workStateKey: "paused" },
+            {
+              onSuccess: () =>
+                setFeedback({
+                  message:
+                    "Work paused — customer replies are disabled until you resume.",
+                  severity: "warning",
+                  sticky: true,
+                }),
+              onError: (err) =>
+                showError(
+                  "Could not update the work state. Please try again.",
+                  err,
+                ),
+            },
+          );
+          return;
+        }
+
+        // Resuming → ongoing: check for other active cases first (abort on
+        // failure), then either mark ongoing or prompt to pause the others.
+        const caseId = data.id;
+        void (async () => {
+          let others: MyOngoingCase[];
+          try {
+            others = await findMyOngoingCases(caseId);
+          } catch (err) {
+            showError(
+              "Couldn't check your other active cases. Please try again.",
+              err,
+            );
+            return;
+          }
+          if (others.length === 0) {
+            try {
+              await patchCase.mutateAsync({ workStateKey: "ongoing" });
+            } catch (err) {
+              showError(
+                "Could not resume work on this case. Please try again.",
+                err,
+              );
+              return;
+            }
+            setFeedback({
+              message: "Resumed work on this case.",
+              severity: "info",
+              sticky: true,
+            });
+            return;
+          }
+          setPauseConflict(others);
+        })();
+        return;
+      }
+
       // Copy-link is async: only confirm success once the clipboard write
       // actually resolves, otherwise a failure shows both a false "copied"
       // toast and an error.
@@ -430,8 +568,46 @@ export default function CsmCaseDetailPage(): JSX.Element {
         sticky: false,
       });
     },
-    [data, showError, patchCase],
+    [data, showError, patchCase, findMyOngoingCases],
   );
+
+  // Confirm pausing the engineer's other ongoing case(s) and making this case
+  // the active one. By the time the dialog opens this case is already
+  // work_in_progress (whether via start-work or resume); here we pause each
+  // other case then mark this one ongoing.
+  const onConfirmStartWork = useCallback(async () => {
+    const others = pauseConflict;
+    if (!others || !data) return;
+    setPauseConflict(null);
+    try {
+      for (const o of others) {
+        await patchCaseById(o.id, { workStateKey: "paused" });
+      }
+      await patchCase.mutateAsync({ workStateKey: "ongoing" });
+      setFeedback({
+        message:
+          others.length === 1
+            ? `Paused ${others[0].label} and made this your active case.`
+            : `Paused ${others.length} other ongoing cases and made this your active case.`,
+        severity: "info",
+        sticky: true,
+      });
+    } catch (err) {
+      showError("Could not update the work states. Please try again.", err);
+    }
+  }, [pauseConflict, data, patchCaseById, patchCase, showError]);
+
+  // Decline: keep the move to work_in_progress (already applied) but leave this
+  // case not-ongoing and the other case(s) ongoing.
+  const onDeclineStartWork = useCallback(() => {
+    setPauseConflict(null);
+    setFeedback({
+      message:
+        "Moved to Work in progress. Your other case stays your active one.",
+      severity: "info",
+      sticky: true,
+    });
+  }, []);
 
   // Assign the case to the chosen engineer via PATCH { assigneeEmail }. The
   // detail query is invalidated by the hook, so the assignee display refreshes
@@ -656,13 +832,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               state doesn't get lost among the tag chips. */}
           <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
             <SeverityChip severity={c.severity} withLabel />
-            <Chip
-              size="small"
-              variant="outlined"
-              label={stateLabel(c.state)}
-              color={stateColor(c.state)}
-              sx={{ fontWeight: 600 }}
-            />
+            <StateChip state={c.state} />
             {c.state === "work_in_progress" && c.workState && (
               <Chip
                 size="small"
@@ -1039,6 +1209,41 @@ export default function CsmCaseDetailPage(): JSX.Element {
           onAssign={onAssign}
         />
       )}
+
+      <Dialog
+        open={!!pauseConflict}
+        onClose={onDeclineStartWork}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>
+          {pauseConflict && pauseConflict.length > 1
+            ? "Pause your other active cases?"
+            : "Pause your other active case?"}
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            You're already working on{" "}
+            <strong>
+              {pauseConflict?.map((o) => o.label).join(", ")}
+            </strong>
+            . Pause {pauseConflict && pauseConflict.length > 1 ? "them" : "it"}{" "}
+            and make this case your active (ongoing) one?
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button color="inherit" onClick={onDeclineStartWork}>
+            No, keep it active
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => void onConfirmStartWork()}
+            disabled={patchCase.isPending}
+          >
+            Pause and start this
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
