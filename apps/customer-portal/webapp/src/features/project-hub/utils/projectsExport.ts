@@ -24,7 +24,7 @@ const EXPORT_HEADERS = [
   "Status",
   "Start Date",
   "End Date",
-  "Action Required",
+  "Action Required Items",
   "Outstanding Items",
 ];
 
@@ -35,7 +35,7 @@ const PDF_COLUMN_STYLES: Record<number, PdfColumnStyle> = {
   2: { cellWidth: 24, halign: "center" },        // Status
   3: { cellWidth: 28, halign: "center" },        // Start Date
   4: { cellWidth: 28, halign: "center" },        // End Date
-  5: { cellWidth: 30, halign: "right" },         // Action Required
+  5: { cellWidth: 30, halign: "right" },         // Action Required Items
   6: { cellWidth: 35, halign: "right" },         // Outstanding Items
 };
 
