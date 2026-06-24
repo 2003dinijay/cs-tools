@@ -148,6 +148,21 @@ Configured in `internal/db/postgres.go`:
 | Max conn lifetime   | 30 min  |
 | Max idle time       | 5 min   |
 
+## Pagination response conventions
+
+All search responses — regardless of data source — must use `total` (not `totalRecords`) as the JSON field name for the count of matched records. This applies to every `SearchXxxResponse` struct in `internal/domain/entity.go`.
+
+ServiceNow integration responses from Choreo use `totalRecords` internally (in the private `snXxxResponse` structs inside the `sn_*` service files). Always map that value to the `Total` field of the domain response before returning:
+
+```go
+return domain.SearchFooResponse{
+    Foos:   views,
+    Total:  snResp.TotalRecords, // map SN field → domain field
+    Limit:  req.Pagination.Limit,
+    Offset: req.Pagination.Offset,
+}, nil
+```
+
 ## ServiceNow data source (`sn_*` services)
 
 ServiceNow uses 32-character hex sysids (e.g. `abc123...`) while the rest of the platform uses standard UUIDs (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`). Conversion helpers live in `internal/service/sn_id.go`.

@@ -318,8 +318,8 @@ paths:
     patch:
       summary: Update a support case.
       description: |
-        Updates exactly one field of the case. Provide exactly one of: `stateKey`, `severityKey`,
-        `workStateKey`, `watchList`, or `assigneeEmail`. `watchList` and `assigneeEmail` are supported
+        Updates exactly one field of the case. Provide exactly one of: `state`, `severity`,
+        `workState`, `watchList`, or `assigneeEmail`. `watchList` and `assigneeEmail` are supported
         only when the ServiceNow data source is active.
       operationId: patchCase
       parameters:
@@ -654,6 +654,42 @@ paths:
                 $ref: '#/components/schemas/SearchDeployedProductsResponse'
         "400":
           description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /change-requests/search:
+    post:
+      summary: Search change requests (ServiceNow data source only).
+      operationId: searchChangeRequests
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchChangeRequestsRequest'
+      responses:
+        "200":
+          description: Change requests matching the filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchChangeRequestsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found.
           content:
             application/json:
               schema:
@@ -1014,7 +1050,7 @@ components:
             type: string
             format: uuid
           description: Filter by project UUIDs.
-        deploymentTypeKeys:
+        deploymentTypes:
           type: array
           items:
             type: string
@@ -1153,24 +1189,24 @@ components:
     UpdateCaseRequest:
       type: object
       description: |
-        Exactly one of `stateKey`, `severityKey`, `workStateKey`, `watchList`, or `assigneeEmail` must be provided.
+        Exactly one of `state`, `severity`, `workState`, `watchList`, or `assigneeEmail` must be provided.
         `watchList` and `assigneeEmail` are supported only for the ServiceNow data source.
       oneOf:
-        - required: [stateKey]
-        - required: [severityKey]
-        - required: [workStateKey]
+        - required: [state]
+        - required: [severity]
+        - required: [workState]
         - required: [watchList]
         - required: [assigneeEmail]
       properties:
-        stateKey:
+        state:
           type: string
           enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
           description: The new state to transition the case to.
-        severityKey:
+        severity:
           type: string
           enum: [catastrophic, critical, high, medium, low]
           description: The new severity of the case.
-        workStateKey:
+        workState:
           type: string
           enum: [ongoing, paused]
           description: The new work sub-state of the case. Only applicable when the case state is work_in_progress.
@@ -1243,9 +1279,9 @@ components:
 
     CreateCaseRequest:
       type: object
-      required: [typeKey, projectId, deploymentId, deployedProductId, subject, description, severityKey, issueTypeKey]
+      required: [type, projectId, deploymentId, deployedProductId, subject, description, severity, issueType]
       properties:
-        typeKey:
+        type:
           type: string
           enum: [support]
           description: |
@@ -1264,10 +1300,10 @@ components:
           type: string
         description:
           type: string
-        severityKey:
+        severity:
           type: string
           enum: [catastrophic, critical, high, medium, low]
-        issueTypeKey:
+        issueType:
           type: string
           enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
 
@@ -1296,7 +1332,7 @@ components:
     SearchCasesFilters:
       type: object
       properties:
-        typeKeys:
+        types:
           type: array
           items:
             type: string
@@ -1319,30 +1355,30 @@ components:
             type: string
             format: uuid
           description: Filter by deployment UUIDs.
-        stateKeys:
+        states:
           type: array
           items:
             type: string
             enum: [open, work_in_progress, waiting_on_wso2, awaiting_info, reopened, solution_proposed, closed]
           description: Filter by case states.
-        severityKeys:
+        severities:
           type: array
           items:
             type: string
             enum: [catastrophic, critical, high, medium, low]
-          description: Filter by severity. Only applicable when typeKeys includes support.
-        issueTypeKeys:
+          description: Filter by severity. Only applicable when types includes support.
+        issueTypes:
           type: array
           items:
             type: string
             enum: [error, partial_outage, performance_degradation, question, security_or_compliance, total_outage]
           description: Filter by issue type.
-        engagementTypeKeys:
+        engagementTypes:
           type: array
           items:
             type: string
             enum: [migration, consultancy, new_feature_improvement, follow_up, onboarding]
-          description: Filter by engagement type. Only applicable when typeKeys includes engagement.
+          description: Filter by engagement type. Only applicable when types includes engagement.
         closedStartDate:
           type: string
           format: date-time
@@ -1659,7 +1695,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CaseSearchView'
-        totalRecords:
+        total:
           type: integer
         offset:
           type: integer
@@ -1668,9 +1704,9 @@ components:
 
     CreateCaseCommentRequest:
       type: object
-      required: [typeKey, content]
+      required: [type, content]
       properties:
-        typeKey:
+        type:
           type: string
           enum: [work_note, comment, activity]
           description: work_note is restricted to internal users; activity to internal and system users.
@@ -1701,7 +1737,7 @@ components:
         filters:
           type: object
           properties:
-            typeKey:
+            type:
               type: string
               enum: [work_note, comment, activity]
         pagination:
@@ -1815,6 +1851,131 @@ components:
           type: integer
         hasMore:
           type: boolean
+
+    SearchChangeRequestsRequest:
+      type: object
+      properties:
+        filters:
+          type: object
+          properties:
+            projectIds:
+              type: array
+              items:
+                type: string
+                format: uuid
+            searchQuery:
+              type: string
+            states:
+              type: array
+              items:
+                type: string
+                enum: [customer_approval, scheduled, implement, review, customer_review, rollback, closed, canceled]
+            impacts:
+              type: array
+              items:
+                type: string
+                enum: [high, medium, low]
+            closedStartDate:
+              type: string
+              format: date-time
+              description: "ISO-8601 UTC datetime (YYYY-MM-DDTHH:MM:SSZ)"
+            closedEndDate:
+              type: string
+              format: date-time
+              description: "ISO-8601 UTC datetime (YYYY-MM-DDTHH:MM:SSZ)"
+        sortBy:
+          type: object
+          required: [field, order]
+          properties:
+            field:
+              type: string
+              enum: [createdOn, updatedOn]
+            order:
+              type: string
+              enum: [asc, desc]
+        pagination:
+          type: object
+          properties:
+            offset:
+              type: integer
+              minimum: 0
+              default: 0
+            limit:
+              type: integer
+              minimum: 1
+              maximum: 100
+              default: 20
+
+    SearchChangeRequestView:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+        subject:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        project:
+          $ref: '#/components/schemas/EntityRef'
+        case:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+        deployment:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+        deployedProduct:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+        product:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+        assignedEngineer:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+        assignedTeam:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
+        plannedStartOn:
+          type: string
+          nullable: true
+        plannedEndOn:
+          type: string
+          nullable: true
+        duration:
+          type: string
+          nullable: true
+        impact:
+          type: string
+          description: Impact label (e.g. "high", "medium", "low").
+        state:
+          type: string
+          description: State label (e.g. "review", "closed").
+        type:
+          type: string
+          description: Type label (e.g. "standard", "normal").
+        createdOn:
+          type: string
+        updatedOn:
+          type: string
+
+    SearchChangeRequestsResponse:
+      type: object
+      properties:
+        changeRequests:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchChangeRequestView'
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
 
     ErrorResponse:
       type: object
