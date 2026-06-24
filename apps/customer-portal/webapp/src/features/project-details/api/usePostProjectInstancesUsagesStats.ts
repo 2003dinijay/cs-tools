@@ -53,6 +53,8 @@ export default function usePostProjectInstancesUsagesStats(
       return response.json() as Promise<InstanceUsageStatsResponse>;
     },
     enabled: !!projectId && isSignedIn && !isAuthLoading,
-    staleTime: 0,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
