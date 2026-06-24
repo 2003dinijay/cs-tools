@@ -122,3 +122,12 @@ type CaseService interface {
 	// A NotFoundError is returned if absent.
 	GetCaseAttachmentContent(ctx context.Context, caseID, attachmentID string) (content []byte, contentType string, err error)
 }
+
+// ChangeRequestService defines the operations available on the change_requests entity.
+type ChangeRequestService interface {
+	// SearchChangeRequests returns a paginated list of change requests filtered by optional
+	// project IDs, state keys, impact keys, date ranges, and search query.
+	// A ValidationError is returned for invalid input; any other error indicates an
+	// infrastructure failure.
+	SearchChangeRequests(ctx context.Context, req domain.SearchChangeRequestsRequest) (domain.SearchChangeRequestsResponse, error)
+}
