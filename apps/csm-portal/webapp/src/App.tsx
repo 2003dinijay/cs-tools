@@ -50,6 +50,12 @@ const CsmCaseCreatePage = lazy(
 const CsmCaseDetailPage = lazy(
   () => import("@features/csm-cases/pages/CsmCaseDetailPage"),
 );
+const OperationsPage = lazy(
+  () => import("@features/csm-operations/pages/OperationsPage"),
+);
+const CreateServiceRequestPage = lazy(
+  () => import("@features/csm-operations/pages/CreateServiceRequestPage"),
+);
 const CsmAdminLayout = lazy(
   () => import("@features/csm-admin/pages/CsmAdminLayout"),
 );
@@ -166,17 +172,13 @@ export default function App(): JSX.Element {
                 <Route path="cases/new" element={<CsmCaseCreatePage />} />
                 <Route path="cases/:caseId" element={<CsmCaseDetailPage />} />
 
-                {/* WIP placeholders for top-level features awaiting BFF support */}
+                <Route path="operations" element={<OperationsPage />} />
                 <Route
-                  path="operations"
-                  element={
-                    <CsmComingSoonPage
-                      title="Operations"
-                      description="Service requests and change requests across customers."
-                      blockedOn="csm-portal/backend operations endpoints"
-                    />
-                  }
+                  path="operations/service-requests/new"
+                  element={<CreateServiceRequestPage />}
                 />
+
+                {/* WIP placeholders for top-level features awaiting BFF support */}
                 <Route
                   path="engagements"
                   element={
