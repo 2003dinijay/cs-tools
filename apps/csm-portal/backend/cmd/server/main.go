@@ -51,6 +51,7 @@ func main() {
 	projectHandler := handler.NewProjectHandler(entityClient)
 	productHandler := handler.NewProductHandler(entityClient)
 	deploymentHandler := handler.NewDeploymentHandler(entityClient)
+	changeRequestHandler := handler.NewChangeRequestHandler(entityClient)
 
 	updatesCfg := updates.Config{
 		BaseURL:      mustEnv("UPDATES_BASE_URL"),
@@ -106,6 +107,7 @@ func main() {
 	mux.HandleFunc("POST /products/{id}/versions/search", productHandler.SearchProductVersions)
 	mux.HandleFunc("POST /deployments/search", deploymentHandler.SearchDeployments)
 	mux.HandleFunc("POST /deployments/{id}/products/search", deploymentHandler.SearchDeployedProducts)
+	mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
 
 	addr := envOrDefault("PORT", ":8080")
 

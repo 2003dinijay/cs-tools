@@ -113,6 +113,12 @@ func (c *Client) SearchDeployedProducts(ctx context.Context, body []byte) ([]byt
 	return c.do(ctx, http.MethodPost, "/deployed-products/search", body)
 }
 
+// SearchChangeRequests calls POST /change-requests/search on the entity service.
+// Response is returned as raw JSON; typed response structs are deferred.
+func (c *Client) SearchChangeRequests(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/change-requests/search", body)
+}
+
 // CreateCaseAttachment calls POST /cases/{id}/attachments on the entity service.
 // Response is returned as raw JSON.
 func (c *Client) CreateCaseAttachment(ctx context.Context, caseID string, body []byte) ([]byte, error) {
