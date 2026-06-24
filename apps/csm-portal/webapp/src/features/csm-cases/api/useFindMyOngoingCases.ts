@@ -17,6 +17,7 @@
 import { useCallback } from "react";
 import { useBackendApi } from "@api/backend/client";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
+import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import type {
   BeCaseSearchPayload,
   BeCaseSearchResponse,
@@ -34,7 +35,8 @@ export interface MyOngoingCase {
 // work_in_progress set is cross-customer, so page through it rather than
 // inspecting only the first page — otherwise the caller's ongoing case could
 // sit beyond the first page and the single-active-case guard would miss it.
-const SEARCH_LIMIT = 100;
+// Page size = the BE's max (requests above it are rejected).
+const SEARCH_LIMIT = BE_MAX_PAGE_LIMIT;
 // Safety bound on the scan (pages * limit) so a pathological dataset can't spin
 // this on-demand check forever.
 const MAX_PAGES = 20;
