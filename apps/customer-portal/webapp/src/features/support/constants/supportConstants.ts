@@ -333,6 +333,9 @@ export const CASE_DETAILS_TABS: CaseDetailsTabConfig[] = [
 
 export const ESCALATION_MAX_LEVEL_ID = "5";
 
+// Escalation levels that require the user to have isLead: true (EL3→EL4 and EL4→EL5).
+export const ESCALATION_LEAD_REQUIRED_FROM_LEVEL = new Set(["3", "4"]);
+
 export const ESCALATION_NEXT_LEVEL: Record<
   string,
   { nextId: string; nextLabel: string; notifiedLabel: string }

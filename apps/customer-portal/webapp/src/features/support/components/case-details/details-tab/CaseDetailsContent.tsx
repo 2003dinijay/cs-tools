@@ -29,6 +29,8 @@ import useGetAIChatHistory from "@features/support/api/useGetAIChatHistory";
 import { useConversationRecommendationsSearch } from "@features/support/api/useConversationRecommendationsSearch";
 import { buildRecommendationRequestFromCase } from "@features/support/utils/recommendations";
 import { usePostCaseEscalationsSearch } from "@features/support/api/usePostCaseEscalationsSearch";
+import useGetProjectContacts from "@features/settings/api/useGetProjectContacts";
+import useGetUserDetails from "@features/settings/api/useGetUserDetails";
 import {
   getStatusColor,
   resolveColorFromTheme,
@@ -192,6 +194,15 @@ export default function CaseDetailsContent({
     : (escalationData?.totalRecords ?? escalationData?.escalations?.length);
   const isEscalated = data?.isEscalated ?? false;
   const escalationLevelId = String(data?.escalationLevel?.id ?? "0");
+
+  // Determine if the logged-in user is a Lead (required for EL3+ escalations).
+  const { data: userDetails } = useGetUserDetails();
+  const { data: projectContacts } = useGetProjectContacts(
+    hideEscalationTab ? "" : resolvedProjectId,
+  );
+  const isCurrentUserLead = !!projectContacts?.find(
+    (c) => c.email.toLowerCase() === (userDetails?.email ?? "").toLowerCase(),
+  )?.isLead;
 
   const visibleTabs = useMemo(
     () => [
@@ -361,6 +372,7 @@ export default function CaseDetailsContent({
                     hideAssignedEngineer={hideAssignedEngineer}
                     escalationLevelId={hideEscalationTab ? null : escalationLevelId}
                     onEscalateSuccess={() => void refetchEscalations()}
+                    isCurrentUserLead={isCurrentUserLead}
                   />
                 )}
               </Box>

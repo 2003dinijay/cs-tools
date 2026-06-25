@@ -28,6 +28,7 @@ import EscalateCaseModal from "../escalation/EscalateCaseModal";
 import { type JSX, useState } from "react";
 import {
   CASE_STATUS_ACTIONS,
+  ESCALATION_LEAD_REQUIRED_FROM_LEVEL,
   ESCALATION_MAX_LEVEL_ID,
   ESCALATION_NEXT_LEVEL,
   type CaseStatusPaletteIntent,
@@ -94,6 +95,7 @@ export default function CaseDetailsActionRow({
   isLoading = false,
   escalationLevelId,
   onEscalateSuccess,
+  isCurrentUserLead = false,
 }: CaseDetailsActionRowProps): JSX.Element {
   void assignedEngineer;
   void engineerInitials;
@@ -115,10 +117,12 @@ export default function CaseDetailsActionRow({
 
   const resolvedEscalationLevelId = String(escalationLevelId ?? "0");
   const escalationLevelInfo = ESCALATION_NEXT_LEVEL[resolvedEscalationLevelId];
+  const needsLead = ESCALATION_LEAD_REQUIRED_FROM_LEVEL.has(resolvedEscalationLevelId);
   const showEscalateButton =
     statusLabel !== "Closed" &&
     resolvedEscalationLevelId !== ESCALATION_MAX_LEVEL_ID &&
-    !!escalationLevelInfo;
+    !!escalationLevelInfo &&
+    (!needsLead || isCurrentUserLead);
 
   const availableActions = getAvailableCaseActions(statusLabel).filter(
     (label) => {
