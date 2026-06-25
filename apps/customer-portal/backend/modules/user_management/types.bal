@@ -39,7 +39,7 @@ public type Contact record {|
     # Whether the contact is a customer admin or not
     boolean isCsAdmin;
     # Whether the contact is a lead or not
-    boolean? isLead;
+    boolean? isLead?;
     # Whether the contact is an Integration user or not
     boolean isCsIntegrationUser;
     # Whether the contact is a portal user or not
