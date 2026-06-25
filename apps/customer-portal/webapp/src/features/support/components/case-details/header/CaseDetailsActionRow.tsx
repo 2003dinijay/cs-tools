@@ -24,9 +24,12 @@ import {
   type Theme,
 } from "@wso2/oxygen-ui";
 import CaseStateConfirmDialog from "@features/support/components/case-details/dialogs/CaseStateConfirmDialog";
+import EscalateCaseModal from "../escalation/EscalateCaseModal";
 import { type JSX, useState } from "react";
 import {
   CASE_STATUS_ACTIONS,
+  ESCALATION_MAX_LEVEL_ID,
+  ESCALATION_NEXT_LEVEL,
   type CaseStatusPaletteIntent,
 } from "@features/support/constants/supportConstants";
 import useGetProjectFilters from "@api/useGetProjectFilters";
@@ -40,6 +43,7 @@ import {
   toPresentContinuousActionLabel,
   toPresentTenseActionLabel,
 } from "@features/support/utils/support";
+import { TriangleAlert } from "@wso2/oxygen-ui-icons-react";
 
 const ACTION_BUTTON_ICON_SIZE = 12;
 
@@ -88,6 +92,8 @@ export default function CaseDetailsActionRow({
   projectId = "",
   caseId = "",
   isLoading = false,
+  escalationLevelId,
+  onEscalateSuccess,
 }: CaseDetailsActionRowProps): JSX.Element {
   void assignedEngineer;
   void engineerInitials;
@@ -105,6 +111,14 @@ export default function CaseDetailsActionRow({
     label: string;
     stateKey: number;
   } | null>(null);
+  const [escalateModalOpen, setEscalateModalOpen] = useState(false);
+
+  const resolvedEscalationLevelId = String(escalationLevelId ?? "0");
+  const escalationLevelInfo = ESCALATION_NEXT_LEVEL[resolvedEscalationLevelId];
+  const showEscalateButton =
+    statusLabel !== "Closed" &&
+    resolvedEscalationLevelId !== ESCALATION_MAX_LEVEL_ID &&
+    !!escalationLevelInfo;
 
   const availableActions = getAvailableCaseActions(statusLabel).filter(
     (label) => {
@@ -167,6 +181,30 @@ export default function CaseDetailsActionRow({
           </Button>
         );
       })}
+      {showEscalateButton && (
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<TriangleAlert size={ACTION_BUTTON_ICON_SIZE} />}
+          onClick={() => setEscalateModalOpen(true)}
+          sx={{
+            borderColor: theme.palette.warning.light,
+            bgcolor: alpha(theme.palette.warning.light, 0.1),
+            color: theme.palette.warning.light,
+            fontSize: "0.7rem",
+            minHeight: 0,
+            py: 0.5,
+            px: 1,
+            "&:hover": {
+              borderColor: theme.palette.warning.main,
+              bgcolor: alpha(theme.palette.warning.light, 0.2),
+            },
+            textTransform: "none",
+          }}
+        >
+          Escalate Case
+        </Button>
+      )}
       <CaseStateConfirmDialog
         open={!!confirmAction}
         actionLabel={confirmAction ? toPresentTenseActionLabel(confirmAction.label) : ""}
@@ -195,6 +233,20 @@ export default function CaseDetailsActionRow({
           );
         }}
       />
+      {showEscalateButton && (
+        <EscalateCaseModal
+          open={escalateModalOpen}
+          caseId={caseId}
+          escalationLevelId={resolvedEscalationLevelId}
+          escalationLevelLabel={`EL${resolvedEscalationLevelId}`}
+          onClose={() => setEscalateModalOpen(false)}
+          onSuccess={() => {
+            showSuccess("Case escalated successfully.");
+            onEscalateSuccess?.();
+          }}
+          onError={(msg) => showError(msg)}
+        />
+      )}
     </Stack>
   );
 }
