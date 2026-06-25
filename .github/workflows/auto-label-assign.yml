@@ -17,7 +17,7 @@
 name: Auto Label and Assign PR
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, reopened, ready_for_review]
 
 jobs:
