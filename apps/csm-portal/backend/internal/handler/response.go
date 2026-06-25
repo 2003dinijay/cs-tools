@@ -24,6 +24,22 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 )
 
+// extractUpstreamMessage tries to parse a "message" field from the JSON body
+// returned by an upstream service error. Falls back to fallback if the body is
+// empty, not valid JSON, or has no "message" field.
+func extractUpstreamMessage(body, fallback string) string {
+	if body == "" {
+		return fallback
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err == nil && payload.Message != "" {
+		return payload.Message
+	}
+	return fallback
+}
+
 // Error message constants matching the customer-portal error vocabulary.
 const (
 	ErrMsgUnauthorized = "You are not authorized to perform this action. Please try again."
@@ -81,7 +97,7 @@ func mapUpstreamError(w http.ResponseWriter, err error, fallbackMsg string) {
 		case http.StatusNotFound:
 			writeError(w, http.StatusNotFound, ErrMsgNotFound)
 		case http.StatusBadRequest:
-			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+			writeError(w, http.StatusBadRequest, extractUpstreamMessage(apiErr.Body, ErrMsgBadRequest))
 		case http.StatusConflict, http.StatusUnprocessableEntity:
 			writeError(w, apiErr.StatusCode, apiErr.Body)
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
