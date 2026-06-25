@@ -1452,11 +1452,13 @@ components:
           description: Required for `service_request` type. UUID of the catalog item.
         variables:
           type: array
+          minItems: 1
           items:
             $ref: '#/components/schemas/Variable'
           description: Required for `service_request` type.
         attachments:
           type: array
+          minItems: 1
           items:
             $ref: '#/components/schemas/CaseAttachment'
           description: Required for `security_report_analysis` type (at least one entry).

@@ -309,7 +309,7 @@ func (c *Client) do(req *http.Request, path string) (json.RawMessage, error) {
 	case resp.StatusCode == http.StatusNotFound:
 		return nil, &apierror.NotFoundError{Msg: extractDownstreamMessage(raw, "resource not found in downstream service")}
 	case resp.StatusCode == http.StatusServiceUnavailable:
-		return nil, &apierror.ServiceUnavailableError{Msg: extractDownstreamMessage(raw, "downstream service unavailable")}
+		return nil, &apierror.ServiceUnavailableError{Msg: "downstream service unavailable"}
 	default:
 		return nil, fmt.Errorf("snclient: %s: unexpected status %d: %s", path, resp.StatusCode, raw)
 	}

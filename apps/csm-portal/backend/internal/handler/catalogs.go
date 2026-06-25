@@ -68,6 +68,16 @@ func (h *CatalogHandler) SearchCatalogs(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	var parsed struct {
+		DeployedProductID string `json:"deployedProductId"`
+	}
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		if parsed.DeployedProductID != "" && !uuidRe.MatchString(parsed.DeployedProductID) {
+			writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+			return
+		}
+	}
+
 	result, err := h.entity.SearchCatalogs(r.Context(), body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchCatalogs failed", "userID", user.UserID, "err", err)

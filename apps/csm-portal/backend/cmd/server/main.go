@@ -19,6 +19,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -177,10 +178,13 @@ func envOrDefault(key, def string) string {
 }
 
 // loadDotEnv reads a .env file and sets any unset environment variables from it.
-// Silently ignored if the file does not exist.
+// Silently ignored if the file does not exist; logs a warning for any other error.
 func loadDotEnv(path string) {
 	f, err := os.Open(path)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("loadDotEnv: failed to open .env file", "err", err)
+		}
 		return
 	}
 	defer f.Close()
@@ -203,6 +207,9 @@ func loadDotEnv(path string) {
 		if os.Getenv(k) == "" {
 			_ = os.Setenv(k, v)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Warn("loadDotEnv: error reading .env file", "err", err)
 	}
 }
 

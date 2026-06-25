@@ -19,6 +19,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -47,8 +48,6 @@ var validCaseType = map[string]bool{
 	"case":                     true,
 	"service_request":          true,
 	"security_report_analysis": true,
-	"announcement":             true,
-	"engagement":               true,
 }
 
 var validEngagementType = map[domain.EngagementType]bool{
@@ -149,6 +148,14 @@ func validateCreateCaseRequest(req domain.CreateCaseRequest) error {
 		}
 		if len(req.Attachments) == 0 {
 			return &apierror.ValidationError{Msg: "at least one attachment is required for security_report_analysis"}
+		}
+		for i, a := range req.Attachments {
+			if a.Name == "" {
+				return &apierror.ValidationError{Msg: fmt.Sprintf("attachments[%d].name is required", i)}
+			}
+			if a.File == "" {
+				return &apierror.ValidationError{Msg: fmt.Sprintf("attachments[%d].file is required", i)}
+			}
 		}
 	}
 

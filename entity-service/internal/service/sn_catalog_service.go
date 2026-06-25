@@ -126,8 +126,8 @@ func (s *snCatalogService) SearchCatalogs(ctx context.Context, req domain.Search
 	return domain.SearchCatalogsResponse{
 		Catalogs: catalogs,
 		Total:    snResp.TotalRecords,
-		Limit:    req.Pagination.Limit,
-		Offset:   req.Pagination.Offset,
+		Limit:    snResp.Limit,
+		Offset:   snResp.Offset,
 	}, nil
 }
 

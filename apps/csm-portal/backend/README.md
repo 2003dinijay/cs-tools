@@ -161,7 +161,7 @@ backend/
 
 ### Cases
 
-- `POST /cases` — Create a case (`type`: `case`, `service_request`, or `security_report_analysis`)
+- `POST /cases` — Create a case (`type`: `case`; `service_request` and `security_report_analysis` are ServiceNow data source only)
 - `GET /cases/{id}` — Get case by ID
 - `PATCH /cases/{id}` — Update a case (state, severity, workState, watchList, or assigneeEmail)
 - `POST /cases/search` — Search cases
