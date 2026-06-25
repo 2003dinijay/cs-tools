@@ -236,7 +236,7 @@ export default function CaseEscalationHistoryPanel({ caseId, caseCreatedOn }: Pr
               key={record.id}
               record={record}
               currentUserEmail={currentUserEmail}
-              isLast={idx === records.length - 1 && !caseCreatedOn}
+              isLast={false}
             />
           ))}
 
