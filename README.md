@@ -11,12 +11,25 @@ Open-source tools built by WSO2 for customer success operations. This repository
 ```
 cs-tools/
 ├── apps/
+│   ├── csm-portal/          # CSM Portal (Go backend + React webapp)
 │   └── customer-portal/     # Customer Portal (Ballerina backend + React webapp + React microapp)
+├── entity-service/          # Shared entity service
 └── integrations/
     └── customer-service/    # Customer operations related integration Ballerina service
 ```
 
 ## Components
+
+### CSM Portal (`apps/csm-portal/`)
+
+An internal portal for Customer Success Managers to manage and track customer cases, assignments, and support operations.
+
+| Component | Description |
+|-----------|-------------|
+| `backend` | Go RESTful service providing CSM Portal APIs |
+| `webapp` | Browser-based portal for CSMs (React + TypeScript) |
+
+See the [CSM Portal README](./apps/csm-portal/README.md) for full setup and usage documentation.
 
 ### Customer Portal (`apps/customer-portal/`)
 
@@ -35,6 +48,24 @@ See the [Customer Portal README](./apps/customer-portal/README.md) for full setu
 ### Customer Service Integration (`integrations/customer-service/`)
 
 A Ballerina REST service that aggregates and exposes customer data from multiple backend systems. Provides endpoints for contact lookup, deployment search, and deployed product queries. Includes an in-memory cache layer to reduce upstream load.
+
+## GitHub Actions
+
+### Auto Label and Assign PR
+
+When a pull request is opened, the workflow automatically:
+
+- Assigns the PR author as the assignee
+- Applies labels based on changed file paths:
+
+| Files changed under… | Label applied |
+|---|---|
+| `apps/csm-portal/**` | `App/CSM Portal` |
+| `apps/customer-portal/**` | `App/Customer Portal` |
+| `apps/*/webapp/**` | `Area/Frontend`, `Platform/Web` |
+| `apps/*/backend/**` | `Area/Backend` |
+| `apps/*/microapp/**` | `Platform/Microapp` |
+| `entity-service/**` | `Entity Service` |
 
 ## Reporting Issues
 
