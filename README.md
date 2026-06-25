@@ -45,6 +45,18 @@ Delivered through two frontend experiences alongside a shared backend:
 
 See the [Customer Portal README](./apps/customer-portal/README.md) for full setup and usage documentation.
 
+### Entity Service (`entity-service/`)
+
+A Go REST service that manages customer entity data backed by PostgreSQL. Provides APIs for case management with pagination and validation, used by other apps in this repository.
+
+| Layer | Technology |
+|-------|------------|
+| Language | Go |
+| Framework | Gin |
+| Database | PostgreSQL 15+ |
+
+See the [Entity Service README](./entity-service/README.md) for full setup and usage documentation.
+
 ### Customer Service Integration (`integrations/customer-service/`)
 
 A Ballerina REST service that aggregates and exposes customer data from multiple backend systems. Provides endpoints for contact lookup, deployment search, and deployed product queries. Includes an in-memory cache layer to reduce upstream load.
