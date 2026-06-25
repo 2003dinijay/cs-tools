@@ -57,8 +57,12 @@ export function useSearchCatalogs(
         const page = res?.catalogs ?? [];
         all.push(...page);
         offset += page.length;
-        const total = res?.total ?? all.length;
-        if (page.length === 0 || all.length >= total) break;
+        // Stop on an empty page; only trust `total` to end paging when it's
+        // actually present (it's optional — defaulting it to all.length would
+        // stop after the first page and drop later catalogs).
+        const total = res?.total;
+        if (page.length === 0) break;
+        if (total != null && all.length >= total) break;
       }
       return all;
     },
