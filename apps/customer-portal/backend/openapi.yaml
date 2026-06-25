@@ -6650,9 +6650,25 @@ components:
           type: string
           description: Reason for the escalation
         notificationSentTo:
-          type: string
+          type: array
           nullable: true
-          description: Name of the role/person notified
+          description: Users notified about the escalation
+          items:
+            type: object
+            required:
+            - id
+            - userName
+            properties:
+              id:
+                $ref: '#/components/schemas/IdString'
+              userName:
+                type: string
+              name:
+                type: string
+                nullable: true
+              email:
+                type: string
+                nullable: true
       description: Escalation data.
     EscalationsResponse:
       required:

@@ -1256,8 +1256,17 @@ public type Escalation record {|
     string updatedOn;
     # Reason for the escalation
     string reason;
-    # Name of the role/person notified
-    string? notificationSentTo;
+    # Users notified about the escalation
+    record {|
+        # ID of the user
+        entity:IdString id;
+        # User name
+        string userName;
+        # Full name of the user
+        string? name;
+        # Email address of the user
+        string? email;
+    |}[]? notificationSentTo;
 |};
 
 # Escalations search response.

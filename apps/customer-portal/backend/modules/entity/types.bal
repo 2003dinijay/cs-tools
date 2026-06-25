@@ -2476,8 +2476,17 @@ public type Escalation record {|
     string updatedOn;
     # Reason for the escalation
     string reason;
-    # Name of the role/person notified
-    string? notificationSentTo;
+    # Users notified about the escalation
+    record {|
+        # System ID of the user
+        IdString id;
+        # User name
+        string userName;
+        # Full name of the user
+        string? name;
+        # Email address of the user
+        string? email;
+    |}[]? notificationSentTo;
     json...;
 |};
 
