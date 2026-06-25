@@ -105,6 +105,10 @@ function isAttachmentFieldByQuestionText(questionText: string): boolean {
 /** Attachment/file-upload field (by type or questionText). Optional + collected
  *  in the shared attachments section, so these are not rendered as text inputs. */
 export function isAttachmentField(variable: BeCatalogItemVariable): boolean {
+  // A File Copy Path field is a plain (optional) text input, not an upload —
+  // exclude it explicitly since its type/label can contain "file" and would
+  // otherwise be swallowed by isAttachmentType and dropped from the form.
+  if (isFileCopyPathField(variable)) return false;
   return (
     isAttachmentType(variable.type ?? "") ||
     isAttachmentFieldByQuestionText(variable.questionText ?? "")

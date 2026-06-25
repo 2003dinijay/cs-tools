@@ -832,7 +832,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               distinct from the free-form tags by a divider, so the current
               state doesn't get lost among the tag chips. */}
           <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-            {c.caseType && (
+            {c.caseType && CASE_TYPE_LABEL[c.caseType] && (
               <Chip
                 size="small"
                 variant="outlined"

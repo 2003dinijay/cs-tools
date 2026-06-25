@@ -69,6 +69,9 @@ export default function CreateSecurityReportPage(): JSX.Element {
   const [deploymentId, setDeploymentId] = useState("");
   const [deployedProductId, setDeployedProductId] = useState("");
   const [subject, setSubject] = useState("");
+  // Once the engineer edits the subject we stop auto-regenerating it, so a later
+  // product reselect doesn't clobber their text.
+  const [subjectEdited, setSubjectEdited] = useState(false);
   const [description, setDescription] = useState("");
   const [attachments, setAttachments] = useState<EncodedAttachment[]>([]);
 
@@ -90,6 +93,7 @@ export default function CreateSecurityReportPage(): JSX.Element {
   // the product is chosen (both names are loaded by then), matching the customer
   // portal. Event-driven so it stays editable and avoids a setState effect.
   const regenerateSubject = (depId: string, prodId: string): void => {
+    if (subjectEdited) return;
     const depName = deployments.data?.find((d) => d.id === depId)?.name;
     const prodLabel = deployedProducts.data?.find((dp) => dp.id === prodId)?.label;
     if (depName && prodLabel) {
@@ -264,7 +268,10 @@ export default function CreateSecurityReportPage(): JSX.Element {
               fullWidth
               required
               value={subject}
-              onChange={(e) => setSubject(e.target.value.slice(0, 200))}
+              onChange={(e) => {
+                setSubjectEdited(true);
+                setSubject(e.target.value.slice(0, 200));
+              }}
               helperText={
                 subject.length >= 160
                   ? `${subject.length}/200`

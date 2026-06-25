@@ -145,8 +145,8 @@ export default function AsyncProjectSelect({
           label={label}
           required={required}
           placeholder={value ? undefined : "Search projects…"}
-          error={isError && open}
-          helperText={isError && open ? "Project search failed." : undefined}
+          error={isError}
+          helperText={isError ? "Project search failed." : undefined}
         />
       )}
     />

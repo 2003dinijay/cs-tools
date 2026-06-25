@@ -154,6 +154,11 @@ export default function CsmIssuesView({
 
   const total = data?.total ?? 0;
   const lastPage = total === 0 ? 0 : Math.ceil(total / rowsPerPage) - 1;
+  // Clamp to the last valid page when the loaded set shrinks (filter change, rows
+  // closing). React's documented pattern for adjusting state from changed inputs
+  // is a guarded set during render — not an effect (the lint rule forbids
+  // setState in effects); React re-renders before committing, so it's not a
+  // user-visible extra paint.
   if (data !== undefined && !data.hasMore && page > lastPage) {
     setPage(lastPage);
   }
