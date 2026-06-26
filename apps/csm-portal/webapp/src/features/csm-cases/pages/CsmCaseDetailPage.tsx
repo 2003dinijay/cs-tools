@@ -241,6 +241,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const { caseId } = useParams<{ caseId: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const isEngagementRoute = location.pathname.startsWith("/engagements/");
+  const backPath = isEngagementRoute ? "/engagements" : "/cases";
+  const backLabel = isEngagementRoute ? "Back to engagements" : "Back to cases";
   const { data, isLoading, isError } = useGetCsmCaseDetail(caseId);
   const {
     data: comments,
@@ -694,10 +697,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
           variant="text"
           size="small"
           startIcon={<ArrowLeft size={16} />}
-          onClick={() => navigate("/cases")}
+          onClick={() => navigate(backPath)}
           sx={{ alignSelf: "flex-start" }}
         >
-          Back to cases
+          {backLabel}
         </Button>
         <Typography variant="body1" color="error">
           Could not load case {caseId}.
@@ -713,10 +716,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
           variant="text"
           size="small"
           startIcon={<ArrowLeft size={16} />}
-          onClick={() => navigate("/cases")}
+          onClick={() => navigate(backPath)}
           sx={{ alignSelf: "flex-start" }}
         >
-          Back to cases
+          {backLabel}
         </Button>
         <Typography variant="h5">Case not found</Typography>
         <Typography variant="body2" color="text.secondary">
@@ -771,10 +774,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
         variant="text"
         size="small"
         startIcon={<ArrowLeft size={16} />}
-        onClick={() => navigate("/cases")}
+        onClick={() => navigate(backPath)}
         sx={{ alignSelf: "flex-start" }}
       >
-        Back to cases
+        {backLabel}
       </Button>
 
       <Box
