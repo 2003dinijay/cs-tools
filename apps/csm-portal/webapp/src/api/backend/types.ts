@@ -182,6 +182,12 @@ export interface BeCaseView {
   /** Nullable: ServiceNow-sourced cases may have no deployment / product. */
   deployment?: BeEntityRef | null;
   deployedProduct?: BeDeployedProductRef | null;
+  /**
+   * The product itself (distinct from {@link deployedProduct}, the
+   * deployment-scoped instance). Populated even when no specific deployed
+   * product is linked, so it's the reliable fallback for the product name.
+   */
+  product?: BeEntityRef | null;
   /** SR catalog refs (managed-cloud); null for non-catalog cases. */
   catalog?: BeEntityRef | null;
   catalogItem?: BeEntityRef | null;
@@ -669,8 +675,68 @@ export interface BeDeployment {
   type?: BeDeploymentType;
   description?: string;
   createdBy?: string;
-  createdAt?: string;
-  updatedAt?: string;
+  createdOn?: string;
+  updatedOn?: string;
+}
+
+/**
+ * Detail-field update for `PATCH /deployments/{id}`. At least one field must be
+ * present (BE rejects an empty body). `description: null` clears the value.
+ * `active` is forbidden on this variant — use `BeDeploymentDeactivatePayload`.
+ *
+ * Per PR #957: the BE now accepts the string `type` enum directly, so
+ * `typeKey` (the old integer) is gone.
+ */
+export type BeDeploymentDetailUpdatePayload = {
+  name?: string;
+  type?: BeDeploymentType;
+  description?: string | null;
+  active?: never;
+} & ({ name: string } | { type: BeDeploymentType } | { description: string | null });
+
+/** Deactivation for `PATCH /deployments/{id}`: `active` must be `false`, alone. */
+export interface BeDeploymentDeactivatePayload {
+  active: false;
+  name?: never;
+  type?: never;
+  description?: never;
+}
+
+export type BeDeploymentUpdatePayload =
+  | BeDeploymentDetailUpdatePayload
+  | BeDeploymentDeactivatePayload;
+
+export interface BeDeploymentUpdateResponse {
+  message: string;
+  deployment: {
+    id: string;
+    updatedOn: string;
+    updatedBy: string;
+  };
+}
+
+/**
+ * Request body for `POST /deployments`. All four fields are required per the
+ * BE contract (PR #957: `type` is the string enum, `typeKey` integer is gone).
+ */
+export interface BeDeploymentCreatePayload {
+  projectId: string;
+  name: string;
+  type: BeDeploymentType;
+  description: string;
+}
+
+export interface BeDeploymentCreateResponse {
+  message: string;
+  deployment: {
+    id: string;
+    projectId: string;
+    name: string;
+    type: BeDeploymentType;
+    description: string;
+    createdOn: string;
+    createdBy: string;
+  };
 }
 
 export interface BeDeploymentSearchPayload {
@@ -750,8 +816,10 @@ export interface BeDeployedProduct {
   deployment?: BeEntityRef;
   product?: BeEntityRef;
   version?: BeDeployedProductVersion | null;
-  cores?: number | null;
-  tps?: number | null;
+  // SN-only sizing fields; the entity service returns them as strings (and
+  // always null for the Postgres data source).
+  cores?: string | null;
+  tps?: string | null;
   category?: string | null;
   createdOn?: string;
   updatedOn?: string;
