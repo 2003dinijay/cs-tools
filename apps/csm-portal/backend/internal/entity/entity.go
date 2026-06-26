@@ -101,6 +101,12 @@ func (c *Client) SearchProductVersions(ctx context.Context, productID string, bo
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/products/%s/versions/search", url.PathEscape(productID)), body)
 }
 
+// PostDeployment calls POST /deployments on the entity service to create a new deployment.
+// Response is returned as raw JSON; typed response structs are deferred.
+func (c *Client) PostDeployment(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/deployments", body)
+}
+
 // PatchDeployment calls PATCH /deployments/{id} on the entity service.
 // Response is returned as raw JSON; typed response structs are deferred.
 func (c *Client) PatchDeployment(ctx context.Context, deploymentID string, body []byte) ([]byte, error) {

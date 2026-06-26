@@ -350,6 +350,28 @@ type SearchDeploymentsResponse struct {
 	HasMore     bool             `json:"hasMore"`
 }
 
+// CreateDeploymentRequest is the input for POST /deployments.
+// All four fields are required.
+type CreateDeploymentRequest struct {
+	ProjectID   string `json:"projectId"`
+	Name        string `json:"name"`
+	TypeKey     int    `json:"typeKey"`
+	Description string `json:"description"`
+}
+
+// CreateDeploymentResponse is the response for POST /deployments.
+type CreateDeploymentResponse struct {
+	Message    string            `json:"message"`
+	Deployment CreatedDeployment `json:"deployment"`
+}
+
+// CreatedDeployment carries the key fields of a newly created deployment.
+type CreatedDeployment struct {
+	ID        string    `json:"id"`
+	CreatedOn time.Time `json:"createdOn"`
+	CreatedBy string    `json:"createdBy"`
+}
+
 // UpdateDeploymentRequest is the input for PATCH /deployments/{id}.
 // Either detail fields (Name, TypeKey, Description) or Active (to deactivate) must be provided,
 // but not both groups in the same request. Active can only be set to false.

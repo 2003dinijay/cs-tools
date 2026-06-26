@@ -865,6 +865,55 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /deployments:
+    post:
+      summary: Create a new deployment.
+      operationId: postDeployment
+      requestBody:
+        description: Deployment creation payload.
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeploymentCreatePayload'
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentCreateResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /deployments/{id}:
     patch:
       summary: Update a deployment's name, type, description, or deactivate it.
@@ -2247,6 +2296,41 @@ components:
         updatedOn:
           type: string
           format: date-time
+
+    DeploymentCreatePayload:
+      type: object
+      required: [projectId, name, typeKey, description]
+      properties:
+        projectId:
+          type: string
+          format: uuid
+          description: UUID of the project this deployment belongs to.
+        name:
+          type: string
+          description: Display name of the deployment.
+        typeKey:
+          type: integer
+          description: ServiceNow deployment type integer key.
+        description:
+          type: string
+          description: Description of the deployment.
+
+    DeploymentCreateResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        deployment:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            createdOn:
+              type: string
+              format: date-time
+            createdBy:
+              type: string
 
     DeploymentUpdatePayload:
       oneOf:
