@@ -244,6 +244,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const isEngagementRoute = location.pathname.startsWith("/engagements/");
   const backPath = isEngagementRoute ? "/engagements" : "/cases";
   const backLabel = isEngagementRoute ? "Back to engagements" : "Back to cases";
+  const detailPath = isEngagementRoute ? `/engagements/${caseId}` : `/cases/${caseId}`;
   const { data, isLoading, isError } = useGetCsmCaseDetail(caseId);
   const {
     data: comments,
@@ -369,7 +370,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
         ? `${caseIdLabel(data)} · ${data.subject}`
         : data.subject,
       subtitle: `${data.customer} · ${data.projectName}`,
-      href: `/cases/${data.id}`,
+      href: detailPath,
     });
   }, [data, recordView]);
 
@@ -551,7 +552,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
       if (action.secondary === "copy_link") {
         if (data && navigator.clipboard) {
           navigator.clipboard
-            .writeText(`${window.location.origin}/cases/${data.id}`)
+            .writeText(`${window.location.origin}${detailPath}`)
             .then(() =>
               setFeedback({
                 message: SECONDARY_TOAST.copy_link,
