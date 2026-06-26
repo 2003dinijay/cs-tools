@@ -28,7 +28,7 @@ jobs:
       issues: write
       contents: read
     steps:
-      - name: Apply labels and assignee
+      - name: Apply labels
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -71,15 +71,18 @@ jobs:
               });
             }
 
-            // Assign the PR author
-            try {
-              await github.rest.issues.addAssignees({
-                owner,
-                repo,
-                issue_number: prNumber,
-                assignees: [pr.user.login],
-              });
-              core.info(`Assigned: ${pr.user.login}`);
-            } catch (error) {
-              core.warning(`Could not assign ${pr.user.login}: ${error.message}`);
-            }
+      - name: Assign PR author
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
+            await github.rest.issues.addAssignees({
+              owner,
+              repo,
+              issue_number: pr.number,
+              assignees: [pr.user.login],
+            });
+            core.info(`Assigned: ${pr.user.login}`);
