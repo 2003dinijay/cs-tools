@@ -75,6 +75,7 @@ describe("writeCasesFiltersToUrl", () => {
       caseTypes: ["service_request"],
       assignees: ["carol@example.com"],
       projects: ["streaming"],
+      engagementTypes: [],
     };
     const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
     expect(round).toEqual(filters);
