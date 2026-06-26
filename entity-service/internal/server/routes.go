@@ -117,6 +117,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
 	mux.HandleFunc("POST /products/search", productHandler.SearchProducts)
 	mux.HandleFunc("POST /products/{id}/versions/search", productVersionHandler.SearchProductVersions)
+	mux.HandleFunc("POST /deployments", deploymentHandler.CreateDeployment)
 	mux.HandleFunc("POST /deployments/search", deploymentHandler.SearchDeployments)
 	mux.HandleFunc("PATCH /deployments/{id}", deploymentHandler.PatchDeployment)
 	mux.HandleFunc("POST /deployed-products/search", deployedProductHandler.SearchDeployedProducts)

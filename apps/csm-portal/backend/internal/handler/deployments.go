@@ -46,6 +46,7 @@ func injectDeploymentID(body []byte, deploymentID string) ([]byte, error) {
 
 // entityDeploymentClient abstracts the entity service deployment operations used by DeploymentHandler.
 type entityDeploymentClient interface {
+	PostDeployment(ctx context.Context, body []byte) ([]byte, error)
 	SearchDeployments(ctx context.Context, body []byte) ([]byte, error)
 	SearchDeployedProducts(ctx context.Context, body []byte) ([]byte, error)
 	PatchDeployment(ctx context.Context, deploymentID string, body []byte) ([]byte, error)
@@ -60,6 +61,42 @@ type DeploymentHandler struct {
 // NewDeploymentHandler creates a DeploymentHandler backed by the given entity client.
 func NewDeploymentHandler(entity entityDeploymentClient) *DeploymentHandler {
 	return &DeploymentHandler{entity: entity}
+}
+
+// PostDeployment handles POST /deployments.
+// Forwards the request body directly to the entity service and returns 201 on success.
+func (h *DeploymentHandler) PostDeployment(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
+		return
+	}
+
+	if !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.PostDeployment(r.Context(), body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity PostDeployment failed", "userID", user.UserID, "err", err)
+		mapUpstreamError(w, err, "Failed to create deployment.")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, result)
 }
 
 // PatchDeployment handles PATCH /deployments/{id}.

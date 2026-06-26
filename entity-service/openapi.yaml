@@ -249,6 +249,42 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /deployments:
+    post:
+      summary: Create a new deployment.
+      operationId: createDeployment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDeploymentRequest'
+      responses:
+        "201":
+          description: Deployment created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateDeploymentResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized — x-user-id-token header is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /deployments/{id}:
     patch:
       summary: Update a deployment's name, type, description, or deactivate it.
@@ -1275,6 +1311,44 @@ components:
         updatedOn:
           type: string
           format: date-time
+
+    CreateDeploymentRequest:
+      type: object
+      required: [projectId, name, typeKey, description]
+      properties:
+        projectId:
+          type: string
+          format: uuid
+          description: UUID of the project this deployment belongs to.
+        name:
+          type: string
+          description: Display name of the deployment.
+        typeKey:
+          type: integer
+          description: ServiceNow deployment type integer key.
+        description:
+          type: string
+          description: Description of the deployment.
+
+    CreateDeploymentResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        deployment:
+          $ref: '#/components/schemas/CreatedDeployment'
+
+    CreatedDeployment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        createdOn:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
 
     UpdateDeploymentRequest:
       oneOf:

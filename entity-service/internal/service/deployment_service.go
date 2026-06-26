@@ -34,6 +34,11 @@ func NewDeploymentService(repo repository.DeploymentRepository) DeploymentServic
 	return &deploymentService{repo: repo}
 }
 
+// CreateDeployment implements DeploymentService. Not supported for the PostgreSQL data source.
+func (s *deploymentService) CreateDeployment(_ context.Context, _ domain.CreateDeploymentRequest) (domain.CreateDeploymentResponse, error) {
+	return domain.CreateDeploymentResponse{}, &apierror.ValidationError{Msg: "CreateDeployment is not supported for the PostgreSQL data source"}
+}
+
 // UpdateDeployment implements DeploymentService. Not supported for the PostgreSQL data source.
 func (s *deploymentService) UpdateDeployment(_ context.Context, _ domain.UpdateDeploymentRequest) (domain.UpdateDeploymentResponse, error) {
 	return domain.UpdateDeploymentResponse{}, &apierror.ValidationError{Msg: "UpdateDeployment is not supported for the PostgreSQL data source"}

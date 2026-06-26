@@ -78,6 +78,9 @@ type DeploymentService interface {
 	// project IDs, deployment type keys, and name search query. A ValidationError is
 	// returned for invalid input; any other error indicates an infrastructure failure.
 	SearchDeployments(ctx context.Context, req domain.SearchDeploymentsRequest) (domain.SearchDeploymentsResponse, error)
+	// CreateDeployment creates a new deployment in ServiceNow.
+	// Supported by the ServiceNow data source only.
+	CreateDeployment(ctx context.Context, req domain.CreateDeploymentRequest) (domain.CreateDeploymentResponse, error)
 	// UpdateDeployment updates a deployment's name, type, description, or deactivates it.
 	// Either detail fields or Active=false must be provided, but not both.
 	// Supported by the ServiceNow data source only.

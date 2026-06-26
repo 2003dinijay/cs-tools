@@ -145,6 +145,75 @@ func (s *snDeploymentService) SearchDeployments(ctx context.Context, req domain.
 	}, nil
 }
 
+// snCreateDeploymentPayload is the Choreo POST /deployments request body.
+type snCreateDeploymentPayload struct {
+	ProjectID   string `json:"projectId"`
+	Name        string `json:"name"`
+	TypeKey     int    `json:"typeKey"` // always set after nil-check in CreateDeployment
+	Description string `json:"description"`
+}
+
+type snCreateDeploymentResponse struct {
+	Message    string `json:"message"`
+	Deployment struct {
+		ID        string `json:"id"`
+		CreatedOn string `json:"createdOn"`
+		CreatedBy string `json:"createdBy"`
+	} `json:"deployment"`
+}
+
+// CreateDeployment implements DeploymentService for the ServiceNow data source.
+func (s *snDeploymentService) CreateDeployment(ctx context.Context, req domain.CreateDeploymentRequest) (domain.CreateDeploymentResponse, error) {
+	if err := validateUUIDs("projectId", []string{req.ProjectID}); err != nil {
+		return domain.CreateDeploymentResponse{}, err
+	}
+	if req.Name == "" {
+		return domain.CreateDeploymentResponse{}, &apierror.ValidationError{Msg: "name is required"}
+	}
+	if req.TypeKey == nil {
+		return domain.CreateDeploymentResponse{}, &apierror.ValidationError{Msg: "typeKey is required"}
+	}
+	if req.Description == "" {
+		return domain.CreateDeploymentResponse{}, &apierror.ValidationError{Msg: "description is required"}
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.CreateDeploymentResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	payload := snCreateDeploymentPayload{
+		ProjectID:   uuidToSysid(req.ProjectID),
+		Name:        req.Name,
+		TypeKey:     *req.TypeKey,
+		Description: req.Description,
+	}
+
+	raw, err := s.client.Post(ctx, "/deployments", token, payload)
+	if err != nil {
+		return domain.CreateDeploymentResponse{}, err
+	}
+
+	var snResp snCreateDeploymentResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.CreateDeploymentResponse{}, fmt.Errorf("sn create deployment: parse response: %w", err)
+	}
+
+	createdOn, err := time.Parse(snCreatedOnLayout, snResp.Deployment.CreatedOn)
+	if err != nil {
+		return domain.CreateDeploymentResponse{}, fmt.Errorf("sn create deployment: parse createdOn %q: %w", snResp.Deployment.CreatedOn, err)
+	}
+
+	return domain.CreateDeploymentResponse{
+		Message: snResp.Message,
+		Deployment: domain.CreatedDeployment{
+			ID:        sysidToUUID(snResp.Deployment.ID),
+			CreatedOn: createdOn,
+			CreatedBy: snResp.Deployment.CreatedBy,
+		},
+	}, nil
+}
+
 // snUpdateDeploymentPayload is the Choreo PATCH /deployments/{id} request body.
 // Description is json.RawMessage so an explicit null ("description":null) can be
 // distinguished from an omitted field — omitempty drops nil RawMessage entirely.

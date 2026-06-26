@@ -35,6 +35,22 @@ func NewDeploymentHandler(svc service.DeploymentService) *DeploymentHandler {
 	return &DeploymentHandler{svc: svc}
 }
 
+// CreateDeployment handles POST /deployments.
+func (h *DeploymentHandler) CreateDeployment(w http.ResponseWriter, r *http.Request) {
+	var req domain.CreateDeploymentRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.CreateDeployment(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // PatchDeployment handles PATCH /deployments/{id}.
 // Accepts name, typeKey, description (detail fields) or active=false (deactivation), but not both groups.
 func (h *DeploymentHandler) PatchDeployment(w http.ResponseWriter, r *http.Request) {
