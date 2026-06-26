@@ -351,11 +351,12 @@ type SearchDeploymentsResponse struct {
 }
 
 // CreateDeploymentRequest is the input for POST /deployments.
-// All four fields are required.
+// All four fields are required. TypeKey uses a pointer to distinguish an omitted
+// field from an explicit value (including 0).
 type CreateDeploymentRequest struct {
 	ProjectID   string `json:"projectId"`
 	Name        string `json:"name"`
-	TypeKey     int    `json:"typeKey"`
+	TypeKey     *int   `json:"typeKey"`
 	Description string `json:"description"`
 }
 

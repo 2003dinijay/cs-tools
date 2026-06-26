@@ -149,7 +149,7 @@ func (s *snDeploymentService) SearchDeployments(ctx context.Context, req domain.
 type snCreateDeploymentPayload struct {
 	ProjectID   string `json:"projectId"`
 	Name        string `json:"name"`
-	TypeKey     int    `json:"typeKey"`
+	TypeKey     int    `json:"typeKey"` // always set after nil-check in CreateDeployment
 	Description string `json:"description"`
 }
 
@@ -170,7 +170,7 @@ func (s *snDeploymentService) CreateDeployment(ctx context.Context, req domain.C
 	if req.Name == "" {
 		return domain.CreateDeploymentResponse{}, &apierror.ValidationError{Msg: "name is required"}
 	}
-	if req.TypeKey == 0 {
+	if req.TypeKey == nil {
 		return domain.CreateDeploymentResponse{}, &apierror.ValidationError{Msg: "typeKey is required"}
 	}
 	if req.Description == "" {
@@ -185,7 +185,7 @@ func (s *snDeploymentService) CreateDeployment(ctx context.Context, req domain.C
 	payload := snCreateDeploymentPayload{
 		ProjectID:   uuidToSysid(req.ProjectID),
 		Name:        req.Name,
-		TypeKey:     req.TypeKey,
+		TypeKey:     *req.TypeKey,
 		Description: req.Description,
 	}
 
