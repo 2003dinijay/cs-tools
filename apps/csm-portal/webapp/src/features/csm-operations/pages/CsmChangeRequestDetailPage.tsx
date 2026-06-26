@@ -23,10 +23,10 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { ArrowLeft, Check, X } from "@wso2/oxygen-ui-icons-react";
-import DOMPurify from "dompurify";
 import { type JSX, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
+import { isBlankHtml, sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 import { useGetChangeRequest } from "@features/csm-operations/api/useGetChangeRequest";
 import {
   changeRequestImpactColor,
@@ -37,23 +37,6 @@ import {
 import type { BeEntityRef } from "@api/backend/types";
 
 const OPERATIONS_CR_PATH = "/operations?tab=change_requests";
-
-// CR long-text fields (description, justification, plans) come back as
-// ServiceNow rich-text HTML, so they're sanitized before rendering. Allow-list
-// mirrors the case comment renderer (CsmCaseCommentBubble).
-const PURIFY_CONFIG = {
-  ALLOWED_TAGS: [
-    "p", "br", "strong", "b", "em", "i", "u", "s", "code", "pre",
-    "ul", "ol", "li", "a", "blockquote", "h1", "h2", "h3", "img", "span", "table",
-    "thead", "tbody", "tr", "th", "td",
-  ],
-  ALLOWED_ATTR: ["href", "target", "rel", "src", "alt"],
-};
-
-/** True when an HTML string has no visible content (e.g. `<p></p>`, `&nbsp;`). */
-function isBlankHtml(html: string): boolean {
-  return html.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").trim().length === 0;
-}
 
 function formatDateTime(value?: string | null): string {
   return (
@@ -99,7 +82,7 @@ function YesNo({ value }: { value?: boolean }): JSX.Element {
  */
 function PlanSection({ title, html }: { title: string; html?: string | null }): JSX.Element | null {
   if (!html || isBlankHtml(html)) return null;
-  const safeHtml = DOMPurify.sanitize(html, PURIFY_CONFIG);
+  const safeHtml = sanitizeRichTextHtml(html);
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
       <Typography variant="subtitle2">{title}</Typography>
