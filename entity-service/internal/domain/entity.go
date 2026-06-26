@@ -353,12 +353,16 @@ type SearchDeploymentsResponse struct {
 // UpdateDeploymentRequest is the input for PATCH /deployments/{id}.
 // Either detail fields (Name, TypeKey, Description) or Active (to deactivate) must be provided,
 // but not both groups in the same request. Active can only be set to false.
+// Description uses a pointer-to-pointer to distinguish three states:
+//   - nil outer pointer: field omitted — leave description unchanged
+//   - non-nil outer, nil inner (*Description == nil): explicit null — clear the description
+//   - non-nil outer, non-nil inner: set description to the given value
 type UpdateDeploymentRequest struct {
-	ID          string  `json:"-"`
-	Name        *string `json:"name"`
-	TypeKey     *int    `json:"typeKey"`
-	Description *string `json:"description"`
-	Active      *bool   `json:"active"`
+	ID          string   `json:"-"`
+	Name        *string  `json:"name"`
+	TypeKey     *int     `json:"typeKey"`
+	Description **string `json:"description"`
+	Active      *bool    `json:"active"`
 }
 
 // UpdateDeploymentResponse is the response for PATCH /deployments/{id}.

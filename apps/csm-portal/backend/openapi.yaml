@@ -2249,19 +2249,26 @@ components:
           format: date-time
 
     DeploymentUpdatePayload:
-      type: object
-      properties:
-        name:
-          type: string
-        typeKey:
-          type: integer
-          description: ServiceNow deployment type integer key.
-        description:
-          type: string
-          nullable: true
-        active:
-          type: boolean
-          description: Can only be set to false to deactivate the deployment.
+      oneOf:
+        - description: Update deployment detail fields. At least one of name, typeKey, or description must be provided.
+          type: object
+          minProperties: 1
+          properties:
+            name:
+              type: string
+            typeKey:
+              type: integer
+              description: ServiceNow deployment type integer key.
+            description:
+              type: string
+              nullable: true
+        - description: Deactivate the deployment. active must be false; no other fields may be present.
+          type: object
+          required: [active]
+          properties:
+            active:
+              type: boolean
+              enum: [false]
 
     DeploymentUpdateResponse:
       type: object

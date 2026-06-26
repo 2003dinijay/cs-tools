@@ -146,11 +146,13 @@ func (s *snDeploymentService) SearchDeployments(ctx context.Context, req domain.
 }
 
 // snUpdateDeploymentPayload is the Choreo PATCH /deployments/{id} request body.
+// Description is json.RawMessage so an explicit null ("description":null) can be
+// distinguished from an omitted field — omitempty drops nil RawMessage entirely.
 type snUpdateDeploymentPayload struct {
-	Name        *string `json:"name,omitempty"`
-	TypeKey     *int    `json:"typeKey,omitempty"`
-	Description *string `json:"description,omitempty"`
-	Active      *bool   `json:"active,omitempty"`
+	Name        *string         `json:"name,omitempty"`
+	TypeKey     *int            `json:"typeKey,omitempty"`
+	Description json.RawMessage `json:"description,omitempty"`
+	Active      *bool           `json:"active,omitempty"`
 }
 
 type snUpdateDeploymentResponse struct {
@@ -185,10 +187,20 @@ func (s *snDeploymentService) UpdateDeployment(ctx context.Context, req domain.U
 	}
 
 	payload := snUpdateDeploymentPayload{
-		Name:        req.Name,
-		TypeKey:     req.TypeKey,
-		Description: req.Description,
-		Active:      req.Active,
+		Name:    req.Name,
+		TypeKey: req.TypeKey,
+		Active:  req.Active,
+	}
+	if req.Description != nil {
+		if *req.Description == nil {
+			payload.Description = json.RawMessage("null")
+		} else {
+			b, err := json.Marshal(**req.Description)
+			if err != nil {
+				return domain.UpdateDeploymentResponse{}, fmt.Errorf("sn update deployment: marshal description: %w", err)
+			}
+			payload.Description = b
+		}
 	}
 
 	raw, err := s.client.Patch(ctx, "/deployments/"+uuidToSysid(req.ID), token, payload)
