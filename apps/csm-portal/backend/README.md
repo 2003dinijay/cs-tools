@@ -213,7 +213,7 @@ backend/
 
 ### Time Cards
 
-- `POST /time-cards/search` — Search time cards; requires `pagination`, optional `filters` (`projectIds`, `startDate`, `endDate`, `states`) (ServiceNow data source only)
+- `POST /time-cards/search` — Search time cards; optional `pagination` and `filters` (`projectIds`, `startDate`, `endDate`, `states`) (ServiceNow data source only)
 
 ### Catalogs
 

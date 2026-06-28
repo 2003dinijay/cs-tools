@@ -1887,6 +1887,7 @@ components:
 
     PatchChangeRequestPayload:
       type: object
+      minProperties: 1
       properties:
         plannedStartOn:
           type: string

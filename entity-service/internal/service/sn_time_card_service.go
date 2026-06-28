@@ -59,7 +59,7 @@ var snTimeCardStateLabelToDomain = map[string]string{
 }
 
 type snTimeCardSearchPayload struct {
-	Filters    snTimeCardFilters   `json:"filters,omitempty"`
+	Filters    *snTimeCardFilters  `json:"filters,omitempty"`
 	Pagination snProjectPagination `json:"pagination"`
 }
 
@@ -179,16 +179,17 @@ func (s *snTimeCardService) SearchTimeCards(ctx context.Context, req domain.Sear
 			snStates = append(snStates, snTimeCardStateLabelToSN[state])
 		}
 
-		payload.Filters = snTimeCardFilters{
+		filters := snTimeCardFilters{
 			ProjectIDs: uuidsToSysids(req.Filters.ProjectIDs),
 			States:     snStates,
 		}
 		if req.Filters.StartDate != nil {
-			payload.Filters.StartDate = *req.Filters.StartDate
+			filters.StartDate = *req.Filters.StartDate
 		}
 		if req.Filters.EndDate != nil {
-			payload.Filters.EndDate = *req.Filters.EndDate
+			filters.EndDate = *req.Filters.EndDate
 		}
+		payload.Filters = &filters
 	}
 
 	raw, err := s.client.Post(ctx, "/time-cards/search", token, payload)
@@ -209,7 +210,7 @@ func (s *snTimeCardService) SearchTimeCards(ctx context.Context, req domain.Sear
 	return domain.SearchTimeCardsResponse{
 		TimeCards: views,
 		Total:     snResp.TotalRecords,
-		Limit:     req.Pagination.Limit,
-		Offset:    req.Pagination.Offset,
+		Limit:     snResp.Limit,
+		Offset:    snResp.Offset,
 	}, nil
 }
