@@ -2669,9 +2669,11 @@ components:
         id:
           type: string
           format: uuid
-        caseId:
+        referenceId:
           type: string
           format: uuid
+        referenceType:
+          $ref: '#/components/schemas/ReferenceType'
         name:
           type: string
         type:

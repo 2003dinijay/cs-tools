@@ -917,11 +917,12 @@ type SearchCaseCommentsResponse struct {
 	HasMore  bool          `json:"hasMore"`
 }
 
-// Attachment represents a file attachment linked to a case.
+// Attachment represents a file attachment linked to a reference entity.
 type Attachment struct {
-	ID          string    `json:"id"`
-	CaseID      string    `json:"caseId"`
-	Name        string    `json:"name"`
+	ID            string        `json:"id"`
+	ReferenceID   string        `json:"referenceId"`
+	ReferenceType ReferenceType `json:"referenceType"`
+	Name          string        `json:"name"`
 	Type        string    `json:"type"`
 	SizeBytes   int       `json:"sizeBytes"`
 	Description *string   `json:"description"`

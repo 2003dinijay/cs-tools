@@ -1088,9 +1088,10 @@ func (s *snCaseService) SearchCaseAttachments(ctx context.Context, req domain.Se
 			return domain.SearchAttachmentsResponse{}, fmt.Errorf("sn search attachments: parse createdOn %q: %w", a.CreatedOn, err)
 		}
 		attachments = append(attachments, domain.Attachment{
-			ID:          sysidToUUID(a.ID),
-			CaseID:      sysidToUUID(a.ReferenceID),
-			Name:        a.Name,
+			ID:            sysidToUUID(a.ID),
+			ReferenceID:   sysidToUUID(a.ReferenceID),
+			ReferenceType: req.ReferenceType,
+			Name:          a.Name,
 			Type:        a.Type,
 			SizeBytes:   a.SizeBytes,
 			Description: a.Description,
