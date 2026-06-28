@@ -145,11 +145,18 @@ type CatalogService interface {
 type ChangeRequestService interface {
 	// SearchChangeRequests returns a paginated list of change requests filtered by optional
 	// project IDs, state keys, impact keys, date ranges, and search query.
-	// A ValidationError is returned for invalid input; any other error indicates an
-	// infrastructure failure.
 	SearchChangeRequests(ctx context.Context, req domain.SearchChangeRequestsRequest) (domain.SearchChangeRequestsResponse, error)
 
 	// GetChangeRequest returns the full detail of a single change request by its UUID.
-	// A NotFoundError is returned if the change request does not exist.
 	GetChangeRequest(ctx context.Context, id string) (domain.ChangeRequest, error)
+
+	// PatchChangeRequest updates mutable fields on a change request identified by UUID.
+	PatchChangeRequest(ctx context.Context, id string, req domain.PatchChangeRequestRequest) (domain.PatchChangeRequestResponse, error)
+}
+
+// TimeCardService defines the operations available on the time-cards entity.
+type TimeCardService interface {
+	// SearchTimeCards returns a paginated list of time cards filtered by optional
+	// project IDs, date range, and states.
+	SearchTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) (domain.SearchTimeCardsResponse, error)
 }

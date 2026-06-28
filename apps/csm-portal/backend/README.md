@@ -202,7 +202,12 @@ backend/
 ### Change Requests
 
 - `GET /change-requests/{id}` — Get change request by ID (ServiceNow data source only)
+- `PATCH /change-requests/{id}` — Update a change request (`plannedStartOn`, `isCustomerApproved`, `isCustomerReviewed`; ServiceNow data source only)
 - `POST /change-requests/search` — Search change requests (ServiceNow data source only)
+
+### Time Cards
+
+- `POST /time-cards/search` — Search time cards; requires `pagination`, optional `filters` (`projectIds`, `startDate`, `endDate`, `states`) (ServiceNow data source only)
 
 ### Catalogs
 

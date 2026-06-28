@@ -102,6 +102,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		changeRequestHandler = handler.NewChangeRequestHandler(service.NewServiceNowChangeRequestService(serviceNowIntegrationServiceClient))
 	}
 
+	var timeCardHandler *handler.TimeCardHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		timeCardHandler = handler.NewTimeCardHandler(service.NewServiceNowTimeCardService(serviceNowIntegrationServiceClient))
+	}
+
 	var catalogHandler *handler.CatalogHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		catalogHandler = handler.NewCatalogHandler(service.NewServiceNowCatalogService(serviceNowIntegrationServiceClient))
@@ -134,6 +139,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	if changeRequestHandler != nil {
 		mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
 		mux.HandleFunc("GET /change-requests/{id}", changeRequestHandler.GetChangeRequest)
+		mux.HandleFunc("PATCH /change-requests/{id}", changeRequestHandler.PatchChangeRequest)
+	}
+
+	if timeCardHandler != nil {
+		mux.HandleFunc("POST /time-cards/search", timeCardHandler.SearchTimeCards)
 	}
 
 	if catalogHandler != nil {

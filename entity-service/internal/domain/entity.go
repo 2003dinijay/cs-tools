@@ -1065,6 +1065,75 @@ type GetCatalogItemVariablesResponse struct {
 	Variables []CatalogItemVariable `json:"variables"`
 }
 
+// PatchChangeRequestRequest is the request body for PATCH /change-requests/{id}.
+type PatchChangeRequestRequest struct {
+	PlannedStartOn     *string `json:"plannedStartOn,omitempty"`
+	IsCustomerApproved *bool   `json:"isCustomerApproved,omitempty"`
+	IsCustomerReviewed *bool   `json:"isCustomerReviewed,omitempty"`
+}
+
+// PatchChangeRequestResponse is the response for PATCH /change-requests/{id}.
+type PatchChangeRequestResponse struct {
+	ID        string `json:"id"`
+	UpdatedOn string `json:"updatedOn"`
+	UpdatedBy string `json:"updatedBy"`
+}
+
+// TimeCardState represents the workflow state of a time card.
+type TimeCardState string
+
+const (
+	TimeCardStateApproved TimeCardState = "approved"
+)
+
+// SearchTimeCardsFilters holds optional filter criteria for POST /time-cards/search.
+type SearchTimeCardsFilters struct {
+	ProjectIDs []string        `json:"projectIds,omitempty"`
+	StartDate  *string         `json:"startDate,omitempty"`
+	EndDate    *string         `json:"endDate,omitempty"`
+	States     []TimeCardState `json:"states,omitempty"`
+}
+
+// SearchTimeCardsRequest is the request body for POST /time-cards/search.
+type SearchTimeCardsRequest struct {
+	Filters    *SearchTimeCardsFilters `json:"filters,omitempty"`
+	Pagination Pagination              `json:"pagination"`
+}
+
+// TimeCardRef is a lightweight reference used for user, approvedBy, and project fields.
+type TimeCardRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// TimeCardCaseRef is a reference to the case associated with a time card.
+type TimeCardCaseRef struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Number string `json:"number"`
+}
+
+// TimeCardView is a single time card in search results.
+type TimeCardView struct {
+	ID          string           `json:"id"`
+	TotalTime   float64          `json:"totalTime"`
+	CreatedOn   string           `json:"createdOn"`
+	HasBillable bool             `json:"hasBillable"`
+	State       *string          `json:"state"`
+	User        *TimeCardRef     `json:"user"`
+	ApprovedBy  *TimeCardRef     `json:"approvedBy"`
+	Project     *TimeCardRef     `json:"project"`
+	Case        *TimeCardCaseRef `json:"case"`
+}
+
+// SearchTimeCardsResponse is the response for POST /time-cards/search.
+type SearchTimeCardsResponse struct {
+	TimeCards []TimeCardView `json:"timeCards"`
+	Total     int            `json:"total"`
+	Limit     int            `json:"limit"`
+	Offset    int            `json:"offset"`
+}
+
 // ChangeRequest is the full change request detail returned by GET /change-requests/{id}.
 // It extends SearchChangeRequestView with additional fields.
 type ChangeRequest struct {

@@ -358,6 +358,60 @@ func (s *snChangeRequestService) SearchChangeRequests(ctx context.Context, req d
 	}, nil
 }
 
+// snPatchChangeRequestPayload mirrors the Choreo PATCH /change-requests/{id} request body.
+type snPatchChangeRequestPayload struct {
+	PlannedStartOn     *string `json:"plannedStartOn,omitempty"`
+	IsCustomerApproved *bool   `json:"isCustomerApproved,omitempty"`
+	IsCustomerReviewed *bool   `json:"isCustomerReviewed,omitempty"`
+}
+
+// snPatchChangeRequestResponse mirrors the Choreo PATCH /change-requests/{id} response.
+type snPatchChangeRequestResponse struct {
+	Message       string `json:"message"`
+	ChangeRequest struct {
+		ID        string `json:"id"`
+		UpdatedOn string `json:"updatedOn"`
+		UpdatedBy string `json:"updatedBy"`
+	} `json:"changeRequest"`
+}
+
+func (s *snChangeRequestService) PatchChangeRequest(ctx context.Context, id string, req domain.PatchChangeRequestRequest) (domain.PatchChangeRequestResponse, error) {
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.PatchChangeRequestResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.PatchChangeRequestResponse{}, err
+	}
+
+	if req.PlannedStartOn == nil && req.IsCustomerApproved == nil && req.IsCustomerReviewed == nil {
+		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "at least one field must be provided"}
+	}
+
+	payload := snPatchChangeRequestPayload{
+		PlannedStartOn:     req.PlannedStartOn,
+		IsCustomerApproved: req.IsCustomerApproved,
+		IsCustomerReviewed: req.IsCustomerReviewed,
+	}
+
+	raw, err := s.client.Patch(ctx, "/change-requests/"+uuidToSysid(id), token, payload)
+	if err != nil {
+		return domain.PatchChangeRequestResponse{}, err
+	}
+
+	var snResp snPatchChangeRequestResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.PatchChangeRequestResponse{}, fmt.Errorf("sn patch change request: parse response: %w", err)
+	}
+
+	return domain.PatchChangeRequestResponse{
+		ID:        sysidToUUID(snResp.ChangeRequest.ID),
+		UpdatedOn: snResp.ChangeRequest.UpdatedOn,
+		UpdatedBy: snResp.ChangeRequest.UpdatedBy,
+	}, nil
+}
+
 // snChangeRequestDetail mirrors the Choreo GET /change-requests/{id} response.
 type snChangeRequestDetail struct {
 	snChangeRequest

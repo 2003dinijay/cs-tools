@@ -31,6 +31,7 @@ import (
 type entityChangeRequestClient interface {
 	SearchChangeRequests(ctx context.Context, body []byte) ([]byte, error)
 	GetChangeRequest(ctx context.Context, id string) ([]byte, error)
+	PatchChangeRequest(ctx context.Context, id string, body []byte) ([]byte, error)
 }
 
 // ChangeRequestHandler handles HTTP requests for change-request operations.
@@ -41,6 +42,47 @@ type ChangeRequestHandler struct {
 // NewChangeRequestHandler creates a ChangeRequestHandler backed by the given entity client.
 func NewChangeRequestHandler(entity entityChangeRequestClient) *ChangeRequestHandler {
 	return &ChangeRequestHandler{entity: entity}
+}
+
+// PatchChangeRequest handles PATCH /change-requests/{id}.
+func (h *ChangeRequestHandler) PatchChangeRequest(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
+		return
+	}
+
+	if len(body) > 0 && !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.PatchChangeRequest(r.Context(), id, body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity PatchChangeRequest failed", "userID", user.UserID, "id", id, "err", err)
+		mapUpstreamError(w, err, "Failed to update change request.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 // GetChangeRequest handles GET /change-requests/{id}.

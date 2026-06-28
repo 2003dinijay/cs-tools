@@ -49,6 +49,22 @@ func (h *ChangeRequestHandler) SearchChangeRequests(w http.ResponseWriter, r *ht
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// PatchChangeRequest handles PATCH /change-requests/{id}.
+func (h *ChangeRequestHandler) PatchChangeRequest(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req domain.PatchChangeRequestRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.PatchChangeRequest(r.Context(), id, req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // GetChangeRequest handles GET /change-requests/{id}.
 func (h *ChangeRequestHandler) GetChangeRequest(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
