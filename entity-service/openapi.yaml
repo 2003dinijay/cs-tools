@@ -2558,7 +2558,7 @@ components:
       properties:
         searchQuery:
           type: string
-        priorityKey:
+        priority:
           $ref: '#/components/schemas/VulnerabilityPriority'
         productName:
           type: string

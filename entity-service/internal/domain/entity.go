@@ -1097,7 +1097,7 @@ const (
 // SearchProductVulnerabilitiesFilters holds optional filter fields for a vulnerability search.
 type SearchProductVulnerabilitiesFilters struct {
 	SearchQuery    string                 `json:"searchQuery,omitempty"`
-	PriorityKey    *VulnerabilityPriority `json:"priorityKey,omitempty"`
+	Priority       *VulnerabilityPriority `json:"priority,omitempty"`
 	ProductName    string                 `json:"productName,omitempty"`
 	ProductVersion string                 `json:"productVersion,omitempty"`
 }
