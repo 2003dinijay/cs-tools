@@ -79,6 +79,163 @@ func NewServiceNowDeployedProductService(client *integrationservice.Client) Depl
 	return &snDeployedProductService{client: client}
 }
 
+// snCreateDeployedProductPayload is the Choreo POST /deployed-products request body.
+type snCreateDeployedProductPayload struct {
+	ProjectID    string `json:"projectId"`
+	DeploymentID string `json:"deploymentId"`
+	ProductID    string `json:"productId"`
+	VersionID    string `json:"versionId"`
+	Cores        *int   `json:"cores,omitempty"`
+	TPS          *int   `json:"tps,omitempty"`
+	Description  *string `json:"description,omitempty"`
+}
+
+type snCreateDeployedProductResponse struct {
+	Message         string `json:"message"`
+	DeployedProduct struct {
+		ID        string `json:"id"`
+		CreatedOn string `json:"createdOn"`
+		CreatedBy string `json:"createdBy"`
+	} `json:"deployedProduct"`
+}
+
+// snUpdateDeployedProductPayload is the Choreo PATCH /deployed-products/{id} request body.
+// Description is json.RawMessage so an explicit null can be distinguished from an omitted field.
+type snUpdateDeployedProductPayload struct {
+	Cores       *int            `json:"cores,omitempty"`
+	TPS         *int            `json:"tps,omitempty"`
+	Description json.RawMessage `json:"description,omitempty"`
+	Active      *bool           `json:"active,omitempty"`
+}
+
+type snUpdateDeployedProductResponse struct {
+	Message         string `json:"message"`
+	DeployedProduct struct {
+		ID        string `json:"id"`
+		UpdatedOn string `json:"updatedOn"`
+		UpdatedBy string `json:"updatedBy"`
+	} `json:"deployedProduct"`
+}
+
+// CreateDeployedProduct implements DeployedProductService for the ServiceNow data source.
+func (s *snDeployedProductService) CreateDeployedProduct(ctx context.Context, req domain.CreateDeployedProductRequest) (domain.CreateDeployedProductResponse, error) {
+	if err := validateUUIDs("projectId", []string{req.ProjectID}); err != nil {
+		return domain.CreateDeployedProductResponse{}, err
+	}
+	if err := validateUUIDs("deploymentId", []string{req.DeploymentID}); err != nil {
+		return domain.CreateDeployedProductResponse{}, err
+	}
+	if err := validateUUIDs("productId", []string{req.ProductID}); err != nil {
+		return domain.CreateDeployedProductResponse{}, err
+	}
+	if err := validateUUIDs("versionId", []string{req.VersionID}); err != nil {
+		return domain.CreateDeployedProductResponse{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.CreateDeployedProductResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	payload := snCreateDeployedProductPayload{
+		ProjectID:    uuidToSysid(req.ProjectID),
+		DeploymentID: uuidToSysid(req.DeploymentID),
+		ProductID:    uuidToSysid(req.ProductID),
+		VersionID:    uuidToSysid(req.VersionID),
+		Cores:        req.Cores,
+		TPS:          req.TPS,
+		Description:  req.Description,
+	}
+
+	raw, err := s.client.Post(ctx, "/deployed-products", token, payload)
+	if err != nil {
+		return domain.CreateDeployedProductResponse{}, err
+	}
+
+	var snResp snCreateDeployedProductResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.CreateDeployedProductResponse{}, fmt.Errorf("sn create deployed product: parse response: %w", err)
+	}
+
+	createdOn, err := time.Parse(snCreatedOnLayout, snResp.DeployedProduct.CreatedOn)
+	if err != nil {
+		return domain.CreateDeployedProductResponse{}, fmt.Errorf("sn create deployed product: parse createdOn %q: %w", snResp.DeployedProduct.CreatedOn, err)
+	}
+
+	return domain.CreateDeployedProductResponse{
+		Message: snResp.Message,
+		DeployedProduct: domain.CreatedDeployedProduct{
+			ID:        sysidToUUID(snResp.DeployedProduct.ID),
+			CreatedOn: createdOn,
+			CreatedBy: snResp.DeployedProduct.CreatedBy,
+		},
+	}, nil
+}
+
+// UpdateDeployedProduct implements DeployedProductService for the ServiceNow data source.
+func (s *snDeployedProductService) UpdateDeployedProduct(ctx context.Context, req domain.UpdateDeployedProductRequest) (domain.UpdateDeployedProductResponse, error) {
+	if err := validateUUIDs("id", []string{req.ID}); err != nil {
+		return domain.UpdateDeployedProductResponse{}, err
+	}
+
+	hasDetailFields := req.Cores != nil || req.TPS != nil || req.Description != nil
+	if !hasDetailFields && req.Active == nil {
+		return domain.UpdateDeployedProductResponse{}, &apierror.ValidationError{Msg: "at least one of cores, tps, or description must be provided, or active must be set to false"}
+	}
+	if req.Active != nil && *req.Active {
+		return domain.UpdateDeployedProductResponse{}, &apierror.ValidationError{Msg: "active can only be set to false"}
+	}
+	if req.Active != nil && hasDetailFields {
+		return domain.UpdateDeployedProductResponse{}, &apierror.ValidationError{Msg: "cores, tps, and description must not be provided when deactivating"}
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.UpdateDeployedProductResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	payload := snUpdateDeployedProductPayload{
+		Cores:  req.Cores,
+		TPS:    req.TPS,
+		Active: req.Active,
+	}
+	if req.Description != nil {
+		if *req.Description == nil {
+			payload.Description = json.RawMessage("null")
+		} else {
+			b, err := json.Marshal(**req.Description)
+			if err != nil {
+				return domain.UpdateDeployedProductResponse{}, fmt.Errorf("sn update deployed product: marshal description: %w", err)
+			}
+			payload.Description = b
+		}
+	}
+
+	raw, err := s.client.Patch(ctx, "/deployed-products/"+uuidToSysid(req.ID), token, payload)
+	if err != nil {
+		return domain.UpdateDeployedProductResponse{}, err
+	}
+
+	var snResp snUpdateDeployedProductResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.UpdateDeployedProductResponse{}, fmt.Errorf("sn update deployed product: parse response: %w", err)
+	}
+
+	updatedOn, err := time.Parse(snCreatedOnLayout, snResp.DeployedProduct.UpdatedOn)
+	if err != nil {
+		return domain.UpdateDeployedProductResponse{}, fmt.Errorf("sn update deployed product: parse updatedOn %q: %w", snResp.DeployedProduct.UpdatedOn, err)
+	}
+
+	return domain.UpdateDeployedProductResponse{
+		Message: snResp.Message,
+		DeployedProduct: domain.UpdatedDeployedProduct{
+			ID:        sysidToUUID(snResp.DeployedProduct.ID),
+			UpdatedOn: updatedOn,
+			UpdatedBy: snResp.DeployedProduct.UpdatedBy,
+		},
+	}, nil
+}
+
 // SearchDeployedProducts implements DeployedProductService.
 func (s *snDeployedProductService) SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) (domain.SearchDeployedProductsResponse, error) {
 	if err := normalizePagination(&req.Pagination); err != nil {

@@ -450,6 +450,55 @@ type SearchDeployedProductsResponse struct {
 	HasMore          bool                  `json:"hasMore"`
 }
 
+// CreateDeployedProductRequest is the input for POST /deployed-products.
+// ProjectID, DeploymentID, ProductID, and VersionID are required.
+type CreateDeployedProductRequest struct {
+	ProjectID    string  `json:"projectId"`
+	DeploymentID string  `json:"deploymentId"`
+	ProductID    string  `json:"productId"`
+	VersionID    string  `json:"versionId"`
+	Cores        *int    `json:"cores"`
+	TPS          *int    `json:"tps"`
+	Description  *string `json:"description"`
+}
+
+// CreateDeployedProductResponse is the response for POST /deployed-products.
+type CreateDeployedProductResponse struct {
+	Message         string                 `json:"message"`
+	DeployedProduct CreatedDeployedProduct `json:"deployedProduct"`
+}
+
+// CreatedDeployedProduct carries the key fields of a newly created deployed product.
+type CreatedDeployedProduct struct {
+	ID        string    `json:"id"`
+	CreatedOn time.Time `json:"createdOn"`
+	CreatedBy string    `json:"createdBy"`
+}
+
+// UpdateDeployedProductRequest is the input for PATCH /deployed-products/{id}.
+// Either detail fields (Cores, TPS, Description) or Active=false must be provided, but not both.
+// Description uses **string so nil means omit, *nil means clear, and *"val" means set.
+type UpdateDeployedProductRequest struct {
+	ID          string   `json:"-"`
+	Cores       *int     `json:"cores"`
+	TPS         *int     `json:"tps"`
+	Description **string `json:"description"`
+	Active      *bool    `json:"active"`
+}
+
+// UpdateDeployedProductResponse is the response for PATCH /deployed-products/{id}.
+type UpdateDeployedProductResponse struct {
+	Message         string                 `json:"message"`
+	DeployedProduct UpdatedDeployedProduct `json:"deployedProduct"`
+}
+
+// UpdatedDeployedProduct carries the fields that may change after an update.
+type UpdatedDeployedProduct struct {
+	ID        string    `json:"id"`
+	UpdatedOn time.Time `json:"updatedOn"`
+	UpdatedBy string    `json:"updatedBy"`
+}
+
 // CaseIssueType classifies the nature of a support case.
 type CaseIssueType string
 
