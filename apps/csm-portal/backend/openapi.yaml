@@ -3358,12 +3358,14 @@ components:
 
     AttachmentCreatePayload:
       type: object
-      required: [caseId, name, type, file]
+      required: [referenceId, referenceType, name, type, file]
       properties:
-        caseId:
+        referenceId:
           type: string
           format: uuid
-          description: UUID of the case to attach the file to.
+          description: UUID of the reference entity (case, change request, etc.)
+        referenceType:
+          $ref: '#/components/schemas/ReferenceType'
         name:
           type: string
           description: File name including extension.

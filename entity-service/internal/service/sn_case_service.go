@@ -972,9 +972,16 @@ func (s *snCaseService) CreateCaseAttachment(ctx context.Context, req domain.Cre
 		return domain.CreateAttachmentResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
 	}
 
+	if err := validateUUIDs("referenceId", []string{req.ReferenceID}); err != nil {
+		return domain.CreateAttachmentResponse{}, err
+	}
+	if _, ok := validReferenceTypes[req.ReferenceType]; !ok {
+		return domain.CreateAttachmentResponse{}, &apierror.ValidationError{Msg: "referenceType is invalid: " + string(req.ReferenceType)}
+	}
+
 	payload := snCreateAttachmentPayload{
-		ReferenceID:   uuidToSysid(req.CaseID),
-		ReferenceType: "case",
+		ReferenceID:   uuidToSysid(req.ReferenceID),
+		ReferenceType: string(req.ReferenceType),
 		Name:          req.Name,
 		Type:          req.Type,
 		File:          rawBase64,

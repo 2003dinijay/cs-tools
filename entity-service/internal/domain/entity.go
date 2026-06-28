@@ -933,11 +933,12 @@ type Attachment struct {
 
 // CreateAttachmentRequest is the input for POST /attachments.
 type CreateAttachmentRequest struct {
-	CaseID      string  `json:"caseId"`
-	Name        string  `json:"name"`
-	Type        string  `json:"type"`
-	File        string  `json:"file"`
-	Description *string `json:"description"`
+	ReferenceID   string        `json:"referenceId"`
+	ReferenceType ReferenceType `json:"referenceType"`
+	Name          string        `json:"name"`
+	Type          string        `json:"type"`
+	File          string        `json:"file"`
+	Description   *string       `json:"description"`
 }
 
 // AttachmentDetail holds the core fields returned after creating an attachment.
