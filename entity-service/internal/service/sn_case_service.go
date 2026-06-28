@@ -1090,7 +1090,7 @@ func (s *snCaseService) SearchCaseAttachments(ctx context.Context, req domain.Se
 	}, nil
 }
 
-func (s *snCaseService) GetCaseAttachmentContent(ctx context.Context, _, attachmentID string) ([]byte, string, error) {
+func (s *snCaseService) GetCaseAttachmentContent(ctx context.Context, attachmentID string) ([]byte, string, error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
 		return nil, "", &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}

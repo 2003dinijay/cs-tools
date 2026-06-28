@@ -322,18 +322,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /cases/{id}/attachments:
+  /attachments:
     post:
       summary: Upload a file attachment to a case.
-      operationId: postCasesIdAttachments
-      parameters:
-        - name: id
-          in: path
-          description: UUID of the case.
-          required: true
-          schema:
-            type: string
-            format: uuid
+      operationId: postAttachments
       requestBody:
         description: Attachment upload payload. The file must be a base64 data URI (max 10 MB decoded).
         required: true
@@ -385,18 +377,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /cases/{id}/attachments/search:
+  /attachments/search:
     post:
       summary: Search attachments linked to a case.
-      operationId: postCasesIdAttachmentsSearch
-      parameters:
-        - name: id
-          in: path
-          description: UUID of the case.
-          required: true
-          schema:
-            type: string
-            format: uuid
+      operationId: postAttachmentsSearch
       requestBody:
         description: Attachment search payload.
         required: true
@@ -442,19 +426,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /cases/{case_id}/attachments/{attachment_id}/content:
+  /attachments/{attachmentId}/content:
     get:
       summary: Download the binary content of a case attachment.
       operationId: getCaseAttachmentContent
       parameters:
-        - name: case_id
-          in: path
-          description: UUID of the case.
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: attachment_id
+        - name: attachmentId
           in: path
           description: UUID of the attachment.
           required: true
@@ -500,18 +477,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /cases/{id}/attachments/{attachmentId}:
+  /attachments/{attachmentId}:
     delete:
       summary: Delete a case attachment (ServiceNow data source only).
       operationId: deleteCaseAttachment
       parameters:
-        - name: id
-          in: path
-          description: UUID of the case.
-          required: true
-          schema:
-            type: string
-            format: uuid
         - name: attachmentId
           in: path
           description: UUID of the attachment.
@@ -3388,8 +3358,12 @@ components:
 
     AttachmentCreatePayload:
       type: object
-      required: [name, type, file]
+      required: [caseId, name, type, file]
       properties:
+        caseId:
+          type: string
+          format: uuid
+          description: UUID of the case to attach the file to.
         name:
           type: string
           description: File name including extension.
@@ -3459,8 +3433,12 @@ components:
 
     AttachmentSearchPayload:
       type: object
-      nullable: true
+      required: [caseId]
       properties:
+        caseId:
+          type: string
+          format: uuid
+          description: UUID of the case whose attachments to search.
         pagination:
           allOf:
             - $ref: '#/components/schemas/Pagination'

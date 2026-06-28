@@ -161,28 +161,28 @@ func (c *Client) SearchTimeCards(ctx context.Context, body []byte) ([]byte, erro
 	return c.do(ctx, http.MethodPost, "/time-cards/search", body)
 }
 
-// CreateCaseAttachment calls POST /cases/{id}/attachments on the entity service.
+// CreateCaseAttachment calls POST /attachments on the entity service.
 // Response is returned as raw JSON.
-func (c *Client) CreateCaseAttachment(ctx context.Context, caseID string, body []byte) ([]byte, error) {
-	return c.do(ctx, http.MethodPost, fmt.Sprintf("/cases/%s/attachments", url.PathEscape(caseID)), body)
+func (c *Client) CreateCaseAttachment(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/attachments", body)
 }
 
-// SearchCaseAttachments calls POST /cases/{id}/attachments/search on the entity service.
+// SearchCaseAttachments calls POST /attachments/search on the entity service.
 // Response is returned as raw JSON.
-func (c *Client) SearchCaseAttachments(ctx context.Context, caseID string, body []byte) ([]byte, error) {
-	return c.do(ctx, http.MethodPost, fmt.Sprintf("/cases/%s/attachments/search", url.PathEscape(caseID)), body)
+func (c *Client) SearchCaseAttachments(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/attachments/search", body)
 }
 
-// GetCaseAttachmentContent calls GET /cases/{case_id}/attachments/{attachment_id}/content
+// GetCaseAttachmentContent calls GET /attachments/{attachmentId}/content
 // and returns the raw binary body with its Content-Type.
-func (c *Client) GetCaseAttachmentContent(ctx context.Context, caseID, attachmentID string) ([]byte, string, error) {
-	return c.doBinary(ctx, fmt.Sprintf("/cases/%s/attachments/%s/content", url.PathEscape(caseID), url.PathEscape(attachmentID)))
+func (c *Client) GetCaseAttachmentContent(ctx context.Context, attachmentID string) ([]byte, string, error) {
+	return c.doBinary(ctx, fmt.Sprintf("/attachments/%s/content", url.PathEscape(attachmentID)))
 }
 
-// DeleteCaseAttachment calls DELETE /cases/{id}/attachments/{attachmentId} on the entity service.
+// DeleteCaseAttachment calls DELETE /attachments/{attachmentId} on the entity service.
 // Response is returned as raw JSON.
-func (c *Client) DeleteCaseAttachment(ctx context.Context, caseID, attachmentID string) ([]byte, error) {
-	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/cases/%s/attachments/%s", url.PathEscape(caseID), url.PathEscape(attachmentID)), nil)
+func (c *Client) DeleteCaseAttachment(ctx context.Context, attachmentID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/attachments/%s", url.PathEscape(attachmentID)), nil)
 }
 
 // SearchCatalogs calls POST /catalogs/search on the entity service.

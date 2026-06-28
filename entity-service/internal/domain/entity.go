@@ -931,10 +931,9 @@ type Attachment struct {
 	PreviewURL  *string   `json:"previewUrl"`
 }
 
-// CreateAttachmentRequest is the input for POST /cases/{id}/attachments.
-// CaseID is populated from the URL path parameter and is not part of the JSON body.
+// CreateAttachmentRequest is the input for POST /attachments.
 type CreateAttachmentRequest struct {
-	CaseID      string  `json:"-"`
+	CaseID      string  `json:"caseId"`
 	Name        string  `json:"name"`
 	Type        string  `json:"type"`
 	File        string  `json:"file"`
@@ -956,10 +955,9 @@ type CreateAttachmentResponse struct {
 	Attachment AttachmentDetail `json:"attachment"`
 }
 
-// SearchAttachmentsRequest is the input for POST /cases/{id}/attachments/search.
-// CaseID is populated from the URL path parameter and is not part of the JSON body.
+// SearchAttachmentsRequest is the input for POST /attachments/search.
 type SearchAttachmentsRequest struct {
-	CaseID     string     `json:"-"`
+	CaseID     string     `json:"caseId"`
 	Pagination Pagination `json:"pagination"`
 }
 
@@ -973,10 +971,8 @@ type SearchAttachmentsResponse struct {
 	HasMore     bool         `json:"hasMore"`
 }
 
-// DeleteAttachmentRequest is the input for DELETE /cases/{id}/attachments/{attachmentId}.
-// Both IDs are injected from URL path parameters.
+// DeleteAttachmentRequest is the input for DELETE /attachments/{attachmentId}.
 type DeleteAttachmentRequest struct {
-	CaseID       string `json:"-"`
 	AttachmentID string `json:"-"`
 }
 

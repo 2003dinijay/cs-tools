@@ -91,10 +91,10 @@ type mockEntityCaseClient struct {
 	searchCaseCommentsFn       func(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	searchCasesFn              func(ctx context.Context, body []byte) ([]byte, error)
 	getCaseFn                  func(ctx context.Context, caseID string) ([]byte, error)
-	createCaseAttachmentFn     func(ctx context.Context, caseID string, body []byte) ([]byte, error)
-	searchCaseAttachmentsFn    func(ctx context.Context, caseID string, body []byte) ([]byte, error)
-	getCaseAttachmentContentFn func(ctx context.Context, caseID, attachmentID string) ([]byte, string, error)
-	deleteCaseAttachmentFn     func(ctx context.Context, caseID, attachmentID string) ([]byte, error)
+	createCaseAttachmentFn     func(ctx context.Context, body []byte) ([]byte, error)
+	searchCaseAttachmentsFn    func(ctx context.Context, body []byte) ([]byte, error)
+	getCaseAttachmentContentFn func(ctx context.Context, attachmentID string) ([]byte, string, error)
+	deleteCaseAttachmentFn     func(ctx context.Context, attachmentID string) ([]byte, error)
 	createCallRequestFn        func(ctx context.Context, body []byte) ([]byte, error)
 	searchCallRequestsFn       func(ctx context.Context, body []byte) ([]byte, error)
 	patchCallRequestFn         func(ctx context.Context, callRequestID string, body []byte) ([]byte, error)
@@ -142,30 +142,30 @@ func (m *mockEntityCaseClient) GetCase(ctx context.Context, caseID string) ([]by
 	return []byte(`{}`), nil
 }
 
-func (m *mockEntityCaseClient) CreateCaseAttachment(ctx context.Context, caseID string, body []byte) ([]byte, error) {
+func (m *mockEntityCaseClient) CreateCaseAttachment(ctx context.Context, body []byte) ([]byte, error) {
 	if m.createCaseAttachmentFn != nil {
-		return m.createCaseAttachmentFn(ctx, caseID, body)
+		return m.createCaseAttachmentFn(ctx, body)
 	}
 	return []byte(`{}`), nil
 }
 
-func (m *mockEntityCaseClient) SearchCaseAttachments(ctx context.Context, caseID string, body []byte) ([]byte, error) {
+func (m *mockEntityCaseClient) SearchCaseAttachments(ctx context.Context, body []byte) ([]byte, error) {
 	if m.searchCaseAttachmentsFn != nil {
-		return m.searchCaseAttachmentsFn(ctx, caseID, body)
+		return m.searchCaseAttachmentsFn(ctx, body)
 	}
 	return []byte(`{"attachments":[],"total":0,"limit":20,"offset":0,"hasMore":false}`), nil
 }
 
-func (m *mockEntityCaseClient) GetCaseAttachmentContent(ctx context.Context, caseID, attachmentID string) ([]byte, string, error) {
+func (m *mockEntityCaseClient) GetCaseAttachmentContent(ctx context.Context, attachmentID string) ([]byte, string, error) {
 	if m.getCaseAttachmentContentFn != nil {
-		return m.getCaseAttachmentContentFn(ctx, caseID, attachmentID)
+		return m.getCaseAttachmentContentFn(ctx, attachmentID)
 	}
 	return []byte(`fake-content`), "image/png", nil
 }
 
-func (m *mockEntityCaseClient) DeleteCaseAttachment(ctx context.Context, caseID, attachmentID string) ([]byte, error) {
+func (m *mockEntityCaseClient) DeleteCaseAttachment(ctx context.Context, attachmentID string) ([]byte, error) {
 	if m.deleteCaseAttachmentFn != nil {
-		return m.deleteCaseAttachmentFn(ctx, caseID, attachmentID)
+		return m.deleteCaseAttachmentFn(ctx, attachmentID)
 	}
 	return []byte(`{"message":"Attachment deleted successfully."}`), nil
 }

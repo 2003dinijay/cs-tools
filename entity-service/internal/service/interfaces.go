@@ -132,9 +132,9 @@ type CaseService interface {
 	// by req.CaseID. A ValidationError is returned for invalid input.
 	SearchCaseAttachments(ctx context.Context, req domain.SearchAttachmentsRequest) (domain.SearchAttachmentsResponse, error)
 	// GetCaseAttachmentContent returns the raw binary content and its Content-Type
-	// for the attachment identified by attachmentID on the given case.
+	// for the attachment identified by attachmentID.
 	// A NotFoundError is returned if absent.
-	GetCaseAttachmentContent(ctx context.Context, caseID, attachmentID string) (content []byte, contentType string, err error)
+	GetCaseAttachmentContent(ctx context.Context, attachmentID string) (content []byte, contentType string, err error)
 	// DeleteCaseAttachment removes the attachment identified by req.AttachmentID from the case.
 	// A NotFoundError is returned if the attachment does not exist.
 	DeleteCaseAttachment(ctx context.Context, req domain.DeleteAttachmentRequest) (domain.DeleteAttachmentResponse, error)
