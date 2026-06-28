@@ -56,6 +56,7 @@ func main() {
 	deploymentHandler := handler.NewDeploymentHandler(entityClient)
 	changeRequestHandler := handler.NewChangeRequestHandler(entityClient)
 	catalogHandler := handler.NewCatalogHandler(entityClient)
+	productVulnerabilityHandler := handler.NewProductVulnerabilityHandler(entityClient)
 
 	updatesCfg := updates.Config{
 		BaseURL:      mustEnv("UPDATES_BASE_URL"),
@@ -122,6 +123,8 @@ func main() {
 	mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
 	mux.HandleFunc("POST /catalogs/search", catalogHandler.SearchCatalogs)
 	mux.HandleFunc("GET /catalogs/{catalogId}/items/{catalogItemId}/variables", catalogHandler.GetCatalogItemVariables)
+	mux.HandleFunc("POST /products/vulnerabilities/search", productVulnerabilityHandler.SearchProductVulnerabilities)
+	mux.HandleFunc("GET /products/vulnerabilities/{id}", productVulnerabilityHandler.GetProductVulnerability)
 
 	addr := envOrDefault("PORT", ":8080")
 

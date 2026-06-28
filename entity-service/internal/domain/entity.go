@@ -1137,6 +1137,59 @@ type ChangeRequest struct {
 	ApprovedOn          *string    `json:"approvedOn"`
 }
 
+// VulnerabilityPriority is a string enum for the priority (severity) of a product vulnerability.
+type VulnerabilityPriority string
+
+const (
+	VulnerabilityPriorityInfo     VulnerabilityPriority = "info"
+	VulnerabilityPriorityLow      VulnerabilityPriority = "low"
+	VulnerabilityPriorityMedium   VulnerabilityPriority = "medium"
+	VulnerabilityPriorityHigh     VulnerabilityPriority = "high"
+	VulnerabilityPriorityCritical VulnerabilityPriority = "critical"
+	VulnerabilityPriorityUnknown  VulnerabilityPriority = "unknown"
+)
+
+// SearchProductVulnerabilitiesFilters holds optional filter fields for a vulnerability search.
+type SearchProductVulnerabilitiesFilters struct {
+	SearchQuery    string                 `json:"searchQuery,omitempty"`
+	Priority       *VulnerabilityPriority `json:"priority,omitempty"`
+	ProductName    string                 `json:"productName,omitempty"`
+	ProductVersion string                 `json:"productVersion,omitempty"`
+}
+
+// SearchProductVulnerabilitiesRequest is the input for POST /products/vulnerabilities/search.
+type SearchProductVulnerabilitiesRequest struct {
+	Filters    *SearchProductVulnerabilitiesFilters `json:"filters,omitempty"`
+	Pagination Pagination                           `json:"pagination"`
+}
+
+// ProductVulnerabilityView is the representation of a vulnerability returned in search results
+// and as the single-item GET response.
+type ProductVulnerabilityView struct {
+	ID              string  `json:"id"`
+	CveID           string  `json:"cveId"`
+	VulnerabilityID string  `json:"vulnerabilityId"`
+	Priority        string  `json:"priority"`
+	ProductName     *string `json:"productName"`
+	ProductVersion  *string `json:"productVersion"`
+	ComponentName   string  `json:"componentName"`
+	Version         string  `json:"version"`
+	Type            string  `json:"type"`
+	ComponentType   *string `json:"componentType"`
+	UpdateLevel     *string `json:"updateLevel"`
+	UseCase         *string `json:"useCase"`
+	Justification   *string `json:"justification"`
+	Resolution      *string `json:"resolution"`
+}
+
+// SearchProductVulnerabilitiesResponse is the paginated result of a vulnerability search.
+type SearchProductVulnerabilitiesResponse struct {
+	ProductVulnerabilities []ProductVulnerabilityView `json:"productVulnerabilities"`
+	Total                  int                        `json:"total"`
+	Limit                  int                        `json:"limit"`
+	Offset                 int                        `json:"offset"`
+}
+
 // CallRequestStateType is the state of a call request as a domain string enum.
 type CallRequestStateType string
 

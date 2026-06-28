@@ -112,6 +112,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		catalogHandler = handler.NewCatalogHandler(service.NewServiceNowCatalogService(serviceNowIntegrationServiceClient))
 	}
 
+	var productVulnerabilityHandler *handler.ProductVulnerabilityHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		productVulnerabilityHandler = handler.NewProductVulnerabilityHandler(service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient))
+	}
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handler.HealthCheck)
@@ -152,6 +157,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	if catalogHandler != nil {
 		mux.HandleFunc("POST /catalogs/search", catalogHandler.SearchCatalogs)
 		mux.HandleFunc("GET /catalogs/{catalogId}/items/{catalogItemId}/variables", catalogHandler.GetCatalogItemVariables)
+	}
+
+	if productVulnerabilityHandler != nil {
+		mux.HandleFunc("POST /products/vulnerabilities/search", productVulnerabilityHandler.SearchProductVulnerabilities)
+mux.HandleFunc("GET /products/vulnerabilities/{id}", productVulnerabilityHandler.GetProductVulnerability)
 	}
 
 	return middleware.CorrelationID(
