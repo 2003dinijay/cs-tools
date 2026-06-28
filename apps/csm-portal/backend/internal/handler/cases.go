@@ -646,10 +646,7 @@ func (h *CaseHandler) PatchCallRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	caseID := r.PathValue("id")
-	if caseID == "" {
-		caseID = r.PathValue("caseId")
-	}
+	caseID := r.PathValue("caseId")
 	if caseID == "" || !uuidRe.MatchString(caseID) {
 		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
