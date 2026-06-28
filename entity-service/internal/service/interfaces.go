@@ -132,9 +132,12 @@ type CaseService interface {
 	// by req.CaseID. A ValidationError is returned for invalid input.
 	SearchCaseAttachments(ctx context.Context, req domain.SearchAttachmentsRequest) (domain.SearchAttachmentsResponse, error)
 	// GetCaseAttachmentContent returns the raw binary content and its Content-Type
-	// for the attachment identified by attachmentID on the given case.
+	// for the attachment identified by attachmentID.
 	// A NotFoundError is returned if absent.
-	GetCaseAttachmentContent(ctx context.Context, caseID, attachmentID string) (content []byte, contentType string, err error)
+	GetCaseAttachmentContent(ctx context.Context, attachmentID string) (content []byte, contentType string, err error)
+	// DeleteCaseAttachment removes the attachment identified by req.AttachmentID from the case.
+	// A NotFoundError is returned if the attachment does not exist.
+	DeleteCaseAttachment(ctx context.Context, req domain.DeleteAttachmentRequest) (domain.DeleteAttachmentResponse, error)
 }
 
 // CatalogService defines the operations available on service catalogs.
@@ -166,13 +169,20 @@ type CallRequestService interface {
 type ChangeRequestService interface {
 	// SearchChangeRequests returns a paginated list of change requests filtered by optional
 	// project IDs, state keys, impact keys, date ranges, and search query.
-	// A ValidationError is returned for invalid input; any other error indicates an
-	// infrastructure failure.
 	SearchChangeRequests(ctx context.Context, req domain.SearchChangeRequestsRequest) (domain.SearchChangeRequestsResponse, error)
 
 	// GetChangeRequest returns the full detail of a single change request by its UUID.
-	// A NotFoundError is returned if the change request does not exist.
 	GetChangeRequest(ctx context.Context, id string) (domain.ChangeRequest, error)
+
+	// PatchChangeRequest updates mutable fields on a change request identified by UUID.
+	PatchChangeRequest(ctx context.Context, id string, req domain.PatchChangeRequestRequest) (domain.PatchChangeRequestResponse, error)
+}
+
+// TimeCardService defines the operations available on the time-cards entity.
+type TimeCardService interface {
+	// SearchTimeCards returns a paginated list of time cards filtered by optional
+	// project IDs, date range, and states.
+	SearchTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) (domain.SearchTimeCardsResponse, error)
 }
 
 // ProductVulnerabilityService defines the operations available on product vulnerabilities.

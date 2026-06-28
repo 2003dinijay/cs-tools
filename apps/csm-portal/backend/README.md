@@ -168,9 +168,10 @@ backend/
 - `POST /cases/search` — Search cases
 - `POST /cases/{id}/comments` — Create a comment on a case
 - `POST /cases/{id}/comments/search` — Search comments on a case
-- `POST /cases/{id}/attachments` — Upload an attachment to a case
-- `POST /cases/{id}/attachments/search` — Search attachments on a case
-- `GET /cases/{case_id}/attachments/{attachment_id}/content` — Download an attachment
+- `POST /attachments` — Upload an attachment (`referenceId`, `referenceType`, `name`, `type`, `file` in body)
+- `POST /attachments/search` — Search attachments (`referenceId`, `referenceType` in body)
+- `GET /attachments/{id}/content` — Download an attachment
+- `DELETE /attachments/{id}` — Delete an attachment (ServiceNow only)
 - `POST /cases/{id}/call-requests` — Create a call request for a case (ServiceNow only)
 - `POST /cases/{id}/call-requests/search` — Search call requests for a case (ServiceNow only)
 - `PATCH /cases/{id}/call-requests/{callRequestId}` — Update a call request (ServiceNow only)
@@ -208,7 +209,12 @@ backend/
 ### Change Requests
 
 - `GET /change-requests/{id}` — Get change request by ID (ServiceNow data source only)
+- `PATCH /change-requests/{id}` — Update a change request (`plannedStartOn`, `isCustomerApproved`, `isCustomerReviewed`; ServiceNow data source only)
 - `POST /change-requests/search` — Search change requests (ServiceNow data source only)
+
+### Time Cards
+
+- `POST /time-cards/search` — Search time cards; optional `pagination` and `filters` (`projectIds`, `startDate`, `endDate`, `states`) (ServiceNow data source only)
 
 ### Catalogs
 

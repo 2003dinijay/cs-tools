@@ -580,18 +580,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /cases/{id}/attachments:
+  /attachments:
     post:
       summary: Upload a file attachment to a support case.
       operationId: createCaseAttachment
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-          description: Case UUID.
       requestBody:
         required: true
         content:
@@ -630,18 +622,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /cases/{id}/attachments/search:
+  /attachments/search:
     post:
       summary: Search attachments linked to a support case.
       operationId: searchCaseAttachments
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-          description: Case UUID.
       requestBody:
         required: true
         content:
@@ -674,19 +658,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /cases/{case_id}/attachments/{attachment_id}/content:
+  /attachments/{id}/content:
     get:
       summary: Download the binary content of a case attachment.
       operationId: getCaseAttachmentContent
       parameters:
-        - name: case_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-          description: Case UUID.
-        - name: attachment_id
+        - name: id
           in: path
           required: true
           schema:
@@ -701,6 +678,44 @@ paths:
               schema:
                 type: string
                 format: binary
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Attachment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /attachments/{id}:
+    delete:
+      summary: Delete a case attachment (ServiceNow data source only).
+      operationId: deleteCaseAttachment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Attachment UUID.
+      responses:
+        "200":
+          description: Attachment deleted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteAttachmentResponse'
         "401":
           description: Unauthorized.
           content:
@@ -957,6 +972,53 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   /change-requests/{id}:
+    patch:
+      summary: Update a change request (ServiceNow data source only).
+      operationId: patchChangeRequest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchChangeRequestRequest'
+      responses:
+        "200":
+          description: Updated change request identifiers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatchChangeRequestResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Change request not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     get:
       summary: Get a single change request by ID (ServiceNow data source only).
       operationId: getChangeRequest
@@ -1192,6 +1254,42 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /time-cards/search:
+    post:
+      summary: Search time cards (ServiceNow data source only).
+      operationId: searchTimeCards
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchTimeCardsRequest'
+      responses:
+        "200":
+          description: Time cards matching the filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchTimeCardsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
           content:
             application/json:
               schema:
@@ -2520,8 +2618,14 @@ components:
 
     CreateAttachmentRequest:
       type: object
-      required: [name, type, file]
+      required: [referenceId, referenceType, name, type, file]
       properties:
+        referenceId:
+          type: string
+          format: uuid
+          description: UUID of the reference entity (case, change request, etc.)
+        referenceType:
+          $ref: '#/components/schemas/ReferenceType'
         name:
           type: string
           description: File name including extension.
@@ -2565,9 +2669,11 @@ components:
         id:
           type: string
           format: uuid
-        caseId:
+        referenceId:
           type: string
           format: uuid
+        referenceType:
+          $ref: '#/components/schemas/ReferenceType'
         name:
           type: string
         type:
@@ -2589,9 +2695,24 @@ components:
           type: string
           nullable: true
 
+    ReferenceType:
+      type: string
+      enum:
+        - case
+        - conversation
+        - change_request
+        - deployment
+
     SearchAttachmentsRequest:
       type: object
+      required: [referenceId, referenceType]
       properties:
+        referenceId:
+          type: string
+          format: uuid
+          description: UUID of the reference entity (case, change request, etc.)
+        referenceType:
+          $ref: '#/components/schemas/ReferenceType'
         pagination:
           $ref: '#/components/schemas/Pagination'
 
@@ -2610,6 +2731,12 @@ components:
           type: integer
         hasMore:
           type: boolean
+
+    DeleteAttachmentResponse:
+      type: object
+      properties:
+        message:
+          type: string
 
     SearchChangeRequestsRequest:
       type: object
@@ -2867,6 +2994,134 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CatalogItemVariable'
+
+    PatchChangeRequestRequest:
+      type: object
+      minProperties: 1
+      properties:
+        plannedStartOn:
+          type: string
+          description: Planned start date and time (format YYYY-MM-DD HH:MM:SS).
+        isCustomerApproved:
+          type: boolean
+        isCustomerReviewed:
+          type: boolean
+
+    PatchChangeRequestResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        updatedOn:
+          type: string
+        updatedBy:
+          type: string
+
+    TimeCardState:
+      type: string
+      enum:
+        - pending
+        - submitted
+        - approved
+        - rejected
+        - processed
+        - recalled
+
+    SearchTimeCardsFilters:
+      type: object
+      properties:
+        projectIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        startDate:
+          type: string
+          description: ISO 8601 date (YYYY-MM-DD).
+        endDate:
+          type: string
+          description: ISO 8601 date (YYYY-MM-DD).
+        states:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimeCardState'
+
+    SearchTimeCardsRequest:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/SearchTimeCardsFilters'
+        pagination:
+          type: object
+          properties:
+            offset:
+              type: integer
+              minimum: 0
+              default: 0
+            limit:
+              type: integer
+              minimum: 1
+              maximum: 100
+              default: 20
+
+    TimeCardRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+
+    TimeCardCaseRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        number:
+          type: string
+
+    TimeCardView:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        totalTime:
+          type: number
+          format: double
+        createdOn:
+          type: string
+        hasBillable:
+          type: boolean
+        state:
+          type: string
+        user:
+          $ref: '#/components/schemas/TimeCardRef'
+        approvedBy:
+          $ref: '#/components/schemas/TimeCardRef'
+        project:
+          $ref: '#/components/schemas/TimeCardRef'
+        case:
+          $ref: '#/components/schemas/TimeCardCaseRef'
+
+    SearchTimeCardsResponse:
+      type: object
+      properties:
+        timeCards:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimeCardView'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
 
     VulnerabilityPriority:
       type: string

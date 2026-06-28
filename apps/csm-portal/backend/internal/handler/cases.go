@@ -50,9 +50,10 @@ type entityCaseClient interface {
 	SearchCaseComments(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	SearchCases(ctx context.Context, body []byte) ([]byte, error)
 	GetCase(ctx context.Context, caseID string) ([]byte, error)
-	CreateCaseAttachment(ctx context.Context, caseID string, body []byte) ([]byte, error)
-	SearchCaseAttachments(ctx context.Context, caseID string, body []byte) ([]byte, error)
-	GetCaseAttachmentContent(ctx context.Context, caseID, attachmentID string) ([]byte, string, error)
+	CreateCaseAttachment(ctx context.Context, body []byte) ([]byte, error)
+	SearchCaseAttachments(ctx context.Context, body []byte) ([]byte, error)
+	GetCaseAttachmentContent(ctx context.Context, attachmentID string) ([]byte, string, error)
+	DeleteCaseAttachment(ctx context.Context, attachmentID string) ([]byte, error)
 	CreateCallRequest(ctx context.Context, body []byte) ([]byte, error)
 	SearchCallRequests(ctx context.Context, body []byte) ([]byte, error)
 	PatchCallRequest(ctx context.Context, callRequestID string, body []byte) ([]byte, error)
@@ -296,17 +297,11 @@ func (h *CaseHandler) SearchCases(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-// CreateCaseAttachment handles POST /cases/{id}/attachments.
+// CreateCaseAttachment handles POST /attachments.
 func (h *CaseHandler) CreateCaseAttachment(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
-		return
-	}
-
-	caseID := r.PathValue("id")
-	if caseID == "" || !uuidRe.MatchString(caseID) {
-		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
 	}
 
@@ -326,9 +321,9 @@ func (h *CaseHandler) CreateCaseAttachment(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	result, err := h.entity.CreateCaseAttachment(r.Context(), caseID, body)
+	result, err := h.entity.CreateCaseAttachment(r.Context(), body)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "entity CreateCaseAttachment failed", "userID", user.UserID, "caseID", caseID, "err", err)
+		slog.ErrorContext(r.Context(), "entity CreateCaseAttachment failed", "userID", user.UserID, "err", err)
 		mapUpstreamError(w, err, "Failed to create case attachment.")
 		return
 	}
@@ -336,17 +331,11 @@ func (h *CaseHandler) CreateCaseAttachment(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusCreated, result)
 }
 
-// SearchCaseAttachments handles POST /cases/{id}/attachments/search.
+// SearchCaseAttachments handles POST /attachments/search.
 func (h *CaseHandler) SearchCaseAttachments(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
-		return
-	}
-
-	caseID := r.PathValue("id")
-	if caseID == "" || !uuidRe.MatchString(caseID) {
-		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
 	}
 
@@ -366,9 +355,9 @@ func (h *CaseHandler) SearchCaseAttachments(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	result, err := h.entity.SearchCaseAttachments(r.Context(), caseID, body)
+	result, err := h.entity.SearchCaseAttachments(r.Context(), body)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "entity SearchCaseAttachments failed", "userID", user.UserID, "caseID", caseID, "err", err)
+		slog.ErrorContext(r.Context(), "entity SearchCaseAttachments failed", "userID", user.UserID, "err", err)
 		mapUpstreamError(w, err, "Failed to search case attachments.")
 		return
 	}
@@ -376,7 +365,7 @@ func (h *CaseHandler) SearchCaseAttachments(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, result)
 }
 
-// GetCaseAttachmentContent handles GET /cases/{case_id}/attachments/{attachment_id}/content.
+// GetCaseAttachmentContent handles GET /attachments/{id}/content.
 func (h *CaseHandler) GetCaseAttachmentContent(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -384,20 +373,15 @@ func (h *CaseHandler) GetCaseAttachmentContent(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	caseID := r.PathValue("case_id")
-	attachmentID := r.PathValue("attachment_id")
-	if caseID == "" || !uuidRe.MatchString(caseID) {
-		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
-		return
-	}
+	attachmentID := r.PathValue("id")
 	if attachmentID == "" || !uuidRe.MatchString(attachmentID) {
 		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
 	}
 
-	content, contentType, err := h.entity.GetCaseAttachmentContent(r.Context(), caseID, attachmentID)
+	content, contentType, err := h.entity.GetCaseAttachmentContent(r.Context(), attachmentID)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "entity GetCaseAttachmentContent failed", "userID", user.UserID, "caseID", caseID, "attachmentID", attachmentID, "err", err)
+		slog.ErrorContext(r.Context(), "entity GetCaseAttachmentContent failed", "userID", user.UserID, "attachmentID", attachmentID, "err", err)
 		mapUpstreamError(w, err, "Failed to retrieve attachment content.")
 		return
 	}
@@ -410,6 +394,30 @@ func (h *CaseHandler) GetCaseAttachmentContent(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Content-Disposition", "attachment")
 	_, _ = w.Write(content)
+}
+
+// DeleteCaseAttachment handles DELETE /attachments/{id}.
+func (h *CaseHandler) DeleteCaseAttachment(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	attachmentID := r.PathValue("id")
+	if attachmentID == "" || !uuidRe.MatchString(attachmentID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	result, err := h.entity.DeleteCaseAttachment(r.Context(), attachmentID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity DeleteCaseAttachment failed", "userID", user.UserID, "attachmentID", attachmentID, "err", err)
+		mapUpstreamError(w, err, "Failed to delete case attachment.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 // PatchCase handles PATCH /cases/{id}.

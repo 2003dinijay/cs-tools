@@ -107,6 +107,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		changeRequestHandler = handler.NewChangeRequestHandler(service.NewServiceNowChangeRequestService(serviceNowIntegrationServiceClient))
 	}
 
+	var timeCardHandler *handler.TimeCardHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		timeCardHandler = handler.NewTimeCardHandler(service.NewServiceNowTimeCardService(serviceNowIntegrationServiceClient))
+	}
+
 	var catalogHandler *handler.CatalogHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		catalogHandler = handler.NewCatalogHandler(service.NewServiceNowCatalogService(serviceNowIntegrationServiceClient))
@@ -139,9 +144,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	mux.HandleFunc("POST /cases/search", caseHandler.SearchCases)
 	mux.HandleFunc("POST /cases/{id}/comments", caseHandler.CreateCaseComment)
 	mux.HandleFunc("POST /cases/{id}/comments/search", caseHandler.SearchCaseComments)
-	mux.HandleFunc("POST /cases/{id}/attachments", caseHandler.CreateCaseAttachment)
-	mux.HandleFunc("POST /cases/{id}/attachments/search", caseHandler.SearchCaseAttachments)
-	mux.HandleFunc("GET /cases/{case_id}/attachments/{attachment_id}/content", caseHandler.GetCaseAttachmentContent)
+	mux.HandleFunc("POST /attachments", caseHandler.CreateCaseAttachment)
+	mux.HandleFunc("POST /attachments/search", caseHandler.SearchCaseAttachments)
+	mux.HandleFunc("GET /attachments/{id}/content", caseHandler.GetCaseAttachmentContent)
+	mux.HandleFunc("DELETE /attachments/{id}", caseHandler.DeleteCaseAttachment)
 
 	if callRequestHandler != nil {
 		mux.HandleFunc("POST /call-requests", callRequestHandler.CreateCallRequest)
@@ -152,6 +158,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	if changeRequestHandler != nil {
 		mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
 		mux.HandleFunc("GET /change-requests/{id}", changeRequestHandler.GetChangeRequest)
+		mux.HandleFunc("PATCH /change-requests/{id}", changeRequestHandler.PatchChangeRequest)
+	}
+
+	if timeCardHandler != nil {
+		mux.HandleFunc("POST /time-cards/search", timeCardHandler.SearchTimeCards)
 	}
 
 	if catalogHandler != nil {

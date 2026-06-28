@@ -917,11 +917,12 @@ type SearchCaseCommentsResponse struct {
 	HasMore  bool          `json:"hasMore"`
 }
 
-// Attachment represents a file attachment linked to a case.
+// Attachment represents a file attachment linked to a reference entity.
 type Attachment struct {
-	ID          string    `json:"id"`
-	CaseID      string    `json:"caseId"`
-	Name        string    `json:"name"`
+	ID            string        `json:"id"`
+	ReferenceID   string        `json:"referenceId"`
+	ReferenceType ReferenceType `json:"referenceType"`
+	Name          string        `json:"name"`
 	Type        string    `json:"type"`
 	SizeBytes   int       `json:"sizeBytes"`
 	Description *string   `json:"description"`
@@ -931,14 +932,14 @@ type Attachment struct {
 	PreviewURL  *string   `json:"previewUrl"`
 }
 
-// CreateAttachmentRequest is the input for POST /cases/{id}/attachments.
-// CaseID is populated from the URL path parameter and is not part of the JSON body.
+// CreateAttachmentRequest is the input for POST /attachments.
 type CreateAttachmentRequest struct {
-	CaseID      string  `json:"-"`
-	Name        string  `json:"name"`
-	Type        string  `json:"type"`
-	File        string  `json:"file"`
-	Description *string `json:"description"`
+	ReferenceID   string        `json:"referenceId"`
+	ReferenceType ReferenceType `json:"referenceType"`
+	Name          string        `json:"name"`
+	Type          string        `json:"type"`
+	File          string        `json:"file"`
+	Description   *string       `json:"description"`
 }
 
 // AttachmentDetail holds the core fields returned after creating an attachment.
@@ -956,11 +957,21 @@ type CreateAttachmentResponse struct {
 	Attachment AttachmentDetail `json:"attachment"`
 }
 
-// SearchAttachmentsRequest is the input for POST /cases/{id}/attachments/search.
-// CaseID is populated from the URL path parameter and is not part of the JSON body.
+// ReferenceType identifies the entity type an attachment is associated with.
+type ReferenceType string
+
+const (
+	ReferenceTypeCase          ReferenceType = "case"
+	ReferenceTypeConversation  ReferenceType = "conversation"
+	ReferenceTypeChangeRequest ReferenceType = "change_request"
+	ReferenceTypeDeployment    ReferenceType = "deployment"
+)
+
+// SearchAttachmentsRequest is the input for POST /attachments/search.
 type SearchAttachmentsRequest struct {
-	CaseID     string     `json:"-"`
-	Pagination Pagination `json:"pagination"`
+	ReferenceID   string        `json:"referenceId"`
+	ReferenceType ReferenceType `json:"referenceType"`
+	Pagination    Pagination    `json:"pagination"`
 }
 
 // SearchAttachmentsResponse is the paginated result of an attachment search.
@@ -971,6 +982,16 @@ type SearchAttachmentsResponse struct {
 	Limit       int          `json:"limit"`
 	Offset      int          `json:"offset"`
 	HasMore     bool         `json:"hasMore"`
+}
+
+// DeleteAttachmentRequest is the input for DELETE /attachments/{attachmentId}.
+type DeleteAttachmentRequest struct {
+	AttachmentID string `json:"-"`
+}
+
+// DeleteAttachmentResponse is the output for DELETE /cases/{id}/attachments/{attachmentId}.
+type DeleteAttachmentResponse struct {
+	Message string `json:"message"`
 }
 
 // ChangeRequestType classifies the change request type.
@@ -1118,6 +1139,80 @@ type CatalogItemVariable struct {
 // GET /catalogs/{catalogId}/items/{catalogItemId}/variables.
 type GetCatalogItemVariablesResponse struct {
 	Variables []CatalogItemVariable `json:"variables"`
+}
+
+// PatchChangeRequestRequest is the request body for PATCH /change-requests/{id}.
+type PatchChangeRequestRequest struct {
+	PlannedStartOn     *string `json:"plannedStartOn,omitempty"`
+	IsCustomerApproved *bool   `json:"isCustomerApproved,omitempty"`
+	IsCustomerReviewed *bool   `json:"isCustomerReviewed,omitempty"`
+}
+
+// PatchChangeRequestResponse is the response for PATCH /change-requests/{id}.
+type PatchChangeRequestResponse struct {
+	ID        string `json:"id"`
+	UpdatedOn string `json:"updatedOn"`
+	UpdatedBy string `json:"updatedBy"`
+}
+
+// TimeCardState represents the workflow state of a time card.
+type TimeCardState string
+
+const (
+	TimeCardStatePending   TimeCardState = "pending"
+	TimeCardStateSubmitted TimeCardState = "submitted"
+	TimeCardStateApproved  TimeCardState = "approved"
+	TimeCardStateRejected  TimeCardState = "rejected"
+	TimeCardStateProcessed TimeCardState = "processed"
+	TimeCardStateRecalled  TimeCardState = "recalled"
+)
+
+// SearchTimeCardsFilters holds optional filter criteria for POST /time-cards/search.
+type SearchTimeCardsFilters struct {
+	ProjectIDs []string        `json:"projectIds,omitempty"`
+	StartDate  *string         `json:"startDate,omitempty"`
+	EndDate    *string         `json:"endDate,omitempty"`
+	States     []TimeCardState `json:"states,omitempty"`
+}
+
+// SearchTimeCardsRequest is the request body for POST /time-cards/search.
+type SearchTimeCardsRequest struct {
+	Filters    *SearchTimeCardsFilters `json:"filters,omitempty"`
+	Pagination Pagination              `json:"pagination"`
+}
+
+// TimeCardRef is a lightweight reference used for user, approvedBy, and project fields.
+type TimeCardRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// TimeCardCaseRef is a reference to the case associated with a time card.
+type TimeCardCaseRef struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Number string `json:"number"`
+}
+
+// TimeCardView is a single time card in search results.
+type TimeCardView struct {
+	ID          string           `json:"id"`
+	TotalTime   float64          `json:"totalTime"`
+	CreatedOn   string           `json:"createdOn"`
+	HasBillable bool             `json:"hasBillable"`
+	State       *string          `json:"state"`
+	User        *TimeCardRef     `json:"user"`
+	ApprovedBy  *TimeCardRef     `json:"approvedBy"`
+	Project     *TimeCardRef     `json:"project"`
+	Case        *TimeCardCaseRef `json:"case"`
+}
+
+// SearchTimeCardsResponse is the response for POST /time-cards/search.
+type SearchTimeCardsResponse struct {
+	TimeCards []TimeCardView `json:"timeCards"`
+	Total     int            `json:"total"`
+	Limit     int            `json:"limit"`
+	Offset    int            `json:"offset"`
 }
 
 // ChangeRequest is the full change request detail returned by GET /change-requests/{id}.
