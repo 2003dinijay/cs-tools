@@ -365,7 +365,7 @@ func (h *CaseHandler) SearchCaseAttachments(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, result)
 }
 
-// GetCaseAttachmentContent handles GET /attachments/{attachmentId}/content.
+// GetCaseAttachmentContent handles GET /attachments/{id}/content.
 func (h *CaseHandler) GetCaseAttachmentContent(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -373,7 +373,7 @@ func (h *CaseHandler) GetCaseAttachmentContent(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	attachmentID := r.PathValue("attachmentId")
+	attachmentID := r.PathValue("id")
 	if attachmentID == "" || !uuidRe.MatchString(attachmentID) {
 		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
@@ -396,7 +396,7 @@ func (h *CaseHandler) GetCaseAttachmentContent(w http.ResponseWriter, r *http.Re
 	_, _ = w.Write(content)
 }
 
-// DeleteCaseAttachment handles DELETE /attachments/{attachmentId}.
+// DeleteCaseAttachment handles DELETE /attachments/{id}.
 func (h *CaseHandler) DeleteCaseAttachment(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -404,7 +404,7 @@ func (h *CaseHandler) DeleteCaseAttachment(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	attachmentID := r.PathValue("attachmentId")
+	attachmentID := r.PathValue("id")
 	if attachmentID == "" || !uuidRe.MatchString(attachmentID) {
 		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return

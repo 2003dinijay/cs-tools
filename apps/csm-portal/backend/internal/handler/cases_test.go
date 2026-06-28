@@ -1121,7 +1121,7 @@ func TestGetCaseAttachmentContent(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
 		h := NewCaseHandler(&mockEntityCaseClient{})
 		r := httptest.NewRequest(http.MethodGet, "/attachments/"+testAttachmentID+"/content", nil)
-		r.SetPathValue("attachmentId", testAttachmentID)
+		r.SetPathValue("id",testAttachmentID)
 		w := httptest.NewRecorder()
 		h.GetCaseAttachmentContent(w, r)
 		assertStatus(t, w, http.StatusUnauthorized)
@@ -1131,7 +1131,7 @@ func TestGetCaseAttachmentContent(t *testing.T) {
 	t.Run("rejects invalid attachment UUID", func(t *testing.T) {
 		h := NewCaseHandler(&mockEntityCaseClient{})
 		r := withUser(httptest.NewRequest(http.MethodGet, "/attachments/not-a-uuid/content", nil))
-		r.SetPathValue("attachmentId", "not-a-uuid")
+		r.SetPathValue("id","not-a-uuid")
 		w := httptest.NewRecorder()
 		h.GetCaseAttachmentContent(w, r)
 		assertStatus(t, w, http.StatusBadRequest)
@@ -1150,7 +1150,7 @@ func TestGetCaseAttachmentContent(t *testing.T) {
 		}
 		h := NewCaseHandler(client)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/attachments/"+testAttachmentID+"/content", nil))
-		r.SetPathValue("attachmentId", testAttachmentID)
+		r.SetPathValue("id",testAttachmentID)
 		w := httptest.NewRecorder()
 		h.GetCaseAttachmentContent(w, r)
 		assertStatus(t, w, http.StatusOK)
@@ -1172,7 +1172,7 @@ func TestGetCaseAttachmentContent(t *testing.T) {
 		}
 		h := NewCaseHandler(client)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/attachments/"+testAttachmentID+"/content", nil))
-		r.SetPathValue("attachmentId", testAttachmentID)
+		r.SetPathValue("id",testAttachmentID)
 		w := httptest.NewRecorder()
 		h.GetCaseAttachmentContent(w, r)
 		assertStatus(t, w, http.StatusOK)
@@ -1190,7 +1190,7 @@ func TestGetCaseAttachmentContent(t *testing.T) {
 				}
 				h := NewCaseHandler(client)
 				r := withUser(httptest.NewRequest(http.MethodGet, "/attachments/"+testAttachmentID+"/content", nil))
-				r.SetPathValue("attachmentId", testAttachmentID)
+				r.SetPathValue("id",testAttachmentID)
 				w := httptest.NewRecorder()
 				h.GetCaseAttachmentContent(w, r)
 				assertStatus(t, w, tc.wantCode)

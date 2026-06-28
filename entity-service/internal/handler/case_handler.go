@@ -160,9 +160,9 @@ func (h *CaseHandler) SearchCaseAttachments(w http.ResponseWriter, r *http.Reque
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// GetCaseAttachmentContent handles GET /attachments/{attachmentId}/content.
+// GetCaseAttachmentContent handles GET /attachments/{id}/content.
 func (h *CaseHandler) GetCaseAttachmentContent(w http.ResponseWriter, r *http.Request) {
-	attachmentID := r.PathValue("attachmentId")
+	attachmentID := r.PathValue("id")
 	content, contentType, err := h.svc.GetCaseAttachmentContent(r.Context(), attachmentID)
 	if err != nil {
 		writeServiceError(w, r, err)
@@ -172,10 +172,10 @@ func (h *CaseHandler) GetCaseAttachmentContent(w http.ResponseWriter, r *http.Re
 	_, _ = w.Write(content)
 }
 
-// DeleteCaseAttachment handles DELETE /attachments/{attachmentId}.
+// DeleteCaseAttachment handles DELETE /attachments/{id}.
 func (h *CaseHandler) DeleteCaseAttachment(w http.ResponseWriter, r *http.Request) {
 	req := domain.DeleteAttachmentRequest{
-		AttachmentID: r.PathValue("attachmentId"),
+		AttachmentID: r.PathValue("id"),
 	}
 	resp, err := h.svc.DeleteCaseAttachment(r.Context(), req)
 	if err != nil {

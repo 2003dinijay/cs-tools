@@ -426,12 +426,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /attachments/{attachmentId}/content:
+  /attachments/{id}/content:
     get:
       summary: Download the binary content of a case attachment.
       operationId: getCaseAttachmentContent
       parameters:
-        - name: attachmentId
+        - name: id
           in: path
           description: UUID of the attachment.
           required: true
@@ -477,12 +477,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /attachments/{attachmentId}:
+  /attachments/{id}:
     delete:
       summary: Delete a case attachment (ServiceNow data source only).
       operationId: deleteCaseAttachment
       parameters:
-        - name: attachmentId
+        - name: id
           in: path
           description: UUID of the attachment.
           required: true
