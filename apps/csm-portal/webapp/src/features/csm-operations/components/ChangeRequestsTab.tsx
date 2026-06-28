@@ -18,9 +18,9 @@ import {
   Alert,
   Box,
   Chip,
-  CircularProgress,
   InputAdornment,
   Paper,
+  Skeleton,
   Table,
   TableBody,
   TableCell,
@@ -138,11 +138,17 @@ export default function ChangeRequestsTab(): JSX.Element {
             </TableHead>
             <TableBody>
               {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={7} align="center" sx={{ py: 4 }}>
-                    <CircularProgress size={24} />
-                  </TableCell>
-                </TableRow>
+                [0, 1, 2, 3, 4, 5].map((i) => (
+                  <TableRow key={i}>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                  </TableRow>
+                ))
               ) : changeRequests.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} align="center" sx={{ py: 4 }}>

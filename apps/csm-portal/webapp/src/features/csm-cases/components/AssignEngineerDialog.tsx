@@ -18,12 +18,12 @@ import {
   Avatar,
   Box,
   Button,
-  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   InputAdornment,
+  Skeleton,
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
@@ -134,8 +134,16 @@ export default function AssignEngineerDialog({
 
           <Box sx={{ minHeight: 160 }}>
             {isFetching ? (
-              <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-                <CircularProgress size={22} />
+              <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, pt: 0.75 }}>
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <Box key={i} sx={{ display: "flex", alignItems: "center", gap: 1.25, px: 1, py: 0.75 }}>
+                    <Skeleton variant="circular" width={28} height={28} />
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Skeleton variant="text" sx={{ fontSize: "0.875rem", width: "55%" }} />
+                      <Skeleton variant="text" sx={{ fontSize: "0.75rem", width: "75%" }} />
+                    </Box>
+                  </Box>
+                ))}
               </Box>
             ) : isError ? (
               <Typography variant="body2" color="error" sx={{ py: 2 }}>

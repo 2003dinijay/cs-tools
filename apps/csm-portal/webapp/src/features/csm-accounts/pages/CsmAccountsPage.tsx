@@ -18,8 +18,8 @@ import {
   Alert,
   Box,
   Chip,
-  CircularProgress,
   Paper,
+  Skeleton,
   Table,
   TableBody,
   TableCell,
@@ -114,11 +114,16 @@ export default function CsmAccountsPage(): JSX.Element {
             </TableHead>
             <TableBody>
               {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
-                    <CircularProgress size={24} />
-                  </TableCell>
-                </TableRow>
+                [0, 1, 2, 3, 4, 5].map((i) => (
+                  <TableRow key={i}>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                    <TableCell><Skeleton variant="text" /></TableCell>
+                  </TableRow>
+                ))
               ) : accounts.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
