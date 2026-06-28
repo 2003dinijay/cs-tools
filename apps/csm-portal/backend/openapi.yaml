@@ -3553,12 +3553,21 @@ components:
 
     UpdateCallRequestPayload:
       type: object
-      required: [stateKey]
+      required: [state]
       additionalProperties: false
       properties:
-        stateKey:
-          type: integer
-          description: New state key for the call request.
+        state:
+          type: string
+          enum:
+            - pending_on_customer
+            - pending_on_wso2
+            - scheduled
+            - customer_rejected
+            - wso2_rejected
+            - canceled
+            - notes_pending
+            - concluded
+          description: New state for the call request.
         cancellationReason:
           type: string
           description: Reason for cancellation (required when cancelling).

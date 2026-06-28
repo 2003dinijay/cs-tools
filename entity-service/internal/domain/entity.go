@@ -1085,6 +1085,20 @@ type ChangeRequest struct {
 	ApprovedOn          *string    `json:"approvedOn"`
 }
 
+// CallRequestStateType is the state of a call request as a domain string enum.
+type CallRequestStateType string
+
+const (
+	CallRequestStatePendingOnCustomer CallRequestStateType = "pending_on_customer"
+	CallRequestStatePendingOnWSO2     CallRequestStateType = "pending_on_wso2"
+	CallRequestStateScheduled         CallRequestStateType = "scheduled"
+	CallRequestStateCustomerRejected  CallRequestStateType = "customer_rejected"
+	CallRequestStateWSO2Rejected      CallRequestStateType = "wso2_rejected"
+	CallRequestStateCanceled          CallRequestStateType = "canceled"
+	CallRequestStateNotesPending      CallRequestStateType = "notes_pending"
+	CallRequestStateConcluded         CallRequestStateType = "concluded"
+)
+
 // CallRequestState holds the state of a call request.
 // ID uses json.RawMessage because the ServiceNow API returns either an int or a string.
 type CallRequestState struct {
@@ -1157,11 +1171,11 @@ type SearchCallRequestsResponse struct {
 // UpdateCallRequestRequest is the input for PATCH /call-requests/{id}.
 // ID is injected from the URL path parameter and excluded from JSON decoding.
 type UpdateCallRequestRequest struct {
-	ID                 string   `json:"-"`
-	StateKey           int      `json:"stateKey"`
-	CancellationReason *string  `json:"cancellationReason,omitempty"`
-	UTCTimes           []string `json:"utcTimes,omitempty"`
-	DurationMinutes    *int     `json:"durationInMinutes,omitempty"`
+	ID                 string               `json:"-"`
+	State              CallRequestStateType `json:"state"`
+	CancellationReason *string              `json:"cancellationReason,omitempty"`
+	UTCTimes           []string             `json:"utcTimes,omitempty"`
+	DurationMinutes    *int                 `json:"durationInMinutes,omitempty"`
 }
 
 // UpdateCallRequestResponse is the output for PATCH /call-requests/{id}.

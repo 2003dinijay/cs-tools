@@ -94,6 +94,30 @@ type snCallRequestUpdatePayload struct {
 	DurationMinutes    *int     `json:"durationInMinutes,omitempty"`
 }
 
+// callRequestStateToKey maps domain CallRequestStateType strings to the ServiceNow integer choice-list key.
+var callRequestStateToKey = map[domain.CallRequestStateType]int{
+	domain.CallRequestStatePendingOnCustomer: 1,
+	domain.CallRequestStatePendingOnWSO2:     2,
+	domain.CallRequestStateScheduled:         3,
+	domain.CallRequestStateCustomerRejected:  4,
+	domain.CallRequestStateWSO2Rejected:      5,
+	domain.CallRequestStateCanceled:          6,
+	domain.CallRequestStateNotesPending:      7,
+	domain.CallRequestStateConcluded:         8,
+}
+
+// validCallRequestStates is the set of accepted CallRequestStateType values.
+var validCallRequestStates = map[domain.CallRequestStateType]struct{}{
+	domain.CallRequestStatePendingOnCustomer: {},
+	domain.CallRequestStatePendingOnWSO2:     {},
+	domain.CallRequestStateScheduled:         {},
+	domain.CallRequestStateCustomerRejected:  {},
+	domain.CallRequestStateWSO2Rejected:      {},
+	domain.CallRequestStateCanceled:          {},
+	domain.CallRequestStateNotesPending:      {},
+	domain.CallRequestStateConcluded:         {},
+}
+
 // snCallRequestUpdateResponse mirrors the SN integration service PATCH /call-requests/{id} response.
 type snCallRequestUpdateResponse struct {
 	Message     string `json:"message"`
@@ -233,8 +257,12 @@ func (s *snCallRequestService) UpdateCallRequest(ctx context.Context, req domain
 		return domain.UpdateCallRequestResponse{}, err
 	}
 
+	if _, ok := validCallRequestStates[req.State]; !ok {
+		return domain.UpdateCallRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid state %q", req.State)}
+	}
+
 	payload := snCallRequestUpdatePayload{
-		StateKey:           req.StateKey,
+		StateKey:           callRequestStateToKey[req.State],
 		CancellationReason: req.CancellationReason,
 		UTCTimes:           req.UTCTimes,
 		DurationMinutes:    req.DurationMinutes,
