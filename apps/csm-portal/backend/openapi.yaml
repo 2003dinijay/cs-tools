@@ -1733,6 +1733,109 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /products/vulnerabilities/search:
+    post:
+      summary: Search product vulnerabilities (ServiceNow data source only).
+      operationId: searchProductVulnerabilities
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchProductVulnerabilitiesPayload'
+      responses:
+        "200":
+          description: Product vulnerabilities matching the filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchProductVulnerabilitiesResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: Request entity too large.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+
+  /products/vulnerabilities/{id}:
+    get:
+      summary: Get a product vulnerability by ID (ServiceNow data source only).
+      operationId: getProductVulnerability
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Vulnerability UUID.
+      responses:
+        "200":
+          description: The product vulnerability with the given ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductVulnerabilityView'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Vulnerability not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /catalogs/{catalogId}/items/{catalogItemId}/variables:
     get:
       summary: Get variables (form fields) for a catalog item (ServiceNow data source only).
@@ -3874,6 +3977,101 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CatalogItemVariable'
+
+    VulnerabilityPriority:
+      type: string
+      enum:
+        - info
+        - low
+        - medium
+        - high
+        - critical
+        - unknown
+
+    SearchProductVulnerabilitiesFilters:
+      type: object
+      properties:
+        searchQuery:
+          type: string
+        priority:
+          $ref: '#/components/schemas/VulnerabilityPriority'
+        productName:
+          type: string
+        productVersion:
+          type: string
+
+    SearchProductVulnerabilitiesPayload:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/SearchProductVulnerabilitiesFilters'
+        pagination:
+          type: object
+          properties:
+            offset:
+              type: integer
+              minimum: 0
+              default: 0
+            limit:
+              type: integer
+              minimum: 1
+              maximum: 100
+              default: 20
+
+    ProductVulnerabilityView:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        cveId:
+          type: string
+        vulnerabilityId:
+          type: string
+        priority:
+          type: string
+          description: Priority label (e.g. High, Critical).
+        productName:
+          type: string
+          nullable: true
+        productVersion:
+          type: string
+          nullable: true
+        componentName:
+          type: string
+        version:
+          type: string
+        type:
+          type: string
+        componentType:
+          type: string
+          nullable: true
+        updateLevel:
+          type: string
+          nullable: true
+        useCase:
+          type: string
+          nullable: true
+        justification:
+          type: string
+          nullable: true
+        resolution:
+          type: string
+          nullable: true
+
+    SearchProductVulnerabilitiesResponse:
+      type: object
+      properties:
+        productVulnerabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductVulnerabilityView'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
 
     CallRequestState:
       type: object

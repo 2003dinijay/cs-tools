@@ -184,3 +184,17 @@ type TimeCardService interface {
 	// project IDs, date range, and states.
 	SearchTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) (domain.SearchTimeCardsResponse, error)
 }
+
+// ProductVulnerabilityService defines the operations available on product vulnerabilities.
+// All methods require the ServiceNow data source; there is no Postgres fallback.
+type ProductVulnerabilityService interface {
+	// SearchProductVulnerabilities returns a paginated list of vulnerabilities filtered by
+	// optional priority, product name, product version, and search query.
+	// A ValidationError is returned for invalid input.
+	SearchProductVulnerabilities(ctx context.Context, req domain.SearchProductVulnerabilitiesRequest) (domain.SearchProductVulnerabilitiesResponse, error)
+
+	// GetProductVulnerability returns the detail of a single vulnerability by its UUID.
+	// A NotFoundError is returned if the vulnerability does not exist.
+	GetProductVulnerability(ctx context.Context, id string) (domain.ProductVulnerabilityView, error)
+
+}
