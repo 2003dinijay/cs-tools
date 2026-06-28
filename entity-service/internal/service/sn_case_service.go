@@ -1104,6 +1104,27 @@ func (s *snCaseService) GetCaseAttachmentContent(ctx context.Context, _, attachm
 	return resp.Body, resp.ContentType, nil
 }
 
+func (s *snCaseService) DeleteCaseAttachment(ctx context.Context, req domain.DeleteAttachmentRequest) (domain.DeleteAttachmentResponse, error) {
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.DeleteAttachmentResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	raw, err := s.client.Delete(ctx, "/attachments/"+uuidToSysid(req.AttachmentID), token)
+	if err != nil {
+		return domain.DeleteAttachmentResponse{}, err
+	}
+
+	var snResp struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.DeleteAttachmentResponse{}, fmt.Errorf("sn delete attachment: parse response: %w", err)
+	}
+
+	return domain.DeleteAttachmentResponse{Message: snResp.Message}, nil
+}
+
 // SearchCases implements CaseService by calling the Choreo POST /cases/search endpoint.
 func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesRequest) (domain.SearchCasesResponse, error) {
 	if err := normalizePagination(&req.Pagination); err != nil {

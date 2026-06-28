@@ -720,6 +720,51 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /cases/{id}/attachments/{attachment_id}:
+    delete:
+      summary: Delete a case attachment (ServiceNow data source only).
+      operationId: deleteCaseAttachment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Case UUID.
+        - name: attachment_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Attachment UUID.
+      responses:
+        "200":
+          description: Attachment deleted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteAttachmentResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Attachment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /deployed-products:
     post:
       summary: Create a new deployed product (ServiceNow data source only).
@@ -2612,6 +2657,12 @@ components:
           type: integer
         hasMore:
           type: boolean
+
+    DeleteAttachmentResponse:
+      type: object
+      properties:
+        message:
+          type: string
 
     SearchChangeRequestsRequest:
       type: object

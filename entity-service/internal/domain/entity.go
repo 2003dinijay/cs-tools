@@ -973,6 +973,18 @@ type SearchAttachmentsResponse struct {
 	HasMore     bool         `json:"hasMore"`
 }
 
+// DeleteAttachmentRequest is the input for DELETE /cases/{id}/attachments/{attachmentId}.
+// Both IDs are injected from URL path parameters.
+type DeleteAttachmentRequest struct {
+	CaseID       string `json:"-"`
+	AttachmentID string `json:"-"`
+}
+
+// DeleteAttachmentResponse is the output for DELETE /cases/{id}/attachments/{attachmentId}.
+type DeleteAttachmentResponse struct {
+	Message string `json:"message"`
+}
+
 // ChangeRequestType classifies the change request type.
 type ChangeRequestType string
 

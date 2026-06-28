@@ -98,6 +98,7 @@ func main() {
 	mux.HandleFunc("POST /cases/{id}/attachments", caseHandler.CreateCaseAttachment)
 	mux.HandleFunc("POST /cases/{id}/attachments/search", caseHandler.SearchCaseAttachments)
 	mux.HandleFunc("GET /cases/{case_id}/attachments/{attachment_id}/content", caseHandler.GetCaseAttachmentContent)
+	mux.HandleFunc("DELETE /cases/{id}/attachments/{attachmentId}", caseHandler.DeleteCaseAttachment)
 	mux.HandleFunc("POST /cases/{id}/call-requests", caseHandler.CreateCallRequest)
 	mux.HandleFunc("POST /cases/{id}/call-requests/search", caseHandler.SearchCallRequests)
 	mux.HandleFunc("PATCH /cases/{caseId}/call-requests/{callRequestId}", caseHandler.PatchCallRequest)

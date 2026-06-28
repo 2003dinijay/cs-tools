@@ -53,6 +53,7 @@ type entityCaseClient interface {
 	CreateCaseAttachment(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	SearchCaseAttachments(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	GetCaseAttachmentContent(ctx context.Context, caseID, attachmentID string) ([]byte, string, error)
+	DeleteCaseAttachment(ctx context.Context, caseID, attachmentID string) ([]byte, error)
 	CreateCallRequest(ctx context.Context, body []byte) ([]byte, error)
 	SearchCallRequests(ctx context.Context, body []byte) ([]byte, error)
 	PatchCallRequest(ctx context.Context, callRequestID string, body []byte) ([]byte, error)
@@ -410,6 +411,35 @@ func (h *CaseHandler) GetCaseAttachmentContent(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Content-Disposition", "attachment")
 	_, _ = w.Write(content)
+}
+
+// DeleteCaseAttachment handles DELETE /cases/{id}/attachments/{attachmentId}.
+func (h *CaseHandler) DeleteCaseAttachment(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	caseID := r.PathValue("id")
+	attachmentID := r.PathValue("attachmentId")
+	if caseID == "" || !uuidRe.MatchString(caseID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+	if attachmentID == "" || !uuidRe.MatchString(attachmentID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	result, err := h.entity.DeleteCaseAttachment(r.Context(), caseID, attachmentID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity DeleteCaseAttachment failed", "userID", user.UserID, "caseID", caseID, "attachmentID", attachmentID, "err", err)
+		mapUpstreamError(w, err, "Failed to delete case attachment.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 // PatchCase handles PATCH /cases/{id}.

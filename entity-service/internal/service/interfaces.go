@@ -135,6 +135,9 @@ type CaseService interface {
 	// for the attachment identified by attachmentID on the given case.
 	// A NotFoundError is returned if absent.
 	GetCaseAttachmentContent(ctx context.Context, caseID, attachmentID string) (content []byte, contentType string, err error)
+	// DeleteCaseAttachment removes the attachment identified by req.AttachmentID from the case.
+	// A NotFoundError is returned if the attachment does not exist.
+	DeleteCaseAttachment(ctx context.Context, req domain.DeleteAttachmentRequest) (domain.DeleteAttachmentResponse, error)
 }
 
 // CatalogService defines the operations available on service catalogs.

@@ -174,3 +174,18 @@ func (h *CaseHandler) GetCaseAttachmentContent(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Content-Type", contentType)
 	_, _ = w.Write(content)
 }
+
+// DeleteCaseAttachment handles DELETE /cases/{id}/attachments/{attachment_id}.
+func (h *CaseHandler) DeleteCaseAttachment(w http.ResponseWriter, r *http.Request) {
+	req := domain.DeleteAttachmentRequest{
+		CaseID:       r.PathValue("id"),
+		AttachmentID: r.PathValue("attachment_id"),
+	}
+	resp, err := h.svc.DeleteCaseAttachment(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}

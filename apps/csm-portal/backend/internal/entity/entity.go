@@ -179,6 +179,12 @@ func (c *Client) GetCaseAttachmentContent(ctx context.Context, caseID, attachmen
 	return c.doBinary(ctx, fmt.Sprintf("/cases/%s/attachments/%s/content", url.PathEscape(caseID), url.PathEscape(attachmentID)))
 }
 
+// DeleteCaseAttachment calls DELETE /cases/{id}/attachments/{attachmentId} on the entity service.
+// Response is returned as raw JSON.
+func (c *Client) DeleteCaseAttachment(ctx context.Context, caseID, attachmentID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/cases/%s/attachments/%s", url.PathEscape(caseID), url.PathEscape(attachmentID)), nil)
+}
+
 // SearchCatalogs calls POST /catalogs/search on the entity service.
 // Response is returned as raw JSON.
 func (c *Client) SearchCatalogs(ctx context.Context, body []byte) ([]byte, error) {

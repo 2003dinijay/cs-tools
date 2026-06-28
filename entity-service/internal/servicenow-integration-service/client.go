@@ -241,6 +241,25 @@ func (c *Client) Patch(ctx context.Context, path string, userIDToken string, pay
 	return c.do(req, path)
 }
 
+// Delete sends a DELETE request to the given path. The OAuth2 bearer token is
+// added as Authorization header; userIDToken is forwarded as x-user-id-token.
+// Returns the raw response body on 2xx.
+func (c *Client) Delete(ctx context.Context, path string, userIDToken string) (json.RawMessage, error) {
+	token, err := c.accessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("snclient: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("x-user-id-token", userIDToken)
+
+	return c.do(req, path)
+}
+
 // Post sends a POST request to the given path. The OAuth2 bearer token is
 // added as Authorization header; userIDToken is forwarded as x-user-id-token.
 // Returns the raw response body on 2xx.
