@@ -145,14 +145,15 @@ backend/
 │   └── handler/
 │       ├── cases.go            # HTTP handlers for case endpoints
 │       ├── state.go            # Case state machine (nextStates, isValidStateTransition)
-│       ├── catalogs.go         # HTTP handlers for catalog endpoints (ServiceNow only)
-│       ├── change_requests.go  # HTTP handlers for change-request endpoints
-│       ├── accounts.go         # HTTP handlers for account endpoints
-│       ├── deployments.go      # HTTP handlers for deployment endpoints
-│       ├── products.go         # HTTP handlers for product endpoints
-│       ├── projects.go         # HTTP handlers for project endpoints
-│       ├── updates.go          # HTTP handlers for updates endpoints
-│       └── users.go            # HTTP handlers for user endpoints
+│       ├── catalogs.go                   # HTTP handlers for catalog endpoints (ServiceNow only)
+│       ├── change_requests.go            # HTTP handlers for change-request endpoints
+│       ├── product_vulnerabilities.go    # HTTP handlers for product vulnerability endpoints (ServiceNow only)
+│       ├── accounts.go                   # HTTP handlers for account endpoints
+│       ├── deployments.go                # HTTP handlers for deployment endpoints
+│       ├── products.go                   # HTTP handlers for product endpoints
+│       ├── projects.go                   # HTTP handlers for project endpoints
+│       ├── updates.go                    # HTTP handlers for updates endpoints
+│       └── users.go                      # HTTP handlers for user endpoints
 ├── .env                        # Local config (git-ignored)
 └── go.mod
 ```
@@ -208,6 +209,11 @@ backend/
 
 - `POST /catalogs/search` — Search service catalogs by deployed product (ServiceNow only)
 - `GET /catalogs/{catalogId}/items/{catalogItemId}/variables` — Get catalog item variables (ServiceNow only)
+
+### Product Vulnerabilities
+
+- `POST /products/vulnerabilities/search` — Search product vulnerabilities with optional `priorityKey`, `searchQuery`, `productName`, `productVersion` filters (ServiceNow data source only)
+- `GET /products/vulnerabilities/{id}` — Get product vulnerability by ID (ServiceNow data source only)
 
 ### Updates
 

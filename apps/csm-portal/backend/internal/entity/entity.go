@@ -166,3 +166,16 @@ func (c *Client) SearchCatalogs(ctx context.Context, body []byte) ([]byte, error
 func (c *Client) GetCatalogItemVariables(ctx context.Context, catalogID, catalogItemID string) ([]byte, error) {
 	return c.do(ctx, http.MethodGet, fmt.Sprintf("/catalogs/%s/items/%s/variables", url.PathEscape(catalogID), url.PathEscape(catalogItemID)), nil)
 }
+
+// SearchProductVulnerabilities calls POST /products/vulnerabilities/search on the entity service.
+// Response is returned as raw JSON.
+func (c *Client) SearchProductVulnerabilities(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/products/vulnerabilities/search", body)
+}
+
+// GetProductVulnerability calls GET /products/vulnerabilities/{id} on the entity service.
+// Response is returned as raw JSON.
+func (c *Client) GetProductVulnerability(ctx context.Context, id string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, fmt.Sprintf("/products/vulnerabilities/%s", url.PathEscape(id)), nil)
+}
+

@@ -880,6 +880,75 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /products/vulnerabilities/search:
+    post:
+      summary: Search product vulnerabilities (ServiceNow data source only).
+      operationId: searchProductVulnerabilities
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchProductVulnerabilitiesRequest'
+      responses:
+        "200":
+          description: Product vulnerabilities matching the filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchProductVulnerabilitiesResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+
+  /products/vulnerabilities/{id}:
+    get:
+      summary: Get a product vulnerability by ID (ServiceNow data source only).
+      operationId: getProductVulnerability
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Vulnerability UUID.
+      responses:
+        "200":
+          description: The product vulnerability with the given ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductVulnerabilityView'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Vulnerability not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /change-requests/search:
     post:
       summary: Search change requests (ServiceNow data source only).
@@ -2472,6 +2541,93 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CatalogItemVariable'
+
+    VulnerabilityPriority:
+      type: string
+      enum:
+        - info
+        - low
+        - medium
+        - high
+        - critical
+        - unknown
+
+    SearchProductVulnerabilitiesFilters:
+      type: object
+      additionalProperties: false
+      properties:
+        searchQuery:
+          type: string
+        priorityKey:
+          $ref: '#/components/schemas/VulnerabilityPriority'
+        productName:
+          type: string
+        productVersion:
+          type: string
+
+    SearchProductVulnerabilitiesRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        filters:
+          $ref: '#/components/schemas/SearchProductVulnerabilitiesFilters'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    ProductVulnerabilityView:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        cveId:
+          type: string
+        vulnerabilityId:
+          type: string
+        priority:
+          type: string
+          description: Priority label (e.g. High, Critical).
+        productName:
+          type: string
+          nullable: true
+        productVersion:
+          type: string
+          nullable: true
+        componentName:
+          type: string
+        version:
+          type: string
+        type:
+          type: string
+        componentType:
+          type: string
+          nullable: true
+        updateLevel:
+          type: string
+          nullable: true
+        useCase:
+          type: string
+          nullable: true
+        justification:
+          type: string
+          nullable: true
+        resolution:
+          type: string
+          nullable: true
+
+    SearchProductVulnerabilitiesResponse:
+      type: object
+      properties:
+        productVulnerabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductVulnerabilityView'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
 
     ErrorResponse:
       type: object
