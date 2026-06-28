@@ -2752,7 +2752,7 @@ components:
           type: integer
           description: Number of cores allocated for the product.
         tps:
-          type: integer
+          type: number
           description: Transactions per second allocated for the product.
         description:
           type: string
@@ -2785,7 +2785,7 @@ components:
               type: integer
               nullable: true
             tps:
-              type: integer
+              type: number
               nullable: true
             description:
               type: string

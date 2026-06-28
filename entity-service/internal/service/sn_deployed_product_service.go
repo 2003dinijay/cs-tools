@@ -81,13 +81,13 @@ func NewServiceNowDeployedProductService(client *integrationservice.Client) Depl
 
 // snCreateDeployedProductPayload is the Choreo POST /deployed-products request body.
 type snCreateDeployedProductPayload struct {
-	ProjectID    string `json:"projectId"`
-	DeploymentID string `json:"deploymentId"`
-	ProductID    string `json:"productId"`
-	VersionID    string `json:"versionId"`
-	Cores        *int   `json:"cores,omitempty"`
-	TPS          *int   `json:"tps,omitempty"`
-	Description  *string `json:"description,omitempty"`
+	ProjectID    string   `json:"projectId"`
+	DeploymentID string   `json:"deploymentId"`
+	ProductID    string   `json:"productId"`
+	VersionID    string   `json:"versionId"`
+	Cores        *int     `json:"cores,omitempty"`
+	TPS          *float64 `json:"tps,omitempty"` // Ballerina decimal?
+	Description  *string  `json:"description,omitempty"`
 }
 
 type snCreateDeployedProductResponse struct {
@@ -103,7 +103,7 @@ type snCreateDeployedProductResponse struct {
 // Description is json.RawMessage so an explicit null can be distinguished from an omitted field.
 type snUpdateDeployedProductPayload struct {
 	Cores       *int            `json:"cores,omitempty"`
-	TPS         *int            `json:"tps,omitempty"`
+	TPS         *float64        `json:"tps,omitempty"` // Ballerina decimal?
 	Description json.RawMessage `json:"description,omitempty"`
 	Active      *bool           `json:"active,omitempty"`
 }

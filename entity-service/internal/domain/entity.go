@@ -453,13 +453,13 @@ type SearchDeployedProductsResponse struct {
 // CreateDeployedProductRequest is the input for POST /deployed-products.
 // ProjectID, DeploymentID, ProductID, and VersionID are required.
 type CreateDeployedProductRequest struct {
-	ProjectID    string  `json:"projectId"`
-	DeploymentID string  `json:"deploymentId"`
-	ProductID    string  `json:"productId"`
-	VersionID    string  `json:"versionId"`
-	Cores        *int    `json:"cores"`
-	TPS          *int    `json:"tps"`
-	Description  *string `json:"description"`
+	ProjectID    string   `json:"projectId"`
+	DeploymentID string   `json:"deploymentId"`
+	ProductID    string   `json:"productId"`
+	VersionID    string   `json:"versionId"`
+	Cores        *int     `json:"cores"`
+	TPS          *float64 `json:"tps"`
+	Description  *string  `json:"description"`
 }
 
 // CreateDeployedProductResponse is the response for POST /deployed-products.
@@ -484,7 +484,7 @@ type UpdateDeployedProductRequest struct {
 	ID           string   `json:"-"`
 	DeploymentID *string  `json:"deploymentId,omitempty"`
 	Cores        *int     `json:"cores"`
-	TPS          *int     `json:"tps"`
+	TPS          *float64 `json:"tps"`
 	Description  **string `json:"description"`
 	Active       *bool    `json:"active"`
 }
