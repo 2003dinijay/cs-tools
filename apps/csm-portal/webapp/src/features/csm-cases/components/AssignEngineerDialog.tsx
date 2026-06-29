@@ -31,7 +31,10 @@ import { Search, UserCheck } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type JSX } from "react";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
-import type { User } from "@features/csm-users/types/csmUsers";
+import {
+  INTERNAL_USER_ROLES,
+  type NormalizedUser,
+} from "@features/csm-users/types/csmUsers";
 
 interface AssignEngineerDialogProps {
   /** Current assignee display name, or "Unassigned". */
@@ -54,8 +57,8 @@ function initialsOf(name: string): string {
     .join("");
 }
 
-function fullName(u: User): string {
-  return [u.firstName, u.lastName].filter(Boolean).join(" ").trim() || u.userName;
+function fullName(u: NormalizedUser): string {
+  return u.name.trim() || u.userName;
 }
 
 /**
@@ -76,16 +79,22 @@ export default function AssignEngineerDialog({
   const [input, setInput] = useState("");
   const search = useDebouncedValue(input.trim(), 300);
   const { data, isFetching, isError } = useSearchUsers({
-    ...(search.length > 0 && { searchQuery: search }),
+    filters: {
+      ...(search.length > 0 && { searchQuery: search }),
+      // Internal-facing roles only (ServiceNow source); the BE applies the
+      // filter, so we no longer client-gate on `userType` (absent on SnUser).
+      roles: INTERNAL_USER_ROLES,
+    },
     pagination: { limit: 8, offset: 0 },
   });
 
-  // Only internal engineers are assignable, and only ones that carry an email
-  // (the assign call is email-based).
+  // Assignment is email-based, so an assignee must carry an email. The role
+  // filter above already restricts to internal staff; we keep a userType guard
+  // only for the postgres source (where roles are absent).
   const engineers = useMemo(
     () =>
       (data?.users ?? []).filter(
-        (u) => u.userType === "internal" && !!u.email,
+        (u) => !!u.email && (u.userType ? u.userType === "internal" : true),
       ),
     [data],
   );

@@ -15,7 +15,7 @@
 // under the License.
 
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { ApiQueryKeys } from "@constants/apiConstants";
+import { ApiQueryKeys, BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
 
 /**
@@ -54,9 +54,10 @@ export function useDirectoryUsers(): UseQueryResult<DirectoryUser[], Error> {
   return useQuery<DirectoryUser[], Error>({
     queryKey: [ApiQueryKeys.CSM_ADMIN_USERS, "directory"],
     queryFn: async (): Promise<DirectoryUser[]> => {
-      const res = await api.post<Record<string, never>, unknown>(
+      // No filters: fetch the broadest page the BE allows (default is only 10).
+      const res = await api.post<{ pagination: { limit: number } }, unknown>(
         "/users/search",
-        {},
+        { pagination: { limit: BE_MAX_PAGE_LIMIT } },
       );
       const rows: RawDirectoryUser[] = Array.isArray(res)
         ? (res as RawDirectoryUser[])

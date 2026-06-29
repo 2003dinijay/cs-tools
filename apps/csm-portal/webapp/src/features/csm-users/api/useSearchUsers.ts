@@ -18,15 +18,23 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useAuthApiClient } from "@hooks/useAuthApiClient";
 import { apiConfig } from "@config/apiConfig";
 import { ApiError, parseApiResponseMessage } from "@utils/ApiError";
-import type {
-  SearchUsersRequest,
-  SearchUsersResponse,
+import {
+  normalizeUserSearchResponse,
+  type NormalizedUserSearchResult,
+  type SearchUsersRequest,
+  type SearchUsersResponse,
 } from "@features/csm-users/types/csmUsers";
 
+/**
+ * Searches users via `POST /users/search`. The endpoint returns a `oneOf`
+ * (postgres `User` vs ServiceNow `SnUser`); the result is normalized into a
+ * source-agnostic {@link NormalizedUserSearchResult} so callers don't branch
+ * on the live data source.
+ */
 export function useSearchUsers(request: SearchUsersRequest) {
   const authFetch = useAuthApiClient();
 
-  return useQuery<SearchUsersResponse, Error>({
+  return useQuery<SearchUsersResponse, Error, NormalizedUserSearchResult>({
     queryKey: ["csm-users-search", request],
     queryFn: async () => {
       const res = await authFetch(`${apiConfig.backendUrl}/users/search`, {
@@ -43,6 +51,7 @@ export function useSearchUsers(request: SearchUsersRequest) {
       }
       return (await res.json()) as SearchUsersResponse;
     },
+    select: normalizeUserSearchResponse,
     placeholderData: keepPreviousData,
   });
 }
