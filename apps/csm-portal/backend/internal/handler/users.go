@@ -182,8 +182,6 @@ func (h *UsersHandler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Decode into a typed SearchUsersRequest and validate fields before forwarding.
-
 	result, err := h.entity.SearchUsers(r.Context(), body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchUsers failed", "userID", user.UserID, "err", err)
@@ -191,6 +189,5 @@ func (h *UsersHandler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Unmarshal result and filter to only the fields required by the frontend.
 	writeJSON(w, http.StatusOK, result)
 }

@@ -180,7 +180,7 @@ backend/
 
 - `GET /users/me` — Get current user profile
 - `PATCH /users/me` — Update current user profile (phone number)
-- `POST /users/search` — Search users
+- `POST /users/search` — Search users; optional `filters` (`searchQuery`, `roles`, `userNames`, `emails`, `active`) and `sortBy` (`field`, `order`); response shape depends on data source (`User` for postgres, `SNUser` for ServiceNow)
 
 ### Accounts
 
