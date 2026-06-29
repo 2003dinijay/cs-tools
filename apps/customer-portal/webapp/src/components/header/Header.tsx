@@ -73,7 +73,7 @@ export default function Header({
     isError,
   } = useInfiniteProjects({
     pageSize: 20,
-    enabled: !isProjectHub && !hideProjectControls,
+    enabled: showProjectToolbar,
   });
 
   // Flatten all pages for selected-project lookup and excludeS0 check
@@ -187,7 +187,7 @@ export default function Header({
               gap: 1,
             }}
           >
-            {!isProjectHub && !hideProjectControls && (
+            {showProjectToolbar && (
               <HeaderUI.Toggle
                 collapsed={collapsed}
                 onToggle={onToggleSidebar}
@@ -199,7 +199,7 @@ export default function Header({
             <HeaderUI.Spacer />
             <Actions hideGetHelp={hideProjectControls} />
           </Box>
-          {!isProjectHub && !hideProjectControls && (
+          {showProjectToolbar && (
             <Box
               data-testid="header-stacked-controls-row"
               sx={{
@@ -239,13 +239,13 @@ export default function Header({
         </Box>
       ) : (
         <>
-          {!isProjectHub && !hideProjectControls && (
+          {showProjectToolbar && (
             <HeaderUI.Toggle collapsed={collapsed} onToggle={onToggleSidebar} />
           )}
           <Box sx={{ flexShrink: 0 }}>
             <Brand isNavigationDisabled={totalRecords <= 1} />
           </Box>
-          {!isProjectHub && !hideProjectControls && (
+          {showProjectToolbar && (
             <Box
               sx={{
                 display: "flex",

@@ -16,21 +16,32 @@
 
 import { type JSX } from "react";
 import { Navigate, Outlet } from "react-router";
-import { Box, LinearProgress } from "@wso2/oxygen-ui";
+import { Box, LinearProgress, Typography } from "@wso2/oxygen-ui";
 import useGetUserDetails from "@features/settings/api/useGetUserDetails";
 import { SETTINGS_PARTNER_ROLE } from "@features/settings/constants/settingsConstants";
 
 /**
  * Guards all /partner/* routes so only users with the partner role can access them.
  * Non-partner users are redirected to the home page.
+ * On fetch error the guard shows an error message rather than falsely redirecting.
  */
 export default function PartnerGuard(): JSX.Element {
-  const { data: userDetails, isLoading } = useGetUserDetails();
+  const { data: userDetails, isLoading, isError } = useGetUserDetails();
 
   if (isLoading) {
     return (
       <Box sx={{ alignItems: "center", display: "flex", flex: 1, justifyContent: "center" }}>
         <LinearProgress sx={{ maxWidth: 400, width: "60%" }} />
+      </Box>
+    );
+  }
+
+  if (isError) {
+    return (
+      <Box sx={{ alignItems: "center", display: "flex", flex: 1, justifyContent: "center" }}>
+        <Typography color="text.secondary" variant="body2">
+          Unable to verify access. Please refresh and try again.
+        </Typography>
       </Box>
     );
   }
