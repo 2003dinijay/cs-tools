@@ -288,9 +288,9 @@ export default function PartnerGlobalSearch(): JSX.Element {
               }}
             >
               {/* Projects section */}
-              {(isDebouncing || isLoadingProjects || dropdownProjects.length > 0) && (
+              {(isDebouncing || isLoadingDropdown || dropdownProjects.length > 0) && (
                 <>
-                  {isDebouncing || isLoadingProjects ? (
+                  {isDebouncing || isLoadingDropdown ? (
                     [1, 2, 3].map((i) => (
                       <Box
                         key={i}
@@ -363,15 +363,14 @@ export default function PartnerGlobalSearch(): JSX.Element {
 
               {/* Divider between sections — only when both have results */}
               {!isDebouncing &&
-                !isLoadingProjects &&
-                !isLoadingCases &&
+                !isLoadingDropdown &&
                 dropdownProjects.length > 0 &&
                 dropdownCases.length > 0 && <Divider />}
 
               {/* Cases section */}
-              {(isDebouncing || isLoadingCases || dropdownCases.length > 0) && (
+              {(isDebouncing || isLoadingDropdown || dropdownCases.length > 0) && (
                 <>
-                  {isDebouncing || isLoadingCases ? (
+                  {isDebouncing || isLoadingDropdown ? (
                     [1, 2, 3].map((i) => (
                       <Box
                         key={i}
