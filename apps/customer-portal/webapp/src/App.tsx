@@ -47,6 +47,9 @@ import EngagementsPage from "@features/engagements/pages/EngagementsPage";
 import UsageMetricsPage from "@features/usage-metrics/pages/UsageMetricsPage";
 import SettingsPage from "@features/settings/pages/SettingsPage";
 import ServiceNowCaseRedirectPage from "@features/project-hub/pages/ServiceNowCaseRedirectPage";
+import PartnerProjectsPage from "@features/project-hub/pages/PartnerProjectsPage";
+import PartnerCasesPage from "@features/project-hub/pages/PartnerCasesPage";
+import PartnerGuard from "@layouts/PartnerGuard";
 import Error401Page from "@components/error/Error401Page";
 import Error403Page from "@components/error/Error403Page";
 import Error404Page from "@components/error/Error404Page";
@@ -98,6 +101,12 @@ export default function App(): JSX.Element {
                   path="support"
                   element={<ServiceNowCaseRedirectPage />}
                 />
+
+                {/* Partner global search drill-down pages — role-gated */}
+                <Route element={<PartnerGuard />}>
+                  <Route path="partner/projects" element={<PartnerProjectsPage />} />
+                  <Route path="partner/cases" element={<PartnerCasesPage />} />
+                </Route>
 
                 {/* Project Specific Routes */}
                 <Route path="projects/:projectId" element={<ProjectGuard />}>
