@@ -155,12 +155,13 @@ export default function PartnerGlobalSearch(): JSX.Element {
 
   const isExporting = exportingFormat !== null;
 
-  // Table query — always unfiltered; does not react to the search input
+  // Table query — filters by the debounced search query when one is active
   const {
     data: tableData,
     isLoading: isLoadingTable,
     isError: isErrorTable,
   } = useGetGlobalSearch({
+    ...(debouncedSearchQuery ? { filters: { searchQuery: debouncedSearchQuery } } : {}),
     projectsPagination: { offset: 0, limit: GLOBAL_SEARCH_PAGE_SIZE },
     casesPagination: { offset: 0, limit: GLOBAL_SEARCH_PAGE_SIZE },
   });
