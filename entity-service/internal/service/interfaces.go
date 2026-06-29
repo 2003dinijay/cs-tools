@@ -29,9 +29,17 @@ import (
 // making it straightforward to substitute a test double in unit tests.
 type UserService interface {
 	// SearchUsers returns a paginated list of users that match the filters in
-	// req. A ValidationError is returned for invalid input (e.g. limit > 100);
+	// req. A ValidationError is returned for invalid input (e.g. limit > 50);
 	// any other error indicates an infrastructure failure.
 	SearchUsers(ctx context.Context, req domain.SearchUsersRequest) (domain.SearchUsersResponse, error)
+}
+
+// SNUserService defines the user search operation backed by the ServiceNow data source.
+type SNUserService interface {
+	// SearchUsers returns a paginated list of ServiceNow users that match the
+	// filters in req. A ValidationError is returned for invalid input; any other
+	// error indicates an infrastructure failure.
+	SearchUsers(ctx context.Context, req domain.SearchUsersRequest) (domain.SearchSNUsersResponse, error)
 }
 
 // AccountService defines the operations available on the account entity.

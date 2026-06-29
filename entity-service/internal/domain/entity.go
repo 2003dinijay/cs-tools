@@ -50,21 +50,68 @@ type User struct {
 	UpdatedOn time.Time `json:"updatedOn"`
 }
 
+// UserRole represents a ServiceNow role that can be assigned to a user.
+type UserRole string
+
+const (
+	UserRoleInternal      UserRole = "internal"
+	UserRoleAgent         UserRole = "agent"
+	UserRoleAdmin         UserRole = "admin"
+	UserRoleCommenter     UserRole = "commenter"
+	UserRoleExternal      UserRole = "external"
+	UserRoleCustomer      UserRole = "customer"
+	UserRoleCustomerAdmin UserRole = "customer_admin"
+	UserRolePartner       UserRole = "partner"
+	UserRolePartnerAdmin  UserRole = "partner_admin"
+)
+
+// UserSortField enumerates the columns by which user search results may be ordered.
+type UserSortField string
+
+const (
+	UserSortFieldName      UserSortField = "name"
+	UserSortFieldCreatedOn UserSortField = "createdOn"
+	UserSortFieldUpdatedOn UserSortField = "updatedOn"
+)
+
+// UserSortOrder is the direction of a user search sort.
+type UserSortOrder string
+
+const (
+	UserSortOrderAsc  UserSortOrder = "asc"
+	UserSortOrderDesc UserSortOrder = "desc"
+)
+
 // Pagination controls which page of results is returned.
-// Limit defaults to 20 and is capped at 100 by the service layer.
+// Limit defaults to 10 and is capped at 50 by the service layer.
 type Pagination struct {
 	Limit  int `json:"limit"`
 	Offset int `json:"offset"`
 }
 
-// SearchUsersRequest is the input for a user search operation.
-// SearchQuery is matched case-insensitively against username and email.
-type SearchUsersRequest struct {
-	Pagination  Pagination `json:"pagination"`
+// SearchUsersFilters holds the optional filter criteria for a user search.
+type SearchUsersFilters struct {
 	SearchQuery string     `json:"searchQuery"`
+	Roles       []UserRole `json:"roles"`
+	UserNames   []string   `json:"userNames"`
+	Emails      []string   `json:"emails"`
+	Active      *bool      `json:"active"`
 }
 
-// SearchUsersResponse is the paginated result of a user search.
+// UserSortBy specifies the sort field and direction for a user search.
+type UserSortBy struct {
+	Field UserSortField `json:"field"`
+	Order UserSortOrder `json:"order"`
+}
+
+// SearchUsersRequest is the input for a user search operation.
+type SearchUsersRequest struct {
+	Pagination Pagination         `json:"pagination"`
+	Filters    SearchUsersFilters `json:"filters"`
+	SortBy     UserSortBy         `json:"sortBy"`
+}
+
+// SearchUsersResponse is the paginated result of a postgres user search.
 // HasMore is true when additional pages are available beyond the current offset.
 type SearchUsersResponse struct {
 	Users   []User `json:"users"`
@@ -72,6 +119,27 @@ type SearchUsersResponse struct {
 	Limit   int    `json:"limit"`
 	Offset  int    `json:"offset"`
 	HasMore bool   `json:"hasMore"`
+}
+
+// SNUser is the user view returned by the ServiceNow data source.
+type SNUser struct {
+	ID        string   `json:"id"`
+	UserName  string   `json:"userName"`
+	Name      string   `json:"name"`
+	Email     string   `json:"email"`
+	TimeZone  *string  `json:"timeZone"`
+	Active    bool     `json:"active"`
+	CreatedOn string   `json:"createdOn"`
+	UpdatedOn string   `json:"updatedOn"`
+	Roles     []string `json:"roles"`
+}
+
+// SearchSNUsersResponse is the paginated result of a ServiceNow user search.
+type SearchSNUsersResponse struct {
+	Users  []SNUser `json:"users"`
+	Total  int      `json:"total"`
+	Limit  int      `json:"limit"`
+	Offset int      `json:"offset"`
 }
 
 // AccountTier represents the subscription tier of an account.
