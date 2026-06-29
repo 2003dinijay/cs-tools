@@ -132,7 +132,7 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
     # + payload - Global search request payload with optional filters and pagination (optional)
     # + return - Global search results or error response
     resource function post search(http:RequestContext ctx, types:GlobalSearchPayload? payload)
-        returns http:Ok|http:Unauthorized|http:InternalServerError {
+        returns http:Ok|http:BadRequest|http:Unauthorized|http:InternalServerError {
 
         authorization:UserInfoPayload|error userInfo = ctx.getWithType(authorization:HEADER_USER_INFO);
         if userInfo is error {
@@ -146,6 +146,13 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
         types:GlobalSearchPayload searchPayload = payload ?: {};
         types:GlobalSearchResponse|error result = globalSearch(userInfo.idToken, searchPayload);
         if result is error {
+            if getStatusCode(result) == http:STATUS_BAD_REQUEST {
+                return <http:BadRequest>{
+                    body: {
+                        message: "Invalid request parameters for global search."
+                    }
+                };
+            }
             if getStatusCode(result) == http:STATUS_UNAUTHORIZED {
                 log:printWarn(string `User: ${userInfo.userId} is not authorized to access the customer portal!`);
                 return <http:Unauthorized>{

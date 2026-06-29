@@ -50,6 +50,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GlobalSearchResponse'
+        "400":
+          description: BadRequest
         "401":
           description: Unauthorized
         "500":
