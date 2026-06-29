@@ -46,7 +46,20 @@ import { mapSeverityToDisplay } from "@features/support/utils/support";
 const ROWS_PER_PAGE_OPTIONS = [10, 25, 50];
 const DEFAULT_ROWS_PER_PAGE = 10;
 const SKELETON_ROW_COUNT = 5;
-const COL_SPAN = 6;
+const COL_SPAN = 7;
+
+const DATE_LOCALE = "en-US";
+const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+};
+
+function formatDate(value: string | null | undefined): string {
+  if (!value) return "--";
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? "--" : d.toLocaleDateString(DATE_LOCALE, DATE_FORMAT_OPTIONS);
+}
 
 /**
  * Full-page cases search for partner users.
@@ -203,6 +216,7 @@ export default function PartnerCasesPage(): JSX.Element {
                 <TableCell>Severity</TableCell>
                 <TableCell>Status</TableCell>
                 <TableCell>Created by</TableCell>
+                <TableCell>Created on</TableCell>
                 <TableCell>Project</TableCell>
               </TableRow>
             </TableHead>
@@ -314,6 +328,11 @@ export default function PartnerCasesPage(): JSX.Element {
                       <TableCell>
                         <Typography color="text.secondary" variant="body2">
                           {c.createdBy ?? "--"}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography color="text.secondary" variant="body2">
+                          {formatDate(c.createdOn)}
                         </Typography>
                       </TableCell>
                       <TableCell>

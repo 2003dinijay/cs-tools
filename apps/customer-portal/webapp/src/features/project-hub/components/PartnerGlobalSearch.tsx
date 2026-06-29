@@ -650,15 +650,16 @@ export default function PartnerGlobalSearch(): JSX.Element {
                   <TableCell>Severity</TableCell>
                   <TableCell>Status</TableCell>
                   <TableCell>Created by</TableCell>
+                  <TableCell>Created on</TableCell>
                   <TableCell>Project</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
                 {isLoadingCases ? (
-                  <SkeletonRows cols={6} />
+                  <SkeletonRows cols={7} />
                 ) : isErrorCases ? (
                   <TableRow>
-                    <TableCell align="center" colSpan={6}>
+                    <TableCell align="center" colSpan={7}>
                       <Typography color="text.secondary" variant="body2">
                         Failed to load cases.
                       </Typography>
@@ -666,7 +667,7 @@ export default function PartnerGlobalSearch(): JSX.Element {
                   </TableRow>
                 ) : cases.length === 0 ? (
                   <TableRow>
-                    <TableCell align="center" colSpan={6}>
+                    <TableCell align="center" colSpan={7}>
                       <Typography color="text.secondary" variant="body2">
                         No cases found.
                       </Typography>
@@ -753,6 +754,11 @@ export default function PartnerGlobalSearch(): JSX.Element {
                         <TableCell>
                           <Typography color="text.secondary" variant="body2">
                             {c.createdBy ?? "--"}
+                          </Typography>
+                        </TableCell>
+                        <TableCell>
+                          <Typography color="text.secondary" variant="body2">
+                            {formatDate(c.createdOn)}
                           </Typography>
                         </TableCell>
                         <TableCell>
