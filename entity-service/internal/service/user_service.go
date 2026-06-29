@@ -44,6 +44,9 @@ const (
 	defaultLimit      = 20
 	maxLimit          = 100
 	maxSearchQueryLen = 200
+
+	defaultUserLimit = 10
+	maxUserLimit     = 50
 )
 
 // normalizePagination applies defaults and clamps to p in-place.
@@ -54,6 +57,20 @@ func normalizePagination(p *domain.Pagination) error {
 	}
 	if p.Limit > maxLimit {
 		return &apierror.ValidationError{Msg: "limit cannot exceed 100"}
+	}
+	if p.Offset < 0 {
+		p.Offset = 0
+	}
+	return nil
+}
+
+// normalizeUserPagination applies user-search-specific defaults (limit 10, max 50).
+func normalizeUserPagination(p *domain.Pagination) error {
+	if p.Limit <= 0 {
+		p.Limit = defaultUserLimit
+	}
+	if p.Limit > maxUserLimit {
+		return &apierror.ValidationError{Msg: "limit cannot exceed 50"}
 	}
 	if p.Offset < 0 {
 		p.Offset = 0
@@ -80,10 +97,10 @@ func NewUserService(repo repository.UserRepository) UserService {
 
 // SearchUsers implements UserService.
 func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersRequest) (domain.SearchUsersResponse, error) {
-	if err := normalizePagination(&req.Pagination); err != nil {
+	if err := normalizeUserPagination(&req.Pagination); err != nil {
 		return domain.SearchUsersResponse{}, err
 	}
-	if err := validateSearchQuery(req.SearchQuery); err != nil {
+	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchUsersResponse{}, err
 	}
 
