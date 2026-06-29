@@ -122,10 +122,19 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		productVulnerabilityHandler = handler.NewProductVulnerabilityHandler(service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient))
 	}
 
+	var snUserHandler *handler.SNUserHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		snUserHandler = handler.NewSNUserHandler(service.NewServiceNowUserService(serviceNowIntegrationServiceClient))
+	}
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handler.HealthCheck)
-	mux.HandleFunc("POST /users/search", userHandler.SearchUsers)
+	if snUserHandler != nil {
+		mux.HandleFunc("POST /users/search", snUserHandler.SearchUsers)
+	} else {
+		mux.HandleFunc("POST /users/search", userHandler.SearchUsers)
+	}
 	mux.HandleFunc("GET /accounts/{id}", accountHandler.GetAccount)
 	mux.HandleFunc("POST /accounts/search", accountHandler.SearchAccounts)
 	mux.HandleFunc("GET /projects/{id}", projectHandler.GetProject)
