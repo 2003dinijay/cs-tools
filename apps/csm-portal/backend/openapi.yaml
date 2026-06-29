@@ -612,7 +612,11 @@ paths:
 
   /users/search:
     post:
-      summary: Search users.
+      summary: Search users with optional filters, sort, and pagination.
+      description: >
+        Returns a paginated list of users. When the entity-service data source is
+        ServiceNow the response uses SNUser (name, timeZone, active, roles); for
+        the postgres data source it uses User (firstName, lastName, userType).
       operationId: postUsersSearch
       requestBody:
         description: User search payload
@@ -623,19 +627,27 @@ paths:
         required: true
       responses:
         "200":
-          description: Ok
+          description: Users matching the supplied filters.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserSearchResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/UserSearchResponse'
+                  - $ref: '#/components/schemas/SNUserSearchResponse'
         "400":
-          description: BadRequest
+          description: Bad request — invalid filter value, sort field, or pagination limit.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "401":
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -2768,18 +2780,72 @@ components:
       type: object
       properties:
         pagination:
-          allOf:
-            - $ref: '#/components/schemas/Pagination'
-            - properties:
-                limit:
-                  default: 20
-                  maximum: 100
+          $ref: '#/components/schemas/UserPagination'
+        filters:
+          $ref: '#/components/schemas/UserSearchFilters'
+        sortBy:
+          $ref: '#/components/schemas/UserSortBy'
+
+    UserPagination:
+      type: object
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+          description: Number of results per page. Defaults to 10, capped at 50.
+        offset:
+          type: integer
+          minimum: 0
+          default: 0
+
+    UserSearchFilters:
+      type: object
+      properties:
         searchQuery:
           type: string
-          description: Searches across userName and email (case-insensitive); max 200 characters
+          maxLength: 200
+          description: Case-insensitive match against username and email.
+        roles:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            enum: [internal, agent, admin, commenter, external, customer, customer_admin, partner, partner_admin]
+          description: Filter by one or more ServiceNow roles. ServiceNow data source only.
+        userNames:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+          description: Filter to specific usernames (exact match).
+        emails:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+          description: Filter to specific email addresses (exact match).
+        active:
+          type: boolean
+          nullable: true
+          description: When set, restricts results to active or inactive users. ServiceNow data source only.
+
+    UserSortBy:
+      type: object
+      properties:
+        field:
+          type: string
+          enum: [name, createdOn, updatedOn]
+          description: Column to sort by. ServiceNow data source only.
+        order:
+          type: string
+          enum: [asc, desc]
+          description: Sort direction. Defaults to asc when field is set.
 
     UserSearchResponse:
       type: object
+      description: Paginated user list from the postgres data source.
       properties:
         users:
           type: array
@@ -2794,6 +2860,48 @@ components:
           type: integer
         hasMore:
           type: boolean
+
+    SNUser:
+      type: object
+      description: User as returned by the ServiceNow data source.
+      properties:
+        id:
+          type: string
+          format: uuid
+        userName:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+        timeZone:
+          type: string
+          nullable: true
+        active:
+          type: boolean
+        createdOn:
+          type: string
+        updatedOn:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+
+    SNUserSearchResponse:
+      type: object
+      description: Paginated user list from the ServiceNow data source.
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/SNUser'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
 
     User:
       type: object
