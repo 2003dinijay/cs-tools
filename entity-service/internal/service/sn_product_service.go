@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -37,11 +36,9 @@ type snProductsResponse struct {
 }
 
 type snProduct struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Class     string `json:"class"`
-	CreatedOn string `json:"createdOn"`
-	UpdatedOn string `json:"updatedOn"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Class string `json:"class"`
 }
 
 // snProductSearchPayload is the Choreo POST /products/search request body.
@@ -58,22 +55,22 @@ type snProductService struct {
 	client *integrationservice.Client
 }
 
-// NewServiceNowProductService constructs a ProductService backed by the Choreo API.
-func NewServiceNowProductService(client *integrationservice.Client) ProductService {
+// NewServiceNowProductService constructs an SNProductService backed by the Choreo API.
+func NewServiceNowProductService(client *integrationservice.Client) SNProductService {
 	return &snProductService{client: client}
 }
 
-func (s *snProductService) SearchProducts(ctx context.Context, req domain.SearchProductsRequest) (domain.SearchProductsResponse, error) {
+func (s *snProductService) SearchProducts(ctx context.Context, req domain.SearchProductsRequest) (domain.SearchSNProductsResponse, error) {
 	if err := normalizePagination(&req.Pagination); err != nil {
-		return domain.SearchProductsResponse{}, err
+		return domain.SearchSNProductsResponse{}, err
 	}
 	if err := validateSearchQuery(req.SearchQuery); err != nil {
-		return domain.SearchProductsResponse{}, err
+		return domain.SearchSNProductsResponse{}, err
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
-		return domain.SearchProductsResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+		return domain.SearchSNProductsResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
 	}
 
 	payload := snProductSearchPayload{
@@ -83,35 +80,25 @@ func (s *snProductService) SearchProducts(ctx context.Context, req domain.Search
 
 	raw, err := s.client.Post(ctx, "/products/search", token, payload)
 	if err != nil {
-		return domain.SearchProductsResponse{}, err
+		return domain.SearchSNProductsResponse{}, err
 	}
 
 	var snResp snProductsResponse
 	if err := json.Unmarshal(raw, &snResp); err != nil {
-		return domain.SearchProductsResponse{}, fmt.Errorf("sn products: parse response: %w", err)
+		return domain.SearchSNProductsResponse{}, fmt.Errorf("sn products: parse response: %w", err)
 	}
 
-	products := make([]domain.Product, 0, len(snResp.Products))
+	products := make([]domain.SNProduct, 0, len(snResp.Products))
 	for _, p := range snResp.Products {
-		createdOn, err := time.Parse(snCreatedOnLayout, p.CreatedOn)
-		if err != nil {
-			return domain.SearchProductsResponse{}, fmt.Errorf("sn products: parse createdOn %q: %w", p.CreatedOn, err)
-		}
-		updatedOn, err := time.Parse(snCreatedOnLayout, p.UpdatedOn)
-		if err != nil {
-			return domain.SearchProductsResponse{}, fmt.Errorf("sn products: parse updatedOn %q: %w", p.UpdatedOn, err)
-		}
-		products = append(products, domain.Product{
-			ID:        sysidToUUID(p.ID),
-			Name:      p.Name,
-			Class:     domain.ProductClass(p.Class),
-			CreatedOn: createdOn,
-			UpdatedOn: updatedOn,
+		products = append(products, domain.SNProduct{
+			ID:    sysidToUUID(p.ID),
+			Name:  p.Name,
+			Class: p.Class,
 		})
 	}
 
 	total := snResp.TotalRecords
-	return domain.SearchProductsResponse{
+	return domain.SearchSNProductsResponse{
 		Products: products,
 		Total:    total,
 		Limit:    req.Pagination.Limit,

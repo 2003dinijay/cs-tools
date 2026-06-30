@@ -3294,15 +3294,19 @@ components:
           type: boolean
 
     Product:
+      description: >
+        Product entry. When backed by the ServiceNow data source,
+        createdOn/updatedOn are absent and class is a ServiceNow label
+        (e.g. "Software Model").
       type: object
       properties:
         id:
           type: string
+          format: uuid
         name:
           type: string
         class:
           type: string
-          enum: [software, service]
         createdOn:
           type: string
           format: date-time
