@@ -32,7 +32,7 @@ import {
   colors,
   useTheme,
 } from "@wso2/oxygen-ui";
-import { Crown, Monitor, Settings, Shield, TriangleAlert, X } from "@wso2/oxygen-ui-icons-react";
+import { Crown, Monitor, Settings, Shield, Star, X } from "@wso2/oxygen-ui-icons-react";
 import { NULL_PLACEHOLDER } from "@features/settings/constants/settingsConstants";
 import { getAvatarColor, getInitials } from "@features/settings/utils/settings";
 import type { EditUserModalProps } from "@features/settings/types/settings";
@@ -49,7 +49,7 @@ const EDITABLE_ROLES = [
     id: "lead" as const,
     label: "Lead",
     description: "A portal user who can escalate an issue beyond level 3",
-    Icon: TriangleAlert,
+    Icon: Star,
     color: "warning" as const,
   },
   {
