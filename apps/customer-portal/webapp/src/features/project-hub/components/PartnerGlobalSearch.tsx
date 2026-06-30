@@ -483,12 +483,27 @@ export default function PartnerGlobalSearch(): JSX.Element {
                           <Typography noWrap variant="body2">
                             {highlightMatch(c.title ?? "--", debouncedSearchQuery)}
                           </Typography>
-                          <Typography color="text.secondary" noWrap variant="caption">
-                            {formatCasesTableCaseIdentifier(c.number, c.internalId)}
-                          </Typography>
-                          <Typography color="text.secondary" noWrap variant="caption">
-                            {caseTypeLabel}
-                          </Typography>
+                          <Box sx={{ alignItems: "center", display: "flex", gap: 0.75, mt: 0.25 }}>
+                            <Typography color="text.secondary" noWrap variant="caption">
+                              {formatCasesTableCaseIdentifier(c.number, c.internalId)}
+                            </Typography>
+                            <Chip
+                              label={caseTypeLabel}
+                              size="small"
+                              variant="outlined"
+                              sx={(theme) => ({
+                                bgcolor: alpha(caseTypeColor, theme.palette.mode === "dark" ? 0.05 : 0.1),
+                                borderColor: alpha(caseTypeColor, theme.palette.mode === "dark" ? 0.18 : 0.3),
+                                color: caseTypeColor,
+                                flexShrink: 0,
+                                fontSize: "0.65rem",
+                                fontWeight: 500,
+                                height: 16,
+                                px: 0,
+                                "& .MuiChip-label": { pl: "5px", pr: "5px" },
+                              })}
+                            />
+                          </Box>
                         </Box>
                       </Box>
                       );
