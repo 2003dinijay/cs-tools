@@ -64,10 +64,14 @@ type snTimeCardSearchPayload struct {
 }
 
 type snTimeCardFilters struct {
-	ProjectIDs []string `json:"projectIds,omitempty"`
-	StartDate  string   `json:"startDate,omitempty"`
-	EndDate    string   `json:"endDate,omitempty"`
-	States     []string `json:"states,omitempty"`
+	ProjectIDs   []string `json:"projectIds,omitempty"`
+	CaseID       string   `json:"caseId,omitempty"`
+	UserID       string   `json:"userId,omitempty"`
+	ApproverID   string   `json:"approverId,omitempty"`
+	ApprovedByID string   `json:"approvedById,omitempty"`
+	StartDate    string   `json:"startDate,omitempty"`
+	EndDate      string   `json:"endDate,omitempty"`
+	States       []string `json:"states,omitempty"`
 }
 
 type snTimeCardsResponse struct {
@@ -78,15 +82,15 @@ type snTimeCardsResponse struct {
 }
 
 type snTimeCard struct {
-	ID          string              `json:"id"`
-	TotalTime   float64             `json:"totalTime"`
-	CreatedOn   string              `json:"createdOn"`
-	HasBillable bool                `json:"hasBillable"`
-	State       *snTimeCardLabel    `json:"state"`
-	User        *snTimeCardRef      `json:"user"`
-	ApprovedBy  *snTimeCardRef      `json:"approvedBy"`
-	Project     *snTimeCardRef      `json:"project"`
-	Case        *snTimeCardCaseRef  `json:"case"`
+	ID          string             `json:"id"`
+	TotalTime   float64            `json:"totalTime"`
+	CreatedOn   string             `json:"createdOn"`
+	HasBillable bool               `json:"hasBillable"`
+	State       *snTimeCardLabel   `json:"state"`
+	User        *snTimeCardRef     `json:"user"`
+	ApprovedBy  *snTimeCardRef     `json:"approvedBy"`
+	Project     *snTimeCardRef     `json:"project"`
+	Case        *snTimeCardCaseRef `json:"case"`
 }
 
 type snTimeCardLabel struct {
@@ -173,6 +177,26 @@ func (s *snTimeCardService) SearchTimeCards(ctx context.Context, req domain.Sear
 		if err := validateUUIDs("projectIds", req.Filters.ProjectIDs); err != nil {
 			return domain.SearchTimeCardsResponse{}, err
 		}
+		if req.Filters.CaseID != nil {
+			if err := validateUUIDs("caseId", []string{*req.Filters.CaseID}); err != nil {
+				return domain.SearchTimeCardsResponse{}, err
+			}
+		}
+		if req.Filters.UserID != nil {
+			if err := validateUUIDs("userId", []string{*req.Filters.UserID}); err != nil {
+				return domain.SearchTimeCardsResponse{}, err
+			}
+		}
+		if req.Filters.ApproverID != nil {
+			if err := validateUUIDs("approverId", []string{*req.Filters.ApproverID}); err != nil {
+				return domain.SearchTimeCardsResponse{}, err
+			}
+		}
+		if req.Filters.ApprovedByID != nil {
+			if err := validateUUIDs("approvedById", []string{*req.Filters.ApprovedByID}); err != nil {
+				return domain.SearchTimeCardsResponse{}, err
+			}
+		}
 
 		snStates := make([]string, 0, len(req.Filters.States))
 		for _, state := range req.Filters.States {
@@ -182,6 +206,18 @@ func (s *snTimeCardService) SearchTimeCards(ctx context.Context, req domain.Sear
 		filters := snTimeCardFilters{
 			ProjectIDs: uuidsToSysids(req.Filters.ProjectIDs),
 			States:     snStates,
+		}
+		if req.Filters.CaseID != nil {
+			filters.CaseID = uuidToSysid(*req.Filters.CaseID)
+		}
+		if req.Filters.UserID != nil {
+			filters.UserID = uuidToSysid(*req.Filters.UserID)
+		}
+		if req.Filters.ApproverID != nil {
+			filters.ApproverID = uuidToSysid(*req.Filters.ApproverID)
+		}
+		if req.Filters.ApprovedByID != nil {
+			filters.ApprovedByID = uuidToSysid(*req.Filters.ApprovedByID)
 		}
 		if req.Filters.StartDate != nil {
 			filters.StartDate = *req.Filters.StartDate
@@ -213,4 +249,187 @@ func (s *snTimeCardService) SearchTimeCards(ctx context.Context, req domain.Sear
 		Limit:     snResp.Limit,
 		Offset:    snResp.Offset,
 	}, nil
+}
+
+// --- write path (create / update / approve / reject) ---------------------------
+
+type snTimeCardCreatePayload struct {
+	CaseID                   string   `json:"caseId"`
+	ProjectID                string   `json:"projectId"`
+	Date                     string   `json:"date"`
+	ApproverIDs              []string `json:"approverIds"`
+	IsBillable               bool     `json:"isBillable"`
+	IssueComplexity          string   `json:"issueComplexity,omitempty"`
+	WorkLogComment           string   `json:"workLogComment,omitempty"`
+	TimeAnalyzing            int      `json:"timeAnalyzing"`
+	TimeSettingUp            int      `json:"timeSettingUp"`
+	TimeReproducingDebugging int      `json:"timeReproducingDebugging"`
+	TimeProvidingSolution    int      `json:"timeProvidingSolution"`
+	TimePatching             int      `json:"timePatching"`
+}
+
+type snTimeCardUpdatePayload struct {
+	State                    string   `json:"state,omitempty"`
+	LeadComment              *string  `json:"leadComment,omitempty"`
+	Date                     *string  `json:"date,omitempty"`
+	ApproverIDs              []string `json:"approverIds,omitempty"`
+	IsBillable               *bool    `json:"isBillable,omitempty"`
+	IssueComplexity          *string  `json:"issueComplexity,omitempty"`
+	WorkLogComment           *string  `json:"workLogComment,omitempty"`
+	TimeAnalyzing            *int     `json:"timeAnalyzing,omitempty"`
+	TimeSettingUp            *int     `json:"timeSettingUp,omitempty"`
+	TimeReproducingDebugging *int     `json:"timeReproducingDebugging,omitempty"`
+	TimeProvidingSolution    *int     `json:"timeProvidingSolution,omitempty"`
+	TimePatching             *int     `json:"timePatching,omitempty"`
+}
+
+type snTimeCardMutationResponse struct {
+	Message  string      `json:"message"`
+	TimeCard *snTimeCard `json:"timeCard"`
+}
+
+func parseTimeCardMutation(raw []byte, op string) (domain.TimeCardMutationResponse, error) {
+	var snResp snTimeCardMutationResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.TimeCardMutationResponse{}, fmt.Errorf("sn time cards: parse %s response: %w", op, err)
+	}
+	out := domain.TimeCardMutationResponse{Message: snResp.Message}
+	if snResp.TimeCard != nil {
+		v := snTimeCardToView(*snResp.TimeCard)
+		out.TimeCard = &v
+	}
+	return out, nil
+}
+
+func nonNegativeMinutes(field string, v int) error {
+	if v < 0 {
+		return &apierror.ValidationError{Msg: field + " must not be negative"}
+	}
+	return nil
+}
+
+func (s *snTimeCardService) CreateTimeCard(ctx context.Context, req domain.CreateTimeCardRequest) (domain.TimeCardMutationResponse, error) {
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.TimeCardMutationResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	if req.CaseID == "" {
+		return domain.TimeCardMutationResponse{}, &apierror.ValidationError{Msg: "caseId is required"}
+	}
+	if req.ProjectID == "" {
+		return domain.TimeCardMutationResponse{}, &apierror.ValidationError{Msg: "projectId is required"}
+	}
+	if req.Date == "" {
+		return domain.TimeCardMutationResponse{}, &apierror.ValidationError{Msg: "date is required"}
+	}
+	if len(req.ApproverIDs) == 0 {
+		return domain.TimeCardMutationResponse{}, &apierror.ValidationError{Msg: "approverIds must not be empty"}
+	}
+	if err := validateUUIDs("caseId", []string{req.CaseID}); err != nil {
+		return domain.TimeCardMutationResponse{}, err
+	}
+	if err := validateUUIDs("projectId", []string{req.ProjectID}); err != nil {
+		return domain.TimeCardMutationResponse{}, err
+	}
+	if err := validateUUIDs("approverIds", req.ApproverIDs); err != nil {
+		return domain.TimeCardMutationResponse{}, err
+	}
+	for f, v := range map[string]int{
+		"timeAnalyzing": req.TimeAnalyzing, "timeSettingUp": req.TimeSettingUp,
+		"timeReproducingDebugging": req.TimeReproducingDebugging,
+		"timeProvidingSolution":    req.TimeProvidingSolution, "timePatching": req.TimePatching,
+	} {
+		if err := nonNegativeMinutes(f, v); err != nil {
+			return domain.TimeCardMutationResponse{}, err
+		}
+	}
+
+	payload := snTimeCardCreatePayload{
+		CaseID:                   uuidToSysid(req.CaseID),
+		ProjectID:                uuidToSysid(req.ProjectID),
+		Date:                     req.Date,
+		ApproverIDs:              uuidsToSysids(req.ApproverIDs),
+		IsBillable:               req.IsBillable,
+		TimeAnalyzing:            req.TimeAnalyzing,
+		TimeSettingUp:            req.TimeSettingUp,
+		TimeReproducingDebugging: req.TimeReproducingDebugging,
+		TimeProvidingSolution:    req.TimeProvidingSolution,
+		TimePatching:             req.TimePatching,
+	}
+	if req.IssueComplexity != nil {
+		payload.IssueComplexity = *req.IssueComplexity
+	}
+	if req.WorkLogComment != nil {
+		payload.WorkLogComment = *req.WorkLogComment
+	}
+
+	raw, err := s.client.Post(ctx, "/time-cards", token, payload)
+	if err != nil {
+		return domain.TimeCardMutationResponse{}, err
+	}
+	return parseTimeCardMutation(raw, "create")
+}
+
+func (s *snTimeCardService) UpdateTimeCard(ctx context.Context, req domain.UpdateTimeCardRequest) (domain.TimeCardMutationResponse, error) {
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.TimeCardMutationResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+	if err := validateUUIDs("id", []string{req.ID}); err != nil {
+		return domain.TimeCardMutationResponse{}, err
+	}
+	if req.State != nil {
+		if *req.State != domain.TimeCardStateApproved && *req.State != domain.TimeCardStateRejected {
+			return domain.TimeCardMutationResponse{}, &apierror.ValidationError{Msg: "state must be approved or rejected"}
+		}
+		if *req.State == domain.TimeCardStateRejected &&
+			(req.LeadComment == nil || strings.TrimSpace(*req.LeadComment) == "") {
+			return domain.TimeCardMutationResponse{}, &apierror.ValidationError{Msg: "leadComment is required when rejecting"}
+		}
+	}
+	if req.ApproverIDs != nil {
+		if len(req.ApproverIDs) == 0 {
+			return domain.TimeCardMutationResponse{}, &apierror.ValidationError{Msg: "approverIds must not be empty when provided"}
+		}
+		if err := validateUUIDs("approverIds", req.ApproverIDs); err != nil {
+			return domain.TimeCardMutationResponse{}, err
+		}
+	}
+	for f, v := range map[string]*int{
+		"timeAnalyzing": req.TimeAnalyzing, "timeSettingUp": req.TimeSettingUp,
+		"timeReproducingDebugging": req.TimeReproducingDebugging,
+		"timeProvidingSolution":    req.TimeProvidingSolution, "timePatching": req.TimePatching,
+	} {
+		if v != nil {
+			if err := nonNegativeMinutes(f, *v); err != nil {
+				return domain.TimeCardMutationResponse{}, err
+			}
+		}
+	}
+
+	payload := snTimeCardUpdatePayload{
+		LeadComment:              req.LeadComment,
+		Date:                     req.Date,
+		IsBillable:               req.IsBillable,
+		IssueComplexity:          req.IssueComplexity,
+		WorkLogComment:           req.WorkLogComment,
+		TimeAnalyzing:            req.TimeAnalyzing,
+		TimeSettingUp:            req.TimeSettingUp,
+		TimeReproducingDebugging: req.TimeReproducingDebugging,
+		TimeProvidingSolution:    req.TimeProvidingSolution,
+		TimePatching:             req.TimePatching,
+	}
+	if req.State != nil {
+		payload.State = snTimeCardStateLabelToSN[*req.State]
+	}
+	if req.ApproverIDs != nil {
+		payload.ApproverIDs = uuidsToSysids(req.ApproverIDs)
+	}
+
+	raw, err := s.client.Patch(ctx, fmt.Sprintf("/time-cards/%s", uuidToSysid(req.ID)), token, payload)
+	if err != nil {
+		return domain.TimeCardMutationResponse{}, err
+	}
+	return parseTimeCardMutation(raw, "update")
 }

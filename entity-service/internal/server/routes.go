@@ -183,6 +183,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 
 	if timeCardHandler != nil {
 		mux.HandleFunc("POST /time-cards/search", timeCardHandler.SearchTimeCards)
+		mux.HandleFunc("POST /time-cards", timeCardHandler.CreateTimeCard)
+		mux.HandleFunc("PATCH /time-cards/{id}", timeCardHandler.UpdateTimeCard)
 	}
 
 	if catalogHandler != nil {
@@ -192,7 +194,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 
 	if productVulnerabilityHandler != nil {
 		mux.HandleFunc("POST /products/vulnerabilities/search", productVulnerabilityHandler.SearchProductVulnerabilities)
-mux.HandleFunc("GET /products/vulnerabilities/{id}", productVulnerabilityHandler.GetProductVulnerability)
+		mux.HandleFunc("GET /products/vulnerabilities/{id}", productVulnerabilityHandler.GetProductVulnerability)
 	}
 
 	return middleware.CorrelationID(

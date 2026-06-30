@@ -799,24 +799,24 @@ type CaseView struct {
 
 // SearchCasesFilters holds all optional filter criteria for a case search.
 type SearchCasesFilters struct {
-	Types           []string         `json:"types"`
-	SearchQuery     string           `json:"searchQuery"`
-	ProjectIDs      []string         `json:"projectIds"`
-	DeploymentIDs   []string         `json:"deploymentIds"`
-	States          []CaseState      `json:"states"`
-	Severities      []CaseSeverity   `json:"severities"`
-	IssueTypes      []CaseIssueType  `json:"issueTypes"`
-	EngagementTypes []EngagementType `json:"engagementTypes"`
-	ClosedStartDate    *time.Time `json:"closedStartDate"`
-	ClosedEndDate      *time.Time `json:"closedEndDate"`
-	StartCreatedDate   *time.Time `json:"startCreatedDate"`
-	EndCreatedDate     *time.Time `json:"endCreatedDate"`
-	StartUpdatedDate   *time.Time `json:"startUpdatedDate"`
-	EndUpdatedDate     *time.Time `json:"endUpdatedDate"`
-	CreatedBy          []string         `json:"createdBy"`
-	CreatedByMe        bool             `json:"createdByMe"`
-	WorkStates         []CaseWorkState  `json:"workStates"`
-	AssignedUserIDs    []string         `json:"assignedUserIds"`
+	Types            []string         `json:"types"`
+	SearchQuery      string           `json:"searchQuery"`
+	ProjectIDs       []string         `json:"projectIds"`
+	DeploymentIDs    []string         `json:"deploymentIds"`
+	States           []CaseState      `json:"states"`
+	Severities       []CaseSeverity   `json:"severities"`
+	IssueTypes       []CaseIssueType  `json:"issueTypes"`
+	EngagementTypes  []EngagementType `json:"engagementTypes"`
+	ClosedStartDate  *time.Time       `json:"closedStartDate"`
+	ClosedEndDate    *time.Time       `json:"closedEndDate"`
+	StartCreatedDate *time.Time       `json:"startCreatedDate"`
+	EndCreatedDate   *time.Time       `json:"endCreatedDate"`
+	StartUpdatedDate *time.Time       `json:"startUpdatedDate"`
+	EndUpdatedDate   *time.Time       `json:"endUpdatedDate"`
+	CreatedBy        []string         `json:"createdBy"`
+	CreatedByMe      bool             `json:"createdByMe"`
+	WorkStates       []CaseWorkState  `json:"workStates"`
+	AssignedUserIDs  []string         `json:"assignedUserIds"`
 }
 
 // SearchCasesRequest is the input for a case search operation.
@@ -863,8 +863,6 @@ type SearchCasesResponse struct {
 	Offset int              `json:"offset"`
 	Limit  int              `json:"limit"`
 }
-
-
 
 // UpdateCaseRequest is the input for PATCH /cases/{id}.
 // Exactly one of State, Severity, WorkState, WatchList, or AssigneeEmail must be provided.
@@ -939,25 +937,25 @@ type CaseAttachment struct {
 // For type "service_request": catalogId, catalogItemId, and variables are required.
 // For type "security_report_analysis": subject, description, and at least one attachment are required.
 type CreateCaseRequest struct {
-	CreatedBy         string           `json:"-"`
-	Type              string           `json:"type"`
-	ProjectID         string           `json:"projectId"`
-	DeploymentID      string           `json:"deploymentId"`
-	DeployedProductID string           `json:"deployedProductId"`
-	Subject           string           `json:"subject"`
-	Description       string           `json:"description"`
-	Severity          CaseSeverity     `json:"severity"`
-	IssueType         CaseIssueType    `json:"issueType"`
+	CreatedBy         string        `json:"-"`
+	Type              string        `json:"type"`
+	ProjectID         string        `json:"projectId"`
+	DeploymentID      string        `json:"deploymentId"`
+	DeployedProductID string        `json:"deployedProductId"`
+	Subject           string        `json:"subject"`
+	Description       string        `json:"description"`
+	Severity          CaseSeverity  `json:"severity"`
+	IssueType         CaseIssueType `json:"issueType"`
 	// For service_request type
-	CatalogID         string           `json:"catalogId"`
-	CatalogItemID     string           `json:"catalogItemId"`
-	Variables         []Variable       `json:"variables"`
+	CatalogID     string     `json:"catalogId"`
+	CatalogItemID string     `json:"catalogItemId"`
+	Variables     []Variable `json:"variables"`
 	// Optional fields
-	RelatedCaseID     string           `json:"relatedCaseId"`
-	ConversationID    string           `json:"conversationId"`
-	WatchList         []string         `json:"watchList"`
+	RelatedCaseID  string   `json:"relatedCaseId"`
+	ConversationID string   `json:"conversationId"`
+	WatchList      []string `json:"watchList"`
 	// For security_report_analysis type
-	Attachments       []CaseAttachment `json:"attachments"`
+	Attachments []CaseAttachment `json:"attachments"`
 }
 
 // CommentType classifies the type of a case comment.
@@ -1012,9 +1010,9 @@ type CaseCommentDetail struct {
 // SearchCaseCommentsRequest is the input for listing comments on a case.
 // CaseID is populated from the URL path parameter and is not part of the JSON body.
 type SearchCaseCommentsRequest struct {
-	CaseID     string      `json:"-"`
+	CaseID     string          `json:"-"`
 	Filters    *CommentFilters `json:"filters"`
-	Pagination Pagination  `json:"pagination"`
+	Pagination Pagination      `json:"pagination"`
 }
 
 // CommentFilters holds optional filter criteria for searching case comments.
@@ -1038,13 +1036,13 @@ type Attachment struct {
 	ReferenceID   string        `json:"referenceId"`
 	ReferenceType ReferenceType `json:"referenceType"`
 	Name          string        `json:"name"`
-	Type        string    `json:"type"`
-	SizeBytes   int       `json:"sizeBytes"`
-	Description *string   `json:"description"`
-	CreatedBy   string    `json:"createdBy"`
-	CreatedOn   time.Time `json:"createdOn"`
-	DownloadURL *string   `json:"downloadUrl"`
-	PreviewURL  *string   `json:"previewUrl"`
+	Type          string        `json:"type"`
+	SizeBytes     int           `json:"sizeBytes"`
+	Description   *string       `json:"description"`
+	CreatedBy     string        `json:"createdBy"`
+	CreatedOn     time.Time     `json:"createdOn"`
+	DownloadURL   *string       `json:"downloadUrl"`
+	PreviewURL    *string       `json:"previewUrl"`
 }
 
 // CreateAttachmentRequest is the input for POST /attachments.
@@ -1284,10 +1282,14 @@ const (
 
 // SearchTimeCardsFilters holds optional filter criteria for POST /time-cards/search.
 type SearchTimeCardsFilters struct {
-	ProjectIDs []string        `json:"projectIds,omitempty"`
-	StartDate  *string         `json:"startDate,omitempty"`
-	EndDate    *string         `json:"endDate,omitempty"`
-	States     []TimeCardState `json:"states,omitempty"`
+	ProjectIDs   []string        `json:"projectIds,omitempty"`
+	CaseID       *string         `json:"caseId,omitempty"`
+	UserID       *string         `json:"userId,omitempty"`
+	ApproverID   *string         `json:"approverId,omitempty"`   // eligible approver (SN approver_list)
+	ApprovedByID *string         `json:"approvedById,omitempty"` // who actually approved (SN approved_by)
+	StartDate    *string         `json:"startDate,omitempty"`
+	EndDate      *string         `json:"endDate,omitempty"`
+	States       []TimeCardState `json:"states,omitempty"`
 }
 
 // SearchTimeCardsRequest is the request body for POST /time-cards/search.
@@ -1328,6 +1330,51 @@ type SearchTimeCardsResponse struct {
 	Total     int            `json:"total"`
 	Limit     int            `json:"limit"`
 	Offset    int            `json:"offset"`
+}
+
+// CreateTimeCardRequest is the request body for POST /time-cards. The submitter
+// is taken from the authenticated session, never from the payload; the card is
+// created in the "submitted" state. approverIds populate the eligible-approver list.
+type CreateTimeCardRequest struct {
+	CaseID                   string   `json:"caseId"`
+	ProjectID                string   `json:"projectId"`
+	Date                     string   `json:"date"` // YYYY-MM-DD
+	ApproverIDs              []string `json:"approverIds"`
+	IsBillable               bool     `json:"isBillable"`
+	IssueComplexity          *string  `json:"issueComplexity,omitempty"`
+	WorkLogComment           *string  `json:"workLogComment,omitempty"`
+	TimeAnalyzing            int      `json:"timeAnalyzing"`
+	TimeSettingUp            int      `json:"timeSettingUp"`
+	TimeReproducingDebugging int      `json:"timeReproducingDebugging"`
+	TimeProvidingSolution    int      `json:"timeProvidingSolution"`
+	TimePatching             int      `json:"timePatching"`
+}
+
+// UpdateTimeCardRequest is the request body for PATCH /time-cards/{id}. ID is
+// injected from the path. It carries EITHER editable fields (submitter, while the
+// card is submitted) OR a state transition: State="approved", or State="rejected"
+// with LeadComment. SN enforces authorization (submitter for edits, an eligible
+// approver in approver_list for transitions).
+type UpdateTimeCardRequest struct {
+	ID                       string         `json:"-"`
+	State                    *TimeCardState `json:"state,omitempty"`
+	LeadComment              *string        `json:"leadComment,omitempty"`
+	Date                     *string        `json:"date,omitempty"`
+	ApproverIDs              []string       `json:"approverIds,omitempty"`
+	IsBillable               *bool          `json:"isBillable,omitempty"`
+	IssueComplexity          *string        `json:"issueComplexity,omitempty"`
+	WorkLogComment           *string        `json:"workLogComment,omitempty"`
+	TimeAnalyzing            *int           `json:"timeAnalyzing,omitempty"`
+	TimeSettingUp            *int           `json:"timeSettingUp,omitempty"`
+	TimeReproducingDebugging *int           `json:"timeReproducingDebugging,omitempty"`
+	TimeProvidingSolution    *int           `json:"timeProvidingSolution,omitempty"`
+	TimePatching             *int           `json:"timePatching,omitempty"`
+}
+
+// TimeCardMutationResponse is returned by create and update.
+type TimeCardMutationResponse struct {
+	Message  string        `json:"message,omitempty"`
+	TimeCard *TimeCardView `json:"timeCard,omitempty"`
 }
 
 // ChangeRequest is the full change request detail returned by GET /change-requests/{id}.

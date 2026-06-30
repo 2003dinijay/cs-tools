@@ -202,8 +202,13 @@ type ChangeRequestService interface {
 // TimeCardService defines the operations available on the time-cards entity.
 type TimeCardService interface {
 	// SearchTimeCards returns a paginated list of time cards filtered by optional
-	// project IDs, date range, and states.
+	// project IDs, case, user, approver, date range, and states.
 	SearchTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) (domain.SearchTimeCardsResponse, error)
+	// CreateTimeCard logs a new time card against a case in the submitted state.
+	CreateTimeCard(ctx context.Context, req domain.CreateTimeCardRequest) (domain.TimeCardMutationResponse, error)
+	// UpdateTimeCard edits an editable (submitted) time card, or transitions its
+	// state (approve/reject) when req.State is set. SN enforces authorization.
+	UpdateTimeCard(ctx context.Context, req domain.UpdateTimeCardRequest) (domain.TimeCardMutationResponse, error)
 }
 
 // ProductVulnerabilityService defines the operations available on product vulnerabilities.
@@ -217,5 +222,4 @@ type ProductVulnerabilityService interface {
 	// GetProductVulnerability returns the detail of a single vulnerability by its UUID.
 	// A NotFoundError is returned if the vulnerability does not exist.
 	GetProductVulnerability(ctx context.Context, id string) (domain.ProductVulnerabilityView, error)
-
 }
