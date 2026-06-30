@@ -19,16 +19,20 @@ import { useAuthApiClient } from "@hooks/useAuthApiClient";
 import { apiConfig } from "@config/apiConfig";
 import { ApiError, parseApiResponseMessage } from "@utils/ApiError";
 
-// Matches csm-portal-backend openapi UserResponse. `id` is the caller's
-// platform UUID, consumed by the cases assignee filter to resolve the `@me`
-// sentinel. The BFF is expected to populate it shortly (currently a TODO,
-// blocked on entity wiring, alongside firstName/lastName/timeZone/roles); it
-// stays optional so `@me` degrades gracefully until the field lands.
+// Matches csm-portal-backend openapi UserResponse. Identity fields
+// (id/firstName/lastName/timeZone/roles) come from the entity service; `id` is
+// the caller's platform UUID, consumed by the cases assignee filter to resolve
+// the `@me` sentinel. `id` is optional because the contract omits it when the
+// entity service is unavailable (the assignee `@me` path degrades gracefully in
+// that case). `phoneNumber` is sourced from SCIM.
 export interface UsersMeResponse {
   id?: string;
   email?: string;
+  firstName?: string;
+  lastName?: string;
+  timeZone?: string;
+  roles?: string[];
   phoneNumber?: string;
-  lastPasswordUpdateTime?: string;
 }
 
 export function useGetUsersMe() {

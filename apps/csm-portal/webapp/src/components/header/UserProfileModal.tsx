@@ -41,17 +41,6 @@ const E164 = /^\+[1-9]\d{7,14}$/;
 // Show at most this many group chips inline before collapsing with "+N more".
 const GROUPS_PREVIEW_LIMIT = 4;
 
-function formatLastPasswordUpdate(epochMs: string | undefined): string {
-  if (!epochMs) return "Not available";
-  const ms = parseInt(epochMs, 10);
-  if (Number.isNaN(ms)) return "Not available";
-  return new Date(ms).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-  });
-}
-
 export interface UserProfileModalProps {
   open: boolean;
   onClose: () => void;
@@ -239,19 +228,6 @@ export default function UserProfileModal({
                 </IconButton>
               </Box>
             )}
-          </Box>
-
-          <Box>
-            <Typography variant="caption" color="text.secondary">
-              Last password update
-            </Typography>
-            <Typography variant="body2" sx={{ mt: 0.5 }}>
-              {isLoading ? (
-                <Skeleton width={160} />
-              ) : (
-                formatLastPasswordUpdate(userMe?.lastPasswordUpdateTime)
-              )}
-            </Typography>
           </Box>
         </Box>
 

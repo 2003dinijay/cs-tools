@@ -155,8 +155,9 @@ export function useGetCsmCases(
       // the directory, so this resolves them all); `@me` → the caller's id,
       // taken from the app-wide CurrentUserProvider (no per-query `/users/me`).
       // Runs only when the assignee filter is active. A user whose id can't be
-      // resolved (e.g. `@me` before the BFF populates `id`, or an email with no
-      // match) is dropped; if nothing resolves, the filter is omitted rather
+      // resolved (e.g. `@me` when `/users/me` omits `id` — entity service down
+      // — or an email with no match) is dropped; if nothing resolves, the
+      // filter is omitted rather
       // than sent empty. A transport failure of the lookup is NOT swallowed —
       // it throws so the query errors (the list shows an error) instead of
       // silently broadening an active assignee filter to all cases.
