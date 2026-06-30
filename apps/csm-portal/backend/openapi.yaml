@@ -2259,9 +2259,12 @@ components:
 
     UpdateTimeCardPayload:
       type: object
+      minProperties: 1
       description: >
         Either editable fields (no `state`), or a state transition: `state`
-        = `approved`, or `state` = `rejected` with a `leadComment`.
+        = `approved`, or `state` = `rejected` with a `leadComment`. The two are
+        mutually exclusive and an empty body is rejected; the entity service
+        enforces this.
       properties:
         state:
           type: string
