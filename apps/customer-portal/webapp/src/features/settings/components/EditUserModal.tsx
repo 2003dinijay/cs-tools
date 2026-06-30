@@ -57,7 +57,7 @@ const EDITABLE_ROLES = [
     label: "Portal User",
     description: "Can log in to and access the Support Portal",
     Icon: Monitor,
-    color: "primary" as const,
+    color: "info" as const,
   },
   {
     id: "security" as const,
