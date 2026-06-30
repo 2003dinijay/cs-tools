@@ -32,15 +32,16 @@ describe("readCasesFiltersFromUrl", () => {
 
   it("parses a fully-populated query string", () => {
     const params = new URLSearchParams(
-      "q=timeout&severities=S0,S2&states=open,closed&types=case,engagement&assignees=alice@example.com,@me&projects=apim",
+      "q=timeout&severities=S0,S2&states=open,work_in_progress,closed&types=case,engagement&assignees=alice@example.com,@me&workStates=ongoing,paused&projects=apim",
     );
     expect(readCasesFiltersFromUrl(params)).toEqual({
       search: "timeout",
       severities: ["S0", "S2"],
-      states: ["open", "closed"],
+      states: ["open", "work_in_progress", "closed"],
       caseTypes: ["case", "engagement"],
       engagementTypes: [],
       assignees: ["alice@example.com", "@me"],
+      workStates: ["ongoing", "paused"],
       projects: ["apim"],
     });
   });
@@ -53,6 +54,18 @@ describe("readCasesFiltersFromUrl", () => {
     expect(f.severities).toEqual(["S0"]);
     expect(f.states).toEqual(["open"]);
     expect(f.caseTypes).toEqual(["case"]);
+  });
+
+  it("drops work-state values outside the allowed enum", () => {
+    const params = new URLSearchParams(
+      "states=work_in_progress&workStates=ongoing,bogus,2",
+    );
+    expect(readCasesFiltersFromUrl(params).workStates).toEqual(["ongoing"]);
+  });
+
+  it("drops work states when `work_in_progress` is not in the state filter", () => {
+    const params = new URLSearchParams("states=open&workStates=ongoing,paused");
+    expect(readCasesFiltersFromUrl(params).workStates).toEqual([]);
   });
 
   it("strips empties and over-long free-form entries", () => {
@@ -75,6 +88,7 @@ describe("writeCasesFiltersToUrl", () => {
       states: ["work_in_progress"],
       caseTypes: ["service_request"],
       assignees: ["carol@example.com"],
+      workStates: ["paused"],
       projects: ["streaming"],
       engagementTypes: [],
     };

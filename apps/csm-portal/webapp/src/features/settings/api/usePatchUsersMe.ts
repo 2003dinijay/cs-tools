@@ -19,14 +19,18 @@ import { useAuthApiClient } from "@hooks/useAuthApiClient";
 import { apiConfig } from "@config/apiConfig";
 import { ApiError, parseApiResponseMessage } from "@utils/ApiError";
 
-// BFF currently accepts only phoneNumber (E.164). timeZone is TODO per BFF
-// openapi.
+// PATCH /users/me accepts phoneNumber (E.164, via SCIM) and timeZone (via the
+// entity service); at least one is required. The response echoes only the
+// field(s) that were updated. No timeZone-editing UI exists yet — the field is
+// here for contract parity and a future profile editor.
 export interface UpdateUserPayload {
   phoneNumber?: string;
+  timeZone?: string;
 }
 
 export interface UpdatedUserResponse {
   phoneNumber?: string;
+  timeZone?: string;
 }
 
 export function usePatchUsersMe() {

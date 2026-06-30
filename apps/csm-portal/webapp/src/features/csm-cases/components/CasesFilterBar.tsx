@@ -70,7 +70,11 @@ import {
   SUGGESTED_FILTER_VIEWS,
   useSavedFilterViews,
 } from "@features/csm-cases/utils/savedFilterViews";
-import type { BeCaseType, BeEngagementType } from "@api/backend/types";
+import type {
+  BeCaseType,
+  BeCaseWorkState,
+  BeEngagementType,
+} from "@api/backend/types";
 import {
   ALL_CASE_TYPES,
   CASE_TYPE_LABEL,
@@ -83,10 +87,10 @@ export const ASSIGNEE_ME_TOKEN = "@me";
 /**
  * Filter state for the CSM cases list. `severities` / `states` / `caseTypes`
  * are multi-select arrays driven by fixed enums; `projects` is an id-based
- * type-to-search multi-select. `assignees` holds engineer **emails** (the
- * stable identity the backend filters on) plus the sentinel `@me` (resolves to
- * the caller via `assignedToMe`). All are pushed into the `/cases/search`
- * payload server-side.
+ * type-to-search multi-select. `assignees` holds engineer **emails** plus the
+ * sentinel `@me`; `useGetCsmCases` resolves these to the engineer UUIDs that
+ * `/cases/search` filters on. All are pushed into the `/cases/search` payload
+ * server-side.
  */
 export interface CasesFilters {
   search: string;
@@ -96,6 +100,8 @@ export interface CasesFilters {
   caseTypes: BeCaseType[];
   /** Engineer emails (+ the `@me` sentinel) to filter by assigned engineer. */
   assignees: string[];
+  /** Work sub-state filter; only meaningful when `states` includes `work_in_progress`. */
+  workStates: BeCaseWorkState[];
   projects: string[];
   /** Engagement sub-type filter; only meaningful when `caseTypes` is locked to `engagement`. */
   engagementTypes: BeEngagementType[];
@@ -144,6 +150,12 @@ const ENGAGEMENT_TYPE_LABEL: Record<BeEngagementType, string> = {
   onboarding: "Onboarding",
 };
 
+const ALL_WORK_STATES: BeCaseWorkState[] = ["ongoing", "paused"];
+const WORK_STATE_LABEL: Record<BeCaseWorkState, string> = {
+  ongoing: "Ongoing",
+  paused: "Paused",
+};
+
 const ALL_SEVERITIES: Severity[] = ["S0", "S1", "S2", "S3", "S4"];
 const PRIMARY_STATES: CaseState[] = [
   "open",
@@ -160,6 +172,7 @@ interface MultiSelectFieldProps<T extends string> {
   values: T[];
   options: { value: T; label: string }[];
   onChange: (next: T[]) => void;
+  disabled?: boolean;
 }
 
 function MultiSelectField<T extends string>({
@@ -168,13 +181,14 @@ function MultiSelectField<T extends string>({
   values,
   options,
   onChange,
+  disabled,
 }: MultiSelectFieldProps<T>): JSX.Element {
   const handleChange = (event: SelectChangeEvent<string[]>): void => {
     const val = event.target.value;
     onChange((Array.isArray(val) ? val : [val]) as T[]);
   };
   return (
-    <FormControl fullWidth size="small">
+    <FormControl fullWidth size="small" disabled={disabled}>
       <InputLabel id={`${id}-label`}>{label}</InputLabel>
       <Select
         multiple
@@ -383,6 +397,10 @@ export default function CasesFilterBar({
   );
   const stateOptions = useMemo(
     () => PRIMARY_STATES.map((s) => ({ value: s, label: STATE_LABEL[s] })),
+    [],
+  );
+  const workStateOptions = useMemo(
+    () => ALL_WORK_STATES.map((s) => ({ value: s, label: WORK_STATE_LABEL[s] })),
     [],
   );
   const caseTypeOptions = useMemo(
@@ -632,7 +650,32 @@ export default function CasesFilterBar({
                 label="State"
                 values={filters.states}
                 options={stateOptions}
-                onChange={(next) => onChange({ ...filters, states: next })}
+                // Work sub-state only applies to `work_in_progress` cases, so
+                // drop any selected work states when that state leaves the
+                // filter — keeps shared URLs / saved views from carrying an
+                // inert work-state selection.
+                onChange={(next) =>
+                  onChange({
+                    ...filters,
+                    states: next,
+                    workStates: next.includes("work_in_progress")
+                      ? filters.workStates
+                      : [],
+                  })
+                }
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
+              {/* Only meaningful for `work_in_progress` cases (ongoing/paused
+                  are sub-states of it); disabled until that state is filtered
+                  in, so the control can't add an inert filter. */}
+              <MultiSelectField
+                id="cases-filter-work-state"
+                label="Work state"
+                values={filters.workStates}
+                options={workStateOptions}
+                onChange={(next) => onChange({ ...filters, workStates: next })}
+                disabled={!filters.states.includes("work_in_progress")}
               />
             </Grid>
             {showEngagementTypeFilter && (
@@ -658,29 +701,21 @@ export default function CasesFilterBar({
               </Grid>
             )}
             <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
-              {/* Disabled until the backend `/cases/search` supports an
-                  assigned-engineer filter. The picker is email-backed and ready
-                  to enable (options labelled by name, `@me` sentinel); the hook
-                  does NOT send any assignee field meanwhile, so the search is
-                  never broken. */}
-              <Tooltip title="Assignee filtering is coming soon.">
-                <Box>
-                  <SearchableMultiSelect
-                    id="cases-filter-assignee"
-                    label="Assignee"
-                    placeholder="Search engineers…"
-                    values={filters.assignees}
-                    options={assigneeOptions}
-                    formatOption={formatAssignee}
-                    getOptionSecondary={assigneeSecondary}
-                    getOptionSearchText={assigneeSearchText}
-                    onChange={(next) =>
-                      onChange({ ...filters, assignees: next })
-                    }
-                    disabled
-                  />
-                </Box>
-              </Tooltip>
+              {/* Email/`@me`-based picker; `useGetCsmCases` resolves the
+                  selection to the UUIDs `/cases/search` expects (`@me` via the
+                  app-wide current-user context, named engineers via
+                  `/users/search`). */}
+              <SearchableMultiSelect
+                id="cases-filter-assignee"
+                label="Assignee"
+                placeholder="Search engineers…"
+                values={filters.assignees}
+                options={assigneeOptions}
+                formatOption={formatAssignee}
+                getOptionSecondary={assigneeSecondary}
+                getOptionSearchText={assigneeSearchText}
+                onChange={(next) => onChange({ ...filters, assignees: next })}
+              />
             </Grid>
             {!hideProjectFilter && (
               <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>

@@ -19,13 +19,20 @@ import { useAuthApiClient } from "@hooks/useAuthApiClient";
 import { apiConfig } from "@config/apiConfig";
 import { ApiError, parseApiResponseMessage } from "@utils/ApiError";
 
-// Matches csm-portal-backend openapi UserResponse; id/firstName/lastName/
-// timeZone/roles are intentionally absent — TODO on the BFF side, blocked on
-// entity wiring.
+// Matches csm-portal-backend openapi UserResponse. Identity fields
+// (id/firstName/lastName/timeZone/roles) come from the entity service; `id` is
+// the caller's platform UUID, consumed by the cases assignee filter to resolve
+// the `@me` sentinel. `id` is optional because the contract omits it when the
+// entity service is unavailable (the assignee `@me` path degrades gracefully in
+// that case). `phoneNumber` is sourced from SCIM.
 export interface UsersMeResponse {
+  id?: string;
   email?: string;
+  firstName?: string;
+  lastName?: string;
+  timeZone?: string;
+  roles?: string[];
   phoneNumber?: string;
-  lastPasswordUpdateTime?: string;
 }
 
 export function useGetUsersMe() {
@@ -45,5 +52,9 @@ export function useGetUsersMe() {
       }
       return (await res.json()) as UsersMeResponse;
     },
+    // The signed-in user's profile is effectively static for a session; this is
+    // fetched once app-wide via CurrentUserProvider, so keep it fresh to avoid
+    // refetches on incidental remounts.
+    staleTime: 5 * 60_000,
   });
 }
