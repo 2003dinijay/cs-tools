@@ -155,29 +155,32 @@ export function useGetCsmCases(
       // the directory, so this resolves them all); `@me` → the caller's id,
       // taken from the app-wide CurrentUserProvider (no per-query `/users/me`).
       // Runs only when the assignee filter is active. A user whose id can't be
-      // resolved (e.g. `@me` before the BFF populates `id`) is dropped; if
-      // nothing resolves, the filter is omitted rather than sent empty.
+      // resolved (e.g. `@me` before the BFF populates `id`, or an email with no
+      // match) is dropped; if nothing resolves, the filter is omitted rather
+      // than sent empty. A transport failure of the lookup is NOT swallowed —
+      // it throws so the query errors (the list shows an error) instead of
+      // silently broadening an active assignee filter to all cases.
       let assignedUserIds: string[] | undefined;
       if (filters.assignees.length > 0) {
         const wantsMe = filters.assignees.includes(ASSIGNEE_ME_TOKEN);
         const emails = filters.assignees.filter((a) => a !== ASSIGNEE_ME_TOKEN);
-        const byEmail =
-          emails.length > 0
-            ? await api
-                .post<
-                  { filters: { emails: string[] }; pagination: { limit: number } },
-                  BeUserSearchResponse
-                >("/users/search", {
-                  filters: { emails },
-                  pagination: { limit: BE_MAX_PAGE_LIMIT },
-                })
-                .catch((err) => {
-                  logger.warn(
-                    `[useGetCsmCases] assignee lookup failed: ${(err as Error).message}`,
-                  );
-                  return null;
-                })
-            : null;
+        let byEmail: BeUserSearchResponse | null = null;
+        if (emails.length > 0) {
+          try {
+            byEmail = await api.post<
+              { filters: { emails: string[] }; pagination: { limit: number } },
+              BeUserSearchResponse
+            >("/users/search", {
+              filters: { emails },
+              pagination: { limit: BE_MAX_PAGE_LIMIT },
+            });
+          } catch (err) {
+            logger.warn(
+              `[useGetCsmCases] assignee lookup failed: ${(err as Error).message}`,
+            );
+            throw new Error("Failed to resolve the assignee filter");
+          }
+        }
         const ids = new Set<string>();
         (byEmail?.users ?? []).forEach((u) => {
           if (u.id) ids.add(u.id);

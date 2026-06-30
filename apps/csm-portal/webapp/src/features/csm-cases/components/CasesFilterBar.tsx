@@ -172,6 +172,7 @@ interface MultiSelectFieldProps<T extends string> {
   values: T[];
   options: { value: T; label: string }[];
   onChange: (next: T[]) => void;
+  disabled?: boolean;
 }
 
 function MultiSelectField<T extends string>({
@@ -180,13 +181,14 @@ function MultiSelectField<T extends string>({
   values,
   options,
   onChange,
+  disabled,
 }: MultiSelectFieldProps<T>): JSX.Element {
   const handleChange = (event: SelectChangeEvent<string[]>): void => {
     const val = event.target.value;
     onChange((Array.isArray(val) ? val : [val]) as T[]);
   };
   return (
-    <FormControl fullWidth size="small">
+    <FormControl fullWidth size="small" disabled={disabled}>
       <InputLabel id={`${id}-label`}>{label}</InputLabel>
       <Select
         multiple
@@ -648,16 +650,32 @@ export default function CasesFilterBar({
                 label="State"
                 values={filters.states}
                 options={stateOptions}
-                onChange={(next) => onChange({ ...filters, states: next })}
+                // Work sub-state only applies to `work_in_progress` cases, so
+                // drop any selected work states when that state leaves the
+                // filter — keeps shared URLs / saved views from carrying an
+                // inert work-state selection.
+                onChange={(next) =>
+                  onChange({
+                    ...filters,
+                    states: next,
+                    workStates: next.includes("work_in_progress")
+                      ? filters.workStates
+                      : [],
+                  })
+                }
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
+              {/* Only meaningful for `work_in_progress` cases (ongoing/paused
+                  are sub-states of it); disabled until that state is filtered
+                  in, so the control can't add an inert filter. */}
               <MultiSelectField
                 id="cases-filter-work-state"
                 label="Work state"
                 values={filters.workStates}
                 options={workStateOptions}
                 onChange={(next) => onChange({ ...filters, workStates: next })}
+                disabled={!filters.states.includes("work_in_progress")}
               />
             </Grid>
             {showEngagementTypeFilter && (
