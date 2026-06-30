@@ -1384,6 +1384,91 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /time-cards:
+    post:
+      summary: Create a time card in the submitted state (ServiceNow data source only).
+      operationId: createTimeCard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTimeCardRequest'
+      responses:
+        "201":
+          description: The created time card.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeCardMutationResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /time-cards/{id}:
+    patch:
+      summary: Update an editable (submitted) time card (ServiceNow data source only).
+      operationId: updateTimeCard
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTimeCardRequest'
+      responses:
+        "200":
+          description: The updated time card.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeCardMutationResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Time card not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
   schemas:
     Pagination:
@@ -3315,6 +3400,22 @@ components:
           items:
             type: string
             format: uuid
+        caseId:
+          type: string
+          format: uuid
+          description: Return only time cards logged against this case.
+        userId:
+          type: string
+          format: uuid
+          description: Return only time cards submitted by this user.
+        approverId:
+          type: string
+          format: uuid
+          description: Return only time cards this user is eligible to approve (SN approver_list).
+        approvedById:
+          type: string
+          format: uuid
+          description: Return only time cards actually approved by this user (SN approved_by).
         startDate:
           type: string
           description: ISO 8601 date (YYYY-MM-DD).
@@ -3401,6 +3502,90 @@ components:
           type: integer
         offset:
           type: integer
+
+    CreateTimeCardRequest:
+      type: object
+      required: [caseId, projectId, date, approverIds]
+      properties:
+        caseId:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          description: ISO 8601 date (YYYY-MM-DD).
+        approverIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Eligible approvers (approver_list). Must be non-empty.
+        isBillable:
+          type: boolean
+        issueComplexity:
+          type: string
+        workLogComment:
+          type: string
+        timeAnalyzing:
+          type: integer
+        timeSettingUp:
+          type: integer
+        timeReproducingDebugging:
+          type: integer
+        timeProvidingSolution:
+          type: integer
+        timePatching:
+          type: integer
+
+    UpdateTimeCardRequest:
+      type: object
+      minProperties: 1
+      description: >
+        Carries either editable fields (submitter, while the card is submitted),
+        or a state transition: state=approved, or state=rejected with leadComment.
+        The two are mutually exclusive and an empty body is rejected (400); the
+        entity service enforces this and authorization.
+      properties:
+        state:
+          type: string
+          enum: [approved, rejected]
+        leadComment:
+          type: string
+          description: Required when state is rejected.
+        date:
+          type: string
+          description: ISO 8601 date (YYYY-MM-DD).
+        approverIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        isBillable:
+          type: boolean
+        issueComplexity:
+          type: string
+        workLogComment:
+          type: string
+        timeAnalyzing:
+          type: integer
+        timeSettingUp:
+          type: integer
+        timeReproducingDebugging:
+          type: integer
+        timeProvidingSolution:
+          type: integer
+        timePatching:
+          type: integer
+
+    TimeCardMutationResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        timeCard:
+          $ref: '#/components/schemas/TimeCardView'
 
     VulnerabilityPriority:
       type: string

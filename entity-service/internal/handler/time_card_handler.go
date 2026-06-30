@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
@@ -41,6 +42,43 @@ func (h *TimeCardHandler) SearchTimeCards(w http.ResponseWriter, r *http.Request
 		return
 	}
 	resp, err := h.svc.SearchTimeCards(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// CreateTimeCard handles POST /time-cards.
+func (h *TimeCardHandler) CreateTimeCard(w http.ResponseWriter, r *http.Request) {
+	var req domain.CreateTimeCardRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.CreateTimeCard(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// UpdateTimeCard handles PATCH /time-cards/{id}.
+func (h *TimeCardHandler) UpdateTimeCard(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		apierror.WriteJSON(w, http.StatusBadRequest, "time card ID is required")
+		return
+	}
+	var req domain.UpdateTimeCardRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	req.ID = id
+	resp, err := h.svc.UpdateTimeCard(r.Context(), req)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
