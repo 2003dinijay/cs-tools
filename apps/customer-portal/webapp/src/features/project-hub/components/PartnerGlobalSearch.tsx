@@ -49,6 +49,11 @@ import {
   downloadProjectListPdf,
   fetchAllProjectsForExport,
 } from "@features/project-hub/utils/projectsExport";
+import {
+  downloadCaseListCsv,
+  downloadCaseListPdf,
+  fetchAllCasesForExport,
+} from "@features/project-hub/utils/casesExport";
 import { getSeverityLegendColor } from "@features/dashboard/utils/dashboard";
 import { formatCasesTableCaseIdentifier, getStatusColor } from "@features/dashboard/utils/casesTable";
 import { mapSeverityToDisplay } from "@features/support/utils/support";
@@ -134,7 +139,7 @@ export default function PartnerGlobalSearch(): JSX.Element {
       isExportingRef.current = true;
       setExportingFormat(format);
       try {
-        const allProjects = await fetchAllProjectsForExport(authFetch);
+        const allProjects = await fetchAllProjectsForExport(authFetch, debouncedSearchQuery);
         if (allProjects.length === 0) {
           showError("No projects to export.");
           return;
@@ -151,10 +156,48 @@ export default function PartnerGlobalSearch(): JSX.Element {
         setExportingFormat(null);
       }
     },
-    [authFetch, showError],
+    [authFetch, debouncedSearchQuery, showError],
   );
 
   const isExporting = exportingFormat !== null;
+
+  const [exportingCasesFormat, setExportingCasesFormat] = useState<ExportFormat | null>(null);
+  const isExportingCasesRef = useRef(false);
+  const [exportCasesAnchorEl, setExportCasesAnchorEl] = useState<HTMLElement | null>(null);
+
+  const handleCasesExportOpen = (e: MouseEvent<HTMLElement>) => {
+    if (!isExportingCasesRef.current) setExportCasesAnchorEl(e.currentTarget);
+  };
+  const handleCasesExportClose = () => setExportCasesAnchorEl(null);
+
+  const handleCasesExport = useCallback(
+    async (format: ExportFormat) => {
+      if (isExportingCasesRef.current) return;
+      handleCasesExportClose();
+      isExportingCasesRef.current = true;
+      setExportingCasesFormat(format);
+      try {
+        const allCases = await fetchAllCasesForExport(authFetch, debouncedSearchQuery);
+        if (allCases.length === 0) {
+          showError("No cases to export.");
+          return;
+        }
+        if (format === "csv") {
+          downloadCaseListCsv(allCases);
+        } else {
+          downloadCaseListPdf(allCases);
+        }
+      } catch {
+        showError("Failed to export cases.");
+      } finally {
+        isExportingCasesRef.current = false;
+        setExportingCasesFormat(null);
+      }
+    },
+    [authFetch, debouncedSearchQuery, showError],
+  );
+
+  const isExportingCases = exportingCasesFormat !== null;
 
   // Table query — filters by the debounced search query when one is active
   const {
@@ -438,14 +481,12 @@ export default function PartnerGlobalSearch(): JSX.Element {
                         </Box>
                         <Box sx={{ flex: 1, minWidth: 0 }}>
                           <Typography noWrap variant="body2">
-                            {highlightMatch(
-                              c.number
-                                ? `${c.number} · ${c.title ?? ""}`
-                                : (c.title ?? ""),
-                              debouncedSearchQuery,
-                            )}
+                            {highlightMatch(c.title ?? "--", debouncedSearchQuery)}
                           </Typography>
-                          <Typography color="text.secondary" variant="caption">
+                          <Typography color="text.secondary" noWrap variant="caption">
+                            {formatCasesTableCaseIdentifier(c.number, c.internalId)}
+                          </Typography>
+                          <Typography color="text.secondary" noWrap variant="caption">
                             {caseTypeLabel}
                           </Typography>
                         </Box>
@@ -638,21 +679,52 @@ export default function PartnerGlobalSearch(): JSX.Element {
 
         {/* Cases section */}
         <Box>
-          <Box sx={{ alignItems: "center", display: "flex", gap: 1, mb: 1.5 }}>
-            <FileText size={20} />
-            <Typography variant="h6">
-              Cases
-              {!isLoadingCases && (
-                <Typography
-                  color="text.secondary"
-                  component="span"
-                  variant="h6"
-                >
-                  {" "}
-                  ({casesTotal})
-                </Typography>
-              )}
-            </Typography>
+          <Box sx={{ alignItems: "center", display: "flex", mb: 1.5 }}>
+            <Box sx={{ alignItems: "center", display: "flex", flex: 1, gap: 1 }}>
+              <FileText size={20} />
+              <Typography variant="h6">
+                Cases
+                {!isLoadingCases && (
+                  <Typography
+                    color="text.secondary"
+                    component="span"
+                    variant="h6"
+                  >
+                    {" "}
+                    ({casesTotal})
+                  </Typography>
+                )}
+              </Typography>
+            </Box>
+            <Button
+              aria-controls="partner-cases-export-menu"
+              aria-expanded={Boolean(exportCasesAnchorEl)}
+              aria-haspopup="menu"
+              disabled={isExportingCases || (!isLoadingCases && casesTotal === 0)}
+              endIcon={<ChevronDown size={16} />}
+              onClick={handleCasesExportOpen}
+              size="small"
+              startIcon={
+                isExportingCases ? (
+                  <CircularProgress color="inherit" size={16} />
+                ) : (
+                  <Download size={16} />
+                )
+              }
+              type="button"
+              variant="outlined"
+            >
+              {isExportingCases ? "Exporting..." : "Export"}
+            </Button>
+            <Menu
+              anchorEl={exportCasesAnchorEl}
+              id="partner-cases-export-menu"
+              onClose={handleCasesExportClose}
+              open={Boolean(exportCasesAnchorEl)}
+            >
+              <MenuItem onClick={() => void handleCasesExport("csv")}>Export to CSV</MenuItem>
+              <MenuItem onClick={() => void handleCasesExport("pdf")}>Export to PDF</MenuItem>
+            </Menu>
           </Box>
 
           <TableContainer component={Paper} sx={{ overflowX: "auto" }}>

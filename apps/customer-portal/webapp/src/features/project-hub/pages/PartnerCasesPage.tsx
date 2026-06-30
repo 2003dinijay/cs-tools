@@ -17,10 +17,14 @@
 import {
   alpha,
   Box,
+  Button,
   Chip,
+  CircularProgress,
   IconButton,
   InputAdornment,
   LinearProgress,
+  Menu,
+  MenuItem,
   Paper,
   Skeleton,
   Table,
@@ -33,8 +37,8 @@ import {
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
-import { ArrowLeft, FileText, Search, X } from "@wso2/oxygen-ui-icons-react";
-import { type ChangeEvent, type JSX, useEffect, useState } from "react";
+import { ArrowLeft, ChevronDown, Download, FileText, Search, X } from "@wso2/oxygen-ui-icons-react";
+import { type ChangeEvent, type JSX, type MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { useGetGlobalSearch } from "@api/useGetGlobalSearch";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
@@ -43,6 +47,13 @@ import { getSeverityLegendColor } from "@features/dashboard/utils/dashboard";
 import { formatCasesTableCaseIdentifier, getStatusColor } from "@features/dashboard/utils/casesTable";
 import { mapSeverityToDisplay } from "@features/support/utils/support";
 import { getCaseNavigationPath, getCaseTypeChipProps } from "@features/project-hub/utils/globalSearchNavigation";
+import {
+  downloadCaseListCsv,
+  downloadCaseListPdf,
+  fetchAllCasesForExport,
+} from "@features/project-hub/utils/casesExport";
+import { useAuthApiClient } from "@/hooks/useAuthApiClient";
+import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 
 const ROWS_PER_PAGE_OPTIONS = [10, 25, 50];
 const DEFAULT_ROWS_PER_PAGE = 10;
@@ -55,8 +66,12 @@ const COL_SPAN = 6;
  * Navigated to via "View More" on the partner global search page.
  * Pre-fills the search bar from the `?q=` URL parameter.
  */
+type ExportFormat = "csv" | "pdf";
+
 export default function PartnerCasesPage(): JSX.Element {
   const navigate = useNavigate();
+  const authFetch = useAuthApiClient();
+  const { showError } = useErrorBanner();
   const [searchParams, setSearchParams] = useSearchParams();
   const urlQuery = searchParams.get("q") ?? "";
 
@@ -93,6 +108,44 @@ export default function PartnerCasesPage(): JSX.Element {
 
   const cases = data?.cases ?? [];
   const totalRecords = data?.casesTotal ?? 0;
+
+  const [exportingFormat, setExportingFormat] = useState<ExportFormat | null>(null);
+  const isExportingRef = useRef(false);
+  const [exportAnchorEl, setExportAnchorEl] = useState<HTMLElement | null>(null);
+
+  const handleExportOpen = (e: MouseEvent<HTMLElement>) => {
+    if (!isExportingRef.current) setExportAnchorEl(e.currentTarget);
+  };
+  const handleExportClose = () => setExportAnchorEl(null);
+
+  const handleExport = useCallback(
+    async (format: ExportFormat) => {
+      if (isExportingRef.current) return;
+      handleExportClose();
+      isExportingRef.current = true;
+      setExportingFormat(format);
+      try {
+        const allCases = await fetchAllCasesForExport(authFetch, debouncedSearchQuery);
+        if (allCases.length === 0) {
+          showError("No cases to export.");
+          return;
+        }
+        if (format === "csv") {
+          downloadCaseListCsv(allCases);
+        } else {
+          downloadCaseListPdf(allCases);
+        }
+      } catch {
+        showError("Failed to export cases.");
+      } finally {
+        isExportingRef.current = false;
+        setExportingFormat(null);
+      }
+    },
+    [authFetch, debouncedSearchQuery, showError],
+  );
+
+  const isExporting = exportingFormat !== null;
 
   const handleChangePage = (_: unknown, newPage: number) => setPage(newPage);
   const handleChangeRowsPerPage = (e: ChangeEvent<HTMLInputElement>) => {
@@ -146,6 +199,35 @@ export default function PartnerCasesPage(): JSX.Element {
             />
           )}
         </Typography>
+        <Button
+          aria-controls="cases-page-export-menu"
+          aria-expanded={Boolean(exportAnchorEl)}
+          aria-haspopup="menu"
+          disabled={isExporting || (!isLoading && totalRecords === 0)}
+          endIcon={<ChevronDown size={16} />}
+          onClick={handleExportOpen}
+          size="small"
+          startIcon={
+            isExporting ? (
+              <CircularProgress color="inherit" size={16} />
+            ) : (
+              <Download size={16} />
+            )
+          }
+          type="button"
+          variant="outlined"
+        >
+          {isExporting ? "Exporting..." : "Export"}
+        </Button>
+        <Menu
+          anchorEl={exportAnchorEl}
+          id="cases-page-export-menu"
+          onClose={handleExportClose}
+          open={Boolean(exportAnchorEl)}
+        >
+          <MenuItem onClick={() => void handleExport("csv")}>Export to CSV</MenuItem>
+          <MenuItem onClick={() => void handleExport("pdf")}>Export to PDF</MenuItem>
+        </Menu>
       </Box>
 
       {/* Filtered-results hint */}
