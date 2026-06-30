@@ -88,9 +88,9 @@ export const ASSIGNEE_ME_TOKEN = "@me";
  * Filter state for the CSM cases list. `severities` / `states` / `caseTypes`
  * are multi-select arrays driven by fixed enums; `projects` is an id-based
  * type-to-search multi-select. `assignees` holds engineer **emails** plus the
- * sentinel `@me`; the control is disabled for now (the BE filter is UUID-based
- * and `@me` has no current-user UUID to resolve to yet). The rest are pushed
- * into the `/cases/search` payload server-side.
+ * sentinel `@me`; `useGetCsmCases` resolves these to the engineer UUIDs that
+ * `/cases/search` filters on. All are pushed into the `/cases/search` payload
+ * server-side.
  */
 export interface CasesFilters {
   search: string;
@@ -683,29 +683,20 @@ export default function CasesFilterBar({
               </Grid>
             )}
             <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
-              {/* Still disabled. `/cases/search` now has `assignedUserIds`,
-                  but it is UUID-based while this picker is email/`@me`-based,
-                  and `GET /users/me` does not return the caller's UUID yet, so
-                  `@me` cannot be resolved. The hook sends no assignee field
-                  meanwhile, so the search is never broken. */}
-              <Tooltip title="Assignee filtering is coming soon.">
-                <Box>
-                  <SearchableMultiSelect
-                    id="cases-filter-assignee"
-                    label="Assignee"
-                    placeholder="Search engineers…"
-                    values={filters.assignees}
-                    options={assigneeOptions}
-                    formatOption={formatAssignee}
-                    getOptionSecondary={assigneeSecondary}
-                    getOptionSearchText={assigneeSearchText}
-                    onChange={(next) =>
-                      onChange({ ...filters, assignees: next })
-                    }
-                    disabled
-                  />
-                </Box>
-              </Tooltip>
+              {/* Email/`@me`-based picker; `useGetCsmCases` resolves the
+                  selection to the UUIDs `/cases/search` expects (`@me` via
+                  `/users/me`, named engineers via `/users/search`). */}
+              <SearchableMultiSelect
+                id="cases-filter-assignee"
+                label="Assignee"
+                placeholder="Search engineers…"
+                values={filters.assignees}
+                options={assigneeOptions}
+                formatOption={formatAssignee}
+                getOptionSecondary={assigneeSecondary}
+                getOptionSearchText={assigneeSearchText}
+                onChange={(next) => onChange({ ...filters, assignees: next })}
+              />
             </Grid>
             {!hideProjectFilter && (
               <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>

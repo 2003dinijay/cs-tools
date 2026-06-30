@@ -414,13 +414,11 @@ export interface BeCaseSearchFilters {
    */
   workStates?: BeCaseWorkState[];
   /**
-   * Filter by assigned-engineer user UUIDs. NOTE: the cases-list assignee
-   * control stays disabled for now. The picker is email/`@me`-based, but this
-   * filter is UUID-based with no `assignedToMe` equivalent, and `GET /users/me`
-   * does not yet return the caller's UUID (BE TODO) — so `@me` cannot be
-   * resolved. Enable once `/users/me` returns an `id` (or the BE adds
-   * `assignedToMe`); named-engineer UUIDs are already available via
-   * `/users/search`.
+   * Filter by assigned-engineer user UUIDs. The cases-list assignee picker is
+   * email/`@me`-based; `useGetCsmCases` resolves the selection to UUIDs (named
+   * engineers via `/users/search`, `@me` via `/users/me`). `@me` resolution
+   * depends on `/users/me` returning an `id` — a BFF TODO; until it lands, an
+   * `@me`-only selection resolves to nothing and the filter is omitted.
    */
   assignedUserIds?: string[];
 }

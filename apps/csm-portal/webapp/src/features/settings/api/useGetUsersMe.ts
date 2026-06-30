@@ -19,10 +19,13 @@ import { useAuthApiClient } from "@hooks/useAuthApiClient";
 import { apiConfig } from "@config/apiConfig";
 import { ApiError, parseApiResponseMessage } from "@utils/ApiError";
 
-// Matches csm-portal-backend openapi UserResponse; id/firstName/lastName/
-// timeZone/roles are intentionally absent — TODO on the BFF side, blocked on
-// entity wiring.
+// Matches csm-portal-backend openapi UserResponse. `id` is the caller's
+// platform UUID, consumed by the cases assignee filter to resolve the `@me`
+// sentinel. The BFF is expected to populate it shortly (currently a TODO,
+// blocked on entity wiring, alongside firstName/lastName/timeZone/roles); it
+// stays optional so `@me` degrades gracefully until the field lands.
 export interface UsersMeResponse {
+  id?: string;
   email?: string;
   phoneNumber?: string;
   lastPasswordUpdateTime?: string;

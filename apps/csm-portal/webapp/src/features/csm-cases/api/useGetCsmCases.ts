@@ -30,12 +30,15 @@ import {
   uiStateFromBe,
 } from "@api/backend/mappers";
 import { projectOptionsQueryOptions } from "@features/csm-cases/api/useProjectOptions";
+import { ASSIGNEE_ME_TOKEN } from "@features/csm-cases/components/CasesFilterBar";
+import type { UsersMeResponse } from "@features/settings/api/useGetUsersMe";
 import type {
   BeAccount,
   BeAccountSearchPayload,
   BeAccountSearchResponse,
   BeCaseSearchPayload,
   BeCaseSearchResponse,
+  BeUserSearchResponse,
 } from "@api/backend/types";
 import type { CasesFilters } from "@features/csm-cases/components/CasesFilterBar";
 import type {
@@ -122,8 +125,10 @@ export function useGetCsmCases(
 
   return useQuery<CsmCasesListResponse, Error>({
     // Sort the array filters so selection order doesn't fragment the cache
-    // (["S1","S2"] and ["S2","S1"] are the same query). `assignees` is omitted:
-    // the assignee filter is disabled and not sent, so it never changes results.
+    // (["S1","S2"] and ["S2","S1"] are the same query). `assignees` holds
+    // engineer emails (+ the `@me` sentinel); it's resolved to UUIDs in the
+    // queryFn, but keying on the raw selection is enough since resolution is
+    // deterministic. `currentUserEmail` is already in the key, covering `@me`.
     queryKey: [
       ApiQueryKeys.CSM_CASES,
       search,
@@ -131,6 +136,7 @@ export function useGetCsmCases(
       [...filters.states].sort(),
       [...filters.caseTypes].sort(),
       [...filters.workStates].sort(),
+      [...filters.assignees].sort(),
       [...filters.projects].sort(),
       [...filters.engagementTypes].sort(),
       currentUserEmail ?? "",
@@ -138,6 +144,53 @@ export function useGetCsmCases(
       pageSize,
     ],
     queryFn: async (): Promise<CsmCasesListResponse> => {
+      // Resolve the assignee filter (engineer emails + the `@me` sentinel) to
+      // the UUIDs `/cases/search` expects. Named engineers → ids from a
+      // targeted `/users/search` by email (selectable emails always come from
+      // the directory, so this resolves them all); `@me` → the caller's id from
+      // `/users/me`. Runs only when the assignee filter is active. A user whose
+      // id can't be resolved (e.g. `@me` before the BFF populates `id`) is
+      // dropped; if nothing resolves, the filter is omitted rather than sent
+      // empty.
+      let assignedUserIds: string[] | undefined;
+      if (filters.assignees.length > 0) {
+        const wantsMe = filters.assignees.includes(ASSIGNEE_ME_TOKEN);
+        const emails = filters.assignees.filter((a) => a !== ASSIGNEE_ME_TOKEN);
+        const [byEmail, me] = await Promise.all([
+          emails.length > 0
+            ? api
+                .post<
+                  { filters: { emails: string[] }; pagination: { limit: number } },
+                  BeUserSearchResponse
+                >("/users/search", {
+                  filters: { emails },
+                  pagination: { limit: BE_MAX_PAGE_LIMIT },
+                })
+                .catch((err) => {
+                  logger.warn(
+                    `[useGetCsmCases] assignee lookup failed: ${(err as Error).message}`,
+                  );
+                  return null;
+                })
+            : Promise.resolve(null),
+          wantsMe
+            ? queryClient
+                .fetchQuery({
+                  queryKey: ["users-me"],
+                  queryFn: () => api.get<UsersMeResponse>("/users/me"),
+                  staleTime: 60_000,
+                })
+                .catch(() => null)
+            : Promise.resolve(null),
+        ]);
+        const ids = new Set<string>();
+        (byEmail?.users ?? []).forEach((u) => {
+          if (u.id) ids.add(u.id);
+        });
+        if (wantsMe && me?.id) ids.add(me.id);
+        if (ids.size > 0) assignedUserIds = [...ids];
+      }
+
       // One cross-project case search, plus project/account lookups for the
       // customer column (cases embed the project, but not its account). The
       // lookups go through `fetchQuery` with their own stable keys, so they
@@ -172,10 +225,10 @@ export function useGetCsmCases(
             ...(filters.projects.length > 0 && {
               projectIds: filters.projects,
             }),
-            // No assignee filter: `/cases/search` has `assignedUserIds`, but
-            // it is UUID-based and `@me` has no current-user UUID to resolve to
-            // yet (see BeCaseSearchFilters), so the disabled control sends
-            // nothing.
+            // Assignee filter, resolved to engineer UUIDs above.
+            ...(assignedUserIds && assignedUserIds.length > 0 && {
+              assignedUserIds,
+            }),
           },
         }),
         queryClient.fetchQuery(projectOptionsQueryOptions(api)).catch((err) => {
