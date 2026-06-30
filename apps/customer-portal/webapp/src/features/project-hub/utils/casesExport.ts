@@ -52,12 +52,14 @@ const DATE_FORMAT: Intl.DateTimeFormatOptions = {
   year: "numeric",
 };
 
+/** Formats an ISO date string for display in exported files. */
 function formatDate(value: string | null | undefined): string {
   if (!value) return "--";
   const d = new Date(value);
   return isNaN(d.getTime()) ? "--" : d.toLocaleDateString(DATE_LOCALE, DATE_FORMAT);
 }
 
+/** Combines the portal case number and WSO2 internal ID into a single display string. */
 function formatCaseId(number?: string | null, internalId?: string | null): string {
   const n = number?.trim() ?? "";
   const id = internalId?.trim() ?? "";
@@ -65,6 +67,7 @@ function formatCaseId(number?: string | null, internalId?: string | null): strin
   return n || id || "--";
 }
 
+/** Builds a timestamped filename for the exported file. */
 function buildFilename(ext: "csv" | "pdf"): string {
   const now = new Date();
   const yyyy = now.getFullYear();
@@ -73,6 +76,7 @@ function buildFilename(ext: "csv" | "pdf"): string {
   return `cases-${yyyy}-${mm}-${dd}.${ext}`;
 }
 
+/** Maps a list of GlobalSearchCase objects to string rows for CSV/PDF output. */
 function mapCasesToRows(cases: GlobalSearchCase[]): string[][] {
   return cases.map((c) => {
     const { displayLabel: caseTypeLabel } = getCaseTypeChipProps(c.caseType?.label);
@@ -136,12 +140,14 @@ export async function fetchAllCasesForExport(
   return allCases;
 }
 
+/** Triggers a CSV file download containing the provided cases. */
 export function downloadCaseListCsv(cases: GlobalSearchCase[]): void {
   const rows = mapCasesToRows(cases);
   const content = buildCsvContent(EXPORT_HEADERS, rows);
   downloadCsvFile(buildFilename("csv"), content);
 }
 
+/** Triggers a PDF file download containing the provided cases. */
 export function downloadCaseListPdf(cases: GlobalSearchCase[]): void {
   const rows = mapCasesToRows(cases);
   downloadPdfFile(
