@@ -232,10 +232,11 @@ export function deriveUsageEnvironmentProducts(
           },
         ];
 
-        const javaVer =
+        const javaVer = (
           instMetric?.dataPoints.at(-1)?.jdkVersion ??
           instMetric?.dataPoints.at(-1)?.deploymentMetadata?.jdkVersion ??
-          USAGE_METRICS_VALUE_EM_DASH;
+          USAGE_METRICS_VALUE_EM_DASH
+        ).replace(/^"|"$/g, "");
         const u2Level =
           instMetric?.dataPoints.at(-1)?.deploymentMetadata?.updateLevel ??
           USAGE_METRICS_VALUE_EM_DASH;

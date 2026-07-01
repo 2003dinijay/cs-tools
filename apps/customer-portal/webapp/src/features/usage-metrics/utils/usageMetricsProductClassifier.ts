@@ -83,7 +83,7 @@ function parseMajorVersion(label: string): number {
 const PRODUCT_TYPE_PATTERNS: [WsoProductType, RegExp][] = [
   [WsoProductType.APIM, /api[\s-]?manager|\bapim\b/i],
   [WsoProductType.IS, /identity[\s-]server/i],
-  [WsoProductType.MI, /micro[\s-]integrator|\bintegrator\b/i],
+  [WsoProductType.MI, /micro[\s-]integrator|wso2\s+integrator/i],
 ];
 
 /**

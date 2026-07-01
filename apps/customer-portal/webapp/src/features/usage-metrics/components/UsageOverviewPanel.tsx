@@ -381,7 +381,7 @@ function EnvironmentBreakdownAccordion({
   );
 
   const { productCount, instanceCount, totalCores, transactionsLabel } = useMemo(() => {
-    if (!depInstancesData) {
+    if (!depInstancesData || !depUsagesData) {
       return {
         productCount: row.productCount,
         instanceCount: row.instanceCount,
@@ -390,7 +390,7 @@ function EnvironmentBreakdownAccordion({
       };
     }
     const instances = depInstancesData.instances ?? [];
-    const usages = depUsagesData?.usages ?? [];
+    const usages = depUsagesData.usages ?? [];
     const productIds = new Set([
       ...instances.map((i) => i.deployedProduct?.id ?? i.product?.id).filter(Boolean),
       ...usages.map((u) => u.deployedProduct?.id ?? u.product?.id).filter(Boolean),
