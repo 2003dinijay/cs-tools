@@ -52,8 +52,8 @@ func (h *AccountHandler) GetAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
 	}
 
@@ -91,8 +91,6 @@ func (h *AccountHandler) SearchAccounts(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// TODO: Decode into a typed SearchAccountsRequest and validate fields before forwarding.
-
 	result, err := h.entity.SearchAccounts(r.Context(), body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchAccounts failed", "userID", user.UserID, "err", err)
@@ -100,6 +98,5 @@ func (h *AccountHandler) SearchAccounts(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// TODO: Unmarshal result and filter to only the fields required by the frontend.
 	writeJSON(w, http.StatusOK, result)
 }

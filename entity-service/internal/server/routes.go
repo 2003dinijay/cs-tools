@@ -38,8 +38,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	userHandler := handler.NewUserHandler(userSvc)
 
 	accountRepo := repository.NewAccountRepository(db)
-	accountSvc := service.NewAccountService(accountRepo)
-	accountHandler := handler.NewAccountHandler(accountSvc)
+	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
 
 	var serviceNowIntegrationServiceClient *integrationservice.Client
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -49,6 +48,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 			ClientSecret: cfg.ServiceNowIntegrationServiceClientSecret,
 			Scopes:       cfg.ServiceNowIntegrationServiceScopes,
 		})
+	}
+
+	var snAccountHandler *handler.SNAccountHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		snAccountHandler = handler.NewSNAccountHandler(service.NewServiceNowAccountService(serviceNowIntegrationServiceClient))
 	}
 
 	projectRepo := repository.NewProjectRepository(db)
@@ -142,8 +146,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	} else {
 		mux.HandleFunc("POST /users/search", userHandler.SearchUsers)
 	}
-	mux.HandleFunc("GET /accounts/{id}", accountHandler.GetAccount)
-	mux.HandleFunc("POST /accounts/search", accountHandler.SearchAccounts)
+	if snAccountHandler != nil {
+		mux.HandleFunc("GET /accounts/{id}", snAccountHandler.GetAccount)
+		mux.HandleFunc("POST /accounts/search", snAccountHandler.SearchAccounts)
+	} else {
+		mux.HandleFunc("GET /accounts/{id}", accountHandler.GetAccount)
+		mux.HandleFunc("POST /accounts/search", accountHandler.SearchAccounts)
+	}
 	mux.HandleFunc("GET /projects/{id}", projectHandler.GetProject)
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
 	if snProductHandler != nil {

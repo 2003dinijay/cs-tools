@@ -59,6 +59,16 @@ type AccountService interface {
 	GetAccountByID(ctx context.Context, id string) (domain.Account, error)
 }
 
+// SNAccountService defines the account operations backed by the ServiceNow data source.
+type SNAccountService interface {
+	// SearchAccounts returns a paginated list of ServiceNow accounts matching the
+	// filters in req. An UnauthorizedError is returned when x-user-id-token is absent.
+	SearchAccounts(ctx context.Context, req domain.SearchAccountsRequest) (domain.SearchSNAccountsResponse, error)
+	// GetAccountByID returns the ServiceNow account for the given UUID.
+	// An UnauthorizedError is returned when x-user-id-token is absent.
+	GetAccountByID(ctx context.Context, id string) (domain.SNAccount, error)
+}
+
 // ProjectService defines the operations available on the project entity.
 type ProjectService interface {
 	// SearchProjects returns a paginated list of projects that match the filters
