@@ -46,12 +46,9 @@ export const TASK_TYPES: { key: TaskType; label: string }[] = [
   { key: "incident", label: "Incident" },
 ];
 
-export const TASK_TYPE_LABEL: Record<TaskType, string> = {
-  case: "Case",
-  project: "Project",
-  change_request: "Change request",
-  incident: "Incident",
-};
+export const TASK_TYPE_LABEL: Record<TaskType, string> = Object.fromEntries(
+  TASK_TYPES.map(({ key, label }) => [key, label]),
+) as Record<TaskType, string>;
 
 /**
  * Mock "assigned tasks" for the auto-generate flow, standing in for the user's
@@ -175,7 +172,7 @@ export const TIMECARD_ADMIN_GROUP = "admin";
 
 /**
  * One-line summary of a breakdown's non-zero activities, e.g.
- * "Analyzing 1h · Patching 1.5h". Returns a placeholder when nothing is logged.
+ * "Reproduce 1h · Providing solution 1.5h". Returns a placeholder when nothing is logged.
  */
 export function breakdownSummary(breakdown: ActivityBreakdown): string {
   const parts = ACTIVITY_BUCKETS.filter((b) => (breakdown[b.key] || 0) > 0).map(
