@@ -61,3 +61,40 @@ func (h *AccountHandler) GetAccount(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(account)
 }
+
+// SNAccountHandler handles HTTP requests for account operations backed by ServiceNow.
+type SNAccountHandler struct {
+	svc service.SNAccountService
+}
+
+// NewSNAccountHandler constructs an SNAccountHandler with the given service.
+func NewSNAccountHandler(svc service.SNAccountService) *SNAccountHandler {
+	return &SNAccountHandler{svc: svc}
+}
+
+// SearchAccounts handles POST /accounts/search for the ServiceNow data source.
+func (h *SNAccountHandler) SearchAccounts(w http.ResponseWriter, r *http.Request) {
+	var req domain.SearchAccountsRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.SearchAccounts(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// GetAccount handles GET /accounts/{id} for the ServiceNow data source.
+func (h *SNAccountHandler) GetAccount(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	account, err := h.svc.GetAccountByID(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(account)
+}

@@ -215,6 +215,33 @@ type SearchAccountsResponse struct {
 	HasMore  bool      `json:"hasMore"`
 }
 
+// SNAccount is the account view returned by the ServiceNow data source.
+// Timestamp fields are kept as strings to accommodate empty values from ServiceNow.
+type SNAccount struct {
+	ID                  string  `json:"id"`
+	SfID                string  `json:"sfId"`
+	Name                string  `json:"name"`
+	Tier                string  `json:"tier"`
+	Region              *string `json:"region"`
+	ActivationDate      string  `json:"activationDate"`
+	DeactivationDate    *string `json:"deactivationDate"`
+	OwnerID             string  `json:"ownerId"`
+	TechnicalOwnerID    *string `json:"technicalOwnerId"`
+	AgentEnabled        bool    `json:"agentEnabled"`
+	KbReferencesEnabled bool    `json:"kbReferencesEnabled"`
+	CreatedOn           string  `json:"createdOn"`
+	UpdatedOn           string  `json:"updatedOn"`
+}
+
+// SearchSNAccountsResponse is the paginated result of a ServiceNow account search.
+type SearchSNAccountsResponse struct {
+	Accounts []SNAccount `json:"accounts"`
+	Total    int         `json:"total"`
+	Limit    int         `json:"limit"`
+	Offset   int         `json:"offset"`
+	HasMore  bool        `json:"hasMore"`
+}
+
 // SubscriptionType classifies the subscription type of a project.
 type SubscriptionType string
 

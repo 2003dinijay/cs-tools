@@ -42,36 +42,49 @@ func TestGetAccount(t *testing.T) {
 		w := httptest.NewRecorder()
 		h.GetAccount(w, r)
 		assertStatus(t, w, http.StatusBadRequest)
-		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertErrorMessage(t, w, ErrMsgInvalidUUID)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects non-UUID account ID", func(t *testing.T) {
+		h := NewAccountHandler(&mockEntityAccountClient{})
+		r := withUser(httptest.NewRequest(http.MethodGet, "/accounts/acc-42", nil))
+		r.SetPathValue("id", "acc-42")
+		w := httptest.NewRecorder()
+		h.GetAccount(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgInvalidUUID)
 		assertContentType(t, w, "application/json")
 	})
 
 	t.Run("passes ID to upstream and returns 200 with response", func(t *testing.T) {
+		const accountID = "11111111-1111-1111-1111-111111111111"
 		var capturedID string
 		client := &mockEntityAccountClient{
 			getAccountFn: func(_ context.Context, id string) ([]byte, error) {
 				capturedID = id
-				return []byte(`{"id":"acc-42","name":"WSO2"}`), nil
+				return []byte(`{"id":"` + accountID + `","name":"WSO2"}`), nil
 			},
 		}
 		h := NewAccountHandler(client)
-		r := withUser(httptest.NewRequest(http.MethodGet, "/accounts/acc-42", nil))
-		r.SetPathValue("id", "acc-42")
+		r := withUser(httptest.NewRequest(http.MethodGet, "/accounts/"+accountID, nil))
+		r.SetPathValue("id", accountID)
 		w := httptest.NewRecorder()
 		h.GetAccount(w, r)
 
 		assertStatus(t, w, http.StatusOK)
 		assertContentType(t, w, "application/json")
-		if capturedID != "acc-42" {
-			t.Errorf("upstream received id %q, want %q", capturedID, "acc-42")
+		if capturedID != accountID {
+			t.Errorf("upstream received id %q, want %q", capturedID, accountID)
 		}
 		resp := decodeJSON[map[string]any](t, w)
-		if resp["id"] != "acc-42" {
-			t.Errorf("response id = %v, want acc-42", resp["id"])
+		if resp["id"] != accountID {
+			t.Errorf("response id = %v, want %s", resp["id"], accountID)
 		}
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
+		const accountID = "11111111-1111-1111-1111-111111111111"
 		for _, tc := range upstreamErrors("Failed to retrieve account.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
@@ -81,8 +94,8 @@ func TestGetAccount(t *testing.T) {
 					},
 				}
 				h := NewAccountHandler(client)
-				r := withUser(httptest.NewRequest(http.MethodGet, "/accounts/acc-1", nil))
-				r.SetPathValue("id", "acc-1")
+				r := withUser(httptest.NewRequest(http.MethodGet, "/accounts/"+accountID, nil))
+				r.SetPathValue("id", accountID)
 				w := httptest.NewRecorder()
 				h.GetAccount(w, r)
 				assertStatus(t, w, tc.wantCode)
