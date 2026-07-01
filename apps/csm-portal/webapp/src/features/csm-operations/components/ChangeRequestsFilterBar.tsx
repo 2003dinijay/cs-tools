@@ -224,15 +224,23 @@ export default function ChangeRequestsFilterBar({
           variant="outlined"
           size="small"
           color="inherit"
-          onClick={hasActive ? onReset : onFiltersToggle}
-          startIcon={hasActive ? <X size={16} /> : <ListFilter size={16} />}
-          endIcon={
-            !hasActive &&
-            (isFiltersOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />)
-          }
+          onClick={onFiltersToggle}
+          startIcon={<ListFilter size={16} />}
+          endIcon={isFiltersOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         >
-          {hasActive ? `Clear filters (${activeCount})` : "Filters"}
+          {hasActive ? `Filters (${activeCount})` : "Filters"}
         </Button>
+        {hasActive && (
+          <Button
+            variant="text"
+            size="small"
+            color="inherit"
+            onClick={onReset}
+            startIcon={<X size={16} />}
+          >
+            Clear filters
+          </Button>
+        )}
       </Box>
 
       {/* Collapsible filter grid */}
