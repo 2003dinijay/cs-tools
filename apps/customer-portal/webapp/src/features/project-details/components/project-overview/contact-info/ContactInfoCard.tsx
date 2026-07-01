@@ -67,7 +67,7 @@ const ContactInfoCard = ({
   );
 
   return (
-    <Card sx={{ height: "100%" }}>
+    <Card>
       <CardContent sx={{ p: 3, overflow: "auto" }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           <Users size={20} />
