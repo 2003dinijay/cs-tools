@@ -32,14 +32,13 @@ export function formatIsoDateForUsageChart(
   isoDate: string,
   _isSmallScreen: boolean = false,
 ): string {
-  try {
-    const date = new Date(`${isoDate}T00:00:00Z`);
-    const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
-    const dd = String(date.getUTCDate()).padStart(2, "0");
-    return `${mm}/${dd}`;
-  } catch {
+  const date = new Date(`${isoDate}T00:00:00Z`);
+  if (isNaN(date.getTime())) {
     return isoDate.slice(5);
   }
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  return `${mm}/${dd}`;
 }
 
 /**
