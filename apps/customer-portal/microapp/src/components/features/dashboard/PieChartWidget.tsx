@@ -130,11 +130,11 @@ export function PieChartWidget({ title, data, ...props }: PieChartWidgetProps) {
             ? null
             : data.map((item, index) => (
                 <Stack key={index}>
-                  <CardActionArea
-                    disabled={!props?.onClick}
-                    sx={{ display: "flex", direction: "row", justifyContent: "space-between" }}
-                    onClick={() => props.onClick?.(item.id, item.label)}
-                  >
+<CardActionArea
+  disabled={!props?.onClick}
+  sx={{ display: "flex", flexDirection: "row", justifyContent: "space-between" }}
+  onClick={() => props.onClick?.(item.id, item.label)}
+>
                     <Stack direction="row" alignItems="center" gap={1}>
                       <Circle sx={{ fontSize: 12, color: item.color }} />
                       <Typography variant="subtitle2" fontWeight="regular" color="text.secondary">
