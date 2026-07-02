@@ -14,9 +14,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, CardActionArea, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
+import { alpha, Box, CardActionArea, colors, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
 import { PieChart } from "@wso2/oxygen-ui-charts-react";
 import { Circle } from "@mui/icons-material";
+import { Inbox } from "@wso2/oxygen-ui-icons-react";
 import { WidgetBox } from "@components/ui";
 
 export interface PieDataItem {
@@ -48,14 +49,32 @@ export function PieChartWidget({ title, data, ...props }: PieChartWidgetProps) {
         ) : isEmpty ? (
           <Box
             sx={{
-              width: 130,
-              height: 130,
-              borderRadius: "50%",
-              border: "3px dashed",
-              borderColor: "divider",
-              my: 2,
+              height: 150,
+              width: "100%",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 1.5,
             }}
-          />
+          >
+            <Box
+              sx={{
+                width: 52,
+                height: 52,
+                borderRadius: "50%",
+                bgcolor: alpha(colors.grey?.[500] ?? "#6B7280", 0.08),
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Inbox size={24} color={colors.grey?.[400] ?? "#9CA3AF"} />
+            </Box>
+            <Typography variant="body2" color="text.disabled" textAlign="center">
+              No {title} found
+            </Typography>
+          </Box>
         ) : (
           <PieChart
             height={150}
@@ -77,7 +96,7 @@ export function PieChartWidget({ title, data, ...props }: PieChartWidgetProps) {
           />
         )}
 
-        {!isEmpty && (
+        {!loading && !isEmpty && (
           <Typography
             variant="h5"
             sx={{
@@ -107,25 +126,27 @@ export function PieChartWidget({ title, data, ...props }: PieChartWidgetProps) {
                 <Skeleton width={20} height={20} />
               </Stack>
             ))
-          : data.map((item, index) => (
-              <Stack key={index}>
-                <CardActionArea
-                  disabled={!props?.onClick}
-                  sx={{ display: "flex", direction: "row", justifyContent: "space-between" }}
-                  onClick={() => props.onClick?.(item.id, item.label)}
-                >
-                  <Stack direction="row" alignItems="center" gap={1}>
-                    <Circle sx={{ fontSize: 12, color: item.color }} />
-                    <Typography variant="subtitle2" fontWeight="regular" color="text.secondary">
-                      {item.label}
+          : isEmpty
+            ? null
+            : data.map((item, index) => (
+                <Stack key={index}>
+<CardActionArea
+  disabled={!props?.onClick}
+  sx={{ display: "flex", flexDirection: "row", justifyContent: "space-between" }}
+  onClick={() => props.onClick?.(item.id, item.label)}
+>
+                    <Stack direction="row" alignItems="center" gap={1}>
+                      <Circle sx={{ fontSize: 12, color: item.color }} />
+                      <Typography variant="subtitle2" fontWeight="regular" color="text.secondary">
+                        {item.label}
+                      </Typography>
+                    </Stack>
+                    <Typography variant="subtitle2" color="text.secondary">
+                      {item.value}
                     </Typography>
-                  </Stack>
-                  <Typography variant="subtitle2" color="text.secondary">
-                    {item.value}
-                  </Typography>
-                </CardActionArea>
-              </Stack>
-            ))}
+                  </CardActionArea>
+                </Stack>
+              ))}
       </Stack>
     </WidgetBox>
   );
