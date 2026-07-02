@@ -1502,19 +1502,32 @@ type CallRequestCaseRef struct {
 	Number *string `json:"number,omitempty"`
 }
 
-// ITServiceLabelRef is a reference to a ServiceNow choice-list entry with an id and a human-readable label.
-type ITServiceLabelRef struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-}
+// BusinessCriticality represents the criticality level of an IT service.
+type BusinessCriticality string
+
+const (
+	BusinessCriticalityMostCritical     BusinessCriticality = "most_critical"
+	BusinessCriticalitySomewhatCritical BusinessCriticality = "somewhat_critical"
+	BusinessCriticalityLessCritical     BusinessCriticality = "less_critical"
+	BusinessCriticalityNotCritical      BusinessCriticality = "not_critical"
+)
+
+// ServiceClassification represents the classification of an IT service.
+type ServiceClassification string
+
+const (
+	ServiceClassificationBusinessService             ServiceClassification = "business_service"
+	ServiceClassificationTechnologyManagementService ServiceClassification = "technology_management_service"
+	ServiceClassificationApplicationService          ServiceClassification = "application_service"
+)
 
 // ITService is a single CMDB service entry returned in a search response.
 type ITService struct {
-	ID                     string             `json:"id"`
-	Name                   *string            `json:"name"`
-	Class                  *string            `json:"class"`
-	BusinessCriticality    *ITServiceLabelRef `json:"businessCriticality"`
-	ServiceClassification  *ITServiceLabelRef `json:"serviceClassification"`
+	ID                    string                 `json:"id"`
+	Name                  *string                `json:"name"`
+	Class                 *string                `json:"class"`
+	BusinessCriticality   *BusinessCriticality   `json:"businessCriticality"`
+	ServiceClassification *ServiceClassification `json:"serviceClassification"`
 }
 
 // SearchITServicesRequest is the input for POST /services/search.

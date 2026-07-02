@@ -94,15 +94,13 @@ func (s *snITServiceService) SearchITServices(ctx context.Context, req domain.Se
 			Class: svc.Class,
 		}
 		if svc.BusinessCriticality != nil {
-			item.BusinessCriticality = &domain.ITServiceLabelRef{
-				ID:    svc.BusinessCriticality.ID,
-				Label: svc.BusinessCriticality.Label,
+			if bc, ok := snBusinessCriticalityIDToEnum[svc.BusinessCriticality.ID]; ok {
+				item.BusinessCriticality = &bc
 			}
 		}
 		if svc.ServiceClassification != nil {
-			item.ServiceClassification = &domain.ITServiceLabelRef{
-				ID:    svc.ServiceClassification.ID,
-				Label: svc.ServiceClassification.Label,
+			if sc, ok := snServiceClassificationLabelToEnum[svc.ServiceClassification.Label]; ok {
+				item.ServiceClassification = &sc
 			}
 		}
 		services = append(services, item)
@@ -114,4 +112,19 @@ func (s *snITServiceService) SearchITServices(ctx context.Context, req domain.Se
 		Limit:    req.Pagination.Limit,
 		Offset:   req.Pagination.Offset,
 	}, nil
+}
+
+// snBusinessCriticalityIDToEnum maps ServiceNow business criticality IDs to domain enums.
+var snBusinessCriticalityIDToEnum = map[string]domain.BusinessCriticality{
+	"1": domain.BusinessCriticalityMostCritical,
+	"2": domain.BusinessCriticalitySomewhatCritical,
+	"3": domain.BusinessCriticalityLessCritical,
+	"4": domain.BusinessCriticalityNotCritical,
+}
+
+// snServiceClassificationLabelToEnum maps ServiceNow service classification labels to domain enums.
+var snServiceClassificationLabelToEnum = map[string]domain.ServiceClassification{
+	"Business Service":             domain.ServiceClassificationBusinessService,
+	"Technology Management Service": domain.ServiceClassificationTechnologyManagementService,
+	"Application Service":          domain.ServiceClassificationApplicationService,
 }

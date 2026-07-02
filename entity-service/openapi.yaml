@@ -3900,14 +3900,6 @@ components:
         pagination:
           $ref: '#/components/schemas/Pagination'
 
-    ITServiceLabelRef:
-      type: object
-      properties:
-        id:
-          type: string
-        label:
-          type: string
-
     ITService:
       type: object
       properties:
@@ -3921,11 +3913,20 @@ components:
           type: string
           nullable: true
         businessCriticality:
-          $ref: '#/components/schemas/ITServiceLabelRef'
+          type: string
           nullable: true
+          enum:
+            - most_critical
+            - somewhat_critical
+            - less_critical
+            - not_critical
         serviceClassification:
-          $ref: '#/components/schemas/ITServiceLabelRef'
+          type: string
           nullable: true
+          enum:
+            - business_service
+            - technology_management_service
+            - application_service
 
     SearchITServicesResponse:
       type: object
