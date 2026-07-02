@@ -1150,6 +1150,9 @@ const (
 type ChangeRequestState string
 
 const (
+	ChangeRequestStateNew              ChangeRequestState = "new"
+	ChangeRequestStateAssess           ChangeRequestState = "assess"
+	ChangeRequestStateAuthorize        ChangeRequestState = "authorize"
 	ChangeRequestStateCustomerApproval ChangeRequestState = "customer_approval"
 	ChangeRequestStateScheduled        ChangeRequestState = "scheduled"
 	ChangeRequestStateImplement        ChangeRequestState = "implement"
@@ -1168,6 +1171,83 @@ const (
 	ChangeRequestImpactMedium ChangeRequestImpact = "medium"
 	ChangeRequestImpactLow    ChangeRequestImpact = "low"
 )
+
+// ChangeRequestRisk represents the risk level of a change request.
+type ChangeRequestRisk string
+
+const (
+	ChangeRequestRiskHigh     ChangeRequestRisk = "high"
+	ChangeRequestRiskModerate ChangeRequestRisk = "moderate"
+	ChangeRequestRiskLow      ChangeRequestRisk = "low"
+)
+
+// ChangeRequestPriority represents the priority of a change request.
+type ChangeRequestPriority string
+
+const (
+	ChangeRequestPriorityCritical ChangeRequestPriority = "critical"
+	ChangeRequestPriorityHigh     ChangeRequestPriority = "high"
+	ChangeRequestPriorityModerate ChangeRequestPriority = "moderate"
+	ChangeRequestPriorityLow      ChangeRequestPriority = "low"
+)
+
+// ChangeRequestCategory represents the category of a change request.
+type ChangeRequestCategory string
+
+const (
+	ChangeRequestCategoryHardware             ChangeRequestCategory = "hardware"
+	ChangeRequestCategorySoftware             ChangeRequestCategory = "software"
+	ChangeRequestCategoryService              ChangeRequestCategory = "service"
+	ChangeRequestCategorySystemSoftware       ChangeRequestCategory = "system_software"
+	ChangeRequestCategoryApplicationsSoftware ChangeRequestCategory = "applications_software"
+	ChangeRequestCategoryNetwork              ChangeRequestCategory = "network"
+	ChangeRequestCategoryTelecom              ChangeRequestCategory = "telecom"
+	ChangeRequestCategoryDocumentation        ChangeRequestCategory = "documentation"
+	ChangeRequestCategoryOther                ChangeRequestCategory = "other"
+	ChangeRequestCategoryRegularReleaseCloud  ChangeRequestCategory = "regular_release_cloud"
+	ChangeRequestCategoryHotfixReleaseCloud   ChangeRequestCategory = "hotfix_release_cloud"
+	ChangeRequestCategoryDevOps               ChangeRequestCategory = "devops"
+	ChangeRequestCategoryCloudComputing       ChangeRequestCategory = "cloud_computing"
+)
+
+// CreateChangeRequestRequest is the input for POST /change-requests.
+// Subject is the only required field; all others are optional.
+type CreateChangeRequestRequest struct {
+	Subject             string                 `json:"subject"`
+	Category            *ChangeRequestCategory `json:"category,omitempty"`
+	ServiceID           *string                `json:"serviceId,omitempty"`
+	ServiceOfferingID   *string                `json:"serviceOfferingId,omitempty"`
+	ConfigurationItemID *string                `json:"configurationItemId,omitempty"`
+	Priority            *ChangeRequestPriority `json:"priority,omitempty"`
+	Impact              *ChangeRequestImpact   `json:"impact,omitempty"`
+	Type                *ChangeRequestType     `json:"type,omitempty"`
+	State               *ChangeRequestState    `json:"state,omitempty"`
+	GroupID             *string                `json:"groupId,omitempty"`
+	AssignedEngineerID  *string                `json:"assignedEngineerId,omitempty"`
+	Risk                *ChangeRequestRisk     `json:"risk,omitempty"`
+	RequestedByID       *string                `json:"requestedById,omitempty"`
+	Description         *string                `json:"description,omitempty"`
+	Justification       *string                `json:"justification,omitempty"`
+	ImplementationPlan  *string                `json:"implementationPlan,omitempty"`
+	RiskImpactAnalysis  *string                `json:"riskImpactAnalysis,omitempty"`
+	BackoutPlan         *string                `json:"backoutPlan,omitempty"`
+	TestPlan            *string                `json:"testPlan,omitempty"`
+	PlannedStartDate    *string                `json:"plannedStartDate,omitempty"`
+	PlannedEndDate      *string                `json:"plannedEndDate,omitempty"`
+	Comment             *string                `json:"comment,omitempty"`
+	WorkNote            *string                `json:"workNote,omitempty"`
+}
+
+// CreateChangeRequestResponse is the output for POST /change-requests.
+type CreateChangeRequestResponse struct {
+	Message       string `json:"message"`
+	ChangeRequest struct {
+		ID        string `json:"id"`
+		Number    string `json:"number"`
+		CreatedOn string `json:"createdOn"`
+		CreatedBy string `json:"createdBy"`
+	} `json:"changeRequest"`
+}
 
 // ChangeRequestSortField enumerates the columns available for sorting change request search results.
 type ChangeRequestSortField string
