@@ -221,6 +221,14 @@ type TimeCardService interface {
 	UpdateTimeCard(ctx context.Context, req domain.UpdateTimeCardRequest) (domain.TimeCardMutationResponse, error)
 }
 
+// ITServiceService defines the operations available on the CMDB IT services entity.
+// All methods require the ServiceNow data source; there is no Postgres fallback.
+type ITServiceService interface {
+	// SearchITServices returns a paginated list of CMDB services from ServiceNow.
+	// An UnauthorizedError is returned when x-user-id-token is absent.
+	SearchITServices(ctx context.Context, req domain.SearchITServicesRequest) (domain.SearchITServicesResponse, error)
+}
+
 // ProductVulnerabilityService defines the operations available on product vulnerabilities.
 // All methods require the ServiceNow data source; there is no Postgres fallback.
 type ProductVulnerabilityService interface {

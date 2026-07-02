@@ -131,6 +131,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		productVulnerabilityHandler = handler.NewProductVulnerabilityHandler(service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient))
 	}
 
+	var itServiceHandler *handler.ITServiceHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		itServiceHandler = handler.NewITServiceHandler(service.NewServiceNowITServiceService(serviceNowIntegrationServiceClient))
+	}
+
 	var snUserHandler *handler.SNUserHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		snUserHandler = handler.NewSNUserHandler(service.NewServiceNowUserService(serviceNowIntegrationServiceClient))
@@ -204,6 +209,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	if productVulnerabilityHandler != nil {
 		mux.HandleFunc("POST /products/vulnerabilities/search", productVulnerabilityHandler.SearchProductVulnerabilities)
 		mux.HandleFunc("GET /products/vulnerabilities/{id}", productVulnerabilityHandler.GetProductVulnerability)
+	}
+
+	if itServiceHandler != nil {
+		mux.HandleFunc("POST /services/search", itServiceHandler.SearchITServices)
 	}
 
 	return middleware.CorrelationID(

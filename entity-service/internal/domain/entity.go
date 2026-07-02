@@ -1502,6 +1502,34 @@ type CallRequestCaseRef struct {
 	Number *string `json:"number,omitempty"`
 }
 
+// ITServiceLabelRef is a reference to a ServiceNow choice-list entry with an id and a human-readable label.
+type ITServiceLabelRef struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// ITService is a single CMDB service entry returned in a search response.
+type ITService struct {
+	ID                     string             `json:"id"`
+	Name                   *string            `json:"name"`
+	Class                  *string            `json:"class"`
+	BusinessCriticality    *ITServiceLabelRef `json:"businessCriticality"`
+	ServiceClassification  *ITServiceLabelRef `json:"serviceClassification"`
+}
+
+// SearchITServicesRequest is the input for POST /services/search.
+type SearchITServicesRequest struct {
+	Pagination Pagination `json:"pagination"`
+}
+
+// SearchITServicesResponse is the paginated result of a services search.
+type SearchITServicesResponse struct {
+	Services []ITService `json:"services"`
+	Total    int         `json:"total"`
+	Offset   int         `json:"offset"`
+	Limit    int         `json:"limit"`
+}
+
 // CreateCallRequestRequest is the input for POST /call-requests.
 type CreateCallRequestRequest struct {
 	CaseID          string   `json:"caseId"`
