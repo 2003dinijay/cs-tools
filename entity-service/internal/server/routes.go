@@ -141,6 +141,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		serviceOfferingHandler = handler.NewServiceOfferingHandler(service.NewServiceNowServiceOfferingService(serviceNowIntegrationServiceClient))
 	}
 
+	var groupHandler *handler.GroupHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		groupHandler = handler.NewGroupHandler(service.NewServiceNowGroupService(serviceNowIntegrationServiceClient))
+	}
+
 	var snUserHandler *handler.SNUserHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		snUserHandler = handler.NewSNUserHandler(service.NewServiceNowUserService(serviceNowIntegrationServiceClient))
@@ -222,6 +227,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 
 	if serviceOfferingHandler != nil {
 		mux.HandleFunc("POST /service-offerings/search", serviceOfferingHandler.SearchServiceOfferings)
+	}
+
+	if groupHandler != nil {
+		mux.HandleFunc("POST /groups/search", groupHandler.SearchGroups)
 	}
 
 	return middleware.CorrelationID(

@@ -1530,6 +1530,39 @@ type ITService struct {
 	ServiceClassification *ServiceClassification `json:"serviceClassification"`
 }
 
+// GroupParentRef is the parent group reference within a group.
+type GroupParentRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Group is a single group entry returned in a search response.
+type Group struct {
+	ID     string          `json:"id"`
+	Name   string          `json:"name"`
+	Active bool            `json:"active"`
+	Parent *GroupParentRef `json:"parent"`
+}
+
+// SearchGroupsFilters holds optional filter criteria for group searches.
+type SearchGroupsFilters struct {
+	SearchQuery string `json:"searchQuery,omitempty"`
+}
+
+// SearchGroupsRequest is the input for POST /groups/search.
+type SearchGroupsRequest struct {
+	Filters    *SearchGroupsFilters `json:"filters,omitempty"`
+	Pagination Pagination           `json:"pagination"`
+}
+
+// SearchGroupsResponse is the paginated result of a groups search.
+type SearchGroupsResponse struct {
+	Groups []Group `json:"groups"`
+	Total  int     `json:"total"`
+	Offset int     `json:"offset"`
+	Limit  int     `json:"limit"`
+}
+
 // ServiceOfferingServiceRef is the parent service reference within a service offering.
 type ServiceOfferingServiceRef struct {
 	ID   string `json:"id"`

@@ -1231,6 +1231,43 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /groups/search:
+    post:
+      summary: Search groups (ServiceNow data source only).
+      operationId: searchGroups
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchGroupsRequest'
+      responses:
+        "200":
+          description: Groups matching the filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchGroupsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+
   /service-offerings/search:
     post:
       summary: Search service offerings (ServiceNow data source only).
@@ -3930,6 +3967,58 @@ components:
               type: string
             updatedBy:
               type: string
+
+    SearchGroupsFilters:
+      type: object
+      properties:
+        searchQuery:
+          type: string
+          description: Free-text search query.
+
+    SearchGroupsRequest:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/SearchGroupsFilters'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    GroupParentRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+
+    Group:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        active:
+          type: boolean
+        parent:
+          $ref: '#/components/schemas/GroupParentRef'
+          nullable: true
+
+    SearchGroupsResponse:
+      type: object
+      properties:
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/Group'
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
 
     SearchServiceOfferingsFilters:
       type: object

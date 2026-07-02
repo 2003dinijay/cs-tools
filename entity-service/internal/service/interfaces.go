@@ -221,6 +221,14 @@ type TimeCardService interface {
 	UpdateTimeCard(ctx context.Context, req domain.UpdateTimeCardRequest) (domain.TimeCardMutationResponse, error)
 }
 
+// GroupService defines the operations available on the groups entity.
+// All methods require the ServiceNow data source; there is no Postgres fallback.
+type GroupService interface {
+	// SearchGroups returns a paginated list of groups filtered by optional search query.
+	// An UnauthorizedError is returned when x-user-id-token is absent.
+	SearchGroups(ctx context.Context, req domain.SearchGroupsRequest) (domain.SearchGroupsResponse, error)
+}
+
 // ServiceOfferingService defines the operations available on the service offerings entity.
 // All methods require the ServiceNow data source; there is no Postgres fallback.
 type ServiceOfferingService interface {
