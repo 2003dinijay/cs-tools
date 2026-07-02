@@ -29,9 +29,7 @@ import { Check, X } from "@wso2/oxygen-ui-icons-react";
 import RelativeTime from "@components/RelativeTime";
 import {
   billableLabel,
-  breakdownSummary,
   LEAD_COMMENT_MAX,
-  TIME_CARD_ACTIVITY_LABEL,
 } from "@features/csm-timecards/constants/timeCardConstants";
 import type {
   CsmTimeCard,
@@ -58,10 +56,10 @@ function Field({ label, value }: { label: string; value: string }): JSX.Element 
 }
 
 /**
- * Team-lead review of a pending time card. Shows the engineer, the case, the
- * activity breakdown and the work log, and captures an optional Lead's comment
- * before accepting or rejecting. Reject requires nothing extra but a reason is
- * encouraged — the comment is sent with either decision.
+ * Team-lead review of a submitted time card, then accept or reject with an
+ * optional comment. Only shows what the backend actually returns on read —
+ * category, issue complexity, work-log comment and the hour breakdown are
+ * accepted on create but never echoed back, so they aren't shown here.
  */
 export default function TimeCardReviewDialog({
   card,
@@ -89,41 +87,17 @@ export default function TimeCardReviewDialog({
             }}
           >
             <Field label="Engineer" value={card.userName} />
-            <Field label="Date" value={card.date} />
-            <Field label="Category" value={card.category} />
-            <Field label="Issue complexity" value={card.issueComplexity} />
+            <Field label="Project" value={card.projectName} />
             <Field label="Billable" value={billableLabel(card.billable)} />
-          </Box>
-
-          <Field label="Time breakdown" value={breakdownSummary(card.breakdown)} />
-
-          <Box>
-            <Typography variant="caption" color="text.secondary">
-              Work log
-            </Typography>
-            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-              {card.workLogComment}
-            </Typography>
-          </Box>
-
-          {card.activity.length > 0 && (
             <Box>
               <Typography variant="caption" color="text.secondary">
-                Activity
+                Logged
               </Typography>
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25, mt: 0.25 }}>
-                {card.activity.map((a, i) => (
-                  <Typography key={i} variant="caption" color="text.secondary">
-                    <Box component="span" sx={{ fontWeight: 600, color: "text.primary" }}>
-                      {TIME_CARD_ACTIVITY_LABEL[a.action]}
-                    </Box>{" "}
-                    by {a.by} · <RelativeTime iso={a.at} />
-                    {a.note ? ` — ${a.note}` : ""}
-                  </Typography>
-                ))}
-              </Box>
+              <Typography variant="body2">
+                <RelativeTime iso={card.createdOn} />
+              </Typography>
             </Box>
-          )}
+          </Box>
 
           <TextField
             label="Lead's comment (optional)"

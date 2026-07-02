@@ -1183,3 +1183,95 @@ export interface BeSearchProductVulnerabilitiesResponse {
   limit: number;
   offset: number;
 }
+
+export type BeTimeCardState =
+  | "pending"
+  | "submitted"
+  | "approved"
+  | "rejected"
+  | "processed"
+  | "recalled";
+
+export interface BeTimeCardRef {
+  id: string;
+  name: string;
+}
+
+export interface BeTimeCardCaseRef {
+  id: string;
+  name: string;
+  number: string;
+}
+
+/**
+ * A time card as returned by search and the mutation endpoints. The backend
+ * never echoes back category / issue complexity / work-log comment / hour
+ * breakdown / lead comment, even though those are accepted on write — see
+ * {@link BeCreateTimeCardPayload}.
+ */
+export interface BeTimeCardView {
+  id: string;
+  totalTime: number;
+  createdOn: string;
+  hasBillable: boolean;
+  state: BeTimeCardState;
+  user?: BeTimeCardRef;
+  approvedBy?: BeTimeCardRef;
+  project?: BeTimeCardRef;
+  case?: BeTimeCardCaseRef;
+}
+
+export interface BeSearchTimeCardsFilters {
+  projectIds?: string[];
+  /** ISO 8601 date (YYYY-MM-DD). */
+  startDate?: string;
+  /** ISO 8601 date (YYYY-MM-DD). */
+  endDate?: string;
+  states?: BeTimeCardState[];
+}
+
+export interface BeSearchTimeCardsPayload {
+  filters?: BeSearchTimeCardsFilters;
+  pagination?: BePagination;
+}
+
+export interface BeSearchTimeCardsResponse {
+  timeCards: BeTimeCardView[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BeCreateTimeCardPayload {
+  caseId: string;
+  projectId: string;
+  /** ISO 8601 date (YYYY-MM-DD). */
+  date: string;
+  /** Eligible approvers (approver_list). Must be non-empty. */
+  approverIds: string[];
+  isBillable?: boolean;
+  issueComplexity?: string;
+  workLogComment?: string;
+  timeAnalyzing?: number;
+  timeSettingUp?: number;
+  timeReproducingDebugging?: number;
+  timeProvidingSolution?: number;
+  timePatching?: number;
+}
+
+/**
+ * Either editable fields (no `state`), or a state transition (`state`:
+ * "approved", or "rejected" with a `leadComment`) — mutually exclusive, per
+ * the backend contract. The portal only ever sends the state-transition form
+ * (see ISSU-009 Edit-card gap: editable fields can't be safely round-tripped
+ * since reads never return them).
+ */
+export interface BeUpdateTimeCardPayload {
+  state?: Extract<BeTimeCardState, "approved" | "rejected">;
+  leadComment?: string;
+}
+
+export interface BeTimeCardMutationResponse {
+  message?: string;
+  timeCard: BeTimeCardView;
+}

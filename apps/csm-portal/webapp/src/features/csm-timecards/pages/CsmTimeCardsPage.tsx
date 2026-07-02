@@ -14,64 +14,36 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { useMemo, useState, type JSX } from "react";
+import { useState, type JSX } from "react";
 import {
-  Alert,
-  AlertTitle,
   Box,
-  Button,
   Chip,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle,
   InputAdornment,
   MenuItem,
   Tab,
   Tabs,
   TextField,
   Typography,
+  Button,
 } from "@wso2/oxygen-ui";
 import { ListFilter, Search, X } from "@wso2/oxygen-ui-icons-react";
 import {
   useApprovalQueue,
-  useApproveSheet,
   useDecideCard,
-  useDeleteCard,
-  useDelegation,
   useMyTimeSheets,
-  useProcessCard,
-  useRecallCard,
-  useRecallSheet,
-  useRejectSheet,
-  useSetDelegation,
-  useSubmitSheet,
-  useUpdateCard,
 } from "@features/csm-timecards/api/useTimeSheets";
 import { useProjectOptions } from "@features/csm-cases/api/useProjectOptions";
+import { BackendApiError } from "@api/backend/client";
+import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import type { BeProject } from "@api/backend/types";
-import { useDebouncedValue } from "@hooks/useDebouncedValue";
-import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
-import { timeCardNotices } from "@features/csm-timecards/utils/timeCardNotifications";
-import { weekStartOf } from "@features/csm-timecards/utils/timeSheetWeek";
-import {
-  breakdownSummary,
-  TIME_CARD_STATE_META,
-} from "@features/csm-timecards/constants/timeCardConstants";
+import { TIME_CARD_STATE_META } from "@features/csm-timecards/constants/timeCardConstants";
 import { useTimecardRole } from "@features/csm-timecards/hooks/useTimecardRole";
 import TimeSheetCard from "@features/csm-timecards/components/TimeSheetCard";
 import TimeCardReviewDialog from "@features/csm-timecards/components/TimeCardReviewDialog";
-import DelegateApprovalsDialog from "@features/csm-timecards/components/DelegateApprovalsDialog";
-import LogTimeCardDialog from "@features/csm-timecards/components/LogTimeCardDialog";
-import {
-  type SheetAction,
-  type TimecardAction,
-} from "@features/csm-timecards/utils/timeSheetState";
+import type { TimecardAction } from "@features/csm-timecards/utils/timeSheetState";
 import type {
   CsmTimeCard,
-  CsmTimeSheet,
   TimeCardSearchFilters,
   TimeCardState,
 } from "@features/csm-timecards/types/timeCards";
@@ -79,53 +51,47 @@ import type {
 type TabId = "mine" | "approvals";
 
 /**
- * Time cards workspace. Three tabs: **My time sheets** (weekly grouping, submit,
- * edit/resubmit), **Approvals** (approver/admin: approve/reject/recall, with
- * delegation), and **Reports** (KPIs + exceptions). Logging a new card opens the
- * log dialog; logging from a case lands the card in that week's sheet.
+ * Time cards workspace. Two tabs: **My time sheets** (weekly grouping, read
+ * only — logging happens from a case's Time tracking tab) and **Approvals**
+ * (approver/admin: approve/reject a submitted card). There's no sheet-level
+ * bulk action, delegation, or reports — the backend has no endpoints for
+ * those (see the module-level notes in `types/timeCards.ts`).
  */
 export default function CsmTimeCardsPage(): JSX.Element {
   const role = useTimecardRole();
+  const { showError } = useErrorBanner();
   const [tab, setTab] = useState<TabId>("mine");
   const activeTab: TabId = tab !== "mine" && !role.isApprover ? "mine" : tab;
 
-  const [editingCard, setEditingCard] = useState<CsmTimeCard | null>(null);
   const [reviewCard, setReviewCard] = useState<CsmTimeCard | null>(null);
-  const [delegateOpen, setDelegateOpen] = useState(false);
-  const [deletingCard, setDeletingCard] = useState<CsmTimeCard | null>(null);
 
-  // Search filters (sent as a POST body, never query params). Project, work
-  // item and state scope both "My time sheets" and "Approvals"; Approvals adds
-  // an engineer filter.
+  // Search filters (sent as a POST body, never query params). Project and
+  // state are server-side; work item and engineer are client-side over the
+  // returned page — the backend has no filter for either.
   const [filterProject, setFilterProject] = useState("");
   const [filterWorkItem, setFilterWorkItem] = useState("");
   const [filterState, setFilterState] = useState<TimeCardState | "">("");
   const [filterEngineer, setFilterEngineer] = useState("");
 
+  const projects = useProjectOptions();
+  // The backend requires a non-empty `projectIds` to return anything at all
+  // (confirmed live — an unscoped search always returns `total: 0`, despite
+  // the OpenAPI spec documenting it as optional). Default to every project
+  // the user can see (already fetched for the filter dropdown below) so
+  // "My time sheets" / "Approvals" work with no filter picked; the explicit
+  // project filter narrows that down when set.
+  const scopeProjectIds = filterProject
+    ? [filterProject]
+    : (projects.data ?? []).map((p) => p.id);
+
   const baseFilters: TimeCardSearchFilters = {
-    ...(filterProject && { projectIds: [filterProject] }),
-    ...(filterWorkItem.trim() && { workItemId: filterWorkItem.trim() }),
+    ...(scopeProjectIds.length && { projectIds: scopeProjectIds }),
     ...(filterState && { states: [filterState] }),
   };
 
   const mySheets = useMyTimeSheets(baseFilters);
   const queue = useApprovalQueue(role.isApprover, baseFilters);
-  const delegation = useDelegation();
-  const projects = useProjectOptions();
-
-  const update = useUpdateCard();
-  const submitSheet = useSubmitSheet();
-  const approveSheet = useApproveSheet();
-  const rejectSheet = useRejectSheet();
-  const recallSheet = useRecallSheet();
   const decideCard = useDecideCard();
-  const recallCard = useRecallCard();
-  const processCard = useProcessCard();
-  const deleteCard = useDeleteCard();
-  const setDelegation = useSetDelegation();
-
-  const activeDelegation = delegation.data ?? null;
-  const approverDisabled = !!activeDelegation;
 
   const anyFilterActive =
     !!filterProject || !!filterWorkItem.trim() || !!filterState || !!filterEngineer.trim();
@@ -136,32 +102,21 @@ export default function CsmTimeCardsPage(): JSX.Element {
     setFilterEngineer("");
   };
 
-  const handleSheetAction = (sheet: CsmTimeSheet, action: SheetAction): void => {
-    const target = { userId: sheet.userId, weekStart: sheet.weekStart };
-    if (action === "submit") submitSheet.mutate(target);
-    else if (action === "approve") approveSheet.mutate(target);
-    else if (action === "reject") rejectSheet.mutate(target);
-    else if (action === "recall") recallSheet.mutate(target);
-  };
-
   const handleCardAction = (card: CsmTimeCard, action: TimecardAction): void => {
-    if (action === "edit") setEditingCard(card);
-    else if (action === "delete") setDeletingCard(card);
-    else if (action === "submit" || action === "resubmit")
-      submitSheet.mutate({ userId: card.userId, weekStart: weekStartOf(card.date) });
-    else if (action === "approve" || action === "reject") setReviewCard(card);
-    else if (action === "recall") recallCard.mutate(card.id);
-    else if (action === "process") processCard.mutate(card.id);
+    if (action === "approve" || action === "reject") setReviewCard(card);
   };
 
-  const [dismissedNoticeIds, setDismissedNoticeIds] = useState<Set<string>>(new Set());
-  const allNotices = timeCardNotices(mySheets.data ?? []);
-  const notices = allNotices.filter((n) => !dismissedNoticeIds.has(n.cardId));
-
-  /** Flat list of the signed-in user's cards — used for duplicate-entry warnings. */
-  const myCards = (mySheets.data ?? [])
-    .flatMap((s) => s.cards)
-    .sort((a, b) => b.date.localeCompare(a.date));
+  /** Client-side work-item substring filter, applied over already-fetched sheets. */
+  const byWorkItem = (userNameFiltered: typeof mySheets.data): typeof mySheets.data => {
+    const q = filterWorkItem.trim().toLowerCase();
+    if (!q || !userNameFiltered) return userNameFiltered;
+    return userNameFiltered
+      .map((s) => ({
+        ...s,
+        cards: s.cards.filter((c) => c.caseNumber.toLowerCase().includes(q)),
+      }))
+      .filter((s) => s.cards.length > 0);
+  };
 
   return (
     <Box
@@ -185,56 +140,34 @@ export default function CsmTimeCardsPage(): JSX.Element {
       </Tabs>
 
       {/* My time sheets */}
-      {activeTab === "mine" &&
-        (mySheets.isLoading ? (
-          <Centered>
-            <CircularProgress />
-          </Centered>
-        ) : mySheets.isError ? (
-          <Typography color="error">Could not load your time sheets.</Typography>
-        ) : (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {notices.length > 0 && (
-              <Alert
-                severity={notices[0].severity}
-                onClose={() =>
-                  setDismissedNoticeIds(
-                    new Set([...dismissedNoticeIds, ...notices.map((n) => n.cardId)]),
-                  )
-                }
-              >
-                <AlertTitle>
-                  {notices.length === 1
-                    ? "A time card needs your attention"
-                    : `${notices.length} time cards need your attention`}
-                </AlertTitle>
-                <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
-                  {notices.slice(0, 4).map((n) => (
-                    <li key={n.cardId}>{n.message}</li>
-                  ))}
-                </Box>
-              </Alert>
-            )}
+      {activeTab === "mine" && (
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <FilterBar
+            projects={projects.data ?? []}
+            filterProject={filterProject}
+            setFilterProject={setFilterProject}
+            filterWorkItem={filterWorkItem}
+            setFilterWorkItem={setFilterWorkItem}
+            filterState={filterState}
+            setFilterState={setFilterState}
+            onClear={clearFilters}
+          />
 
-            <FilterBar
-              projects={projects.data ?? []}
-              filterProject={filterProject}
-              setFilterProject={setFilterProject}
-              filterWorkItem={filterWorkItem}
-              setFilterWorkItem={setFilterWorkItem}
-              filterState={filterState}
-              setFilterState={setFilterState}
-              onClear={clearFilters}
-              engineerSlot={
-                <EngineerFilter value={filterEngineer} onChange={setFilterEngineer} />
-              }
-            />
-
-            {(() => {
-              const q = filterEngineer.trim().toLowerCase();
-              const filtered = (mySheets.data ?? []).filter(
-                (s) => !q || s.userName.toLowerCase().includes(q),
-              );
+          {/* mySheets stays disabled until `projects` resolves a project
+           scope (see scopeProjectIds above), so its own isLoading never
+           turns true during that wait — fold projects.isLoading in too, or
+           this would flash the empty state before real data has a chance to
+           load. The filter bar itself renders regardless, same as Approvals
+           below, so it's never hidden behind this spinner. */}
+          {mySheets.isLoading || projects.isLoading ? (
+            <Centered>
+              <CircularProgress />
+            </Centered>
+          ) : mySheets.isError ? (
+            <Typography color="error">Could not load your time sheets.</Typography>
+          ) : (
+            (() => {
+              const filtered = byWorkItem(mySheets.data) ?? [];
               if (filtered.length === 0) {
                 return (
                   <Empty
@@ -251,30 +184,18 @@ export default function CsmTimeCardsPage(): JSX.Element {
                   key={s.id}
                   sheet={s}
                   role={{ isOwner: true, isApprover: false, isAdmin: false }}
-                  onSheetAction={handleSheetAction}
                   onCardAction={handleCardAction}
                 />
               ));
-            })()}
-          </Box>
-        ))}
+            })()
+          )}
+        </Box>
+      )}
 
       {/* Approvals */}
       {activeTab === "approvals" && role.isApprover && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 1,
-            }}
-          >
-            <Typography variant="subtitle2">Submitted for your approval</Typography>
-            <Button variant="outlined" size="small" onClick={() => setDelegateOpen(true)}>
-              {activeDelegation ? "Manage delegation" : "Delegate approvals"}
-            </Button>
-          </Box>
+          <Typography variant="subtitle2">Submitted for your approval</Typography>
 
           <FilterBar
             projects={projects.data ?? []}
@@ -297,15 +218,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
             }
           />
 
-          {activeDelegation && (
-            <Alert severity="info">
-              Approvals delegated to <strong>{activeDelegation.delegateName}</strong>{" "}
-              ({activeDelegation.from} → {activeDelegation.to}). Your accept/reject
-              is paused for this period.
-            </Alert>
-          )}
-
-          {queue.isLoading ? (
+          {queue.isLoading || projects.isLoading ? (
             <Centered>
               <CircularProgress />
             </Centered>
@@ -316,11 +229,20 @@ export default function CsmTimeCardsPage(): JSX.Element {
           ) : (
             (() => {
               const q = filterEngineer.trim().toLowerCase();
-              const filtered = (queue.data ?? []).filter(
+              const byEngineer = (queue.data ?? []).filter(
                 (s) => !q || s.userName.toLowerCase().includes(q),
               );
+              const filtered = byWorkItem(byEngineer) ?? [];
               if (filtered.length === 0) {
-                return <Empty text={`No engineers match “${filterEngineer}”.`} />;
+                return (
+                  <Empty
+                    text={
+                      q
+                        ? `No engineers match "${filterEngineer}".`
+                        : "No time cards match the current filters."
+                    }
+                  />
+                );
               }
               return filtered.map((s) => (
                 <TimeSheetCard
@@ -328,8 +250,6 @@ export default function CsmTimeCardsPage(): JSX.Element {
                   sheet={s}
                   role={{ isOwner: false, isApprover: true, isAdmin: role.isAdmin }}
                   showEngineer
-                  approverDisabled={approverDisabled}
-                  onSheetAction={handleSheetAction}
                   onCardAction={handleCardAction}
                 />
               ));
@@ -338,248 +258,37 @@ export default function CsmTimeCardsPage(): JSX.Element {
         </Box>
       )}
 
-      {/* Dialogs. Logging new cards happens from a case; here we only edit an
-          existing (rejected/recalled) card, review, delegate, or delete. */}
-      {editingCard && (
-        <LogTimeCardDialog
-          editing={editingCard}
-          existingCards={myCards}
-          isSubmitting={update.isPending}
-          onClose={() => setEditingCard(null)}
-          onSubmit={(input) =>
-            update.mutate(
-              {
-                cardId: editingCard.id,
-                patch: {
-                  date: input.date,
-                  category: input.category,
-                  billable: input.billable,
-                  breakdown: input.breakdown,
-                  workLogComment: input.workLogComment,
-                  issueComplexity: input.issueComplexity,
-                },
-              },
-              { onSuccess: () => setEditingCard(null) },
-            )
-          }
-        />
-      )}
-
       {reviewCard && (
         <TimeCardReviewDialog
           card={reviewCard}
           isDeciding={decideCard.isPending}
           onClose={() => setReviewCard(null)}
           onDecide={(decision) =>
-            decideCard.mutate(decision, { onSuccess: () => setReviewCard(null) })
+            decideCard.mutate(decision, {
+              onSuccess: () => setReviewCard(null),
+              onError: (err) => {
+                // The backend 403s when the signed-in user isn't authorized
+                // to decide this specific card (confirmed live: approving
+                // your own just-created card succeeds, approving another
+                // engineer's real card 403s) — surface its own message
+                // rather than failing silently.
+                const msg =
+                  err instanceof BackendApiError && err.status < 500 && err.message
+                    ? err.message
+                    : "Could not submit your decision. Please try again.";
+                showError(msg, err);
+              },
+            })
           }
         />
-      )}
-
-      {delegateOpen && (
-        <DelegateApprovalsDialog
-          current={activeDelegation}
-          isSaving={setDelegation.isPending}
-          onClose={() => setDelegateOpen(false)}
-          onSave={(input) =>
-            setDelegation.mutate(input, { onSuccess: () => setDelegateOpen(false) })
-          }
-        />
-      )}
-
-      {deletingCard && (
-        <Dialog open onClose={() => setDeletingCard(null)} maxWidth="xs" fullWidth>
-          <DialogTitle>Delete time card?</DialogTitle>
-          <DialogContent>
-            <DialogContentText sx={{ mb: 1.5 }}>
-              This permanently removes the entry below. This can&apos;t be undone.
-            </DialogContentText>
-            <Box
-              sx={{
-                bgcolor: "action.hover",
-                borderRadius: 1,
-                px: 2,
-                py: 1.5,
-                display: "flex",
-                flexDirection: "column",
-                gap: 0.5,
-              }}
-            >
-              <Typography variant="body2">
-                <strong>{deletingCard.caseNumber}</strong> &middot; {deletingCard.date}
-              </Typography>
-              <Typography variant="body2">
-                {deletingCard.totalHours.toFixed(2)}h &middot; {deletingCard.category}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {breakdownSummary(deletingCard.breakdown)}
-              </Typography>
-            </Box>
-          </DialogContent>
-          <DialogActions>
-            <Button
-              color="inherit"
-              onClick={() => setDeletingCard(null)}
-              disabled={deleteCard.isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              color="error"
-              variant="contained"
-              disabled={deleteCard.isPending}
-              onClick={() =>
-                deleteCard.mutate(deletingCard.id, {
-                  onSuccess: () => setDeletingCard(null),
-                })
-              }
-            >
-              Delete
-            </Button>
-          </DialogActions>
-        </Dialog>
       )}
     </Box>
   );
 }
 
-const FILTER_STATES: TimeCardState[] = [
-  "pending",
-  "submitted",
-  "approved",
-  "rejected",
-  "recalled",
-  "processed",
-];
-
-/** Searchable engineer picker used in both filter bars. */
-function EngineerFilter({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (name: string) => void;
-}): JSX.Element {
-  const [input, setInput] = useState("");
-  const search = useDebouncedValue(input.trim(), 300);
-  const { data } = useSearchUsers({
-    ...(search.length > 0 && { searchQuery: search }),
-    pagination: { limit: 6, offset: 0 },
-  });
-
-  const candidates = useMemo(
-    () =>
-      input.trim().length === 0
-        ? []
-        : (data?.users ?? [])
-            .filter((u) => u.userType === "internal")
-            .map((u) => ({
-              id: u.id,
-              name: u.name.trim() || u.userName,
-              email: u.email,
-            })),
-    [data, input],
-  );
-
-  if (value) {
-    return (
-      <Chip
-        label={value}
-        size="small"
-        onDelete={() => onChange("")}
-        deleteIcon={<X size={14} />}
-      />
-    );
-  }
-
-  return (
-    <Box sx={{ position: "relative" }}>
-      <TextField
-        size="small"
-        label="Engineer"
-        placeholder="Search…"
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        sx={{ width: 180 }}
-        slotProps={{
-          input: {
-            startAdornment: (
-              <InputAdornment position="start">
-                <Search size={14} />
-              </InputAdornment>
-            ),
-          },
-        }}
-      />
-      {input.trim().length > 0 && (
-        <Box
-          sx={{
-            position: "absolute",
-            top: "100%",
-            left: 0,
-            zIndex: 10,
-            mt: 0.5,
-            width: 240,
-            border: 1,
-            borderColor: "divider",
-            borderRadius: 1,
-            bgcolor: "background.paper",
-            boxShadow: 2,
-            maxHeight: 200,
-            overflowY: "auto",
-          }}
-        >
-          {candidates.length === 0 ? (
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", p: 1 }}
-            >
-              No matching engineers.
-            </Typography>
-          ) : (
-            candidates.map((u) => (
-              <Button
-                key={u.id}
-                variant="text"
-                color="inherit"
-                onClick={() => {
-                  onChange(u.name);
-                  setInput("");
-                }}
-                sx={{
-                  display: "flex",
-                  justifyContent: "flex-start",
-                  textTransform: "none",
-                  width: "100%",
-                  px: 1.5,
-                  py: 0.75,
-                  gap: 1,
-                }}
-              >
-                <Box sx={{ minWidth: 0, textAlign: "left" }}>
-                  <Typography variant="body2" noWrap>
-                    {u.name}
-                  </Typography>
-                  {u.email && (
-                    <Typography
-                      variant="caption"
-                      color="text.secondary"
-                      noWrap
-                      sx={{ display: "block" }}
-                    >
-                      {u.email}
-                    </Typography>
-                  )}
-                </Box>
-              </Button>
-            ))
-          )}
-        </Box>
-      )}
-    </Box>
-  );
-}
+/** States reachable via the portal's API today — "pending"/"recalled"/
+ * "processed" exist in the backend's enum but nothing here can produce them. */
+const FILTER_STATES: TimeCardState[] = ["submitted", "approved", "rejected"];
 
 /** Shared filter bar for the My time sheets and Approvals tabs. */
 function FilterBar({

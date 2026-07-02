@@ -62,8 +62,6 @@ export const ApiQueryKeys = {
   CASE_TIME_CARDS_SEARCH: "case-time-cards-search",
   TIME_SHEETS_SEARCH: "time-sheets-search",
   TIME_CARD_APPROVAL_QUEUE: "time-card-approval-queue",
-  TIME_CARD_REPORTS: "time-card-reports",
-  TIME_CARD_DELEGATION: "time-card-delegation",
   PROJECT_DEPLOYMENT_DETAILS: "project-deployment-details",
   UPDATE_LEVELS_SEARCH: "update-levels-search",
   CHANGE_REQUESTS: "change-requests",
