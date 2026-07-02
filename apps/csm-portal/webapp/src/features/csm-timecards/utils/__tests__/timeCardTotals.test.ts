@@ -21,6 +21,7 @@ import {
   timeCardDraftErrors,
   totalHours,
 } from "@features/csm-timecards/utils/timeCardTotals";
+import { WORK_LOG_MAX } from "@features/csm-timecards/constants/timeCardConstants";
 
 describe("timeCardTotals", () => {
   it("emptyBreakdown is all zeros and sums to 0", () => {
@@ -67,6 +68,14 @@ describe("timeCardTotals", () => {
       expect(errors.hours).toBeDefined();
       expect(errors.workLogComment).toBeDefined();
       expect(errors.approver).toBeDefined();
+    });
+
+    it("flags a work log comment over WORK_LOG_MAX", () => {
+      const errors = timeCardDraftErrors({
+        ...valid,
+        workLogComment: "a".repeat(WORK_LOG_MAX + 1),
+      });
+      expect(errors.workLogComment).toBeDefined();
     });
   });
 });

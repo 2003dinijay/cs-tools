@@ -62,15 +62,18 @@ import { roundHours } from "@features/csm-timecards/utils/timeCardTotals";
  * The signed-in engineer's stable identity, resolved from `GET /users/me`.
  * `id` is the entity-service UUID — the same stable identifier the platform
  * uses across all services. Display name is built from firstName + lastName
- * returned by the entity service. Both fall back to ID-token values while
- * the query is in flight.
+ * returned by the entity service, falling back to ID-token values while the
+ * query is in flight. `id` is `undefined` until a real identity resolves —
+ * never a synthetic placeholder — so callers must gate on it before running
+ * queries/mutations that key off it (a placeholder id would silently let
+ * "my cards" / "not my cards" filtering match nothing, or everything).
  */
-export function useCurrentEngineer(): { id: string; name: string } {
+export function useCurrentEngineer(): { id: string | undefined; name: string } {
   const { data: me } = useGetUsersMe();
   const info = resolveUserInfo(useIdTokenClaims());
   const displayName =
     [me?.firstName, me?.lastName].filter(Boolean).join(" ") || info.fullName;
-  return { id: me?.id ?? me?.email ?? info.email ?? "me", name: displayName };
+  return { id: me?.id ?? me?.email ?? info.email, name: displayName };
 }
 
 /** Invalidate every time-card query so all views refresh after a write. */
@@ -201,6 +204,7 @@ export function useMyTimeSheets(
   return useQuery<CsmTimeSheet[], Error>({
     queryKey: [ApiQueryKeys.TIME_SHEETS_SEARCH, "mine", me.id, filters],
     queryFn: async (): Promise<CsmTimeSheet[]> => {
+      if (!me.id) return [];
       const all = await searchTimeCards(api, filters);
       return groupIntoSheets(
         all.filter((c) => c.userId === me.id),
@@ -229,6 +233,7 @@ export function useApprovalQueue(
   return useQuery<CsmTimeSheet[], Error>({
     queryKey: [ApiQueryKeys.TIME_CARD_APPROVAL_QUEUE, me.id, filters],
     queryFn: async (): Promise<CsmTimeSheet[]> => {
+      if (!me.id) return [];
       const submitted = await searchTimeCards(api, {
         ...filters,
         states: ["submitted"],
@@ -244,7 +249,7 @@ export function useApprovalQueue(
         groupIntoSheets(cards, userId, cards[0]?.userName ?? "—"),
       );
     },
-    enabled: enabled && !!filters?.projectIds?.length,
+    enabled: enabled && !!me.id && !!filters?.projectIds?.length,
     staleTime: 5_000,
   });
 }

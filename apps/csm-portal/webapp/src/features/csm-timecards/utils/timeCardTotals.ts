@@ -18,6 +18,7 @@ import {
   ACTIVITY_KEYS,
   type ActivityBreakdown,
 } from "@features/csm-timecards/types/timeCards";
+import { WORK_LOG_MAX } from "@features/csm-timecards/constants/timeCardConstants";
 
 /** A fresh breakdown with every activity at zero hours. */
 export function emptyBreakdown(): ActivityBreakdown {
@@ -75,6 +76,8 @@ export function timeCardDraftErrors(draft: TimeCardDraft): TimeCardDraftErrors {
   }
   if (!draft.workLogComment.trim()) {
     errors.workLogComment = "Add a work log comment.";
+  } else if (draft.workLogComment.length > WORK_LOG_MAX) {
+    errors.workLogComment = `Comment must be ${WORK_LOG_MAX} characters or fewer.`;
   }
   if (!draft.approverId) errors.approver = "Choose an approver.";
   return errors;
