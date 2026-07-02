@@ -79,6 +79,9 @@ func (s *snServiceOfferingService) SearchServiceOfferings(ctx context.Context, r
 
 	var filters snServiceOfferingFilters
 	if req.Filters != nil {
+		if err := validateUUIDs("serviceIds", req.Filters.ServiceIDs); err != nil {
+			return domain.SearchServiceOfferingsResponse{}, err
+		}
 		filters.ServiceIDs = uuidsToSysids(req.Filters.ServiceIDs)
 		filters.SearchQuery = req.Filters.SearchQuery
 	}
