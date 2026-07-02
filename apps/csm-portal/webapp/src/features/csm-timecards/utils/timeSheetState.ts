@@ -14,27 +14,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import type {
-  CsmTimeCard,
-  CsmTimeSheet,
-  TimeCardState,
-  TimeSheetState,
-} from "@features/csm-timecards/types/timeCards";
+import type { TimeCardState } from "@features/csm-timecards/types/timeCards";
 
-/** Actions that can be taken on a card or sheet. */
-export type TimecardAction =
-  | "edit"
-  | "delete"
-  | "submit"
-  | "resubmit"
-  | "approve"
-  | "reject"
-  | "recall"
-  | "process";
+/**
+ * Actions that can be taken on a card. The backend only supports a
+ * state-transition PATCH (`approved` / `rejected`) — there's no submit
+ * (cards are created already submitted), no edit (reads never return the
+ * fields needed to safely round-trip an edit), no recall, and no process.
+ * There's also no bulk/sheet-level endpoint, so there are no sheet actions.
+ */
+export type TimecardAction = "approve" | "reject";
 
-/** The capabilities of the current user relative to the target. */
+/** The capabilities of the current user relative to a card. */
 export interface TimecardRoleCtx {
-  /** The signed-in user owns the card/sheet. */
+  /** The signed-in user owns the card. */
   isOwner: boolean;
   /** The signed-in user may approve (team-lead/approver, or admin). */
   isApprover: boolean;
@@ -42,74 +35,16 @@ export interface TimecardRoleCtx {
   isAdmin: boolean;
 }
 
-/** States in which the owner (or admin) may edit a card. */
-export const EDITABLE_STATES: TimeCardState[] = ["pending", "rejected", "recalled"];
-
 /**
- * Allowed actions on a single card given its state and the user's role. Single
- * source of truth for which buttons render (mirrors the cases `nextStates`
- * pattern). The owner edits/submits; an approver approves/rejects/recalls; an
- * admin can do both plus process.
+ * Allowed actions on a single card given its state and the user's role.
+ * Single source of truth for which buttons render. Only an approver/admin
+ * acting on a `submitted` card (not their own) has any action — the owner
+ * has none, matching what the backend actually supports today.
  */
 export function cardActions(
   state: TimeCardState,
   role: TimecardRoleCtx,
 ): TimecardAction[] {
-  const canEdit = role.isOwner || role.isAdmin;
-  const canApprove = role.isApprover || role.isAdmin;
-  switch (state) {
-    case "pending":
-      return canEdit ? ["edit", "delete", "submit"] : [];
-    case "rejected":
-    case "recalled":
-      return canEdit ? ["edit", "delete", "resubmit"] : [];
-    case "submitted":
-      return canApprove ? ["approve", "reject"] : [];
-    case "approved":
-      return [
-        ...(canApprove ? (["recall"] as TimecardAction[]) : []),
-        ...(role.isAdmin ? (["process"] as TimecardAction[]) : []),
-      ];
-    case "processed":
-    default:
-      return [];
-  }
-}
-
-/** Roll a sheet's cards up into a single status for display. */
-export function sheetStatus(cards: CsmTimeCard[]): TimeSheetState {
-  if (cards.some((c) => c.state === "rejected")) return "rejected";
-  if (cards.some((c) => c.state === "recalled")) return "recalled";
-  if (cards.some((c) => c.state === "submitted")) return "submitted";
-  if (
-    cards.length > 0 &&
-    cards.every((c) => c.state === "approved" || c.state === "processed")
-  ) {
-    return "approved";
-  }
-  return "open";
-}
-
-/** Sheet-level actions (a subset of {@link TimecardAction}). */
-export type SheetAction = "submit" | "approve" | "reject" | "recall";
-
-/** Sheet-level actions available to the user. */
-export function sheetActions(
-  sheet: CsmTimeSheet,
-  role: TimecardRoleCtx,
-): SheetAction[] {
-  const actions: SheetAction[] = [];
-  const canEdit = role.isOwner || role.isAdmin;
-  const canApprove = role.isApprover || role.isAdmin;
-  if (canEdit && sheet.cards.some((c) => EDITABLE_STATES.includes(c.state))) {
-    actions.push("submit");
-  }
-  if (canApprove && sheet.cards.some((c) => c.state === "submitted")) {
-    actions.push("approve"); // "approve remaining"
-    actions.push("reject"); // "reject remaining"
-  }
-  if (canApprove && sheet.cards.some((c) => c.state === "approved")) {
-    actions.push("recall");
-  }
-  return actions;
+  if (state !== "submitted" || role.isOwner) return [];
+  return role.isApprover || role.isAdmin ? ["approve", "reject"] : [];
 }

@@ -15,9 +15,11 @@
 // under the License.
 
 /**
- * Approval lifecycle of a time card (mirrors ServiceNow Time Card states):
- * pending (draft) → submitted → approved/rejected; an approved card can be
- * recalled for corrections, or marked processed (expensed).
+ * Approval lifecycle of a time card, per the entity-service contract. A card
+ * is created already `submitted` — there is no draft/pending step via the
+ * portal API. A lead then decides `approved` or `rejected` via `PATCH
+ * /time-cards/{id}`. `recalled` and `processed` appear in the backend's state
+ * enum but the portal exposes no endpoint to set them.
  */
 export type TimeCardState =
   | "pending"
@@ -28,10 +30,11 @@ export type TimeCardState =
   | "processed";
 
 /**
- * The fixed activity buckets a time card splits its hours across — the activity
- * categories from the Time Management requirement (ISSU-009). Order here is the
- * canonical display order; the human labels live in
- * `timeCardConstants.ACTIVITY_BUCKETS`.
+ * The fixed activity buckets a time card splits its hours across — the
+ * activity categories from the Time Management requirement (ISSU-009).
+ * Write-only: the backend accepts these on create (`timeAnalyzing`,
+ * `timeSettingUp`, …) but never returns them on read, so they shape the
+ * log-time form only, not {@link CsmTimeCard}.
  */
 export const ACTIVITY_KEYS = [
   "analysisDebugging",
@@ -43,94 +46,69 @@ export const ACTIVITY_KEYS = [
 
 export type ActivityKey = (typeof ACTIVITY_KEYS)[number];
 
-/** Hours logged against each activity bucket. */
+/** Hours logged against each activity bucket (log-time form state only). */
 export type ActivityBreakdown = Record<ActivityKey, number>;
 
-/** A team lead who must approve a time card (the ServiceNow "Approver list"). */
+/** A team lead eligible to approve a time card (ServiceNow "approver_list"). */
 export interface TimeCardApprover {
   id: string;
   name: string;
 }
 
 /**
- * The kind of work a time card is logged against. ServiceNow time cards attach
- * to the whole Task table; we surface the common ones.
+ * Work category options (the ServiceNow "Category" field). Write-only — see
+ * {@link ActivityBreakdown}.
  */
-export type TaskType = "case" | "project" | "change_request" | "incident";
-
-/** Work category options (the ServiceNow "Category" field). */
 export type TimeCardCategory =
   | "Task work"
   | "Investigation"
   | "Customer call"
   | "Documentation";
 
-/** Issue-complexity options (the ServiceNow "Issue Complexity" field). */
+/** Issue-complexity options (the ServiceNow "Issue Complexity" field). Write-only. */
 export type IssueComplexity = "N/A" | "Low" | "Medium" | "High";
 
-/** A lifecycle event on a time card (the ServiceNow "Activities" audit). */
-export type TimeCardActivityAction =
-  | "created"
-  | "edited"
-  | "submitted"
-  | "approved"
-  | "rejected"
-  | "recalled"
-  | "processed";
-
-export interface TimeCardActivity {
-  at: string; // ISO timestamp
-  by: string; // display name
-  action: TimeCardActivityAction;
-  note?: string;
-}
-
-/** A single time card logged by an engineer against a case. */
+/**
+ * A time card as returned by `POST /time-cards/search` and the mutation
+ * endpoints (the backend's `TimeCardView`). This is the complete set of
+ * fields the backend ever returns for a card — `category`, `issueComplexity`,
+ * `workLogComment`, the hour breakdown, and any lead comment are accepted on
+ * write but never read back, so editing an existing card isn't supported
+ * (it would silently blank those fields).
+ */
 export interface CsmTimeCard {
   id: string;
-  /** What kind of task the time was logged against. */
-  taskType: TaskType;
-  /** Task the time was spent on (the ServiceNow "Task"); a case id for cases. */
+  /** Case the time was spent on. */
   caseId: string;
-  /** Task reference shown to humans (e.g. CS0352584, the project/CR/incident id). */
+  /** Case reference shown to humans (e.g. CS0352584). */
   caseNumber: string;
-  /** Project the parent case belongs to. A company customer may have several
-   *  projects; this drives the project filter. Sourced from the case detail. */
   projectId: string;
   projectName: string;
-  /** Day the work happened (YYYY-MM-DD). */
-  date: string;
-  /** Engineer who logged the time. */
+  /**
+   * When the record was created (ISO). The backend doesn't separately track
+   * the engineer-chosen work date on read, only creation time.
+   */
+  createdOn: string;
   userId: string;
   userName: string;
   state: TimeCardState;
-  category: TimeCardCategory;
-  breakdown: ActivityBreakdown;
   /** Whether the logged time is billable to the customer (ISSU-009). */
   billable: boolean;
-  /** Derived sum of `breakdown`, stored for convenience. */
   totalHours: number;
-  workLogComment: string;
-  /** Reviewer's note, set when a lead accepts/rejects. */
-  leadComment?: string;
-  issueComplexity: IssueComplexity;
-  approvers: TimeCardApprover[];
-  /** When the engineer submitted (ISO). */
-  submittedAt: string;
-  /** When a lead decided (ISO); unset while pending. */
-  decidedAt?: string;
-  /** Display name of the deciding lead; unset while pending. */
-  decidedBy?: string;
-  /** Audit trail of lifecycle events, oldest first. */
-  activity: TimeCardActivity[];
+  /** The deciding approver, once a decision has been made. */
+  approvedById?: string;
+  approvedByName?: string;
 }
 
-/** Payload to create a new time card from the log dialog. */
+/**
+ * Payload to create a new time card from the log dialog. The card is created
+ * already `submitted` — there is no separate submit step, and no support for
+ * logging against anything other than a case (the backend's `caseId` is a
+ * required, case-only reference).
+ */
 export interface CreateTimeCardInput {
-  taskType: TaskType;
   caseId: string;
   caseNumber: string;
-  /** Project of the parent case (sourced from case detail at log time). */
   projectId: string;
   projectName: string;
   date: string;
@@ -150,24 +128,14 @@ export interface TimeCardDecisionInput {
   leadComment?: string;
 }
 
-/** Filters for the workload / list views. */
-export interface TimeCardFilters {
-  state?: TimeCardState | "all";
-  /** Restrict to a single engineer (team view). */
-  engineerId?: string;
-  /** Time window the cards fall in. */
-  period?: "week" | "all";
-}
+/**
+ * Rolled-up status of a weekly time sheet, derived from its cards. Purely a
+ * frontend display grouping — the backend has no "sheet" concept, and there
+ * is no bulk endpoint, so sheets carry no bulk actions.
+ */
+export type TimeSheetState = "submitted" | "approved" | "rejected";
 
-/** Rolled-up status of a weekly time sheet, derived from its cards. */
-export type TimeSheetState =
-  | "open" // editable cards, nothing submitted yet
-  | "submitted" // awaiting approver decisions
-  | "approved" // all cards approved/processed
-  | "rejected" // contains rejected card(s) needing rework
-  | "recalled"; // contains recalled card(s)
-
-/** A user's time cards for one ISO week (Mon–Sun), the unit of submission. */
+/** A user's time cards for one ISO week (Mon–Sun), a display-only grouping. */
 export interface CsmTimeSheet {
   /** `${userId}:${weekStart}`. */
   id: string;
@@ -183,80 +151,18 @@ export interface CsmTimeSheet {
 }
 
 /**
- * A permanent record of a deleted time card (ISSU-009 audit). Deleting a card
- * removes it from active sheets but leaves this tombstone so the actor, hours
- * removed, and timestamp survive.
- */
-export interface TimeCardDeletion {
-  cardId: string;
-  caseNumber: string;
-  userName: string;
-  totalHours: number;
-  /** Who performed the delete (display name). */
-  deletedBy: string;
-  /** When the delete happened (ISO). */
-  at: string;
-}
-
-/** An approver handing their approvals to another approver for a period. */
-export interface ApproverDelegation {
-  approverId: string;
-  delegateId: string;
-  delegateName: string;
-  /** Inclusive date range the delegation is active (YYYY-MM-DD). */
-  from: string;
-  to: string;
-}
-
-/**
  * Filters for the time-card search. Sent in the POST body (never as query
- * params) so case / work-item ids and engineer ids stay out of URLs and logs.
- * All fields are optional; an empty object returns everything in scope.
+ * params). The backend only supports `projectIds` / `states` / date range
+ * server-side; case and engineer scoping happen client-side over the
+ * returned page (see `useTimeSheets.ts`) since the backend has no `caseId`
+ * or `engineerId` search filter.
  */
 export interface TimeCardSearchFilters {
   /** Projects to include (company customer may own several). */
   projectIds?: string[];
-  /** Work item / case reference (e.g. CS0352584); substring match. */
-  workItemId?: string;
-  /** Engineer id to scope to a single user. */
-  engineerId?: string;
   /** Lifecycle states to include. */
   states?: TimeCardState[];
-  /** Inclusive date range (YYYY-MM-DD). */
+  /** Inclusive date range (YYYY-MM-DD), matched against `createdOn`. */
   from?: string;
   to?: string;
-}
-
-/** Aggregated figures for the reports / exceptions view. */
-export interface TimecardReports {
-  totalHours: number;
-  /** Hours flagged billable to the customer. */
-  billableHours: number;
-  /** Hours flagged non-billable. */
-  nonBillableHours: number;
-  /** Cards awaiting a decision (submitted). */
-  pendingApproval: number;
-  approved: number;
-  rejected: number;
-  /** Mean days between submission and decision, over decided cards. */
-  avgApprovalLagDays: number;
-  /** Share of cards that have moved past draft (submitted+), 0–1. */
-  submissionRate: number;
-  byCategory: { category: string; hours: number }[];
-  byUser: {
-    userId: string;
-    userName: string;
-    hours: number;
-    pending: number;
-    approved: number;
-  }[];
-  exceptions: {
-    id: string;
-    userName: string;
-    caseNumber: string;
-    kind: "overdue" | "rejected";
-    detail: string;
-  }[];
-  /** Audit of recently deleted cards (newest first). */
-  deletions: TimeCardDeletion[];
 }

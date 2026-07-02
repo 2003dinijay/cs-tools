@@ -15,17 +15,16 @@
 // under the License.
 
 //
-// React Query hooks for weekly time sheets, approvals, delegation and reports.
-// FE-first: backed by `timeCardStore`. Contract the BFF should expose later:
+// React Query hooks for weekly time sheets and approvals, backed by the real
+// csm-portal-backend endpoints:
 //
-//   POST  /time-sheets/search                 my weekly sheets
-//   POST  /time-sheets/{user}/{week}/submit    submit a week
-//   POST  /time-sheets/{user}/{week}/approve   approve remaining
-//   POST  /time-sheets/{user}/{week}/recall    recall approved
-//   PATCH /time-cards/{id}                      decide / recall / process / edit
-//   GET   /time-cards/approvals                 approval queue
-//   GET/PUT /time-cards/delegation             approver delegation
-//   GET   /time-cards/reports                   aggregates
+//   POST  /time-cards/search   my sheets / approval queue (client-grouped into weeks)
+//   PATCH /time-cards/{id}     approve / reject a card
+//
+// The backend has no "sheet" concept, no bulk (approve/reject/submit a whole
+// week) endpoint, no delegation, and no reports/aggregates endpoint — those
+// features from the earlier FE-first mock are not available here. Weekly
+// sheets are a pure client-side grouping of individual cards for display.
 //
 
 import {
@@ -36,279 +35,245 @@ import {
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query";
-import { ApiQueryKeys } from "@constants/apiConstants";
+import { ApiQueryKeys, BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { resolveUserInfo } from "@utils/userClaims";
 import { useGetUsersMe } from "@features/settings/api/useGetUsersMe";
+import { useBackendApi, type BackendApi } from "@api/backend/client";
 import type {
-  ApproverDelegation,
+  BeSearchTimeCardsPayload,
+  BeSearchTimeCardsResponse,
+  BeTimeCardState,
+  BeTimeCardView,
+  BeUpdateTimeCardPayload,
+  BeTimeCardMutationResponse,
+} from "@api/backend/types";
+import type {
   CsmTimeCard,
   CsmTimeSheet,
   TimeCardDecisionInput,
-  TimecardReports,
   TimeCardSearchFilters,
+  TimeSheetState,
 } from "@features/csm-timecards/types/timeCards";
-import {
-  activeDelegationFor,
-  approveSheet,
-  autoGenerateCards,
-  clearDelegation,
-  computeReports,
-  copyPreviousWeek,
-  decideTimeCard,
-  deleteCard,
-  ensureDemoCardsForUser,
-  listApprovalQueue,
-  listMyTimeSheets,
-  processCard,
-  recallCard,
-  recallSheet,
-  rejectSheet,
-  setDelegation,
-  submitSheet,
-  updateCard,
-} from "@features/csm-timecards/api/timeCardStore";
+import { weekEndOf, weekStartOf } from "@features/csm-timecards/utils/timeSheetWeek";
+import { roundHours } from "@features/csm-timecards/utils/timeCardTotals";
 
 /**
  * The signed-in engineer's stable identity, resolved from `GET /users/me`.
  * `id` is the entity-service UUID — the same stable identifier the platform
  * uses across all services. Display name is built from firstName + lastName
- * returned by the entity service. Both fall back to ID-token values while
- * the query is in flight.
+ * returned by the entity service, falling back to ID-token values while the
+ * query is in flight. `id` is `undefined` until a real identity resolves —
+ * never a synthetic placeholder — so callers must gate on it before running
+ * queries/mutations that key off it (a placeholder id would silently let
+ * "my cards" / "not my cards" filtering match nothing, or everything).
  */
-export function useCurrentEngineer(): { id: string; name: string } {
+export function useCurrentEngineer(): { id: string | undefined; name: string } {
   const { data: me } = useGetUsersMe();
   const info = resolveUserInfo(useIdTokenClaims());
   const displayName =
     [me?.firstName, me?.lastName].filter(Boolean).join(" ") || info.fullName;
-  return { id: me?.id ?? me?.email ?? info.email ?? "me", name: displayName };
+  return { id: me?.id ?? me?.email ?? info.email, name: displayName };
 }
 
-/** Invalidate every time-card/-sheet query so all views refresh after a write. */
+/** Invalidate every time-card query so all views refresh after a write. */
 export function invalidateTimecards(queryClient: QueryClient): void {
   for (const key of [
     ApiQueryKeys.TIME_CARDS_SEARCH,
     ApiQueryKeys.CASE_TIME_CARDS_SEARCH,
     ApiQueryKeys.TIME_SHEETS_SEARCH,
     ApiQueryKeys.TIME_CARD_APPROVAL_QUEUE,
-    ApiQueryKeys.TIME_CARD_REPORTS,
-    ApiQueryKeys.TIME_CARD_DELEGATION,
   ]) {
     void queryClient.invalidateQueries({ queryKey: [key] });
   }
 }
 
-/** The signed-in user's weekly time sheets, newest first. */
+/** Map the backend's `TimeCardView` to the portal's `CsmTimeCard`. */
+export function mapTimeCard(v: BeTimeCardView): CsmTimeCard {
+  return {
+    id: v.id,
+    caseId: v.case?.id ?? "",
+    caseNumber: v.case?.number || v.case?.name || "—",
+    projectId: v.project?.id ?? "",
+    projectName: v.project?.name ?? "—",
+    createdOn: v.createdOn,
+    userId: v.user?.id ?? "",
+    userName: v.user?.name ?? "—",
+    state: v.state,
+    billable: v.hasBillable,
+    totalHours: v.totalTime,
+    approvedById: v.approvedBy?.id,
+    approvedByName: v.approvedBy?.name,
+  };
+}
+
+/**
+ * Raw search against `POST /time-cards/search`, mapped to `CsmTimeCard[]`.
+ * The backend only supports `projectIds` / date range server-side — there is
+ * no `caseId` or `engineerId` filter, so case- and user-scoping happen
+ * client-side over the returned page (see {@link useCaseTimeCards},
+ * {@link useMyTimeSheets}, {@link useApprovalQueue} below). Fetches
+ * `BE_MAX_PAGE_LIMIT` cards (the backend rejects `limit` above that with a
+ * generic 400 despite the OpenAPI spec documenting up to 100 — confirmed
+ * live); a dataset larger than that isn't fully covered yet — this is a
+ * known limitation until search grows pagination support here.
+ *
+ * `filters.states` is deliberately filtered client-side, never sent as
+ * `filters.states` on the wire: confirmed live that the backend 500s
+ * ("Failed to search time cards.") when `states` is combined with a large
+ * `projectIds` array (reproduced: 2 or 10 project ids + `states` → 200; the
+ * full ~88-project default scope + `states` → 500; that same full scope
+ * *without* `states` → 200). Since {@link useApprovalQueue} always needs a
+ * "submitted" filter and now defaults to every visible project, sending
+ * `states` server-side would make the Approvals queue fail outright for any
+ * user with enough visible projects — worse than not filtering at all.
+ */
+export async function searchTimeCards(
+  api: BackendApi,
+  filters?: TimeCardSearchFilters,
+): Promise<CsmTimeCard[]> {
+  const payload: BeSearchTimeCardsPayload = {
+    filters: {
+      ...(filters?.projectIds?.length ? { projectIds: filters.projectIds } : {}),
+      ...(filters?.from ? { startDate: filters.from } : {}),
+      ...(filters?.to ? { endDate: filters.to } : {}),
+    },
+    pagination: { limit: BE_MAX_PAGE_LIMIT, offset: 0 },
+  };
+  const res = await api.post<BeSearchTimeCardsPayload, BeSearchTimeCardsResponse>(
+    "/time-cards/search",
+    payload,
+  );
+  const cards = (res.timeCards ?? []).map(mapTimeCard);
+  return filters?.states?.length
+    ? cards.filter((c) => (filters.states as BeTimeCardState[]).includes(c.state))
+    : cards;
+}
+
+/** Roll a week's cards up into a single display status. */
+function sheetStatus(cards: CsmTimeCard[]): TimeSheetState {
+  if (cards.some((c) => c.state === "rejected")) return "rejected";
+  if (cards.every((c) => c.state === "approved" || c.state === "processed")) {
+    return "approved";
+  }
+  return "submitted";
+}
+
+/** Group a flat list of cards into weekly sheets (Mon–Sun), newest first. */
+function groupIntoSheets(
+  cards: CsmTimeCard[],
+  userId: string,
+  userName: string,
+): CsmTimeSheet[] {
+  const byWeek = new Map<string, CsmTimeCard[]>();
+  for (const c of cards) {
+    const wk = weekStartOf(c.createdOn);
+    const bucket = byWeek.get(wk);
+    if (bucket) bucket.push(c);
+    else byWeek.set(wk, [c]);
+  }
+  const sheets: CsmTimeSheet[] = [];
+  for (const [weekStart, weekCards] of byWeek) {
+    weekCards.sort((a, b) => b.createdOn.localeCompare(a.createdOn));
+    sheets.push({
+      id: `${userId}:${weekStart}`,
+      userId,
+      userName,
+      weekStart,
+      weekEnd: weekEndOf(weekStart),
+      state: sheetStatus(weekCards),
+      cards: weekCards,
+      totalHours: roundHours(weekCards.reduce((sum, c) => sum + c.totalHours, 0)),
+    });
+  }
+  return sheets.sort((a, b) => b.weekStart.localeCompare(a.weekStart));
+}
+
+/**
+ * The signed-in user's own cards, grouped into weekly sheets, newest first.
+ * `filters.projectIds` must be non-empty — the backend requires it to return
+ * anything (see {@link searchTimeCards}) — so this stays disabled until the
+ * caller has resolved a real project scope (defaulted to every visible
+ * project when the user hasn't picked one — see `CsmTimeCardsPage.tsx`).
+ */
 export function useMyTimeSheets(
   filters?: TimeCardSearchFilters,
 ): UseQueryResult<CsmTimeSheet[], Error> {
+  const api = useBackendApi();
   const me = useCurrentEngineer();
   return useQuery<CsmTimeSheet[], Error>({
     queryKey: [ApiQueryKeys.TIME_SHEETS_SEARCH, "mine", me.id, filters],
     queryFn: async (): Promise<CsmTimeSheet[]> => {
-      ensureDemoCardsForUser(me.id, me.name);
-      return listMyTimeSheets(me.id, filters);
+      if (!me.id) return [];
+      const all = await searchTimeCards(api, filters);
+      return groupIntoSheets(
+        all.filter((c) => c.userId === me.id),
+        me.id,
+        me.name,
+      );
     },
+    enabled: !!me.id && !!filters?.projectIds?.length,
     staleTime: 5_000,
   });
 }
 
-/** Submitted sheets awaiting the signed-in approver/admin (excludes own). */
+/**
+ * Other engineers' sheets containing a card awaiting the signed-in
+ * approver's decision. There's no server-side "approval queue" endpoint or
+ * engineer filter, so this fetches submitted cards (scoped by `filters`) and
+ * excludes the signed-in user's own on the client. Like {@link useMyTimeSheets},
+ * this requires `filters.projectIds` to be non-empty to get anything back.
+ */
 export function useApprovalQueue(
   enabled: boolean,
   filters?: TimeCardSearchFilters,
 ): UseQueryResult<CsmTimeSheet[], Error> {
+  const api = useBackendApi();
   const me = useCurrentEngineer();
   return useQuery<CsmTimeSheet[], Error>({
     queryKey: [ApiQueryKeys.TIME_CARD_APPROVAL_QUEUE, me.id, filters],
-    queryFn: async (): Promise<CsmTimeSheet[]> => listApprovalQueue(me.id, filters),
-    enabled,
+    queryFn: async (): Promise<CsmTimeSheet[]> => {
+      if (!me.id) return [];
+      const submitted = await searchTimeCards(api, {
+        ...filters,
+        states: ["submitted"],
+      });
+      const others = submitted.filter((c) => c.userId !== me.id);
+      const byUser = new Map<string, CsmTimeCard[]>();
+      for (const c of others) {
+        const bucket = byUser.get(c.userId);
+        if (bucket) bucket.push(c);
+        else byUser.set(c.userId, [c]);
+      }
+      return [...byUser.entries()].flatMap(([userId, cards]) =>
+        groupIntoSheets(cards, userId, cards[0]?.userName ?? "—"),
+      );
+    },
+    enabled: enabled && !!me.id && !!filters?.projectIds?.length,
     staleTime: 5_000,
   });
 }
 
-/** Submit a user's week (their pending/rejected/recalled cards → submitted). */
-export function useSubmitSheet(): UseMutationResult<
-  void,
-  Error,
-  { userId: string; weekStart: string }
-> {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ userId, weekStart }) => submitSheet(userId, weekStart),
-    onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
-
-/** Copy last week's tasks into a target week as zero-hour pending cards. */
-export function useCopyPreviousWeek(): UseMutationResult<
-  number,
-  Error,
-  { weekStart: string }
-> {
-  const me = useCurrentEngineer();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ weekStart }) => copyPreviousWeek(me.id, weekStart),
-    onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
-
-/** Generate zero-hour pending cards from the user's assigned tasks (mock). */
-export function useAutoGenerate(): UseMutationResult<
-  number,
-  Error,
-  { weekStart: string }
-> {
-  const me = useCurrentEngineer();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ weekStart }) =>
-      autoGenerateCards(me.id, me.name, weekStart),
-    onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
-
-/** Approve every still-submitted card in a sheet. */
-export function useApproveSheet(): UseMutationResult<
-  void,
-  Error,
-  { userId: string; weekStart: string; comment?: string }
-> {
-  const me = useCurrentEngineer();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ userId, weekStart, comment }) =>
-      approveSheet(userId, weekStart, me.name, comment),
-    onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
-
-/** Reject every still-submitted card in a sheet. */
-export function useRejectSheet(): UseMutationResult<
-  void,
-  Error,
-  { userId: string; weekStart: string; comment?: string }
-> {
-  const me = useCurrentEngineer();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ userId, weekStart, comment }) =>
-      rejectSheet(userId, weekStart, me.name, comment),
-    onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
-
-/** Recall every approved card in a sheet. */
-export function useRecallSheet(): UseMutationResult<
-  void,
-  Error,
-  { userId: string; weekStart: string }
-> {
-  const me = useCurrentEngineer();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ userId, weekStart }) =>
-      recallSheet(userId, weekStart, me.name),
-    onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
-
-/** Approve or reject a single card (within a submitted sheet). */
+/** Approve or reject a single card. */
 export function useDecideCard(): UseMutationResult<
   CsmTimeCard,
   Error,
   TimeCardDecisionInput
 > {
-  const me = useCurrentEngineer();
+  const api = useBackendApi();
   const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (decision) => decideTimeCard(decision, me.name),
-    onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
-
-/** Recall a single approved card. */
-export function useRecallCard(): UseMutationResult<CsmTimeCard, Error, string> {
-  const me = useCurrentEngineer();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (cardId) => recallCard(cardId, me.name),
-    onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
-
-/** Mark an approved card as processed (admin). */
-export function useProcessCard(): UseMutationResult<CsmTimeCard, Error, string> {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (cardId) => processCard(cardId),
-    onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
-
-/** Edit an editable card's fields (owner or admin). */
-export function useUpdateCard(): UseMutationResult<
-  CsmTimeCard,
-  Error,
-  { cardId: string; patch: Parameters<typeof updateCard>[1] }
-> {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ cardId, patch }) => updateCard(cardId, patch),
-    onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
-
-/** Delete an editable card (owner or admin); records a deletion audit entry. */
-export function useDeleteCard(): UseMutationResult<void, Error, string> {
-  const me = useCurrentEngineer();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (cardId) => deleteCard(cardId, me.name),
-    onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
-
-/** The signed-in approver's active delegation, if any. */
-export function useDelegation(): UseQueryResult<
-  ApproverDelegation | null,
-  Error
-> {
-  const me = useCurrentEngineer();
-  return useQuery<ApproverDelegation | null, Error>({
-    queryKey: [ApiQueryKeys.TIME_CARD_DELEGATION, me.id],
-    queryFn: async () => activeDelegationFor(me.id) ?? null,
-    staleTime: 5_000,
-  });
-}
-
-/** Set or clear the signed-in approver's delegation. */
-export function useSetDelegation(): UseMutationResult<
-  void,
-  Error,
-  Omit<ApproverDelegation, "approverId"> | null
-> {
-  const me = useCurrentEngineer();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (input) => {
-      if (input === null) clearDelegation(me.id);
-      else setDelegation({ approverId: me.id, ...input });
+  return useMutation<CsmTimeCard, Error, TimeCardDecisionInput>({
+    mutationFn: async (decision): Promise<CsmTimeCard> => {
+      const payload: BeUpdateTimeCardPayload = {
+        state: decision.state,
+        ...(decision.leadComment ? { leadComment: decision.leadComment } : {}),
+      };
+      const res = await api.patch<BeUpdateTimeCardPayload, BeTimeCardMutationResponse>(
+        `/time-cards/${encodeURIComponent(decision.cardId)}`,
+        payload,
+      );
+      return mapTimeCard(res.timeCard);
     },
     onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
-
-/** Aggregated report figures across all time cards. */
-export function useTimecardReports(
-  enabled: boolean,
-  filter?: { from?: string; to?: string },
-): UseQueryResult<TimecardReports, Error> {
-  return useQuery<TimecardReports, Error>({
-    queryKey: [ApiQueryKeys.TIME_CARD_REPORTS, filter?.from, filter?.to],
-    queryFn: async () => computeReports(filter),
-    enabled,
-    staleTime: 5_000,
   });
 }

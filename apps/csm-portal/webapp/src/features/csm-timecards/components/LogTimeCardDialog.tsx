@@ -16,7 +16,6 @@
 
 import { useMemo, useState, type JSX, type KeyboardEvent } from "react";
 import {
-  Alert,
   Avatar,
   Box,
   Button,
@@ -39,7 +38,10 @@ import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { initialsOf, resolveUserInfo } from "@utils/userClaims";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
-import type { NormalizedUser } from "@features/csm-users/types/csmUsers";
+import {
+  INTERNAL_USER_ROLES,
+  type NormalizedUser,
+} from "@features/csm-users/types/csmUsers";
 import TimeCardStatusChip from "@features/csm-timecards/components/TimeCardStatusChip";
 import {
   ACTIVITY_BUCKETS,
@@ -47,9 +49,6 @@ import {
   DEFAULT_ISSUE_COMPLEXITY,
   DEFAULT_TIME_CARD_CATEGORY,
   ISSUE_COMPLEXITY_OPTIONS,
-  MOCK_APPROVERS,
-  TASK_TYPE_LABEL,
-  TASK_TYPES,
   TIME_CARD_CATEGORIES,
   WORK_LOG_MAX,
 } from "@features/csm-timecards/constants/timeCardConstants";
@@ -57,9 +56,7 @@ import type {
   ActivityBreakdown,
   ActivityKey,
   CreateTimeCardInput,
-  CsmTimeCard,
   IssueComplexity,
-  TaskType,
   TimeCardApprover,
   TimeCardCategory,
 } from "@features/csm-timecards/types/timeCards";
@@ -71,22 +68,14 @@ import {
 import { localTodayIso } from "@features/csm-timecards/utils/timeSheetWeek";
 
 interface LogTimeCardDialogProps {
-  /** Preset task id; omitted when logging from the standalone page. */
-  caseId?: string;
-  /** Preset task reference; when omitted the user types one (free text). */
-  caseNumber?: string;
-  /** Project of the parent case (passed from case detail; carried onto the card). */
-  projectId?: string;
-  projectName?: string;
-  /** Preset task type (case tab → "case", grid → the row's type). */
-  taskType?: TaskType;
-  /** Lock the date to a specific day (grid cell create). */
-  presetDate?: string;
-  /** When set, the dialog edits this card (prefilled) instead of creating one. */
-  editing?: CsmTimeCard;
-  /** Existing cards used to warn about a duplicate entry (same case + day). */
-  existingCards?: CsmTimeCard[];
-  /** True while the create/update mutation is in flight. */
+  /** The case the time was spent on — always known, this dialog only opens
+   * from a case's Time tracking tab (the backend requires a real case UUID,
+   * which only a case context can provide). */
+  caseId: string;
+  caseNumber: string;
+  projectId: string;
+  projectName: string;
+  /** True while the create mutation is in flight. */
   isSubmitting: boolean;
   onClose: () => void;
   onSubmit: (input: CreateTimeCardInput) => void;
@@ -151,55 +140,33 @@ function ActivityRow({
 }
 
 /**
- * Improved "Create Time Card" form. Mirrors the ServiceNow fields (date,
- * category, the five activity buckets, work-log comment, issue complexity,
- * approver) but adds a live running total, per-activity proportion bars, an
- * auto-filled engineer + Pending status, and inline validation. The task is
- * preset when opened from a case; on the standalone page the user types it.
+ * "Log time" form. Mirrors the ServiceNow fields (date, category, the five
+ * activity buckets, work-log comment, issue complexity, approver) with a live
+ * running total, per-activity proportion bars, and inline validation.
+ * Creating a card submits it immediately — the backend has no draft step, so
+ * there is no "Pending" status and no edit-after-create (see the module-level
+ * note in `types/timeCards.ts` on why edit isn't supported).
  */
 export default function LogTimeCardDialog({
   caseId,
   caseNumber,
   projectId,
   projectName,
-  taskType: taskTypeProp,
-  presetDate,
-  editing,
-  existingCards,
   isSubmitting,
   onClose,
   onSubmit,
 }: LogTimeCardDialogProps): JSX.Element {
   const me = resolveUserInfo(useIdTokenClaims());
-  const effectiveCaseNumber = caseNumber ?? editing?.caseNumber;
-  const effectiveCaseId = caseId ?? editing?.caseId;
-  const effectiveProjectId = projectId ?? editing?.projectId ?? "";
-  const effectiveProjectName = projectName ?? editing?.projectName ?? "";
-  const presetCase = !!effectiveCaseNumber;
 
-  const [taskType, setTaskType] = useState<TaskType>(
-    taskTypeProp ?? editing?.taskType ?? "case",
-  );
-  const [caseInput, setCaseInput] = useState(effectiveCaseNumber ?? "");
-  const [date, setDate] = useState(presetDate ?? editing?.date ?? localTodayIso());
-  const [category, setCategory] = useState<TimeCardCategory>(
-    editing?.category ?? DEFAULT_TIME_CARD_CATEGORY,
-  );
+  const [date, setDate] = useState(localTodayIso());
+  const [category, setCategory] = useState<TimeCardCategory>(DEFAULT_TIME_CARD_CATEGORY);
   const [issueComplexity, setIssueComplexity] = useState<IssueComplexity>(
-    editing?.issueComplexity ?? DEFAULT_ISSUE_COMPLEXITY,
+    DEFAULT_ISSUE_COMPLEXITY,
   );
-  const [billable, setBillable] = useState<boolean>(
-    editing?.billable ?? DEFAULT_BILLABLE,
-  );
-  const [breakdown, setBreakdown] = useState<ActivityBreakdown>(
-    editing ? { ...editing.breakdown } : emptyBreakdown(),
-  );
-  const [workLogComment, setWorkLogComment] = useState(
-    editing?.workLogComment ?? "",
-  );
-  const [approver, setApprover] = useState<TimeCardApprover | null>(
-    editing?.approvers[0] ?? null,
-  );
+  const [billable, setBillable] = useState<boolean>(DEFAULT_BILLABLE);
+  const [breakdown, setBreakdown] = useState<ActivityBreakdown>(emptyBreakdown());
+  const [workLogComment, setWorkLogComment] = useState("");
+  const [approver, setApprover] = useState<TimeCardApprover | null>(null);
   const [approverInput, setApproverInput] = useState("");
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const touch = (field: string): void =>
@@ -213,57 +180,51 @@ export default function LogTimeCardDialog({
     workLogComment,
     approverId: approver?.id,
   });
-  const caseError =
-    !presetCase && !caseInput.trim() ? "Enter a case number." : undefined;
-  const isValid = Object.keys(errors).length === 0 && !caseError;
-
-  // Soft warning (not a blocker): an entry already exists for this case on this
-  // day — the engineer probably means to edit it rather than create a second one.
-  const resolvedCaseNumber = (effectiveCaseNumber ?? caseInput).trim();
-  const duplicateCard =
-    resolvedCaseNumber && date
-      ? (existingCards ?? []).find(
-          (c) =>
-            c.id !== editing?.id &&
-            c.caseNumber === resolvedCaseNumber &&
-            c.date === date,
-        )
-      : undefined;
+  const isValid = Object.keys(errors).length === 0;
 
   const search = useDebouncedValue(approverInput.trim(), 300);
   const { data } = useSearchUsers({
-    ...(search.length > 0 && { searchQuery: search }),
+    filters: {
+      ...(search.length > 0 && { searchQuery: search }),
+      // Approvers must be real internal accounts — the backend requires a
+      // real UUID in `approverIds`, so there is no offline/mock fallback
+      // (a fabricated id would always be rejected on submit).
+      roles: INTERNAL_USER_ROLES,
+      active: true,
+    },
     pagination: { limit: 6, offset: 0 },
   });
-  // Live results when the backend answers; otherwise a static mock list so the
-  // approver can still be chosen offline (FE-first).
   const hasApproverInput = approverInput.trim().length > 0;
+  // An approver needs an id (always present) and is expected to carry an
+  // email; `userType` is postgres-only (absent on the ServiceNow source, the
+  // live data here), so only gate on it when present — the `roles`/`active`
+  // filters above already restrict server-side. Mirrors AssignEngineerDialog.
   const candidates: ApproverOption[] = useMemo(() => {
     if (!hasApproverInput) return [];
-    const live = (data?.users ?? [])
-      .filter((u) => u.userType === "internal" && !!u.email)
+    return (data?.users ?? [])
+      .filter(
+        (u) =>
+          !!u.email &&
+          u.active !== false &&
+          (u.userType ? u.userType === "internal" : true),
+      )
       .map((u) => ({ id: u.id, name: fullName(u), email: u.email }));
-    if (live.length > 0) return live;
-    const q = approverInput.trim().toLowerCase();
-    return MOCK_APPROVERS.filter((a) => a.name.toLowerCase().includes(q));
-  }, [data, approverInput, hasApproverInput]);
+  }, [data, hasApproverInput]);
 
   const setActivity = (key: ActivityKey, next: number): void =>
     setBreakdown((prev) => ({ ...prev, [key]: next }));
 
-  const ALL_FIELDS = ["case", "date", "hours", "workLogComment", "approver"];
+  const ALL_FIELDS = ["date", "hours", "workLogComment", "approver"];
   const handleSubmit = (): void => {
     if (!isValid || !approver) {
       setTouched(new Set(ALL_FIELDS));
       return;
     }
-    const resolvedNumber = (effectiveCaseNumber ?? caseInput).trim();
     onSubmit({
-      taskType,
-      caseId: effectiveCaseId ?? resolvedNumber,
-      caseNumber: resolvedNumber,
-      projectId: effectiveProjectId,
-      projectName: effectiveProjectName,
+      caseId,
+      caseNumber,
+      projectId,
+      projectName,
       date,
       category,
       breakdown,
@@ -288,10 +249,7 @@ export default function LogTimeCardDialog({
 
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>
-        {editing ? "Edit time card" : "Log time"}
-        {effectiveCaseNumber ? ` · ${effectiveCaseNumber}` : ""}
-      </DialogTitle>
+      <DialogTitle>Log time · {caseNumber}</DialogTitle>
       <DialogContent dividers>
         <Box
           onKeyDown={handleKeyDown}
@@ -315,49 +273,13 @@ export default function LogTimeCardDialog({
               </Avatar>
               <Typography variant="body2">{me.fullName}</Typography>
             </Box>
-            <TimeCardStatusChip state="pending" />
+            <TimeCardStatusChip state="submitted" />
           </Box>
 
-          {/* Task (preset → read-only; standalone → type + reference) */}
-          {presetCase ? (
-            <Typography variant="body2" color="text.secondary">
-              Task: {TASK_TYPE_LABEL[taskType]} · {effectiveCaseNumber}
-              {effectiveProjectName ? ` · ${effectiveProjectName}` : ""}
-            </Typography>
-          ) : (
-            <Box
-              sx={{
-                display: "grid",
-                gap: 1.5,
-                gridTemplateColumns: { xs: "1fr", sm: "180px 1fr" },
-              }}
-            >
-              <TextField
-                select
-                label="Task type"
-                size="small"
-                value={taskType}
-                onChange={(e) => setTaskType(e.target.value as TaskType)}
-              >
-                {TASK_TYPES.map((t) => (
-                  <MenuItem key={t.key} value={t.key}>
-                    {t.label}
-                  </MenuItem>
-                ))}
-              </TextField>
-              <TextField
-                label="Task reference"
-                size="small"
-                required
-                placeholder="e.g. CS0352584"
-                value={caseInput}
-                onChange={(e) => setCaseInput(e.target.value)}
-                onBlur={() => touch("case")}
-                error={isTouched("case") && !!caseError}
-                helperText={isTouched("case") ? caseError : undefined}
-              />
-            </Box>
-          )}
+          <Typography variant="body2" color="text.secondary">
+            Task: {caseNumber}
+            {projectName ? ` · ${projectName}` : ""}
+          </Typography>
 
           {/* Date + category */}
           <Box
@@ -372,7 +294,6 @@ export default function LogTimeCardDialog({
               label="Date"
               size="small"
               required
-              disabled={!!presetDate}
               value={date}
               onChange={(e) => setDate(e.target.value)}
               onBlur={() => touch("date")}
@@ -394,14 +315,6 @@ export default function LogTimeCardDialog({
               ))}
             </TextField>
           </Box>
-
-          {duplicateCard && (
-            <Alert severity="warning" sx={{ py: 0 }}>
-              You already logged {duplicateCard.totalHours.toFixed(2)}h on{" "}
-              {resolvedCaseNumber} for this day. Consider editing that entry instead of
-              creating a duplicate.
-            </Alert>
-          )}
 
           <Divider />
 
@@ -426,6 +339,12 @@ export default function LogTimeCardDialog({
               {errors.hours}
             </Typography>
           )}
+          <Typography variant="caption" color="text.secondary">
+            Each activity is logged in whole-hour increments — quarter-hours
+            help you balance the total below, but round to the nearest hour
+            on submit (a small amount split across several activities may
+            round down to 0h for those activities).
+          </Typography>
           <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>
             {ACTIVITY_BUCKETS.map((b) => (
               <ActivityRow
@@ -555,6 +474,7 @@ export default function LogTimeCardDialog({
                     candidates.map((u) => (
                       <Button
                         key={u.id}
+                        data-testid="approver-candidate"
                         variant="text"
                         color="inherit"
                         onClick={() => {
@@ -605,7 +525,7 @@ export default function LogTimeCardDialog({
           onClick={handleSubmit}
           disabled={isSubmitting || (touched.size > 0 && !isValid)}
         >
-          {editing ? "Save changes" : "Submit for review"}
+          Submit for review
         </Button>
       </DialogActions>
     </Dialog>

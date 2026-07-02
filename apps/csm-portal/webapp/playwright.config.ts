@@ -16,16 +16,39 @@
 
 import { defineConfig, devices } from "@playwright/test";
 
+// Base URL of the locally-served app. Override with E2E_BASE_URL to point at a
+// deployed environment (the `webServer` block below is skipped in that case by
+// setting E2E_NO_WEBSERVER=1).
+const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:3001";
+
 export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 30_000,
-  fullyParallel: true,
+  // Specs run against a real staging backend (no mocking), all under the same
+  // captured account -- concurrent workers cause real network contention and
+  // flaky timeouts (observed directly: a state-filter assertion failed under
+  // 4 workers, passed cleanly serial). One worker trades speed for determinism.
+  fullyParallel: false,
+  workers: 1,
+  forbidOnly: !!process.env.CI,
+  retries: 0,
   outputDir: "test-results",
+  reporter: [["html", { open: "never" }], ["list"]],
   use: {
-    baseURL: "http://localhost:3001",
+    baseURL: BASE_URL,
     trace: "retain-on-failure",
     video: "retain-on-failure",
   },
+  // Boot the local dev server for the run (reused if already running). Skipped
+  // when targeting a remote E2E_BASE_URL.
+  webServer: process.env.E2E_NO_WEBSERVER
+    ? undefined
+    : {
+        command: "pnpm run dev",
+        url: BASE_URL,
+        reuseExistingServer: true,
+        timeout: 120_000,
+      },
   projects: [
     {
       name: "chromium",
@@ -33,4 +56,3 @@ export default defineConfig({
     },
   ],
 });
-

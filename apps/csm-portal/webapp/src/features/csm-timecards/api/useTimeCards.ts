@@ -15,13 +15,12 @@
 // under the License.
 
 //
-// Card-level React Query hooks (a case's cards, create, decide). FE-first:
-// backed by `timeCardStore`. Weekly sheets/approvals/reports live in
-// `useTimeSheets`. API contract the BFF should expose:
+// Card-level React Query hooks (a case's cards, create, decide), backed by
+// the real csm-portal-backend endpoints:
 //
-//   POST   /cases/{id}/time-cards            create
-//   POST   /cases/{id}/time-cards/search     list for a case
-//   PATCH  /time-cards/{cardId}              accept/reject { state, leadComment }
+//   POST  /time-cards/search   list for a case (client-filtered, see below)
+//   POST  /time-cards          create (already `submitted` — no draft step)
+//   PATCH /time-cards/{id}     accept/reject { state, leadComment }
 //
 
 import {
@@ -32,67 +31,93 @@ import {
   type UseQueryResult,
 } from "@tanstack/react-query";
 import { ApiQueryKeys } from "@constants/apiConstants";
+import { useBackendApi } from "@api/backend/client";
+import type {
+  BeCreateTimeCardPayload,
+  BeTimeCardMutationResponse,
+} from "@api/backend/types";
 import type {
   CreateTimeCardInput,
   CsmTimeCard,
-  TimeCardDecisionInput,
 } from "@features/csm-timecards/types/timeCards";
 import {
-  createTimeCard,
-  decideTimeCard,
-  listCaseTimeCards,
-} from "@features/csm-timecards/api/timeCardStore";
-import {
   invalidateTimecards,
-  useCurrentEngineer,
+  mapTimeCard,
+  searchTimeCards,
+  useDecideCard,
 } from "@features/csm-timecards/api/useTimeSheets";
 
-/** Time cards logged on a single case, newest first. */
+/**
+ * Time cards logged on a single case, newest first. There is no `caseId`
+ * search filter on the backend — `POST /time-cards/search` also requires a
+ * non-empty `filters.projectIds` to return anything at all (confirmed live;
+ * an unscoped search always returns `total: 0` despite the OpenAPI spec
+ * documenting `projectIds` as optional) — so this scopes the search to the
+ * case's own project and filters the case's cards out client-side.
+ */
 export function useCaseTimeCards(
   caseId: string | undefined,
+  projectId: string | undefined,
 ): UseQueryResult<CsmTimeCard[], Error> {
+  const api = useBackendApi();
   return useQuery<CsmTimeCard[], Error>({
-    queryKey: [ApiQueryKeys.CASE_TIME_CARDS_SEARCH, caseId ?? ""],
+    queryKey: [ApiQueryKeys.CASE_TIME_CARDS_SEARCH, caseId ?? "", projectId ?? ""],
     queryFn: async (): Promise<CsmTimeCard[]> => {
-      if (!caseId) return [];
-      // TODO(backend): api.post(`/cases/${caseId}/time-cards/search`, payload)
-      return listCaseTimeCards(caseId);
+      if (!caseId || !projectId) return [];
+      const all = await searchTimeCards(api, { projectIds: [projectId] });
+      return all.filter((c) => c.caseId === caseId);
     },
-    enabled: !!caseId,
+    enabled: !!caseId && !!projectId,
     staleTime: 5_000,
   });
 }
 
-/** Create a time card on the signed-in engineer's behalf. */
+/**
+ * Create a time card on the signed-in engineer's behalf. The card is created
+ * already `submitted` — the backend has no draft/pending step.
+ */
 export function usePostTimeCard(): UseMutationResult<
   CsmTimeCard,
   Error,
   CreateTimeCardInput
 > {
-  const me = useCurrentEngineer();
+  const api = useBackendApi();
   const queryClient = useQueryClient();
   return useMutation<CsmTimeCard, Error, CreateTimeCardInput>({
     mutationFn: async (input): Promise<CsmTimeCard> => {
-      // TODO(backend): api.post(`/cases/${input.caseId}/time-cards`, payload)
-      return createTimeCard(input, me);
+      const payload: BeCreateTimeCardPayload = {
+        caseId: input.caseId,
+        projectId: input.projectId,
+        date: input.date,
+        approverIds: [input.approver.id],
+        isBillable: input.billable,
+        issueComplexity: input.issueComplexity,
+        workLogComment: input.workLogComment,
+        // The backend's hour fields are integers (confirmed live: a 0.5
+        // value is rejected with 400) even though the form logs quarter-hour
+        // increments — round each bucket to the nearest whole hour here, at
+        // the API boundary, so the FE keeps its finer-grained display.
+        timeAnalyzing: Math.round(input.breakdown.analysisDebugging),
+        timeSettingUp: Math.round(input.breakdown.settingUp),
+        timeReproducingDebugging: Math.round(input.breakdown.reproduce),
+        timeProvidingSolution: Math.round(input.breakdown.providingSolution),
+        timePatching: Math.round(input.breakdown.answering),
+      };
+      const res = await api.post<BeCreateTimeCardPayload, BeTimeCardMutationResponse>(
+        "/time-cards",
+        payload,
+      );
+      return mapTimeCard(res.timeCard);
     },
     onSuccess: () => invalidateTimecards(queryClient),
   });
 }
 
-/** Accept or reject a single time card (approver/admin). */
-export function useDecideTimeCard(): UseMutationResult<
-  CsmTimeCard,
-  Error,
-  TimeCardDecisionInput
-> {
-  const me = useCurrentEngineer();
-  const queryClient = useQueryClient();
-  return useMutation<CsmTimeCard, Error, TimeCardDecisionInput>({
-    mutationFn: async (decision): Promise<CsmTimeCard> => {
-      // TODO(backend): api.patch(`/time-cards/${decision.cardId}`, { state, leadComment })
-      return decideTimeCard(decision, me.name);
-    },
-    onSuccess: () => invalidateTimecards(queryClient),
-  });
-}
+/**
+ * Accept or reject a single time card (approver/admin). An alias of
+ * {@link useDecideCard} — the case-panel and the Approvals-queue decide
+ * flows were identical mutations with two independently drifting
+ * `onSuccess` invalidation lists; this keeps a single implementation so
+ * they can't drift again.
+ */
+export const useDecideTimeCard = useDecideCard;

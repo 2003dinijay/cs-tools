@@ -55,6 +55,7 @@ import {
 } from "@features/csm-cases/api/useFindMyOngoingCases";
 import type { BeCaseState } from "@api/backend/types";
 import { beStateFromUi } from "@api/backend/mappers";
+import { BackendApiError } from "@api/backend/client";
 import {
   useGetCsmCaseComments,
   usePostCsmCaseComment,
@@ -1253,6 +1254,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
         <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: "1fr" }}>
           <CaseTimeCardsPanel
             caseId={c.id}
+            projectId={c.projectId}
             onLogTime={() => setLogTimeOpen(true)}
             readOnly={isClosed}
           />
@@ -1294,7 +1296,16 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   sticky: false,
                 });
               },
-              onError: () => showError("Could not log time."),
+              onError: (err) => {
+                // Surface the backend's own message on 4xx (e.g. an invalid
+                // approver or hour value) instead of a generic string, same
+                // as the decide-flow in CsmTimeCardsPage.tsx.
+                const msg =
+                  err instanceof BackendApiError && err.status < 500 && err.message
+                    ? err.message
+                    : "Could not log time.";
+                showError(msg, err);
+              },
             })
           }
         />

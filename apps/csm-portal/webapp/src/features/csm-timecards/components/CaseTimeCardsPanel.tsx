@@ -27,16 +27,17 @@ import { Clock, Plus } from "@wso2/oxygen-ui-icons-react";
 import RelativeTime from "@components/RelativeTime";
 import { useCaseTimeCards, useDecideTimeCard } from "@features/csm-timecards/api/useTimeCards";
 import { useIsTeamLead } from "@features/csm-timecards/hooks/useIsTeamLead";
-import {
-  billableLabel,
-  breakdownSummary,
-} from "@features/csm-timecards/constants/timeCardConstants";
+import { billableLabel } from "@features/csm-timecards/constants/timeCardConstants";
+import { BackendApiError } from "@api/backend/client";
+import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import TimeCardStatusChip from "@features/csm-timecards/components/TimeCardStatusChip";
 import TimeCardReviewDialog from "@features/csm-timecards/components/TimeCardReviewDialog";
 import type { CsmTimeCard } from "@features/csm-timecards/types/timeCards";
 
 interface CaseTimeCardsPanelProps {
   caseId: string;
+  /** The case's project — required to scope `/time-cards/search` (see useCaseTimeCards). */
+  projectId: string;
   /** Opens the log-time dialog (owned by the page so the action bar can trigger it). */
   onLogTime: () => void;
   /**
@@ -47,19 +48,21 @@ interface CaseTimeCardsPanelProps {
 }
 
 /**
- * The body of a case's "Time tracking" tab: the time cards logged on this case,
- * with a running total and per-entry status. A team lead can review (accept or
- * reject) any pending entry inline — unless the case is closed, in which case
- * the panel is read-only.
+ * The body of a case's "Time tracking" tab: the time cards logged on this
+ * case, with a running total and per-entry status. A team lead can review
+ * (accept or reject) any submitted entry inline — unless the case is closed,
+ * in which case the panel is read-only.
  */
 export default function CaseTimeCardsPanel({
   caseId,
+  projectId,
   onLogTime,
   readOnly = false,
 }: CaseTimeCardsPanelProps): JSX.Element {
-  const { data, isLoading, isError } = useCaseTimeCards(caseId);
+  const { data, isLoading, isError } = useCaseTimeCards(caseId, projectId);
   const isTeamLead = useIsTeamLead();
   const decide = useDecideTimeCard();
+  const { showError } = useErrorBanner();
   const [reviewCard, setReviewCard] = useState<CsmTimeCard | null>(null);
 
   const cards = useMemo(() => data ?? [], [data]);
@@ -158,7 +161,7 @@ export default function CaseTimeCardsPanel({
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   <Typography variant="body2">{c.totalHours.toFixed(2)}h</Typography>
                   <TimeCardStatusChip state={c.state} />
-                  {isTeamLead && !readOnly && c.state === "pending" && (
+                  {isTeamLead && !readOnly && c.state === "submitted" && (
                     <Button
                       size="small"
                       variant="outlined"
@@ -170,14 +173,9 @@ export default function CaseTimeCardsPanel({
                 </Box>
               </Box>
               <Typography variant="caption" color="text.secondary">
-                {billableLabel(c.billable)} · {breakdownSummary(c.breakdown)} ·{" "}
-                <RelativeTime iso={c.submittedAt} />
+                {billableLabel(c.billable)} · <RelativeTime iso={c.createdOn} />
+                {c.approvedByName && ` · Decided by ${c.approvedByName}`}
               </Typography>
-              {c.leadComment && (
-                <Typography variant="caption" color="text.secondary">
-                  Lead: {c.leadComment}
-                </Typography>
-              )}
             </Box>
           ))}
         </Box>
@@ -189,7 +187,20 @@ export default function CaseTimeCardsPanel({
           isDeciding={decide.isPending}
           onClose={() => setReviewCard(null)}
           onDecide={(decision) =>
-            decide.mutate(decision, { onSuccess: () => setReviewCard(null) })
+            decide.mutate(decision, {
+              onSuccess: () => setReviewCard(null),
+              onError: (err) => {
+                // The backend 403s when the signed-in user isn't authorized
+                // to decide this specific card — surface its own message
+                // rather than failing silently (see CsmTimeCardsPage.tsx for
+                // the same pattern and the confirmed-live evidence).
+                const msg =
+                  err instanceof BackendApiError && err.status < 500 && err.message
+                    ? err.message
+                    : "Could not submit your decision. Please try again.";
+                showError(msg, err);
+              },
+            })
           }
         />
       )}
