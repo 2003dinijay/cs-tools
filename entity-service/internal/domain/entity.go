@@ -1530,6 +1530,38 @@ type ITService struct {
 	ServiceClassification *ServiceClassification `json:"serviceClassification"`
 }
 
+// ServiceOfferingServiceRef is the parent service reference within a service offering.
+type ServiceOfferingServiceRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// ServiceOffering is a single service offering entry returned in a search response.
+type ServiceOffering struct {
+	ID      string                     `json:"id"`
+	Name    string                     `json:"name"`
+	Service *ServiceOfferingServiceRef `json:"service"`
+}
+
+// SearchServiceOfferingsFilters holds optional filter criteria for service offering searches.
+type SearchServiceOfferingsFilters struct {
+	ServiceIDs []string `json:"serviceIds,omitempty"`
+}
+
+// SearchServiceOfferingsRequest is the input for POST /service-offerings/search.
+type SearchServiceOfferingsRequest struct {
+	Filters    *SearchServiceOfferingsFilters `json:"filters,omitempty"`
+	Pagination Pagination                     `json:"pagination"`
+}
+
+// SearchServiceOfferingsResponse is the paginated result of a service offerings search.
+type SearchServiceOfferingsResponse struct {
+	ServiceOfferings []ServiceOffering `json:"serviceOfferings"`
+	Total            int               `json:"total"`
+	Offset           int               `json:"offset"`
+	Limit            int               `json:"limit"`
+}
+
 // SearchITServicesRequest is the input for POST /services/search.
 type SearchITServicesRequest struct {
 	Pagination Pagination `json:"pagination"`

@@ -1231,6 +1231,43 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /service-offerings/search:
+    post:
+      summary: Search service offerings (ServiceNow data source only).
+      operationId: searchServiceOfferings
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchServiceOfferingsRequest'
+      responses:
+        "200":
+          description: Service offerings matching the filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchServiceOfferingsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+
   /services/search:
     post:
       summary: Search CMDB IT services (ServiceNow data source only).
@@ -3893,6 +3930,58 @@ components:
               type: string
             updatedBy:
               type: string
+
+    SearchServiceOfferingsFilters:
+      type: object
+      properties:
+        serviceIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    SearchServiceOfferingsRequest:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/SearchServiceOfferingsFilters'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    ServiceOfferingServiceRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+
+    ServiceOffering:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        service:
+          $ref: '#/components/schemas/ServiceOfferingServiceRef'
+          nullable: true
+
+    SearchServiceOfferingsResponse:
+      type: object
+      properties:
+        serviceOfferings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceOffering'
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
 
     SearchITServicesRequest:
       type: object
