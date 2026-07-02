@@ -112,7 +112,7 @@ export default function TimeSheetCard({
           return (
             <Box
               key={c.id}
-              data-testid={`timecard-row-${c.caseNumber}`}
+              data-testid={`timecard-row-${c.id}`}
               sx={{
                 display: "flex",
                 alignItems: "center",

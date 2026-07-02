@@ -46,23 +46,26 @@ export class TimeCardsPage {
   }
 
   /**
-   * The most recent row for a card, via the stable `data-testid` TimeSheetCard
-   * sets on each row (`timecard-row-<caseNumber>`). DOM-heuristic scoping
-   * (hasText + last(), or "nearest ancestor with a button") is fragile here:
-   * once a card has no remaining owner actions (e.g. right after submit, when
-   * the sheet's own rolled-up status chip also reads the same state as the
-   * card), those heuristics over-match well past the intended row.
+   * The most recent row for a card. TimeSheetCard sets `data-testid`
+   * per-row keyed by the card's own id (`timecard-row-<id>`) — unique per
+   * row, since an engineer can log multiple cards against the same case in
+   * one week. Tests only know the case *number* though (ids are
+   * server-generated), so this filters the testid-tagged rows by their
+   * visible case-number text instead of matching the testid directly.
    *
-   * The testid is keyed by case number, not card id — and since there's no
-   * delete endpoint, repeated runs against the same case accumulate multiple
-   * cards (and thus multiple rows) under the same case number. `.first()`
-   * reliably lands on the newest one: sheets render newest-week-first and
-   * cards within a sheet render newest-createdOn-first (see `groupIntoSheets`
-   * in `useTimeSheets.ts`), so the first DOM match for a case number is
-   * always its most recently created card.
+   * There's no delete endpoint, so repeated runs against the same case
+   * accumulate multiple cards (and thus multiple matching rows) under the
+   * same case number. `.first()` reliably lands on the newest one: sheets
+   * render newest-week-first and cards within a sheet render
+   * newest-createdOn-first (see `groupIntoSheets` in `useTimeSheets.ts`), so
+   * the first DOM match for a case number is always its most recently
+   * created card.
    */
   cardRow(caseNumber: string): Locator {
-    return this.page.getByTestId(`timecard-row-${caseNumber}`).first();
+    return this.page
+      .locator('[data-testid^="timecard-row-"]')
+      .filter({ hasText: caseNumber })
+      .first();
   }
 
   /** Any element showing this case number (e.g. to assert presence/absence). */

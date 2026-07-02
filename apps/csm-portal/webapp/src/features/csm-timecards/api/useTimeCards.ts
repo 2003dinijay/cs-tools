@@ -35,16 +35,16 @@ import { useBackendApi } from "@api/backend/client";
 import type {
   BeCreateTimeCardPayload,
   BeTimeCardMutationResponse,
-  BeUpdateTimeCardPayload,
 } from "@api/backend/types";
 import type {
   CreateTimeCardInput,
   CsmTimeCard,
-  TimeCardDecisionInput,
 } from "@features/csm-timecards/types/timeCards";
 import {
+  invalidateTimecards,
   mapTimeCard,
   searchTimeCards,
+  useDecideCard,
 } from "@features/csm-timecards/api/useTimeSheets";
 
 /**
@@ -109,46 +109,15 @@ export function usePostTimeCard(): UseMutationResult<
       );
       return mapTimeCard(res.timeCard);
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.TIME_CARDS_SEARCH] });
-      void queryClient.invalidateQueries({
-        queryKey: [ApiQueryKeys.CASE_TIME_CARDS_SEARCH],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: [ApiQueryKeys.TIME_SHEETS_SEARCH],
-      });
-    },
+    onSuccess: () => invalidateTimecards(queryClient),
   });
 }
 
-/** Accept or reject a single time card (approver/admin). */
-export function useDecideTimeCard(): UseMutationResult<
-  CsmTimeCard,
-  Error,
-  TimeCardDecisionInput
-> {
-  const api = useBackendApi();
-  const queryClient = useQueryClient();
-  return useMutation<CsmTimeCard, Error, TimeCardDecisionInput>({
-    mutationFn: async (decision): Promise<CsmTimeCard> => {
-      const payload: BeUpdateTimeCardPayload = {
-        state: decision.state,
-        ...(decision.leadComment ? { leadComment: decision.leadComment } : {}),
-      };
-      const res = await api.patch<BeUpdateTimeCardPayload, BeTimeCardMutationResponse>(
-        `/time-cards/${encodeURIComponent(decision.cardId)}`,
-        payload,
-      );
-      return mapTimeCard(res.timeCard);
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.TIME_CARDS_SEARCH] });
-      void queryClient.invalidateQueries({
-        queryKey: [ApiQueryKeys.CASE_TIME_CARDS_SEARCH],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: [ApiQueryKeys.TIME_CARD_APPROVAL_QUEUE],
-      });
-    },
-  });
-}
+/**
+ * Accept or reject a single time card (approver/admin). An alias of
+ * {@link useDecideCard} — the case-panel and the Approvals-queue decide
+ * flows were identical mutations with two independently drifting
+ * `onSuccess` invalidation lists; this keeps a single implementation so
+ * they can't drift again.
+ */
+export const useDecideTimeCard = useDecideCard;

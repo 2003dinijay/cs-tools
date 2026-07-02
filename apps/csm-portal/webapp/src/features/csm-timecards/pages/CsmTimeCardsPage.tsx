@@ -216,6 +216,14 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 sx={{ width: 180 }}
               />
             }
+            engineerChip={
+              filterEngineer.trim()
+                ? {
+                    label: `Engineer: ${filterEngineer.trim()}`,
+                    onDelete: () => setFilterEngineer(""),
+                  }
+                : undefined
+            }
           />
 
           {queue.isLoading || projects.isLoading ? (
@@ -237,7 +245,10 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 return (
                   <Empty
                     text={
-                      q
+                      // Only blame the engineer filter when it's the one that
+                      // excluded everything — if it matched fine and the
+                      // work-item filter emptied the result, say that instead.
+                      q && byEngineer.length === 0
                         ? `No engineers match "${filterEngineer}".`
                         : "No time cards match the current filters."
                     }
@@ -301,6 +312,7 @@ function FilterBar({
   setFilterState,
   onClear,
   engineerSlot,
+  engineerChip,
 }: {
   projects: BeProject[];
   filterProject: string;
@@ -311,8 +323,11 @@ function FilterBar({
   setFilterState: (v: TimeCardState | "") => void;
   onClear: () => void;
   engineerSlot?: JSX.Element;
+  /** Active-chip for the Engineer filter — only the Approvals tab has one. */
+  engineerChip?: { label: string; onDelete: () => void };
 }): JSX.Element {
   const activeChips: { key: string; label: string; onDelete: () => void }[] = [];
+  if (engineerChip) activeChips.push({ key: "engineer", ...engineerChip });
   if (filterProject) {
     const name = projects.find((p) => p.id === filterProject)?.name ?? filterProject;
     activeChips.push({
