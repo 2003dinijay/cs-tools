@@ -15,76 +15,99 @@
 // under the License.
 
 //
-// "My time sheets" tab — the signed-in user's own weekly cards. Backed by the
-// FE-first store, which seeds one pending (CS0353001) and one approved
-// (CS0352900) card per user. The store resets on full page load, so each test
-// starts from the same seeded state.
+// "My time sheets" tab, backed by the real POST /time-cards/search
+// (client-grouped into weeks). The backend requires `filters.projectIds` to
+// be non-empty to return anything (confirmed live) — useMyTimeSheets now
+// defaults to every project the signed-in user can see when no explicit
+// project filter is picked, so a just-created card is expected to appear
+// here without the user touching the project filter.
 //
 
-import { test, expect, withRole } from "../../fixtures/test";
+import { test, expect, withRole, currentUserSearchQuery } from "../../fixtures/test";
 import { TimeCardsPage } from "../../pages/TimeCardsPage";
-import { MY_SEED } from "../../utils/selectors";
+import { LogTimeDialog } from "../../pages/LogTimeDialog";
+import { e2eWorkLogComment } from "../../utils/selectors";
 
 withRole(test, "approver");
 
+/** Logs a real, uniquely-labelled time card from whichever case is first in
+ * the list and returns its case number, or null if there's nothing to open. */
+async function logTimeOnFirstCase(
+  page: import("@playwright/test").Page,
+  label: string,
+): Promise<string | null> {
+  const approverQuery = await currentUserSearchQuery(page);
+  await page.goto("/cases");
+  const firstCase = page
+    .locator('a[href^="/cases/"]:not([href="/cases/new"])')
+    .first();
+  const hasCase = await firstCase
+    .waitFor({ state: "visible", timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!hasCase) return null;
+  await firstCase.click();
+  await expect(page).toHaveURL(/\/cases\/[^/]+$/);
+
+  await page.getByRole("tab", { name: "Time tracking" }).click();
+  const logTime = page.getByRole("button", { name: "Log time" });
+  if (!(await logTime.isVisible().catch(() => false))) return null;
+
+  await logTime.click();
+  const dialog = new LogTimeDialog(page);
+  await dialog.waitForOpen();
+  const caseNumber = await dialog.caseNumber();
+  await dialog.fillAndSubmit({
+    hours: 1,
+    workLogComment: e2eWorkLogComment(label),
+    approverQuery,
+  });
+  return caseNumber;
+}
+
 test.describe("time cards — my time sheets", () => {
-  test("shows the seeded pending and approved cards", async ({ page }) => {
+  test("page loads: tab, filters, and an empty/loaded state render", async ({ page }) => {
     const tc = new TimeCardsPage(page);
     await tc.goto();
-    await expect(tc.cardText(MY_SEED.pending.caseNumber)).toBeVisible();
-    await expect(tc.cardText(MY_SEED.approved.caseNumber)).toBeVisible();
+    await expect(tc.myTab()).toBeVisible();
+    await expect(page.getByLabel("Project")).toBeVisible();
+    await expect(page.getByLabel("Work item")).toBeVisible();
+    await expect(page.getByLabel("State")).toBeVisible();
+    await expect(page.getByText("Could not load your time sheets.")).toHaveCount(0);
   });
 
-  test("submitting the pending card moves it to Submitted", async ({ page }) => {
+  test("a newly logged card appears grouped in My time sheets", async ({ page }) => {
+    const caseNumber = await logTimeOnFirstCase(page, "my-sheets display");
+    test.skip(!caseNumber, "No open case available to log time against.");
+
     const tc = new TimeCardsPage(page);
     await tc.goto();
-    await tc.cardButton(MY_SEED.pending.caseNumber, "Submit").click();
-    // The card stays in the sheet; its status chip flips to Submitted and the
-    // owner can no longer Submit it.
-    await expect(
-      tc.cardRow(MY_SEED.pending.caseNumber).getByText("Submitted", { exact: true }),
-    ).toBeVisible();
-    await expect(
-      tc.cardButton(MY_SEED.pending.caseNumber, "Submit"),
-    ).toHaveCount(0);
+    await expect(tc.cardRow(caseNumber!)).toBeVisible({ timeout: 15_000 });
   });
 
-  test("editing the pending card opens and saves the dialog", async ({ page }) => {
+  test("state and work-item filters narrow to the matching card", async ({ page }) => {
+    // Creates a real card (network round trip against live staging) *and*
+    // drives three sequential filter interactions afterward — comfortably
+    // exceeds the config default of 30s.
+    test.setTimeout(60_000);
+    const caseNumber = await logTimeOnFirstCase(page, "my-sheets filters");
+    test.skip(!caseNumber, "No open case available to log time against.");
+
     const tc = new TimeCardsPage(page);
     await tc.goto();
-    await tc.cardButton(MY_SEED.pending.caseNumber, "Edit").click();
+    await expect(tc.cardRow(caseNumber!)).toBeVisible({ timeout: 15_000 });
 
-    const dialog = page.getByRole("dialog");
-    await expect(
-      dialog.getByRole("heading", { name: new RegExp(`Edit time card`) }),
-    ).toBeVisible();
-    await dialog
-      .getByLabel("Work log comment")
-      .fill("Updated by e2e: refined the breakdown.");
-    await dialog.getByRole("button", { name: "Save changes" }).click();
-    await expect(dialog).toBeHidden();
-  });
+    // Work item filter narrows to the matching card.
+    await page.getByLabel("Work item").fill(caseNumber!);
+    await expect(tc.cardRow(caseNumber!)).toBeVisible();
 
-  test("deleting the pending card removes it", async ({ page }) => {
-    const tc = new TimeCardsPage(page);
-    await tc.goto();
-    await tc.cardButton(MY_SEED.pending.caseNumber, "Delete").click();
+    // A work item that can't match anything hides it.
+    await page.getByLabel("Work item").fill("no-such-case-number-zzz");
+    await expect(tc.cardText(caseNumber!)).toHaveCount(0);
+    await page.getByLabel("Work item").fill("");
 
-    const dialog = page.getByRole("dialog");
-    await expect(
-      dialog.getByRole("heading", { name: "Delete time card?" }),
-    ).toBeVisible();
-    await dialog.getByRole("button", { name: "Delete", exact: true }).click();
-
-    await expect(dialog).toBeHidden();
-    await expect(tc.cardText(MY_SEED.pending.caseNumber)).toHaveCount(0);
-  });
-
-  test("state filter narrows to the selected state", async ({ page }) => {
-    const tc = new TimeCardsPage(page);
-    await tc.goto();
-    await tc.filterState(MY_SEED.approved.state); // "Approved"
-    await expect(tc.cardText(MY_SEED.approved.caseNumber)).toBeVisible();
-    await expect(tc.cardText(MY_SEED.pending.caseNumber)).toHaveCount(0);
+    // State filter: the card was just created, so it's "submitted".
+    await tc.filterState("Submitted");
+    await expect(tc.cardRow(caseNumber!)).toBeVisible();
   });
 });

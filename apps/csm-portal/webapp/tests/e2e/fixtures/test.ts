@@ -23,7 +23,7 @@
 // skipped (not failed) when its role's session bundle hasn't been captured.
 //
 
-import { test as base, expect } from "@playwright/test";
+import { test as base, expect, type Browser, type BrowserContext, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -41,6 +41,46 @@ export function sessionPath(role: TimecardRole): string {
   return path.join(process.cwd(), "tests", "e2e", "storageState", `${role}.json`);
 }
 
+export function hasSession(role: TimecardRole): boolean {
+  return fs.existsSync(sessionPath(role));
+}
+
+function readBundle(role: TimecardRole): SessionBundle {
+  return JSON.parse(fs.readFileSync(sessionPath(role), "utf8")) as SessionBundle;
+}
+
+async function applySession(context: BrowserContext, role: TimecardRole): Promise<void> {
+  const bundle = readBundle(role);
+  await context.addInitScript((b: SessionBundle) => {
+    try {
+      for (const [k, v] of Object.entries(b.localStorage ?? {})) {
+        window.localStorage.setItem(k, v);
+      }
+      for (const [k, v] of Object.entries(b.sessionStorage ?? {})) {
+        window.sessionStorage.setItem(k, v);
+      }
+    } catch {
+      // Storage not accessible on this document yet; the next navigation
+      // re-runs this init script, so it's safe to ignore.
+    }
+  }, bundle);
+}
+
+/**
+ * Opens a second, independent browser context authenticated as `role` — for
+ * specs that need two identities in the same test (e.g. one account creates
+ * a card, a different account decides it). Caller must close the returned
+ * context. Requires that role's session to have been captured.
+ */
+export async function openContextAs(
+  browser: Browser,
+  role: TimecardRole,
+): Promise<BrowserContext> {
+  const context = await browser.newContext();
+  await applySession(context, role);
+  return context;
+}
+
 /**
  * Configure a test file to run authenticated as `role`. Replays the captured
  * localStorage + sessionStorage before each page loads (so the Asgardeo SDK
@@ -52,27 +92,31 @@ export function sessionPath(role: TimecardRole): string {
  */
 export function withRole(t: typeof base, role: TimecardRole): void {
   t.beforeEach(async ({ context }) => {
-    const p = sessionPath(role);
     t.skip(
-      !fs.existsSync(p),
+      !hasSession(role),
       `No captured session for '${role}'. See tests/e2e/auth/README.md to create ` +
         `tests/e2e/storageState/${role}.json.`,
     );
-    const bundle = JSON.parse(fs.readFileSync(p, "utf8")) as SessionBundle;
-    await context.addInitScript((b: SessionBundle) => {
-      try {
-        for (const [k, v] of Object.entries(b.localStorage ?? {})) {
-          window.localStorage.setItem(k, v);
-        }
-        for (const [k, v] of Object.entries(b.sessionStorage ?? {})) {
-          window.sessionStorage.setItem(k, v);
-        }
-      } catch {
-        // Storage not accessible on this document yet; the next navigation
-        // re-runs this init script, so it's safe to ignore.
-      }
-    }, bundle);
+    await applySession(context, role);
   });
+}
+
+/**
+ * A search string virtually guaranteed to match the signed-in user's own
+ * account (their email's local part) — used as the approver-search query in
+ * specs. A generic single-letter query can match only empty-email service
+ * accounts in a small staging tenant (confirmed); querying by "myself" always
+ * finds a real, email-having candidate regardless of who captured the
+ * session or what else exists in the directory. Nothing in the approver
+ * picker excludes the current user from the results.
+ */
+export async function currentUserSearchQuery(page: Page): Promise<string> {
+  const [meResp] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes("/users/me")),
+    page.goto("/dashboard"),
+  ]);
+  const me = (await meResp.json()) as { email?: string };
+  return me.email?.split("@")[0] ?? "a";
 }
 
 export const test = base;

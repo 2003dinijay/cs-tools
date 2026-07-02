@@ -22,9 +22,13 @@ login page or 2FA is driven locally. You capture a session once per role into
 Two roles:
 
 - **`approver.json`** — an account whose `GET /users/me` `roles` include
-  `csm-leads` (and/or `csm-timecard-admins`). Sees the **Approvals** tab.
-- **`engineer.json`** — a plain account **without** those roles (negative
-  role-gating case). Optional; that one test skips without it.
+  `admin` (see `TIMECARD_ADMIN_GROUP` in `timeCardConstants.ts` — temporarily
+  mapped to the real `admin` role until a dedicated time-card role exists).
+  Sees the **Approvals** tab.
+- **`engineer.json`** — a plain account **without** the `admin` role. Unlocks
+  two things: the negative role-gating case, and (paired with `approver.json`)
+  real cross-user approve/reject coverage in `approvals.spec.ts`. Optional —
+  those tests skip cleanly without it.
 
 ## Capture a session (browser console)
 

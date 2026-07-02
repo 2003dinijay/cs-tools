@@ -46,15 +46,23 @@ export class TimeCardsPage {
   }
 
   /**
-   * The row for one card, via the stable `data-testid` TimeSheetCard sets on
-   * each row (`timecard-row-<caseNumber>`). DOM-heuristic scoping (hasText +
-   * last(), or "nearest ancestor with a button") is fragile here: once a card
-   * has no remaining owner actions (e.g. right after submit, when the sheet's
-   * own rolled-up status chip also reads the same state as the card), those
-   * heuristics over-match well past the intended row.
+   * The most recent row for a card, via the stable `data-testid` TimeSheetCard
+   * sets on each row (`timecard-row-<caseNumber>`). DOM-heuristic scoping
+   * (hasText + last(), or "nearest ancestor with a button") is fragile here:
+   * once a card has no remaining owner actions (e.g. right after submit, when
+   * the sheet's own rolled-up status chip also reads the same state as the
+   * card), those heuristics over-match well past the intended row.
+   *
+   * The testid is keyed by case number, not card id — and since there's no
+   * delete endpoint, repeated runs against the same case accumulate multiple
+   * cards (and thus multiple rows) under the same case number. `.first()`
+   * reliably lands on the newest one: sheets render newest-week-first and
+   * cards within a sheet render newest-createdOn-first (see `groupIntoSheets`
+   * in `useTimeSheets.ts`), so the first DOM match for a case number is
+   * always its most recently created card.
    */
   cardRow(caseNumber: string): Locator {
-    return this.page.getByTestId(`timecard-row-${caseNumber}`);
+    return this.page.getByTestId(`timecard-row-${caseNumber}`).first();
   }
 
   /** Any element showing this case number (e.g. to assert presence/absence). */

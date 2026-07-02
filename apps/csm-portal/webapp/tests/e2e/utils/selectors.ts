@@ -15,25 +15,20 @@
 // under the License.
 
 //
-// Stable anchors for the FE-first time-card store's seeded demo data
-// (features/csm-timecards/api/timeCardStore.ts). Card ids are random and
-// dates/weeks are relative to "now", so specs must key off these stable case
-// numbers / engineer names / states — never ids or absolute dates.
+// The time-card feature is wired to the real csm-portal-backend — there is no
+// seeded mock data, and no delete endpoint, so anything a spec creates via
+// `POST /time-cards` becomes a permanent record in staging. Every card an E2E
+// spec creates MUST carry E2E_TAG in its work-log comment so it's easy to
+// find/identify later, and specs must never assume any pre-existing card.
 //
 
-/** Cards seeded for the *signed-in* user, shown on the "My time sheets" tab. */
-export const MY_SEED = {
-  /** Pending card — has Edit / Delete / Submit actions. */
-  pending: { caseNumber: "CS0353001", state: "Pending" },
-  /** Approved card — no owner actions. */
-  approved: { caseNumber: "CS0352900", state: "Approved" },
-} as const;
+/** Prefix every E2E-created work-log comment with this, followed by a
+ * timestamp, so entries are identifiable and never collide across runs. */
+export const E2E_TAG = "[E2E]";
 
-/** Other engineers' sheets seeded in the approver "Approvals" queue. */
-export const QUEUE_SEED = {
-  sajith: { name: "Sajith Ekanayaka", submitted: "CS0352584" },
-  nimal: { name: "Nimal Perera", submitted: "CS0349881" },
-} as const;
+export function e2eWorkLogComment(label: string): string {
+  return `${E2E_TAG} ${label} — ${new Date().toISOString()}`;
+}
 
 /** Page-level accessible names used across the time-cards UI. */
 export const TIMECARDS = {
