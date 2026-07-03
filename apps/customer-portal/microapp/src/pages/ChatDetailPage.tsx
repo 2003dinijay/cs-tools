@@ -176,6 +176,7 @@ export default function ChatDetailPage() {
           value={comment}
           placeholder="Type your message"
           submitOnEnter={false}
+          multiline
           loading={mutation.isPending}
           disabled={!projectId}
           onChange={setComment}

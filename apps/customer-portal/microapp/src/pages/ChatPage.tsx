@@ -288,6 +288,7 @@ export default function ChatPage() {
         value={comment}
         placeholder="Type your message"
         submitOnEnter={false}
+        multiline
         onChange={setComment}
         onSend={handleSend}
         topSlot={
