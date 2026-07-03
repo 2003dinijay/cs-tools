@@ -21,10 +21,11 @@
  */
 
 /**
- * When true, every page/menu item flagged `wip` (see `csmNavItems.ts`) is hidden
- * from the sidebar and quick-nav, and its routes redirect to the dashboard. Lets
- * a deployment ship with unfinished sections switched off without a rebuild.
- * Defaults to false (nothing hidden) when the key is absent.
+ * When true, every page/menu item flagged `wip` (see `csmNavItems.ts`) is shown
+ * in the sidebar but disabled — greyed out, non-clickable, with a
+ * "work in progress" tooltip — and its routes redirect to the dashboard. Lets a
+ * deployment advertise upcoming sections without exposing unfinished pages.
+ * Defaults to false (everything enabled) when the key is absent.
  */
-export const HIDE_WIP_FEATURES: boolean =
-  window.config?.CSM_PORTAL_HIDE_WIP_FEATURES ?? false;
+export const DISABLE_WIP_FEATURES: boolean =
+  window.config?.CSM_PORTAL_DISABLE_WIP_FEATURES ?? false;

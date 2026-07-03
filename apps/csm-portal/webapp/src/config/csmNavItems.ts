@@ -26,7 +26,7 @@ import {
   Shield,
 } from "@wso2/oxygen-ui-icons-react";
 import type { ComponentType } from "react";
-import { HIDE_WIP_FEATURES } from "@config/featureFlagsConfig";
+import { DISABLE_WIP_FEATURES } from "@config/featureFlagsConfig";
 
 export interface CsmNavItem {
   id: string;
@@ -34,9 +34,11 @@ export interface CsmNavItem {
   path: string;
   icon: ComponentType<{ size?: number | string }>;
   /**
-   * Marks a still-in-progress section. When the `CSM_PORTAL_HIDE_WIP_FEATURES`
-   * runtime flag is on, these are hidden from the nav and their routes redirect
-   * to the dashboard (see `isHiddenWipPath` and `App.tsx`).
+   * Marks a still-in-progress section. When the `CSM_PORTAL_DISABLE_WIP_FEATURES`
+   * runtime flag is on, these stay visible in the sidebar but are disabled (with
+   * a "work in progress" tooltip), dropped from the quick-nav palette, and their
+   * routes redirect to the dashboard (see `isWipDisabled`, `navigableNavItems`,
+   * `isDisabledWipPath`, and `App.tsx`).
    */
   wip?: boolean;
 }
@@ -47,8 +49,8 @@ export interface CsmNavItem {
  * derivation — so a new page only has to be added here once.
  *
  * Dashboard, Support, Updates and Time cards are the shipped sections; the rest
- * are flagged `wip` so a deployment can hide them via
- * `CSM_PORTAL_HIDE_WIP_FEATURES` until they are ready.
+ * are flagged `wip` so a deployment can disable them via
+ * `CSM_PORTAL_DISABLE_WIP_FEATURES` until they are ready.
  */
 export const CSM_NAV_ITEMS: CsmNavItem[] = [
   { id: "dashboard", label: "Dashboard", path: "/dashboard", icon: ChartColumn },
@@ -62,13 +64,21 @@ export const CSM_NAV_ITEMS: CsmNavItem[] = [
   { id: "admin", label: "Settings", path: "/admin", icon: Settings, wip: true },
 ];
 
+/** True when `item` is a WIP section the current config disables. */
+export function isWipDisabled(item: CsmNavItem): boolean {
+  return DISABLE_WIP_FEATURES && item.wip === true;
+}
+
 /**
- * Nav items to render, honouring the WIP hide flag. Callers that display the
- * nav (sidebar, quick-nav) use this; title/kind derivation keeps using the full
- * {@link CSM_NAV_ITEMS} so a directly-navigated page still resolves its title.
+ * Nav items that can actually be navigated to — the full list minus any WIP
+ * section the current config disables. Used by the quick-nav palette so it only
+ * offers reachable destinations. The sidebar still renders the full
+ * {@link CSM_NAV_ITEMS} (disabling WIP items in place), and title/kind
+ * derivation keeps using the full list so a directly-navigated page still
+ * resolves its title.
  */
-export function visibleNavItems(): CsmNavItem[] {
-  return HIDE_WIP_FEATURES
+export function navigableNavItems(): CsmNavItem[] {
+  return DISABLE_WIP_FEATURES
     ? CSM_NAV_ITEMS.filter((item) => !item.wip)
     : CSM_NAV_ITEMS;
 }
@@ -81,10 +91,10 @@ export function navItemForPath(pathname: string): CsmNavItem | undefined {
 }
 
 /**
- * True when `pathname` belongs to a WIP section that the current config hides.
- * Used to redirect direct/deep links to hidden sections back to the dashboard.
+ * True when `pathname` belongs to a WIP section the current config disables.
+ * Used to redirect direct/deep links to disabled sections back to the dashboard.
  */
-export function isHiddenWipPath(pathname: string): boolean {
-  if (!HIDE_WIP_FEATURES) return false;
+export function isDisabledWipPath(pathname: string): boolean {
+  if (!DISABLE_WIP_FEATURES) return false;
   return navItemForPath(pathname)?.wip === true;
 }

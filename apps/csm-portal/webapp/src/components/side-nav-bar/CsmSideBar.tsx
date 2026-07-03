@@ -14,10 +14,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Link, Sidebar, Typography } from "@wso2/oxygen-ui";
+import { Box, Link, Sidebar, Tooltip, Typography } from "@wso2/oxygen-ui";
 import { type JSX } from "react";
 import { Link as NavigateLink, useLocation } from "react-router";
-import { navItemForPath, visibleNavItems } from "@config/csmNavItems";
+import {
+  CSM_NAV_ITEMS,
+  isWipDisabled,
+  navItemForPath,
+} from "@config/csmNavItems";
+
+const WIP_TOOLTIP = "This feature is still a work in progress";
 
 const COMPANY_NAME = "WSO2 LLC";
 const TERMS_OF_SERVICE_URL = "https://wso2.com/terms-of-use/";
@@ -54,14 +60,8 @@ export default function CsmSideBar({
     >
       <Sidebar.Nav>
         <Sidebar.Category>
-          {visibleNavItems().map((item) => (
-            <Link
-              key={item.id}
-              component={NavigateLink}
-              to={item.path}
-              color="inherit"
-              underline="none"
-            >
+          {CSM_NAV_ITEMS.map((item) => {
+            const itemContent = (
               <Sidebar.Item id={item.id}>
                 <Sidebar.ItemIcon>
                   <item.icon size={20} />
@@ -71,8 +71,41 @@ export default function CsmSideBar({
                     as "[object Object]". */}
                 <Sidebar.ItemLabel>{item.label}</Sidebar.ItemLabel>
               </Sidebar.Item>
-            </Link>
-          ))}
+            );
+
+            // WIP sections stay visible but disabled: no navigating Link, dimmed
+            // and non-clickable (pointer events blocked on the inner box so no
+            // click reaches Oxygen's select handler), with a "work in progress"
+            // tooltip on the outer span (which still receives hover). Their
+            // routes also redirect to the dashboard (see App.tsx).
+            if (isWipDisabled(item)) {
+              return (
+                <Tooltip key={item.id} title={WIP_TOOLTIP} placement="right">
+                  <Box
+                    component="span"
+                    aria-disabled
+                    sx={{ display: "block", cursor: "not-allowed" }}
+                  >
+                    <Box sx={{ opacity: 0.45, pointerEvents: "none" }}>
+                      {itemContent}
+                    </Box>
+                  </Box>
+                </Tooltip>
+              );
+            }
+
+            return (
+              <Link
+                key={item.id}
+                component={NavigateLink}
+                to={item.path}
+                color="inherit"
+                underline="none"
+              >
+                {itemContent}
+              </Link>
+            );
+          })}
         </Sidebar.Category>
       </Sidebar.Nav>
 

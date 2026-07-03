@@ -17,7 +17,7 @@
 import { type JSX, lazy } from "react";
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "react-router";
 import AuthGuard from "@layouts/AuthGuard";
-import { isHiddenWipPath } from "@config/csmNavItems";
+import { isDisabledWipPath } from "@config/csmNavItems";
 import {
   POST_LOGIN_REDIRECT_KEY,
   PostLoginRedirectConsumer,
@@ -112,14 +112,15 @@ function RootLanding(): JSX.Element | null {
 }
 
 /**
- * Layout guard for WIP sections. When `CSM_PORTAL_HIDE_WIP_FEATURES` is on, a
- * direct or pinned link to a hidden WIP path (e.g. `/operations`, `/customers`)
- * redirects to the dashboard instead of rendering the unfinished page; the same
- * flag also strips these from the nav. Renders the matched route otherwise.
+ * Layout guard for WIP sections. When `CSM_PORTAL_DISABLE_WIP_FEATURES` is on, a
+ * direct or pinned link to a disabled WIP path (e.g. `/operations`,
+ * `/customers`) redirects to the dashboard instead of rendering the unfinished
+ * page; the same flag disables these items in the nav. Renders the matched
+ * route otherwise.
  */
 function WipRouteGuard(): JSX.Element {
   const { pathname } = useLocation();
-  if (isHiddenWipPath(pathname)) return <Navigate to="/dashboard" replace />;
+  if (isDisabledWipPath(pathname)) return <Navigate to="/dashboard" replace />;
   return <Outlet />;
 }
 
