@@ -123,7 +123,7 @@ export default function CaseTimeCardsPanel({
 
       <Divider sx={{ mb: 1 }} />
 
-      {data?.truncated && (
+      {!isError && data?.truncated && (
         <TimeCardTruncatedNotice hint="Some entries on this case may not be shown." />
       )}
 
