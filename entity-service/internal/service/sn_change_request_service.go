@@ -460,57 +460,6 @@ var snCRCategoryIDMap = map[domain.ChangeRequestCategory]string{
 	domain.ChangeRequestCategoryCloudComputing:       "cloud computing",
 }
 
-var validChangeRequestTypes = map[domain.ChangeRequestType]struct{}{
-	domain.ChangeRequestTypeStandard:           {},
-	domain.ChangeRequestTypeNormal:             {},
-	domain.ChangeRequestTypeEmergency:          {},
-	domain.ChangeRequestTypeModel:              {},
-	domain.ChangeRequestTypeSiteReliabilityOps: {},
-	domain.ChangeRequestTypeAzure:              {},
-}
-
-var validChangeRequestRisks = map[domain.ChangeRequestRisk]struct{}{
-	domain.ChangeRequestRiskHigh:     {},
-	domain.ChangeRequestRiskModerate: {},
-	domain.ChangeRequestRiskLow:      {},
-}
-
-var validChangeRequestPriorities = map[domain.ChangeRequestPriority]struct{}{
-	domain.ChangeRequestPriorityCritical: {},
-	domain.ChangeRequestPriorityHigh:     {},
-	domain.ChangeRequestPriorityModerate: {},
-	domain.ChangeRequestPriorityLow:      {},
-}
-
-var validChangeRequestCategories = map[domain.ChangeRequestCategory]struct{}{
-	domain.ChangeRequestCategoryHardware:             {},
-	domain.ChangeRequestCategorySoftware:             {},
-	domain.ChangeRequestCategoryService:              {},
-	domain.ChangeRequestCategorySystemSoftware:       {},
-	domain.ChangeRequestCategoryApplicationsSoftware: {},
-	domain.ChangeRequestCategoryNetwork:              {},
-	domain.ChangeRequestCategoryTelecom:              {},
-	domain.ChangeRequestCategoryDocumentation:        {},
-	domain.ChangeRequestCategoryOther:                {},
-	domain.ChangeRequestCategoryRegularReleaseCloud:  {},
-	domain.ChangeRequestCategoryHotfixReleaseCloud:   {},
-	domain.ChangeRequestCategoryDevOps:               {},
-	domain.ChangeRequestCategoryCloudComputing:       {},
-}
-
-var validChangeRequestCreateStates = map[domain.ChangeRequestState]struct{}{
-	domain.ChangeRequestStateNew:              {},
-	domain.ChangeRequestStateAssess:           {},
-	domain.ChangeRequestStateAuthorize:        {},
-	domain.ChangeRequestStateCustomerApproval: {},
-	domain.ChangeRequestStateScheduled:        {},
-	domain.ChangeRequestStateImplement:        {},
-	domain.ChangeRequestStateReview:           {},
-	domain.ChangeRequestStateCustomerReview:   {},
-	domain.ChangeRequestStateRollback:         {},
-	domain.ChangeRequestStateClosed:           {},
-	domain.ChangeRequestStateCanceled:         {},
-}
 
 func strPtr(s string) *string { return &s }
 
@@ -520,27 +469,27 @@ func (s *snChangeRequestService) CreateChangeRequest(ctx context.Context, req do
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: "subject is required"}
 	}
 	if req.Category != nil {
-		if _, ok := validChangeRequestCategories[*req.Category]; !ok {
+		if _, ok := snCRCategoryIDMap[*req.Category]; !ok {
 			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid category %q", *req.Category)}
 		}
 	}
 	if req.Type != nil {
-		if _, ok := validChangeRequestTypes[*req.Type]; !ok {
+		if _, ok := snCRCreateTypeIDMap[*req.Type]; !ok {
 			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid type %q", *req.Type)}
 		}
 	}
 	if req.State != nil {
-		if _, ok := validChangeRequestCreateStates[*req.State]; !ok {
+		if _, ok := snCRCreateStateIDMap[*req.State]; !ok {
 			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid state %q", *req.State)}
 		}
 	}
 	if req.Risk != nil {
-		if _, ok := validChangeRequestRisks[*req.Risk]; !ok {
+		if _, ok := snCRRiskIDMap[*req.Risk]; !ok {
 			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid risk %q", *req.Risk)}
 		}
 	}
 	if req.Priority != nil {
-		if _, ok := validChangeRequestPriorities[*req.Priority]; !ok {
+		if _, ok := snCRPriorityIDMap[*req.Priority]; !ok {
 			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid priority %q", *req.Priority)}
 		}
 	}
