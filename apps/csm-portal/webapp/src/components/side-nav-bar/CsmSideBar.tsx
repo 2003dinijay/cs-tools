@@ -23,7 +23,9 @@ import {
   navItemForPath,
 } from "@config/csmNavItems";
 
-const WIP_TOOLTIP = "This feature is still a work in progress";
+/** Tooltip for a disabled WIP item. Includes the label so the collapsed rail
+ *  (which hides the label) still says which feature it is. */
+const wipTooltip = (label: string): string => `${label} (work in progress)`;
 
 const COMPANY_NAME = "WSO2 LLC";
 const TERMS_OF_SERVICE_URL = "https://wso2.com/terms-of-use/";
@@ -80,7 +82,11 @@ export default function CsmSideBar({
             // routes also redirect to the dashboard (see App.tsx).
             if (isWipDisabled(item)) {
               return (
-                <Tooltip key={item.id} title={WIP_TOOLTIP} placement="right">
+                <Tooltip
+                  key={item.id}
+                  title={wipTooltip(item.label)}
+                  placement="right"
+                >
                   <Box
                     component="span"
                     aria-disabled
