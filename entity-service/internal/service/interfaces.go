@@ -273,6 +273,15 @@ type ITServiceService interface {
 	SearchITServices(ctx context.Context, req domain.SearchITServicesRequest) (domain.SearchITServicesResponse, error)
 }
 
+// ConversationService defines the operations available on conversations.
+// All methods require the ServiceNow data source; there is no Postgres fallback.
+type ConversationService interface {
+	// GetConversationMessages returns a paginated list of messages for the conversation
+	// identified by req.ConversationID. An UnauthorizedError is returned when
+	// x-user-id-token is absent.
+	GetConversationMessages(ctx context.Context, req domain.GetConversationMessagesRequest) (domain.GetConversationMessagesResponse, error)
+}
+
 // ProductVulnerabilityService defines the operations available on product vulnerabilities.
 // All methods require the ServiceNow data source; there is no Postgres fallback.
 type ProductVulnerabilityService interface {

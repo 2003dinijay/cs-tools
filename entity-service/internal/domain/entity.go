@@ -1079,6 +1079,35 @@ type SearchCaseCommentsResponse struct {
 	HasMore  bool          `json:"hasMore"`
 }
 
+// ConversationMessage represents a single message within a conversation thread.
+type ConversationMessage struct {
+	ID                 string    `json:"id"`
+	ConversationID     string    `json:"conversationId"`
+	Content            string    `json:"content"`
+	Type               string    `json:"type"`
+	CreatedOn          time.Time `json:"createdOn"`
+	CreatedBy          string    `json:"createdBy"`
+	CreatedByFirstName string    `json:"createdByFirstName"`
+	CreatedByLastName  string    `json:"createdByLastName"`
+	CreatedByFullName  string    `json:"createdByFullName"`
+}
+
+// GetConversationMessagesRequest is the input for GET /conversations/{id}/messages.
+// ConversationID is populated from the URL path parameter.
+type GetConversationMessagesRequest struct {
+	ConversationID string
+	Pagination     Pagination
+}
+
+// GetConversationMessagesResponse is the paginated result of a conversation messages query.
+type GetConversationMessagesResponse struct {
+	Comments []ConversationMessage `json:"comments"`
+	Total    int                   `json:"total"`
+	Limit    int                   `json:"limit"`
+	Offset   int                   `json:"offset"`
+	HasMore  bool                  `json:"hasMore"`
+}
+
 // CaseGithubIssueReason classifies why a GitHub issue is being filed from a case.
 type CaseGithubIssueReason string
 
