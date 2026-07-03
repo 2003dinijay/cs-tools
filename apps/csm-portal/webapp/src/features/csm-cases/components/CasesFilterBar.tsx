@@ -15,11 +15,9 @@
 // under the License.
 
 import {
-  Autocomplete,
   Box,
   Button,
   Checkbox,
-  Chip,
   Dialog,
   DialogActions,
   DialogContent,
@@ -80,6 +78,7 @@ import {
   CASE_TYPE_LABEL,
 } from "@features/csm-cases/utils/caseType";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
+import AsyncAssigneeMultiSelect from "@features/csm-cases/components/AsyncAssigneeMultiSelect";
 
 /** Sentinel used inside `assignees` to mean "the current user". */
 export const ASSIGNEE_ME_TOKEN = "@me";
@@ -242,107 +241,6 @@ function MultiSelectField<T extends string>({
   );
 }
 
-interface SearchableMultiSelectProps {
-  id: string;
-  label: string;
-  placeholder?: string;
-  values: string[];
-  options: string[];
-  /** Optional renderer for option labels (e.g. the @me sentinel → "Me"). */
-  formatOption?: (value: string) => string;
-  /** Optional secondary line shown beneath each option (e.g. email). */
-  getOptionSecondary?: (value: string) => string | undefined;
-  /** Optional filter against synthetic text (e.g. include email in the query). */
-  getOptionSearchText?: (value: string) => string;
-  onChange: (next: string[]) => void;
-  disabled?: boolean;
-}
-
-/**
- * Multi-select autocomplete. Users type to filter the option list and
- * select multiple. Picked values render as removable chips inside the field.
- * Internally a thin wrapper over MUI Autocomplete so we keep oxygen-ui
- * theming via the re-exported components.
- */
-function SearchableMultiSelect({
-  id,
-  label,
-  placeholder,
-  values,
-  options,
-  formatOption,
-  getOptionSecondary,
-  getOptionSearchText,
-  onChange,
-  disabled,
-}: SearchableMultiSelectProps): JSX.Element {
-  const format = formatOption ?? ((v: string) => v);
-  const searchText = getOptionSearchText ?? format;
-  return (
-    <Autocomplete
-      multiple
-      size="small"
-      disabled={disabled}
-      id={id}
-      options={options}
-      value={values}
-      onChange={(_event, next) => onChange(next as string[])}
-      disableCloseOnSelect
-      getOptionLabel={(opt) => format(opt as string)}
-      isOptionEqualToValue={(opt, val) => opt === val}
-      filterOptions={(opts, state) => {
-        const q = state.inputValue.trim().toLowerCase();
-        if (!q) return opts;
-        return opts.filter((o) => searchText(o as string).toLowerCase().includes(q));
-      }}
-      renderTags={(value, getTagProps) =>
-        value.map((option, index) => {
-          const { key, ...tagProps } = getTagProps({ index });
-          return (
-            <Chip
-              key={key}
-              size="small"
-              label={format(option as string)}
-              {...tagProps}
-            />
-          );
-        })
-      }
-      renderOption={(props, option, { selected }) => {
-        const { key, ...liProps } = props as React.HTMLAttributes<HTMLLIElement> & {
-          key: string;
-        };
-        const primary = format(option as string);
-        const secondary = getOptionSecondary?.(option as string);
-        return (
-          <li key={key} {...liProps} style={{ paddingTop: 2, paddingBottom: 2 }}>
-            <Checkbox
-              size="small"
-              checked={selected}
-              sx={{ mr: 1, p: 0.25 }}
-            />
-            <ListItemText
-              primary={primary}
-              secondary={secondary}
-              slotProps={{
-                primary: { style: { fontSize: 13 } },
-                secondary: { style: { fontSize: 11 } },
-              }}
-            />
-          </li>
-        );
-      }}
-      renderInput={(params) => (
-        <TextField
-          {...params}
-          label={label}
-          placeholder={values.length ? undefined : placeholder ?? "Type to search…"}
-        />
-      )}
-    />
-  );
-}
-
 export default function CasesFilterBar({
   filters,
   onChange,
@@ -421,40 +319,18 @@ export default function CasesFilterBar({
     [availableProjects],
   );
 
-  // Assignee options are engineer EMAILS (the value the backend filters on),
-  // pinned after the "@me" sentinel and ordered by display name. Pulling from
-  // the user directory rather than only the owners present in loaded cases
-  // means typing a name finds anyone, not just people who happen to own one
-  // of the currently-listed cases.
-  const nameByEmail = useMemo(() => {
+  // The assignee filter searches the user directory from the backend as you
+  // type (see AsyncAssigneeMultiSelect), so anyone is findable — not just the
+  // first page of users. `availableAssigneeUsers` (the directory prefetch /
+  // owners on loaded cases) only seeds chip labels for already-selected emails
+  // before any search has run.
+  const assigneeNameSeed = useMemo(() => {
     const m = new Map<string, string>();
     availableAssigneeUsers.forEach((u) => {
       if (u.email) m.set(u.email, u.name);
     });
     return m;
   }, [availableAssigneeUsers]);
-
-  const assigneeOptions = useMemo(() => {
-    const emails = Array.from(
-      new Set(availableAssigneeUsers.map((u) => u.email).filter(Boolean)),
-    ).sort((a, b) =>
-      (nameByEmail.get(a) ?? a).localeCompare(nameByEmail.get(b) ?? b),
-    );
-    return [ASSIGNEE_ME_TOKEN, ...emails];
-  }, [availableAssigneeUsers, nameByEmail]);
-
-  // Label an assignee value: the @me sentinel reads "Me"; an email resolves to
-  // the engineer's display name (falling back to the raw email).
-  const formatAssignee = (value: string): string =>
-    value === ASSIGNEE_ME_TOKEN ? "Me" : (nameByEmail.get(value) ?? value);
-
-  const assigneeSecondary = (value: string): string | undefined =>
-    value === ASSIGNEE_ME_TOKEN ? undefined : value;
-
-  const assigneeSearchText = (value: string): string =>
-    value === ASSIGNEE_ME_TOKEN
-      ? "Me"
-      : `${nameByEmail.get(value) ?? ""} ${value}`.trim();
 
   return (
     <Paper sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
@@ -704,17 +580,11 @@ export default function CasesFilterBar({
               {/* Email/`@me`-based picker; `useGetCsmCases` resolves the
                   selection to the UUIDs `/cases/search` expects (`@me` via the
                   app-wide current-user context, named engineers via
-                  `/users/search`). */}
-              <SearchableMultiSelect
-                id="cases-filter-assignee"
-                label="Assignee"
-                placeholder="Search engineers…"
+                  `/users/search`). Searches the directory as you type. */}
+              <AsyncAssigneeMultiSelect
                 values={filters.assignees}
-                options={assigneeOptions}
-                formatOption={formatAssignee}
-                getOptionSecondary={assigneeSecondary}
-                getOptionSearchText={assigneeSearchText}
                 onChange={(next) => onChange({ ...filters, assignees: next })}
+                nameSeed={assigneeNameSeed}
               />
             </Grid>
             {!hideProjectFilter && (

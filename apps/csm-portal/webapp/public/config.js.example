@@ -19,6 +19,12 @@ window.config = {
   CSM_PORTAL_THEME: "acrylicOrange",
   CSM_PORTAL_LOG_LEVEL: "ERROR",
 
+  // Hide work-in-progress sections. When true, every nav item flagged `wip` in
+  // src/config/csmNavItems.ts (currently Operations, Engagements, Security
+  // Center, Customers, Settings) is removed from the sidebar and quick-nav, and
+  // its routes redirect to the dashboard. Leave false to show everything.
+  CSM_PORTAL_HIDE_WIP_FEATURES: false,
+
   // Mock data: when true, data hooks short-circuit to seeded fixtures instead
   // of calling the backend. Leave false (or unset) to use the live backend.
   CSM_PORTAL_USE_MOCKS: false,

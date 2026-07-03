@@ -17,7 +17,7 @@
 import { Box, Link, Sidebar, Typography } from "@wso2/oxygen-ui";
 import { type JSX } from "react";
 import { Link as NavigateLink, useLocation } from "react-router";
-import { CSM_NAV_ITEMS, navItemForPath } from "@config/csmNavItems";
+import { navItemForPath, visibleNavItems } from "@config/csmNavItems";
 
 const COMPANY_NAME = "WSO2 LLC";
 const TERMS_OF_SERVICE_URL = "https://wso2.com/terms-of-use/";
@@ -54,7 +54,7 @@ export default function CsmSideBar({
     >
       <Sidebar.Nav>
         <Sidebar.Category>
-          {CSM_NAV_ITEMS.map((item) => (
+          {visibleNavItems().map((item) => (
             <Link
               key={item.id}
               component={NavigateLink}
