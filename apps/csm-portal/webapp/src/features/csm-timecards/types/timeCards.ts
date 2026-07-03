@@ -152,17 +152,14 @@ export interface CsmTimeSheet {
 
 /**
  * Filters for the time-card search. Sent in the POST body (never as query
- * params). The backend only supports `projectIds` / `states` / date range
- * server-side; case and engineer scoping happen client-side over the
- * returned page (see `useTimeSheets.ts`) since the backend has no `caseId`
- * or `engineerId` search filter.
+ * params). The backend only supports `projectIds` / `states` server-side;
+ * case and engineer scoping happen client-side over the returned page (see
+ * `useTimeSheets.ts`) since the backend has no `caseId` or `engineerId`
+ * search filter. No date-range filter — nothing in the UI sets one.
  */
 export interface TimeCardSearchFilters {
   /** Projects to include (company customer may own several). */
   projectIds?: string[];
   /** Lifecycle states to include. */
   states?: TimeCardState[];
-  /** Inclusive date range (YYYY-MM-DD), matched against `createdOn`. */
-  from?: string;
-  to?: string;
 }

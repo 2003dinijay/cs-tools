@@ -64,8 +64,8 @@ export function useCaseTimeCards(
     queryKey: [ApiQueryKeys.CASE_TIME_CARDS_SEARCH, caseId ?? "", projectId ?? ""],
     queryFn: async (): Promise<CsmTimeCard[]> => {
       if (!caseId || !projectId) return [];
-      const all = await searchTimeCards(api, { projectIds: [projectId] });
-      return all.filter((c) => c.caseId === caseId);
+      const { cards } = await searchTimeCards(api, { projectIds: [projectId] });
+      return cards.filter((c) => c.caseId === caseId);
     },
     enabled: !!caseId && !!projectId,
     staleTime: 5_000,

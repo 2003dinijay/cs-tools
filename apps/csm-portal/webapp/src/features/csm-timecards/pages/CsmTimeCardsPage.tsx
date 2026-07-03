@@ -44,6 +44,7 @@ import TimeCardReviewDialog from "@features/csm-timecards/components/TimeCardRev
 import type { TimecardAction } from "@features/csm-timecards/utils/timeSheetState";
 import type {
   CsmTimeCard,
+  CsmTimeSheet,
   TimeCardSearchFilters,
   TimeCardState,
 } from "@features/csm-timecards/types/timeCards";
@@ -107,10 +108,10 @@ export default function CsmTimeCardsPage(): JSX.Element {
   };
 
   /** Client-side work-item substring filter, applied over already-fetched sheets. */
-  const byWorkItem = (userNameFiltered: typeof mySheets.data): typeof mySheets.data => {
+  const byWorkItem = (sheets: CsmTimeSheet[] | undefined): CsmTimeSheet[] | undefined => {
     const q = filterWorkItem.trim().toLowerCase();
-    if (!q || !userNameFiltered) return userNameFiltered;
-    return userNameFiltered
+    if (!q || !sheets) return sheets;
+    return sheets
       .map((s) => ({
         ...s,
         cards: s.cards.filter((c) => c.caseNumber.toLowerCase().includes(q)),
@@ -166,28 +167,31 @@ export default function CsmTimeCardsPage(): JSX.Element {
           ) : mySheets.isError ? (
             <Typography color="error">Could not load your time sheets.</Typography>
           ) : (
-            (() => {
-              const filtered = byWorkItem(mySheets.data) ?? [];
-              if (filtered.length === 0) {
-                return (
-                  <Empty
-                    text={
-                      anyFilterActive
-                        ? "No time cards match the current filters."
-                        : "No time logged yet. Open a case and use its Time tracking tab to log time."
-                    }
+            <>
+              {mySheets.data?.truncated && <TruncatedNotice />}
+              {(() => {
+                const filtered = byWorkItem(mySheets.data?.sheets) ?? [];
+                if (filtered.length === 0) {
+                  return (
+                    <Empty
+                      text={
+                        anyFilterActive
+                          ? "No time cards match the current filters."
+                          : "No time logged yet. Open a case and use its Time tracking tab to log time."
+                      }
+                    />
+                  );
+                }
+                return filtered.map((s) => (
+                  <TimeSheetCard
+                    key={s.id}
+                    sheet={s}
+                    role={{ isOwner: true, isApprover: false, isAdmin: false }}
+                    onCardAction={handleCardAction}
                   />
-                );
-              }
-              return filtered.map((s) => (
-                <TimeSheetCard
-                  key={s.id}
-                  sheet={s}
-                  role={{ isOwner: true, isApprover: false, isAdmin: false }}
-                  onCardAction={handleCardAction}
-                />
-              ));
-            })()
+                ));
+              })()}
+            </>
           )}
         </Box>
       )}
@@ -232,39 +236,45 @@ export default function CsmTimeCardsPage(): JSX.Element {
             </Centered>
           ) : queue.isError ? (
             <Typography color="error">Could not load the approval queue.</Typography>
-          ) : (queue.data ?? []).length === 0 ? (
-            <Empty text="Nothing awaiting approval." />
+          ) : (queue.data?.sheets ?? []).length === 0 ? (
+            <>
+              {queue.data?.truncated && <TruncatedNotice />}
+              <Empty text="Nothing awaiting approval." />
+            </>
           ) : (
-            (() => {
-              const q = filterEngineer.trim().toLowerCase();
-              const byEngineer = (queue.data ?? []).filter(
-                (s) => !q || s.userName.toLowerCase().includes(q),
-              );
-              const filtered = byWorkItem(byEngineer) ?? [];
-              if (filtered.length === 0) {
-                return (
-                  <Empty
-                    text={
-                      // Only blame the engineer filter when it's the one that
-                      // excluded everything — if it matched fine and the
-                      // work-item filter emptied the result, say that instead.
-                      q && byEngineer.length === 0
-                        ? `No engineers match "${filterEngineer}".`
-                        : "No time cards match the current filters."
-                    }
-                  />
+            <>
+              {queue.data?.truncated && <TruncatedNotice />}
+              {(() => {
+                const q = filterEngineer.trim().toLowerCase();
+                const byEngineer = (queue.data?.sheets ?? []).filter(
+                  (s) => !q || s.userName.toLowerCase().includes(q),
                 );
-              }
-              return filtered.map((s) => (
-                <TimeSheetCard
-                  key={s.id}
-                  sheet={s}
-                  role={{ isOwner: false, isApprover: true, isAdmin: role.isAdmin }}
-                  showEngineer
-                  onCardAction={handleCardAction}
-                />
-              ));
-            })()
+                const filtered = byWorkItem(byEngineer) ?? [];
+                if (filtered.length === 0) {
+                  return (
+                    <Empty
+                      text={
+                        // Only blame the engineer filter when it's the one that
+                        // excluded everything — if it matched fine and the
+                        // work-item filter emptied the result, say that instead.
+                        q && byEngineer.length === 0
+                          ? `No engineers match "${filterEngineer}".`
+                          : "No time cards match the current filters."
+                      }
+                    />
+                  );
+                }
+                return filtered.map((s) => (
+                  <TimeSheetCard
+                    key={s.id}
+                    sheet={s}
+                    role={{ isOwner: false, isApprover: true, isAdmin: role.isAdmin }}
+                    showEngineer
+                    onCardAction={handleCardAction}
+                  />
+                ));
+              })()}
+            </>
           )}
         </Box>
       )}
@@ -486,6 +496,28 @@ function Empty({ text }: { text: string }): JSX.Element {
   return (
     <Typography variant="body2" color="text.secondary" sx={{ py: 4 }}>
       {text}
+    </Typography>
+  );
+}
+
+/** Shown when `searchTimeCards` hit its page cap — some cards in scope
+ * weren't fetched, so the list below may be missing older entries. Narrow
+ * the Project filter to see everything within a smaller scope. */
+function TruncatedNotice(): JSX.Element {
+  return (
+    <Typography
+      variant="caption"
+      sx={{
+        display: "block",
+        px: 1.5,
+        py: 1,
+        borderRadius: 1,
+        bgcolor: "warning.light",
+        color: "warning.dark",
+      }}
+    >
+      Showing a partial result — there are more cards in scope than could be
+      loaded. Narrow the Project filter to see everything.
     </Typography>
   );
 }

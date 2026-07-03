@@ -61,19 +61,22 @@ import { roundHours } from "@features/csm-timecards/utils/timeCardTotals";
 /**
  * The signed-in engineer's stable identity, resolved from `GET /users/me`.
  * `id` is the entity-service UUID — the same stable identifier the platform
- * uses across all services. Display name is built from firstName + lastName
- * returned by the entity service, falling back to ID-token values while the
- * query is in flight. `id` is `undefined` until a real identity resolves —
- * never a synthetic placeholder — so callers must gate on it before running
- * queries/mutations that key off it (a placeholder id would silently let
- * "my cards" / "not my cards" filtering match nothing, or everything).
+ * uses across all services, and the same identifier `card.userId` compares
+ * against. Display name is built from firstName + lastName returned by the
+ * entity service, falling back to ID-token values while the query is in
+ * flight. `id` is `undefined` until the real UUID resolves — deliberately
+ * *not* falling back to email: the ID-token email is available immediately,
+ * so an email fallback would make the "wait for a real id" gate never
+ * actually wait, and "my cards" filtering (`card.userId === id`) would
+ * compare a UUID against an email and match nothing until `GET /users/me`
+ * resolves (permanently, if it errors).
  */
 export function useCurrentEngineer(): { id: string | undefined; name: string } {
   const { data: me } = useGetUsersMe();
   const info = resolveUserInfo(useIdTokenClaims());
   const displayName =
     [me?.firstName, me?.lastName].filter(Boolean).join(" ") || info.fullName;
-  return { id: me?.id ?? me?.email ?? info.email, name: displayName };
+  return { id: me?.id, name: displayName };
 }
 
 /** Invalidate every time-card query so all views refresh after a write. */
@@ -108,15 +111,32 @@ export function mapTimeCard(v: BeTimeCardView): CsmTimeCard {
 }
 
 /**
- * Raw search against `POST /time-cards/search`, mapped to `CsmTimeCard[]`.
- * The backend only supports `projectIds` / date range server-side — there is
- * no `caseId` or `engineerId` filter, so case- and user-scoping happen
- * client-side over the returned page (see {@link useCaseTimeCards},
- * {@link useMyTimeSheets}, {@link useApprovalQueue} below). Fetches
- * `BE_MAX_PAGE_LIMIT` cards (the backend rejects `limit` above that with a
- * generic 400 despite the OpenAPI spec documenting up to 100 — confirmed
- * live); a dataset larger than that isn't fully covered yet — this is a
- * known limitation until search grows pagination support here.
+ * Page cap for {@link searchTimeCards} — `BE_MAX_PAGE_LIMIT` (50) per page,
+ * so 20 pages covers up to 1,000 cards per scoped search before giving up
+ * and reporting `truncated: true`. Mirrors the same bounded-pagination
+ * shape as `projectOptionsQueryOptions` in `useProjectOptions.ts`.
+ */
+const TIME_CARDS_MAX_PAGES = 20;
+
+/** Result of {@link searchTimeCards}: the cards found, and whether the
+ * `TIME_CARDS_MAX_PAGES` safety cap was hit before the results ran out (in
+ * which case some cards in scope were not fetched). */
+export interface TimeCardSearchResult {
+  cards: CsmTimeCard[];
+  truncated: boolean;
+}
+
+/**
+ * Search against `POST /time-cards/search`, paginating through every page
+ * up to {@link TIME_CARDS_MAX_PAGES}. The backend only supports
+ * `projectIds` server-side (also `startDate`/`endDate`, but nothing in the
+ * UI exposes a date-range filter, so this never sends them) — there is no
+ * `caseId` or `engineerId` filter, so case- and user-scoping happen
+ * client-side over the fetched cards (see {@link useCaseTimeCards},
+ * {@link useMyTimeSheets}, {@link useApprovalQueue} below). `limit` per
+ * page is capped at `BE_MAX_PAGE_LIMIT` — the backend rejects anything
+ * above that with a generic 400 despite the OpenAPI spec documenting up to
+ * 100 (confirmed live).
  *
  * `filters.states` is deliberately filtered client-side, never sent as
  * `filters.states` on the wire: confirmed live that the backend 500s
@@ -131,23 +151,37 @@ export function mapTimeCard(v: BeTimeCardView): CsmTimeCard {
 export async function searchTimeCards(
   api: BackendApi,
   filters?: TimeCardSearchFilters,
-): Promise<CsmTimeCard[]> {
-  const payload: BeSearchTimeCardsPayload = {
-    filters: {
-      ...(filters?.projectIds?.length ? { projectIds: filters.projectIds } : {}),
-      ...(filters?.from ? { startDate: filters.from } : {}),
-      ...(filters?.to ? { endDate: filters.to } : {}),
-    },
-    pagination: { limit: BE_MAX_PAGE_LIMIT, offset: 0 },
+): Promise<TimeCardSearchResult> {
+  const baseFilters = {
+    ...(filters?.projectIds?.length ? { projectIds: filters.projectIds } : {}),
   };
-  const res = await api.post<BeSearchTimeCardsPayload, BeSearchTimeCardsResponse>(
-    "/time-cards/search",
-    payload,
-  );
-  const cards = (res.timeCards ?? []).map(mapTimeCard);
-  return filters?.states?.length
-    ? cards.filter((c) => (filters.states as BeTimeCardState[]).includes(c.state))
-    : cards;
+
+  const all: BeTimeCardView[] = [];
+  let truncated = false;
+  let offset = 0;
+  for (let page = 0; page < TIME_CARDS_MAX_PAGES; page += 1) {
+    const payload: BeSearchTimeCardsPayload = {
+      filters: baseFilters,
+      pagination: { limit: BE_MAX_PAGE_LIMIT, offset },
+    };
+    const res = await api.post<BeSearchTimeCardsPayload, BeSearchTimeCardsResponse>(
+      "/time-cards/search",
+      payload,
+    );
+    const pageCards = res.timeCards ?? [];
+    all.push(...pageCards);
+    if (pageCards.length < BE_MAX_PAGE_LIMIT) break;
+    offset += BE_MAX_PAGE_LIMIT;
+    if (page === TIME_CARDS_MAX_PAGES - 1) truncated = true;
+  }
+
+  const cards = all.map(mapTimeCard);
+  return {
+    cards: filters?.states?.length
+      ? cards.filter((c) => (filters.states as BeTimeCardState[]).includes(c.state))
+      : cards,
+    truncated,
+  };
 }
 
 /** Roll a week's cards up into a single display status. */
@@ -189,6 +223,13 @@ function groupIntoSheets(
   return sheets.sort((a, b) => b.weekStart.localeCompare(a.weekStart));
 }
 
+/** Weekly sheets plus whether {@link searchTimeCards} hit its page cap —
+ * i.e. some cards in scope weren't fetched and aren't reflected below. */
+export interface TimeSheetsResult {
+  sheets: CsmTimeSheet[];
+  truncated: boolean;
+}
+
 /**
  * The signed-in user's own cards, grouped into weekly sheets, newest first.
  * `filters.projectIds` must be non-empty — the backend requires it to return
@@ -198,19 +239,22 @@ function groupIntoSheets(
  */
 export function useMyTimeSheets(
   filters?: TimeCardSearchFilters,
-): UseQueryResult<CsmTimeSheet[], Error> {
+): UseQueryResult<TimeSheetsResult, Error> {
   const api = useBackendApi();
   const me = useCurrentEngineer();
-  return useQuery<CsmTimeSheet[], Error>({
+  return useQuery<TimeSheetsResult, Error>({
     queryKey: [ApiQueryKeys.TIME_SHEETS_SEARCH, "mine", me.id, filters],
-    queryFn: async (): Promise<CsmTimeSheet[]> => {
-      if (!me.id) return [];
-      const all = await searchTimeCards(api, filters);
-      return groupIntoSheets(
-        all.filter((c) => c.userId === me.id),
-        me.id,
-        me.name,
-      );
+    queryFn: async (): Promise<TimeSheetsResult> => {
+      if (!me.id) return { sheets: [], truncated: false };
+      const { cards, truncated } = await searchTimeCards(api, filters);
+      return {
+        sheets: groupIntoSheets(
+          cards.filter((c) => c.userId === me.id),
+          me.id,
+          me.name,
+        ),
+        truncated,
+      };
     },
     enabled: !!me.id && !!filters?.projectIds?.length,
     staleTime: 5_000,
@@ -227,27 +271,30 @@ export function useMyTimeSheets(
 export function useApprovalQueue(
   enabled: boolean,
   filters?: TimeCardSearchFilters,
-): UseQueryResult<CsmTimeSheet[], Error> {
+): UseQueryResult<TimeSheetsResult, Error> {
   const api = useBackendApi();
   const me = useCurrentEngineer();
-  return useQuery<CsmTimeSheet[], Error>({
+  return useQuery<TimeSheetsResult, Error>({
     queryKey: [ApiQueryKeys.TIME_CARD_APPROVAL_QUEUE, me.id, filters],
-    queryFn: async (): Promise<CsmTimeSheet[]> => {
-      if (!me.id) return [];
-      const submitted = await searchTimeCards(api, {
+    queryFn: async (): Promise<TimeSheetsResult> => {
+      if (!me.id) return { sheets: [], truncated: false };
+      const { cards, truncated } = await searchTimeCards(api, {
         ...filters,
         states: ["submitted"],
       });
-      const others = submitted.filter((c) => c.userId !== me.id);
+      const others = cards.filter((c) => c.userId !== me.id);
       const byUser = new Map<string, CsmTimeCard[]>();
       for (const c of others) {
         const bucket = byUser.get(c.userId);
         if (bucket) bucket.push(c);
         else byUser.set(c.userId, [c]);
       }
-      return [...byUser.entries()].flatMap(([userId, cards]) =>
-        groupIntoSheets(cards, userId, cards[0]?.userName ?? "—"),
-      );
+      return {
+        sheets: [...byUser.entries()].flatMap(([userId, userCards]) =>
+          groupIntoSheets(userCards, userId, userCards[0]?.userName ?? "—"),
+        ),
+        truncated,
+      };
     },
     enabled: enabled && !!me.id && !!filters?.projectIds?.length,
     staleTime: 5_000,
