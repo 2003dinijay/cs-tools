@@ -46,7 +46,12 @@ type snProductVersion struct {
 
 // snProductVersionSearchPayload is the Choreo POST /products/{id}/versions/search request body.
 type snProductVersionSearchPayload struct {
-	Pagination snProjectPagination `json:"pagination"`
+	Filters    snProductVersionFilters `json:"filters,omitempty"`
+	Pagination snProjectPagination     `json:"pagination"`
+}
+
+type snProductVersionFilters struct {
+	SearchQuery string `json:"searchQuery,omitempty"`
 }
 
 type snProductVersionService struct {
@@ -62,6 +67,9 @@ func (s *snProductVersionService) SearchProductVersions(ctx context.Context, req
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchSNProductVersionsResponse{}, err
 	}
+	if err := validateSearchQuery(req.SearchQuery); err != nil {
+		return domain.SearchSNProductVersionsResponse{}, err
+	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
@@ -72,6 +80,7 @@ func (s *snProductVersionService) SearchProductVersions(ctx context.Context, req
 	path := fmt.Sprintf("/products/%s/versions/search", productSysid)
 
 	payload := snProductVersionSearchPayload{
+		Filters:    snProductVersionFilters{SearchQuery: req.SearchQuery},
 		Pagination: snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
 	}
 
