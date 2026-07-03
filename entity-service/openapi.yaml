@@ -1273,7 +1273,7 @@ paths:
       summary: Search CMDB configuration items (ServiceNow data source only).
       operationId: searchConfigurationItems
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
@@ -1310,7 +1310,7 @@ paths:
       summary: Search groups (ServiceNow data source only).
       operationId: searchGroups
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
@@ -1347,7 +1347,7 @@ paths:
       summary: Search service offerings (ServiceNow data source only).
       operationId: searchServiceOfferings
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
@@ -1384,7 +1384,7 @@ paths:
       summary: Search CMDB IT services (ServiceNow data source only).
       operationId: searchITServices
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
@@ -1421,7 +1421,7 @@ paths:
       summary: Search product vulnerabilities (ServiceNow data source only).
       operationId: searchProductVulnerabilities
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
@@ -1538,7 +1538,7 @@ paths:
       summary: Search time cards (ServiceNow data source only).
       operationId: searchTimeCards
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
