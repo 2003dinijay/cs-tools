@@ -220,17 +220,15 @@ function timeZoneOffsetMs(utcMs: number, timeZone: string): number {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false,
+    hourCycle: "h23", // 00-23; avoids the h24 midnight "24" edge case
   }).formatToParts(new Date(utcMs));
   const get = (t: Intl.DateTimeFormatPartTypes): number =>
     Number(parts.find((p) => p.type === t)?.value ?? "0");
-  let hour = get("hour");
-  if (hour === 24) hour = 0; // en-US hour12:false can emit "24" at midnight
   const asUtc = Date.UTC(
     get("year"),
     get("month") - 1,
     get("day"),
-    hour,
+    get("hour"),
     get("minute"),
     get("second"),
   );
@@ -293,13 +291,12 @@ export function utcMsToZonedInputValue(
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
+    hourCycle: "h23", // 00-23; avoids the h24 midnight "24" edge case
     timeZone,
   }).formatToParts(new Date(utcMs));
   const get = (t: Intl.DateTimeFormatPartTypes): string =>
     parts.find((p) => p.type === t)?.value ?? "00";
-  const hh = get("hour") === "24" ? "00" : get("hour");
-  return `${get("year")}-${get("month")}-${get("day")}T${hh}:${get("minute")}`;
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
 }
 
 /**
@@ -324,17 +321,14 @@ export function formatAbsoluteForUser(
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
-      hour12: false,
+      hourCycle: "h23", // 00-23; avoids the h24 midnight "24" edge case
       timeZone,
       timeZoneName: "shortOffset",
     }).formatToParts(date);
     const find = (type: Intl.DateTimeFormatPartTypes): string =>
       parts.find((p) => p.type === type)?.value ?? "";
     const datePart = `${find("year")}-${find("month")}-${find("day")}`;
-    // hour with hour12=false in en-CA returns "00"-"24"; "24" can appear for
-    // midnight — normalize to "00".
-    const hh = find("hour") === "24" ? "00" : find("hour");
-    const timePart = `${hh}:${find("minute")}:${find("second")}`;
+    const timePart = `${find("hour")}:${find("minute")}:${find("second")}`;
     const tzPart = find("timeZoneName") || "UTC";
     return `${datePart} ${timePart} ${tzPart}`;
   } catch {
