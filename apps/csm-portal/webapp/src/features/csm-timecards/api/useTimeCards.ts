@@ -45,7 +45,13 @@ import {
   mapTimeCard,
   searchTimeCards,
   useDecideCard,
+  type TimeCardSearchResult,
 } from "@features/csm-timecards/api/useTimeSheets";
+
+/** A case's time cards, plus whether {@link searchTimeCards} hit its page
+ * cap — some cards in the case's project weren't fetched, so this case's
+ * list/total may be incomplete. */
+export type CaseTimeCardsResult = TimeCardSearchResult;
 
 /**
  * Time cards logged on a single case, newest first. There is no `caseId`
@@ -58,14 +64,14 @@ import {
 export function useCaseTimeCards(
   caseId: string | undefined,
   projectId: string | undefined,
-): UseQueryResult<CsmTimeCard[], Error> {
+): UseQueryResult<CaseTimeCardsResult, Error> {
   const api = useBackendApi();
-  return useQuery<CsmTimeCard[], Error>({
+  return useQuery<CaseTimeCardsResult, Error>({
     queryKey: [ApiQueryKeys.CASE_TIME_CARDS_SEARCH, caseId ?? "", projectId ?? ""],
-    queryFn: async (): Promise<CsmTimeCard[]> => {
-      if (!caseId || !projectId) return [];
-      const { cards } = await searchTimeCards(api, { projectIds: [projectId] });
-      return cards.filter((c) => c.caseId === caseId);
+    queryFn: async (): Promise<CaseTimeCardsResult> => {
+      if (!caseId || !projectId) return { cards: [], truncated: false };
+      const { cards, truncated } = await searchTimeCards(api, { projectIds: [projectId] });
+      return { cards: cards.filter((c) => c.caseId === caseId), truncated };
     },
     enabled: !!caseId && !!projectId,
     staleTime: 5_000,

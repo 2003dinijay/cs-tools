@@ -41,6 +41,7 @@ import { TIME_CARD_STATE_META } from "@features/csm-timecards/constants/timeCard
 import { useTimecardRole } from "@features/csm-timecards/hooks/useTimecardRole";
 import TimeSheetCard from "@features/csm-timecards/components/TimeSheetCard";
 import TimeCardReviewDialog from "@features/csm-timecards/components/TimeCardReviewDialog";
+import TimeCardTruncatedNotice from "@features/csm-timecards/components/TimeCardTruncatedNotice";
 import type { TimecardAction } from "@features/csm-timecards/utils/timeSheetState";
 import type {
   CsmTimeCard,
@@ -168,7 +169,9 @@ export default function CsmTimeCardsPage(): JSX.Element {
             <Typography color="error">Could not load your time sheets.</Typography>
           ) : (
             <>
-              {mySheets.data?.truncated && <TruncatedNotice />}
+              {mySheets.data?.truncated && (
+                <TimeCardTruncatedNotice hint="Narrow the Project filter to see everything." />
+              )}
               {(() => {
                 const filtered = byWorkItem(mySheets.data?.sheets) ?? [];
                 if (filtered.length === 0) {
@@ -238,12 +241,16 @@ export default function CsmTimeCardsPage(): JSX.Element {
             <Typography color="error">Could not load the approval queue.</Typography>
           ) : (queue.data?.sheets ?? []).length === 0 ? (
             <>
-              {queue.data?.truncated && <TruncatedNotice />}
+              {queue.data?.truncated && (
+                <TimeCardTruncatedNotice hint="Narrow the Project filter to see everything." />
+              )}
               <Empty text="Nothing awaiting approval." />
             </>
           ) : (
             <>
-              {queue.data?.truncated && <TruncatedNotice />}
+              {queue.data?.truncated && (
+                <TimeCardTruncatedNotice hint="Narrow the Project filter to see everything." />
+              )}
               {(() => {
                 const q = filterEngineer.trim().toLowerCase();
                 const byEngineer = (queue.data?.sheets ?? []).filter(
@@ -496,28 +503,6 @@ function Empty({ text }: { text: string }): JSX.Element {
   return (
     <Typography variant="body2" color="text.secondary" sx={{ py: 4 }}>
       {text}
-    </Typography>
-  );
-}
-
-/** Shown when `searchTimeCards` hit its page cap — some cards in scope
- * weren't fetched, so the list below may be missing older entries. Narrow
- * the Project filter to see everything within a smaller scope. */
-function TruncatedNotice(): JSX.Element {
-  return (
-    <Typography
-      variant="caption"
-      sx={{
-        display: "block",
-        px: 1.5,
-        py: 1,
-        borderRadius: 1,
-        bgcolor: "warning.light",
-        color: "warning.dark",
-      }}
-    >
-      Showing a partial result — there are more cards in scope than could be
-      loaded. Narrow the Project filter to see everything.
     </Typography>
   );
 }
