@@ -1333,6 +1333,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
           submitting={postGithubIssue.isPending}
           error={githubIssueError}
           defaultUpdateLevel={c.productContext.updateLevel}
+          defaultTitle={c.subject}
+          defaultDescription={c.description}
           onClose={() => {
             setGithubIssueOpen(false);
             setGithubIssueError(null);

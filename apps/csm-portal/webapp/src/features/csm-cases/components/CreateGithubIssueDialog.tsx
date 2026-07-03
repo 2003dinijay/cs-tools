@@ -80,6 +80,10 @@ export interface CreateGithubIssueDialogProps {
   error: string | null;
   /** Prefill for the update-level field, taken from the case's product context. */
   defaultUpdateLevel?: string;
+  /** Prefill for the Summary field, taken from the case's subject. */
+  defaultTitle?: string;
+  /** Prefill for the Description field, taken from the case's description. */
+  defaultDescription?: string;
   onClose: () => void;
   /** Body for `POST /cases/{id}/github-issues` (caseId is added by the caller). */
   onSubmit: (payload: BeCreateCaseGithubIssuePayload) => void;
@@ -101,11 +105,13 @@ export function CreateGithubIssueDialog({
   submitting,
   error,
   defaultUpdateLevel,
+  defaultTitle,
+  defaultDescription,
   onClose,
   onSubmit,
 }: CreateGithubIssueDialogProps): JSX.Element {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
+  const [title, setTitle] = useState(defaultTitle ?? "");
+  const [description, setDescription] = useState(defaultDescription ?? "");
   const [updateLevel, setUpdateLevel] = useState(defaultUpdateLevel ?? "");
   const [publicIssueUrl, setPublicIssueUrl] = useState("");
   const [issueTypeLabel, setIssueTypeLabel] = useState<string>(UNSET);
@@ -115,8 +121,8 @@ export function CreateGithubIssueDialog({
   const [regression, setRegression] = useState<string>(UNSET);
 
   const resetAndClose = () => {
-    setTitle("");
-    setDescription("");
+    setTitle(defaultTitle ?? "");
+    setDescription(defaultDescription ?? "");
     setUpdateLevel(defaultUpdateLevel ?? "");
     setPublicIssueUrl("");
     setIssueTypeLabel(UNSET);
