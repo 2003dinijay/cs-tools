@@ -503,3 +503,16 @@ func (m *mockEntityDeploymentClient) PatchDeployedProduct(ctx context.Context, d
 	}
 	return []byte(`{}`), nil
 }
+
+// ----- mock entity conversation client -----
+
+type mockEntityConversationClient struct {
+	getConversationMessagesFn func(ctx context.Context, conversationID string, rawQuery string) ([]byte, error)
+}
+
+func (m *mockEntityConversationClient) GetConversationMessages(ctx context.Context, conversationID string, rawQuery string) ([]byte, error) {
+	if m.getConversationMessagesFn != nil {
+		return m.getConversationMessagesFn(ctx, conversationID, rawQuery)
+	}
+	return []byte(`{"comments":[],"total":0,"limit":20,"offset":0,"hasMore":false}`), nil
+}

@@ -287,3 +287,13 @@ func (c *Client) SearchConfigurationItems(ctx context.Context, body []byte) ([]b
 func (c *Client) CreateCaseGithubIssue(ctx context.Context, caseID string, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/cases/%s/github-issues", url.PathEscape(caseID)), body)
 }
+
+// GetConversationMessages calls GET /conversations/{id}/messages on the entity service.
+// rawQuery is the URL-encoded query string (e.g. "limit=20&offset=0"); pass empty string for defaults.
+func (c *Client) GetConversationMessages(ctx context.Context, conversationID string, rawQuery string) ([]byte, error) {
+	path := fmt.Sprintf("/conversations/%s/messages", url.PathEscape(conversationID))
+	if rawQuery != "" {
+		path += "?" + rawQuery
+	}
+	return c.do(ctx, http.MethodGet, path, nil)
+}
