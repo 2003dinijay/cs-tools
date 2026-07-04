@@ -2094,3 +2094,35 @@ public type DeployedProductMetricsResponse record {|
     # Chart data points ordered by date
     DeployedProductMetricsChartDataPoint[] chartData;
 |};
+
+# Request payload for searching deployed product metrics usage counts.
+public type DeployedProductMetricsUsageCountsPayload record {|
+    # Start date of the range (format: YYYY-MM-DD), required
+    entity:Date startDate;
+    # End date of the range (format: YYYY-MM-DD), required
+    entity:Date endDate;
+|};
+
+# Summary for deployed product metrics usage counts.
+public type DeployedProductMetricsUsageCountsSummary record {|
+    # Date range of the metrics query
+    record {|
+        string 'start;
+        string 'end;
+    |} dateRange;
+    # Count types aggregated over the range
+    map<int> countTypes;
+|};
+
+# Response for deployed product metrics usage counts search.
+public type DeployedProductMetricsUsageCountsResponse record {|
+    # The deployed product reference
+    record {|
+        string id;
+        string name;
+    |} product;
+    # Summary statistics for the queried range
+    DeployedProductMetricsUsageCountsSummary summary;
+    # Chart data points ordered by date
+    json[] chartData;
+|};

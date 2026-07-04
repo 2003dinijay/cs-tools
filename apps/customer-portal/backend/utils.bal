@@ -1400,3 +1400,27 @@ public isolated function mapDeployedProductMetrics(entity:DeployedProductMetrics
         chartData
     };
 }
+
+# Map deployed product metrics usage counts response.
+#
+# + response - Deployed product metrics usage counts response from the entity service
+# + return - Mapped deployed product metrics usage counts response
+public isolated function mapDeployedProductMetricsUsageCounts(
+        entity:DeployedProductMetricsUsageCountsResponse response)
+        returns types:DeployedProductMetricsUsageCountsResponse {
+
+    return {
+        product: {
+            id: response.deployedProduct.id,
+            name: response.deployedProduct.name
+        },
+        summary: {
+            dateRange: {
+                'start: response.summary.dateRange.'start,
+                'end: response.summary.dateRange.'end
+            },
+            countTypes: response.summary.countTypes
+        },
+        chartData: response.chartData
+    };
+}
