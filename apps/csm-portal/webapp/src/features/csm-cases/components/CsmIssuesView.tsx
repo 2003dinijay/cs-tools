@@ -123,7 +123,7 @@ export default function CsmIssuesView({
     [filters, debouncedSearch, lockedFilters],
   );
 
-  const { data, isLoading, isFetching, isError, error } = useGetCsmCases(
+  const { data, isLoading, isError, error } = useGetCsmCases(
     queryFilters,
     page,
     rowsPerPage,
@@ -186,7 +186,7 @@ export default function CsmIssuesView({
   const rangeEnd = page * rowsPerPage + cases.length;
 
   const subtitle =
-    isLoading || isFetching
+    isLoading
       ? null
       : total === 0
         ? `No ${entityNoun}`

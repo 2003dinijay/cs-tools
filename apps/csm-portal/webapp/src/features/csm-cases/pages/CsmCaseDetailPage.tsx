@@ -918,6 +918,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 {c.caseNumber}
               </Box>
             )}
+            {!c.wso2CaseId && !c.caseNumber && (
+              <Box component="span" sx={{ color: "text.disabled" }}>
+                —
+              </Box>
+            )}
           </Typography>
 
           {/* Status group (severity, lifecycle state, SLA) kept visually

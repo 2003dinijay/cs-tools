@@ -202,7 +202,7 @@ export function useGetCsmCases(
       // customer column (cases embed the project, but not its account). The
       // lookups go through `fetchQuery` with their own stable keys, so they
       // hit the network only when their cache is stale — not on every filter
-      // change. Lookup failures degrade to "—" names, not a failed list.
+      // change. Lookup failures degrade to blank names, not a failed list.
       const [casesResponse, projects, accounts] = await Promise.all([
         api.post<BeCaseSearchPayload, BeCaseSearchResponse>("/cases/search", {
           pagination: { offset, limit: pageSize },
