@@ -2800,6 +2800,204 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
         return response.deployedProduct;
     }
 
+    # Search metrics for a deployed product within a specific deployment.
+    #
+    # + deploymentId - ID of the deployment
+    # + productId - ID of the deployed product
+    # + payload - Metrics search payload containing startDate and endDate (within a 1-year range)
+    # + return - Deployed product metrics response or error response
+    resource function post deployments/[entity:IdString deploymentId]/products/[entity:IdString productId]
+            /metrics/search(http:RequestContext ctx, types:DeployedProductMetricsPayload payload)
+        returns http:Ok|http:BadRequest|http:Unauthorized|http:Forbidden|http:NotFound|http:InternalServerError {
+
+        authorization:UserInfoPayload|error userInfo = ctx.getWithType(authorization:HEADER_USER_INFO);
+        if userInfo is error {
+            return <http:InternalServerError>{
+                body: {
+                    message: ERR_MSG_USER_INFO_HEADER_NOT_FOUND
+                }
+            };
+        }
+
+        if isInvalidDateRange(payload.startDate, payload.endDate) {
+            return <http:BadRequest>{
+                body: {
+                    message: "Invalid date range: startDate must not be after endDate."
+                }
+            };
+        }
+
+        boolean|error withinOneYear = isWithinOneYear(payload.startDate, payload.endDate);
+        if withinOneYear is error {
+            log:printError("Failed to parse date range for deployed product metrics search.", withinOneYear);
+            return <http:InternalServerError>{
+                body: {
+                    message: "Failed to process the requested date range."
+                }
+            };
+        }
+        if !withinOneYear {
+            return <http:BadRequest>{
+                body: {
+                    message: "Invalid date range: the range between startDate and endDate must not exceed 1 year."
+                }
+            };
+        }
+
+        entity:DeployedProductMetricsResponse|error response = entity:searchDeployedProductMetrics(
+                userInfo.idToken,
+                productId,
+                {
+                    deploymentId,
+                    startDate: payload.startDate,
+                    endDate: payload.endDate
+                });
+        if response is error {
+            if getStatusCode(response) == http:STATUS_BAD_REQUEST {
+                return <http:BadRequest>{
+                    body: {
+                        message: "Invalid request parameters for searching metrics for the deployed product."
+                    }
+                };
+            }
+            if getStatusCode(response) == http:STATUS_UNAUTHORIZED {
+                log:printWarn(string `User: ${userInfo.userId} is not authorized to access the customer portal!`);
+                return <http:Unauthorized>{
+                    body: {
+                        message: ERR_MSG_UNAUTHORIZED_ACCESS
+                    }
+                };
+            }
+            if getStatusCode(response) == http:STATUS_FORBIDDEN {
+                log:printWarn(string `User: ${userInfo.userId} is forbidden to access metrics for deployed product` +
+                        string ` with ID: ${productId} in deployment with ID: ${deploymentId}!`);
+                return <http:Forbidden>{
+                    body: {
+                        message: "Access to the requested deployed product metrics is forbidden!"
+                    }
+                };
+            }
+            if getStatusCode(response) == http:STATUS_NOT_FOUND {
+                return <http:NotFound>{
+                    body: {
+                        message: "Deployed product or deployment not found."
+                    }
+                };
+            }
+
+            string customError = "Failed to retrieve metrics for the deployed product.";
+            log:printError(customError, response);
+            return <http:InternalServerError>{
+                body: {
+                    message: customError
+                }
+            };
+        }
+
+        return <http:Ok>{body: mapDeployedProductMetrics(response)};
+    }
+
+    # Search metrics usage counts for a deployed product within a specific deployment.
+    #
+    # + deploymentId - ID of the deployment
+    # + productId - ID of the deployed product
+    # + payload - Metrics usage counts search payload containing startDate and endDate (within a 1-year range)
+    # + return - Deployed product metrics usage counts response or error response
+    resource function post deployments/[entity:IdString deploymentId]/products/[entity:IdString productId]
+            /metrics/usage\-counts/search(http:RequestContext ctx,
+            types:DeployedProductMetricsUsageCountsPayload payload)
+        returns http:Ok|http:BadRequest|http:Unauthorized|http:Forbidden|http:NotFound|http:InternalServerError {
+
+        authorization:UserInfoPayload|error userInfo = ctx.getWithType(authorization:HEADER_USER_INFO);
+        if userInfo is error {
+            return <http:InternalServerError>{
+                body: {
+                    message: ERR_MSG_USER_INFO_HEADER_NOT_FOUND
+                }
+            };
+        }
+
+        if isInvalidDateRange(payload.startDate, payload.endDate) {
+            return <http:BadRequest>{
+                body: {
+                    message: "Invalid date range: startDate must not be after endDate."
+                }
+            };
+        }
+
+        boolean|error withinOneYear = isWithinOneYear(payload.startDate, payload.endDate);
+        if withinOneYear is error {
+            log:printError("Failed to parse date range for deployed product metrics usage counts search.",
+                    withinOneYear);
+            return <http:InternalServerError>{
+                body: {
+                    message: "Failed to process the requested date range."
+                }
+            };
+        }
+        if !withinOneYear {
+            return <http:BadRequest>{
+                body: {
+                    message: "Invalid date range: the range between startDate and endDate must not exceed 1 year."
+                }
+            };
+        }
+
+        entity:DeployedProductMetricsUsageCountsResponse|error response =
+            entity:searchDeployedProductMetricsUsageCounts(
+                userInfo.idToken,
+                productId,
+                {
+                    deploymentId,
+                    startDate: payload.startDate,
+                    endDate: payload.endDate
+                });
+        if response is error {
+            if getStatusCode(response) == http:STATUS_BAD_REQUEST {
+                return <http:BadRequest>{
+                    body: {
+                        message: "Invalid request parameters for searching metrics usage counts" +
+                            " for the deployed product."
+                    }
+                };
+            }
+            if getStatusCode(response) == http:STATUS_UNAUTHORIZED {
+                log:printWarn(string `User: ${userInfo.userId} is not authorized to access the customer portal!`);
+                return <http:Unauthorized>{
+                    body: {
+                        message: ERR_MSG_UNAUTHORIZED_ACCESS
+                    }
+                };
+            }
+            if getStatusCode(response) == http:STATUS_FORBIDDEN {
+                log:printWarn(string `User: ${userInfo.userId} is forbidden to access metrics usage counts` +
+                        string ` for deployed product with ID: ${productId} in deployment with ID: ${deploymentId}!`);
+                return <http:Forbidden>{
+                    body: {
+                        message: "Access to the requested deployed product metrics usage counts is forbidden!"
+                    }
+                };
+            }
+            if getStatusCode(response) == http:STATUS_NOT_FOUND {
+                return <http:NotFound>{
+                    body: {
+                        message: "Deployed product or deployment not found."
+                    }
+                };
+            }
+
+            string customError = "Failed to retrieve metrics usage counts for the deployed product.";
+            log:printError(customError, response);
+            return <http:InternalServerError>{
+                body: {
+                    message: customError
+                }
+            };
+        }
+
+        return <http:Ok>{body: mapDeployedProductMetricsUsageCounts(response)};
+    }
+
     # Search catalogs for a specific deployed product with filters and pagination.
     #
     # + id - ID of the deployed product
@@ -4108,7 +4306,7 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
     resource function post projects/[entity:IdString id]/cases/time\-cards/search(http:RequestContext ctx,
             types:TimeCardSearchPayload payload)
         returns http:Ok|http:BadRequest|http:Unauthorized|http:Forbidden|http:InternalServerError {
-        
+
         authorization:UserInfoPayload|error userInfo = ctx.getWithType(authorization:HEADER_USER_INFO);
         if userInfo is error {
             return <http:InternalServerError>{
@@ -4663,7 +4861,7 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
         if response is error {
             if getStatusCode(response) == http:STATUS_BAD_REQUEST {
                 log:printWarn(string `Invalid request parameters for creating registry token by user: ${
-                    userInfo.userId}`, response);
+                        userInfo.userId}`, response);
                 return <http:BadRequest>{
                     body: {
                         message: "Invalid request parameters for creating registry token."

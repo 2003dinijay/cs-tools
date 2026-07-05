@@ -2618,3 +2618,123 @@ public type GlobalSearchResponse record {|
     GlobalSearchCase[] cases;
     json...;
 |};
+
+# Request payload for searching deployed product metrics.
+public type DeployedProductMetricsPayload record {|
+    # Deployment ID reference (e.g. "deployments/<id>")
+    IdString deploymentId;
+    # Start date of the metrics range (format: YYYY-MM-DD)
+    Date startDate;
+    # End date of the metrics range (format: YYYY-MM-DD)
+    Date endDate;
+|};
+
+# A single instance entry within a chart data point.
+public type DeployedProductMetricsInstance record {|
+    # Instance ID
+    string id;
+    # Instance name
+    string name;
+    # CPU cores allocated
+    int cores;
+    json...;
+|};
+
+# A single chart data point for deployed product metrics.
+public type DeployedProductMetricsChartDataPoint record {|
+    # Date of the data point (format: YYYY-MM-DD)
+    string date;
+    # Number of instances on this date
+    int instanceCount;
+    # Total CPU cores on this date
+    int totalCores;
+    # Minimum CPU cores on this date
+    int minCores;
+    # Maximum CPU cores on this date
+    int maxCores;
+    # Average CPU cores on this date
+    decimal avgCores;
+    # Individual instances on this date
+    DeployedProductMetricsInstance[] instances;
+    json...;
+|};
+
+# Summary for deployed product metrics.
+public type DeployedProductMetricsSummary record {|
+    # Queried date range
+    record {|
+        # Start date of the range
+        string 'start;
+        # End date of the range
+        string 'end;
+        json...;
+    |} dateRange;
+    # Total number of distinct instances in the range
+    int totalInstances;
+    # Minimum core count in the range; null when there are no instances
+    int? minCores;
+    # Maximum core count in the range; null when there are no instances
+    int? maxCores;
+    # Average core count in the range; null when there are no instances
+    decimal? avgCores;
+    json...;
+|};
+
+# Response for deployed product metrics search.
+public type DeployedProductMetricsResponse record {|
+    # The deployed product reference
+    record {|
+        # Deployed product ID
+        string id;
+        # Deployed product name
+        string name;
+        json...;
+    |} deployedProduct;
+    # Summary statistics for the queried range
+    DeployedProductMetricsSummary summary;
+    # Chart data points ordered by date
+    DeployedProductMetricsChartDataPoint[] chartData;
+    json...;
+|};
+
+# Request payload for searching deployed product metrics usage counts.
+public type DeployedProductMetricsUsageCountsPayload record {|
+    # Deployment ID
+    IdString deploymentId;
+    # Start date of the range (format: YYYY-MM-DD)
+    Date startDate;
+    # End date of the range (format: YYYY-MM-DD)
+    Date endDate;
+|};
+
+# Summary for deployed product metrics usage counts.
+public type DeployedProductMetricsUsageCountsSummary record {|
+    # Date range of the metrics query
+    record {|
+        # Start date
+        string 'start;
+        # End date
+        string 'end;
+        json...;
+    |} dateRange;
+    # Count types aggregated over the range
+    map<int> countTypes;
+    json...;
+|};
+
+# Response for deployed product metrics usage counts search.
+public type DeployedProductMetricsUsageCountsResponse record {|
+    # The deployed product reference
+    record {|
+        # Deployed product ID
+        string id;
+        # Deployed product name
+        string name;
+        json...;
+    |} deployedProduct;
+    # Summary statistics for the queried range
+    DeployedProductMetricsUsageCountsSummary summary;
+    # Chart data points ordered by date
+    json[] chartData;
+    json...;
+|};
