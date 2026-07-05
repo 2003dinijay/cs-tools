@@ -1896,3 +1896,56 @@ type UpdateCallRequestResponse struct {
 		UpdatedBy string `json:"updatedBy"`
 	} `json:"callRequest"`
 }
+
+// SearchTaskSlasFilters holds optional filter criteria for POST /task-slas/search.
+type SearchTaskSlasFilters struct {
+	TaskIDs []string `json:"taskIds,omitempty"`
+}
+
+// SearchTaskSlasRequest is the request body for POST /task-slas/search.
+type SearchTaskSlasRequest struct {
+	Filters    *SearchTaskSlasFilters `json:"filters,omitempty"`
+	Pagination Pagination             `json:"pagination"`
+}
+
+// TaskSlaDefinition is the SLA definition referenced by a task SLA record.
+type TaskSlaDefinition struct {
+	ID     *string `json:"id"`
+	Name   *string `json:"name"`
+	Type   *string `json:"type"`
+	Target *string `json:"target"`
+}
+
+// TaskSlaStage is the current stage of the SLA.
+type TaskSlaStage struct {
+	ID    *string `json:"id"`
+	Label *string `json:"label"`
+}
+
+// TaskSlaTaskRef is a reference to the task associated with a task SLA record.
+type TaskSlaTaskRef struct {
+	ID   *string `json:"id"`
+	Name *string `json:"name"`
+	Type *string `json:"type"`
+}
+
+// TaskSlaView is a single task SLA record in search results.
+type TaskSlaView struct {
+	ID                        string             `json:"id"`
+	SlaDefinition             *TaskSlaDefinition `json:"slaDefinition"`
+	Stage                     *TaskSlaStage      `json:"stage"`
+	Task                      *TaskSlaTaskRef    `json:"task"`
+	BusinessTimeLeft          *string            `json:"businessTimeLeft"`
+	BusinessElapsedTime       *string            `json:"businessElapsedTime"`
+	BusinessElapsedPercentage *string            `json:"businessElapsedPercentage"`
+	StartTime                 *string            `json:"startTime"`
+	EndTime                   *string            `json:"endTime"`
+}
+
+// SearchTaskSlasResponse is the response for POST /task-slas/search.
+type SearchTaskSlasResponse struct {
+	TaskSlas []TaskSlaView `json:"taskSlas"`
+	Total    int           `json:"total"`
+	Limit    int           `json:"limit"`
+	Offset   int           `json:"offset"`
+}
