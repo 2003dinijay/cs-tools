@@ -79,6 +79,7 @@ import {
 } from "@features/csm-cases/utils/caseType";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
 import AsyncAssigneeMultiSelect from "@features/csm-cases/components/AsyncAssigneeMultiSelect";
+import ProductNameMultiSelect from "@features/csm-cases/components/ProductNameMultiSelect";
 
 
 /**
@@ -102,6 +103,8 @@ export interface CasesFilters {
   projects: string[];
   /** Engagement sub-type filter; only meaningful when `caseTypes` is locked to `engagement`. */
   engagementTypes: BeEngagementType[];
+  /** Product family names (e.g. "API Manager"); matches all versions of each. */
+  productNames: string[];
 }
 
 /**
@@ -594,6 +597,14 @@ export default function CasesFilterBar({
                 />
               </Grid>
             )}
+            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
+              {/* Product family filter; the selected names map straight to
+                  `productNames` (SN matches product.name, all versions). */}
+              <ProductNameMultiSelect
+                values={filters.productNames}
+                onChange={(next) => onChange({ ...filters, productNames: next })}
+              />
+            </Grid>
           </Grid>
           {activeCount > 0 && (
             <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
