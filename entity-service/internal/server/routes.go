@@ -276,6 +276,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	}
 
 	if taskSlaHandler != nil {
+		mux.HandleFunc("GET /task-slas/{id}", taskSlaHandler.GetTaskSla)
 		mux.HandleFunc("POST /task-slas/search", taskSlaHandler.SearchTaskSlas)
 	}
 

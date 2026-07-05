@@ -34,6 +34,18 @@ func NewTaskSlaHandler(svc service.TaskSlaService) *TaskSlaHandler {
 	return &TaskSlaHandler{svc: svc}
 }
 
+// GetTaskSla handles GET /task-slas/{id}.
+func (h *TaskSlaHandler) GetTaskSla(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	result, err := h.svc.GetTaskSla(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
 // SearchTaskSlas handles POST /task-slas/search.
 func (h *TaskSlaHandler) SearchTaskSlas(w http.ResponseWriter, r *http.Request) {
 	var req domain.SearchTaskSlasRequest

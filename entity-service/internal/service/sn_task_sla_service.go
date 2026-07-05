@@ -73,6 +73,52 @@ type snTaskSlaStage struct {
 	Label *string `json:"label"`
 }
 
+type snTaskSlaDetail struct {
+	ID                        string                    `json:"id"`
+	Task                      *snTaskSlaTaskRef         `json:"task"`
+	SlaDefinition             *snTaskSlaDefinitionDetail `json:"slaDefinition"`
+	Stage                     *snTaskSlaStage           `json:"stage"`
+	BusinessTimeLeft          *string                   `json:"businessTimeLeft"`
+	BusinessElapsedTime       *string                   `json:"businessElapsedTime"`
+	BusinessElapsedPercentage *string                   `json:"businessElapsedPercentage"`
+	StartTime                 *string                   `json:"startTime"`
+	EndTime                   *string                   `json:"endTime"`
+	Active                    *bool                     `json:"active"`
+	Schedule                  *snTaskSlaScheduleRef     `json:"schedule"`
+}
+
+type snTaskSlaDefinitionDetail struct {
+	ID               *string `json:"id"`
+	Name             *string `json:"name"`
+	Type             *string `json:"type"`
+	Target           *string `json:"target"`
+	Flow             *string `json:"flow"`
+	Workflow         *string `json:"workflow"`
+	EnableLogging    *bool   `json:"enableLogging"`
+	DurationType     *string `json:"durationType"`
+	Duration         *string `json:"duration"`
+	ScheduleSource   *string `json:"scheduleSource"`
+	Schedule         *string `json:"schedule"`
+	TimezoneSource   *string `json:"timezoneSource"`
+	Timezone         *string `json:"timezone"`
+	StartCondition   *string `json:"startCondition"`
+	RetroactiveStart *bool   `json:"retroactiveStart"`
+	RetroactivePause *bool   `json:"retroactivePause"`
+	WhenToCancel     *string `json:"whenToCancel"`
+	CancelCondition  *string `json:"cancelCondition"`
+	PauseCondition   *string `json:"pauseCondition"`
+	WhenToResume     *string `json:"whenToResume"`
+	StopCondition    *string `json:"stopCondition"`
+	ResetCondition   *string `json:"resetCondition"`
+	ResetAction      *string `json:"resetAction"`
+}
+
+type snTaskSlaScheduleRef struct {
+	ID       *string `json:"id"`
+	Name     *string `json:"name"`
+	Timezone *string `json:"timezone"`
+}
+
 func snTaskSlaToView(t snTaskSla) domain.TaskSlaView {
 	view := domain.TaskSlaView{
 		ID:                        sysidToUUID(t.ID),
@@ -122,19 +168,119 @@ type snTaskSlaService struct {
 	client *integrationservice.Client
 }
 
-// NewServiceNowTaskSlaService constructs a TaskSlaService backed by the Choreo API.
+// NewServiceNowTaskSlaService constructs a TaskSlaService backed by ServiceNow via integrationservice.Client.
 func NewServiceNowTaskSlaService(client *integrationservice.Client) TaskSlaService {
 	return &snTaskSlaService{client: client}
 }
 
-func (s *snTaskSlaService) SearchTaskSlas(ctx context.Context, req domain.SearchTaskSlasRequest) (domain.SearchTaskSlasResponse, error) {
-	if err := normalizePagination(&req.Pagination); err != nil {
-		return domain.SearchTaskSlasResponse{}, err
+func snTaskSlaToDetailView(t snTaskSlaDetail) domain.TaskSlaDetail {
+	view := domain.TaskSlaDetail{
+		ID:                        sysidToUUID(t.ID),
+		BusinessTimeLeft:          t.BusinessTimeLeft,
+		BusinessElapsedTime:       t.BusinessElapsedTime,
+		BusinessElapsedPercentage: t.BusinessElapsedPercentage,
+		StartTime:                 t.StartTime,
+		EndTime:                   t.EndTime,
+		Active:                    t.Active,
 	}
 
+	if t.Task != nil {
+		ref := &domain.TaskSlaTaskRef{
+			Name: t.Task.Name,
+			Type: t.Task.Type,
+		}
+		if t.Task.ID != nil {
+			id := sysidToUUID(*t.Task.ID)
+			ref.ID = &id
+		}
+		view.Task = ref
+	}
+
+	if t.SlaDefinition != nil {
+		def := &domain.TaskSlaDefinitionDetail{
+			Name:             t.SlaDefinition.Name,
+			Type:             t.SlaDefinition.Type,
+			Target:           t.SlaDefinition.Target,
+			Flow:             t.SlaDefinition.Flow,
+			Workflow:         t.SlaDefinition.Workflow,
+			EnableLogging:    t.SlaDefinition.EnableLogging,
+			DurationType:     t.SlaDefinition.DurationType,
+			Duration:         t.SlaDefinition.Duration,
+			ScheduleSource:   t.SlaDefinition.ScheduleSource,
+			Schedule:         t.SlaDefinition.Schedule,
+			TimezoneSource:   t.SlaDefinition.TimezoneSource,
+			Timezone:         t.SlaDefinition.Timezone,
+			StartCondition:   t.SlaDefinition.StartCondition,
+			RetroactiveStart: t.SlaDefinition.RetroactiveStart,
+			RetroactivePause: t.SlaDefinition.RetroactivePause,
+			WhenToCancel:     t.SlaDefinition.WhenToCancel,
+			CancelCondition:  t.SlaDefinition.CancelCondition,
+			PauseCondition:   t.SlaDefinition.PauseCondition,
+			WhenToResume:     t.SlaDefinition.WhenToResume,
+			StopCondition:    t.SlaDefinition.StopCondition,
+			ResetCondition:   t.SlaDefinition.ResetCondition,
+			ResetAction:      t.SlaDefinition.ResetAction,
+		}
+		if t.SlaDefinition.ID != nil {
+			id := sysidToUUID(*t.SlaDefinition.ID)
+			def.ID = &id
+		}
+		view.SlaDefinition = def
+	}
+
+	if t.Stage != nil {
+		view.Stage = &domain.TaskSlaStage{
+			ID:    t.Stage.ID,
+			Label: t.Stage.Label,
+		}
+	}
+
+	if t.Schedule != nil {
+		ref := &domain.TaskSlaScheduleRef{
+			Name:     t.Schedule.Name,
+			Timezone: t.Schedule.Timezone,
+		}
+		if t.Schedule.ID != nil {
+			id := sysidToUUID(*t.Schedule.ID)
+			ref.ID = &id
+		}
+		view.Schedule = ref
+	}
+
+	return view
+}
+
+func (s *snTaskSlaService) GetTaskSla(ctx context.Context, id string) (domain.TaskSlaDetail, error) {
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.TaskSlaDetail{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.TaskSlaDetail{}, err
+	}
+
+	raw, err := s.client.Get(ctx, "/task-slas/"+uuidToSysid(id), token)
+	if err != nil {
+		return domain.TaskSlaDetail{}, err
+	}
+
+	var t snTaskSlaDetail
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return domain.TaskSlaDetail{}, fmt.Errorf("sn get task sla: parse response: %w", err)
+	}
+
+	return snTaskSlaToDetailView(t), nil
+}
+
+func (s *snTaskSlaService) SearchTaskSlas(ctx context.Context, req domain.SearchTaskSlasRequest) (domain.SearchTaskSlasResponse, error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
 		return domain.SearchTaskSlasResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchTaskSlasResponse{}, err
 	}
 
 	payload := snTaskSlaSearchPayload{
