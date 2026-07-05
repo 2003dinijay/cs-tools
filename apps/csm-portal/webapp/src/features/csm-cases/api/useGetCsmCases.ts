@@ -236,6 +236,10 @@ export function useGetCsmCases(
             ...(assignedUserIds && assignedUserIds.length > 0 && {
               assignedUserIds,
             }),
+            // Product family names; SN matches `product.name` (all versions).
+            ...(filters.productNames.length > 0 && {
+              productNames: filters.productNames,
+            }),
           },
         }),
         queryClient.fetchQuery(projectOptionsQueryOptions(api)).catch((err) => {

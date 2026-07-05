@@ -54,6 +54,7 @@ const FILTER_PARAM_KEYS = [
   "assignees",
   "projects",
   "engagementTypes",
+  "products",
 ] as const;
 
 interface CsmIssuesViewProps {

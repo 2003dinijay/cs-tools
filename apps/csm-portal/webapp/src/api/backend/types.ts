@@ -422,6 +422,12 @@ export interface BeCaseSearchFilters {
    * `@me`-only selection resolves to nothing and the filter is omitted.
    */
   assignedUserIds?: string[];
+  /**
+   * Filter by product family name (e.g. `"API Manager"`, `"Asgardeo"`). Matches
+   * every version of each named product (ServiceNow matches `product.name`).
+   * SN data source only.
+   */
+  productNames?: string[];
 }
 
 export interface BeCaseSearchPayload {
