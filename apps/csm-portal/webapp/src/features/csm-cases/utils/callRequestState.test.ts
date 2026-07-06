@@ -46,6 +46,15 @@ describe("resolveCallRequestStateKey", () => {
     expect(resolveCallRequestStateKey(undefined)).toBeNull();
   });
 
+  it("does not resolve a key from the display label (label is display-only)", () => {
+    // The FE label table is worded independently of the data source's labels, so
+    // label is not a reliable key source; only state.id resolves a key. An
+    // unmappable id is not rescued by a label.
+    expect(resolveCallRequestStateKey({ id: 99, label: "Scheduled" })).toBeNull();
+    // The label is still honoured for display, though:
+    expect(callRequestStateLabel({ id: 99, label: "Scheduled" })).toBe("Scheduled");
+  });
+
   it("regression: agent-action lookup is always an array, never undefined", () => {
     // The crash was CALL_REQUEST_AGENT_ACTIONS[String(state.id)] === undefined
     // then reading .length. Resolving first and defaulting to [] prevents it.

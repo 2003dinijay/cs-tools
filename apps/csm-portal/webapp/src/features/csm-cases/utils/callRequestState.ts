@@ -65,10 +65,17 @@ const NUMERIC_STATE_KEY: Record<string, BeCallRequestStateKey> = {
 };
 
 /**
- * Resolve a backend call-request state to one of our enum keys. `state.id` may
- * arrive as our string key, as an integer choice key, or the state may only
- * carry a display `label`. Returns null when it maps to none of them, so
- * callers must handle the null case (never index a lookup with the raw id).
+ * Resolve a backend call-request state to one of our enum keys from `state.id`,
+ * which arrives either as our string enum key or as the data source's integer
+ * choice key. Returns null otherwise, so callers must handle the null case
+ * (never index a lookup with the raw id).
+ *
+ * `state.label` is intentionally NOT used for key resolution: the FE label table
+ * (`CALL_REQUEST_STATE_LABEL`) is worded independently of the data source's
+ * labels (e.g. our `customer_rejected` -> "Rejected by customer" vs the source's
+ * "Customer Rejected"), so a reverse label lookup would resolve only some states
+ * and silently miss others. The label is display-only (see `callRequestStateLabel`).
+ * In practice the backend always sends a usable `state.id`.
  */
 export function resolveCallRequestStateKey(
   state: { id: number | string; label?: string } | undefined,
