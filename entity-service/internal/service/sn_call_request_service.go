@@ -137,23 +137,23 @@ type snCallRequestUpdateResponse struct {
 
 // snCallRequestSchedulePayload mirrors POST /call-requests/{id}/schedule in the SN integration service.
 type snCallRequestSchedulePayload struct {
-	MeetingDate     string `json:"meetingDate"`
-	DurationMinutes int    `json:"durationInMinutes"`
-	Assignee        string `json:"assignee,omitempty"`
+	MeetingDate     string  `json:"meetingDate"`
+	DurationMinutes int     `json:"durationInMinutes"`
+	Assignee        *string `json:"assignee,omitempty"`
 }
 
 // snCallRequestRejectPayload mirrors POST /call-requests/{id}/reject in the SN integration service.
 type snCallRequestRejectPayload struct {
-	Reason string `json:"reason,omitempty"`
+	Reason *string `json:"reason,omitempty"`
 }
 
 // snCallRequestNotesPayload mirrors POST /call-requests/{id}/notes in the SN integration service.
 type snCallRequestNotesPayload struct {
-	Notes             string `json:"notes"`
-	Plan              string `json:"plan,omitempty"`
-	Attendees         string `json:"attendees,omitempty"`
-	ActionItems       string `json:"actionItems,omitempty"`
-	ActualDurationMin *int   `json:"actualDurationMin,omitempty"`
+	Notes             string  `json:"notes"`
+	Plan              *string `json:"plan,omitempty"`
+	Attendees         *string `json:"attendees,omitempty"`
+	ActionItems       *string `json:"actionItems,omitempty"`
+	ActualDurationMin *int    `json:"actualDurationMin,omitempty"`
 }
 
 // snCallRequestActionResponse mirrors the SN integration service response for the

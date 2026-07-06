@@ -1972,28 +1972,28 @@ type UpdateCallRequestResponse struct {
 // ScheduleCallRequestRequest is the input for POST /call-requests/{id}/schedule.
 // ID is injected from the URL path parameter and excluded from JSON decoding.
 type ScheduleCallRequestRequest struct {
-	ID              string `json:"-"`
-	MeetingDate     string `json:"meetingDate"`
-	DurationMinutes int    `json:"durationInMinutes"`
-	Assignee        string `json:"assignee,omitempty"`
+	ID              string  `json:"-"`
+	MeetingDate     string  `json:"meetingDate"`
+	DurationMinutes int     `json:"durationInMinutes"`
+	Assignee        *string `json:"assignee,omitempty"`
 }
 
 // RejectCallRequestRequest is the input for POST /call-requests/{id}/reject.
 // ID is injected from the URL path parameter and excluded from JSON decoding.
 type RejectCallRequestRequest struct {
-	ID     string `json:"-"`
-	Reason string `json:"reason,omitempty"`
+	ID     string  `json:"-"`
+	Reason *string `json:"reason,omitempty"`
 }
 
 // SendCallRequestNotesRequest is the input for POST /call-requests/{id}/notes.
 // ID is injected from the URL path parameter and excluded from JSON decoding.
 type SendCallRequestNotesRequest struct {
-	ID                string `json:"-"`
-	Notes             string `json:"notes"`
-	Plan              string `json:"plan,omitempty"`
-	Attendees         string `json:"attendees,omitempty"`
-	ActionItems       string `json:"actionItems,omitempty"`
-	ActualDurationMin *int   `json:"actualDurationMin,omitempty"`
+	ID                string  `json:"-"`
+	Notes             string  `json:"notes"`
+	Plan              *string `json:"plan,omitempty"`
+	Attendees         *string `json:"attendees,omitempty"`
+	ActionItems       *string `json:"actionItems,omitempty"`
+	ActualDurationMin *int    `json:"actualDurationMin,omitempty"`
 }
 
 // CallRequestActionResponse is the output for the agent-side call request actions
@@ -2040,11 +2040,11 @@ type TaskSlaTaskRef struct {
 type TaskSlaView struct {
 	ID                        string             `json:"id"`
 	SlaDefinition             *TaskSlaDefinition `json:"slaDefinition"`
-	Stage                     *string      `json:"stage"`
+	Stage                     *string            `json:"stage"`
 	Task                      *TaskSlaTaskRef    `json:"task"`
 	BusinessTimeLeft          *string            `json:"businessTimeLeft"`
 	BusinessElapsedTime       *string            `json:"businessElapsedTime"`
-	BusinessElapsedPercentage *float64 `json:"businessElapsedPercentage"`
+	BusinessElapsedPercentage *float64           `json:"businessElapsedPercentage"`
 	StartTime                 *string            `json:"startTime"`
 	EndTime                   *string            `json:"endTime"`
 }
@@ -2059,29 +2059,29 @@ type SearchTaskSlasResponse struct {
 
 // TaskSlaDefinitionDetail is the extended SLA definition returned by GET /task-slas/{id}.
 type TaskSlaDefinitionDetail struct {
-	ID               *string `json:"id"`
-	Name             *string `json:"name"`
-	Type             *string `json:"type"`
-	Target           *string `json:"target"`
-	Flow             *string `json:"flow"`
-	Workflow         *string `json:"workflow"`
-	IsEnableLogging  *bool   `json:"isEnableLogging"`
-	DurationType     *string `json:"durationType"`
-	Duration         *string `json:"duration"`
-	ScheduleSource   *string `json:"scheduleSource"`
-	Schedule         *string `json:"schedule"`
-	TimezoneSource   *string `json:"timezoneSource"`
-	Timezone         *string `json:"timezone"`
-	StartCondition   *string `json:"startCondition"`
+	ID                 *string `json:"id"`
+	Name               *string `json:"name"`
+	Type               *string `json:"type"`
+	Target             *string `json:"target"`
+	Flow               *string `json:"flow"`
+	Workflow           *string `json:"workflow"`
+	IsEnableLogging    *bool   `json:"isEnableLogging"`
+	DurationType       *string `json:"durationType"`
+	Duration           *string `json:"duration"`
+	ScheduleSource     *string `json:"scheduleSource"`
+	Schedule           *string `json:"schedule"`
+	TimezoneSource     *string `json:"timezoneSource"`
+	Timezone           *string `json:"timezone"`
+	StartCondition     *string `json:"startCondition"`
 	IsRetroactiveStart *bool   `json:"isRetroactiveStart"`
 	IsRetroactivePause *bool   `json:"isRetroactivePause"`
-	WhenToCancel     *string `json:"whenToCancel"`
-	CancelCondition  *string `json:"cancelCondition"`
-	PauseCondition   *string `json:"pauseCondition"`
-	WhenToResume     *string `json:"whenToResume"`
-	StopCondition    *string `json:"stopCondition"`
-	ResetCondition   *string `json:"resetCondition"`
-	ResetAction      *string `json:"resetAction"`
+	WhenToCancel       *string `json:"whenToCancel"`
+	CancelCondition    *string `json:"cancelCondition"`
+	PauseCondition     *string `json:"pauseCondition"`
+	WhenToResume       *string `json:"whenToResume"`
+	StopCondition      *string `json:"stopCondition"`
+	ResetCondition     *string `json:"resetCondition"`
+	ResetAction        *string `json:"resetAction"`
 }
 
 // TaskSlaScheduleRef is the schedule reference returned by GET /task-slas/{id}.
@@ -2096,7 +2096,7 @@ type TaskSlaDetail struct {
 	ID                        string                   `json:"id"`
 	Task                      *TaskSlaTaskRef          `json:"task"`
 	SlaDefinition             *TaskSlaDefinitionDetail `json:"slaDefinition"`
-	Stage                     *string            `json:"stage"`
+	Stage                     *string                  `json:"stage"`
 	BusinessTimeLeft          *string                  `json:"businessTimeLeft"`
 	BusinessElapsedTime       *string                  `json:"businessElapsedTime"`
 	BusinessElapsedPercentage *float64                 `json:"businessElapsedPercentage"`
