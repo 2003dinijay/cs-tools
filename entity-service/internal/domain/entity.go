@@ -1938,7 +1938,7 @@ type TaskSlaView struct {
 
 // SearchTaskSlasResponse is the response for POST /task-slas/search.
 type SearchTaskSlasResponse struct {
-	TaskSlas []TaskSlaView `json:"taskSlas"`
+	TaskSlas []TaskSlaView `json:"slas"`
 	Total    int           `json:"total"`
 	Limit    int           `json:"limit"`
 	Offset   int           `json:"offset"`

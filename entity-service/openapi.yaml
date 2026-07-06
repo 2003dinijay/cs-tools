@@ -1666,7 +1666,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /task-slas/{id}:
+  /slas/{id}:
     get:
       summary: Get a task SLA record by ID (ServiceNow data source only).
       operationId: getTaskSla
@@ -1709,7 +1709,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /task-slas/search:
+  /slas/search:
     post:
       summary: Search task SLA records (ServiceNow data source only).
       operationId: searchTaskSlas
@@ -4051,7 +4051,7 @@ components:
     SearchTaskSlasResponse:
       type: object
       properties:
-        taskSlas:
+        slas:
           type: array
           items:
             $ref: '#/components/schemas/TaskSlaView'

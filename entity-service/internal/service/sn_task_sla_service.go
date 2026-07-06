@@ -37,7 +37,7 @@ type snTaskSlaFilters struct {
 }
 
 type snTaskSlasResponse struct {
-	TaskSlas     []snTaskSla `json:"taskSlas"`
+	TaskSlas     []snTaskSla `json:"slas"`
 	TotalRecords int         `json:"totalRecords"`
 	Limit        int         `json:"limit"`
 	Offset       int         `json:"offset"`
@@ -254,7 +254,7 @@ func (s *snTaskSlaService) GetTaskSla(ctx context.Context, id string) (domain.Ta
 		return domain.TaskSlaDetail{}, err
 	}
 
-	raw, err := s.client.Get(ctx, "/task-slas/"+uuidToSysid(id), token)
+	raw, err := s.client.Get(ctx, "/slas/"+uuidToSysid(id), token)
 	if err != nil {
 		return domain.TaskSlaDetail{}, err
 	}
@@ -290,7 +290,7 @@ func (s *snTaskSlaService) SearchTaskSlas(ctx context.Context, req domain.Search
 		}
 	}
 
-	raw, err := s.client.Post(ctx, "/task-slas/search", token, payload)
+	raw, err := s.client.Post(ctx, "/slas/search", token, payload)
 	if err != nil {
 		return domain.SearchTaskSlasResponse{}, err
 	}
