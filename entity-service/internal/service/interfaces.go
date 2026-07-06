@@ -169,6 +169,11 @@ type CaseService interface {
 	// SearchCaseAttachments returns a paginated list of attachments for the case identified
 	// by req.CaseID. A ValidationError is returned for invalid input.
 	SearchCaseAttachments(ctx context.Context, req domain.SearchAttachmentsRequest) (domain.SearchAttachmentsResponse, error)
+	// SearchCaseActivities returns a paginated activity feed (comments, attachments, and
+	// optionally field changes) for the case identified by req.CaseID. Field-change entries
+	// are included only when req.IncludeFieldChanges is set. A ValidationError is returned
+	// for invalid input. Supported by the ServiceNow data source only.
+	SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error)
 	// GetCaseAttachmentContent returns the raw binary content and its Content-Type
 	// for the attachment identified by attachmentID.
 	// A NotFoundError is returned if absent.
