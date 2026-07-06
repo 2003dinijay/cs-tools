@@ -1080,6 +1080,71 @@ type SearchCaseCommentsResponse struct {
 	HasMore  bool          `json:"hasMore"`
 }
 
+// ActivityType classifies an entry in a case activity feed.
+type ActivityType string
+
+const (
+	// ActivityTypeComment is a comment or work note on the case.
+	ActivityTypeComment ActivityType = "comment"
+	// ActivityTypeAttachment is a file attached to the case.
+	ActivityTypeAttachment ActivityType = "attachment"
+	// ActivityTypeFieldChange is a recorded change to one or more case fields.
+	ActivityTypeFieldChange ActivityType = "field_change"
+)
+
+// FieldChange describes a single field mutation recorded on a case.
+type FieldChange struct {
+	Field         string `json:"field"`
+	FieldLabel    string `json:"fieldLabel"`
+	PreviousValue string `json:"previousValue"`
+	NewValue      string `json:"newValue"`
+}
+
+// CaseActivity is a single entry in a case activity feed. It is a discriminated
+// union on Type: the shared fields are always present, while the type-specific
+// fields are populated only for the matching Type (CommentType for comments;
+// FileName/ContentType/SizeBytes/DownloadURL for attachments; Changes for field
+// changes).
+type CaseActivity struct {
+	ID                 string       `json:"id"`
+	Type               ActivityType `json:"type"`
+	Content            string       `json:"content"`
+	CreatedOn          time.Time    `json:"createdOn"`
+	CreatedBy          string       `json:"createdBy"`
+	CreatedByFirstName string       `json:"createdByFirstName"`
+	CreatedByLastName  string       `json:"createdByLastName"`
+	CreatedByFullName  string       `json:"createdByFullName"`
+	// CommentType is set only for Type == ActivityTypeComment.
+	CommentType *CommentType `json:"commentType,omitempty"`
+	// FileName, ContentType, SizeBytes, and DownloadURL are set only for
+	// Type == ActivityTypeAttachment.
+	FileName    string `json:"fileName,omitempty"`
+	ContentType string `json:"contentType,omitempty"`
+	SizeBytes   int    `json:"sizeBytes,omitempty"`
+	DownloadURL string `json:"downloadUrl,omitempty"`
+	// Changes is set only for Type == ActivityTypeFieldChange.
+	Changes []FieldChange `json:"changes,omitempty"`
+}
+
+// SearchCaseActivitiesRequest is the input for listing the activity feed of a case.
+// CaseID is populated from the URL path parameter and is not part of the JSON body.
+// When IncludeFieldChanges is nil or false, only comment and attachment entries are returned.
+type SearchCaseActivitiesRequest struct {
+	CaseID              string     `json:"-"`
+	Pagination          Pagination `json:"pagination"`
+	IncludeFieldChanges *bool      `json:"includeFieldChanges,omitempty"`
+}
+
+// SearchCaseActivitiesResponse is the paginated result of a case activity search.
+// HasMore is true when additional pages are available beyond the current offset.
+type SearchCaseActivitiesResponse struct {
+	Activity []CaseActivity `json:"activity"`
+	Total    int            `json:"total"`
+	Limit    int            `json:"limit"`
+	Offset   int            `json:"offset"`
+	HasMore  bool           `json:"hasMore"`
+}
+
 // Comment is a generic comment associated with any reference entity type
 // (case, conversation, change_request, etc.).
 type Comment struct {

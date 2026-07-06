@@ -1126,6 +1126,131 @@ func (s *snCaseService) SearchCaseAttachments(ctx context.Context, req domain.Se
 	}, nil
 }
 
+type snSearchActivitiesPayload struct {
+	Pagination          snProjectPagination `json:"pagination"`
+	IncludeFieldChanges *bool               `json:"includeFieldChanges,omitempty"`
+}
+
+type snFieldChange struct {
+	Field         string `json:"field"`
+	FieldLabel    string `json:"fieldLabel"`
+	PreviousValue string `json:"previousValue"`
+	NewValue      string `json:"newValue"`
+}
+
+type snActivity struct {
+	ID                 string          `json:"id"`
+	Type               string          `json:"type"`
+	Content            string          `json:"content"`
+	CreatedOn          string          `json:"createdOn"`
+	CreatedBy          string          `json:"createdBy"`
+	CreatedByFirstName string          `json:"createdByFirstName"`
+	CreatedByLastName  string          `json:"createdByLastName"`
+	CreatedByFullName  string          `json:"createdByFullName"`
+	CommentType        string          `json:"commentType"`
+	FileName           string          `json:"fileName"`
+	ContentType        string          `json:"contentType"`
+	SizeBytes          int             `json:"sizeBytes"`
+	DownloadURL        string          `json:"downloadUrl"`
+	Changes            []snFieldChange `json:"changes"`
+}
+
+type snSearchActivitiesResponse struct {
+	Activity     []snActivity `json:"activity"`
+	Offset       int          `json:"offset"`
+	Limit        int          `json:"limit"`
+	TotalRecords int          `json:"totalRecords"`
+}
+
+func (s *snCaseService) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error) {
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.SearchCaseActivitiesResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+
+	if err := validateUUIDs("id", []string{req.CaseID}); err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+
+	payload := snSearchActivitiesPayload{
+		Pagination:          snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
+		IncludeFieldChanges: req.IncludeFieldChanges,
+	}
+
+	raw, err := s.client.Post(ctx, "/cases/"+uuidToSysid(req.CaseID)+"/activities/search", token, payload)
+	if err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+
+	var snResp snSearchActivitiesResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.SearchCaseActivitiesResponse{}, fmt.Errorf("sn search activities: parse response: %w", err)
+	}
+
+	activities := make([]domain.CaseActivity, 0, len(snResp.Activity))
+	for _, a := range snResp.Activity {
+		createdOn, err := time.Parse(snCreatedOnLayout, a.CreatedOn)
+		if err != nil {
+			return domain.SearchCaseActivitiesResponse{}, fmt.Errorf("sn search activities: parse createdOn %q: %w", a.CreatedOn, err)
+		}
+		activity := domain.CaseActivity{
+			ID:                 sysidToUUID(a.ID),
+			Type:               domain.ActivityType(a.Type),
+			Content:            a.Content,
+			CreatedOn:          createdOn,
+			CreatedBy:          a.CreatedBy,
+			CreatedByFirstName: a.CreatedByFirstName,
+			CreatedByLastName:  a.CreatedByLastName,
+			CreatedByFullName:  a.CreatedByFullName,
+		}
+		switch domain.ActivityType(a.Type) {
+		case domain.ActivityTypeComment:
+			var ct domain.CommentType
+			switch a.CommentType {
+			case "comments", "comment":
+				ct = domain.CommentTypeComment
+			case "work_notes", "work_note":
+				ct = domain.CommentTypeWorkNote
+			case "activity":
+				ct = domain.CommentTypeActivity
+			default:
+				ct = domain.CommentTypeComment
+			}
+			activity.CommentType = &ct
+		case domain.ActivityTypeAttachment:
+			activity.FileName = a.FileName
+			activity.ContentType = a.ContentType
+			activity.SizeBytes = a.SizeBytes
+			activity.DownloadURL = a.DownloadURL
+		case domain.ActivityTypeFieldChange:
+			changes := make([]domain.FieldChange, 0, len(a.Changes))
+			for _, ch := range a.Changes {
+				changes = append(changes, domain.FieldChange{
+					Field:         ch.Field,
+					FieldLabel:    ch.FieldLabel,
+					PreviousValue: ch.PreviousValue,
+					NewValue:      ch.NewValue,
+				})
+			}
+			activity.Changes = changes
+		}
+		activities = append(activities, activity)
+	}
+
+	total := snResp.TotalRecords
+	return domain.SearchCaseActivitiesResponse{
+		Activity: activities,
+		Total:    total,
+		Limit:    req.Pagination.Limit,
+		Offset:   req.Pagination.Offset,
+		HasMore:  req.Pagination.Offset+len(activities) < total,
+	}, nil
+}
+
 func (s *snCaseService) GetCaseAttachmentContent(ctx context.Context, attachmentID string) ([]byte, string, error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
