@@ -27,7 +27,7 @@ import {
   Typography,
   Button,
 } from "@wso2/oxygen-ui";
-import { ListFilter, X } from "@wso2/oxygen-ui-icons-react";
+import { CalendarRange, ListFilter, X } from "@wso2/oxygen-ui-icons-react";
 import {
   useAllTimeCards,
   useApprovalQueue,
@@ -40,6 +40,7 @@ import { useProjectOptions } from "@features/csm-cases/api/useProjectOptions";
 import { BackendApiError } from "@api/backend/client";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
+import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
 import type { BeProject } from "@api/backend/types";
 import { TIME_CARD_STATE_META } from "@features/csm-timecards/constants/timeCardConstants";
 import { useTimecardRole } from "@features/csm-timecards/hooks/useTimecardRole";
@@ -81,6 +82,25 @@ const DEFAULT_ROWS_PER_PAGE = 20;
 // Top option is the backend's max page limit; larger requests are rejected.
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
 
+/** Strips the native date input's own chrome so it blends into the grouped
+ * pill it sits in, rather than looking like a bare HTML form control.
+ * `colorScheme: "light dark"` lets the browser render its calendar icon
+ * for whichever of light/dark actually applies, instead of always dark. */
+const dateInputSx = {
+  border: "none",
+  outline: "none",
+  background: "none",
+  font: "inherit",
+  fontSize: "0.8125rem",
+  color: "inherit",
+  colorScheme: "light dark",
+  width: 108,
+  "&::-webkit-calendar-picker-indicator": {
+    cursor: "pointer",
+    opacity: 0.7,
+  },
+};
+
 /** Page + rows-per-page state for one tab's `TablePagination`, following the
  * same shape/convention as `CsmUsersPage.tsx` and friends. Each tab gets its
  * own instance so switching tabs doesn't disturb another tab's position. */
@@ -117,6 +137,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
   const role = useTimecardRole();
   const me = useCurrentEngineer();
   const { showError } = useErrorBanner();
+  const { showSuccess } = useSuccessBanner();
   const [tab, setTab] = useState<TabId>("mine");
   const activeTab: TabId = tab === "approvals" && !role.isApprover ? "mine" : tab;
 
@@ -129,6 +150,11 @@ export default function CsmTimeCardsPage(): JSX.Element {
   const [filterWorkItem, setFilterWorkItem] = useState<string[]>([]);
   const [filterState, setFilterState] = useState<TimeCardState | "">("");
   const [filterEngineer, setFilterEngineer] = useState<string[]>([]);
+  // Date range (YYYY-MM-DD, inclusive) — `from`/`to` are already real
+  // server-side filters (see TimeCardSearchFilters), just never had a UI
+  // control wired to them until now.
+  const [filterFrom, setFilterFrom] = useState("");
+  const [filterTo, setFilterTo] = useState("");
 
   const projects = useProjectOptions();
   // Search is unscoped by default: with no project filter picked we send no
@@ -142,6 +168,8 @@ export default function CsmTimeCardsPage(): JSX.Element {
   const baseFilters: TimeCardSearchFilters = {
     ...(scopeProjectIds.length && { projectIds: scopeProjectIds }),
     ...(filterState && { states: [filterState] }),
+    ...(filterFrom && { from: filterFrom }),
+    ...(filterTo && { to: filterTo }),
   };
 
   // Each tab pages independently — was previously fetching its *entire*
@@ -168,7 +196,9 @@ export default function CsmTimeCardsPage(): JSX.Element {
     filterProject.length > 0 ||
     filterWorkItem.length > 0 ||
     !!filterState ||
-    filterEngineer.length > 0;
+    filterEngineer.length > 0 ||
+    !!filterFrom ||
+    !!filterTo;
 
   // A filter change re-scopes the search for every tab, so every tab's page
   // position needs to reset too — otherwise "page 3" of a narrower result
@@ -186,11 +216,25 @@ export default function CsmTimeCardsPage(): JSX.Element {
     setFilterState(v);
     resetAllPages();
   };
+  const handleFilterFromChange = (v: string): void => {
+    setFilterFrom(v);
+    // min/max on the date inputs only guide the picker UI — typing a date
+    // directly can still commit an inverted range, so clamp here too.
+    if (filterTo && v > filterTo) setFilterTo(v);
+    resetAllPages();
+  };
+  const handleFilterToChange = (v: string): void => {
+    setFilterTo(v);
+    if (filterFrom && v < filterFrom) setFilterFrom(v);
+    resetAllPages();
+  };
   const clearFilters = (): void => {
     setFilterProject([]);
     setFilterWorkItem([]);
     setFilterState("");
     setFilterEngineer([]);
+    setFilterFrom("");
+    setFilterTo("");
     resetAllPages();
   };
 
@@ -268,6 +312,10 @@ export default function CsmTimeCardsPage(): JSX.Element {
             workItemOptions={mineWorkItemOptions}
             filterState={filterState}
             setFilterState={handleFilterStateChange}
+            filterFrom={filterFrom}
+            setFilterFrom={handleFilterFromChange}
+            filterTo={filterTo}
+            setFilterTo={handleFilterToChange}
             onClear={clearFilters}
           />
 
@@ -343,6 +391,10 @@ export default function CsmTimeCardsPage(): JSX.Element {
             workItemOptions={allWorkItemOptions}
             filterState={filterState}
             setFilterState={handleFilterStateChange}
+            filterFrom={filterFrom}
+            setFilterFrom={handleFilterFromChange}
+            filterTo={filterTo}
+            setFilterTo={handleFilterToChange}
             onClear={clearFilters}
             engineerSlot={
               <Box sx={{ width: 200 }}>
@@ -435,6 +487,10 @@ export default function CsmTimeCardsPage(): JSX.Element {
             workItemOptions={approvalsWorkItemOptions}
             filterState={filterState}
             setFilterState={handleFilterStateChange}
+            filterFrom={filterFrom}
+            setFilterFrom={handleFilterFromChange}
+            filterTo={filterTo}
+            setFilterTo={handleFilterToChange}
             onClear={clearFilters}
             hideStateFilter
             engineerSlot={
@@ -526,7 +582,14 @@ export default function CsmTimeCardsPage(): JSX.Element {
           onClose={() => setReviewCard(null)}
           onDecide={(decision) =>
             decideCard.mutate(decision, {
-              onSuccess: () => setReviewCard(null),
+              onSuccess: () => {
+                setReviewCard(null);
+                showSuccess(
+                  decision.state === "approved"
+                    ? "Time card approved."
+                    : "Time card rejected.",
+                );
+              },
               onError: (err) => {
                 // The backend 403s when the signed-in user isn't authorized
                 // to decide this specific card (confirmed live: approving
@@ -561,6 +624,10 @@ function FilterBar({
   workItemOptions,
   filterState,
   setFilterState,
+  filterFrom,
+  setFilterFrom,
+  filterTo,
+  setFilterTo,
   onClear,
   engineerSlot,
   engineerChip,
@@ -576,6 +643,11 @@ function FilterBar({
   workItemOptions: string[];
   filterState: TimeCardState | "";
   setFilterState: (v: TimeCardState | "") => void;
+  /** Inclusive date range (YYYY-MM-DD), matched against a card's work date. */
+  filterFrom: string;
+  setFilterFrom: (v: string) => void;
+  filterTo: string;
+  setFilterTo: (v: string) => void;
   onClear: () => void;
   engineerSlot?: JSX.Element;
   /** Active-chip for the Engineer filter — only the All/Approvals tabs have one. */
@@ -609,6 +681,16 @@ function FilterBar({
       onDelete: () => setFilterState(""),
     });
   }
+  if (filterFrom || filterTo) {
+    activeChips.push({
+      key: "dateRange",
+      label: `Date: ${filterFrom || "…"} to ${filterTo || "…"}`,
+      onDelete: () => {
+        setFilterFrom("");
+        setFilterTo("");
+      },
+    });
+  }
 
   return (
     <Box
@@ -620,68 +702,104 @@ function FilterBar({
         overflow: "hidden",
       }}
     >
-      {/* Controls row */}
-      <Box
-        sx={{
-          display: "flex",
-          flexWrap: "wrap",
-          alignItems: "center",
-          gap: 1.5,
-          px: 2,
-          py: 1.5,
-        }}
-      >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, color: "text.secondary", mr: 0.5 }}>
-          <ListFilter size={16} />
-          <Typography variant="caption" fontWeight={600} color="text.secondary">
-            Filters
+      {/* Controls — a fixed two-row layout rather than one row that wraps
+       unpredictably: which controls land on row two would otherwise depend
+       on viewport width, and a single item stranding itself alone on a new
+       row (with a lot of empty space next to it) reads as broken overflow
+       rather than a deliberate section. Row one is the entity filters, row
+       two is always the date range, regardless of width. */}
+      <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25, px: 2, py: 1.5 }}>
+        <Box sx={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 1.5 }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, color: "text.secondary", mr: 0.5 }}>
+            <ListFilter size={16} />
+            <Typography variant="caption" fontWeight={600} color="text.secondary">
+              Filters
+            </Typography>
+          </Box>
+
+          <Box sx={{ width: 220 }}>
+            <SearchableMultiSelect
+              id="timecards-filter-project"
+              label="Project"
+              placeholder="Search projects…"
+              values={filterProject}
+              options={projects.map((p) => p.id)}
+              formatOption={(id) => projects.find((p) => p.id === id)?.name ?? id}
+              onChange={setFilterProject}
+            />
+          </Box>
+
+          <Box sx={{ width: 220 }}>
+            <SearchableMultiSelect
+              id="timecards-filter-work-item"
+              label="Work item"
+              placeholder="Search work items…"
+              values={filterWorkItem}
+              options={workItemOptions}
+              onChange={setFilterWorkItem}
+            />
+          </Box>
+
+          {engineerSlot}
+
+          {!hideStateFilter && (
+            <TextField
+              select
+              size="small"
+              label="State"
+              value={filterState}
+              onChange={(e) => setFilterState(e.target.value as TimeCardState | "")}
+              sx={{ width: 150 }}
+            >
+              <MenuItem value="">All states</MenuItem>
+              {FILTER_STATES.map((s) => (
+                <MenuItem key={s} value={s}>
+                  {TIME_CARD_STATE_META[s].label}
+                </MenuItem>
+              ))}
+            </TextField>
+          )}
+        </Box>
+
+        {/* One grouped pill instead of two separate outlined fields — reads
+         as a single "date range" control, always on its own row. */}
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 0.75,
+            width: "fit-content",
+            height: 40,
+            px: 1.25,
+            border: 1,
+            borderColor: "divider",
+            borderRadius: 1,
+            color: "text.secondary",
+          }}
+        >
+          <CalendarRange size={15} style={{ flexShrink: 0, opacity: 0.7 }} />
+          <Box
+            component="input"
+            type="date"
+            aria-label="From date"
+            value={filterFrom}
+            max={filterTo || undefined}
+            onChange={(e) => setFilterFrom(e.target.value)}
+            sx={dateInputSx}
+          />
+          <Typography variant="body2" color="text.disabled">
+            –
           </Typography>
-        </Box>
-
-        <Box sx={{ width: 220 }}>
-          <SearchableMultiSelect
-            id="timecards-filter-project"
-            label="Project"
-            placeholder="Search projects…"
-            values={filterProject}
-            options={projects.map((p) => p.id)}
-            formatOption={(id) => projects.find((p) => p.id === id)?.name ?? id}
-            onChange={setFilterProject}
+          <Box
+            component="input"
+            type="date"
+            aria-label="To date"
+            value={filterTo}
+            min={filterFrom || undefined}
+            onChange={(e) => setFilterTo(e.target.value)}
+            sx={dateInputSx}
           />
         </Box>
-
-        <Box sx={{ width: 220 }}>
-          <SearchableMultiSelect
-            id="timecards-filter-work-item"
-            label="Work item"
-            placeholder="Search work items…"
-            values={filterWorkItem}
-            options={workItemOptions}
-            onChange={setFilterWorkItem}
-          />
-        </Box>
-
-        {engineerSlot}
-
-        {!hideStateFilter && (
-          <TextField
-            select
-            size="small"
-            label="State"
-            value={filterState}
-            onChange={(e) => setFilterState(e.target.value as TimeCardState | "")}
-            sx={{ width: 150 }}
-          >
-            <MenuItem value="">All states</MenuItem>
-            {FILTER_STATES.map((s) => (
-              <MenuItem key={s} value={s}>
-                {TIME_CARD_STATE_META[s].label}
-              </MenuItem>
-            ))}
-          </TextField>
-        )}
-
-        <Box sx={{ flexGrow: 1 }} />
       </Box>
 
       {/* Active filter chips */}
