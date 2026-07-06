@@ -322,6 +322,62 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /cases/{id}/activities/search:
+    post:
+      summary: Search the activity trail of a case.
+      description: >
+        Returns the chronological activity trail for a case (comments, work notes,
+        state transitions, and other recorded field changes). The request body is
+        forwarded to the integration service as-is and the response is returned
+        verbatim. Set includeFieldChanges to also include per-field value changes.
+      operationId: postCasesIdActivitiesSearch
+      parameters:
+        - name: id
+          in: path
+          description: UUID of the case.
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        description: Case activity search payload
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseActivitySearchPayload'
+        required: false
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseActivitySearchResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /attachments:
     post:
       summary: Upload a file attachment to a case.
@@ -4257,6 +4313,58 @@ components:
         total:
           type: integer
           description: Total number of comments on the case
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    CaseActivitySearchPayload:
+      type: object
+      nullable: true
+      description: >
+        Payload for paginating the activity trail of a case. The case ID is taken
+        from the URL path. The payload is forwarded to the integration service as-is.
+      properties:
+        pagination:
+          allOf:
+            - $ref: '#/components/schemas/Pagination'
+            - properties:
+                limit:
+                  default: 20
+                  maximum: 100
+        includeFieldChanges:
+          type: boolean
+          description: When true, include per-field value changes in each activity entry.
+
+    CaseActivity:
+      type: object
+      description: A single entry in a case's activity trail. Shape is defined by the integration service.
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        caseId:
+          type: string
+        type:
+          type: string
+        createdBy:
+          type: string
+        createdOn:
+          type: string
+          format: date-time
+
+    CaseActivitySearchResponse:
+      type: object
+      properties:
+        activities:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseActivity'
+        total:
+          type: integer
+          description: Total number of activity entries on the case
         limit:
           type: integer
         offset:

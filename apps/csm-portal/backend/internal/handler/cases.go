@@ -48,6 +48,7 @@ type entityCaseClient interface {
 	PatchCase(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	CreateCaseComment(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	SearchComments(ctx context.Context, body []byte) ([]byte, error)
+	SearchCaseActivities(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	SearchCases(ctx context.Context, body []byte) ([]byte, error)
 	GetCase(ctx context.Context, caseID string) ([]byte, error)
 	CreateCaseAttachment(ctx context.Context, body []byte) ([]byte, error)
@@ -267,6 +268,48 @@ func (h *CaseHandler) SearchCaseComments(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchComments failed", "userID", user.UserID, "caseID", caseID, "err", err)
 		mapUpstreamError(w, err, "Failed to search case comments.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// SearchCaseActivities handles POST /cases/{id}/activities/search.
+// The endpoint is path-scoped, so the request body is capped and forwarded to the
+// entity service as-is (no fields are injected) and the response is returned verbatim.
+func (h *CaseHandler) SearchCaseActivities(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	caseID := r.PathValue("id")
+	if caseID == "" {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		if _, ok := err.(*http.MaxBytesError); ok {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
+		return
+	}
+
+	if len(body) > 0 && !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.SearchCaseActivities(r.Context(), caseID, body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity SearchCaseActivities failed", "userID", user.UserID, "caseID", caseID, "err", err)
+		mapUpstreamError(w, err, "Failed to search case activities.")
 		return
 	}
 
