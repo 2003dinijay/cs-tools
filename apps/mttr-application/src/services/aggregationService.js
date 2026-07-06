@@ -124,6 +124,29 @@ const DIMENSIONS = {
     },
 };
 
+// Startup allowlist assertion — every DIMENSIONS entry's groupBy column
+// is interpolated directly into SQL string in fetchDurations below. All
+// current values are hardcoded plain column names and safe, but the
+// pattern is structurally identical to an injection vulnerability: if
+// someone later loads DIMENSIONS from a config table or env var, an
+// attacker-controlled column name would be silently exploitable. This
+// loop turns that future mistake into an immediate boot-time crash.
+//
+// Note: dimensionDef.where fragments are also interpolated but aren't
+// amenable to structural validation (they're SQL predicates, not
+// identifiers). Their safety guarantee is that they're all authored
+// here in this file — same-file review is the enforcement.
+const SAFE_SQL_IDENTIFIER = /^[a-z_][a-z0-9_]*$/i;
+for (const [dimensionName, dimensionDef] of Object.entries(DIMENSIONS)) {
+    for (const column of dimensionDef.groupBy) {
+        if (!SAFE_SQL_IDENTIFIER.test(column)) {
+            throw new Error(
+                `Unsafe groupBy column in dimension '${dimensionName}': ${column}`
+            );
+        }
+    }
+}
+
 // The P95 truncated-mean itself lives in src/utils/mttrMath.js so the
 // aggregation and retention services share one implementation. See
 // docs/logic-and-architecture.md §2 for the algorithm description.
@@ -153,10 +176,15 @@ function getRollingPeriod() {
 //   • orders by the group keys (so groupByLabels() can rely on order)
 
 async function fetchDurations(dimensionDef, periodWindow, specificMonth) {
+    // case_state is normalised to lowercase at ingest (see
+    // ingestionService.validateCase) so this predicate can use the
+    // composite index idx_case_events_state_closed(case_state,
+    // closed_date). Do NOT wrap with LOWER() — Postgres cannot use a
+    // B-tree index on the raw column to satisfy a function predicate.
     let sqlText = `
         SELECT ${dimensionDef.groupBy.join(', ')}, business_duration_ms
         FROM case_events
-        WHERE LOWER(case_state) IN ('closed', 'resolved')
+        WHERE case_state IN ('closed', 'resolved')
           AND closed_date >= $1
           AND closed_date <= ($2::date + interval '1 day')
     `;
@@ -186,10 +214,12 @@ async function fetchDurations(dimensionDef, periodWindow, specificMonth) {
 // months are skipped — preventing zero-value points in the line chart.)
 
 async function getDistinctMonths(periodWindow) {
+    // case_state matched by raw equality (no LOWER wrapper) so the
+    // composite index can serve this — see fetchDurations comment.
     const queryResult = await db.query(
         `SELECT DISTINCT to_char(closed_date, 'YYYY-MM') AS month
          FROM case_events
-         WHERE LOWER(case_state) IN ('closed', 'resolved') AND closed_date >= $1 AND closed_date <= ($2::date + interval '1 day')
+         WHERE case_state IN ('closed', 'resolved') AND closed_date >= $1 AND closed_date <= ($2::date + interval '1 day')
          ORDER BY month`,
         [periodWindow.start, periodWindow.end]
     );

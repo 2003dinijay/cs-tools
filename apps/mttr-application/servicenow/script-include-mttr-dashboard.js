@@ -134,7 +134,11 @@ MttrDashboardAPI.prototype = {
             }
 
             // Weighted average for the combined MTTR figure.
-            if (dataRow.mttr_hours && dataRow.total_cases) {
+            // Include the row when we have a real numeric mttr_hours (0 is
+            // legitimate — a small-sample or genuinely-fast case type) and
+            // at least one case backing it. The prior `dataRow.mttr_hours &&
+            // dataRow.total_cases` truthy check silently dropped 0-hour rows.
+            if (dataRow.total_cases > 0 && dataRow.mttr_hours != null) {
                 weightedHoursSum += dataRow.mttr_hours * dataRow.total_cases;
                 weightedCaseCount += dataRow.total_cases;
             }

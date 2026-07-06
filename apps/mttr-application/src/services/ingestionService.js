@@ -63,10 +63,24 @@ function validateCase(caseRecord) {
         return 'case_sys_id exceeds 32 characters';
     }
 
-    // business_duration_ms is the value MTTR is computed from — a zero or
-    // negative number would silently corrupt every aggregation.
-    if (!caseRecord.business_duration_ms && caseRecord.business_duration_ms !== 0) {
+    // business_duration_ms is the value MTTR is computed from — a zero,
+    // negative, or non-numeric value would corrupt aggregation OR abort
+    // the whole batch at INSERT time. Reject upfront: only finite
+    // numbers > 0 pass. Numeric strings ("5000") and floats (1.5) are
+    // rejected too — the SN scheduled job always sends parsed integers
+    // via GlideDuration.dateNumericValue(), so anything else is a bug
+    // on the caller's side that we want visible in the rejection log.
+    if (caseRecord.business_duration_ms === null || caseRecord.business_duration_ms === undefined) {
         return 'business_duration_ms is null or missing';
+    }
+    if (typeof caseRecord.business_duration_ms !== 'number' || !Number.isFinite(caseRecord.business_duration_ms)) {
+        return 'business_duration_ms must be a finite number';
+    }
+    // Integer required — the DB column is BIGINT and would reject a
+    // decimal at INSERT time (rolling back the whole batch). SN always
+    // sends parsed integers via GlideDuration.dateNumericValue.
+    if (!Number.isInteger(caseRecord.business_duration_ms)) {
+        return 'business_duration_ms must be an integer (milliseconds)';
     }
     if (caseRecord.business_duration_ms <= 0) {
         return 'business_duration_ms is zero or negative';
@@ -77,20 +91,53 @@ function validateCase(caseRecord) {
     if (!caseRecord.created_date) {
         return 'created_date is missing';
     }
+    // Only accept string timestamps (matches the OpenAPI contract's
+    // `format: date-time`; SN sends "YYYY-MM-DD HH:MM:SS" strings).
+    // A numeric like 12345 would otherwise be parsed by Postgres as
+    // "year 12345 AD" — silent corruption of the historical dataset.
+    if (typeof caseRecord.created_date !== 'string') {
+        return 'created_date must be an ISO-format string';
+    }
+    // Reject values that Postgres would fail to parse as a timestamp
+    // ("not a date", "2024-13-45", etc.). Date.parse returns NaN for
+    // unparseable input; a finite result means the value is at least
+    // date-shaped and won't rollback the transaction.
+    if (!Number.isFinite(Date.parse(caseRecord.created_date))) {
+        return 'created_date is not a valid timestamp';
+    }
     if (!caseRecord.case_type) {
         return 'case_type is missing';
     }
     if (!ALLOWED_CASE_TYPES.includes(caseRecord.case_type)) {
-        return 'unsupported case_type: ' + caseRecord.case_type;
+        // Truncate + String-coerce the echoed value — it's caller-supplied
+        // and lands in ingestion_log.rejected_details (JSONB) and the
+        // admin /ingestion-logs response. Prevents an attacker (or a
+        // buggy caller) from stuffing arbitrarily large strings into
+        // the audit log via a single bad batch record.
+        return 'unsupported case_type: ' + String(caseRecord.case_type).substring(0, 50);
     }
     if (!caseRecord.case_state) {
         return 'case_state is missing';
     }
+    // Length guards below match the VARCHAR widths in sql/init.sql.
+    // Without them an overlong value would slip past validation, hit
+    // the UPSERT, and abort the whole batch with a generic Postgres
+    // "value too long for type character varying(N)" — rolling back
+    // up to MAX_BATCH_SIZE valid records with it.
+    if (caseRecord.case_state.length > 30) {
+        return 'case_state exceeds 30 characters';
+    }
     if (!caseRecord.product) {
         return 'product is missing';
     }
+    if (caseRecord.product.length > 100) {
+        return 'product exceeds 100 characters';
+    }
     if (!caseRecord.cs_team) {
         return 'cs_team is missing';
+    }
+    if (caseRecord.cs_team.length > 100) {
+        return 'cs_team exceeds 100 characters';
     }
 
     // Priority only applies to Incidents (P1–P4). Queries legitimately
@@ -98,6 +145,19 @@ function validateCase(caseRecord) {
     if (caseRecord.case_type === 'Incident' && !caseRecord.priority) {
         return 'priority is missing for Incident';
     }
+    if (caseRecord.priority && caseRecord.priority.length > 30) {
+        return 'priority exceeds 30 characters';
+    }
+
+    // Normalise case_state to lowercase in-place so the composite index
+    // idx_case_events_state_closed(case_state, closed_date) can serve
+    // the aggregation queries. Postgres cannot use a B-tree index on
+    // case_state to satisfy a `LOWER(case_state) = ...` predicate, so
+    // the previous query shape forced a full seq scan of case_events
+    // on every nightly aggregation tick. Normalising here (rather than
+    // wrapping every query) puts the transform once, on the write side.
+    caseRecord.case_state = caseRecord.case_state.toLowerCase();
+
     return null;
 }
 

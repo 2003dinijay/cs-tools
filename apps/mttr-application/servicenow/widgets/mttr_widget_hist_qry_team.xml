@@ -63,11 +63,22 @@
             if (_rtHQT) clearTimeout(_rtHQT);
             _rtHQT = setTimeout(drawHistQryTeam, 150);
         }
-        window.addEventListener('resize', _scheduleRedrawHQT);
-        if (typeof ResizeObserver !== 'undefined') {
-            new ResizeObserver(_scheduleRedrawHQT).observe(
-                document.getElementById('chart_hist_qry_team'));
+        // Idempotent listener setup — see mttr_widget_hist_inc_priority.xml
+        // for the rationale (SN re-renders re-run this script; naive
+        // addEventListener leaks a handler on every mount).
+        if (window.__mttrHistQryTeamState) {
+            window.removeEventListener('resize', window.__mttrHistQryTeamState.resizeHandler);
+            if (window.__mttrHistQryTeamState.observer) {
+                window.__mttrHistQryTeamState.observer.disconnect();
+            }
         }
+        window.addEventListener('resize', _scheduleRedrawHQT);
+        var _obsHQT = null;
+        if (typeof ResizeObserver !== 'undefined') {
+            _obsHQT = new ResizeObserver(_scheduleRedrawHQT);
+            _obsHQT.observe(document.getElementById('chart_hist_qry_team'));
+        }
+        window.__mttrHistQryTeamState = { resizeHandler: _scheduleRedrawHQT, observer: _obsHQT };
 
         var TEAM_COLORS_HQT = ['#4dc9f6','#f67019','#f53794','#00a950',
                                 '#8549ba','#ff6384','#36a2eb','#cddc39'];
@@ -150,8 +161,17 @@
         }
 
         function noDataHQT() {
-            document.getElementById('chart_hist_qry_team').innerHTML =
-                '&lt;p style="color:#999;text-align:center;padding:40px;"&gt;No historical data available&lt;/p&gt;';
+            // DOM-API placeholder — see mttr_widget_team_trend.xml for
+            // the full rationale (escaped-entity innerHTML rendered as
+            // literal text; createElement produces a real p node).
+            var container = document.getElementById('chart_hist_qry_team');
+            container.innerHTML = '';
+            var p = document.createElement('p');
+            p.style.color = '#999';
+            p.style.textAlign = 'center';
+            p.style.padding = '40px';
+            p.textContent = 'No historical data available';
+            container.appendChild(p);
         }
     </script>
 

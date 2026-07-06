@@ -80,7 +80,7 @@
 //     HTTP Method:   GET
 //     Endpoint:      https://<your-choreo-app-url>/api/v1/mttr?type=${type}
 //     Used by:       MttrDashboardAPI._fetchDimension()
-//     Notes:         ${type} is substituted at runtime via setStringParameterNoEscape.
+//     Notes:         ${type} is substituted at runtime via setStringParameter (URL-encoded).
 //
 //   ── Method 4: GET_Health ──────────────────────────────────────────────
 //     HTTP Method:   GET
@@ -99,17 +99,28 @@
 //     Used by:       MttrDashboardAPI._fetchSummary() for quarterly trends
 //     Notes:         Both ${case_type} and ${group_by} are substituted at runtime.
 
-// ─── Step 4: Create the watermark system property ──────────────────────────
+// ─── Step 4: Create the watermark system properties ────────────────────────
+//
+//   The scheduled job tracks a COMPOUND cursor (sys_updated_on, sys_id) so
+//   it can advance through groups of rows that share the same
+//   sys_updated_on (otherwise setLimit(500) can leave rows in a tie stranded).
+//   Create BOTH properties below.
 //
 //   Navigation: sys_properties.list
 //
+//   Property 1:
 //     Name:   u_mttr_last_sync
 //     Type:   string
 //     Value:  (leave empty — the scheduled job sets it on first run)
 //
-//   Why a system property and not a table column?
-//     The scheduled job runs server-side and stores its "last successfully
-//     synced sys_updated_on" here. A system property is the simplest
-//     SN-native key/value store and is cheap to read/write inside a job.
+//   Property 2:
+//     Name:   u_mttr_last_sync_sys_id
+//     Type:   string
+//     Value:  (leave empty — the scheduled job sets it on first run)
+//
+//   Why system properties and not a table column?
+//     A system property is the simplest SN-native key/value store and is
+//     cheap to read/write inside a scheduled job. Two properties keep the
+//     cursor typed and human-readable in the ServiceNow UI.
 //
 // ============================================================================

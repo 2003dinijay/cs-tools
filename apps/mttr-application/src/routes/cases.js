@@ -45,6 +45,12 @@ const router = express.Router();
 const MAX_BATCH_SIZE = 500;     // SN scheduled job's per-tick batch limit
 const MAX_BULK_SIZE = 5000;     // Backfill endpoint — manual operator use only
 
+// Must match the ingestion_log.batch_id column (VARCHAR(100)) in
+// sql/init.sql. An overlong value used to fail deep inside the INSERT
+// with an opaque Postgres error and roll back the whole batch; we
+// reject it at the validator now instead.
+const MAX_BATCH_ID_LENGTH = 100;
+
 /**
  * POST /api/v1/cases/batch
  *
@@ -57,7 +63,9 @@ router.post(
     [
         // Schema-level validation. The deeper per-case validation
         // (durations, required fields, etc.) happens inside ingestBatch().
-        body('batch_id').isString().notEmpty().withMessage('batch_id is required'),
+        body('batch_id')
+            .isString().notEmpty().withMessage('batch_id is required')
+            .isLength({ max: MAX_BATCH_ID_LENGTH }).withMessage(`batch_id must be ${MAX_BATCH_ID_LENGTH} characters or fewer`),
         body('cases').isArray({ min: 1, max: MAX_BATCH_SIZE }).withMessage(`cases must be an array of 1-${MAX_BATCH_SIZE} items`),
     ],
     async (req, res) => {
@@ -93,7 +101,9 @@ router.post(
     '/bulk-import',
     requireAdmin,
     [
-        body('batch_id').isString().notEmpty().withMessage('batch_id is required'),
+        body('batch_id')
+            .isString().notEmpty().withMessage('batch_id is required')
+            .isLength({ max: MAX_BATCH_ID_LENGTH }).withMessage(`batch_id must be ${MAX_BATCH_ID_LENGTH} characters or fewer`),
         body('cases').isArray({ min: 1, max: MAX_BULK_SIZE }).withMessage(`cases must be an array of 1-${MAX_BULK_SIZE} items`),
     ],
     async (req, res) => {

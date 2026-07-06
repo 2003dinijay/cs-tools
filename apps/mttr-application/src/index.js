@@ -37,6 +37,7 @@ const logger = require('./utils/logger');
 const { authenticate, requireAdmin } = require('./middleware/auth');
 const { correlationId } = require('./middleware/correlationId');
 const { startAggregationJob } = require('./jobs/aggregationJob');
+const { pool } = require('./config/database');
 
 // ── Route modules ─────────────────────────────────────────────────────────
 const casesRoutes = require('./routes/cases');
@@ -59,13 +60,16 @@ expressApp.set('trust proxy', 1);
 // helmet sets a sensible set of HTTP security headers with strict defaults.
 expressApp.use(helmet());
 
-// CORS: production restricts to an explicit allowlist (set via
-// CORS_ALLOWED_ORIGINS as a comma-separated list); dev/test is wide open
-// for easier iteration.
+// CORS: deny-by-default. Only the two well-known local labels get the
+// wildcard origin; every other value of NODE_ENV (production, staging,
+// perf, uat, preprod, or a typo) uses the CORS_ALLOWED_ORIGINS
+// allowlist. If that env-var is unset in a restricted environment the
+// filter yields an empty array — browsers are then CORS-blocked, which
+// is the intended safe default.
 expressApp.use(cors({
-    origin: applicationConfig.env === 'production'
-        ? (process.env.CORS_ALLOWED_ORIGINS || '').split(',').filter(Boolean)
-        : '*',
+    origin: (applicationConfig.env === 'development' || applicationConfig.env === 'test')
+        ? '*'
+        : (process.env.CORS_ALLOWED_ORIGINS || '').split(',').filter(Boolean),
 }));
 
 // 10MB body limit accommodates a worst-case 5000-case bulk-import payload.
@@ -140,14 +144,79 @@ expressApp.use((err, req, res, next) => {
     res.status(500).json({ error: 'Internal server error', correlation_id: req.correlationId });
 });
 
+// ─── Process-level error handlers ─────────────────────────────────────────
+//
+// Node 18+ terminates on unhandled rejections and uncaught exceptions
+// with a fatal message to stderr and no structured log line — meaning
+// pool `error` events, cron callback slips, or startup races can crash
+// the pod silently. Install top-level handlers that route both classes
+// through our winston logger so ops sees them in the log aggregator
+// with the same shape as every other error line.
+//
+// Policy split:
+//   • unhandledRejection → log and CONTINUE. The most likely sources
+//     are pg-node pool events and cron async slips; letting a single
+//     background hiccup take down the API would create outages from
+//     transient issues. If the same rejection keeps recurring, ops
+//     sees it in the log stream and investigates.
+//   • uncaughtException → log and EXIT. State may be corrupted after
+//     a synchronous throw escapes to the top level; Node's official
+//     guidance is exit-fast and let the process supervisor restart.
+process.on('unhandledRejection', (reason) => {
+    logger.error('Unhandled promise rejection', { reason: String(reason) });
+});
+process.on('uncaughtException', (err) => {
+    logger.error('Uncaught exception — shutting down', { error: err.message, stack: err.stack });
+    process.exit(1);
+});
+
 // ─── Start server + cron ──────────────────────────────────────────────────
 
-expressApp.listen(applicationConfig.port, () => {
+const server = expressApp.listen(applicationConfig.port, () => {
     logger.info(`MTTR App started on port ${applicationConfig.port} (${applicationConfig.env})`);
 
     // Kick off the daily aggregation cron once the HTTP server is up
     // so we don't risk computing while the DB pool is still warming.
     startAggregationJob();
 });
+
+// ─── Graceful shutdown ────────────────────────────────────────────────────
+//
+// Choreo (Kubernetes) sends SIGTERM before terminating a pod and waits
+// `terminationGracePeriodSeconds` (default 30s) before SIGKILL. Without
+// a handler, in-flight requests get dropped mid-response and DB pool
+// connections aren't closed cleanly. We:
+//   1. Stop accepting new HTTP connections (`server.close`)
+//   2. Wait for in-flight requests to finish
+//   3. Drain the DB pool (`pool.end`)
+//   4. Exit(0)
+// A hard 25s timer short-circuits any hung shutdown so we exit under
+// our own control before SIGKILL arrives — otherwise a stuck request
+// or a wedged pool.end could leak the whole grace window.
+// SIGINT is handled the same way so dev-loop Ctrl+C is also clean.
+function gracefulShutdown(signal) {
+    logger.info(`${signal} received — closing HTTP server`);
+    setTimeout(() => {
+        logger.error('Graceful shutdown timed out — forcing exit');
+        process.exit(1);
+    }, 25000).unref();
+
+    server.close((serverCloseErr) => {
+        if (serverCloseErr) {
+            logger.error('HTTP server close error', { error: serverCloseErr.message });
+        }
+        pool.end()
+            .then(() => {
+                logger.info('DB pool drained — exiting');
+                process.exit(0);
+            })
+            .catch((poolEndErr) => {
+                logger.error('DB pool drain error', { error: poolEndErr.message });
+                process.exit(1);
+            });
+    });
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 module.exports = expressApp;

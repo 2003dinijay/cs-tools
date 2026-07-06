@@ -555,8 +555,13 @@ components:
             properties:
               labels:
                 type: object
+                # Label values are strings (case_type, priority, cs_team,
+                # product, month) except for the `is_patched` dimension,
+                # which echoes the raw boolean back from case_events.
                 additionalProperties:
-                  type: string
+                  oneOf:
+                    - type: string
+                    - type: boolean
                 example:
                   cs_team: IAM
               total_cases:
@@ -568,6 +573,10 @@ components:
               p95_cutoff_hours:
                 type: number
                 format: float
+                # Null when the sample size is below MIN_SAMPLE_SIZE — in
+                # that case we return the simple average without a P95 cut
+                # (min_sample_met=false) and there is no cutoff to report.
+                nullable: true
                 example: 480.2
               mttr_hours:
                 type: number

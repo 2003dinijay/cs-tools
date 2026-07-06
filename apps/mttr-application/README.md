@@ -346,7 +346,7 @@ All schema lives in [`sql/init.sql`](sql/init.sql) (idempotent — safe to re-ru
 | `cs_team` | VARCHAR(100) | IAM/Choreo override OR account default |
 | `business_duration_ms` | BIGINT | SLA-aware work time in ms |
 | `created_date` | TIMESTAMPTZ | `sys_created_on` |
-| `closed_date` | TIMESTAMPTZ | `sys_updated_on` (used as the "resolved" moment) |
+| `closed_date` | TIMESTAMPTZ | `closed_at` (state 3) or `resolved_at` (state 6) — stable close/resolve time; NOT `sys_updated_on` |
 | `case_type` | VARCHAR(50) | Incident or Query |
 | `priority` | VARCHAR(30) | P1–P4 (NULL for Queries) |
 | `is_patched` | BOOLEAN | True when `u_fix_eta_shared` is populated |

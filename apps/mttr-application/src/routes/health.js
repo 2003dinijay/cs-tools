@@ -34,37 +34,74 @@ const logger = require('../utils/logger');
 
 const router = express.Router();
 
+// Whole-handler ceiling. Choreo readiness probes fire every few seconds
+// and Docker HEALTHCHECK every 30s; both need a fast answer. If the DB
+// hangs mid-query (pool client alive but server-side stuck) we want to
+// surface a 503 in a bounded time rather than exhausting probe timeout.
+// Covers all five queries collectively via Promise.race below.
+const HEALTH_QUERY_TIMEOUT_MS = 3000;
+
+function timeoutAfter(ms, label) {
+    return new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms).unref();
+    });
+}
+
 /**
  * GET /api/v1/health
  * Returns DB connectivity + ingestion / aggregation freshness indicators.
  */
 router.get('/', async (req, res) => {
     try {
-        // Liveness ping. If this throws, the whole endpoint fails fast.
-        const dbServerTime = await db.healthCheck();
+        // Wrap the whole read-side in a race against a hard timeout so
+        // a stuck query can't hang the probe. If any single query in
+        // the chain is slow, the race rejects, catch runs, 503 returns.
+        const responseBody = await Promise.race([
+            (async () => {
+                // Liveness ping first — cheapest way to prove the pool
+                // can hand out a working client. If this throws we skip
+                // the diagnostic block entirely.
+                const dbServerTime = await db.healthCheck();
 
-        // Run the diagnostic queries in parallel — none depend on each other
-        // and the response time is dominated by the slowest one.
-        const [
-            totalCasesQuery,
-            lastCalculatedAt,
-            cacheRowCount,
-            lastIngestionQuery,
-        ] = await Promise.all([
-            db.query('SELECT COUNT(*) AS count FROM case_events'),
-            getLastCalculatedAt(),
-            getCacheCount(),
-            db.query('SELECT MAX(ingested_at) AS last_ingestion_at FROM ingestion_log'),
+                // Diagnostic queries in parallel — none depend on each other.
+                //   • total_cases: approximate via pg_class.reltuples instead
+                //     of SELECT COUNT(*) — the exact count would full-scan
+                //     the case_events table on every probe. reltuples is
+                //     updated by autovacuum/ANALYZE and is O(1). GREATEST(0,
+                //     …) coerces the "-1" sentinel Postgres returns when a
+                //     table has never been analysed (fresh install).
+                //   • cache_entries / last_aggregation_at: mttr_cache is
+                //     small (bounded by dimension × group) so an exact
+                //     COUNT / MAX is cheap.
+                //   • last_ingestion_at: MAX() uses the ingested_at index
+                //     for an O(1) index-only scan.
+                const [
+                    totalCasesQuery,
+                    lastCalculatedAt,
+                    cacheRowCount,
+                    lastIngestionQuery,
+                ] = await Promise.all([
+                    db.query(
+                        `SELECT GREATEST(0, reltuples::bigint) AS estimate
+                         FROM pg_class WHERE relname = 'case_events'`
+                    ),
+                    getLastCalculatedAt(),
+                    getCacheCount(),
+                    db.query('SELECT MAX(ingested_at) AS last_ingestion_at FROM ingestion_log'),
+                ]);
+
+                return {
+                    status: 'healthy',
+                    db_time: dbServerTime,
+                    total_cases: parseInt(totalCasesQuery.rows[0]?.estimate ?? 0, 10),
+                    last_ingestion_at: lastIngestionQuery.rows[0].last_ingestion_at || null,
+                    last_aggregation_at: lastCalculatedAt,
+                    cache_entries: cacheRowCount,
+                };
+            })(),
+            timeoutAfter(HEALTH_QUERY_TIMEOUT_MS, 'Health probe'),
         ]);
-
-        return res.json({
-            status: 'healthy',
-            db_time: dbServerTime,
-            total_cases: parseInt(totalCasesQuery.rows[0].count, 10),
-            last_ingestion_at: lastIngestionQuery.rows[0].last_ingestion_at || null,
-            last_aggregation_at: lastCalculatedAt,
-            cache_entries: cacheRowCount,
-        });
+        return res.json(responseBody);
     } catch (healthCheckError) {
         // Any failure here means the DB is down or unreachable — return
         // 503 so external probes can react (restart the pod, alert, etc.).

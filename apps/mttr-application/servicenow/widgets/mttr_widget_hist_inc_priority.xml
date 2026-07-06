@@ -63,11 +63,23 @@
             if (_rtHIP) clearTimeout(_rtHIP);
             _rtHIP = setTimeout(drawHistIncPri, 150);
         }
-        window.addEventListener('resize', _scheduleRedrawHIP);
-        if (typeof ResizeObserver !== 'undefined') {
-            new ResizeObserver(_scheduleRedrawHIP).observe(
-                document.getElementById('chart_hist_inc_pri'));
+        // Idempotent listener setup: SN re-renders the widget by re-running
+        // this script, which would otherwise stack duplicate `resize`
+        // handlers and ResizeObservers on every re-mount. Tear down anything
+        // saved by the previous run, attach fresh, then persist the refs.
+        if (window.__mttrHistIncPriState) {
+            window.removeEventListener('resize', window.__mttrHistIncPriState.resizeHandler);
+            if (window.__mttrHistIncPriState.observer) {
+                window.__mttrHistIncPriState.observer.disconnect();
+            }
         }
+        window.addEventListener('resize', _scheduleRedrawHIP);
+        var _obsHIP = null;
+        if (typeof ResizeObserver !== 'undefined') {
+            _obsHIP = new ResizeObserver(_scheduleRedrawHIP);
+            _obsHIP.observe(document.getElementById('chart_hist_inc_pri'));
+        }
+        window.__mttrHistIncPriState = { resizeHandler: _scheduleRedrawHIP, observer: _obsHIP };
 
         var PRI_COLORS = { P1: '#e53935', P2: '#fb8c00', P3: '#fdd835', P4: '#43a047' };
 
@@ -155,8 +167,17 @@
         }
 
         function noDataHIP() {
-            document.getElementById('chart_hist_inc_pri').innerHTML =
-                '&lt;p style="color:#999;text-align:center;padding:40px;"&gt;No historical data available&lt;/p&gt;';
+            // DOM-API placeholder — see mttr_widget_team_trend.xml for
+            // the full rationale (escaped-entity innerHTML rendered as
+            // literal text; createElement produces a real p node).
+            var container = document.getElementById('chart_hist_inc_pri');
+            container.innerHTML = '';
+            var p = document.createElement('p');
+            p.style.color = '#999';
+            p.style.textAlign = 'center';
+            p.style.padding = '40px';
+            p.textContent = 'No historical data available';
+            container.appendChild(p);
         }
     </script>
 

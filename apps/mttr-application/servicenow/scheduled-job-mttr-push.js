@@ -37,7 +37,10 @@
 //   Active:   true
 //
 // PREREQUISITES
-//   1. System Property `u_mttr_last_sync` (auto-created on the first run).
+//   1. Two System Properties (auto-created on the first run):
+//      • `u_mttr_last_sync`         — timestamp part of the cursor
+//      • `u_mttr_last_sync_sys_id`  — sys_id tie-breaker for rows sharing
+//                                      that timestamp (see Step 2 comment)
 //   2. REST Message `MTTR_Choreo_API` with method `POST_Batch`:
 //      • Endpoint:      https://<choreo-app>/api/v1/cases/batch
 //      • Auth:          OAuth 2.0 (client_credentials)
@@ -50,9 +53,14 @@
     // Keep BATCH_SIZE aligned with the Choreo /cases/batch endpoint cap.
     var MAX_CASES_PER_BATCH = 500;
 
-    // Watermark system property name. Stored as a string holding the most
-    // recent sys_updated_on value that was successfully shipped.
-    var WATERMARK_PROPERTY_NAME = 'u_mttr_last_sync';
+    // Watermark = a COMPOUND CURSOR (sys_updated_on, sys_id).
+    // We need both because sys_updated_on is not unique: many rows can share
+    // the same value, and with setLimit(500) a group of ties can straddle the
+    // batch boundary. Tracking sys_id as a tie-breaker gives us a strictly
+    // monotonic cursor that always advances even when 501+ rows share a
+    // timestamp.
+    var WATERMARK_PROPERTY_NAME = 'u_mttr_last_sync';                // sys_updated_on
+    var WATERMARK_SYS_ID_PROPERTY_NAME = 'u_mttr_last_sync_sys_id';  // sys_id tie-breaker
 
     // REST Message + HTTP Method records that talk to Choreo.
     var CHOREO_REST_MESSAGE = 'MTTR_Choreo_API';
@@ -64,53 +72,69 @@
     var INCIDENT_CASE_TYPE_SYS_ID = '8d4b87bd1b18f010cb6898aebd4bcb59';
     var QUERY_CASE_TYPE_SYS_ID = '0d5b8fbd1b18f010cb6898aebd4bcba5';
 
-    // ─── Step 1: Read the watermark ──────────────────────────────────────
+    // ─── Step 1: Read the compound watermark (sys_updated_on, sys_id) ────
     // No watermark = very first run → start from the historical cut-off
-    // (early-2024). The MTTR project intentionally only tracks data from
-    // 2024 onwards.
+    // (early-2024, empty sys_id). The MTTR project intentionally only
+    // tracks data from 2024 onwards.
     var lastSyncTimestamp = gs.getProperty(WATERMARK_PROPERTY_NAME);
+    var lastSyncSysId = gs.getProperty(WATERMARK_SYS_ID_PROPERTY_NAME) || '';
     if (!lastSyncTimestamp) {
         lastSyncTimestamp = '2024-01-01 00:00:00';
         gs.info('MTTR Sync: No watermark found. Starting from ' + lastSyncTimestamp);
     }
 
-    // ─── Step 2: Query candidate cases ───────────────────────────────────
+    // ─── Step 2: Query candidate cases with a tie-broken cursor ──────────
     //   • state 3 = Closed, state 6 = Resolved / Cancelled
-    //   • sys_updated_on >= watermark  → incremental sync
     //   • account / project / business_duration all required for valid MTTR
     //   • sys_created_on >= 2024-01-01 → only cases inside the project scope
     //   • u_case_type IN (Incident, Query)
-    //   • ORDER BY sys_updated_on so the new watermark is monotonically increasing
     //
-    // Why `>=` and not `>`?  With `setLimit(500)` two rows sharing the
-    // same sys_updated_on can straddle the batch boundary — if the
-    // watermark advanced past that shared timestamp on the previous
-    // run, the row on the wrong side of the cut would be lost forever.
-    // Using `>=` means the last-seen timestamp is re-scanned each tick;
-    // the Choreo /cases/batch endpoint UPSERTs by case_sys_id so the
-    // re-scanned row is idempotently updated, not duplicated.
+    // Watermark condition:
+    //     (sys_updated_on > last_ts)
+    //   OR
+    //     (sys_updated_on = last_ts AND sys_id > last_sys_id)
+    //
+    // Why the OR-branch? sys_updated_on isn't unique. When >500 rows share
+    // the same value they can straddle the batch boundary. A tie-broken
+    // cursor advances even inside a group of ties, so the "left behind"
+    // rows are picked up on the next tick instead of being skipped forever.
+    // Choreo /cases/batch UPSERTs by case_sys_id, so any incidental
+    // re-scan is harmless.
+    //
+    // Ordering must match the cursor: sys_updated_on ASC, sys_id ASC.
     var caseRecord = new GlideRecord('sn_customerservice_case');
     caseRecord.addQuery('state', 'IN', '3,6');
-    caseRecord.addQuery('sys_updated_on', '>=', lastSyncTimestamp);
     caseRecord.addNotNullQuery('account');
     caseRecord.addNotNullQuery('project');
     caseRecord.addNotNullQuery('business_duration');
     caseRecord.addQuery('sys_created_on', '>=', '2024-01-01 00:00:00');
     caseRecord.addQuery('u_case_type', 'IN', INCIDENT_CASE_TYPE_SYS_ID + ',' + QUERY_CASE_TYPE_SYS_ID);
+    // Compound watermark via encoded query. In SN encoded-query syntax
+    // `^OR` starts an OR-alternative and `^` inside it is AND, so the
+    // string below evaluates as:
+    //   (sys_updated_on > last_ts) OR (sys_updated_on = last_ts AND sys_id > last_sys_id)
+    caseRecord.addEncodedQuery(
+        'sys_updated_on>' + lastSyncTimestamp +
+        '^ORsys_updated_on=' + lastSyncTimestamp + '^sys_id>' + lastSyncSysId
+    );
     caseRecord.orderBy('sys_updated_on');
+    caseRecord.orderBy('sys_id');
     caseRecord.setLimit(MAX_CASES_PER_BATCH);
     caseRecord.query();
 
     // Nothing new — silent return.
     if (!caseRecord.hasNext()) {
-        gs.debug('MTTR Sync: No new cases to push since ' + lastSyncTimestamp);
+        gs.debug('MTTR Sync: No new cases to push since (' + lastSyncTimestamp + ', ' + lastSyncSysId + ')');
         return;
     }
 
-    // Accumulator for the batch payload, and a running maximum of
-    // sys_updated_on so we know how far to advance the watermark.
+    // Accumulator for the batch payload, and the compound-cursor tracker.
+    // Because the query is ORDER BY (sys_updated_on, sys_id) ASC, the last
+    // row we iterate over IS the highest cursor value we've seen — no need
+    // for a "max" reducer.
     var batchPayloadCases = [];
-    var maxSysUpdatedOn = lastSyncTimestamp;
+    var lastRowSysUpdatedOn = lastSyncTimestamp;
+    var lastRowSysId = lastSyncSysId;
 
     // ─── Skip-reason counters (for end-of-run diagnostics) ───────────────
     var skipReasonStats = {
@@ -121,13 +145,11 @@
     };
 
     while (caseRecord.next()) {
-        // ── Step 3a: Always advance the per-record watermark ─────────────
+        // ── Step 3a: Always advance the per-record cursor position ───────
         // Even rows we skip count towards "we've seen this", otherwise we'd
         // re-query the same invalid cases on every tick.
-        var rowSysUpdatedOn = caseRecord.getValue('sys_updated_on');
-        if (rowSysUpdatedOn > maxSysUpdatedOn) {
-            maxSysUpdatedOn = rowSysUpdatedOn;
-        }
+        lastRowSysUpdatedOn = caseRecord.getValue('sys_updated_on');
+        lastRowSysId = caseRecord.sys_id.toString();
 
         // ── Step 3b: Derive is_patched from the fix-ETA field ────────────
         // u_fix_eta_shared is populated only after a fix has been targeted
@@ -205,13 +227,28 @@
         }
 
         // ── Step 3g: Append the validated record to the batch ────────────
+        //
+        // closed_date MUST be the actual close/resolve time, NOT
+        // sys_updated_on — every downstream MTTR aggregation buckets by
+        // closed_date. If we used sys_updated_on, a case closed in Q1
+        // that later gets a tag added or a work note logged in Q3 would
+        // silently reappear in Q3's bucket and disappear from Q1's,
+        // corrupting every rolling-window and quarterly figure.
+        //
+        // state 3 (Closed) populates closed_at; state 6 (Resolved/
+        // "Solution Proposed") populates resolved_at. Coalesce in
+        // preference order — both are stable once set, and the Choreo
+        // ingestion side normalises '' → null (nullable column).
+        var closedDate = caseRecord.getValue('closed_at')
+            || caseRecord.getValue('resolved_at')
+            || '';
         batchPayloadCases.push({
             case_sys_id: caseRecord.sys_id.toString(),
             product: productNameDisplay,                                       // reference → display value
             cs_team: resolvedCsTeam,                                           // resolved via override or account
             business_duration_ms: businessDurationMs,
             created_date: caseRecord.getValue('sys_created_on') || '',
-            closed_date: caseRecord.getValue('sys_updated_on') || '',
+            closed_date: closedDate,
             case_type: caseTypeDisplay,                                        // Incident | Query
             priority: normalizedPriority,                                      // P1–P4 or '' for Query
             is_patched: caseIsPatched,
@@ -220,6 +257,7 @@
     }
 
     // ─── If every queried record was skipped: still advance the watermark
+    // (skipped rows are structurally invalid — no point re-scanning them).
     if (batchPayloadCases.length === 0) {
         var totalSkippedNow = skipReasonStats.wrongCaseType + skipReasonStats.invalidDuration + skipReasonStats.noProduct + skipReasonStats.noTeam;
         gs.info('MTTR Sync: No eligible cases in this batch. Queried: ' + caseRecord.getRowCount() + ', Skipped: ' + totalSkippedNow);
@@ -227,8 +265,9 @@
         gs.info('  ├─ Invalid Duration: ' + skipReasonStats.invalidDuration);
         gs.info('  ├─ No Product: ' + skipReasonStats.noProduct);
         gs.info('  └─ No Team: ' + skipReasonStats.noTeam);
-        gs.info('Advancing watermark to ' + maxSysUpdatedOn);
-        gs.setProperty(WATERMARK_PROPERTY_NAME, maxSysUpdatedOn);
+        gs.info('Advancing watermark to (' + lastRowSysUpdatedOn + ', ' + lastRowSysId + ')');
+        gs.setProperty(WATERMARK_PROPERTY_NAME, lastRowSysUpdatedOn);
+        gs.setProperty(WATERMARK_SYS_ID_PROPERTY_NAME, lastRowSysId);
         return;
     }
 
@@ -268,8 +307,9 @@
         // This is what makes the delivery semantics "at least once": a
         // Choreo outage simply means the same batch ships next run.
         if (httpStatusCode == 200) {
-            gs.setProperty(WATERMARK_PROPERTY_NAME, maxSysUpdatedOn);
-            gs.info('MTTR Sync: Pushed ' + batchPayloadCases.length + ' cases (batch: ' + batchId + '). New watermark: ' + maxSysUpdatedOn);
+            gs.setProperty(WATERMARK_PROPERTY_NAME, lastRowSysUpdatedOn);
+            gs.setProperty(WATERMARK_SYS_ID_PROPERTY_NAME, lastRowSysId);
+            gs.info('MTTR Sync: Pushed ' + batchPayloadCases.length + ' cases (batch: ' + batchId + '). New watermark: (' + lastRowSysUpdatedOn + ', ' + lastRowSysId + ')');
 
             // Choreo reports per-record rejections in the body — surface
             // them at WARN level so operators see them in the syslog.

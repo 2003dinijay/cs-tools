@@ -94,9 +94,18 @@ router.get(
 
             // All cache rows for one dimension share the same period and
             // calculated_at — grab them from the first row.
+            //
+            // pg-node returns Postgres DATE columns as JS Date objects
+            // (midnight UTC). JSON.stringify(Date) would emit a full ISO
+            // datetime like "2026-01-01T00:00:00.000Z"; the OpenAPI
+            // contract for this endpoint declares period as `format: date`
+            // ("YYYY-MM-DD"). Format explicitly so this branch and the
+            // empty-data branch above (which uses getRollingPeriod)
+            // return the same shape. calculated_at is a timestamptz and
+            // ISO datetime is the correct shape for it — left alone.
             const period = {
-                start: cacheRows[0].period_start,
-                end: cacheRows[0].period_end,
+                start: cacheRows[0].period_start.toISOString().split('T')[0],
+                end: cacheRows[0].period_end.toISOString().split('T')[0],
             };
             const calculatedAt = cacheRows[0].calculated_at;
 

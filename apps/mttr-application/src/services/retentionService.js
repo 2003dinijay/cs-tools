@@ -65,7 +65,7 @@ const CASE_EVENTS_RETENTION_MONTHS = applicationConfig.retention.caseEventsMonth
 async function purgeOldIngestionLogs(correlationId) {
     const deleteResult = await db.query(
         `DELETE FROM ingestion_log
-         WHERE ingested_at < NOW() - ($1 || ' days')::interval
+         WHERE ingested_at < NOW() - ($1 * INTERVAL '1 day')
          RETURNING id`,
         [INGESTION_LOG_RETENTION_DAYS]
     );
@@ -88,26 +88,45 @@ async function purgeOldIngestionLogs(correlationId) {
 // stick around forever — this DELETE removes anything whose calculated_at
 // isn't the latest for its dimension_type.
 //
-// Runs inside the caller's transaction (caller passes its client in) so
-// it commits atomically with whatever caller-driven changes preceded it.
+// Owns its own pool client — a previous version took the client as an
+// argument with a docstring claiming it ran inside the caller's
+// transaction, but the caller never actually opened one, so the
+// invariant was misleading. The DELETE is a single statement (atomic
+// on its own); wrapping it in an explicit BEGIN/COMMIT would not
+// change observable behaviour.
+//
+// KNOWN RACE — deliberately not fixed here:
+//   runFullAggregation opens+commits its own transaction, THEN this
+//   function runs. Between those two commits the cache holds both the
+//   new rows AND stale rows for dimensions whose labels changed.
+//   A `/mttr?type=X` read in that millisecond-scale window can see
+//   both. Shrinking the window to zero would require sharing a single
+//   transaction across the whole cron tick — a bigger refactor. In
+//   practice the affected surface (rows for renamed labels only) is
+//   small and self-heals on the next request after purge completes.
 
-async function purgeStaleCache(dbClient, correlationId) {
-    const deleteResult = await dbClient.query(
-        `DELETE FROM mttr_cache mc
-         USING (
-             SELECT dimension_type, MAX(calculated_at) AS latest
-             FROM mttr_cache
-             GROUP BY dimension_type
-         ) keep
-         WHERE mc.dimension_type = keep.dimension_type
-           AND mc.calculated_at < keep.latest
-         RETURNING mc.id`
-    );
-    const deletedRowCount = deleteResult.rowCount;
-    if (deletedRowCount > 0) {
-        logger.info(`Retention: purged ${deletedRowCount} stale mttr_cache entries`, { correlationId });
+async function purgeStaleCache(correlationId) {
+    const dbClient = await db.getClient();
+    try {
+        const deleteResult = await dbClient.query(
+            `DELETE FROM mttr_cache mc
+             USING (
+                 SELECT dimension_type, MAX(calculated_at) AS latest
+                 FROM mttr_cache
+                 GROUP BY dimension_type
+             ) keep
+             WHERE mc.dimension_type = keep.dimension_type
+               AND mc.calculated_at < keep.latest
+             RETURNING mc.id`
+        );
+        const deletedRowCount = deleteResult.rowCount;
+        if (deletedRowCount > 0) {
+            logger.info(`Retention: purged ${deletedRowCount} stale mttr_cache entries`, { correlationId });
+        }
+        return deletedRowCount;
+    } finally {
+        dbClient.release();
     }
-    return deletedRowCount;
 }
 
 // P95 truncated-mean lives in src/utils/mttrMath.js — same implementation
@@ -212,29 +231,24 @@ async function summariseAndPurgeOldCases(correlationId) {
         await dbClient.query('BEGIN');
 
         for (const quarterPeriod of quarterCandidates) {
-            // Has any summary for this quarter already been written?
-            const existingSummaryCheck = await dbClient.query(
-                `SELECT 1 FROM case_events_summary WHERE period_label = $1 LIMIT 1`,
-                [quarterPeriod.label]
-            );
-
-            if (existingSummaryCheck.rows.length > 0) {
-                if (quarterPeriod.canDelete) {
-                    // Already summarised AND old enough to delete: just
-                    // sweep up any raw rows that arrived/were updated after
-                    // the original summary was written.
-                    const deleteResult = await dbClient.query(
-                        `DELETE FROM case_events
-                         WHERE closed_date >= $1 AND closed_date <= ($2::date + interval '1 day')
-                         RETURNING id`,
-                        [quarterPeriod.start, quarterPeriod.end]
-                    );
-                    totalRawRowsDeleted += deleteResult.rowCount;
-                    continue;
-                }
-                // Already summarised but within retention window → fall through
-                // and re-summarise (because new cases may have closed since).
-            }
+            // Every quarter — even ones that already have a summary AND
+            // are past the retention cutoff — falls through to the
+            // summarise-then-(optionally-)delete path below. Do NOT add
+            // a fast-path that skips summarisation.
+            //
+            // Why: a case can be re-opened + re-closed weeks after its
+            // original quarter was already summarised and its raw row
+            // deleted. Re-ingestion writes a fresh raw row into the
+            // still-open case_events table; if we then skipped
+            // re-summarising and just deleted, that late row would be
+            // erased without being folded into case_events_summary
+            // (silent data loss on the historical dashboard).
+            //
+            // The UPSERT below (ON CONFLICT DO UPDATE) safely re-writes
+            // any existing summary rows, and if no raw rows exist for
+            // this quarter (the common case after the first successful
+            // retention run) we short-circuit at the
+            // `rawCaseRows.rows.length === 0` check a few lines down.
 
             // Pull the raw durations for the quarter grouped by the
             // summary-table's natural key. We do NOT filter by case_state

@@ -31,11 +31,19 @@
 // ============================================================================
 
 const express = require('express');
-const { query, validationResult } = require('express-validator');
 const { runFullAggregation, runAggregationForType, DIMENSIONS } = require('../services/aggregationService');
 const { getIngestionLogs } = require('../services/ingestionService');
 const { runRetention } = require('../services/retentionService');
+const { withMaintenanceLock } = require('../utils/maintenanceLock');
 const logger = require('../utils/logger');
+
+// Response body returned when a heavy maintenance operation is refused
+// because the advisory lock is held by another caller (cron tick, another
+// admin request, or another pod). HTTP 409 Conflict; operator can retry.
+const LOCK_HELD_RESPONSE = {
+    status: 409,
+    body: { error: 'Another maintenance operation is in progress. Please retry shortly.' },
+};
 
 const router = express.Router();
 
@@ -55,6 +63,10 @@ router.post('/cache/reset', async (req, res) => {
 
     try {
         // Branch 1: targeted reset for a single dimension.
+        // NOT lock-guarded — matches the cache-miss path in cacheService,
+        // which invokes runAggregationForType lazily on user requests.
+        // Concurrent computes for the same dimension UPSERT the same
+        // cache_key rows (last write wins; no corruption).
         if (requestedDimensionType) {
             if (!VALID_DIMENSION_TYPES.includes(requestedDimensionType)) {
                 return res.status(400).json({
@@ -70,11 +82,24 @@ router.post('/cache/reset', async (req, res) => {
         }
 
         // Branch 2: full rebuild of every dimension.
-        const fullResult = await runFullAggregation(req.correlationId);
+        // Lock-guarded — this is the same heavy path the nightly cron
+        // runs. Overlapping calls would waste ~30s of compute each and
+        // contend on every cache_key row in mttr_cache; the lock skips
+        // duplicate work with a fast 409 to the second caller.
+        const lockOutcome = await withMaintenanceLock(
+            { correlationId: req.correlationId, source: 'admin_cache_reset_full' },
+            () => runFullAggregation(req.correlationId)
+        );
+        if (!lockOutcome.acquired) {
+            return res.status(LOCK_HELD_RESPONSE.status).json({
+                ...LOCK_HELD_RESPONSE.body,
+                correlation_id: req.correlationId,
+            });
+        }
         return res.json({
             status: 'ok',
             recalculated: Object.keys(DIMENSIONS),
-            ...fullResult,
+            ...lockOutcome.result,
         });
     } catch (resetError) {
         logger.error('Cache reset error', {
@@ -92,9 +117,29 @@ router.post('/cache/reset', async (req, res) => {
  * `limit` (1–200, default 50).
  */
 router.get('/ingestion-logs', async (req, res) => {
+    // Parse + validate `limit`:
+    //   • Omitted        → default 50
+    //   • 1..200         → use as-is
+    //   • >200           → clamp to 200 (preserves prior behaviour for
+    //                       clients that ask for "as many as possible")
+    //   • ≤0, non-numeric, empty → HTTP 400 with an explanatory body
+    //     rather than letting a bad `LIMIT -1` reach Postgres and fail
+    //     as a generic 500.
+    const DEFAULT_LIMIT = 50;
+    const MAX_LIMIT = 200;
+    let requestedLimit = DEFAULT_LIMIT;
+    if (req.query.limit !== undefined) {
+        const parsed = parseInt(req.query.limit, 10);
+        if (!Number.isInteger(parsed) || parsed < 1) {
+            return res.status(400).json({
+                error: `limit must be a positive integer between 1 and ${MAX_LIMIT}`,
+                correlation_id: req.correlationId,
+            });
+        }
+        requestedLimit = Math.min(parsed, MAX_LIMIT);
+    }
+
     try {
-        // Clamp at 200 so a runaway client can't ask for the entire log.
-        const requestedLimit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
         const ingestionLogRows = await getIngestionLogs(requestedLimit);
         return res.json({ logs: ingestionLogRows });
     } catch (logsQueryError) {
@@ -116,11 +161,22 @@ router.get('/ingestion-logs', async (req, res) => {
 router.post('/retention/run', async (req, res) => {
     try {
         logger.info('Admin: Manual retention job triggered', { correlationId: req.correlationId });
-        const retentionResult = await runRetention(req.correlationId);
+        // Lock-guarded — same heavy path the nightly cron runs. Refuses
+        // with 409 if the cron or another admin call is already running.
+        const lockOutcome = await withMaintenanceLock(
+            { correlationId: req.correlationId, source: 'admin_retention_run' },
+            () => runRetention(req.correlationId)
+        );
+        if (!lockOutcome.acquired) {
+            return res.status(LOCK_HELD_RESPONSE.status).json({
+                ...LOCK_HELD_RESPONSE.body,
+                correlation_id: req.correlationId,
+            });
+        }
         return res.json({
             status: 'ok',
             message: 'Retention job completed',
-            ...retentionResult,
+            ...lockOutcome.result,
         });
     } catch (retentionError) {
         logger.error('Admin retention job error', {

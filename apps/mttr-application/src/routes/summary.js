@@ -54,6 +54,19 @@ const GROUP_BY_COLUMN_MAP = new Map([
     ['product', 'product'],
 ]);
 
+// Startup allowlist assertion on the VALUES of the map. The `.has()`
+// guard below blocks unknown request inputs, but a future maintainer
+// adding a poisoned entry like ['team', 'cs_team; DROP TABLE …'] would
+// silently become live SQLi. Reject anything that isn't a plain SQL
+// identifier at module load — same pattern used in
+// aggregationService.js for DIMENSIONS[].groupBy.
+const SAFE_SQL_IDENTIFIER = /^[a-z_][a-z0-9_]*$/i;
+for (const [key, column] of GROUP_BY_COLUMN_MAP) {
+    if (!SAFE_SQL_IDENTIFIER.test(column)) {
+        throw new Error(`Unsafe SQL column in GROUP_BY_COLUMN_MAP['${key}']: ${column}`);
+    }
+}
+
 /**
  * GET /api/v1/summary/historical
  *

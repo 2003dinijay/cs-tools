@@ -151,7 +151,7 @@ WSO2 Choreo
 
 ### 4.7 Patched vs Non-Patched Derivation
 
-**Decision:** Derive `is_patched` from whether the SN `fix_eta_shared` date field is populated.
+**Decision:** Derive `is_patched` from whether the SN `u_fix_eta_shared` date field is populated.
 
 **Rationale:**
 - The source field is a date, not a boolean.
@@ -204,7 +204,7 @@ WSO2 Choreo
 | closed_date | TIMESTAMPTZ | Case closed_at (nullable for Solution Proposed) |
 | case_type | VARCHAR(50) | Incident, Query, Security Report |
 | priority | VARCHAR(20) | P1, P2, P3, P4 |
-| is_patched | BOOLEAN | Derived from fix_eta_shared date presence |
+| is_patched | BOOLEAN | Derived from u_fix_eta_shared date presence |
 | case_state | VARCHAR(30) | solution_proposed or closed |
 | ingested_at | TIMESTAMPTZ | When record was first ingested |
 | updated_at | TIMESTAMPTZ | When record was last updated |

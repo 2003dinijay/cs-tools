@@ -63,11 +63,22 @@
             if (_rtHO) clearTimeout(_rtHO);
             _rtHO = setTimeout(drawHistOverall, 150);
         }
-        window.addEventListener('resize', _scheduleRedrawHO);
-        if (typeof ResizeObserver !== 'undefined') {
-            new ResizeObserver(_scheduleRedrawHO).observe(
-                document.getElementById('chart_hist_overall'));
+        // Idempotent listener setup — see mttr_widget_hist_inc_priority.xml
+        // for the rationale (SN re-renders re-run this script; naive
+        // addEventListener leaks a handler on every mount).
+        if (window.__mttrHistOverallState) {
+            window.removeEventListener('resize', window.__mttrHistOverallState.resizeHandler);
+            if (window.__mttrHistOverallState.observer) {
+                window.__mttrHistOverallState.observer.disconnect();
+            }
         }
+        window.addEventListener('resize', _scheduleRedrawHO);
+        var _obsHO = null;
+        if (typeof ResizeObserver !== 'undefined') {
+            _obsHO = new ResizeObserver(_scheduleRedrawHO);
+            _obsHO.observe(document.getElementById('chart_hist_overall'));
+        }
+        window.__mttrHistOverallState = { resizeHandler: _scheduleRedrawHO, observer: _obsHO };
 
         function drawHistOverall() {
             try {
@@ -147,8 +158,17 @@
         }
 
         function noDataHO() {
-            document.getElementById('chart_hist_overall').innerHTML =
-                '&lt;p style="color:#999;text-align:center;padding:40px;"&gt;No historical data available&lt;/p&gt;';
+            // DOM-API placeholder — see mttr_widget_team_trend.xml for
+            // the full rationale (escaped-entity innerHTML rendered as
+            // literal text; createElement produces a real p node).
+            var container = document.getElementById('chart_hist_overall');
+            container.innerHTML = '';
+            var p = document.createElement('p');
+            p.style.color = '#999';
+            p.style.textAlign = 'center';
+            p.style.padding = '40px';
+            p.textContent = 'No historical data available';
+            container.appendChild(p);
         }
     </script>
 

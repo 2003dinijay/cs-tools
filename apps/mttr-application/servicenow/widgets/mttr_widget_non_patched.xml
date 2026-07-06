@@ -54,6 +54,10 @@
     <textarea id="mttr_data_non_patched" style="display:none">${jvar_non_patched}</textarea>
 
     <script type="text/javascript">
+    // IIFE scope-guard — see mttr_widget_team_casetype.xml for full
+    // rationale (sibling widgets declare _scheduleRedraw / drawChart /
+    // noData at top level; the wrap keeps them per-widget-scoped).
+    (function () {
         google.charts.load('current', { packages: ['corechart'] });
         google.charts.setOnLoadCallback(function() { setTimeout(drawChart, 100); });
 
@@ -62,11 +66,22 @@
             if (_rtimer) clearTimeout(_rtimer);
             _rtimer = setTimeout(drawChart, 150);
         }
-        window.addEventListener('resize', _scheduleRedraw);
-        if (typeof ResizeObserver !== 'undefined') {
-            new ResizeObserver(_scheduleRedraw).observe(
-                document.getElementById('chart_non_patched'));
+        // Idempotent listener setup — see mttr_widget_hist_inc_priority.xml
+        // for the rationale (SN re-renders re-run this script; naive
+        // addEventListener leaks a handler on every mount).
+        if (window.__mttrNonPatchedState) {
+            window.removeEventListener('resize', window.__mttrNonPatchedState.resizeHandler);
+            if (window.__mttrNonPatchedState.observer) {
+                window.__mttrNonPatchedState.observer.disconnect();
+            }
         }
+        window.addEventListener('resize', _scheduleRedraw);
+        var _obsNonPatched = null;
+        if (typeof ResizeObserver !== 'undefined') {
+            _obsNonPatched = new ResizeObserver(_scheduleRedraw);
+            _obsNonPatched.observe(document.getElementById('chart_non_patched'));
+        }
+        window.__mttrNonPatchedState = { resizeHandler: _scheduleRedraw, observer: _obsNonPatched };
 
         function drawChart() {
             try {
@@ -110,9 +125,19 @@
         }
 
         function noData() {
-            document.getElementById('chart_non_patched').innerHTML =
-                '&lt;p style="color:#999;text-align:center;padding:40px;"&gt;No data available&lt;/p&gt;';
+            // DOM-API placeholder — see mttr_widget_team_trend.xml for
+            // the full rationale (escaped-entity innerHTML rendered as
+            // literal text; createElement produces a real p node).
+            var container = document.getElementById('chart_non_patched');
+            container.innerHTML = '';
+            var p = document.createElement('p');
+            p.style.color = '#999';
+            p.style.textAlign = 'center';
+            p.style.padding = '40px';
+            p.textContent = 'No data available';
+            container.appendChild(p);
         }
+    })();
     </script>
 
 </j:jelly>

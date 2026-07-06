@@ -112,3 +112,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ces_unique_slice
 CREATE INDEX IF NOT EXISTS idx_ces_period ON case_events_summary(period_start, period_end);
 CREATE INDEX IF NOT EXISTS idx_ces_case_type ON case_events_summary(case_type);
 CREATE INDEX IF NOT EXISTS idx_ces_team ON case_events_summary(cs_team);
+-- Composite for /summary/historical: WHERE case_type = $1 ORDER BY period_start, …
+-- Lets both the filter AND the primary sort come from a single index
+-- scan — no in-memory sort step for period_start. Progressively more
+-- valuable as case_events_summary grows (retained forever).
+CREATE INDEX IF NOT EXISTS idx_ces_case_type_period ON case_events_summary(case_type, period_start);

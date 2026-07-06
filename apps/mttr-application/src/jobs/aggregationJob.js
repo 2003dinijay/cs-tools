@@ -45,7 +45,7 @@ const { v4: uuidv4 } = require('uuid');
 const applicationConfig = require('../config');
 const { runFullAggregation } = require('../services/aggregationService');
 const { purgeStaleCache, runRetention } = require('../services/retentionService');
-const db = require('../config/database');
+const { withMaintenanceLock } = require('../utils/maintenanceLock');
 const logger = require('../utils/logger');
 
 /**
@@ -53,6 +53,23 @@ const logger = require('../utils/logger');
  */
 function startAggregationJob() {
     const cronExpression = applicationConfig.aggregation.cron;
+
+    // Guard against a malformed AGGREGATION_CRON env var. node-cron's
+    // schedule() throws synchronously on an invalid expression, which
+    // would crash the process during boot. Log the misconfiguration and
+    // skip scheduling so the HTTP API still starts — MTTR won't auto-
+    // recompute until the env var is fixed and the pod is restarted, but
+    // /admin/cache/reset remains available as a manual workaround.
+    if (!cron.validate(cronExpression)) {
+        logger.error(
+            'Invalid AGGREGATION_CRON expression — cron NOT scheduled; ' +
+            'daily MTTR recompute + retention will not run until the env ' +
+            'var is fixed and the service is restarted.',
+            { cronExpression }
+        );
+        return;
+    }
+
     logger.info(`Scheduling aggregation job with cron: ${cronExpression}`);
 
     cron.schedule(cronExpression, async () => {
@@ -61,33 +78,37 @@ function startAggregationJob() {
         // calls into — can be filtered together. The "cron_" prefix
         // makes it obvious in logs that the trace wasn't request-driven.
         const correlationId = 'cron_' + uuidv4();
-        try {
-            // ── Step 1: Recompute every MTTR aggregation ───────────────
-            logger.info('Aggregation cron job triggered', { correlationId });
-            const aggregationResult = await runFullAggregation(correlationId);
-            logger.info('Aggregation cron job completed', { correlationId, ...aggregationResult });
 
-            // ── Step 2: Drop cache rows that aren't part of the latest run
-            // We need a dedicated client because purgeStaleCache runs its
-            // single DELETE inside the caller's transaction context.
-            const dbClient = await db.getClient();
+        // Serialise the whole tick against any concurrent admin-triggered
+        // maintenance and against any other replica's cron: if the
+        // advisory lock is already held (e.g. yesterday's tick is still
+        // running past midnight, or an operator is mid-`/admin/cache/reset`),
+        // this tick logs and returns without doing work — no duplicate
+        // aggregation, no UPSERT contention on cache_key rows.
+        await withMaintenanceLock({ correlationId, source: 'cron_tick' }, async () => {
             try {
-                await purgeStaleCache(dbClient, correlationId);
-            } finally {
-                dbClient.release();
-            }
+                // ── Step 1: Recompute every MTTR aggregation ───────────
+                logger.info('Aggregation cron job triggered', { correlationId });
+                const aggregationResult = await runFullAggregation(correlationId);
+                logger.info('Aggregation cron job completed', { correlationId, ...aggregationResult });
 
-            // ── Step 3: Run retention (ingestion logs + summarise/delete)
-            const retentionResult = await runRetention(correlationId);
-            logger.info('Retention job completed', { correlationId, ...retentionResult });
-        } catch (cronError) {
-            // Swallow + log so the cron stays alive for the next tick.
-            logger.error('Aggregation/retention cron job failed', {
-                correlationId,
-                error: cronError.message,
-                stack: cronError.stack,
-            });
-        }
+                // ── Step 2: Drop cache rows that aren't part of the latest run
+                // purgeStaleCache owns its own pool client — no client
+                // management needed here.
+                await purgeStaleCache(correlationId);
+
+                // ── Step 3: Run retention (ingestion logs + summarise/delete)
+                const retentionResult = await runRetention(correlationId);
+                logger.info('Retention job completed', { correlationId, ...retentionResult });
+            } catch (cronError) {
+                // Swallow + log so the cron stays alive for the next tick.
+                logger.error('Aggregation/retention cron job failed', {
+                    correlationId,
+                    error: cronError.message,
+                    stack: cronError.stack,
+                });
+            }
+        });
     });
 }
 

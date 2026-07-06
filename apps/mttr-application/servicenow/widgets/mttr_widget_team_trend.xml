@@ -55,6 +55,10 @@
     <textarea id="mttr_data_team_trend" style="display:none">${jvar_team_trend}</textarea>
 
     <script type="text/javascript">
+    // IIFE scope-guard — see mttr_widget_team_casetype.xml for full
+    // rationale (sibling widgets declare _scheduleRedraw / drawChart /
+    // noData at top level; the wrap keeps them per-widget-scoped).
+    (function () {
         google.charts.load('current', { packages: ['corechart'] });
         google.charts.setOnLoadCallback(function() { setTimeout(drawChart, 100); });
 
@@ -63,11 +67,22 @@
             if (_rtimer) clearTimeout(_rtimer);
             _rtimer = setTimeout(drawChart, 150);
         }
-        window.addEventListener('resize', _scheduleRedraw);
-        if (typeof ResizeObserver !== 'undefined') {
-            new ResizeObserver(_scheduleRedraw).observe(
-                document.getElementById('chart_team_trend'));
+        // Idempotent listener setup — see mttr_widget_hist_inc_priority.xml
+        // for the rationale (SN re-renders re-run this script; naive
+        // addEventListener leaks a handler on every mount).
+        if (window.__mttrTeamTrendState) {
+            window.removeEventListener('resize', window.__mttrTeamTrendState.resizeHandler);
+            if (window.__mttrTeamTrendState.observer) {
+                window.__mttrTeamTrendState.observer.disconnect();
+            }
         }
+        window.addEventListener('resize', _scheduleRedraw);
+        var _obsTeamTrend = null;
+        if (typeof ResizeObserver !== 'undefined') {
+            _obsTeamTrend = new ResizeObserver(_scheduleRedraw);
+            _obsTeamTrend.observe(document.getElementById('chart_team_trend'));
+        }
+        window.__mttrTeamTrendState = { resizeHandler: _scheduleRedraw, observer: _obsTeamTrend };
 
         var MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun',
                            'Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -142,9 +157,23 @@
         }
 
         function noData() {
-            document.getElementById('chart_team_trend').innerHTML =
-                '&lt;p style="color:#999;text-align:center;padding:40px;"&gt;No data available&lt;/p&gt;';
+            // Build the placeholder via DOM API instead of innerHTML.
+            // The old escaped-entity string kept the XML/Jelly parser
+            // happy but at runtime left the JS string containing literal
+            // "&amp;lt;" characters, which the HTML parser then decoded to
+            // text (not markup) — so the paragraph tag rendered as literal
+            // text on the page. Using createElement + textContent keeps
+            // the JS source XML-safe and produces a real p node in the DOM.
+            var container = document.getElementById('chart_team_trend');
+            container.innerHTML = '';
+            var p = document.createElement('p');
+            p.style.color = '#999';
+            p.style.textAlign = 'center';
+            p.style.padding = '40px';
+            p.textContent = 'No data available';
+            container.appendChild(p);
         }
+    })();
     </script>
 
 </j:jelly>
