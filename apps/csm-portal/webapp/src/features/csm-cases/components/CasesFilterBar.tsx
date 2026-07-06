@@ -15,33 +15,25 @@
 // under the License.
 
 import {
-  Autocomplete,
   Box,
   Button,
-  Checkbox,
-  Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   Divider,
-  FormControl,
   Grid,
   IconButton,
   InputAdornment,
-  InputLabel,
   ListItemIcon,
   ListItemText,
   ListSubheader,
   Menu,
   MenuItem,
   Paper,
-  Select,
   TextField,
-  Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
-import type { SelectChangeEvent } from "@wso2/oxygen-ui";
 import {
   Bookmark,
   BookmarkPlus,
@@ -80,6 +72,8 @@ import {
   CASE_TYPE_LABEL,
 } from "@features/csm-cases/utils/caseType";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
+import MultiSelectField from "@components/MultiSelectField";
+import SearchableMultiSelect from "@components/SearchableMultiSelect";
 
 /** Sentinel used inside `assignees` to mean "the current user". */
 export const ASSIGNEE_ME_TOKEN = "@me";
@@ -165,183 +159,6 @@ const PRIMARY_STATES: CaseState[] = [
   "waiting_on_wso2",
   "closed",
 ];
-
-interface MultiSelectFieldProps<T extends string> {
-  id: string;
-  label: string;
-  values: T[];
-  options: { value: T; label: string }[];
-  onChange: (next: T[]) => void;
-  disabled?: boolean;
-}
-
-function MultiSelectField<T extends string>({
-  id,
-  label,
-  values,
-  options,
-  onChange,
-  disabled,
-}: MultiSelectFieldProps<T>): JSX.Element {
-  const handleChange = (event: SelectChangeEvent<string[]>): void => {
-    const val = event.target.value;
-    onChange((Array.isArray(val) ? val : [val]) as T[]);
-  };
-  return (
-    <FormControl fullWidth size="small" disabled={disabled}>
-      <InputLabel id={`${id}-label`}>{label}</InputLabel>
-      <Select
-        multiple
-        labelId={`${id}-label`}
-        id={id}
-        value={values as unknown as string[]}
-        label={label}
-        onChange={handleChange}
-        renderValue={(selected) => {
-          if (!Array.isArray(selected) || selected.length === 0) return "";
-          const labels = selected.map(
-            (v) => options.find((o) => o.value === v)?.label ?? v,
-          );
-          const text = labels.join(", ");
-          if (labels.length === 1) return text;
-          return (
-            <Tooltip title={text} placement="top">
-              <Box
-                component="span"
-                sx={{
-                  display: "block",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {text}
-              </Box>
-            </Tooltip>
-          );
-        }}
-      >
-        {options.length === 0 ? (
-          <MenuItem disabled value="">
-            <em>No options</em>
-          </MenuItem>
-        ) : (
-          options.map((opt) => (
-            <MenuItem key={opt.value} value={opt.value} sx={{ py: 0.5 }}>
-              <Checkbox
-                size="small"
-                checked={values.includes(opt.value)}
-                sx={{ mr: 1, p: 0.25 }}
-              />
-              <ListItemText primary={opt.label} />
-            </MenuItem>
-          ))
-        )}
-      </Select>
-    </FormControl>
-  );
-}
-
-interface SearchableMultiSelectProps {
-  id: string;
-  label: string;
-  placeholder?: string;
-  values: string[];
-  options: string[];
-  /** Optional renderer for option labels (e.g. the @me sentinel → "Me"). */
-  formatOption?: (value: string) => string;
-  /** Optional secondary line shown beneath each option (e.g. email). */
-  getOptionSecondary?: (value: string) => string | undefined;
-  /** Optional filter against synthetic text (e.g. include email in the query). */
-  getOptionSearchText?: (value: string) => string;
-  onChange: (next: string[]) => void;
-  disabled?: boolean;
-}
-
-/**
- * Multi-select autocomplete. Users type to filter the option list and
- * select multiple. Picked values render as removable chips inside the field.
- * Internally a thin wrapper over MUI Autocomplete so we keep oxygen-ui
- * theming via the re-exported components.
- */
-function SearchableMultiSelect({
-  id,
-  label,
-  placeholder,
-  values,
-  options,
-  formatOption,
-  getOptionSecondary,
-  getOptionSearchText,
-  onChange,
-  disabled,
-}: SearchableMultiSelectProps): JSX.Element {
-  const format = formatOption ?? ((v: string) => v);
-  const searchText = getOptionSearchText ?? format;
-  return (
-    <Autocomplete
-      multiple
-      size="small"
-      disabled={disabled}
-      id={id}
-      options={options}
-      value={values}
-      onChange={(_event, next) => onChange(next as string[])}
-      disableCloseOnSelect
-      getOptionLabel={(opt) => format(opt as string)}
-      isOptionEqualToValue={(opt, val) => opt === val}
-      filterOptions={(opts, state) => {
-        const q = state.inputValue.trim().toLowerCase();
-        if (!q) return opts;
-        return opts.filter((o) => searchText(o as string).toLowerCase().includes(q));
-      }}
-      renderTags={(value, getTagProps) =>
-        value.map((option, index) => {
-          const { key, ...tagProps } = getTagProps({ index });
-          return (
-            <Chip
-              key={key}
-              size="small"
-              label={format(option as string)}
-              {...tagProps}
-            />
-          );
-        })
-      }
-      renderOption={(props, option, { selected }) => {
-        const { key, ...liProps } = props as React.HTMLAttributes<HTMLLIElement> & {
-          key: string;
-        };
-        const primary = format(option as string);
-        const secondary = getOptionSecondary?.(option as string);
-        return (
-          <li key={key} {...liProps} style={{ paddingTop: 2, paddingBottom: 2 }}>
-            <Checkbox
-              size="small"
-              checked={selected}
-              sx={{ mr: 1, p: 0.25 }}
-            />
-            <ListItemText
-              primary={primary}
-              secondary={secondary}
-              slotProps={{
-                primary: { style: { fontSize: 13 } },
-                secondary: { style: { fontSize: 11 } },
-              }}
-            />
-          </li>
-        );
-      }}
-      renderInput={(params) => (
-        <TextField
-          {...params}
-          label={label}
-          placeholder={values.length ? undefined : placeholder ?? "Type to search…"}
-        />
-      )}
-    />
-  );
-}
 
 export default function CasesFilterBar({
   filters,
