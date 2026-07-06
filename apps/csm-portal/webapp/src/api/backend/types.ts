@@ -1055,6 +1055,18 @@ export interface BeCallRequestView {
   updatedOn?: string;
   state?: BeCallRequestState;
   cancellationReason?: string;
+  /** Agent (or team) assigned to run the call, once scheduled. */
+  assignee?: string;
+  /** Call notes recorded after the call concludes. */
+  notes?: string;
+  /** Follow-up plan recorded alongside the call notes. */
+  plan?: string;
+  /** Attendee list recorded alongside the call notes. */
+  attendees?: string;
+  /** Action items recorded alongside the call notes. */
+  actionItems?: string;
+  /** Actual call duration in minutes, recorded alongside the call notes. */
+  actualDurationMin?: number;
 }
 
 /** `POST /cases/{id}/call-requests` request body. */
@@ -1169,6 +1181,67 @@ export interface BeUpdateCallRequestResponse {
     id: string;
     updatedOn?: string;
     updatedBy?: string;
+  };
+}
+
+/**
+ * `POST /cases/{caseId}/call-requests/{callRequestId}/schedule` request body.
+ * Used for the initial schedule (from `pending_on_wso2`) and for reschedule
+ * (when already `scheduled`) -- same endpoint, same shape.
+ */
+export interface BeScheduleCallRequestPayload {
+  /** UTC datetime (ISO string) the call is scheduled for. */
+  meetingDate: string;
+  /** Duration of the call in minutes (15-240). */
+  durationInMinutes: number;
+  /** Agent (or team) assigned to run the call. */
+  assignee?: string;
+}
+
+/** `POST /cases/{caseId}/call-requests/{callRequestId}/schedule` response. */
+export interface BeScheduleCallRequestResponse {
+  message?: string;
+  callRequest?: {
+    id: string;
+    updatedOn?: string;
+    state?: BeCallRequestState;
+    meetingLink?: string;
+    scheduleTime?: string;
+  };
+}
+
+/** `POST /cases/{caseId}/call-requests/{callRequestId}/reject` request body. */
+export interface BeRejectCallRequestPayload {
+  reason?: string;
+}
+
+/** `POST /cases/{caseId}/call-requests/{callRequestId}/reject` response. */
+export interface BeRejectCallRequestResponse {
+  message?: string;
+  callRequest?: {
+    id: string;
+    updatedOn?: string;
+    state?: BeCallRequestState;
+  };
+}
+
+/** `POST /cases/{caseId}/call-requests/{callRequestId}/notes` request body. */
+export interface BeSendCallRequestNotesPayload {
+  notes: string;
+  plan?: string;
+  attendees?: string;
+  actionItems?: string;
+  /** Actual call duration in minutes. */
+  actualDuration?: number;
+}
+
+/** `POST /cases/{caseId}/call-requests/{callRequestId}/notes` response. */
+export interface BeSendCallRequestNotesResponse {
+  message?: string;
+  callRequest?: {
+    id: string;
+    updatedOn?: string;
+    state?: BeCallRequestState;
   };
 }
 

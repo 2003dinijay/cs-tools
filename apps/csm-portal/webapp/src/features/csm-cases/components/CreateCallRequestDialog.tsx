@@ -220,7 +220,7 @@ export function CreateCallRequestDialog({
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Request a call</DialogTitle>
+      <DialogTitle>Create a call request</DialogTitle>
       <DialogContent>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 0.5 }}>
           {error && (
@@ -228,6 +228,10 @@ export function CreateCallRequestDialog({
               {error}
             </Typography>
           )}
+          <Typography variant="body2" color="text.secondary">
+            Creates a call request on behalf of the customer on this case,
+            ready for an agent to schedule.
+          </Typography>
           <TextField
             label="Reason for the call"
             multiline

@@ -89,30 +89,34 @@ export const ALL_CALL_REQUEST_STATES: BeCallRequestStateKey[] = [
 ];
 
 /**
- * State transitions available to a CS engineer from a given current state.
- * This is deliberately conservative: only transitions that make operational
- * sense are exposed; the full graph is owned by the backend and may accept more.
+ * Agent-facing actions available on a call request, keyed by its current
+ * state. This mirrors exactly what the backend can fulfil today (see the
+ * cross-layer contract) -- do not add an action here unless there is a
+ * corresponding backend endpoint, otherwise the UI offers a transition that
+ * fails on submit.
  *
- * From pending states: can schedule, reject (wso2), or cancel.
- * From scheduled: can conclude, move to notes_pending, or cancel.
- * From notes_pending: can conclude or cancel.
- * Terminal states (customer_rejected, wso2_rejected, canceled, concluded): no transitions.
+ * - `pending_on_wso2`: agent can schedule the call or reject it.
+ * - `scheduled`: agent can reschedule or cancel. Sending notes from this
+ *   state is normally gated by the backend's post-due automation moving the
+ *   request to `notes_pending` first; it is not offered here.
+ * - `notes_pending`: agent can send call notes (concludes the request).
+ * - `pending_on_customer`: the customer owns scheduling/rejecting; the agent
+ *   can only cancel on their behalf.
+ * - Terminal states (`customer_rejected`, `wso2_rejected`, `canceled`,
+ *   `concluded`): no actions.
  */
-export const CALL_REQUEST_TRANSITIONS: Record<
+export type CallRequestAgentAction = "schedule" | "reschedule" | "reject" | "sendNotes" | "cancel";
+
+export const CALL_REQUEST_AGENT_ACTIONS: Record<
   BeCallRequestStateKey,
-  BeCallRequestStateKey[]
+  CallRequestAgentAction[]
 > = {
-  pending_on_customer: ["pending_on_wso2", "scheduled", "wso2_rejected", "canceled"],
-  pending_on_wso2: ["pending_on_customer", "scheduled", "wso2_rejected", "canceled"],
-  scheduled: ["notes_pending", "concluded", "canceled"],
+  pending_on_customer: ["cancel"],
+  pending_on_wso2: ["schedule", "reject"],
+  scheduled: ["reschedule", "cancel"],
   customer_rejected: [],
   wso2_rejected: [],
   canceled: [],
-  notes_pending: ["concluded", "canceled"],
+  notes_pending: ["sendNotes"],
   concluded: [],
 };
-
-/** Returns true for states where a cancellation reason is required. */
-export function requiresCancellationReason(state: BeCallRequestStateKey): boolean {
-  return state === "canceled";
-}

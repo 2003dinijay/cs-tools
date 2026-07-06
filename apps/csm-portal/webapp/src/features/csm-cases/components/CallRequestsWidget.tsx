@@ -35,13 +35,20 @@ import {
   useGetCsmCaseCallRequests,
   usePostCsmCaseCallRequest,
   usePatchCsmCaseCallRequest,
+  useScheduleCsmCaseCallRequest,
+  useRejectCsmCaseCallRequest,
+  useSendCsmCaseCallRequestNotes,
 } from "@features/csm-cases/api/useCsmCaseCallRequests";
 import {
   ALL_CALL_REQUEST_STATES,
   CALL_REQUEST_STATE_LABEL,
+  type CallRequestAgentAction,
 } from "@features/csm-cases/utils/callRequestState";
 import { CreateCallRequestDialog } from "./CreateCallRequestDialog";
-import { UpdateCallRequestDialog } from "./UpdateCallRequestDialog";
+import { ScheduleCallDialog } from "./ScheduleCallDialog";
+import { RejectCallDialog } from "./RejectCallDialog";
+import { SendCallNotesDialog } from "./SendCallNotesDialog";
+import { CancelCallDialog } from "./CancelCallDialog";
 import { CallRequestRow } from "./CallRequestRow";
 
 // ---------------------------------------------------------------------------
@@ -62,24 +69,36 @@ export function CallRequestsWidget({
   caseId,
   severity,
 }: CallRequestsWidgetProps): JSX.Element {
-  const { data, isLoading, isError, refetch } = useGetCsmCaseCallRequests(caseId);
+  // State filter — empty string means "all". Filtering happens server-side
+  // via `filters.states` on the search request.
+  const [stateFilter, setStateFilter] = useState<BeCallRequestStateKey | "">("");
+  const activeStates = stateFilter ? [stateFilter] : undefined;
+
+  const { data, isLoading, isError, refetch } = useGetCsmCaseCallRequests(
+    caseId,
+    activeStates,
+  );
   const postCallRequest = usePostCsmCaseCallRequest();
   const patchCallRequest = usePatchCsmCaseCallRequest();
+  const scheduleCallRequest = useScheduleCsmCaseCallRequest();
+  const rejectCallRequest = useRejectCsmCaseCallRequest();
+  const sendCallNotes = useSendCsmCaseCallRequestNotes();
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  const [updateTarget, setUpdateTarget] = useState<BeCallRequestView | null>(null);
-  const [updateError, setUpdateError] = useState<string | null>(null);
+  // Dialog targets — only one dialog is ever open at a time, driven by which
+  // action was clicked on a row.
+  const [scheduleTarget, setScheduleTarget] = useState<BeCallRequestView | null>(null);
+  const [rejectTarget, setRejectTarget] = useState<BeCallRequestView | null>(null);
+  const [notesTarget, setNotesTarget] = useState<BeCallRequestView | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<BeCallRequestView | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  // State filter — empty string means "all".
-  const [stateFilter, setStateFilter] = useState<BeCallRequestStateKey | "">("");
+  const isReschedule =
+    scheduleTarget?.state && String(scheduleTarget.state.id) === "scheduled";
 
-  const filteredRequests = stateFilter
-    ? (data ?? []).filter(
-        (cr) => String(cr.state?.id) === stateFilter,
-      )
-    : (data ?? []);
+  const requests = data ?? [];
 
   const handleCreate = async (
     reason: string,
@@ -97,25 +116,99 @@ export function CallRequestsWidget({
     }
   };
 
-  const handleUpdateState = async (
-    newState: BeCallRequestStateKey,
-    cancellationReason?: string,
-  ) => {
-    if (!updateTarget) return;
-    setUpdateError(null);
+  const handleAction = (action: CallRequestAgentAction, cr: BeCallRequestView) => {
+    setActionError(null);
+    switch (action) {
+      case "schedule":
+      case "reschedule":
+        setScheduleTarget(cr);
+        break;
+      case "reject":
+        setRejectTarget(cr);
+        break;
+      case "sendNotes":
+        setNotesTarget(cr);
+        break;
+      case "cancel":
+        setCancelTarget(cr);
+        break;
+    }
+  };
+
+  const handleSchedule = async (input: {
+    meetingDate: string;
+    durationInMinutes: number;
+    assignee?: string;
+  }) => {
+    if (!scheduleTarget) return;
+    setActionError(null);
+    try {
+      await scheduleCallRequest.mutateAsync({
+        caseId,
+        callRequestId: scheduleTarget.id,
+        ...input,
+      });
+      setScheduleTarget(null);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : "Could not schedule the call.",
+      );
+    }
+  };
+
+  const handleReject = async (reason?: string) => {
+    if (!rejectTarget) return;
+    setActionError(null);
+    try {
+      await rejectCallRequest.mutateAsync({
+        caseId,
+        callRequestId: rejectTarget.id,
+        reason,
+      });
+      setRejectTarget(null);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : "Could not reject the call request.",
+      );
+    }
+  };
+
+  const handleSendNotes = async (input: {
+    notes: string;
+    plan?: string;
+    attendees?: string;
+    actionItems?: string;
+    actualDuration?: number;
+  }) => {
+    if (!notesTarget) return;
+    setActionError(null);
+    try {
+      await sendCallNotes.mutateAsync({
+        caseId,
+        callRequestId: notesTarget.id,
+        ...input,
+      });
+      setNotesTarget(null);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : "Could not send the call notes.",
+      );
+    }
+  };
+
+  const handleCancel = async (cancellationReason: string) => {
+    if (!cancelTarget) return;
+    setActionError(null);
     try {
       await patchCallRequest.mutateAsync({
         caseId,
-        callRequestId: updateTarget.id,
-        patch: {
-          state: newState,
-          ...(cancellationReason ? { cancellationReason } : {}),
-        },
+        callRequestId: cancelTarget.id,
+        patch: { state: "canceled", cancellationReason },
       });
-      setUpdateTarget(null);
+      setCancelTarget(null);
     } catch (err) {
-      setUpdateError(
-        err instanceof Error ? err.message : "Could not update the call request.",
+      setActionError(
+        err instanceof Error ? err.message : "Could not cancel the call request.",
       );
     }
   };
@@ -140,7 +233,7 @@ export function CallRequestsWidget({
               <Chip
                 size="small"
                 variant="outlined"
-                label={`${data?.length ?? 0} total`}
+                label={`${requests.length} ${stateFilter ? "matching" : "total"}`}
               />
             )}
           </Box>
@@ -172,7 +265,7 @@ export function CallRequestsWidget({
               onClick={() => setCreateOpen(true)}
               sx={{ textTransform: "none" }}
             >
-              Request a call
+              Create call request
             </Button>
           </Box>
         </Box>
@@ -211,7 +304,7 @@ export function CallRequestsWidget({
           </Box>
         )}
 
-        {!isLoading && !isError && filteredRequests.length === 0 && (
+        {!isLoading && !isError && requests.length === 0 && (
           <Box sx={{ py: 3, textAlign: "center" }}>
             <Typography variant="body2" color="text.secondary">
               {stateFilter
@@ -221,14 +314,10 @@ export function CallRequestsWidget({
           </Box>
         )}
 
-        {!isLoading && !isError && filteredRequests.length > 0 && (
+        {!isLoading && !isError && requests.length > 0 && (
           <Box sx={{ display: "flex", flexDirection: "column" }}>
-            {filteredRequests.map((cr) => (
-              <CallRequestRow
-                key={cr.id}
-                cr={cr}
-                onUpdateState={setUpdateTarget}
-              />
+            {requests.map((cr) => (
+              <CallRequestRow key={cr.id} cr={cr} onAction={handleAction} />
             ))}
           </Box>
         )}
@@ -248,17 +337,49 @@ export function CallRequestsWidget({
         }
       />
 
-      <UpdateCallRequestDialog
-        callRequest={updateTarget}
-        submitting={patchCallRequest.isPending}
-        error={updateError}
+      <ScheduleCallDialog
+        callRequest={scheduleTarget}
+        isReschedule={!!isReschedule}
+        submitting={scheduleCallRequest.isPending}
+        error={actionError}
         onClose={() => {
-          setUpdateTarget(null);
-          setUpdateError(null);
+          setScheduleTarget(null);
+          setActionError(null);
         }}
-        onSubmit={(newState, cancellationReason) =>
-          void handleUpdateState(newState, cancellationReason)
-        }
+        onSubmit={(input) => void handleSchedule(input)}
+      />
+
+      <RejectCallDialog
+        callRequest={rejectTarget}
+        submitting={rejectCallRequest.isPending}
+        error={actionError}
+        onClose={() => {
+          setRejectTarget(null);
+          setActionError(null);
+        }}
+        onSubmit={(reason) => void handleReject(reason)}
+      />
+
+      <SendCallNotesDialog
+        callRequest={notesTarget}
+        submitting={sendCallNotes.isPending}
+        error={actionError}
+        onClose={() => {
+          setNotesTarget(null);
+          setActionError(null);
+        }}
+        onSubmit={(input) => void handleSendNotes(input)}
+      />
+
+      <CancelCallDialog
+        callRequest={cancelTarget}
+        submitting={patchCallRequest.isPending}
+        error={actionError}
+        onClose={() => {
+          setCancelTarget(null);
+          setActionError(null);
+        }}
+        onSubmit={(reason) => void handleCancel(reason)}
       />
     </>
   );
