@@ -5263,14 +5263,16 @@ components:
           type: string
           format: uuid
         slaDefinition:
-          $ref: '#/components/schemas/TaskSlaDefinitionRef'
           nullable: true
+          allOf:
+            - $ref: '#/components/schemas/TaskSlaDefinitionRef'
         stage:
           type: string
           nullable: true
         task:
-          $ref: '#/components/schemas/TaskSlaTaskRef'
           nullable: true
+          allOf:
+            - $ref: '#/components/schemas/TaskSlaTaskRef'
         businessTimeLeft:
           type: string
           nullable: true
@@ -5398,11 +5400,13 @@ components:
           type: string
           format: uuid
         task:
-          $ref: '#/components/schemas/TaskSlaTaskRef'
           nullable: true
+          allOf:
+            - $ref: '#/components/schemas/TaskSlaTaskRef'
         slaDefinition:
-          $ref: '#/components/schemas/TaskSlaDefinitionDetail'
           nullable: true
+          allOf:
+            - $ref: '#/components/schemas/TaskSlaDefinitionDetail'
         stage:
           type: string
           nullable: true
@@ -5426,5 +5430,6 @@ components:
           type: boolean
           nullable: true
         schedule:
-          $ref: '#/components/schemas/TaskSlaScheduleRef'
           nullable: true
+          allOf:
+            - $ref: '#/components/schemas/TaskSlaScheduleRef'
