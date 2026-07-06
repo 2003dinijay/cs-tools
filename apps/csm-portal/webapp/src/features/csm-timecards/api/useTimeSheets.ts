@@ -239,11 +239,10 @@ function groupCardsByUserIntoSheets(cards: CsmTimeCard[]): CsmTimeSheet[] {
  * reflect just this user's cards — paginating over a project-wide page and
  * filtering to "mine" client-side would make `total` and the page size
  * meaningless here (a page of 20 project-wide cards could easily contain
- * none of the signed-in user's own). `filters.projectIds` must still be
- * non-empty — the backend requires it to return anything (see
- * {@link searchTimeCards}) — so this stays disabled until the caller has
- * resolved a real project scope (defaulted to every visible project when
- * the user hasn't picked one — see `CsmTimeCardsPage.tsx`).
+ * none of the signed-in user's own). No project scope is required: with no
+ * project filter picked the search runs unscoped and the backend returns
+ * every card the caller is entitled to, bounded here to the signed-in user
+ * by `userId` (see `CsmTimeCardsPage.tsx`).
  *
  * `enabled` should be gated on the owning tab actually being active (see
  * `CsmTimeCardsPage.tsx`) — confirmed live: with this, {@link useAllTimeCards}
@@ -269,7 +268,7 @@ export function useMyTimeSheets(
       );
       return { sheets: groupIntoSheets(cards, me.id, me.name), total };
     },
-    enabled: enabled && !!me.id && !!filters?.projectIds?.length,
+    enabled: enabled && !!me.id,
     staleTime: 5_000,
   });
 }
@@ -285,9 +284,9 @@ export function useMyTimeSheets(
  * cards client-side as a defense-in-depth self-approval guard: a card
  * created before `LogTimeCardDialog` started excluding the submitter from
  * the approver picker could still name themselves as an eligible approver.
- * Like {@link useMyTimeSheets}, this requires `filters.projectIds` to be
- * non-empty to get anything back, and `enabled` should be gated on this tab
- * actually being active (see the note on {@link useMyTimeSheets} for why).
+ * Like {@link useMyTimeSheets}, no project scope is required (the search runs
+ * unscoped when no project filter is picked), and `enabled` should be gated on
+ * this tab actually being active (see the note on {@link useMyTimeSheets}).
  */
 export function useApprovalQueue(
   enabled: boolean,
@@ -308,7 +307,7 @@ export function useApprovalQueue(
       const others = cards.filter((c) => c.userId !== me.id);
       return { sheets: groupCardsByUserIntoSheets(others), total };
     },
-    enabled: enabled && !!me.id && !!filters?.projectIds?.length,
+    enabled: enabled && !!me.id,
     staleTime: 5_000,
   });
 }
@@ -316,11 +315,11 @@ export function useApprovalQueue(
 /**
  * Every visible user's sheets on the requested page, own included — unlike
  * {@link useMyTimeSheets} (self only) and {@link useApprovalQueue} (others'
- * submitted cards only, for deciding), this is a read-only "see everything
- * in scope" view: no state restriction, no ownership exclusion. Requires
- * `filters.projectIds` to be non-empty, same as every other search here,
- * and `enabled` should be gated on this tab actually being active (see the
- * note on {@link useMyTimeSheets} for why).
+ * submitted cards only, for deciding), this is a read-only "see everything"
+ * view: no state restriction, no ownership exclusion. Runs unscoped when no
+ * project filter is picked (the backend returns the caller's full
+ * entitlement), and `enabled` should be gated on this tab actually being
+ * active (see the note on {@link useMyTimeSheets} for why).
  */
 export function useAllTimeCards(
   enabled: boolean,
@@ -335,7 +334,7 @@ export function useAllTimeCards(
       const { cards, total } = await searchTimeCards(api, filters, pagination);
       return { sheets: groupCardsByUserIntoSheets(cards), total };
     },
-    enabled: enabled && !!me.id && !!filters?.projectIds?.length,
+    enabled: enabled && !!me.id,
     staleTime: 5_000,
   });
 }
