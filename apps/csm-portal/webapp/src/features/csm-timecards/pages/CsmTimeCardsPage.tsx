@@ -131,15 +131,13 @@ export default function CsmTimeCardsPage(): JSX.Element {
   const [filterEngineer, setFilterEngineer] = useState<string[]>([]);
 
   const projects = useProjectOptions();
-  // The backend requires a non-empty `projectIds` to return anything at all
-  // (confirmed live — an unscoped search always returns `total: 0`, despite
-  // the OpenAPI spec documenting it as optional). Default to every project
-  // the user can see (already fetched for the filter dropdown below) so
-  // "My time sheets" / "Approvals" work with no filter picked; the explicit
-  // project filter narrows that down when set (to one or several).
-  const scopeProjectIds = filterProject.length
-    ? filterProject
-    : (projects.data ?? []).map((p) => p.id);
+  // Search is unscoped by default: with no project filter picked we send no
+  // `projectIds`, and the backend returns every time card the caller is
+  // entitled to (internal agents get a global list). Picking the project
+  // filter narrows it to the chosen project(s). "My time sheets" and
+  // "Approvals" are further bounded server-side by the signed-in user /
+  // approver, so they stay correct unscoped too.
+  const scopeProjectIds = filterProject;
 
   const baseFilters: TimeCardSearchFilters = {
     ...(scopeProjectIds.length && { projectIds: scopeProjectIds }),
