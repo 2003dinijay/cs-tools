@@ -136,7 +136,7 @@ describe("CaseActivitiesFeed", () => {
     expect(permalink).not.toBeNull();
   });
 
-  it("suppresses a change line whose new value just restates the entry's own timestamp", () => {
+  it("renders every backend-provided change line, even one matching the entry's own timestamp", () => {
     const entry: CaseAuditEntry = {
       id: "fc-6",
       kind: "field_change",
@@ -153,8 +153,8 @@ describe("CaseActivitiesFeed", () => {
           field: "resolvedAt",
           fieldLabel: "Resolved On",
           previousValue: undefined,
-          // Same instant as createdAt (to the minute) — this restates the
-          // header time and should be dropped.
+          // Field-level curation is a backend concern now — the FE renders
+          // whatever `changes[]` it receives, with no client-side dropping.
           newValue: "2026-07-01 10:15:22",
         },
       ],
@@ -165,7 +165,7 @@ describe("CaseActivitiesFeed", () => {
     );
 
     expect(screen.getByText("State:")).toBeInTheDocument();
-    expect(screen.queryByText("Resolved On:")).not.toBeInTheDocument();
+    expect(screen.getByText("Resolved On:")).toBeInTheDocument();
   });
 
   it("does not suppress a timestamp change when it differs from the entry's own time", () => {

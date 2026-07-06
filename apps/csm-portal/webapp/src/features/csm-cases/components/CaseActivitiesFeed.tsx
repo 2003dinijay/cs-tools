@@ -45,10 +45,7 @@ import { useMemo, useState, type JSX } from "react";
 import CsmCaseCommentBubble from "@features/csm-cases/components/CsmCaseCommentBubble";
 import RelativeTime from "@components/RelativeTime";
 import { formatBytes } from "@utils/formatBytes";
-import {
-  formatAbsoluteForUser,
-  parseBackendTimestamp,
-} from "@utils/dateTime";
+import { formatAbsoluteForUser } from "@utils/dateTime";
 import {
   compareFeedEntries,
   type FeedEntry,
@@ -56,7 +53,6 @@ import {
 import type {
   CaseAttachment,
   CaseAuditEntry,
-  CaseAuditFieldChange,
   CsmCaseComment,
 } from "@features/csm-cases/types/csmCases";
 
@@ -92,28 +88,6 @@ const TIMESTAMP_VALUE_PATTERN =
 /** True when `value` looks like a full date-time (not a bare number/year). */
 function isTimestampLikeValue(value: string | undefined): boolean {
   return !!value && TIMESTAMP_VALUE_PATTERN.test(value.trim());
-}
-
-/**
- * A change line is redundant when its new value is itself the activity's own
- * timestamp (to the minute) — e.g. an "updated on"/"assigned on" field that
- * always mirrors the entry's own `createdAt`. Showing it repeats the header
- * time, so the caller drops it. Only suppressed when the previous value is
- * either absent or also a timestamp, so a real value-to-value change is never
- * hidden.
- */
-function isRedundantTimestampChange(
-  change: CaseAuditFieldChange,
-  entryCreatedAt: string,
-): boolean {
-  if (!isTimestampLikeValue(change.newValue)) return false;
-  if (change.previousValue?.trim() && !isTimestampLikeValue(change.previousValue)) {
-    return false;
-  }
-  const newDate = parseBackendTimestamp(change.newValue);
-  const entryDate = parseBackendTimestamp(entryCreatedAt);
-  if (!newDate || !entryDate) return false;
-  return Math.abs(newDate.getTime() - entryDate.getTime()) < 60_000;
 }
 
 /** Renders a field's value, formatting it in the user's local timezone when
@@ -300,13 +274,6 @@ export default function CaseActivitiesFeed({
             }
             if (e.kind === "audit") {
               const isBreach = e.entry.kind === "sla_breached";
-              // Drop change lines that would just restate the header's own
-              // timestamp (e.g. an "updated on" field set to this same
-              // activity time) — the header already shows it once.
-              const visibleChanges = (e.entry.changes ?? []).filter(
-                (change) =>
-                  !isRedundantTimestampChange(change, e.entry.createdAt),
-              );
               return (
                 <Box
                   id={e.entry.id}
@@ -370,22 +337,20 @@ export default function CaseActivitiesFeed({
                     </Box>
                     <Box sx={{ minWidth: 0, overflowWrap: "anywhere" }}>
                       {e.entry.changes && e.entry.changes.length > 0 ? (
-                        visibleChanges.length > 0 && (
-                          <Box
-                            sx={{
-                              display: "flex",
-                              flexDirection: "column",
-                              gap: 0.25,
-                            }}
-                          >
-                            {visibleChanges.map((change, i) => (
-                              <FieldChangeLine
-                                key={`${change.field}-${i}`}
-                                field={change}
-                              />
-                            ))}
-                          </Box>
-                        )
+                        <Box
+                          sx={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 0.25,
+                          }}
+                        >
+                          {e.entry.changes.map((change, i) => (
+                            <FieldChangeLine
+                              key={`${change.field}-${i}`}
+                              field={change}
+                            />
+                          ))}
+                        </Box>
                       ) : (
                         <Typography variant="body2">
                           {e.entry.description}
