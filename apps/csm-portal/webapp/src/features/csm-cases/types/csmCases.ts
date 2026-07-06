@@ -190,7 +190,7 @@ export interface TaskSlaView {
   } | null;
   businessTimeLeft: string | null;
   businessElapsedTime: string | null;
-  businessElapsedPercentage: string | null;
+  businessElapsedPercentage: number | null;
   startTime: string | null;
   endTime: string | null;
 }

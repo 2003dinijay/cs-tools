@@ -56,7 +56,7 @@ describe("toCaseSla", () => {
     task: { id: "case-1" },
     businessTimeLeft: "30 minutes",
     businessElapsedTime: "30 minutes",
-    businessElapsedPercentage: "50",
+    businessElapsedPercentage: 50,
     startTime: "2026-07-01T10:00:00Z",
     endTime: null,
   };
@@ -80,11 +80,11 @@ describe("toCaseSla", () => {
   it("derives hasBreached from the elapsed percentage reaching 100", () => {
     const breached = toCaseSla({
       ...baseView,
-      businessElapsedPercentage: "100",
+      businessElapsedPercentage: 100,
     });
     expect(breached.hasBreached).toBe(true);
 
-    const over = toCaseSla({ ...baseView, businessElapsedPercentage: "142" });
+    const over = toCaseSla({ ...baseView, businessElapsedPercentage: 142 });
     expect(over.hasBreached).toBe(true);
   });
 
