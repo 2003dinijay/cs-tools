@@ -47,7 +47,7 @@ export function useGetCsmCaseSlas(
     queryFn: async (): Promise<CaseSlaList | null> => {
       if (!caseId) return null;
       const res = await api.post<TaskSlaSearchPayload, TaskSlaSearchResponse>(
-        "/task-slas/search",
+        "/slas/search",
         {
           filters: { taskIds: [caseId] },
           pagination: { limit: TASK_SLA_PAGE_LIMIT, offset: 0 },
