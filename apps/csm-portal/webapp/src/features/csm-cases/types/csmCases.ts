@@ -210,7 +210,7 @@ export interface TaskSlaSearchPayload {
 }
 
 export interface TaskSlaSearchResponse {
-  taskSlas: TaskSlaView[];
+  slas: TaskSlaView[];
   total: number;
   limit: number;
   offset: number;

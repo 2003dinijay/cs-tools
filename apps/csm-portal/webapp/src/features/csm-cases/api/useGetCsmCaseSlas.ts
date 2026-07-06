@@ -52,7 +52,7 @@ export function useGetCsmCaseSlas(
           pagination: { limit: TASK_SLA_PAGE_LIMIT, offset: 0 },
         },
       );
-      const slas = (res.taskSlas ?? []).map(toCaseSla);
+      const slas = (res.slas ?? []).map(toCaseSla);
       // Count reflects the rows actually rendered (this table always shows a
       // case's full SLA list), not the backend's total-across-pages figure.
       return { caseId, count: slas.length, slas };
