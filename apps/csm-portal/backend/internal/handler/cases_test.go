@@ -456,6 +456,107 @@ func TestSearchCaseComments(t *testing.T) {
 	})
 }
 
+// ----- SearchCaseActivities -----
+
+func TestSearchCaseActivities(t *testing.T) {
+	t.Run("requires authenticated user", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := httptest.NewRequest(http.MethodPost, "/cases/case-1/activities/search", strings.NewReader(`{}`))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.SearchCaseActivities(w, r)
+		assertStatus(t, w, http.StatusUnauthorized)
+		assertErrorMessage(t, w, ErrMsgUnauthorized)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects empty case ID", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases//activities/search", strings.NewReader(`{}`)))
+		w := httptest.NewRecorder()
+		h.SearchCaseActivities(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects body exceeding 1 MiB", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/activities/search", strings.NewReader(strings.Repeat("x", maxRequestBodyBytes+1))))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.SearchCaseActivities(w, r)
+		assertStatus(t, w, http.StatusRequestEntityTooLarge)
+		assertErrorMessage(t, w, ErrMsgTooLarge)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects invalid JSON body", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/activities/search", strings.NewReader(`not-json`)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.SearchCaseActivities(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("forwards body verbatim and returns upstream response", func(t *testing.T) {
+		var capturedCaseID string
+		var capturedBody []byte
+		reqBody := `{"pagination":{"limit":20,"offset":0},"includeFieldChanges":true}`
+		client := &mockEntityCaseClient{
+			searchCaseActivitiesFn: func(_ context.Context, caseID string, body []byte) ([]byte, error) {
+				capturedCaseID = caseID
+				capturedBody = body
+				return []byte(`{"activities":[{"id":"a-1"}],"total":1,"limit":20,"offset":0,"hasMore":false}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-42/activities/search", strings.NewReader(reqBody)))
+		r.SetPathValue("id", "case-42")
+		w := httptest.NewRecorder()
+		h.SearchCaseActivities(w, r)
+
+		assertStatus(t, w, http.StatusOK)
+		assertContentType(t, w, "application/json")
+
+		if capturedCaseID != "case-42" {
+			t.Errorf("caseID = %q, want %q", capturedCaseID, "case-42")
+		}
+		if string(capturedBody) != reqBody {
+			t.Errorf("upstream body = %q, want verbatim %q", string(capturedBody), reqBody)
+		}
+
+		resp := decodeJSON[map[string]any](t, w)
+		if resp["total"] != float64(1) {
+			t.Errorf("total = %v, want 1", resp["total"])
+		}
+	})
+
+	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
+		for _, tc := range upstreamErrors("Failed to search case activities.") {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				client := &mockEntityCaseClient{
+					searchCaseActivitiesFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+						return nil, tc.err
+					},
+				}
+				h := NewCaseHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/activities/search", strings.NewReader(`{}`)))
+				r.SetPathValue("id", "case-1")
+				w := httptest.NewRecorder()
+				h.SearchCaseActivities(w, r)
+				assertStatus(t, w, tc.wantCode)
+				assertErrorMessage(t, w, tc.wantMsg)
+				assertContentType(t, w, "application/json")
+			})
+		}
+	})
+}
+
 // ----- SearchCases -----
 
 func TestSearchCases(t *testing.T) {
