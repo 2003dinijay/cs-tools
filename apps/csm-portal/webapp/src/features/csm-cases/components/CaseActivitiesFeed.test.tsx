@@ -18,6 +18,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
+import { formatAbsoluteForUser } from "@utils/dateTime";
 import type { CaseAuditEntry } from "@features/csm-cases/types/csmCases";
 
 describe("CaseActivitiesFeed", () => {
@@ -106,6 +107,94 @@ describe("CaseActivitiesFeed", () => {
 
     expect(screen.getByText("cleared")).toBeInTheDocument();
     expect(screen.getByText("John Smith")).toBeInTheDocument();
+  });
+
+  it("renders a comment-style header (author + permalinked time) above the changes", () => {
+    const entry: CaseAuditEntry = {
+      id: "fc-5",
+      kind: "field_change",
+      actor: "Jane Doe",
+      createdAt: "2026-07-01T10:15:00Z",
+      changes: [
+        {
+          field: "state",
+          fieldLabel: "State",
+          previousValue: "In Progress",
+          newValue: "Resolved",
+        },
+      ],
+    };
+
+    render(
+      <CaseActivitiesFeed comments={[]} audit={[entry]} attachments={[]} />,
+    );
+
+    expect(screen.getByText("Jane Doe")).toBeInTheDocument();
+    expect(screen.getByText("Lifecycle")).toBeInTheDocument();
+    // The time is a permalink anchor to the entry, same pattern comments use.
+    const permalink = document.querySelector(`a[href="#${entry.id}"]`);
+    expect(permalink).not.toBeNull();
+  });
+
+  it("suppresses a change line whose new value just restates the entry's own timestamp", () => {
+    const entry: CaseAuditEntry = {
+      id: "fc-6",
+      kind: "field_change",
+      actor: "Jane Doe",
+      createdAt: "2026-07-01T10:15:00Z",
+      changes: [
+        {
+          field: "state",
+          fieldLabel: "State",
+          previousValue: "In Progress",
+          newValue: "Resolved",
+        },
+        {
+          field: "resolvedAt",
+          fieldLabel: "Resolved On",
+          previousValue: undefined,
+          // Same instant as createdAt (to the minute) — this restates the
+          // header time and should be dropped.
+          newValue: "2026-07-01 10:15:22",
+        },
+      ],
+    };
+
+    render(
+      <CaseActivitiesFeed comments={[]} audit={[entry]} attachments={[]} />,
+    );
+
+    expect(screen.getByText("State:")).toBeInTheDocument();
+    expect(screen.queryByText("Resolved On:")).not.toBeInTheDocument();
+  });
+
+  it("does not suppress a timestamp change when it differs from the entry's own time", () => {
+    const entry: CaseAuditEntry = {
+      id: "fc-7",
+      kind: "field_change",
+      actor: "Jane Doe",
+      createdAt: "2026-07-01T10:15:00Z",
+      changes: [
+        {
+          field: "dueDate",
+          fieldLabel: "Due Date",
+          previousValue: undefined,
+          newValue: "2026-08-15 09:00:00",
+        },
+      ],
+    };
+
+    const { container } = render(
+      <CaseActivitiesFeed comments={[]} audit={[entry]} attachments={[]} />,
+    );
+
+    expect(screen.getByText("Due Date:")).toBeInTheDocument();
+    // The timestamp value must be routed through the shared user-timezone
+    // formatter, not shown as the raw backend string.
+    expect(screen.queryByText("2026-08-15 09:00:00")).not.toBeInTheDocument();
+    const expected = formatAbsoluteForUser("2026-08-15 09:00:00");
+    expect(expected).not.toBeNull();
+    expect(container.textContent).toContain(expected);
   });
 
   it("falls back to description when changes is absent", () => {
