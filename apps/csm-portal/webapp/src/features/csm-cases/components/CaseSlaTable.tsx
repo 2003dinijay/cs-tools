@@ -20,6 +20,7 @@ import {
   Card,
   Chip,
   IconButton,
+  LinearProgress,
   Skeleton,
   Table,
   TableBody,
@@ -72,6 +73,13 @@ function stageColor(sla: CaseSla): "info" | "warning" | "success" | "default" | 
   return sla.hasBreached
     ? "error"
     : (SLA_STAGE_COLOR[sla.stage as KnownSlaStage] ?? "default");
+}
+
+/** Progress bar color for a row: redder as more of the SLA target is consumed. */
+function slaProgressColor(sla: CaseSla): "error" | "warning" | "success" {
+  if (sla.hasBreached || sla.businessElapsedPercent >= 100) return "error";
+  if (sla.businessElapsedPercent >= 75) return "warning";
+  return "success";
 }
 
 interface CaseSlaTableProps {
@@ -197,7 +205,20 @@ export function CaseSlaTable({ caseId }: CaseSlaTableProps): JSX.Element {
                         label={sla.stageLabel}
                       />
                     </TableCell>
-                    <TableCell>{sla.businessTimeLeftLabel}</TableCell>
+                    <TableCell sx={{ minWidth: 140 }}>
+                      <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+                        <LinearProgress
+                          variant="determinate"
+                          value={Math.min(Math.max(sla.businessElapsedPercent, 0), 100)}
+                          color={slaProgressColor(sla)}
+                          aria-label={`${sla.definition} ${Math.round(sla.businessElapsedPercent)}% elapsed`}
+                          sx={{ height: 6, borderRadius: 1, width: "100%" }}
+                        />
+                        <Typography variant="caption" color="text.secondary">
+                          {sla.businessTimeLeftLabel}
+                        </Typography>
+                      </Box>
+                    </TableCell>
                     <TableCell>{sla.businessElapsedLabel}</TableCell>
                     <TableCell>{`${Math.round(sla.businessElapsedPercent)}%`}</TableCell>
                     <TableCell>{formatSlaDateTime(sla.startTime)}</TableCell>
