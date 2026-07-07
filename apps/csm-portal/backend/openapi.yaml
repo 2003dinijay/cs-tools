@@ -2851,6 +2851,8 @@ components:
       description: |
         Exactly one of `state`, `severity`, `workState`, `watchList`, or `assigneeEmail` must be provided.
         `watchList` and `assigneeEmail` are supported only for the ServiceNow data source.
+        `resolutionCode`, `cause`, and `closeNotes` are optional resolution fields that may only be
+        provided alongside `state: closed` or `state: solution_proposed`.
       oneOf:
         - required: [state]
         - required: [severity]
@@ -2880,6 +2882,15 @@ components:
           type: string
           format: email
           description: Email of the engineer to assign to this case (ServiceNow only).
+        resolutionCode:
+          $ref: '#/components/schemas/CaseResolutionCode'
+          description: Resolution code — only allowed when state is closed or solution_proposed.
+        cause:
+          $ref: '#/components/schemas/CaseCause'
+          description: Root-cause category — only allowed when state is closed or solution_proposed.
+        closeNotes:
+          type: string
+          description: Free-text closure notes — only allowed when state is closed or solution_proposed.
 
     UpdateCaseResponse:
       type: object
@@ -2927,6 +2938,76 @@ components:
               format: uuid
             name:
               type: string
+        resolutionCode:
+          $ref: '#/components/schemas/CaseResolutionCode'
+          nullable: true
+          description: Resolution code set when closing or proposing a solution.
+        cause:
+          $ref: '#/components/schemas/CaseCause'
+          nullable: true
+          description: Root-cause category set when closing or proposing a solution.
+        closeNotes:
+          type: string
+          nullable: true
+          description: Free-text closure notes.
+        resolvedOn:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp when the case was resolved.
+
+    CaseResolutionCode:
+      type: string
+      description: Resolution code for a closed or solution-proposed case.
+      enum:
+        - SOLVED_FIXED_BY_SUPPORT_GUIDANCE_PROVIDED
+        - SOLVED_FIXED_BY_CLOSING_RELATED_INCIDENT
+        - SOLVED_FIXED_BY_CLOSING_RELATED_RD_TICKET
+        - SOLVED_WORKAROUND_PROVIDED
+        - SOLVED_BY_CUSTOMER
+        - CONSIDERED_FOR_ROADMAP
+        - INCONCLUSIVE_OUT_OF_SCOPE
+        - INCONCLUSIVE_CANNOT_REPRODUCE
+        - INCONCLUSIVE_NO_WORKAROUND
+        - DUPLICATE_ISSUE
+        - VOIDED_CANCELED
+        - ON_HOLD
+        - CONSIDERED_FOR_ROADMAP_ALT
+        - SOLVED_FIXED_THE_ISSUE
+        - SOLVED_WORKAROUND_PROVIDED_ALT
+        - SOLVED_BY_CONTRIBUTOR
+        - SOLVED_BY_NOVERA
+        - ABRUPTLY_CLOSED_DUE_TO_NON_RESPONSIVENESS
+
+    CaseCause:
+      type: string
+      description: Root-cause category for a closed or solution-proposed case.
+      enum:
+        - USER_MISUNDERSTANDING_CONCEPTS
+        - USER_MISUNDERSTANDING_DOCUMENTATION
+        - USER_NOT_FOLLOWING_DOCUMENTATION
+        - USER_MISTAKE
+        - SOLUTION_PROBLEMATIC_SOLUTION_ARCHITECTURE
+        - SOLUTION_PROBLEMATIC_CODE
+        - APPLICATION_BUG
+        - APPLICATION_MISLEADING_UX_UI
+        - APPLICATION_LIMITATION
+        - APPLICATION_MISSING_FEATURE
+        - APPLICATION_DOCUMENTATION_GAP
+        - APPLICATION_DOCUMENTATION_ERROR
+        - INFRASTRUCTURE_CUSTOMERS_SIDE
+        - INFRASTRUCTURE_SAAS_SIDE_NOT_ENOUGH
+        - INFRASTRUCTURE_SAAS_SIDE_OTHER
+        - UNKNOWN
+
+    CaseLabelRef:
+      type: object
+      description: Generic id/label pair returned by ServiceNow for choice-list fields.
+      properties:
+        id:
+          type: string
+        label:
+          type: string
 
     WatchListUser:
       type: object

@@ -178,7 +178,7 @@ backend/
 
 - `POST /cases` — Create a case (`type`: `case`; `service_request` and `security_report_analysis` are ServiceNow data source only)
 - `GET /cases/{id}` — Get case by ID
-- `PATCH /cases/{id}` — Update a case (state, severity, workState, watchList, or assigneeEmail)
+- `PATCH /cases/{id}` — Update a case (state, severity, workState, watchList, or assigneeEmail); optional `resolutionCode`, `cause`, `closeNotes` accepted alongside `state: closed` or `state: solution_proposed`
 - `POST /cases/search` — Search cases; filters include `searchQuery`, `types`, `states`, `severities`, `workStates` (`ongoing`/`paused`), `assignedUserIds`, `projectIds`, `deploymentIds`, `engagementTypes`, `issueTypes`, date ranges, `createdBy`, `createdByMe`
 - `POST /cases/{id}/comments` — Create a comment on a case
 - `POST /cases/{id}/comments/search` — Search comments on a case
