@@ -319,9 +319,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const [composerOpen, setComposerOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
   const [logTimeOpen, setLogTimeOpen] = useState(false);
-  // Bumped to pop open the Call requests tab's "Create call request" dialog
-  // from the action bar's "Request a call" item.
-  const [requestCallSignal, setRequestCallSignal] = useState(0);
+  // One-shot: true to pop open the Call requests tab's "Create call request"
+  // dialog from the action bar's "Request a call" item. The widget flips it
+  // back to false once handled, so switching tabs afterwards doesn't reopen it.
+  const [autoOpenCallCreate, setAutoOpenCallCreate] = useState(false);
   const [githubIssueOpen, setGithubIssueOpen] = useState(false);
   // Inline error shown inside the Git-issue dialog (e.g. the SN routing 422 /
   // state 409). Cleared when the dialog opens or a submit is retried.
@@ -669,7 +670,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
       // dialog, rather than a second/duplicate entry point for the same form.
       if (action.secondary === "request_call") {
         setActiveTab("call-requests");
-        setRequestCallSignal((n) => n + 1);
+        setAutoOpenCallCreate(true);
         return;
       }
 
@@ -1323,7 +1324,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
           <CallRequestsWidget
             caseId={caseId}
             severity={c.severity}
-            openCreateSignal={requestCallSignal}
+            autoOpenCreate={autoOpenCallCreate}
+            onAutoOpenCreateHandled={() => setAutoOpenCallCreate(false)}
           />
         </Box>
       )}
