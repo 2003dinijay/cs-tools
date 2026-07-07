@@ -49,6 +49,31 @@ if (typeof window !== "undefined") {
   }
 }
 
+// A tab left open across a deploy still holds the old build's chunk hashes;
+// fetching one 404s to the SPA fallback (text/html), which Vite reports as
+// `vite:preloadError` (and plain `import()` calls reject the same way). Reload
+// once to pick up the new build — guarded by a session flag so a genuinely
+// broken deployment doesn't reload-loop the tab forever.
+if (typeof window !== "undefined") {
+  const RELOAD_GUARD_KEY = "csm_chunk_reload_once";
+  const reloadForNewBuild = (): void => {
+    let alreadyReloaded = false;
+    try {
+      alreadyReloaded = window.sessionStorage.getItem(RELOAD_GUARD_KEY) === "1";
+      window.sessionStorage.setItem(RELOAD_GUARD_KEY, "1");
+    } catch {
+      /* sessionStorage may be unavailable; fall through and reload anyway. */
+    }
+    if (!alreadyReloaded) window.location.reload();
+  };
+  window.addEventListener("vite:preloadError", reloadForNewBuild);
+  window.addEventListener("unhandledrejection", (event) => {
+    if (/Failed to fetch dynamically imported module/.test(String(event.reason))) {
+      reloadForNewBuild();
+    }
+  });
+}
+
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <AppWithConfig />
