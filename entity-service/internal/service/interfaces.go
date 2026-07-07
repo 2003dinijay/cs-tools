@@ -213,7 +213,9 @@ type CallRequestService interface {
 	// A ValidationError is returned for invalid input.
 	SearchCallRequests(ctx context.Context, req domain.SearchCallRequestsRequest) (domain.SearchCallRequestsResponse, error)
 	// UpdateCallRequest updates the state or other fields of a call request.
-	// A ValidationError is returned for invalid input; a NotFoundError if no call request matches.
+	// The target state selects the behaviour (customer/agent transitions, scheduling,
+	// rejection, conclusion with notes). A ValidationError is returned for invalid
+	// input; a NotFoundError if no call request matches.
 	UpdateCallRequest(ctx context.Context, req domain.UpdateCallRequestRequest) (domain.UpdateCallRequestResponse, error)
 }
 

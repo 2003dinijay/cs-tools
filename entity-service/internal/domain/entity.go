@@ -1731,10 +1731,11 @@ const (
 )
 
 // CallRequestState holds the state of a call request.
-// ID uses json.RawMessage because the ServiceNow API returns either an int or a string.
+// ID is the string state enum key (see CallRequestStateType); Label is the
+// human-readable display label.
 type CallRequestState struct {
-	ID    json.RawMessage `json:"id"`
-	Label string          `json:"label"`
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
 // CallRequestCaseRef is a reference to a case embedded in a call request.
@@ -1929,6 +1930,13 @@ type CallRequestView struct {
 	UpdatedOn          string             `json:"updatedOn"`
 	State              CallRequestState   `json:"state"`
 	CancellationReason *string            `json:"cancellationReason,omitempty"`
+	// Agent-side fields, populated once an engineer schedules or concludes the call.
+	Assignee          *string `json:"assignee,omitempty"`
+	Notes             *string `json:"notes,omitempty"`
+	Plan              *string `json:"plan,omitempty"`
+	Attendees         *string `json:"attendees,omitempty"`
+	ActionItems       *string `json:"actionItems,omitempty"`
+	ActualDurationMin *int    `json:"actualDurationMin,omitempty"`
 }
 
 // SearchCallRequestsResponse is the paginated result of a call request search.
@@ -1950,6 +1958,15 @@ type UpdateCallRequestRequest struct {
 	CancellationReason *string              `json:"cancellationReason,omitempty"`
 	UTCTimes           []string             `json:"utcTimes,omitempty"`
 	DurationMinutes    *int                 `json:"durationInMinutes,omitempty"`
+	// Agent-side fields, set when an engineer schedules or concludes the call.
+	// The target state selects which of these apply.
+	MeetingDate       *string `json:"meetingDate,omitempty"`
+	Assignee          *string `json:"assignee,omitempty"`
+	Notes             *string `json:"notes,omitempty"`
+	Plan              *string `json:"plan,omitempty"`
+	Attendees         *string `json:"attendees,omitempty"`
+	ActionItems       *string `json:"actionItems,omitempty"`
+	ActualDurationMin *int    `json:"actualDurationMin,omitempty"`
 }
 
 // UpdateCallRequestResponse is the output for PATCH /call-requests/{id}.
@@ -1992,11 +2009,11 @@ type TaskSlaTaskRef struct {
 type TaskSlaView struct {
 	ID                        string             `json:"id"`
 	SlaDefinition             *TaskSlaDefinition `json:"slaDefinition"`
-	Stage                     *string      `json:"stage"`
+	Stage                     *string            `json:"stage"`
 	Task                      *TaskSlaTaskRef    `json:"task"`
 	BusinessTimeLeft          *string            `json:"businessTimeLeft"`
 	BusinessElapsedTime       *string            `json:"businessElapsedTime"`
-	BusinessElapsedPercentage *float64 `json:"businessElapsedPercentage"`
+	BusinessElapsedPercentage *float64           `json:"businessElapsedPercentage"`
 	StartTime                 *string            `json:"startTime"`
 	EndTime                   *string            `json:"endTime"`
 }
@@ -2011,29 +2028,29 @@ type SearchTaskSlasResponse struct {
 
 // TaskSlaDefinitionDetail is the extended SLA definition returned by GET /task-slas/{id}.
 type TaskSlaDefinitionDetail struct {
-	ID               *string `json:"id"`
-	Name             *string `json:"name"`
-	Type             *string `json:"type"`
-	Target           *string `json:"target"`
-	Flow             *string `json:"flow"`
-	Workflow         *string `json:"workflow"`
-	IsEnableLogging  *bool   `json:"isEnableLogging"`
-	DurationType     *string `json:"durationType"`
-	Duration         *string `json:"duration"`
-	ScheduleSource   *string `json:"scheduleSource"`
-	Schedule         *string `json:"schedule"`
-	TimezoneSource   *string `json:"timezoneSource"`
-	Timezone         *string `json:"timezone"`
-	StartCondition   *string `json:"startCondition"`
+	ID                 *string `json:"id"`
+	Name               *string `json:"name"`
+	Type               *string `json:"type"`
+	Target             *string `json:"target"`
+	Flow               *string `json:"flow"`
+	Workflow           *string `json:"workflow"`
+	IsEnableLogging    *bool   `json:"isEnableLogging"`
+	DurationType       *string `json:"durationType"`
+	Duration           *string `json:"duration"`
+	ScheduleSource     *string `json:"scheduleSource"`
+	Schedule           *string `json:"schedule"`
+	TimezoneSource     *string `json:"timezoneSource"`
+	Timezone           *string `json:"timezone"`
+	StartCondition     *string `json:"startCondition"`
 	IsRetroactiveStart *bool   `json:"isRetroactiveStart"`
 	IsRetroactivePause *bool   `json:"isRetroactivePause"`
-	WhenToCancel     *string `json:"whenToCancel"`
-	CancelCondition  *string `json:"cancelCondition"`
-	PauseCondition   *string `json:"pauseCondition"`
-	WhenToResume     *string `json:"whenToResume"`
-	StopCondition    *string `json:"stopCondition"`
-	ResetCondition   *string `json:"resetCondition"`
-	ResetAction      *string `json:"resetAction"`
+	WhenToCancel       *string `json:"whenToCancel"`
+	CancelCondition    *string `json:"cancelCondition"`
+	PauseCondition     *string `json:"pauseCondition"`
+	WhenToResume       *string `json:"whenToResume"`
+	StopCondition      *string `json:"stopCondition"`
+	ResetCondition     *string `json:"resetCondition"`
+	ResetAction        *string `json:"resetAction"`
 }
 
 // TaskSlaScheduleRef is the schedule reference returned by GET /task-slas/{id}.
@@ -2048,7 +2065,7 @@ type TaskSlaDetail struct {
 	ID                        string                   `json:"id"`
 	Task                      *TaskSlaTaskRef          `json:"task"`
 	SlaDefinition             *TaskSlaDefinitionDetail `json:"slaDefinition"`
-	Stage                     *string            `json:"stage"`
+	Stage                     *string                  `json:"stage"`
 	BusinessTimeLeft          *string                  `json:"businessTimeLeft"`
 	BusinessElapsedTime       *string                  `json:"businessElapsedTime"`
 	BusinessElapsedPercentage *float64                 `json:"businessElapsedPercentage"`

@@ -1062,7 +1062,13 @@ paths:
 
   /call-requests/{id}:
     patch:
-      summary: Update a call request (ServiceNow data source only).
+      summary: Update a call request (supported by the backing data source only).
+      description: >
+        The target state selects the behaviour: customer/agent state
+        transitions, scheduling (with meetingDate, durationInMinutes,
+        assignee), rejection or cancellation (with cancellationReason), or
+        conclusion with post-call notes (notes, plan, attendees, actionItems,
+        actualDurationMin).
       operationId: updateCallRequest
       parameters:
         - name: id
@@ -4271,10 +4277,20 @@ components:
 
     CallRequestState:
       type: object
-      description: Choice-list state item. id may be an integer or a string depending on the ServiceNow configuration.
+      description: State of a call request.
       properties:
         id:
-          description: State key (int or string).
+          type: string
+          enum:
+            - pending_on_customer
+            - pending_on_wso2
+            - scheduled
+            - customer_rejected
+            - wso2_rejected
+            - canceled
+            - notes_pending
+            - concluded
+          description: State enum key.
         label:
           type: string
           description: Human-readable state label.
@@ -4459,6 +4475,21 @@ components:
           $ref: '#/components/schemas/CallRequestState'
         cancellationReason:
           type: string
+        assignee:
+          type: string
+          description: Identifier of the engineer the call is assigned to.
+        notes:
+          type: string
+          description: Notes captured from the concluded call.
+        plan:
+          type: string
+        attendees:
+          type: string
+        actionItems:
+          type: string
+        actualDurationMin:
+          type: integer
+          description: Actual call duration in minutes.
 
     SearchCallRequestsResponse:
       type: object
@@ -4493,7 +4524,7 @@ components:
           description: New state for the call request.
         cancellationReason:
           type: string
-          description: Reason for cancellation (required when cancelling).
+          description: Reason for cancellation or rejection.
         utcTimes:
           type: array
           items:
@@ -4503,6 +4534,29 @@ components:
           type: integer
           minimum: 1
           description: Updated duration in minutes.
+        meetingDate:
+          type: string
+          format: date-time
+          description: Scheduled meeting start time as an RFC3339 UTC timestamp (used when scheduling).
+        assignee:
+          type: string
+          description: Identifier of the engineer the call is assigned to.
+        notes:
+          type: string
+          description: Notes captured from the concluded call.
+        plan:
+          type: string
+          description: Plan discussed during the call.
+        attendees:
+          type: string
+          description: List of call attendees.
+        actionItems:
+          type: string
+          description: Action items agreed during the call.
+        actualDurationMin:
+          type: integer
+          minimum: 1
+          description: Actual call duration in minutes.
 
     UpdateCallRequestResponse:
       type: object

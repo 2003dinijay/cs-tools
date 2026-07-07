@@ -5174,7 +5174,7 @@ components:
           description: New state for the call request.
         cancellationReason:
           type: string
-          description: Reason for cancellation (required when cancelling).
+          description: Reason for cancellation or rejection.
         utcTimes:
           type: array
           items:
@@ -5184,6 +5184,35 @@ components:
           type: integer
           minimum: 1
           description: Updated duration in minutes.
+        meetingDate:
+          type: string
+          format: date-time
+          description: >
+            Confirmed meeting start time, in UTC (RFC 3339). Set when moving to
+            the scheduled state.
+        assignee:
+          type: string
+          description: >
+            Optional identifier of the engineer assigned to the call, set when
+            scheduling.
+        notes:
+          type: string
+          description: >
+            Free-form notes describing the outcome of the call. Set when
+            concluding the request.
+        plan:
+          type: string
+          description: Optional plan or next steps agreed during the call.
+        attendees:
+          type: string
+          description: Optional call attendees (free text).
+        actionItems:
+          type: string
+          description: Optional action items from the call (free text).
+        actualDurationMin:
+          type: integer
+          minimum: 1
+          description: Optional actual call duration in minutes.
 
     UpdateCallRequestResponse:
       type: object

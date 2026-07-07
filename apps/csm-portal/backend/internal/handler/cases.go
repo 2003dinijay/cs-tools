@@ -701,6 +701,12 @@ func (h *CaseHandler) SearchCallRequests(w http.ResponseWriter, r *http.Request)
 
 // PatchCallRequest handles PATCH /cases/{id}/call-requests/{callRequestId}.
 // Forwards the body unchanged to the entity service's PATCH /call-requests/{callRequestId}.
+//
+// This is the single mutation surface for call requests, including the agent-only
+// (WSO2 engineer) state transitions (schedule/reschedule, reject, conclude+notes)
+// selected by the target `state` in the body. The backend has no role-based access
+// control layer yet, so any authenticated user may invoke them today; engineer-only
+// gating is a follow-up and MUST NOT be invented here.
 func (h *CaseHandler) PatchCallRequest(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
