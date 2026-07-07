@@ -84,18 +84,22 @@ export default function CsmCaseCommentBubble({
         }}
       >
         <SemanticChip role="warning" label="System" />
-        <Box
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            overflowWrap: "anywhere",
-            wordBreak: "break-word",
-            "& p": { m: 0 },
-            "& a": { color: "primary.main" },
-            ...{ "& *": { fontSize: "0.875rem" } },
-          }}
-          dangerouslySetInnerHTML={{ __html: resolvedHtml }}
-        />
+        {isImagesLoading ? (
+          <Skeleton variant="text" width="40%" sx={{ flex: 1 }} />
+        ) : (
+          <Box
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              overflowWrap: "anywhere",
+              wordBreak: "break-word",
+              "& p": { m: 0 },
+              "& a": { color: "primary.main" },
+              ...{ "& *": { fontSize: "0.875rem" } },
+            }}
+            dangerouslySetInnerHTML={{ __html: resolvedHtml }}
+          />
+        )}
         <Typography variant="caption" color="text.secondary">
           <RelativeTime iso={comment.createdAt} href={`#${comment.id}`} />
         </Typography>

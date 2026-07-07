@@ -26,12 +26,13 @@ import {
 
 const SAFE_IMAGE_SUBTYPES = /^(png|jpeg|jpg|gif|webp|svg\+xml|bmp|avif)$/i;
 
-function toSafeMimeType(raw: string): string {
+/** Returns the normalized image MIME type, or `null` if `raw` isn't an allowed image subtype. */
+function toSafeMimeType(raw: string): string | null {
   const lower = raw.trim().toLowerCase();
   const fullMatch = lower.match(/^image\/(.+)$/);
   if (fullMatch && SAFE_IMAGE_SUBTYPES.test(fullMatch[1])) return lower;
   if (SAFE_IMAGE_SUBTYPES.test(lower)) return `image/${lower}`;
-  return "image/png";
+  return null;
 }
 
 function blobToDataUrl(blob: Blob): Promise<string | null> {
@@ -73,12 +74,14 @@ export function useResolvedInlineImageHtml(html: string): {
           `/attachments/${encodeURIComponent(sysidToUuid(id))}/content`,
         );
         const mimeType = toSafeMimeType(blob.type);
-        if (!mimeType.startsWith("image/")) return null;
+        if (!mimeType) return null;
         return blobToDataUrl(blob);
       },
       enabled: !!id,
-      staleTime: 0,
-      retry: false,
+      // Attachment content is immutable once uploaded, so cache it
+      // indefinitely rather than refetching on every window focus.
+      staleTime: Infinity,
+      retry: 1,
     })),
   });
 
@@ -90,12 +93,17 @@ export function useResolvedInlineImageHtml(html: string): {
     if (result) dataUrls.set(id, result);
   });
 
+  // A fixed-length key derived from the resolved data URLs: useMemo's
+  // dependency array must stay the same length across renders, which
+  // `queries.map((q) => q.data)` cannot guarantee as attachmentIds changes.
+  const dataUrlsKey = Array.from(dataUrls.entries())
+    .map(([id, url]) => `${id}:${url}`)
+    .join(",");
+
   const resolvedHtml = useMemo(
     () => replaceInlineImageSrcs(html, dataUrls),
-    // dataUrls is rebuilt fresh each render from `queries`; compare on the
-    // query results themselves rather than the (always-new) Map reference.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [html, ...queries.map((q) => q.data)],
+    [html, dataUrlsKey],
   );
 
   return { resolvedHtml, isLoading: attachmentIds.length > 0 && isLoading };

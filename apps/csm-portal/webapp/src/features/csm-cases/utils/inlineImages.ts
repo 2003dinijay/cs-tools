@@ -14,8 +14,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// Shared "img tag with quoted/bare src" grammar for both extraction and
+// replacement, so the two stay in sync as the pattern evolves. Capture groups:
+// 1=before-src attrs, 2=double-quoted src, 3=single-quoted src, 4=bare src, 5=after-src attrs.
 const IMG_TAG_SRC =
-  /<img[^>]*?\s+src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>/gi;
+  /<img([^>]*?)\s+src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))([^>]*)>/gi;
 
 /**
  * Extracts the backing attachment id from an inline `<img>` `src` value. The
@@ -56,7 +59,7 @@ export function extractIixAttachmentIds(html: string): string[] {
   let match;
   IMG_TAG_SRC.lastIndex = 0;
   while ((match = IMG_TAG_SRC.exec(html)) !== null) {
-    const src = match[1] ?? match[2] ?? match[3] ?? "";
+    const src = match[2] ?? match[3] ?? match[4] ?? "";
     if (src.includes(".iix")) {
       const id = extractInlineImageRefId(src);
       if (id && !ids.includes(id)) ids.push(id);
@@ -74,9 +77,8 @@ export function replaceInlineImageSrcs(
   html: string,
   dataUrls: Map<string, string>,
 ): string {
-  if (!dataUrls.size) return html;
   return html.replace(
-    /<img([^>]*?)\s+src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))([^>]*)>/gi,
+    IMG_TAG_SRC,
     (fullMatch, before, doubleSrc, singleSrc, bareSrc, after) => {
       const src = (doubleSrc ?? singleSrc ?? bareSrc ?? "") as string;
       if (!src.includes(".iix")) return fullMatch;
