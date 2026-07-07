@@ -389,6 +389,7 @@ export default function AllCasesPage(): JSX.Element {
           restrictSeverityToLow={restrictSeverityToLow}
           hideSeverityFilter={isDashboardSeverityNavigation}
           hideDeploymentFilter={!permissions.hasDeployments}
+          hideCreatedByFilter={createdByMe}
           isProjectContextLoading={isProjectContextLoading}
           excludeFromCount={
             initialSeverityId && filters.severityIds?.includes(initialSeverityId)
