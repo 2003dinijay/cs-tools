@@ -795,6 +795,18 @@ var snResolutionCodeKey = map[domain.CaseResolutionCode]int{
 	domain.CaseResolutionCodeAbruptlyClosedDueToNonResponsiveness: 52,
 }
 
+// snResolutionCodeByID maps ServiceNow resolution code id strings to domain CaseResolutionCode enums.
+var snResolutionCodeByID = func() map[string]domain.CaseResolutionCode {
+	m := make(map[string]domain.CaseResolutionCode, len(snResolutionCodeKey))
+	for k, v := range snResolutionCodeKey {
+		m[fmt.Sprintf("%d", v)] = k
+	}
+	return m
+}()
+
+// snCauseLabelToEnum maps ServiceNow cause label strings to domain CaseCause enums.
+var snCauseLabelToEnum map[string]domain.CaseCause
+
 // snCauseLabel maps domain CaseCause enums to the ServiceNow cause label strings.
 var snCauseLabel = map[domain.CaseCause]string{
 	domain.CaseCauseUserMisunderstandingConcepts:      "User - Misunderstanding concepts",
@@ -813,6 +825,13 @@ var snCauseLabel = map[domain.CaseCause]string{
 	domain.CaseCauseInfrastructureSaaSNotEnough:       "Infrastructure - SaaS side - Not enough ...",
 	domain.CaseCauseInfrastructureSaaSother:           "Infrastructure - SaaS side - Other",
 	domain.CaseCauseUnknown:                           "Unknown",
+}
+
+func init() {
+	snCauseLabelToEnum = make(map[string]domain.CaseCause, len(snCauseLabel))
+	for k, v := range snCauseLabel {
+		snCauseLabelToEnum[v] = k
+	}
 }
 
 // snWorkStateIDMap maps domain CaseWorkState enums to SN numeric work state IDs.
@@ -1000,10 +1019,14 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		resp.Case.WatchList = wl
 	}
 	if snResp.Case.ResolutionCode != nil {
-		resp.Case.ResolutionCode = &domain.CaseLabelRef{ID: snResp.Case.ResolutionCode.ID.String(), Label: snResp.Case.ResolutionCode.Label}
+		if rc, ok := snResolutionCodeByID[snResp.Case.ResolutionCode.ID.String()]; ok {
+			resp.Case.ResolutionCode = &rc
+		}
 	}
 	if snResp.Case.Cause != nil {
-		resp.Case.Cause = &domain.CaseLabelRef{ID: snResp.Case.Cause.ID, Label: snResp.Case.Cause.Label}
+		if c, ok := snCauseLabelToEnum[snResp.Case.Cause.Label]; ok {
+			resp.Case.Cause = &c
+		}
 	}
 	resp.Case.CloseNotes = snResp.Case.CloseNotes
 	if snResp.Case.ResolvedOn != nil {

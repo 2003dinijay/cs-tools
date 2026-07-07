@@ -999,8 +999,8 @@ type UpdatedCase struct {
 	WorkState      *CaseWorkState       `json:"workState"`
 	WatchList      []WatchListUser      `json:"watchList,omitempty"`
 	AssignedTo     *AssignedEngineerRef `json:"assignedTo,omitempty"`
-	ResolutionCode *CaseLabelRef        `json:"resolutionCode,omitempty"`
-	Cause          *CaseLabelRef        `json:"cause,omitempty"`
+	ResolutionCode *CaseResolutionCode  `json:"resolutionCode,omitempty"`
+	Cause          *CaseCause           `json:"cause,omitempty"`
 	CloseNotes     *string              `json:"closeNotes,omitempty"`
 	ResolvedOn     *time.Time           `json:"resolvedOn,omitempty"`
 }
