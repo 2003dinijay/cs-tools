@@ -849,7 +849,7 @@ type snUpdateCaseResponse struct {
 			Label string `json:"label"`
 		} `json:"cause"`
 		CloseNotes *string `json:"closeNotes"`
-		ResolvedAt *string `json:"resolvedAt"`
+		ResolvedOn *string `json:"resolvedOn"`
 	} `json:"case"`
 }
 
@@ -1006,12 +1006,12 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		resp.Case.Cause = &domain.CaseLabelRef{ID: snResp.Case.Cause.ID, Label: snResp.Case.Cause.Label}
 	}
 	resp.Case.CloseNotes = snResp.Case.CloseNotes
-	if snResp.Case.ResolvedAt != nil {
-		resolvedAt, err := time.Parse(snCreatedOnLayout, *snResp.Case.ResolvedAt)
+	if snResp.Case.ResolvedOn != nil {
+		resolvedOn, err := time.Parse(snCreatedOnLayout, *snResp.Case.ResolvedOn)
 		if err != nil {
-			return domain.UpdateCaseResponse{}, fmt.Errorf("sn update case: parse resolvedAt %q: %w", *snResp.Case.ResolvedAt, err)
+			return domain.UpdateCaseResponse{}, fmt.Errorf("sn update case: parse resolvedAt %q: %w", *snResp.Case.ResolvedOn, err)
 		}
-		resp.Case.ResolvedAt = &resolvedAt
+		resp.Case.ResolvedOn = &resolvedOn
 	}
 
 	return resp, nil

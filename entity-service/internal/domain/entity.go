@@ -1002,7 +1002,7 @@ type UpdatedCase struct {
 	ResolutionCode *CaseLabelRef        `json:"resolutionCode,omitempty"`
 	Cause          *CaseLabelRef        `json:"cause,omitempty"`
 	CloseNotes     *string              `json:"closeNotes,omitempty"`
-	ResolvedAt     *time.Time           `json:"resolvedAt,omitempty"`
+	ResolvedOn     *time.Time           `json:"resolvedOn,omitempty"`
 }
 
 // WatchListUser is a compact user reference within the watch list.
