@@ -313,7 +313,8 @@ export default function CaseActionBar({
         <>
           <Button
             size="small"
-            variant="outlined"
+            variant="contained"
+            color="primary"
             endIcon={<ChevronDown size={16} />}
             onClick={(e) => setStateMenuAnchor(e.currentTarget)}
           >
