@@ -97,7 +97,7 @@ function formatChangeValue(value: string | undefined): string | undefined {
   return formatAbsoluteForUser(value) ?? value;
 }
 
-/** One "<label>: <new> was <old>" line for a field-change entry's audit strip. */
+/** One "<label>: <old> → <new>" line for a field-change entry's audit strip. */
 function FieldChangeLine({
   field,
 }: {
@@ -108,22 +108,15 @@ function FieldChangeLine({
   return (
     <Typography variant="body2" component="div">
       <strong>{field.fieldLabel}:</strong>{" "}
-      {hasNew ? formatChangeValue(field.newValue) : <em>cleared</em>}
       {hadPrevious && (
         <>
-          {" "}
-          was{" "}
-          <Box
-            component="span"
-            sx={{
-              textDecoration: "line-through",
-              color: "text.secondary",
-            }}
-          >
+          <Box component="span" sx={{ color: "text.secondary" }}>
             {formatChangeValue(field.previousValue)}
           </Box>
+          {" → "}
         </>
       )}
+      {hasNew ? formatChangeValue(field.newValue) : <em>cleared</em>}
     </Typography>
   );
 }

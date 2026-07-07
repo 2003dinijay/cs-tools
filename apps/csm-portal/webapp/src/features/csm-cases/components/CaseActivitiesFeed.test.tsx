@@ -43,12 +43,11 @@ describe("CaseActivitiesFeed", () => {
     );
 
     expect(screen.getByText("State:")).toBeInTheDocument();
-    // The line reads "State: Resolved was In Progress" across sibling text
-    // nodes (new value, then the struck-through old value in its own span) —
-    // assert on the row's combined text rather than a single text node.
-    expect(container.textContent).toContain("Resolved");
-    expect(container.textContent).toContain("was");
+    // The line reads "State: In Progress → Resolved" across sibling text nodes
+    // (muted old value, arrow, then new value) — assert on combined row text.
     expect(container.textContent).toContain("In Progress");
+    expect(container.textContent).toContain("→");
+    expect(container.textContent).toContain("Resolved");
     expect(screen.getByText(/Jane Doe/)).toBeInTheDocument();
   });
 
