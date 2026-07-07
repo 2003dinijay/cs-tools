@@ -15,7 +15,6 @@
 // under the License.
 
 import {
-  Avatar,
   Box,
   Button,
   Card,
@@ -33,10 +32,8 @@ import {
   CheckCircle,
   Clock,
   Download,
-  ExternalLink,
   History,
   Link as LinkIcon,
-  Mail,
   MapPin,
   Paperclip,
   Plus,
@@ -49,18 +46,14 @@ import {
   Users,
 } from "@wso2/oxygen-ui-icons-react";
 import { useRef, type ChangeEvent, type JSX } from "react";
-import { Link as RouterLink } from "react-router";
-import { initialsOf } from "@utils/userClaims";
 import { formatBytes } from "@utils/formatBytes";
 import type {
   CaseAttachment,
   CaseAuditEntry,
   CaseCustomerContext,
-  CaseLinkedItem,
   CaseProductContext,
   CaseTag,
   CaseTimeLogEntry,
-  CaseWatcher,
 } from "@features/csm-cases/types/csmCases";
 import { tierColor, tierLabel } from "@features/csm-cases/utils/caseTier";
 import {
@@ -190,19 +183,14 @@ export function CustomerContextWidget({
           <strong>{ctx.accountName}</strong>
         </Typography>
       </MetaRow>
-      <MetaRow label="Primary contact">
-        <Box sx={{ display: "flex", flexDirection: "column" }}>
-          <Typography variant="body2">{ctx.primaryContact}</Typography>
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            sx={{ display: "flex", alignItems: "center", gap: 0.5 }}
-          >
-            <Mail size={12} />
-            {ctx.primaryContactEmail}
-          </Typography>
-        </Box>
+      <MetaRow label="Account Manager">
+        <Typography variant="body2">{ctx.accountManager}</Typography>
       </MetaRow>
+      {ctx.technicalOwner && (
+        <MetaRow label="Technical Owner">
+          <Typography variant="body2">{ctx.technicalOwner}</Typography>
+        </MetaRow>
+      )}
       <MetaRow label="Region">
         <Typography
           variant="body2"
@@ -212,14 +200,6 @@ export function CustomerContextWidget({
           {ctx.region}
         </Typography>
       </MetaRow>
-      <MetaRow label="Account Manager">
-        <Typography variant="body2">{ctx.accountManager}</Typography>
-      </MetaRow>
-      {ctx.technicalOwner && (
-        <MetaRow label="Technical Owner">
-          <Typography variant="body2">{ctx.technicalOwner}</Typography>
-        </MetaRow>
-      )}
       {isLoadingProject && (
         <MetaRow label="Project">
           <Typography variant="body2" color="text.secondary">
@@ -229,14 +209,17 @@ export function CustomerContextWidget({
       )}
       {project && (
         <>
-          <MetaRow label="Subscription">
-            <Typography variant="body2" sx={{ textTransform: "capitalize" }}>
-              {formatSubscriptionType(project.subscriptionType)}
-            </Typography>
+          <MetaRow label="Project name">
+            <Typography variant="body2">{project.name}</Typography>
           </MetaRow>
           <MetaRow label="Project key">
             <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
               {project.key}
+            </Typography>
+          </MetaRow>
+          <MetaRow label="Subscription type">
+            <Typography variant="body2" sx={{ textTransform: "capitalize" }}>
+              {formatSubscriptionType(project.subscriptionType)}
             </Typography>
           </MetaRow>
           <MetaRow label="Subscription period">
@@ -245,13 +228,8 @@ export function CustomerContextWidget({
               {formatDeploymentDate(project.endDate)}
             </Typography>
           </MetaRow>
-          {project.account.activationDate && (
-            <MetaRow label="Account since">
-              <Typography variant="body2">
-                {formatDeploymentDate(project.account.activationDate)}
-              </Typography>
-            </MetaRow>
-          )}
+          {/* No subscription-status field exists on the project record today
+              (only start/end dates) — omitted rather than inferring one. */}
         </>
       )}
     </WidgetCard>
@@ -261,16 +239,6 @@ export function CustomerContextWidget({
 // ---------------------------------------------------------------------------
 // 2. Product / environment context
 // ---------------------------------------------------------------------------
-
-const ENV_COLOR: Record<
-  CaseProductContext["environment"],
-  "default" | "info" | "warning" | "error"
-> = {
-  dev: "default",
-  qa: "info",
-  staging: "warning",
-  prod: "error",
-};
 
 export function ProductContextWidget({
   ctx,
@@ -293,31 +261,19 @@ export function ProductContextWidget({
   return (
     <WidgetCard title="Deployment info" icon={<Server size={16} />}>
       <MetaRow label="Deployment">
-        <Box
-          sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}
-        >
-          <Typography variant="body2">
-            <strong>
-              {isLoadingLiveDeployment ? "Loading…" : deploymentName}
-            </strong>
-          </Typography>
-          {categoryLabel && !isLoadingLiveDeployment && (
-            <Chip
-              size="small"
-              variant="outlined"
-              label={categoryLabel}
-              color={ENV_COLOR[ctx.environment]}
-            />
-          )}
-        </Box>
+        <Typography variant="body2">
+          <strong>{isLoadingLiveDeployment ? "Loading…" : deploymentName}</strong>
+        </Typography>
       </MetaRow>
+      {!isLoadingLiveDeployment && categoryLabel && (
+        <MetaRow label="Type">
+          <Typography variant="body2">{categoryLabel}</Typography>
+        </MetaRow>
+      )}
       <MetaRow label="Product">
         <Typography variant="body2">
           <strong>{ctx.product}</strong>
         </Typography>
-      </MetaRow>
-      <MetaRow label="Version">
-        <Typography variant="body2">{ctx.version}</Typography>
       </MetaRow>
       {ctx.updateLevel && (
         <MetaRow label="Update level">
@@ -336,186 +292,7 @@ export function ProductContextWidget({
 }
 
 // ---------------------------------------------------------------------------
-// 4. Watchers
-// ---------------------------------------------------------------------------
-
-const ROLE_LABEL: Record<CaseWatcher["role"], string> = {
-  wso2_engineer: "WSO2",
-  customer_contact: "Customer",
-  manager: "Manager",
-};
-
-export function WatchersWidget({
-  watchers,
-  onAdd,
-  disabled,
-}: {
-  watchers: CaseWatcher[];
-  onAdd?: () => void;
-  /** True while watcher management isn't wired up yet. */
-  disabled?: boolean;
-}): JSX.Element {
-  return (
-    <WidgetCard
-      title="Watchers"
-      icon={<Users size={16} />}
-      disabledReason={disabled ? "Watcher management isn't available yet." : undefined}
-      action={
-        <Button
-          size="small"
-          variant="text"
-          startIcon={<Plus size={14} />}
-          onClick={onAdd}
-          disabled={disabled}
-        >
-          Add
-        </Button>
-      }
-    >
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
-        {watchers.map((w) => (
-          <Box
-            key={w.id}
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              gap: 1,
-              py: 0.5,
-            }}
-          >
-            <Avatar sx={{ width: 28, height: 28, fontSize: "0.75rem" }}>
-              {initialsOf(w.name)}
-            </Avatar>
-            <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography variant="body2" sx={{ lineHeight: 1.2 }}>
-                {w.name} {w.isMe && <em>(you)</em>}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {ROLE_LABEL[w.role]}
-              </Typography>
-            </Box>
-          </Box>
-        ))}
-      </Box>
-    </WidgetCard>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 5. Linked items
-// ---------------------------------------------------------------------------
-
-const LINKED_ICON: Record<CaseLinkedItem["kind"], JSX.Element> = {
-  case: <LinkIcon size={14} />,
-  incident: <TriangleAlert size={14} />,
-  escalation: <ArrowUpRight size={14} />,
-  kb: <Shield size={14} />,
-  cr: <CheckCircle size={14} />,
-  sr: <CheckCircle size={14} />,
-};
-
-const LINKED_LABEL: Record<CaseLinkedItem["kind"], string> = {
-  case: "Case",
-  incident: "Incident",
-  escalation: "Escalation",
-  kb: "KB",
-  cr: "CR",
-  sr: "SR",
-};
-
-export function LinkedItemsWidget({
-  items,
-  onLink,
-  disabled,
-}: {
-  items: CaseLinkedItem[];
-  onLink?: () => void;
-  /** True while linking cases/incidents isn't wired up yet. */
-  disabled?: boolean;
-}): JSX.Element {
-  return (
-    <WidgetCard
-      title="Linked items"
-      icon={<LinkIcon size={16} />}
-      disabledReason={disabled ? "Linking items isn't available yet." : undefined}
-      action={
-        <Button
-          size="small"
-          variant="text"
-          startIcon={<Plus size={14} />}
-          onClick={onLink}
-          disabled={disabled}
-        >
-          Link
-        </Button>
-      }
-    >
-      {items.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">
-          Nothing linked yet.
-        </Typography>
-      ) : (
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
-          {items.map((item) => {
-            const inner = (
-              <Box
-                sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 1,
-                  p: 0.75,
-                  borderRadius: 1,
-                  border: 1,
-                  borderColor: "divider",
-                  "&:hover": item.href
-                    ? { backgroundColor: "action.hover", cursor: "pointer" }
-                    : undefined,
-                }}
-              >
-                {LINKED_ICON[item.kind]}
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ display: "block", lineHeight: 1.1 }}
-                  >
-                    {LINKED_LABEL[item.kind]} · {item.reference} · {item.state}
-                  </Typography>
-                  <Typography
-                    variant="body2"
-                    sx={{
-                      lineHeight: 1.2,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {item.title}
-                  </Typography>
-                </Box>
-                {item.href && <ExternalLink size={14} />}
-              </Box>
-            );
-            return item.href ? (
-              <RouterLink
-                key={item.id}
-                to={item.href}
-                style={{ textDecoration: "none", color: "inherit" }}
-              >
-                {inner}
-              </RouterLink>
-            ) : (
-              <Box key={item.id}>{inner}</Box>
-            );
-          })}
-        </Box>
-      )}
-    </WidgetCard>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 6. Tags
+// 3. Tags
 // ---------------------------------------------------------------------------
 
 export function TagsWidget({
@@ -562,7 +339,7 @@ export function TagsWidget({
 }
 
 // ---------------------------------------------------------------------------
-// 7. Time logs
+// 4. Time logs
 // ---------------------------------------------------------------------------
 
 export function TimeLogsWidget({
@@ -638,7 +415,7 @@ export function TimeLogsWidget({
 }
 
 // ---------------------------------------------------------------------------
-// 7b. Attachments (all files on the case, newest first)
+// 4b. Attachments (all files on the case, newest first)
 // ---------------------------------------------------------------------------
 
 /**
@@ -843,7 +620,7 @@ export function AttachmentsWidget({
 }
 
 // ---------------------------------------------------------------------------
-// 8. Audit timeline (lifecycle events, distinct from comments)
+// 5. Audit timeline (lifecycle events, distinct from comments)
 // ---------------------------------------------------------------------------
 
 const AUDIT_ICON: Record<CaseAuditEntry["kind"], JSX.Element> = {

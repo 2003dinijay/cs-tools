@@ -93,7 +93,7 @@ describe("CaseActionBar — nextStates-driven buttons", () => {
       />,
     );
     expect(screen.getByRole("button", { name: /wait on wso2/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^closed$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^close$/i })).toBeInTheDocument();
   });
 
   it("shows exactly the transitions the backend permits, nothing more", () => {
@@ -109,7 +109,7 @@ describe("CaseActionBar — nextStates-driven buttons", () => {
     expect(screen.getByRole("button", { name: /propose solution/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /request information/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /wait on wso2/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^closed$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
   });
 
   it("labels a target the same regardless of source state (no UI-invented verbs)", () => {
@@ -158,8 +158,8 @@ describe("CaseActionBar — nextStates-driven buttons", () => {
         onAction={onAction}
       />,
     );
-    // Clicking "Closed" must NOT dispatch yet — it opens a confirm dialog.
-    fireEvent.click(screen.getByRole("button", { name: /^closed$/i }));
+    // Clicking "Close" must NOT dispatch yet — it opens a confirm dialog.
+    fireEvent.click(screen.getByRole("button", { name: /^close$/i }));
     expect(onAction).not.toHaveBeenCalled();
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     // Confirming dispatches with the close action + closed target.
@@ -180,7 +180,7 @@ describe("CaseActionBar — nextStates-driven buttons", () => {
     expect(screen.queryByRole("button", { name: /propose solution/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /request information/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /wait on wso2/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^closed$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /more/i })).toBeInTheDocument();
   });
 

@@ -146,6 +146,7 @@ const TRANSITION_LABEL: Partial<Record<CaseState, string>> = {
   solution_proposed: "Propose solution",
   awaiting_info: "Request information",
   waiting_on_wso2: "Wait on WSO2",
+  closed: "Close",
 };
 
 /** Build the button for a transition into `target`, labelled by the BE state. */
@@ -217,7 +218,7 @@ interface SecondaryItem {
  *   - Copy case link                 → ISSU-010 (per-comment + per-case permalinks)
  *
  * Intentionally NOT here:
- *   - Watch / unwatch  → managed via the Watchers widget in Details (ISSU-018)
+ *   - Watch / unwatch  → withdrawn along with the Watchers widget (ISSU-018), no backend flow planned yet
  *   - Open in ServiceNow → this platform replaces ServiceNow; no back-link
  *   - Escalate to lead / Request severity change → withdrawn, no backend flow planned yet
  */

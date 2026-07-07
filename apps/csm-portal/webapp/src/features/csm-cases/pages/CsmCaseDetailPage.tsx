@@ -77,9 +77,7 @@ import CaseMetaBand from "@features/csm-cases/components/CaseMetaBand";
 import {
   AttachmentsWidget,
   CustomerContextWidget,
-  LinkedItemsWidget,
   ProductContextWidget,
-  WatchersWidget,
 } from "@features/csm-cases/components/CaseDetailWidgets";
 import { CallRequestsWidget } from "@features/csm-cases/components/CallRequestsWidget";
 import { useGetCsmCaseCallRequests } from "@features/csm-cases/api/useCsmCaseCallRequests";
@@ -191,9 +189,7 @@ const SECONDARY_TOAST: Record<string, string> = {
   reassign_group: "Reassign group dialog (mock).",
   hold_auto_close: "Hold auto-closure dialog (mock).",
   create_incident: "Create incident from case (mock).",
-  link_case: "Link related case picker (mock).",
   link_incident: "Link to incident picker (mock).",
-  manage_watchers: "Add/remove watcher dialog (mock).",
   create_task: "Create task dialog (mock).",
   log_time: "Log time dialog (mock).",
   copy_link: "Case link copied to clipboard.",
@@ -1294,16 +1290,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
             isLoadingLiveDeployment={
               !!c.productContext.deploymentId && isProjectDeploymentsLoading
             }
-          />
-          <WatchersWidget
-            watchers={c.watchers}
-            onAdd={() => onAction({ secondary: "manage_watchers" })}
-            disabled
-          />
-          <LinkedItemsWidget
-            items={c.linkedItems}
-            onLink={() => onAction({ secondary: "link_case" })}
-            disabled
           />
         </Box>
       )}
