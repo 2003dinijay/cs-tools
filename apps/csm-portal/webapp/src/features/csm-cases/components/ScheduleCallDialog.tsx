@@ -83,6 +83,7 @@ export function ScheduleCallDialog({
   const [customTime, setCustomTime] = useState<string>("");
   const [duration, setDuration] = useState("30");
   const [assignee, setAssignee] = useState("");
+  const [pastError, setPastError] = useState(false);
 
   // Reset local state whenever the target call request changes (render-time
   // state adjustment, not an effect -- see React docs on this pattern).
@@ -93,6 +94,7 @@ export function ScheduleCallDialog({
     setCustomTime("");
     setDuration(callRequest?.durationMin ? String(callRequest.durationMin) : "30");
     setAssignee(callRequest?.assignee ?? "");
+    setPastError(false);
   }
 
   const handleClose = () => {
@@ -100,6 +102,7 @@ export function ScheduleCallDialog({
     setCustomTime("");
     setDuration("30");
     setAssignee("");
+    setPastError(false);
     onClose();
   };
 
@@ -122,6 +125,13 @@ export function ScheduleCallDialog({
 
   const handleSubmit = () => {
     if (!canSubmit || !meetingDate) return;
+    // Reject a time in the past (immediate feedback; the backing data source
+    // enforces a stricter lead time). Time is read in the handler, not render.
+    if (new Date(meetingDate).getTime() <= Date.now()) {
+      setPastError(true);
+      return;
+    }
+    setPastError(false);
     onSubmit({
       meetingDate,
       durationInMinutes: durationNum,
@@ -134,9 +144,9 @@ export function ScheduleCallDialog({
       <DialogTitle>{isReschedule ? "Reschedule call" : "Schedule call"}</DialogTitle>
       <DialogContent>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 0.5 }}>
-          {error && (
+          {(error || pastError) && (
             <Typography variant="body2" color="error">
-              {error}
+              {error ?? "Meeting time must be in the future."}
             </Typography>
           )}
 
@@ -147,7 +157,10 @@ export function ScheduleCallDialog({
               </Typography>
               <RadioGroup
                 value={selectedTime}
-                onChange={(e) => setSelectedTime(e.target.value)}
+                onChange={(e) => {
+                  setSelectedTime(e.target.value);
+                  setPastError(false);
+                }}
               >
                 {preferredTimes.map((t) => (
                   <FormControlLabel
@@ -180,16 +193,24 @@ export function ScheduleCallDialog({
               label={`Meeting time (${timeZone})`}
               type="datetime-local"
               value={customTime}
-              onChange={(e) => setCustomTime(e.target.value)}
+              onChange={(e) => {
+                setCustomTime(e.target.value);
+                setPastError(false);
+              }}
               fullWidth
               required
               size="small"
               disabled={submitting}
-              error={selectedTime === CUSTOM_TIME_VALUE && !!customTime && !customTimeValid}
+              error={
+                (selectedTime === CUSTOM_TIME_VALUE && !!customTime && !customTimeValid) ||
+                pastError
+              }
               helperText={
                 selectedTime === CUSTOM_TIME_VALUE && customTime && !customTimeValid
                   ? "Invalid date/time."
-                  : `Entered in your timezone (${timeZone}); stored as UTC.`
+                  : pastError
+                    ? "Meeting time must be in the future."
+                    : `Entered in your timezone (${timeZone}); stored as UTC.`
               }
             />
           )}
