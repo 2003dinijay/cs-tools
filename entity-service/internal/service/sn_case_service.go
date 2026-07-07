@@ -757,11 +757,81 @@ func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.Searc
 }
 
 type snUpdateCasePayload struct {
-	StateKey      *int     `json:"stateKey,omitempty"`
-	SeverityKey   *int     `json:"severityKey,omitempty"`
-	WorkStateKey  *int     `json:"workStateKey,omitempty"`
-	WatchList     []string `json:"watchList,omitempty"`
-	AssigneeEmail *string  `json:"assigneeEmail,omitempty"`
+	StateKey       *int     `json:"stateKey,omitempty"`
+	SeverityKey    *int     `json:"severityKey,omitempty"`
+	WorkStateKey   *int     `json:"workStateKey,omitempty"`
+	WatchList      []string `json:"watchList,omitempty"`
+	AssigneeEmail  *string  `json:"assigneeEmail,omitempty"`
+	ResolutionCode *int    `json:"resolutionCode,omitempty"`
+	Cause          *string  `json:"cause,omitempty"`
+	CloseNotes     *string  `json:"closeNotes,omitempty"`
+}
+
+// snResolutionStates are the state keys that allow resolution fields.
+var snResolutionStates = map[int]bool{
+	3: true, // closed
+	6: true, // solution_proposed
+}
+
+// snResolutionCodeKey maps domain CaseResolutionCode enums to the ServiceNow integer keys.
+var snResolutionCodeKey = map[domain.CaseResolutionCode]int{
+	domain.CaseResolutionCodeSolvedFixedBySupportGuidanceProvided: 1,
+	domain.CaseResolutionCodeSolvedFixedByClosingRelatedIncident:  16,
+	domain.CaseResolutionCodeSolvedFixedByClosingRelatedRDTicket:  17,
+	domain.CaseResolutionCodeSolvedWorkaroundProvided:             3,
+	domain.CaseResolutionCodeSolvedByCustomer:                     4,
+	domain.CaseResolutionCodeConsideredForRoadmap:                 18,
+	domain.CaseResolutionCodeInconclusiveOutOfScope:               5,
+	domain.CaseResolutionCodeInconclusiveCannotReproduce:          6,
+	domain.CaseResolutionCodeInconclusiveNoWorkaround:             7,
+	domain.CaseResolutionCodeDuplicateIssue:                       8,
+	domain.CaseResolutionCodeVoidedCanceled:                       9,
+	domain.CaseResolutionCodeOnHold:                               19,
+	domain.CaseResolutionCodeConsideredForRoadmapAlt:              20,
+	domain.CaseResolutionCodeSolvedFixedTheIssue:                  21,
+	domain.CaseResolutionCodeSolvedWorkaroundProvidedAlt:          22,
+	domain.CaseResolutionCodeSolvedByContributor:                  27,
+	domain.CaseResolutionCodeSolvedByNovera:                       51,
+	domain.CaseResolutionCodeAbruptlyClosedDueToNonResponsiveness: 52,
+}
+
+// snResolutionCodeByID maps ServiceNow resolution code id strings to domain CaseResolutionCode enums.
+var snResolutionCodeByID = func() map[string]domain.CaseResolutionCode {
+	m := make(map[string]domain.CaseResolutionCode, len(snResolutionCodeKey))
+	for k, v := range snResolutionCodeKey {
+		m[fmt.Sprintf("%d", v)] = k
+	}
+	return m
+}()
+
+// snCauseLabelToEnum maps ServiceNow cause label strings to domain CaseCause enums.
+var snCauseLabelToEnum map[string]domain.CaseCause
+
+// snCauseLabel maps domain CaseCause enums to the ServiceNow cause label strings.
+var snCauseLabel = map[domain.CaseCause]string{
+	domain.CaseCauseUserMisunderstandingConcepts:      "User - Misunderstanding concepts",
+	domain.CaseCauseUserMisunderstandingDocumentation: "User - Misunderstanding documentation",
+	domain.CaseCauseUserNotFollowingDocumentation:     "User - Not following documentation",
+	domain.CaseCauseUserMistake:                       "User - Mistake",
+	domain.CaseCauseSolutionProblematicArchitecture:   "Solution - Problematic solution architecture",
+	domain.CaseCauseSolutionProblematicCode:           "Solution - Problematic code",
+	domain.CaseCauseApplicationBug:                    "Application - Bug",
+	domain.CaseCauseApplicationMisleadingUXUI:         "Application - Misleading UX / UI",
+	domain.CaseCauseApplicationLimitation:             "Application - Limitation",
+	domain.CaseCauseApplicationMissingFeature:         "Application - Missing feature",
+	domain.CaseCauseApplicationDocumentationGap:       "Application - Documentation gap",
+	domain.CaseCauseApplicationDocumentationError:     "Application - Documentation error",
+	domain.CaseCauseInfrastructureCustomerSide:        "Infrastructure - Customer's side",
+	domain.CaseCauseInfrastructureSaaSNotEnough:       "Infrastructure - SaaS side - Not enough ...",
+	domain.CaseCauseInfrastructureSaaSother:           "Infrastructure - SaaS side - Other",
+	domain.CaseCauseUnknown:                           "Unknown",
+}
+
+func init() {
+	snCauseLabelToEnum = make(map[string]domain.CaseCause, len(snCauseLabel))
+	for k, v := range snCauseLabel {
+		snCauseLabelToEnum[v] = k
+	}
 }
 
 // snWorkStateIDMap maps domain CaseWorkState enums to SN numeric work state IDs.
@@ -773,13 +843,13 @@ var snWorkStateIDMap = map[domain.CaseWorkState]int{
 type snUpdateCaseResponse struct {
 	Message string `json:"message"`
 	Case    struct {
-		ID        string       `json:"id"`
-		UpdatedOn string       `json:"updatedOn"`
-		UpdatedBy string       `json:"updatedBy"`
-		State     *snCaseState `json:"state"`
-		Severity  *snCaseLabel `json:"severity"`
-		WorkState *snCaseLabel `json:"workState"`
-		WatchList []struct {
+		ID             string       `json:"id"`
+		UpdatedOn      string       `json:"updatedOn"`
+		UpdatedBy      string       `json:"updatedBy"`
+		State          *snCaseState `json:"state"`
+		Severity       *snCaseLabel `json:"severity"`
+		WorkState      *snCaseLabel `json:"workState"`
+		WatchList      []struct {
 			ID       string `json:"id"`
 			UserName string `json:"userName"`
 			Name     string `json:"name"`
@@ -789,6 +859,16 @@ type snUpdateCaseResponse struct {
 			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"assignedTo"`
+		ResolutionCode *struct {
+			ID    json.Number `json:"id"`
+			Label string      `json:"label"`
+		} `json:"resolutionCode"`
+		Cause *struct {
+			ID    string `json:"id"`
+			Label string `json:"label"`
+		} `json:"cause"`
+		CloseNotes *string `json:"closeNotes"`
+		ResolvedOn *string `json:"resolvedOn"`
 	} `json:"case"`
 }
 
@@ -796,6 +876,8 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
+
+	hasResolutionFields := req.ResolutionCode != nil || req.Cause != nil || req.CloseNotes != nil
 
 	fieldCount := 0
 	if req.State != nil {
@@ -819,6 +901,9 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	if fieldCount > 1 {
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "only one of state, severity, workState, watchList, or assigneeEmail may be provided per request"}
 	}
+	if hasResolutionFields && req.State == nil {
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are only allowed when state is also provided"}
+	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
@@ -835,6 +920,24 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "state " + string(*req.State) + " is not supported by ServiceNow"}
 		}
 		payload.StateKey = &id
+		if hasResolutionFields && !snResolutionStates[id] {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are only allowed when state is closed or solution_proposed"}
+		}
+		if req.ResolutionCode != nil {
+			key, ok := snResolutionCodeKey[*req.ResolutionCode]
+			if !ok {
+				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode contains invalid value: " + string(*req.ResolutionCode)}
+			}
+			payload.ResolutionCode = &key
+		}
+		if req.Cause != nil {
+			label, ok := snCauseLabel[*req.Cause]
+			if !ok {
+				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "cause contains invalid value: " + string(*req.Cause)}
+			}
+			payload.Cause = &label
+		}
+		payload.CloseNotes = req.CloseNotes
 	}
 	if req.Severity != nil {
 		if !validCaseSeverity[*req.Severity] {
@@ -914,6 +1017,24 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 			})
 		}
 		resp.Case.WatchList = wl
+	}
+	if snResp.Case.ResolutionCode != nil {
+		if rc, ok := snResolutionCodeByID[snResp.Case.ResolutionCode.ID.String()]; ok {
+			resp.Case.ResolutionCode = &rc
+		}
+	}
+	if snResp.Case.Cause != nil {
+		if c, ok := snCauseLabelToEnum[snResp.Case.Cause.Label]; ok {
+			resp.Case.Cause = &c
+		}
+	}
+	resp.Case.CloseNotes = snResp.Case.CloseNotes
+	if snResp.Case.ResolvedOn != nil {
+		resolvedOn, err := time.Parse(snCreatedOnLayout, *snResp.Case.ResolvedOn)
+		if err != nil {
+			return domain.UpdateCaseResponse{}, fmt.Errorf("sn update case: parse resolvedAt %q: %w", *snResp.Case.ResolvedOn, err)
+		}
+		resp.Case.ResolvedOn = &resolvedOn
 	}
 
 	return resp, nil

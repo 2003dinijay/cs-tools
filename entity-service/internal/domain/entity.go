@@ -711,6 +711,52 @@ const (
 	CaseWorkStatePaused  CaseWorkState = "paused"
 )
 
+// CaseResolutionCode enumerates the resolution codes for a resolved case.
+type CaseResolutionCode string
+
+const (
+	CaseResolutionCodeSolvedFixedBySupportGuidanceProvided    CaseResolutionCode = "SOLVED_FIXED_BY_SUPPORT_GUIDANCE_PROVIDED"
+	CaseResolutionCodeSolvedFixedByClosingRelatedIncident     CaseResolutionCode = "SOLVED_FIXED_BY_CLOSING_RELATED_INCIDENT"
+	CaseResolutionCodeSolvedFixedByClosingRelatedRDTicket     CaseResolutionCode = "SOLVED_FIXED_BY_CLOSING_RELATED_RD_TICKET"
+	CaseResolutionCodeSolvedWorkaroundProvided                CaseResolutionCode = "SOLVED_WORKAROUND_PROVIDED"
+	CaseResolutionCodeSolvedByCustomer                        CaseResolutionCode = "SOLVED_BY_CUSTOMER"
+	CaseResolutionCodeConsideredForRoadmap                    CaseResolutionCode = "CONSIDERED_FOR_ROADMAP"
+	CaseResolutionCodeInconclusiveOutOfScope                  CaseResolutionCode = "INCONCLUSIVE_OUT_OF_SCOPE"
+	CaseResolutionCodeInconclusiveCannotReproduce             CaseResolutionCode = "INCONCLUSIVE_CANNOT_REPRODUCE"
+	CaseResolutionCodeInconclusiveNoWorkaround                CaseResolutionCode = "INCONCLUSIVE_NO_WORKAROUND"
+	CaseResolutionCodeDuplicateIssue                          CaseResolutionCode = "DUPLICATE_ISSUE"
+	CaseResolutionCodeVoidedCanceled                          CaseResolutionCode = "VOIDED_CANCELED"
+	CaseResolutionCodeOnHold                                  CaseResolutionCode = "ON_HOLD"
+	CaseResolutionCodeConsideredForRoadmapAlt                 CaseResolutionCode = "CONSIDERED_FOR_ROADMAP_ALT"
+	CaseResolutionCodeSolvedFixedTheIssue                     CaseResolutionCode = "SOLVED_FIXED_THE_ISSUE"
+	CaseResolutionCodeSolvedWorkaroundProvidedAlt             CaseResolutionCode = "SOLVED_WORKAROUND_PROVIDED_ALT"
+	CaseResolutionCodeSolvedByContributor                     CaseResolutionCode = "SOLVED_BY_CONTRIBUTOR"
+	CaseResolutionCodeSolvedByNovera                          CaseResolutionCode = "SOLVED_BY_NOVERA"
+	CaseResolutionCodeAbruptlyClosedDueToNonResponsiveness    CaseResolutionCode = "ABRUPTLY_CLOSED_DUE_TO_NON_RESPONSIVENESS"
+)
+
+// CaseCause enumerates the root-cause categories for a resolved case.
+type CaseCause string
+
+const (
+	CaseCauseUserMisunderstandingConcepts      CaseCause = "USER_MISUNDERSTANDING_CONCEPTS"
+	CaseCauseUserMisunderstandingDocumentation CaseCause = "USER_MISUNDERSTANDING_DOCUMENTATION"
+	CaseCauseUserNotFollowingDocumentation     CaseCause = "USER_NOT_FOLLOWING_DOCUMENTATION"
+	CaseCauseUserMistake                       CaseCause = "USER_MISTAKE"
+	CaseCauseSolutionProblematicArchitecture   CaseCause = "SOLUTION_PROBLEMATIC_SOLUTION_ARCHITECTURE"
+	CaseCauseSolutionProblematicCode           CaseCause = "SOLUTION_PROBLEMATIC_CODE"
+	CaseCauseApplicationBug                    CaseCause = "APPLICATION_BUG"
+	CaseCauseApplicationMisleadingUXUI         CaseCause = "APPLICATION_MISLEADING_UX_UI"
+	CaseCauseApplicationLimitation             CaseCause = "APPLICATION_LIMITATION"
+	CaseCauseApplicationMissingFeature         CaseCause = "APPLICATION_MISSING_FEATURE"
+	CaseCauseApplicationDocumentationGap       CaseCause = "APPLICATION_DOCUMENTATION_GAP"
+	CaseCauseApplicationDocumentationError     CaseCause = "APPLICATION_DOCUMENTATION_ERROR"
+	CaseCauseInfrastructureCustomerSide        CaseCause = "INFRASTRUCTURE_CUSTOMERS_SIDE"
+	CaseCauseInfrastructureSaaSNotEnough       CaseCause = "INFRASTRUCTURE_SAAS_SIDE_NOT_ENOUGH"
+	CaseCauseInfrastructureSaaSother           CaseCause = "INFRASTRUCTURE_SAAS_SIDE_OTHER"
+	CaseCauseUnknown                           CaseCause = "UNKNOWN"
+)
+
 // EngagementType classifies the type of an engagement case.
 type EngagementType string
 
@@ -917,13 +963,18 @@ type SearchCasesResponse struct {
 // UpdateCaseRequest is the input for PATCH /cases/{id}.
 // Exactly one of State, Severity, WorkState, WatchList, or AssigneeEmail must be provided.
 // WatchList and AssigneeEmail are only supported for the ServiceNow data source.
+// ResolutionCode, Cause, and CloseNotes are optional resolution fields only allowed when
+// State is closed or solution_proposed.
 type UpdateCaseRequest struct {
-	ID            string         `json:"-"`
-	State         *CaseState     `json:"state"`
-	Severity      *CaseSeverity  `json:"severity"`
-	WorkState     *CaseWorkState `json:"workState"`
-	WatchList     []string       `json:"watchList"`
-	AssigneeEmail *string        `json:"assigneeEmail"`
+	ID             string         `json:"-"`
+	State          *CaseState     `json:"state"`
+	Severity       *CaseSeverity  `json:"severity"`
+	WorkState      *CaseWorkState `json:"workState"`
+	WatchList      []string       `json:"watchList"`
+	AssigneeEmail  *string        `json:"assigneeEmail"`
+	ResolutionCode *CaseResolutionCode `json:"resolutionCode"`
+	Cause          *CaseCause     `json:"cause"`
+	CloseNotes     *string        `json:"closeNotes"`
 }
 
 // UpdateCaseResponse is the response for PATCH /cases/{id}.
@@ -932,16 +983,26 @@ type UpdateCaseResponse struct {
 	Case    UpdatedCase `json:"case"`
 }
 
+// CaseLabelRef is a generic id/label pair returned by ServiceNow for choice-list fields.
+type CaseLabelRef struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
 // UpdatedCase carries the fields of a case that may change after an update.
 type UpdatedCase struct {
-	ID         string               `json:"id"`
-	UpdatedOn  time.Time            `json:"updatedOn"`
-	UpdatedBy  string               `json:"updatedBy,omitempty"`
-	State      CaseState            `json:"state,omitempty"`
-	Severity   CaseSeverity         `json:"severity,omitempty"`
-	WorkState  *CaseWorkState       `json:"workState"`
-	WatchList  []WatchListUser      `json:"watchList,omitempty"`
-	AssignedTo *AssignedEngineerRef `json:"assignedTo,omitempty"`
+	ID             string               `json:"id"`
+	UpdatedOn      time.Time            `json:"updatedOn"`
+	UpdatedBy      string               `json:"updatedBy,omitempty"`
+	State          CaseState            `json:"state,omitempty"`
+	Severity       CaseSeverity         `json:"severity,omitempty"`
+	WorkState      *CaseWorkState       `json:"workState"`
+	WatchList      []WatchListUser      `json:"watchList,omitempty"`
+	AssignedTo     *AssignedEngineerRef `json:"assignedTo,omitempty"`
+	ResolutionCode *CaseResolutionCode  `json:"resolutionCode,omitempty"`
+	Cause          *CaseCause           `json:"cause,omitempty"`
+	CloseNotes     *string              `json:"closeNotes,omitempty"`
+	ResolvedOn     *time.Time           `json:"resolvedOn,omitempty"`
 }
 
 // WatchListUser is a compact user reference within the watch list.
