@@ -5174,7 +5174,7 @@ components:
           description: New state for the call request.
         cancellationReason:
           type: string
-          description: Reason for cancellation (required when cancelling).
+          description: Reason for cancellation or rejection.
         utcTimes:
           type: array
           items:
