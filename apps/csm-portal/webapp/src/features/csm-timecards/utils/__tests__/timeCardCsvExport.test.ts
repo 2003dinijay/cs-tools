@@ -67,4 +67,9 @@ describe("timeCardsToCsv", () => {
     const csv = timeCardsToCsv([card({ userName: 'Jane "JD" Doe' })]);
     expect(csv).toContain('"Jane ""JD"" Doe"');
   });
+
+  it("quotes a field with a bare carriage return, not just \\n", () => {
+    const csv = timeCardsToCsv([card({ userName: "Jane\rDoe" })]);
+    expect(csv).toContain('"Jane\rDoe"');
+  });
 });

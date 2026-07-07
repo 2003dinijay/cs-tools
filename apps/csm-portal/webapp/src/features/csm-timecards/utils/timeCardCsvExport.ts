@@ -30,10 +30,10 @@ const CSV_HEADER = [
 ];
 
 /** Quotes a CSV field only when it needs it (contains a comma, quote, or
- * newline), doubling any internal quotes — the minimal escaping RFC 4180
- * requires. */
+ * carriage return/newline), doubling any internal quotes — the minimal
+ * escaping RFC 4180 requires. */
 function csvField(value: string): string {
-  if (!/[",\n]/.test(value)) return value;
+  if (!/["\r\n,]/.test(value)) return value;
   return `"${value.replace(/"/g, '""')}"`;
 }
 
