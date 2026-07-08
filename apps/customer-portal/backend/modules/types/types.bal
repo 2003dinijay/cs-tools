@@ -26,12 +26,42 @@ public type FeatureFlags record {|
     boolean usageMetricsEnabled;
 |};
 
+# Feedback emoji chip information.
+public type FeedbackEmojiChip record {|
+    # ID
+    string id;
+    # Name
+    string name;
+    # Value
+    string value;
+    json...;
+|};
+
+# Feedback emoji information.
+public type FeedbackEmoji record {|
+    # ID
+    string id;
+    # Name
+    string name;
+    # Value
+    string value;
+    # Unselected image URL
+    string unselectedImage;
+    # Selected image URL
+    string selectedImage;
+    # Chips
+    FeedbackEmojiChip[] chips;
+    json...;
+|};
+
 # Metadata.
 public type MetadataResponse record {|
     # List of available time zones
     ReferenceItem[] timeZones;
     # List of available project types
     ReferenceItem[] projectTypes;
+    # List of feedback emojies
+    FeedbackEmoji[] feedbackEmojies;
     # Indicate which features are enabled
     FeatureFlags featureFlags;
 |};

@@ -5228,6 +5228,56 @@ components:
           type: string
         method:
           type: string
+    FeedbackEmojiChip:
+      required:
+      - id
+      - name
+      - value
+      type: object
+      properties:
+        id:
+          type: string
+          description: ID
+        name:
+          type: string
+          description: Name
+        value:
+          type: string
+          description: Value
+      additionalProperties: false
+      description: Feedback emoji chip information.
+    FeedbackEmoji:
+      required:
+      - chips
+      - id
+      - name
+      - selectedImage
+      - unselectedImage
+      - value
+      type: object
+      properties:
+        id:
+          type: string
+          description: ID
+        name:
+          type: string
+          description: Name
+        value:
+          type: string
+          description: Value
+        unselectedImage:
+          type: string
+          description: Unselected image URL
+        selectedImage:
+          type: string
+          description: Selected image URL
+        chips:
+          type: array
+          description: Chips
+          items:
+            $ref: '#/components/schemas/FeedbackEmojiChip'
+      additionalProperties: false
+      description: Feedback emoji information.
     FeatureFlags:
       required:
       - usageMetricsEnabled
@@ -5431,6 +5481,7 @@ components:
     MetadataResponse:
       required:
       - featureFlags
+      - feedbackEmojies
       - projectTypes
       - timeZones
       type: object
@@ -5445,6 +5496,11 @@ components:
           description: List of available project types
           items:
             $ref: '#/components/schemas/ReferenceItem'
+        feedbackEmojies:
+          type: array
+          description: List of feedback emojies
+          items:
+            $ref: '#/components/schemas/FeedbackEmoji'
         featureFlags:
           $ref: '#/components/schemas/FeatureFlags'
       additionalProperties: false

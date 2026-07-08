@@ -54,6 +54,8 @@ public type MetadataResponse record {|
     ChoiceListItem[] timeZones;
     # List of available project types
     ReferenceTableItem[] projectTypes;
+    # List of feedback emojies
+    FeedbackEmoji[] feedbackEmojies;
     json...;
 |};
 
@@ -437,6 +439,34 @@ public type ReferenceTableItem record {|
     Date? releasedOn?;
     # End of life date (for product versions)
     Date? endOfLifeOn?;
+    json...;
+|};
+
+# Feedback emoji chip information.
+public type FeedbackEmojiChip record {|
+    # ID
+    string id;
+    # Name
+    string name;
+    # Value
+    string value;
+    json...;
+|};
+
+# Feedback emoji information.
+public type FeedbackEmoji record {|
+    # ID
+    string id;
+    # Name
+    string name;
+    # Value
+    string value;
+    # Unselected image URL
+    string unselectedImage;
+    # Selected image URL
+    string selectedImage;
+    # Chips
+    FeedbackEmojiChip[] chips;
     json...;
 |};
 
