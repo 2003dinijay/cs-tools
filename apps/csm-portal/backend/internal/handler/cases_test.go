@@ -1088,6 +1088,7 @@ func TestGetCase(t *testing.T) {
 		}
 		recentClosed := time.Now().Add(-10 * 24 * time.Hour).Format(time.RFC3339)
 		oldClosed := time.Now().Add(-90 * 24 * time.Hour).Format(time.RFC3339)
+		recentClosedNoZone := time.Now().Add(-10 * 24 * time.Hour).UTC().Format("2006-01-02 15:04:05")
 		cases := []struct {
 			name     string
 			body     string
@@ -1095,6 +1096,7 @@ func TestGetCase(t *testing.T) {
 		}{
 			{"closed case within the 60-day window", `{"id":"` + testCaseID + `","type":"case","state":"closed","closedOn":"` + recentClosed + `"}`, []string{caseStateReopened}},
 			{"closed case outside the 60-day window", `{"id":"` + testCaseID + `","type":"case","state":"closed","closedOn":"` + oldClosed + `"}`, []string{}},
+			{"closed case with a zoneless space-separated closedOn", `{"id":"` + testCaseID + `","type":"case","state":"closed","closedOn":"` + recentClosedNoZone + `"}`, []string{caseStateReopened}},
 			{"closed case with no closedOn", `{"id":"` + testCaseID + `","type":"case","state":"closed"}`, []string{}},
 			{"open case with a closedOn value", `{"id":"` + testCaseID + `","type":"case","state":"open","closedOn":"` + recentClosed + `"}`, []string{caseStateWorkInProgress}},
 			{"closed service_request within the window", `{"id":"` + testCaseID + `","type":"service_request","state":"closed","closedOn":"` + recentClosed + `"}`, []string{}},

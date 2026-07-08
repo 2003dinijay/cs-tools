@@ -82,19 +82,45 @@ func isValidStateTransition(from, to string) bool {
 	return false
 }
 
+// closedOnLayouts are the timestamp shapes the "closedOn" field has been seen
+// in, in order of preference. The entity service normally emits RFC 3339, but
+// some upstream (ServiceNow) values pass through as bare "YYYY-MM-DD HH:MM:SS"
+// with no zone — the frontend's normalizeBackendTimestamp (src/utils/dateTime.ts)
+// treats that shape as UTC, so this mirrors it rather than only accepting
+// RFC 3339 and silently hiding the action for those cases.
+var closedOnLayouts = []string{
+	time.RFC3339,
+	"2006-01-02 15:04:05",
+}
+
+// parseClosedOn parses "closedOn" using the first matching layout in
+// closedOnLayouts, treating a zoneless value as UTC.
+func parseClosedOn(closedOn string) (time.Time, bool) {
+	if t, err := time.Parse(time.RFC3339, closedOn); err == nil {
+		return t, true
+	}
+	for _, layout := range closedOnLayouts[1:] {
+		if t, err := time.ParseInLocation(layout, closedOn, time.UTC); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
 // canCreateRelatedCase reports whether a new case may be created as related to
-// a case of the given type/state, closed at the given timestamp (RFC 3339, as
-// returned in the "closedOn" field; empty when the case was never closed).
-// The upstream data source rejects the link once a closed case falls outside
-// relatedCaseWindow, so this mirrors that rule to avoid advertising an action
-// that would fail server-side. Scoped to caseType == "case" — the other case
-// types' create flows have no related-case field yet.
+// a case of the given type/state, closed at the given timestamp (as returned
+// in the "closedOn" field — see parseClosedOn for accepted shapes; empty when
+// the case was never closed). The upstream data source rejects the link once
+// a closed case falls outside relatedCaseWindow, so this mirrors that rule to
+// avoid advertising an action that would fail server-side. Scoped to
+// caseType == "case" — the other case types' create flows have no
+// related-case field yet.
 func canCreateRelatedCase(caseType, state, closedOn string) bool {
 	if caseType != caseTypeCase || state != caseStateClosed || closedOn == "" {
 		return false
 	}
-	t, err := time.Parse(time.RFC3339, closedOn)
-	if err != nil {
+	t, ok := parseClosedOn(closedOn)
+	if !ok {
 		return false
 	}
 	return time.Since(t) <= relatedCaseWindow
