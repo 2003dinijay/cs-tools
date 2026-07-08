@@ -70,7 +70,11 @@ export const STATE_COLOR: Record<
   solution_proposed: "default",
   awaiting_info: "default",
   closed: "success",
-  // Active again, on us — same bucket as open/work_in_progress.
+  // Defensive: `reopened` only appears in a closed case's `nextStates` (the
+  // "Create related case" signal, see CaseState's doc) — never as a case's
+  // own state, so this entry should be unreachable via a real case's state.
+  // Kept in the "info" bucket rather than omitted, so the exhaustive Record
+  // still compiles and any incidental rendering doesn't look broken.
   reopened: "info",
 };
 
