@@ -74,6 +74,7 @@ import CaseActionBar from "@features/csm-cases/components/CaseActionBar";
 import AssignEngineerDialog from "@features/csm-cases/components/AssignEngineerDialog";
 import ChangeSeverityDialog from "@features/csm-cases/components/ChangeSeverityDialog";
 import { CreateGithubIssueDialog } from "@features/csm-cases/components/CreateGithubIssueDialog";
+import { isCloudSupportSubscription } from "@features/csm-projects/utils/subscriptionType";
 import { usePostCaseGithubIssue } from "@features/csm-cases/api/useCsmCaseGithubIssue";
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
 import CaseMetaBand from "@features/csm-cases/components/CaseMetaBand";
@@ -1479,6 +1480,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           defaultUpdateLevel={c.productContext.updateLevel}
           defaultTitle={c.subject}
           defaultDescription={c.description}
+          showRepoField={isCloudSupportSubscription(caseProject?.subscriptionType)}
           onClose={() => {
             setGithubIssueOpen(false);
             setGithubIssueError(null);

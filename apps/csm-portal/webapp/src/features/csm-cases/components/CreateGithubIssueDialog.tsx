@@ -15,9 +15,6 @@
 // under the License.
 
 import {
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
   Box,
   Button,
   Dialog,
@@ -34,7 +31,7 @@ import {
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
-import { CheckCircle, ChevronDown } from "@wso2/oxygen-ui-icons-react";
+import { CheckCircle } from "@wso2/oxygen-ui-icons-react";
 import { useState, type JSX } from "react";
 import type {
   BeCreateCaseGithubIssuePayload,
@@ -95,6 +92,10 @@ export interface CreateGithubIssueDialogProps {
   defaultTitle?: string;
   /** Prefill for the Description field, taken from the case's description. */
   defaultDescription?: string;
+  /** Show the repository field only for cloud subscription / cloud
+   * evaluation subscription projects — other project types route by
+   * product unit on the SN side and have no repo to choose. */
+  showRepoField?: boolean;
   onClose: () => void;
   /** Body for `POST /cases/{id}/github-issues` (caseId is added by the caller). */
   onSubmit: (payload: BeCreateCaseGithubIssuePayload) => void;
@@ -125,6 +126,7 @@ export function CreateGithubIssueDialog({
   defaultUpdateLevel,
   defaultTitle,
   defaultDescription,
+  showRepoField,
   onClose,
   onSubmit,
 }: CreateGithubIssueDialogProps): JSX.Element {
@@ -322,27 +324,14 @@ export function CreateGithubIssueDialog({
             label="Regression"
           />
 
-          {/* Only the repo override stays optional across every type and is
-              rarely needed (the SN side routes by product unit when unset),
-              so it's the only field still tucked away by default. */}
-          <Accordion disableGutters sx={{ "&:before": { display: "none" } }}>
-            <AccordionSummary expandIcon={<ChevronDown size={16} />}>
-              <Typography variant="body2" color="text.secondary">
-                More options (optional)
-              </Typography>
-            </AccordionSummary>
-            <AccordionDetails
-              sx={{ display: "flex", flexDirection: "column", gap: 2 }}
-            >
-              {renderSelect(
-                "ghi-repo",
-                "Choose repository (only for cloud cases)",
-                repo,
-                setRepo,
-                REPO_OPTIONS,
-              )}
-            </AccordionDetails>
-          </Accordion>
+          {showRepoField &&
+            renderSelect(
+              "ghi-repo",
+              "Choose repository",
+              repo,
+              setRepo,
+              REPO_OPTIONS,
+            )}
         </Box>
       </DialogContent>
       <DialogActions>
