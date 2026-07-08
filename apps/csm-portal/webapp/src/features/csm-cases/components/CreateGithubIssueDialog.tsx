@@ -15,6 +15,9 @@
 // under the License.
 
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Box,
   Button,
   Dialog,
@@ -28,6 +31,7 @@ import {
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
+import { ChevronDown } from "@wso2/oxygen-ui-icons-react";
 import { useState, type JSX } from "react";
 import type { BeCreateCaseGithubIssuePayload } from "@api/backend/types";
 
@@ -119,6 +123,14 @@ export function CreateGithubIssueDialog({
   const [repo, setRepo] = useState<string>(UNSET);
   const [hotFix, setHotFix] = useState<string>(UNSET);
   const [regression, setRegression] = useState<string>(UNSET);
+  // Set once the user clicks "Create issue" on the form; holds the built
+  // payload until they confirm on the follow-up step below. Filing this issue
+  // is a real, permanent write to an external GitHub repo with no delete —
+  // unlike the rest of this form's state, it can't just be reopened and
+  // corrected, so it gets an explicit confirm step like the case's other
+  // hard-to-undo actions (see CaseActionBar's TARGET_CONFIG.confirm).
+  const [confirmPayload, setConfirmPayload] =
+    useState<BeCreateCaseGithubIssuePayload | null>(null);
 
   const resetAndClose = () => {
     setTitle(defaultTitle ?? "");
@@ -130,6 +142,7 @@ export function CreateGithubIssueDialog({
     setRepo(UNSET);
     setHotFix(UNSET);
     setRegression(UNSET);
+    setConfirmPayload(null);
     onClose();
   };
 
@@ -154,8 +167,10 @@ export function CreateGithubIssueDialog({
     if (hotFix === "yes") payload.hotFixRequired = true;
     if (regression === "yes") payload.regression = true;
 
-    onSubmit(payload);
+    setConfirmPayload(payload);
   };
+
+  const repoLabel = REPO_OPTIONS.find((o) => o.value === repo)?.label;
 
   // Shared renderer for a "-- Select --" dropdown.
   const renderSelect = (
@@ -224,40 +239,55 @@ export function CreateGithubIssueDialog({
             helperText="Case number, product and reporter are appended to the issue body automatically."
           />
 
-          <TextField
-            label="Update Level"
-            value={updateLevel}
-            onChange={(e) => setUpdateLevel(e.target.value)}
-            disabled={submitting}
-            size="small"
-            fullWidth
-          />
+          {/* Everything below is optional; collapsed by default so the form
+              reads as "2 required fields" rather than 9 identically-weighted
+              ones. Defaults to closed even when a field inside has a value
+              (e.g. a prefilled Update Level) — reopening it is one click. */}
+          <Accordion disableGutters sx={{ "&:before": { display: "none" } }}>
+            <AccordionSummary expandIcon={<ChevronDown size={16} />}>
+              <Typography variant="body2" color="text.secondary">
+                More options (optional)
+              </Typography>
+            </AccordionSummary>
+            <AccordionDetails
+              sx={{ display: "flex", flexDirection: "column", gap: 2 }}
+            >
+              <TextField
+                label="Update Level"
+                value={updateLevel}
+                onChange={(e) => setUpdateLevel(e.target.value)}
+                disabled={submitting}
+                size="small"
+                fullWidth
+              />
 
-          <TextField
-            label="Public Git Issue or Security Internal JIRA"
-            value={publicIssueUrl}
-            onChange={(e) => setPublicIssueUrl(e.target.value)}
-            disabled={submitting}
-            size="small"
-            fullWidth
-            placeholder="https://github.com/… or JIRA link"
-          />
+              <TextField
+                label="Public Git Issue or Security Internal JIRA"
+                value={publicIssueUrl}
+                onChange={(e) => setPublicIssueUrl(e.target.value)}
+                disabled={submitting}
+                size="small"
+                fullWidth
+                placeholder="https://github.com/… or JIRA link"
+              />
 
-          {renderSelect("ghi-type", "Type", issueTypeLabel, setIssueTypeLabel, TYPE_OPTIONS)}
+              {renderSelect("ghi-type", "Type", issueTypeLabel, setIssueTypeLabel, TYPE_OPTIONS)}
 
-          {renderSelect("ghi-severity", "Severity", priorityLevel, setPriorityLevel, SEVERITY_OPTIONS)}
+              {renderSelect("ghi-severity", "Severity", priorityLevel, setPriorityLevel, SEVERITY_OPTIONS)}
 
-          {renderSelect(
-            "ghi-repo",
-            "Choose repository (only for cloud cases)",
-            repo,
-            setRepo,
-            REPO_OPTIONS,
-          )}
+              {renderSelect(
+                "ghi-repo",
+                "Choose repository (only for cloud cases)",
+                repo,
+                setRepo,
+                REPO_OPTIONS,
+              )}
 
-          {renderSelect("ghi-hotfix", "Hotfix Required", hotFix, setHotFix, YES_NO_OPTIONS)}
+              {renderSelect("ghi-hotfix", "Hotfix Required", hotFix, setHotFix, YES_NO_OPTIONS)}
 
-          {renderSelect("ghi-regression", "Regression", regression, setRegression, YES_NO_OPTIONS)}
+              {renderSelect("ghi-regression", "Regression", regression, setRegression, YES_NO_OPTIONS)}
+            </AccordionDetails>
+          </Accordion>
         </Box>
       </DialogContent>
       <DialogActions>
@@ -273,6 +303,52 @@ export function CreateGithubIssueDialog({
           Create issue
         </Button>
       </DialogActions>
+
+      {/* Filing a GitHub issue is a real, permanent write to an external repo
+          with no delete on either side (see useCsmCaseGithubIssue.ts) — the
+          one action in this dialog that can't be undone by just editing the
+          form again, so it gets its own explicit confirm step. */}
+      <Dialog
+        open={!!confirmPayload}
+        onClose={() => setConfirmPayload(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>File this GitHub issue?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            This creates a real, permanent issue in{" "}
+            {repoLabel
+              ? `wso2-enterprise/${repo} (${repoLabel})`
+              : "a WSO2 product repository, routed automatically by the case's product"}
+            . It can't be deleted from here afterward.
+          </Typography>
+          {/* Errors surface here too, not just on the form step behind this
+              dialog — otherwise a failed submit leaves the user looking at
+              this confirm step with no visible reason why it stopped. */}
+          {error && (
+            <Typography variant="body2" color="error" sx={{ mt: 1.5 }}>
+              {error}
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmPayload(null)} disabled={submitting}>
+            Back
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            disabled={submitting}
+            loading={submitting}
+            onClick={() => {
+              if (confirmPayload) onSubmit(confirmPayload);
+            }}
+          >
+            File issue
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Dialog>
   );
 }
