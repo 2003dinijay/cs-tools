@@ -19,7 +19,8 @@ import relativeTime from "dayjs/plugin/relativeTime";
 
 dayjs.extend(relativeTime);
 
-export const formatDate = (date: Date): string => dayjs(date).format("MMM D, YYYY h:mm A");
+export const formatDate = (date: Date): string =>
+  Number.isNaN(date.getTime()) ? "—" : dayjs(date).format("MMM D, YYYY h:mm A");
 
 // dayjs renders an Invalid Date as "a month ago" rather than erroring, which silently masks
 // unparseable timestamps as a plausible-looking value instead of surfacing the bug.

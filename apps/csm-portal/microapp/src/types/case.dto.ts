@@ -111,8 +111,8 @@ export interface CaseSearchViewDto {
   state: CaseState;
   workState: CaseWorkState;
   type: string;
-  createdOn: string;
-  updatedOn: string;
+  createdOn?: string;
+  updatedOn?: string;
   closedOn: string | null;
   createdBy: UserIdEmailRefDto;
   project: EntityRefDto;
@@ -145,8 +145,8 @@ export interface CaseViewDto {
   workState: CaseWorkState;
   type: string | null;
   engagementType: string | null;
-  createdOn: string;
-  updatedOn: string;
+  createdOn?: string;
+  updatedOn?: string;
   closedOn: string | null;
   createdBy: UserRefDto;
   project: EntityRefDto;

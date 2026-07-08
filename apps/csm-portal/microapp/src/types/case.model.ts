@@ -102,8 +102,10 @@ export function toCaseSummary(dto: CaseSearchViewDto): CaseSummary {
     state: dto.state,
     workState: dto.workState,
     type: dto.type as CaseType,
-    createdOn: parseBackendTimestamp(dto.createdOn),
-    updatedOn: parseBackendTimestamp(dto.updatedOn),
+    // The search/detail views don't always populate updatedOn (e.g. a case that hasn't been
+    // touched since creation); fall back to createdOn rather than showing an invalid time.
+    createdOn: parseBackendTimestamp(dto.createdOn ?? ""),
+    updatedOn: parseBackendTimestamp(dto.updatedOn ?? dto.createdOn ?? ""),
     closedOn: parseOptionalBackendTimestamp(dto.closedOn),
     createdBy: dto.createdBy,
     project: dto.project,
@@ -128,8 +130,10 @@ export function toCaseDetail(dto: CaseViewDto): CaseDetail {
     workState: dto.workState,
     type: dto.type as CaseType | null,
     engagementType: dto.engagementType,
-    createdOn: parseBackendTimestamp(dto.createdOn),
-    updatedOn: parseBackendTimestamp(dto.updatedOn),
+    // The search/detail views don't always populate updatedOn (e.g. a case that hasn't been
+    // touched since creation); fall back to createdOn rather than showing an invalid time.
+    createdOn: parseBackendTimestamp(dto.createdOn ?? ""),
+    updatedOn: parseBackendTimestamp(dto.updatedOn ?? dto.createdOn ?? ""),
     closedOn: parseOptionalBackendTimestamp(dto.closedOn),
     createdBy: dto.createdBy,
     project: dto.project,
