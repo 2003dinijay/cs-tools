@@ -933,7 +933,6 @@ public type SubmittedFeedback record {|
     string createdBy;
     # Created date and time
     string createdOn;
-    json...;
 |};
 
 # Response from submitting case feedback.
