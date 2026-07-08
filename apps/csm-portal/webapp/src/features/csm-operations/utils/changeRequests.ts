@@ -22,6 +22,9 @@ import type {
 type ChipColor = "default" | "info" | "warning" | "success" | "error";
 
 const STATE_LABEL: Record<BeChangeRequestState, string> = {
+  new: "New",
+  assess: "Assess",
+  authorize: "Authorize",
   customer_approval: "Customer Approval",
   scheduled: "Scheduled",
   implement: "Implement",
@@ -35,6 +38,9 @@ const STATE_LABEL: Record<BeChangeRequestState, string> = {
 // State chip colour: approvals/reviews are in-flight (info), implement is active
 // (warning), rollback/cancel are problem states (error), closed is terminal-good.
 const STATE_COLOR: Record<BeChangeRequestState, ChipColor> = {
+  new: "default",
+  assess: "info",
+  authorize: "info",
   customer_approval: "info",
   scheduled: "info",
   implement: "warning",

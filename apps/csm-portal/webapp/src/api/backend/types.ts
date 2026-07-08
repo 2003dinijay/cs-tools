@@ -1215,6 +1215,9 @@ export interface BeUpdateCallRequestResponse {
 // ---------------------------------------------------------------------------
 
 export type BeChangeRequestState =
+  | "new"
+  | "assess"
+  | "authorize"
   | "customer_approval"
   | "scheduled"
   | "implement"
@@ -1295,10 +1298,11 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
  * `POST /change-requests` body (ServiceNow data source only). `subject` is
  * the only required field; every ID field (`serviceId`, `serviceOfferingId`,
  * `configurationItemId`, `groupId`, `assignedEngineerId`, `requestedById`)
- * is a portal UUID, converted to a ServiceNow sysid server-side — the BE has
- * no lookup/search endpoint for any of them, so the form collects them as
- * plain text. `state` is deliberately not exposed: the BE defaults it and a
- * create form has no business picking an arbitrary starting workflow state.
+ * is a portal UUID, converted to a ServiceNow sysid server-side, resolved via
+ * the matching `/*\/search` endpoint (see `AsyncEntitySelect` usages in
+ * `CreateChangeRequestPage.tsx`). `state` accepts any of the full set the BE
+ * validates against (see `snCRCreateStateIDMap` in the entity service) — the
+ * create form defaults it to "new" but leaves it editable.
  * `plannedStartDate`/`plannedEndDate` are `YYYY-MM-DD HH:MM:SS` strings.
  */
 export interface BeCreateChangeRequestPayload {
@@ -1310,6 +1314,7 @@ export interface BeCreateChangeRequestPayload {
   priority?: BeChangeRequestPriority;
   impact?: BeChangeRequestImpact;
   type?: BeChangeRequestType;
+  state?: BeChangeRequestState;
   groupId?: string;
   assignedEngineerId?: string;
   risk?: BeChangeRequestRisk;
@@ -1335,6 +1340,90 @@ export interface BeCreateChangeRequestResponse {
     createdOn: string;
     createdBy: string;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Change-request reference lookups (ServiceNow CMDB — groups, IT services,
+// service offerings, configuration items). Each search response carries no
+// `hasMore` (same as change requests), so these don't extend
+// BeSearchResponseBase.
+// ---------------------------------------------------------------------------
+
+export interface BeGroup {
+  id: string;
+  name: string;
+  active: boolean;
+  parent?: BeEntityRef | null;
+}
+
+export interface BeGroupSearchPayload {
+  filters?: { searchQuery?: string };
+  pagination: BePagination;
+}
+
+export interface BeGroupSearchResponse {
+  groups: BeGroup[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BeItService {
+  id: string;
+  name?: string | null;
+  class?: string | null;
+  businessCriticality?: string | null;
+  serviceClassification?: string | null;
+}
+
+export interface BeItServiceSearchPayload {
+  filters?: { searchQuery?: string };
+  pagination: BePagination;
+}
+
+export interface BeItServiceSearchResponse {
+  services: BeItService[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BeServiceOffering {
+  id: string;
+  name: string;
+  service?: BeEntityRef | null;
+}
+
+export interface BeServiceOfferingSearchPayload {
+  /** Narrow to offerings under a specific service (its portal UUID). */
+  filters?: { serviceIds?: string[]; searchQuery?: string };
+  pagination: BePagination;
+}
+
+export interface BeServiceOfferingSearchResponse {
+  serviceOfferings: BeServiceOffering[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BeConfigurationItem {
+  id: string;
+  name?: string | null;
+  description?: string | null;
+  class?: string | null;
+}
+
+export interface BeConfigurationItemSearchPayload {
+  filters?: { searchQuery?: string };
+  pagination: BePagination;
+}
+
+export interface BeConfigurationItemSearchResponse {
+  configurationItems: BeConfigurationItem[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 /**

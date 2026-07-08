@@ -29,18 +29,32 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { ArrowLeft, ChevronDown } from "@wso2/oxygen-ui-icons-react";
-import { useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import { useNavigate } from "react-router";
 import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { usePostChangeRequest } from "@features/csm-operations/api/usePostChangeRequest";
+import { useGetUsersMe } from "@features/settings/api/useGetUsersMe";
+import { useSearchGroups } from "@api/useSearchGroups";
+import { useSearchItServices } from "@api/useSearchItServices";
+import { useSearchServiceOfferings } from "@api/useSearchServiceOfferings";
+import { useSearchConfigurationItems } from "@api/useSearchConfigurationItems";
+import { useSearchUsersByName } from "@api/useSearchUsersByName";
+import AsyncEntitySelect from "@components/AsyncEntitySelect";
+import { CHANGE_REQUEST_STATES, changeRequestStateLabel } from "@features/csm-operations/utils/changeRequests";
 import type {
   BeChangeRequestCategory,
   BeChangeRequestImpact,
   BeChangeRequestPriority,
   BeChangeRequestRisk,
+  BeChangeRequestState,
   BeChangeRequestType,
   BeCreateChangeRequestPayload,
+  BeConfigurationItem,
+  BeGroup,
+  BeItService,
+  BeServiceOffering,
+  BeUser,
 } from "@api/backend/types";
 
 const UNSET = "";
@@ -97,6 +111,25 @@ const RISK_OPTIONS: Array<{ value: BeChangeRequestRisk; label: string }> = [
   { value: "low", label: "Low" },
 ];
 
+// Reuses the same state list/labels the change-request list and detail pages
+// already show, so "New" here reads the same way it will once the record is
+// searchable. Defaults to "new" — the state SN itself defaults a fresh change
+// request to — rather than leaving it unset.
+const STATE_OPTIONS: Array<{ value: BeChangeRequestState; label: string }> =
+  CHANGE_REQUEST_STATES.map((s) => ({ value: s, label: changeRequestStateLabel(s) }));
+
+function userLabel(u: BeUser): string {
+  return [u.firstName, u.lastName].filter(Boolean).join(" ").trim() || u.email || u.id || "";
+}
+
+function itServiceLabel(s: BeItService): string {
+  return s.name ?? s.id;
+}
+
+function configurationItemLabel(ci: BeConfigurationItem): string {
+  return ci.name ?? ci.id;
+}
+
 /** `datetime-local` input value ("YYYY-MM-DDTHH:MM") to the BE's expected
  * "YYYY-MM-DD HH:MM:SS" string. */
 function toBackendDateTime(localValue: string): string {
@@ -126,6 +159,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const [impact, setImpact] = useState<string>("low");
   const [priority, setPriority] = useState<string>(UNSET);
   const [risk, setRisk] = useState<string>("moderate");
+  const [state, setState] = useState<string>("new");
   const [plannedStartDate, setPlannedStartDate] = useState("");
   const [plannedEndDate, setPlannedEndDate] = useState("");
   const [description, setDescription] = useState("");
@@ -143,6 +177,23 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const [comment, setComment] = useState("");
   const [workNote, setWorkNote] = useState("");
 
+  // Defaults "Requested by" to the signed-in user, matching the legacy
+  // ServiceNow form's own behaviour (usePostChangeRequest.ts/BE doesn't do
+  // this itself — see BeCreateChangeRequestPayload's doc comment). Fires
+  // once, when the current user's id first loads; a ref (not the field's own
+  // emptiness) gates it so manually clearing the field afterward sticks.
+  const { data: me } = useGetUsersMe();
+  const meLabel = me
+    ? [me.firstName, me.lastName].filter(Boolean).join(" ").trim() || me.email
+    : undefined;
+  const autoFilledRequester = useRef(false);
+  useEffect(() => {
+    if (me?.id && !autoFilledRequester.current) {
+      autoFilledRequester.current = true;
+      setRequestedById(me.id);
+    }
+  }, [me?.id]);
+
   const canSubmit = subject.trim().length > 0 && !postChangeRequest.isPending;
 
   const handleSubmit = (): void => {
@@ -154,6 +205,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
     if (impact) payload.impact = impact as BeChangeRequestImpact;
     if (priority) payload.priority = priority as BeChangeRequestPriority;
     if (risk) payload.risk = risk as BeChangeRequestRisk;
+    if (state) payload.state = state as BeChangeRequestState;
     if (plannedStartDate) payload.plannedStartDate = toBackendDateTime(plannedStartDate);
     if (plannedEndDate) payload.plannedEndDate = toBackendDateTime(plannedEndDate);
     if (description.trim()) payload.description = description.trim();
@@ -285,6 +337,9 @@ export default function CreateChangeRequestPage(): JSX.Element {
             <Box sx={{ flex: "1 1 200px" }}>
               {renderSelect("cr-risk", "Risk", risk, setRisk, RISK_OPTIONS)}
             </Box>
+            <Box sx={{ flex: "1 1 200px" }}>
+              {renderSelect("cr-state", "State", state, setState, STATE_OPTIONS)}
+            </Box>
           </Box>
 
           <Typography variant="subtitle2" sx={{ mt: 1 }}>
@@ -374,69 +429,94 @@ export default function CreateChangeRequestPage(): JSX.Element {
                 helperText="Internal only — never shown to the customer."
               />
 
-              {/* No lookup/search UI exists for these ServiceNow CMDB
-                  references yet, so they're plain UUID text inputs — the
-                  backend validates the format and rejects an invalid one. */}
-              <Typography variant="caption" color="text.secondary">
-                The fields below take a ServiceNow record's UUID directly —
-                there's no picker for these yet.
-              </Typography>
               <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
-                <TextField
-                  label="Service ID"
-                  value={serviceId}
-                  onChange={(e) => setServiceId(e.target.value)}
-                  disabled={postChangeRequest.isPending}
-                  size="small"
-                  sx={{ flex: "1 1 220px" }}
-                  placeholder="UUID"
-                />
-                <TextField
-                  label="Service offering ID"
-                  value={serviceOfferingId}
-                  onChange={(e) => setServiceOfferingId(e.target.value)}
-                  disabled={postChangeRequest.isPending}
-                  size="small"
-                  sx={{ flex: "1 1 220px" }}
-                  placeholder="UUID"
-                />
-                <TextField
-                  label="Configuration item ID"
-                  value={configurationItemId}
-                  onChange={(e) => setConfigurationItemId(e.target.value)}
-                  disabled={postChangeRequest.isPending}
-                  size="small"
-                  sx={{ flex: "1 1 220px" }}
-                  placeholder="UUID"
-                />
-                <TextField
-                  label="Group ID"
-                  value={groupId}
-                  onChange={(e) => setGroupId(e.target.value)}
-                  disabled={postChangeRequest.isPending}
-                  size="small"
-                  sx={{ flex: "1 1 220px" }}
-                  placeholder="UUID"
-                />
-                <TextField
-                  label="Assigned engineer ID"
-                  value={assignedEngineerId}
-                  onChange={(e) => setAssignedEngineerId(e.target.value)}
-                  disabled={postChangeRequest.isPending}
-                  size="small"
-                  sx={{ flex: "1 1 220px" }}
-                  placeholder="UUID"
-                />
-                <TextField
-                  label="Requested by ID"
-                  value={requestedById}
-                  onChange={(e) => setRequestedById(e.target.value)}
-                  disabled={postChangeRequest.isPending}
-                  size="small"
-                  sx={{ flex: "1 1 220px" }}
-                  placeholder="UUID"
-                  helperText="Left blank, ServiceNow records no requester — unlike the old form, this doesn't default to you."
-                />
+                <Box sx={{ flex: "1 1 220px" }}>
+                  <AsyncEntitySelect<BeItService>
+                    id="cr-service"
+                    label="Service"
+                    placeholder="Search services…"
+                    value={serviceId}
+                    onChange={(next) => {
+                      setServiceId(next);
+                      // A service offering only makes sense under its own
+                      // service — drop it rather than leave a stale pairing.
+                      setServiceOfferingId("");
+                    }}
+                    disabled={postChangeRequest.isPending}
+                    useSearch={useSearchItServices}
+                    getId={(s) => s.id}
+                    getLabel={itServiceLabel}
+                  />
+                </Box>
+                <Box sx={{ flex: "1 1 220px" }}>
+                  <AsyncEntitySelect<BeServiceOffering>
+                    id="cr-service-offering"
+                    label="Service offering"
+                    placeholder="Search service offerings…"
+                    value={serviceOfferingId}
+                    onChange={setServiceOfferingId}
+                    disabled={postChangeRequest.isPending}
+                    useSearch={useSearchServiceOfferings}
+                    searchExtra={serviceId || undefined}
+                    getId={(o) => o.id}
+                    getLabel={(o) => o.name}
+                    helperText={serviceId ? undefined : "Narrows to a Service once one is picked."}
+                  />
+                </Box>
+                <Box sx={{ flex: "1 1 220px" }}>
+                  <AsyncEntitySelect<BeConfigurationItem>
+                    id="cr-configuration-item"
+                    label="Configuration item"
+                    placeholder="Search configuration items…"
+                    value={configurationItemId}
+                    onChange={setConfigurationItemId}
+                    disabled={postChangeRequest.isPending}
+                    useSearch={useSearchConfigurationItems}
+                    getId={(ci) => ci.id}
+                    getLabel={configurationItemLabel}
+                  />
+                </Box>
+                <Box sx={{ flex: "1 1 220px" }}>
+                  <AsyncEntitySelect<BeGroup>
+                    id="cr-group"
+                    label="Assignment group"
+                    placeholder="Search groups…"
+                    value={groupId}
+                    onChange={setGroupId}
+                    disabled={postChangeRequest.isPending}
+                    useSearch={useSearchGroups}
+                    getId={(g) => g.id}
+                    getLabel={(g) => g.name}
+                  />
+                </Box>
+                <Box sx={{ flex: "1 1 220px" }}>
+                  <AsyncEntitySelect<BeUser>
+                    id="cr-assigned-engineer"
+                    label="Assigned to"
+                    placeholder="Search people…"
+                    value={assignedEngineerId}
+                    onChange={setAssignedEngineerId}
+                    disabled={postChangeRequest.isPending}
+                    useSearch={useSearchUsersByName}
+                    getId={(u) => u.id ?? ""}
+                    getLabel={userLabel}
+                  />
+                </Box>
+                <Box sx={{ flex: "1 1 220px" }}>
+                  <AsyncEntitySelect<BeUser>
+                    id="cr-requested-by"
+                    label="Requested by"
+                    placeholder="Search people…"
+                    value={requestedById}
+                    onChange={setRequestedById}
+                    disabled={postChangeRequest.isPending}
+                    useSearch={useSearchUsersByName}
+                    getId={(u) => u.id ?? ""}
+                    getLabel={userLabel}
+                    knownLabel={meLabel}
+                    helperText="Defaults to you — clear it if this wasn't your request."
+                  />
+                </Box>
               </Box>
             </AccordionDetails>
           </Accordion>
