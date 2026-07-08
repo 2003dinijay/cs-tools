@@ -34,7 +34,6 @@ public type FeedbackEmojiChip record {|
     string name;
     # Value
     string value;
-    json...;
 |};
 
 # Feedback emoji information.
