@@ -216,6 +216,7 @@ interface SecondaryItem {
  *   - Request a call                 → ISSU-008 (opens the Call requests tab's create dialog)
  *   - Log time                       → ISSU-017
  *   - Copy case link                 → ISSU-010 (per-comment + per-case permalinks)
+ *   - Create related case            → ISSU-004 (closed-case replacement for reopen; backend-gated)
  *
  * Intentionally NOT here:
  *   - Watch / unwatch  → withdrawn along with the Watchers widget (ISSU-018), no backend flow planned yet
@@ -276,12 +277,29 @@ function buildSecondaryItems(caseDetail: CsmCaseDetail): SecondaryItem[] {
       ? [{ key: "hold_auto_close", label: "Hold auto-closure…", icon: <PauseCircle size={16} />, divider: true }]
       : []),
     { key: "create_incident", label: "Create incident from case…", icon: <AlertTriangle size={16} />, disabled: true },
-    { key: "link_incident", label: "Link to incident…", icon: <LinkIcon size={16} />, divider: true, disabled: true },
+    { key: "link_incident", label: "Link to incident…", icon: <LinkIcon size={16} />, disabled: true },
     { key: "create_task", label: "Create task…", icon: <ListChecks size={16} />, divider: true, disabled: true },
     { key: "request_call", label: "Request a call…", icon: <Phone size={16} /> },
     { key: "log_time", label: "Log time…", icon: <Clock size={16} />, divider: true },
     { key: "copy_link", label: "Copy case link", icon: <Copy size={16} /> },
   );
+
+  // Offered as the closed-case replacement for reopening a case (the backing
+  // data source has no outbound transition from closed — see nextStates).
+  // Gated entirely on the backend-computed `canCreateRelatedCase`: the data
+  // source only accepts a related-case link within 60 days of closing, and
+  // that eligibility is derived server-side, never recomputed on the FE.
+  if (caseDetail.state === "closed") {
+    items.push({
+      key: "create_related_case",
+      label: "Create related case…",
+      icon: <ArrowRight size={16} />,
+      disabled: !caseDetail.canCreateRelatedCase,
+      tooltip: caseDetail.canCreateRelatedCase
+        ? undefined
+        : "Related cases can be created within 60 days after a case is closed.",
+    });
+  }
 
   return items;
 }

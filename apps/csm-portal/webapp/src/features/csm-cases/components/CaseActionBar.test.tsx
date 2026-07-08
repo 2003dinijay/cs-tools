@@ -279,3 +279,52 @@ describe("CaseActionBar — reassign gating for WIP-Ongoing", () => {
     expect(onAction).toHaveBeenCalledWith({ secondary: "reassign_engineer" });
   });
 });
+
+describe("CaseActionBar — create related case (closed-case reopen replacement)", () => {
+  /** Open the "More" overflow and return the create-related-case menu item. */
+  function openRelatedCaseItem(): HTMLElement {
+    fireEvent.click(screen.getByRole("button", { name: /more/i }));
+    return screen.getByRole("menuitem", { name: /create related case/i });
+  }
+
+  it("is not offered on a non-closed case", () => {
+    render(
+      <CaseActionBar
+        caseDetail={caseInState("work_in_progress", ["solution_proposed"])}
+        onAction={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /more/i }));
+    expect(
+      screen.queryByRole("menuitem", { name: /create related case/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("is disabled on a closed case the backend has not flagged as eligible", () => {
+    const onAction = vi.fn();
+    render(
+      <CaseActionBar
+        caseDetail={{ ...caseInState("closed", []), canCreateRelatedCase: false }}
+        onAction={onAction}
+      />,
+    );
+    const item = openRelatedCaseItem();
+    expect(item).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(item);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it("is enabled and dispatches when the backend flags the case eligible", () => {
+    const onAction = vi.fn();
+    render(
+      <CaseActionBar
+        caseDetail={{ ...caseInState("closed", []), canCreateRelatedCase: true }}
+        onAction={onAction}
+      />,
+    );
+    const item = openRelatedCaseItem();
+    expect(item).not.toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(item);
+    expect(onAction).toHaveBeenCalledWith({ secondary: "create_related_case" });
+  });
+});

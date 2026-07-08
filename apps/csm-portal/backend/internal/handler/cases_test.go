@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 )
@@ -1076,6 +1077,46 @@ func TestGetCase(t *testing.T) {
 					if got != tc.wantNext[i] {
 						t.Errorf("nextStates[%d] = %v, want %v", i, got, tc.wantNext[i])
 					}
+				}
+			})
+		}
+	})
+
+	t.Run("canCreateRelatedCase reflects state and closedOn window", func(t *testing.T) {
+		type getCaseRelatedResp struct {
+			CanCreateRelatedCase bool `json:"canCreateRelatedCase"`
+		}
+		recentClosed := time.Now().Add(-10 * 24 * time.Hour).Format(time.RFC3339)
+		oldClosed := time.Now().Add(-90 * 24 * time.Hour).Format(time.RFC3339)
+		cases := []struct {
+			name     string
+			body     string
+			wantTrue bool
+		}{
+			{"closed case within the 60-day window", `{"id":"` + testCaseID + `","type":"case","state":"closed","closedOn":"` + recentClosed + `"}`, true},
+			{"closed case outside the 60-day window", `{"id":"` + testCaseID + `","type":"case","state":"closed","closedOn":"` + oldClosed + `"}`, false},
+			{"closed case with no closedOn", `{"id":"` + testCaseID + `","type":"case","state":"closed"}`, false},
+			{"open case with a closedOn value", `{"id":"` + testCaseID + `","type":"case","state":"open","closedOn":"` + recentClosed + `"}`, false},
+			{"closed service_request within the window", `{"id":"` + testCaseID + `","type":"service_request","state":"closed","closedOn":"` + recentClosed + `"}`, false},
+			{"closed case with no type set", `{"id":"` + testCaseID + `","state":"closed","closedOn":"` + recentClosed + `"}`, false},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				client := &mockEntityCaseClient{
+					getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+						return []byte(tc.body), nil
+					},
+				}
+				h := NewCaseHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodGet, "/cases/"+testCaseID, nil))
+				r.SetPathValue("id", testCaseID)
+				w := httptest.NewRecorder()
+				h.GetCase(w, r)
+				assertStatus(t, w, http.StatusOK)
+				resp := decodeJSON[getCaseRelatedResp](t, w)
+				if resp.CanCreateRelatedCase != tc.wantTrue {
+					t.Errorf("canCreateRelatedCase = %v, want %v", resp.CanCreateRelatedCase, tc.wantTrue)
 				}
 			})
 		}

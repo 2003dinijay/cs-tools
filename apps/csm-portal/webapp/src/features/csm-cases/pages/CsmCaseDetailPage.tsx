@@ -35,6 +35,7 @@ import {
   ArrowLeft,
   Clock,
   Layers,
+  Link as LinkIcon,
   ListChecks,
   MessageSquarePlus,
   Paperclip,
@@ -688,6 +689,18 @@ export default function CsmCaseDetailPage(): JSX.Element {
         return;
       }
 
+      // ISSU-004: replaces reopening a closed case (the data source has no
+      // outbound transition from closed). The action bar only offers this
+      // when the backend's `canCreateRelatedCase` says the case is still
+      // within its 60-day window, so no eligibility check is needed here.
+      if (action.secondary === "create_related_case") {
+        if (!data) return;
+        const params = new URLSearchParams({ projectId: data.projectId, relatedCaseId: data.id });
+        if (data.caseNumber) params.set("relatedCaseNumber", data.caseNumber);
+        navigate(`/cases/new?${params.toString()}`);
+        return;
+      }
+
       setFeedback({
         message: SECONDARY_TOAST[action.secondary] ?? `Action: ${action.secondary}`,
         severity: "info",
@@ -703,6 +716,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
       startWork,
       resolveOngoingConflict,
       currentUserEmail,
+      navigate,
     ],
   );
 
@@ -983,6 +997,17 @@ export default function CsmCaseDetailPage(): JSX.Element {
             )}
             <SeverityChip severity={c.severity} withLabel />
             <StateChip state={c.state} />
+            {c.relatedCase && (
+              <Chip
+                size="small"
+                variant="outlined"
+                clickable
+                icon={<LinkIcon size={14} />}
+                label={`Related: ${c.relatedCase.caseNumber ?? c.relatedCase.id}`}
+                onClick={() => navigate(`/cases/${c.relatedCase!.id}`)}
+                sx={{ fontWeight: 600 }}
+              />
+            )}
             {c.state === "work_in_progress" && c.workState && (
               <Chip
                 size="small"

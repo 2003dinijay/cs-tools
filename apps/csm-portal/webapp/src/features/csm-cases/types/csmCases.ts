@@ -352,6 +352,13 @@ export interface CsmCaseDetail extends CsmCaseRow {
   conversationId?: string;
   /** States this case may transition into next, per the backend. */
   nextStates?: CaseState[];
+  /**
+   * Whether a new case may be created as related to this one — backend-computed
+   * (closed + within its 60-day related-case window), never derived on the FE.
+   */
+  canCreateRelatedCase?: boolean;
+  /** The case this one was created as related to, when any. */
+  relatedCase?: { id: string; caseNumber?: string };
   /** Display name of the person who opened the case. */
   createdBy?: string;
   /** Email of the creator — used to tell a WSO2 engineer from a customer. */

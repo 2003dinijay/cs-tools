@@ -3495,6 +3495,15 @@ components:
               - reopened
               - solution_proposed
               - closed
+        canCreateRelatedCase:
+          type: boolean
+          readOnly: true
+          description: >-
+            Whether a new case may be created as related to this one. True
+            only for a standard `case`-type case that is closed and within
+            its 60-day related-case window; always false for other case
+            types and for a case outside that window, since the backing
+            data source rejects the link otherwise.
 
     CaseSearchView:
       type: object
