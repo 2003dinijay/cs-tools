@@ -2303,7 +2303,7 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
     # + id - ID of the case
     # + return - Case feedback or error response
     resource function get cases/[entity:IdString id]/feedback(http:RequestContext ctx)
-        returns types:CaseFeedback|http:Unauthorized|http:NotFound|http:InternalServerError {
+        returns types:CaseFeedback|http:Unauthorized|http:Forbidden|http:NotFound|http:InternalServerError {
 
         authorization:UserInfoPayload|error userInfo = ctx.getWithType(authorization:HEADER_USER_INFO);
         if userInfo is error {
@@ -2321,6 +2321,17 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
                 return <http:Unauthorized>{
                     body: {
                         message: ERR_MSG_UNAUTHORIZED_ACCESS
+                    }
+                };
+            }
+
+            if getStatusCode(feedbackResponse) == http:STATUS_FORBIDDEN {
+                log:printWarn(string `User: ${userInfo.userId} is forbidden to access feedback for case with ID: ${
+                        id}!`);
+                return <http:Forbidden>{
+                    body: {
+                        message: "You're not authorized to access the feedback for the requested case. " +
+                        "Please check your access permissions or contact support."
                     }
                 };
             }
