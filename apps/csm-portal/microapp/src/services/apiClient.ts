@@ -16,7 +16,7 @@
 
 import axios, { type InternalAxiosRequestConfig } from "axios";
 import { Logger } from "@utils/logger";
-import { refreshToken } from "./auth";
+import { getAccessToken, refreshToken } from "./auth";
 import { BACKEND_URL } from "@config/endpoints";
 
 // Variables/constants
@@ -57,18 +57,13 @@ apiClient.interceptors.request.use(
     }
 
     try {
-      const token = await refreshTokenPromise;
-      if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-        config.headers["x-user-id-token"] = token;
+      const idToken = await refreshTokenPromise;
+      const accessToken = getAccessToken();
+      if (idToken && accessToken) {
+        config.headers.Authorization = `Bearer ${accessToken}`;
+        config.headers["x-user-id-token"] = idToken;
         config.headers["Content-Type"] = "application/json";
         config.headers["X-CSM-Correlation-ID"] = crypto.randomUUID();
-
-        // NOTE: This header is intended for local development testing only.
-        // This manually injects the JWT assertion header and must remain disabled in production.
-        // if (import.meta.env.DEV) {
-        //   config.headers["x-jwt-assertion"] = token;
-        // }
       } else {
         Logger.warn("No token available for request");
       }
@@ -150,7 +145,8 @@ apiClient.interceptors.response.use(
 
       try {
         Logger.info("Attempting to refresh access token");
-        const newAccessToken = await refreshToken();
+        await refreshToken();
+        const newAccessToken = getAccessToken();
         apiClient.defaults.headers.common["Authorization"] = `Bearer ${newAccessToken}`;
         originalRequest.headers["Authorization"] = `Bearer ${newAccessToken}`;
         processQueue(null, newAccessToken);

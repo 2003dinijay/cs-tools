@@ -5,3 +5,7 @@ if (!BACKEND_URL) {
 }
 
 export const USERS_ME_ENDPOINT = "/users/me";
+
+export const CASES_SEARCH_ENDPOINT = "/cases/search";
+export const CASE_DETAILS_ENDPOINT = (id: string) => `/cases/${id}`;
+export const CASE_COMMENTS_SEARCH_ENDPOINT = (id: string) => `/cases/${id}/comments/search`;

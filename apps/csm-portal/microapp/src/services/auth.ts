@@ -15,6 +15,7 @@
 // under the License.
 
 import { jwtDecode } from "jwt-decode";
+
 import { getAccessTokenFromBridge, getToken } from "@components/microapp-bridge";
 import { LocalStorageKeys } from "@utils/constants";
 import { Logger } from "@utils/logger";
