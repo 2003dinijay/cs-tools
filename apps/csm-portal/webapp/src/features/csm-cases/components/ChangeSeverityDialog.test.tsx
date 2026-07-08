@@ -69,51 +69,6 @@ describe("ChangeSeverityDialog — submission gating", () => {
   });
 });
 
-describe("ChangeSeverityDialog — on-call paging warning", () => {
-  it("warns when raising from S4 (never pages) to a paging severity", () => {
-    render(
-      <ChangeSeverityDialog
-        currentSeverity="S4"
-        isManagedCloud
-        isChanging={false}
-        onClose={() => {}}
-        onChange={() => {}}
-      />,
-    );
-    expect(screen.queryByText(/may page on-call staff/i)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("radio", { name: /s1/i }));
-    expect(screen.getByText(/may page on-call staff/i)).toBeInTheDocument();
-  });
-
-  it("does not warn when moving between two severities that already page", () => {
-    render(
-      <ChangeSeverityDialog
-        currentSeverity="S1"
-        isManagedCloud
-        isChanging={false}
-        onClose={() => {}}
-        onChange={() => {}}
-      />,
-    );
-    fireEvent.click(screen.getByRole("radio", { name: /s2/i }));
-    expect(screen.queryByText(/may page on-call staff/i)).not.toBeInTheDocument();
-  });
-
-  it("does not warn when lowering to S4", () => {
-    render(
-      <ChangeSeverityDialog
-        currentSeverity="S1"
-        isManagedCloud
-        isChanging={false}
-        onClose={() => {}}
-        onChange={() => {}}
-      />,
-    );
-    fireEvent.click(screen.getByRole("radio", { name: /s4/i }));
-    expect(screen.queryByText(/may page on-call staff/i)).not.toBeInTheDocument();
-  });
-});
-
 describe("ChangeSeverityDialog — S0 is reserved for Managed Cloud", () => {
   it("disables the S0 option for a non-Managed-Cloud case", () => {
     render(

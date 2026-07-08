@@ -15,7 +15,6 @@
 // under the License.
 
 import {
-  Alert,
   Button,
   Dialog,
   DialogActions,
@@ -32,14 +31,6 @@ import type { Severity } from "@features/csm-dashboard/types/abtDashboard";
 import { SEVERITY_LABEL } from "@features/csm-dashboard/utils/abtDashboard";
 
 const SEVERITIES: Severity[] = ["S0", "S1", "S2", "S3", "S4"];
-
-/** S0-S3 are the on-call-paging severities (matches the "High Severity Case
- * Alert" threshold everywhere else in the portal this distinction shows up —
- * e.g. the E2E suite deliberately only ever creates S4 test cases to avoid
- * triggering it). S4 is the only severity that never pages anyone. */
-function pagesOnCall(severity: Severity): boolean {
-  return severity !== "S4";
-}
 
 interface ChangeSeverityDialogProps {
   currentSeverity: Severity;
@@ -59,8 +50,7 @@ interface ChangeSeverityDialogProps {
  * usePatchCsmCase.ts's own doc comment ("state transitions, priority
  * changes, ...") and CaseAuditKind's `severity_change` entry, which the
  * activity feed already knows how to render — this dialog was the only
- * missing piece. Raising to S0-S3 can page on-call staff, so that's called
- * out before confirming rather than left to be discovered after the fact.
+ * missing piece.
  */
 export default function ChangeSeverityDialog({
   currentSeverity,
@@ -72,7 +62,6 @@ export default function ChangeSeverityDialog({
   const [selected, setSelected] = useState<Severity>(currentSeverity);
 
   const changed = selected !== currentSeverity;
-  const willPage = changed && pagesOnCall(selected) && !pagesOnCall(currentSeverity);
 
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
@@ -108,12 +97,6 @@ export default function ChangeSeverityDialog({
             })}
           </RadioGroup>
         </FormControl>
-
-        {willPage && (
-          <Alert severity="warning" sx={{ mt: 1.5 }}>
-            Raising to {selected} may page on-call staff.
-          </Alert>
-        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={isChanging}>
@@ -121,7 +104,6 @@ export default function ChangeSeverityDialog({
         </Button>
         <Button
           variant="contained"
-          color={willPage ? "warning" : "primary"}
           disabled={!changed || isChanging}
           loading={isChanging}
           onClick={() => onChange(selected)}
