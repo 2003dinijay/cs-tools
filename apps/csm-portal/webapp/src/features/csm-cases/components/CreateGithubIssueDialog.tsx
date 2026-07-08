@@ -189,7 +189,7 @@ export function CreateGithubIssueDialog({
     // whenever the user picked one and let the SN side decide to apply it.
     if (priorityLevel) payload.priorityLevel = priorityLevel;
     if (repo) payload.repoOverride = { owner: REPO_OWNER, repo };
-    if (hotFix) payload.hotFixRequired = true;
+    if (showHotFix && hotFix) payload.hotFixRequired = true;
     if (regression) payload.regression = true;
 
     setConfirmPayload(payload);

@@ -136,6 +136,37 @@ describe("CreateGithubIssueDialog — per-type field rules", () => {
   });
 });
 
+describe("CreateGithubIssueDialog — stale per-type fields don't leak into the payload", () => {
+  it("drops hotFixRequired once Type is switched away from Patch after toggling it on", () => {
+    const onSubmit = vi.fn();
+    render(
+      <CreateGithubIssueDialog
+        open
+        submitting={false}
+        error={null}
+        onClose={() => {}}
+        onSubmit={onSubmit}
+      />,
+    );
+    selectType("Patch");
+    fireEvent.click(screen.getByRole("switch", { name: /hotfix required/i }));
+    // Switching away from Patch hides the control, but the toggled-on state
+    // must not still ride along in the submitted payload.
+    selectType("Query");
+    fireEvent.change(screen.getByLabelText(/subject/i), {
+      target: { value: "Token issuance is slow" },
+    });
+    fireEvent.change(screen.getByLabelText(/description/i), {
+      target: { value: "Latency spiked after the last deploy." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /create issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /file issue/i }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.not.objectContaining({ hotFixRequired: true }),
+    );
+  });
+});
+
 describe("CreateGithubIssueDialog — confirm step before filing a real issue", () => {
   // Filing an issue is a real write to an external repo with no delete on
   // either side, so it must never fire on the first click.
