@@ -36,3 +36,18 @@ export const TIMECARDS = {
   heading: "Time cards",
   tabs: { mine: "My time sheets", approvals: "Approvals" },
 } as const;
+
+//
+// Change requests are wired to the real csm-portal-backend too — POST
+// /change-requests has no delete endpoint, so anything a spec creates
+// becomes a permanent ServiceNow record. Same tagging rule as time cards.
+//
+
+export function e2eChangeRequestSubject(label: string): string {
+  return `${E2E_TAG} ${label} — ${new Date().toISOString()}`;
+}
+
+export const CHANGE_REQUEST_CREATE = {
+  path: "/operations/change-requests/new",
+  heading: "New change request",
+} as const;
