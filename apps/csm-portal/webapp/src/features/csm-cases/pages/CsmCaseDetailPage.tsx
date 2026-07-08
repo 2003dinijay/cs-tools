@@ -1385,6 +1385,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
       {severityOpen && (
         <ChangeSeverityDialog
           currentSeverity={c.severity}
+          // S0 is reserved for Managed Cloud, same rule as case creation (see
+          // CsmCaseCreatePage.tsx) — caseProject is the same project fetch
+          // already used for the Customer card above.
+          isManagedCloud={caseProject?.subscriptionType === "managed_cloud_subscription"}
           isChanging={patchCase.isPending}
           onClose={() => setSeverityOpen(false)}
           onChange={onChangeSeverity}

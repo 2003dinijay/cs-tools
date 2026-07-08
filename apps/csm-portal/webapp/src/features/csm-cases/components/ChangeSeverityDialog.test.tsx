@@ -24,6 +24,7 @@ describe("ChangeSeverityDialog — submission gating", () => {
     render(
       <ChangeSeverityDialog
         currentSeverity="S4"
+        isManagedCloud
         isChanging={false}
         onClose={() => {}}
         onChange={() => {}}
@@ -39,6 +40,7 @@ describe("ChangeSeverityDialog — submission gating", () => {
     render(
       <ChangeSeverityDialog
         currentSeverity="S4"
+        isManagedCloud
         isChanging={false}
         onClose={() => {}}
         onChange={onChange}
@@ -55,6 +57,7 @@ describe("ChangeSeverityDialog — submission gating", () => {
     render(
       <ChangeSeverityDialog
         currentSeverity="S4"
+        isManagedCloud
         isChanging={false}
         onClose={onClose}
         onChange={onChange}
@@ -71,6 +74,7 @@ describe("ChangeSeverityDialog — on-call paging warning", () => {
     render(
       <ChangeSeverityDialog
         currentSeverity="S4"
+        isManagedCloud
         isChanging={false}
         onClose={() => {}}
         onChange={() => {}}
@@ -85,6 +89,7 @@ describe("ChangeSeverityDialog — on-call paging warning", () => {
     render(
       <ChangeSeverityDialog
         currentSeverity="S1"
+        isManagedCloud
         isChanging={false}
         onClose={() => {}}
         onChange={() => {}}
@@ -98,6 +103,7 @@ describe("ChangeSeverityDialog — on-call paging warning", () => {
     render(
       <ChangeSeverityDialog
         currentSeverity="S1"
+        isManagedCloud
         isChanging={false}
         onClose={() => {}}
         onChange={() => {}}
@@ -105,5 +111,38 @@ describe("ChangeSeverityDialog — on-call paging warning", () => {
     );
     fireEvent.click(screen.getByRole("radio", { name: /s4/i }));
     expect(screen.queryByText(/may page on-call staff/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("ChangeSeverityDialog — S0 is reserved for Managed Cloud", () => {
+  it("disables the S0 option for a non-Managed-Cloud case", () => {
+    render(
+      <ChangeSeverityDialog
+        currentSeverity="S4"
+        isManagedCloud={false}
+        isChanging={false}
+        onClose={() => {}}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByRole("radio", { name: /s0/i })).toBeDisabled();
+  });
+
+  it("allows picking S0 for a Managed Cloud case", () => {
+    const onChange = vi.fn();
+    render(
+      <ChangeSeverityDialog
+        currentSeverity="S4"
+        isManagedCloud
+        isChanging={false}
+        onClose={() => {}}
+        onChange={onChange}
+      />,
+    );
+    const s0 = screen.getByRole("radio", { name: /s0/i });
+    expect(s0).toBeEnabled();
+    fireEvent.click(s0);
+    fireEvent.click(screen.getByRole("button", { name: /change severity/i }));
+    expect(onChange).toHaveBeenCalledWith("S0");
   });
 });

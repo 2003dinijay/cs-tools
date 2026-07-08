@@ -43,6 +43,9 @@ function pagesOnCall(severity: Severity): boolean {
 
 interface ChangeSeverityDialogProps {
   currentSeverity: Severity;
+  /** True when the case's project is a Managed Cloud subscription — S0 is
+   * reserved for those, same rule as case creation (see CsmCaseCreatePage.tsx). */
+  isManagedCloud: boolean;
   /** True while a PATCH is in flight; disables the actions. */
   isChanging: boolean;
   onClose: () => void;
@@ -61,6 +64,7 @@ interface ChangeSeverityDialogProps {
  */
 export default function ChangeSeverityDialog({
   currentSeverity,
+  isManagedCloud,
   isChanging,
   onClose,
   onChange,
@@ -86,15 +90,22 @@ export default function ChangeSeverityDialog({
             value={selected}
             onChange={(e) => setSelected(e.target.value as Severity)}
           >
-            {SEVERITIES.map((s) => (
-              <FormControlLabel
-                key={s}
-                value={s}
-                disabled={isChanging}
-                control={<Radio size="small" />}
-                label={`${s} · ${SEVERITY_LABEL[s]}`}
-              />
-            ))}
+            {SEVERITIES.map((s) => {
+              const s0Blocked = s === "S0" && !isManagedCloud;
+              return (
+                <FormControlLabel
+                  key={s}
+                  value={s}
+                  disabled={isChanging || s0Blocked}
+                  control={<Radio size="small" />}
+                  label={
+                    s0Blocked
+                      ? `${s} · ${SEVERITY_LABEL[s]} (Managed Cloud only)`
+                      : `${s} · ${SEVERITY_LABEL[s]}`
+                  }
+                />
+              );
+            })}
           </RadioGroup>
         </FormControl>
 
