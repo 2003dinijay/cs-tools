@@ -68,8 +68,8 @@ const formatLastPasswordUpdate = (
     const displayTimeZone = resolveDisplayTimeZone(timeZone);
     return date.toLocaleDateString("en-US", {
       year: "numeric",
-      month: "short",
-      day: "numeric",
+      month: "2-digit",
+      day: "2-digit",
       timeZone: displayTimeZone,
     });
   } catch {
