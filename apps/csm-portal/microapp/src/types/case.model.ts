@@ -31,6 +31,7 @@ import type {
   UserIdEmailRefDto,
   UserRefDto,
 } from "./case.dto";
+import { parseBackendTimestamp, parseOptionalBackendTimestamp } from "@utils/dateTime";
 
 export interface CaseSummary {
   id: string;
@@ -101,9 +102,9 @@ export function toCaseSummary(dto: CaseSearchViewDto): CaseSummary {
     state: dto.state,
     workState: dto.workState,
     type: dto.type as CaseType,
-    createdOn: new Date(dto.createdOn),
-    updatedOn: new Date(dto.updatedOn),
-    closedOn: dto.closedOn ? new Date(dto.closedOn) : null,
+    createdOn: parseBackendTimestamp(dto.createdOn),
+    updatedOn: parseBackendTimestamp(dto.updatedOn),
+    closedOn: parseOptionalBackendTimestamp(dto.closedOn),
     createdBy: dto.createdBy,
     project: dto.project,
     deployment: dto.deployment,
@@ -127,9 +128,9 @@ export function toCaseDetail(dto: CaseViewDto): CaseDetail {
     workState: dto.workState,
     type: dto.type as CaseType | null,
     engagementType: dto.engagementType,
-    createdOn: new Date(dto.createdOn),
-    updatedOn: new Date(dto.updatedOn),
-    closedOn: dto.closedOn ? new Date(dto.closedOn) : null,
+    createdOn: parseBackendTimestamp(dto.createdOn),
+    updatedOn: parseBackendTimestamp(dto.updatedOn),
+    closedOn: parseOptionalBackendTimestamp(dto.closedOn),
     createdBy: dto.createdBy,
     project: dto.project,
     deployment: dto.deployment,
@@ -150,6 +151,6 @@ export function toComment(dto: CaseCommentDto): Comment {
     type: dto.type,
     content: dto.content,
     createdBy: dto.createdBy,
-    createdOn: new Date(dto.createdOn),
+    createdOn: parseBackendTimestamp(dto.createdOn),
   };
 }
