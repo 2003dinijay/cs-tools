@@ -230,7 +230,6 @@ export default function ChangeRequestsTab(): JSX.Element {
           showLastButton
         />
       </Box>
-
     </Box>
   );
 }
