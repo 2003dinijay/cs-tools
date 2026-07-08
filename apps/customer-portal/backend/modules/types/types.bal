@@ -885,6 +885,39 @@ public type CommentCreatePayload record {|
     entity:CommentType 'type;
 |};
 
+# Payload for submitting case feedback.
+public type CaseFeedbackPayload record {|
+    # Emoji ID
+    string emojiId;
+    # Chip IDs
+    string[] chipIds?;
+    # Additional comment
+    string additionalComment?;
+|};
+
+# Submitted feedback details.
+public type SubmittedFeedback record {|
+    # ID
+    entity:IdString id;
+    # Assessment ID
+    entity:IdString assessmentId;
+    # Case ID
+    entity:IdString caseId;
+    # User who created the feedback
+    string createdBy;
+    # Created date and time
+    string createdOn;
+    json...;
+|};
+
+# Response from submitting case feedback.
+public type CaseFeedbackResponse record {|
+    # Success message
+    string message;
+    # Submitted feedback details
+    SubmittedFeedback feedback;
+|};
+
 # Payload for creating an attachment.
 public type AttachmentCreatePayload record {|
     # File name

@@ -1449,6 +1449,40 @@ public type CommentCreateResponse record {|
     json...;
 |};
 
+# Payload for submitting case feedback.
+public type CaseFeedbackPayload record {|
+    # Emoji ID
+    string emojiId;
+    # Chip IDs
+    string[] chipIds?;
+    # Additional comment
+    string additionalComment?;
+|};
+
+# Submitted feedback details.
+public type SubmittedFeedback record {|
+    # ID
+    IdString id;
+    # Assessment ID
+    IdString assessmentId;
+    # Case ID
+    IdString caseId;
+    # User who created the feedback
+    string createdBy;
+    # Created date and time
+    string createdOn;
+    json...;
+|};
+
+# Response from submitting case feedback.
+public type CaseFeedbackResponse record {|
+    # Success message
+    string message;
+    # Submitted feedback details
+    SubmittedFeedback feedback;
+    json...;
+|};
+
 # Response from creating an attachment.
 public type AttachmentCreateResponse record {|
     # Success message

@@ -2298,6 +2298,81 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
         return createdCommentResponse.comment;
     }
 
+    # Submit feedback for a specific case.
+    #
+    # + id - ID of the case
+    # + return - Submitted feedback response or error response
+    resource function post cases/[entity:IdString id]/feedback(http:RequestContext ctx,
+            types:CaseFeedbackPayload payload)
+        returns types:CaseFeedbackResponse|http:BadRequest|http:Unauthorized|http:Forbidden|http:InternalServerError {
+
+        authorization:UserInfoPayload|error userInfo = ctx.getWithType(authorization:HEADER_USER_INFO);
+        if userInfo is error {
+            return <http:InternalServerError>{
+                body: {
+                    message: ERR_MSG_USER_INFO_HEADER_NOT_FOUND
+                }
+            };
+        }
+
+        entity:CaseFeedbackResponse|error feedbackResponse = entity:submitCaseFeedback(userInfo.idToken, id,
+                {
+                    emojiId: payload.emojiId,
+                    chipIds: payload.chipIds,
+                    additionalComment: payload.additionalComment
+                });
+        if feedbackResponse is error {
+            if getStatusCode(feedbackResponse) == http:STATUS_UNAUTHORIZED {
+                log:printWarn(string `User: ${userInfo.userId} is not authorized to access the customer portal!`);
+                return <http:Unauthorized>{
+                    body: {
+                        message: ERR_MSG_UNAUTHORIZED_ACCESS
+                    }
+                };
+            }
+
+            if getStatusCode(feedbackResponse) == http:STATUS_FORBIDDEN {
+                log:printWarn(string `User: ${userInfo.userId} is forbidden to submit feedback for case with ID: ${
+                        id}!`);
+                return <http:Forbidden>{
+                    body: {
+                        message: "You're not authorized to submit feedback for the requested case. " +
+                        "Please check your access permissions or contact support."
+                    }
+                };
+            }
+
+            if getStatusCode(feedbackResponse) == http:STATUS_BAD_REQUEST {
+                string customError = "Invalid request parameters for submitting feedback for the case.";
+                log:printWarn(customError, feedbackResponse);
+                return <http:BadRequest>{
+                    body: {
+                        message: customError
+                    }
+                };
+            }
+
+            string customError = "Failed to submit feedback for the case.";
+            log:printError(customError, feedbackResponse);
+            return <http:InternalServerError>{
+                body: {
+                    message: customError
+                }
+            };
+        }
+
+        return {
+            message: feedbackResponse.message,
+            feedback: {
+                id: feedbackResponse.feedback.id,
+                assessmentId: feedbackResponse.feedback.assessmentId,
+                caseId: feedbackResponse.feedback.caseId,
+                createdBy: feedbackResponse.feedback.createdBy,
+                createdOn: feedbackResponse.feedback.createdOn
+            }
+        };
+    }
+
     # Create a new attachment for a specific case.
     #
     # + id - ID of the case

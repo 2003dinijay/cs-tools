@@ -321,6 +321,18 @@ public isolated function createComment(string idToken, CommentCreatePayload payl
     return csEntityClient->/comments.post(payload, generateHeaders(idToken));
 }
 
+# Submit feedback for a case.
+#
+# + idToken - ID token for authorization
+# + id - ID of the case
+# + payload - Case feedback payload
+# + return - Case feedback response or error
+public isolated function submitCaseFeedback(string idToken, IdString id, CaseFeedbackPayload payload)
+    returns CaseFeedbackResponse|error {
+
+    return csEntityClient->/cases/[id]/feedback.post(payload, generateHeaders(idToken));
+}
+
 # Search product vulnerabilities.
 #
 # + idToken - ID token for authorization
