@@ -24,13 +24,20 @@ import {
 } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
 import { type JSX, type ReactNode } from "react";
-import { useNavigate, useParams } from "react-router";
+import {  useParams } from "react-router";
 import { useGetAccount } from "@features/csm-accounts/api/useGetAccount";
+import { useNavTransition } from "@hooks/useNavTransition";
 
 function formatDate(value?: string | null): string {
   if (!value) return "—";
   const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? value : d.toLocaleDateString();
+  return Number.isNaN(d.getTime())
+    ? value
+    : d.toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      });
 }
 
 function MetaCell({
@@ -78,7 +85,7 @@ function BackButton({ onClick }: { onClick: () => void }): JSX.Element {
 
 export default function CsmAccountDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
+  const navigate = useNavTransition();
   const { data, isLoading, isError } = useGetAccount(id);
 
   if (isLoading) {

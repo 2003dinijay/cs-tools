@@ -130,6 +130,15 @@ Copy `.env` and fill in the values:
 | `SCIM_CLIENT_SECRET` | OAuth2 client secret |
 | `SCIM_SCOPES` | Comma-separated OAuth2 scopes (optional) |
 
+### Auth
+
+| Variable | Description |
+|---|---|
+| `AUTH_JWKS_ENDPOINT` | JWKS endpoint used to verify JWT signatures |
+| `AUTH_ISSUER` | Expected `iss` claim value |
+| `AUTH_AUDIENCE` | Comma-separated accepted `aud` values; token passes if any listed value is present in its `aud` claim |
+| `AUTH_TOKEN_VALIDATOR_ENABLED` | Set to `false` for local development to skip signature verification (default `true`) |
+
 ### Server
 
 | Variable | Description |
@@ -158,7 +167,7 @@ backend/
 │   │   └── security_headers.go # X-Content-Type-Options, CSP, HSTS on every response
 │   └── handler/
 │       ├── cases.go            # HTTP handlers for case endpoints
-│       ├── state.go            # Case state machine (nextStates, isValidStateTransition)
+│       ├── state.go            # Case state machine (nextStates, isValidStateTransition, canCreateRelatedCase)
 │       ├── catalogs.go                   # HTTP handlers for catalog endpoints (ServiceNow only)
 │       ├── change_requests.go            # HTTP handlers for change-request endpoints
 │       ├── product_vulnerabilities.go    # HTTP handlers for product vulnerability endpoints (ServiceNow only)

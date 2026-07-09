@@ -29,7 +29,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { ArrowLeft, Lock } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type JSX } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import {  useSearchParams } from "react-router";
 import { priorityFromSeverity } from "@api/backend/mappers";
 import { formatBytes } from "@utils/formatBytes";
 import Editor from "@components/rich-text-editor/Editor";
@@ -51,6 +51,7 @@ import { useEngineerDisplayName } from "@hooks/useEngineerDisplayName";
 import { SEVERITY_LABEL } from "@features/csm-dashboard/utils/abtDashboard";
 import type { Severity } from "@features/csm-dashboard/types/abtDashboard";
 import type { BeCaseIssueType } from "@api/backend/types";
+import { useNavTransition } from "@hooks/useNavTransition";
 
 const SEVERITIES: Severity[] = ["S0", "S1", "S2", "S3", "S4"];
 
@@ -79,7 +80,7 @@ const MAX_DESCRIPTION_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_DESCRIPTION_CONTENT_BYTES = MAX_DESCRIPTION_BODY_BYTES - 4 * 1024;
 
 export default function CsmCaseCreatePage(): JSX.Element {
-  const navigate = useNavigate();
+  const navigate = useNavTransition();
   const { showError } = useErrorBanner();
 
   // When the form is opened from a project's page (`/cases/new?projectId=…`),
@@ -90,6 +91,12 @@ export default function CsmCaseCreatePage(): JSX.Element {
   const [searchParams] = useSearchParams();
   const lockedProjectId = searchParams.get("projectId") ?? "";
   const isProjectLocked = !!lockedProjectId;
+  // Set when opened from a closed case's "Create related case" action
+  // (`/cases/new?relatedCaseId=…&relatedCaseNumber=…`). The backend already
+  // validated eligibility (closed + within its 60-day window) before offering
+  // that action, so this page just carries the id through on submit.
+  const relatedCaseId = searchParams.get("relatedCaseId") ?? undefined;
+  const relatedCaseNumber = searchParams.get("relatedCaseNumber") ?? undefined;
 
   const [projectId, setProjectId] = useState(lockedProjectId);
   const [deploymentId, setDeploymentId] = useState("");
@@ -119,6 +126,25 @@ export default function CsmCaseCreatePage(): JSX.Element {
   const isCloudProject = isCloudSupportSubscription(
     selectedProject.data?.subscriptionType,
   );
+  // S0 is reserved for Managed Cloud — the highest severity is meant to page
+  // WSO2's own on-call for a subscription WSO2 directly operates, not one a
+  // customer only gets support for.
+  const isManagedCloud =
+    selectedProject.data?.subscriptionType === "managed_cloud_subscription";
+  // Clears a stale S0 pick if the project changes to a non-Managed-Cloud one
+  // after it was selected (the dropdown itself blocks picking it fresh, but
+  // can't stop an already-selected value from becoming invalid underneath).
+  // Adjusted during render (React's recommended pattern for this) rather
+  // than in an effect, which would call setState synchronously post-commit.
+  // Gated on the fetch having settled — while a new project's data is still
+  // loading, `selectedProject.data` (and so isManagedCloud) is transiently
+  // empty/false, which would otherwise wipe a valid S0 when moving between
+  // two Managed Cloud projects.
+  const [prevManagedCloud, setPrevManagedCloud] = useState(isManagedCloud);
+  if (!selectedProject.isFetching && isManagedCloud !== prevManagedCloud) {
+    setPrevManagedCloud(isManagedCloud);
+    if (severity === "S0" && !isManagedCloud) setSeverity("");
+  }
   const primaryProductionDeployments = useMemo(
     () => (deployments.data ?? []).filter((d) => d.type === "primary_production"),
     [deployments.data],
@@ -213,6 +239,7 @@ export default function CsmCaseCreatePage(): JSX.Element {
         description,
         severity: priorityFromSeverity(severity),
         issueType: issueType,
+        relatedCaseId,
       });
       // The create endpoint doesn't attach files for standard cases, so upload
       // them to the new case afterwards. A partial failure still lands the case.
@@ -244,9 +271,14 @@ export default function CsmCaseCreatePage(): JSX.Element {
       >
         Back to cases
       </Button>
-      <Typography variant="h5" sx={{ mb: 2 }}>
+      <Typography variant="h5" sx={{ mb: relatedCaseId ? 0.5 : 2 }}>
         New case
       </Typography>
+      {relatedCaseId && (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Related to {relatedCaseNumber ?? "the closed case"} — its id is carried through automatically.
+        </Typography>
+      )}
 
       <Card variant="outlined" sx={{ p: 3 }}>
         {hasOptionsError && (
@@ -319,6 +351,8 @@ export default function CsmCaseCreatePage(): JSX.Element {
                   <FormHelperText>Select a project first</FormHelperText>
                 ) : deployments.isLoading ? (
                   <FormHelperText>Loading deployments…</FormHelperText>
+                ) : (deployments.data ?? []).length === 0 ? (
+                  <FormHelperText>No deployments found for this project.</FormHelperText>
                 ) : null}
               </FormControl>
             </Grid>
@@ -351,6 +385,8 @@ export default function CsmCaseCreatePage(): JSX.Element {
                 </FormHelperText>
               ) : deployedProducts.isLoading ? (
                 <FormHelperText>Loading products…</FormHelperText>
+              ) : (deployedProducts.data ?? []).length === 0 ? (
+                <FormHelperText>No deployed products found for this deployment.</FormHelperText>
               ) : null}
             </FormControl>
           </Grid>
@@ -365,8 +401,9 @@ export default function CsmCaseCreatePage(): JSX.Element {
                 onChange={(e) => setSeverity(e.target.value as Severity)}
               >
                 {SEVERITIES.map((s) => (
-                  <MenuItem key={s} value={s}>
+                  <MenuItem key={s} value={s} disabled={s === "S0" && !isManagedCloud}>
                     {s} · {SEVERITY_LABEL[s]}
+                    {s === "S0" && !isManagedCloud ? " (Managed Cloud only)" : ""}
                   </MenuItem>
                 ))}
               </Select>

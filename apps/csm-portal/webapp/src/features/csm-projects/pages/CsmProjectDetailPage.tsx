@@ -26,17 +26,24 @@ import {
 } from "@wso2/oxygen-ui";
 import { ArrowLeft, Plus } from "@wso2/oxygen-ui-icons-react";
 import { useState, type JSX, type ReactNode } from "react";
-import { Link as RouterLink, useNavigate, useParams } from "react-router";
+import { Link as RouterLink, useParams } from "react-router";
 import { useGetProject } from "@features/csm-projects/api/useGetProject";
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
 import DeploymentsTab from "@features/csm-projects/components/DeploymentsTab";
+import { useNavTransition } from "@hooks/useNavTransition";
 
 type ProjectTabId = "overview" | "issues" | "deployments";
 
 function formatDate(value?: string | null): string {
   if (!value) return "—";
   const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? value : d.toLocaleDateString();
+  return Number.isNaN(d.getTime())
+    ? value
+    : d.toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      });
 }
 
 function formatSubscriptionType(value: string): string {
@@ -118,7 +125,7 @@ function BackButton({ onClick }: { onClick: () => void }): JSX.Element {
 
 export default function CsmProjectDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
+  const navigate = useNavTransition();
   const { data, isLoading, isError } = useGetProject(id);
   const [activeTab, setActiveTab] = useState<ProjectTabId>("overview");
 

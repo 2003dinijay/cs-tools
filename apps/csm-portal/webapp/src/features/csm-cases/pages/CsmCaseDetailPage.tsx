@@ -35,6 +35,7 @@ import {
   ArrowLeft,
   Clock,
   Layers,
+  Link as LinkIcon,
   ListChecks,
   MessageSquarePlus,
   Paperclip,
@@ -42,7 +43,7 @@ import {
   X,
 } from "@wso2/oxygen-ui-icons-react";
 import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
-import { useLocation, useNavigate, useParams } from "react-router";
+import { useLocation, useParams } from "react-router";
 import { useGetCsmCaseDetail } from "@features/csm-cases/api/useGetCsmCaseDetail";
 import {
   usePatchCsmCase,
@@ -52,8 +53,14 @@ import {
   useFindMyOngoingCases,
   type MyOngoingCase,
 } from "@features/csm-cases/api/useFindMyOngoingCases";
-import type { BeCaseState } from "@api/backend/types";
-import { beStateFromUi } from "@api/backend/mappers";
+import type {
+  BeCaseCause,
+  BeCaseResolutionCode,
+  BeCaseState,
+  BeCreateCaseGithubIssueResponse,
+} from "@api/backend/types";
+import { beStateFromUi, priorityFromSeverity } from "@api/backend/mappers";
+import type { Severity } from "@features/csm-dashboard/types/abtDashboard";
 import { BackendApiError } from "@api/backend/client";
 import {
   useGetCsmCaseComments,
@@ -70,7 +77,10 @@ import {
 import CsmCaseCommentInput from "@features/csm-cases/components/CsmCaseCommentInput";
 import CaseActionBar from "@features/csm-cases/components/CaseActionBar";
 import AssignEngineerDialog from "@features/csm-cases/components/AssignEngineerDialog";
+import ResolutionDialog from "@features/csm-cases/components/ResolutionDialog";
+import ChangeSeverityDialog from "@features/csm-cases/components/ChangeSeverityDialog";
 import { CreateGithubIssueDialog } from "@features/csm-cases/components/CreateGithubIssueDialog";
+import { isCloudSupportSubscription } from "@features/csm-projects/utils/subscriptionType";
 import { usePostCaseGithubIssue } from "@features/csm-cases/api/useCsmCaseGithubIssue";
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
 import CaseMetaBand from "@features/csm-cases/components/CaseMetaBand";
@@ -105,6 +115,7 @@ import type {
   CaseLifecycleAction,
 } from "@features/csm-cases/types/csmCases";
 import type { CaseState } from "@features/csm-dashboard/types/abtDashboard";
+import { useNavTransition } from "@hooks/useNavTransition";
 
 function MetaCell({
   label,
@@ -132,6 +143,10 @@ const LIFECYCLE_TOAST: Record<CaseLifecycleAction, string> = {
   resume_work: "Resumed work on this case.",
   close: "Case closed.",
   close_no_response: "Closed (no response received).",
+  // Unused: intercepted before this map is read (see onAction) since it
+  // navigates instead of showing a toast. Present only to satisfy the
+  // exhaustive Record.
+  create_related_case: "",
   transition: "Case updated.",
 };
 
@@ -156,6 +171,8 @@ const LIFECYCLE_SEVERITY: Record<CaseLifecycleAction, FeedbackSeverity> = {
   resume_work: "info",
   close: "success",
   close_no_response: "success",
+  // Unused — see the matching note in LIFECYCLE_TOAST.
+  create_related_case: "info",
   transition: "info",
 };
 
@@ -184,14 +201,10 @@ const FEEDBACK_PALETTE: Record<
   error: { bg: "error.50", border: "error.main", fg: "error.main" },
 };
 
+// Only covers secondary actions that are handled inline below with a fixed,
+// literal toast — every action with real branching feedback (success/error,
+// dynamic text) sets its own message directly instead of reading this map.
 const SECONDARY_TOAST: Record<string, string> = {
-  reassign_engineer: "Reassign engineer dialog (mock).",
-  reassign_group: "Reassign group dialog (mock).",
-  hold_auto_close: "Hold auto-closure dialog (mock).",
-  create_incident: "Create incident from case (mock).",
-  link_incident: "Link to incident picker (mock).",
-  create_task: "Create task dialog (mock).",
-  log_time: "Log time dialog (mock).",
   copy_link: "Case link copied to clipboard.",
 };
 
@@ -239,7 +252,7 @@ const TAB_DEFS: Array<{
 
 export default function CsmCaseDetailPage(): JSX.Element {
   const { caseId } = useParams<{ caseId: string }>();
-  const navigate = useNavigate();
+  const navigate = useNavTransition();
   const location = useLocation();
   const isEngagementRoute = location.pathname.startsWith("/engagements/");
   const isServiceRequestRoute = location.pathname.startsWith("/operations/service-requests/");
@@ -332,6 +345,14 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const [metaCollapsed, setMetaCollapsed] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
+  // ISSU-026: closing or proposing a solution opens this instead of PATCHing
+  // immediately — it collects the Post Resolution Activity and doubles as
+  // the confirmation step for these two customer-notifying transitions.
+  const [resolutionDialog, setResolutionDialog] = useState<{
+    kind: "close" | "propose_solution";
+    targetState: BeCaseState;
+  } | null>(null);
+  const [severityOpen, setSeverityOpen] = useState(false);
   const [logTimeOpen, setLogTimeOpen] = useState(false);
   // One-shot: true to pop open the Call requests tab's "Create call request"
   // dialog from the action bar's "Request a call" item. The widget flips it
@@ -341,6 +362,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // Inline error shown inside the Git-issue dialog (e.g. the SN routing 422 /
   // state 409). Cleared when the dialog opens or a submit is retried.
   const [githubIssueError, setGithubIssueError] = useState<string | null>(null);
+  // Set on a successful submit so the dialog can show its own "created" view
+  // with a clickable link instead of closing itself immediately.
+  const [githubIssueResult, setGithubIssueResult] =
+    useState<BeCreateCaseGithubIssueResponse | null>(null);
   const postGithubIssue = usePostCaseGithubIssue();
   const postTimeCard = usePostTimeCard();
   // Attachment pending delete confirmation (drives the confirm dialog).
@@ -546,6 +571,27 @@ export default function CsmCaseDetailPage(): JSX.Element {
           return;
         }
 
+        // ISSU-004: the backend puts `reopened` in a closed case's
+        // `nextStates` only as a signal — there is no real reopen (the data
+        // source has no such transition). Never PATCH it; open the new-case
+        // form pre-filled with relatedCaseId instead. Must run before the
+        // generic `targetState` PATCH below, since `beStateFromUi("reopened")`
+        // is truthy and would otherwise be sent as a state transition.
+        if (action === "create_related_case" && data) {
+          const params = new URLSearchParams({ projectId: data.projectId, relatedCaseId: data.id });
+          if (data.caseNumber) params.set("relatedCaseNumber", data.caseNumber);
+          navigate(`/cases/new?${params.toString()}`);
+          return;
+        }
+
+        // ISSU-026: closing or proposing a solution records the Post
+        // Resolution Activity first — open that dialog instead of PATCHing
+        // immediately. Must run before the generic `targetState` PATCH below.
+        if ((action === "close" || action === "propose_solution") && targetState) {
+          setResolutionDialog({ kind: action, targetState });
+          return;
+        }
+
         if (targetState === "work_in_progress" && data) {
           void startWork(LIFECYCLE_TOAST[action], LIFECYCLE_SEVERITY[action]);
           return;
@@ -586,6 +632,13 @@ export default function CsmCaseDetailPage(): JSX.Element {
       // onAssign once an engineer is chosen.
       if (action.secondary === "reassign_engineer") {
         setAssignOpen(true);
+        return;
+      }
+
+      // Change severity opens the severity picker; the PATCH happens in
+      // onChangeSeverity once a new value is confirmed.
+      if (action.secondary === "change_severity") {
+        setSeverityOpen(true);
         return;
       }
 
@@ -670,10 +723,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
         return;
       }
 
-      // ISSU-020: file an internal GitHub issue from the case. The SN side
-      // gates on the case state (only certain states may file) and resolves
-      // the target repo from the product; we don't pre-gate here — open the
-      // dialog and surface any backend rejection inline.
+      // ISSU-020: file an internal GitHub issue from the case. Closed cases
+      // are blocked at the menu level (CaseActionBar's raise_git_issue item
+      // is disabled — see caseClosed there); this handler only runs for a
+      // non-closed case. The SN side still resolves the target repo from the
+      // product and may reject other states we don't otherwise pre-gate, so
+      // any backend rejection still surfaces inline in the dialog.
       if (action.secondary === "raise_git_issue") {
         setGithubIssueError(null);
         setGithubIssueOpen(true);
@@ -688,8 +743,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
         return;
       }
 
+      // Reachable only for a secondary action with no handler above — every
+      // menu item that isn't wired up yet is disabled in CaseActionBar, so
+      // this is a defensive fallback, not a normal path.
       setFeedback({
-        message: SECONDARY_TOAST[action.secondary] ?? `Action: ${action.secondary}`,
+        message: SECONDARY_TOAST[action.secondary] ?? "This action isn't available yet.",
         severity: "info",
         sticky: false,
       });
@@ -703,6 +761,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
       startWork,
       resolveOngoingConflict,
       currentUserEmail,
+      navigate,
     ],
   );
 
@@ -761,6 +820,56 @@ export default function CsmCaseDetailPage(): JSX.Element {
             });
           },
           onError: (err) => showError("Could not reassign the case.", err),
+        },
+      );
+    },
+    [patchCase, showError],
+  );
+
+  // Submits the Post Resolution Activity dialog: PATCHes state alongside
+  // resolutionCode/cause/closeNotes in one call (the backend accepts all
+  // four together for these two transitions — see BeCaseUpdatePayload).
+  const onResolutionSubmit = useCallback(
+    (fields: {
+      resolutionCode: BeCaseResolutionCode;
+      cause: BeCaseCause;
+      closeNotes: string;
+    }) => {
+      if (!resolutionDialog) return;
+      const { kind, targetState } = resolutionDialog;
+      patchCase.mutate(
+        { state: targetState, ...fields },
+        {
+          onSuccess: () => {
+            setResolutionDialog(null);
+            setFeedback({
+              message: LIFECYCLE_TOAST[kind],
+              severity: LIFECYCLE_SEVERITY[kind],
+              sticky: true,
+            });
+          },
+          onError: (err) =>
+            showError("Could not update the case. Please try again.", err),
+        },
+      );
+    },
+    [patchCase, resolutionDialog, showError],
+  );
+
+  const onChangeSeverity = useCallback(
+    (next: Severity) => {
+      patchCase.mutate(
+        { severity: priorityFromSeverity(next) },
+        {
+          onSuccess: () => {
+            setSeverityOpen(false);
+            setFeedback({
+              message: `Severity changed to ${next}.`,
+              severity: "success",
+              sticky: true,
+            });
+          },
+          onError: (err) => showError("Could not change the severity.", err),
         },
       );
     },
@@ -892,6 +1001,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
   }
 
   const c = data;
+  // Narrowed once here so the JSX below can use it without a non-null
+  // assertion — `c.relatedCase` on its own doesn't stay narrowed across the
+  // `onClick` closure.
+  const relatedCase = c.relatedCase;
   const isClosed = c.state === "closed";
   // The backend rejects a customer-visible comment unless the case is
   // work_in_progress + ongoing. Internal work notes are allowed in any state,
@@ -983,6 +1096,17 @@ export default function CsmCaseDetailPage(): JSX.Element {
             )}
             <SeverityChip severity={c.severity} withLabel />
             <StateChip state={c.state} />
+            {relatedCase && (
+              <Chip
+                size="small"
+                variant="outlined"
+                clickable
+                icon={<LinkIcon size={14} />}
+                label={`Related: ${relatedCase.caseNumber ?? relatedCase.id}`}
+                onClick={() => navigate(`/cases/${relatedCase.id}`)}
+                sx={{ fontWeight: 600 }}
+              />
+            )}
             {c.state === "work_in_progress" && c.workState && (
               <Chip
                 size="small"
@@ -1352,6 +1476,28 @@ export default function CsmCaseDetailPage(): JSX.Element {
         />
       )}
 
+      {resolutionDialog && (
+        <ResolutionDialog
+          kind={resolutionDialog.kind}
+          isSubmitting={patchCase.isPending}
+          onClose={() => setResolutionDialog(null)}
+          onSubmit={onResolutionSubmit}
+        />
+      )}
+
+      {severityOpen && (
+        <ChangeSeverityDialog
+          currentSeverity={c.severity}
+          // S0 is reserved for Managed Cloud, same rule as case creation (see
+          // CsmCaseCreatePage.tsx) — caseProject is the same project fetch
+          // already used for the Customer card above.
+          isManagedCloud={caseProject?.subscriptionType === "managed_cloud_subscription"}
+          isChanging={patchCase.isPending}
+          onClose={() => setSeverityOpen(false)}
+          onChange={onChangeSeverity}
+        />
+      )}
+
       {logTimeOpen && (
         <LogTimeCardDialog
           caseId={c.id}
@@ -1391,12 +1537,15 @@ export default function CsmCaseDetailPage(): JSX.Element {
           open={githubIssueOpen}
           submitting={postGithubIssue.isPending}
           error={githubIssueError}
+          createdIssue={githubIssueResult}
           defaultUpdateLevel={c.productContext.updateLevel}
           defaultTitle={c.subject}
           defaultDescription={c.description}
+          showRepoField={isCloudSupportSubscription(caseProject?.subscriptionType)}
           onClose={() => {
             setGithubIssueOpen(false);
             setGithubIssueError(null);
+            setGithubIssueResult(null);
           }}
           onSubmit={(payload) => {
             setGithubIssueError(null);
@@ -1404,17 +1553,13 @@ export default function CsmCaseDetailPage(): JSX.Element {
               { caseId: c.id, ...payload },
               {
                 onSuccess: (res) => {
-                  setGithubIssueOpen(false);
-                  // The SN side writes the issue URL into work notes; show that
-                  // entry by switching to the activities feed (just refetched).
+                  // Dialog shows its own "created" view with a clickable
+                  // link (see createdIssue) instead of closing immediately —
+                  // still switch to the activities feed in the background so
+                  // the SN-written work-note entry is visible once they're
+                  // done reading the confirmation.
                   setActiveTab("activities");
-                  setFeedback({
-                    message: res.issue?.url
-                      ? `Internal Git issue created: ${res.issue.url}`
-                      : "Internal Git issue created.",
-                    severity: "success",
-                    sticky: true,
-                  });
+                  setGithubIssueResult(res);
                 },
                 onError: (err) => {
                   // Surface the backend's own message on 4xx (invalid state,

@@ -87,6 +87,50 @@ export type BeCaseState =
  */
 export type BeCaseWorkState = "ongoing" | "paused";
 
+/**
+ * Resolution code for a closed or solution-proposed case (the Post
+ * Resolution Activity — see UseCases.md ISSU-026). Only accepted by
+ * `PATCH /cases/{id}` alongside `state: "closed"` or `"solution_proposed"`.
+ */
+export type BeCaseResolutionCode =
+  | "SOLVED_FIXED_BY_SUPPORT_GUIDANCE_PROVIDED"
+  | "SOLVED_FIXED_BY_CLOSING_RELATED_INCIDENT"
+  | "SOLVED_FIXED_BY_CLOSING_RELATED_RD_TICKET"
+  | "SOLVED_WORKAROUND_PROVIDED"
+  | "SOLVED_BY_CUSTOMER"
+  | "CONSIDERED_FOR_ROADMAP"
+  | "INCONCLUSIVE_OUT_OF_SCOPE"
+  | "INCONCLUSIVE_CANNOT_REPRODUCE"
+  | "INCONCLUSIVE_NO_WORKAROUND"
+  | "DUPLICATE_ISSUE"
+  | "VOIDED_CANCELED"
+  | "ON_HOLD"
+  | "CONSIDERED_FOR_ROADMAP_ALT"
+  | "SOLVED_FIXED_THE_ISSUE"
+  | "SOLVED_WORKAROUND_PROVIDED_ALT"
+  | "SOLVED_BY_CONTRIBUTOR"
+  | "SOLVED_BY_NOVERA"
+  | "ABRUPTLY_CLOSED_DUE_TO_NON_RESPONSIVENESS";
+
+/** Root-cause category for a closed or solution-proposed case. Same gating as {@link BeCaseResolutionCode}. */
+export type BeCaseCause =
+  | "USER_MISUNDERSTANDING_CONCEPTS"
+  | "USER_MISUNDERSTANDING_DOCUMENTATION"
+  | "USER_NOT_FOLLOWING_DOCUMENTATION"
+  | "USER_MISTAKE"
+  | "SOLUTION_PROBLEMATIC_SOLUTION_ARCHITECTURE"
+  | "SOLUTION_PROBLEMATIC_CODE"
+  | "APPLICATION_BUG"
+  | "APPLICATION_MISLEADING_UX_UI"
+  | "APPLICATION_LIMITATION"
+  | "APPLICATION_MISSING_FEATURE"
+  | "APPLICATION_DOCUMENTATION_GAP"
+  | "APPLICATION_DOCUMENTATION_ERROR"
+  | "INFRASTRUCTURE_CUSTOMERS_SIDE"
+  | "INFRASTRUCTURE_SAAS_SIDE_NOT_ENOUGH"
+  | "INFRASTRUCTURE_SAAS_SIDE_OTHER"
+  | "UNKNOWN";
+
 export type BeCaseSortField = "createdOn" | "updatedOn" | "severity" | "state";
 
 export interface BeCase {
@@ -105,7 +149,7 @@ export interface BeCase {
   state?: BeCaseState;
   createdAt?: string;
   updatedAt?: string;
-  closedAt?: string;
+  closedOn?: string;
 }
 
 /** A referenced user, as embedded in case views (not just an id string). */
@@ -120,6 +164,12 @@ export interface BeUserRef {
 export interface BeEntityRef {
   id: string;
   name: string;
+}
+
+/** A referenced case carrying only its display number, e.g. the related case. */
+export interface BeCaseNumberRef {
+  id: string;
+  number?: string;
 }
 
 /**
@@ -173,7 +223,15 @@ export interface BeCaseView {
   state?: BeCaseState;
   /** Work sub-state; only meaningful while `state` is `work_in_progress`. */
   workState?: BeCaseWorkState | null;
+  /**
+   * States this case may transition into next. For a closed case, `reopened`
+   * appearing here is not a real reopen (the data source has no such
+   * transition) — it signals that a new case may still be created as related
+   * to this one, within its 60-day window.
+   */
   nextStates?: BeCaseState[];
+  /** The case this one was created as related to, when any. */
+  relatedCase?: BeCaseNumberRef | null;
   createdBy?: BeUserRef;
   /** The CS engineer the case is assigned to; null when unassigned. */
   assignedEngineer?: BeAssignedEngineerRef | null;
@@ -196,7 +254,7 @@ export interface BeCaseView {
   conversation?: BeEntityRef | null;
   createdOn?: string;
   updatedOn?: string;
-  closedAt?: string | null;
+  closedOn?: string | null;
 }
 
 export interface BeCaseCreatePayload {
@@ -209,6 +267,12 @@ export interface BeCaseCreatePayload {
   description: string;
   severity: BeCaseSeverity;
   issueType: BeCaseIssueType;
+  /**
+   * UUID of the closed case this one is related to. The data source only
+   * accepts this for a case closed within the last 60 days — otherwise it
+   * rejects the create with a "related case too old" error.
+   */
+  relatedCaseId?: string;
   /** Optional supporting files (raw base64), like the customer portal. */
   attachments?: BeCaseAttachmentPayload[];
 }
@@ -348,7 +412,17 @@ export interface BeGetCatalogItemVariablesResponse {
  * `work_in_progress`.
  */
 export type BeCaseUpdatePayload =
-  | { state: BeCaseState; severity?: never; workState?: never; assigneeEmail?: never; watchList?: never }
+  | {
+      state: BeCaseState;
+      severity?: never;
+      workState?: never;
+      assigneeEmail?: never;
+      watchList?: never;
+      /** Post Resolution Activity — only meaningful (and only accepted by the backend) alongside `state: "closed"` or `"solution_proposed"`. */
+      resolutionCode?: BeCaseResolutionCode;
+      cause?: BeCaseCause;
+      closeNotes?: string;
+    }
   | { state?: never; severity: BeCaseSeverity; workState?: never; assigneeEmail?: never; watchList?: never }
   /** Work sub-state toggle (`ongoing` / `paused`) for an in-progress case. */
   | { state?: never; severity?: never; workState: BeCaseWorkState; assigneeEmail?: never; watchList?: never }
