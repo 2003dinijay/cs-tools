@@ -774,9 +774,20 @@ export interface BeUser {
   updatedAt?: string;
 }
 
+export interface BeUserSearchFilters {
+  /** Case-insensitive match against username and email. */
+  searchQuery?: string;
+  /** ServiceNow data source only. */
+  roles?: string[];
+  /** Exact match. */
+  userNames?: string[];
+  /** Exact match. */
+  emails?: string[];
+}
+
 export interface BeUserSearchPayload {
   pagination?: BePagination;
-  searchQuery?: string;
+  filters?: BeUserSearchFilters;
 }
 
 export interface BeUserSearchResponse extends BeSearchResponseBase {
@@ -1289,6 +1300,9 @@ export interface BeUpdateCallRequestResponse {
 // ---------------------------------------------------------------------------
 
 export type BeChangeRequestState =
+  | "new"
+  | "assess"
+  | "authorize"
   | "customer_approval"
   | "scheduled"
   | "implement"
@@ -1299,6 +1313,33 @@ export type BeChangeRequestState =
   | "canceled";
 
 export type BeChangeRequestImpact = "high" | "medium" | "low";
+
+export type BeChangeRequestType =
+  | "standard"
+  | "normal"
+  | "emergency"
+  | "model"
+  | "site_reliability_ops"
+  | "azure";
+
+export type BeChangeRequestPriority = "critical" | "high" | "moderate" | "low";
+
+export type BeChangeRequestRisk = "high" | "moderate" | "low";
+
+export type BeChangeRequestCategory =
+  | "hardware"
+  | "software"
+  | "service"
+  | "system_software"
+  | "applications_software"
+  | "network"
+  | "telecom"
+  | "documentation"
+  | "other"
+  | "regular_release_cloud"
+  | "hotfix_release_cloud"
+  | "devops"
+  | "cloud_computing";
 
 /** List-item / shared shape for a change request (`POST /change-requests/search`). */
 export interface BeChangeRequestSearchView {
@@ -1336,6 +1377,139 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
   hasCustomerReviewed?: boolean;
   approvedBy?: BeEntityRef | null;
   approvedOn?: string | null;
+}
+
+/**
+ * `POST /change-requests` body (ServiceNow data source only). `subject` is
+ * the only required field; every ID field (`serviceId`, `serviceOfferingId`,
+ * `configurationItemId`, `groupId`, `assignedEngineerId`, `requestedById`)
+ * is a portal UUID resolved server-side against the backing data source, via
+ * the matching `/*\/search` endpoint (see `AsyncEntitySelect` usages in
+ * `CreateChangeRequestPage.tsx`). `state` accepts any valid lifecycle state,
+ * but the create form restricts the selectable options to the pre-workflow
+ * states (new/assess/authorize), defaulting to "new", so a CR can't be created
+ * already past its own approval flow.
+ * `plannedStartDate`/`plannedEndDate` are `YYYY-MM-DD HH:MM:SS` strings.
+ */
+export interface BeCreateChangeRequestPayload {
+  subject: string;
+  category?: BeChangeRequestCategory;
+  serviceId?: string;
+  serviceOfferingId?: string;
+  configurationItemId?: string;
+  priority?: BeChangeRequestPriority;
+  impact?: BeChangeRequestImpact;
+  type?: BeChangeRequestType;
+  state?: BeChangeRequestState;
+  groupId?: string;
+  assignedEngineerId?: string;
+  risk?: BeChangeRequestRisk;
+  requestedById?: string;
+  description?: string;
+  justification?: string;
+  implementationPlan?: string;
+  riskImpactAnalysis?: string;
+  backoutPlan?: string;
+  testPlan?: string;
+  plannedStartDate?: string;
+  plannedEndDate?: string;
+  comment?: string;
+  workNote?: string;
+}
+
+/** `POST /change-requests` response — the created identifiers. */
+export interface BeCreateChangeRequestResponse {
+  message: string;
+  changeRequest: {
+    id: string;
+    number: string;
+    createdOn: string;
+    createdBy: string;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Change-request reference lookups (ServiceNow CMDB — groups, IT services,
+// service offerings, configuration items). Each search response carries no
+// `hasMore` (same as change requests), so these don't extend
+// BeSearchResponseBase.
+// ---------------------------------------------------------------------------
+
+export interface BeGroup {
+  id: string;
+  name: string;
+  active: boolean;
+  parent?: BeEntityRef | null;
+}
+
+export interface BeGroupSearchPayload {
+  filters?: { searchQuery?: string };
+  pagination: BePagination;
+}
+
+export interface BeGroupSearchResponse {
+  groups: BeGroup[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BeItService {
+  id: string;
+  name?: string | null;
+  class?: string | null;
+  businessCriticality?: string | null;
+  serviceClassification?: string | null;
+}
+
+export interface BeItServiceSearchPayload {
+  filters?: { searchQuery?: string };
+  pagination: BePagination;
+}
+
+export interface BeItServiceSearchResponse {
+  services: BeItService[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BeServiceOffering {
+  id: string;
+  name: string;
+  service?: BeEntityRef | null;
+}
+
+export interface BeServiceOfferingSearchPayload {
+  /** Narrow to offerings under a specific service (its portal UUID). */
+  filters?: { serviceIds?: string[]; searchQuery?: string };
+  pagination: BePagination;
+}
+
+export interface BeServiceOfferingSearchResponse {
+  serviceOfferings: BeServiceOffering[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BeConfigurationItem {
+  id: string;
+  name?: string | null;
+  description?: string | null;
+  class?: string | null;
+}
+
+export interface BeConfigurationItemSearchPayload {
+  filters?: { searchQuery?: string };
+  pagination: BePagination;
+}
+
+export interface BeConfigurationItemSearchResponse {
+  configurationItems: BeConfigurationItem[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 /**

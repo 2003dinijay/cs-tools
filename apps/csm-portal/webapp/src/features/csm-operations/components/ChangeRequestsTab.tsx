@@ -16,6 +16,7 @@
 
 import {
   Box,
+  Button,
   Chip,
   Skeleton,
   Table,
@@ -27,6 +28,7 @@ import {
   TableRow,
   Typography,
 } from "@wso2/oxygen-ui";
+import { Plus } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type ChangeEvent, type JSX } from "react";
 import { useNavTransition } from "@hooks/useNavTransition";
 import QueryErrorState from "@components/QueryErrorState";
@@ -38,11 +40,10 @@ import {
   changeRequestImpactLabel,
   changeRequestStateColor,
   changeRequestStateLabel,
-} from "@features/csm-operations/utils/changeRequests";
-import ChangeRequestsFilterBar, {
   DEFAULT_CR_FILTERS,
   type ChangeRequestFilters,
-} from "@features/csm-operations/components/ChangeRequestsFilterBar";
+} from "@features/csm-operations/utils/changeRequests";
+import ChangeRequestsFilterBar from "@features/csm-operations/components/ChangeRequestsFilterBar";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
@@ -121,6 +122,18 @@ export default function ChangeRequestsTab(): JSX.Element {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+        <Button
+          variant="contained"
+          color="primary"
+          size="small"
+          startIcon={<Plus size={16} />}
+          onClick={() => navigate("/operations/change-requests/new")}
+        >
+          Create change request
+        </Button>
+      </Box>
+
       <ChangeRequestsFilterBar
         filters={filters}
         onChange={handleFiltersChange}
