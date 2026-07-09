@@ -61,77 +61,77 @@ export default function CatalogVariableFields({
   onChange,
 }: CatalogVariableFieldsProps): JSX.Element {
   return (
-    <Grid container spacing={2.5}>
-      {variables.map((v) => {
-        const value = values[v.id] ?? "";
-        const label = variableLabel(v);
+    <LocalizationProvider dateAdapter={AdapterDateFns}>
+      <Grid container spacing={2.5}>
+        {variables.map((v) => {
+          const value = values[v.id] ?? "";
+          const label = variableLabel(v);
 
-        if (isChoiceField(v)) {
-          const labelId = `sr-var-${v.id}-label`;
-          return (
-            <Grid key={v.id} size={{ xs: 12, sm: 6 }}>
-              <FormControl fullWidth size="small" required>
-                <InputLabel id={labelId}>{label}</InputLabel>
-                <Select
-                  labelId={labelId}
-                  label={label}
-                  value={value}
-                  onChange={(e) => onChange(v.id, String(e.target.value))}
+          if (isChoiceField(v)) {
+            const labelId = `sr-var-${v.id}-label`;
+            return (
+              <Grid key={v.id} size={{ xs: 12, sm: 6 }}>
+                <FormControl fullWidth size="small" required>
+                  <InputLabel id={labelId}>{label}</InputLabel>
+                  <Select
+                    labelId={labelId}
+                    label={label}
+                    value={value}
+                    onChange={(e) => onChange(v.id, String(e.target.value))}
+                  >
+                    <MenuItem value="Yes">Yes</MenuItem>
+                    <MenuItem value="No">No</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+            );
+          }
+
+          if (isDescriptionField(v.questionText ?? "")) {
+            return (
+              <Grid key={v.id} size={{ xs: 12 }}>
+                <Typography
+                  component="label"
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: "block", mb: 0.5 }}
                 >
-                  <MenuItem value="Yes">Yes</MenuItem>
-                  <MenuItem value="No">No</MenuItem>
-                </Select>
-              </FormControl>
-            </Grid>
-          );
-        }
+                  {label} *
+                </Typography>
+                <Box role="group" aria-label={label}>
+                  <Editor
+                    value={value}
+                    onChange={(html) => onChange(v.id, html)}
+                    placeholder=""
+                    minHeight={150}
+                    maxHeight="300px"
+                    toolbarVariant="full"
+                  />
+                </Box>
+              </Grid>
+            );
+          }
 
-        if (isDescriptionField(v.questionText ?? "")) {
-          return (
-            <Grid key={v.id} size={{ xs: 12 }}>
-              <Typography
-                component="label"
-                variant="caption"
-                color="text.secondary"
-                sx={{ display: "block", mb: 0.5 }}
-              >
-                {label} *
-              </Typography>
-              <Box role="group" aria-label={label}>
-                <Editor
+          if (isMultiLineField(v)) {
+            return (
+              <Grid key={v.id} size={{ xs: 12 }}>
+                <TextField
+                  label={label}
+                  size="small"
+                  fullWidth
+                  required
+                  multiline
+                  minRows={4}
                   value={value}
-                  onChange={(html) => onChange(v.id, html)}
-                  placeholder=""
-                  minHeight={150}
-                  maxHeight="300px"
-                  toolbarVariant="full"
+                  onChange={(e) => onChange(v.id, e.target.value)}
                 />
-              </Box>
-            </Grid>
-          );
-        }
+              </Grid>
+            );
+          }
 
-        if (isMultiLineField(v)) {
-          return (
-            <Grid key={v.id} size={{ xs: 12 }}>
-              <TextField
-                label={label}
-                size="small"
-                fullWidth
-                required
-                multiline
-                minRows={4}
-                value={value}
-                onChange={(e) => onChange(v.id, e.target.value)}
-              />
-            </Grid>
-          );
-        }
-
-        if (isDateTimeField(v)) {
-          return (
-            <Grid key={v.id} size={{ xs: 12, sm: 6 }}>
-              <LocalizationProvider dateAdapter={AdapterDateFns}>
+          if (isDateTimeField(v)) {
+            return (
+              <Grid key={v.id} size={{ xs: 12, sm: 6 }}>
                 <DateTimePicker
                   label={label}
                   value={parseDateTimeLocal(value)}
@@ -148,26 +148,26 @@ export default function CatalogVariableFields({
                     field: { clearable: true },
                   }}
                 />
-              </LocalizationProvider>
+              </Grid>
+            );
+          }
+
+          // File Copy Path is an optional plain text input.
+          const optional = isFileCopyPathField(v);
+          return (
+            <Grid key={v.id} size={{ xs: 12 }}>
+              <TextField
+                label={label}
+                size="small"
+                fullWidth
+                required={!optional}
+                value={value}
+                onChange={(e) => onChange(v.id, e.target.value)}
+              />
             </Grid>
           );
-        }
-
-        // File Copy Path is an optional plain text input.
-        const optional = isFileCopyPathField(v);
-        return (
-          <Grid key={v.id} size={{ xs: 12 }}>
-            <TextField
-              label={label}
-              size="small"
-              fullWidth
-              required={!optional}
-              value={value}
-              onChange={(e) => onChange(v.id, e.target.value)}
-            />
-          </Grid>
-        );
-      })}
-    </Grid>
+        })}
+      </Grid>
+    </LocalizationProvider>
   );
 }
