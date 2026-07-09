@@ -43,8 +43,11 @@ export const TIMECARDS = {
 // becomes a permanent ServiceNow record. Same tagging rule as time cards.
 //
 
+/** Same E2E_TAG + label + timestamp format as {@link e2eWorkLogComment} —
+ * kept as its own named export since it tags a different kind of record,
+ * but delegates to avoid duplicating the format itself. */
 export function e2eChangeRequestSubject(label: string): string {
-  return `${E2E_TAG} ${label} — ${new Date().toISOString()}`;
+  return e2eWorkLogComment(label);
 }
 
 export const CHANGE_REQUEST_CREATE = {
