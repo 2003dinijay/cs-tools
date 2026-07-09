@@ -45,7 +45,7 @@ import { useSearchServiceOfferings } from "@api/useSearchServiceOfferings";
 import { useSearchConfigurationItems } from "@api/useSearchConfigurationItems";
 import { useSearchUsersByName } from "@api/useSearchUsersByName";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
-import { CHANGE_REQUEST_STATES, changeRequestStateLabel } from "@features/csm-operations/utils/changeRequests";
+import { changeRequestStateLabel } from "@features/csm-operations/utils/changeRequests";
 import type {
   BeChangeRequestCategory,
   BeChangeRequestImpact,
@@ -115,12 +115,15 @@ const RISK_OPTIONS: Array<{ value: BeChangeRequestRisk; label: string }> = [
   { value: "low", label: "Low" },
 ];
 
-// Reuses the same state list/labels the change-request list and detail pages
-// already show, so "New" here reads the same way it will once the record is
-// searchable. Defaults to "new" — the state SN itself defaults a fresh change
-// request to — rather than leaving it unset.
+// Only the pre-workflow states are selectable at creation. A new change
+// request must enter its lifecycle at the start (new/assess/authorize) and
+// move forward from there — creating one already Closed/Cancelled, or straight
+// into Implement, would skip its own assess → authorize → approval workflow.
+// Defaults to "new" — the state SN itself defaults a fresh CR to. Labels reuse
+// the same map the list/detail pages show, so they read consistently.
+const CREATE_STATE_VALUES: BeChangeRequestState[] = ["new", "assess", "authorize"];
 const STATE_OPTIONS: Array<{ value: BeChangeRequestState; label: string }> =
-  CHANGE_REQUEST_STATES.map((s) => ({ value: s, label: changeRequestStateLabel(s) }));
+  CREATE_STATE_VALUES.map((s) => ({ value: s, label: changeRequestStateLabel(s) }));
 
 function userLabel(u: BeUser): string {
   return [u.firstName, u.lastName].filter(Boolean).join(" ").trim() || u.email || u.id || "";
@@ -544,7 +547,9 @@ export default function CreateChangeRequestPage(): JSX.Element {
                     onChange={setAssignedEngineerId}
                     disabled={postChangeRequest.isPending}
                     useSearch={useSearchUsersByName}
-                    getId={(u) => u.id ?? ""}
+                    // useSearchUsersByName filters out any user without an id,
+                    // so every option here is guaranteed to have one.
+                    getId={(u) => u.id!}
                     getLabel={userLabel}
                   />
                 </Box>
@@ -557,7 +562,9 @@ export default function CreateChangeRequestPage(): JSX.Element {
                     onChange={setRequestedById}
                     disabled={postChangeRequest.isPending}
                     useSearch={useSearchUsersByName}
-                    getId={(u) => u.id ?? ""}
+                    // useSearchUsersByName filters out any user without an id,
+                    // so every option here is guaranteed to have one.
+                    getId={(u) => u.id!}
                     getLabel={userLabel}
                     knownLabel={meLabel}
                     helperText="Defaults to you — clear it if this wasn't your request."

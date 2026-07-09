@@ -1383,11 +1383,12 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
  * `POST /change-requests` body (ServiceNow data source only). `subject` is
  * the only required field; every ID field (`serviceId`, `serviceOfferingId`,
  * `configurationItemId`, `groupId`, `assignedEngineerId`, `requestedById`)
- * is a portal UUID, converted to a ServiceNow sysid server-side, resolved via
+ * is a portal UUID resolved server-side against the backing data source, via
  * the matching `/*\/search` endpoint (see `AsyncEntitySelect` usages in
- * `CreateChangeRequestPage.tsx`). `state` accepts any of the full set the BE
- * validates against (see `snCRCreateStateIDMap` in the entity service) — the
- * create form defaults it to "new" but leaves it editable.
+ * `CreateChangeRequestPage.tsx`). `state` accepts any valid lifecycle state,
+ * but the create form restricts the selectable options to the pre-workflow
+ * states (new/assess/authorize), defaulting to "new", so a CR can't be created
+ * already past its own approval flow.
  * `plannedStartDate`/`plannedEndDate` are `YYYY-MM-DD HH:MM:SS` strings.
  */
 export interface BeCreateChangeRequestPayload {
