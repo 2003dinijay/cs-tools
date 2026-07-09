@@ -224,12 +224,13 @@ export function ScheduleCallDialog({
                     error:
                       (selectedTime === CUSTOM_TIME_VALUE && !!customTime && !customTimeValid) ||
                       pastError,
+                    // The pastError message is shown by the top-level Typography
+                    // above, so it's not repeated here — only the custom-time
+                    // invalid case has its own inline text.
                     helperText:
                       selectedTime === CUSTOM_TIME_VALUE && customTime && !customTimeValid
                         ? "Invalid date/time."
-                        : pastError
-                          ? "Meeting time must be in the future."
-                          : `Entered in your timezone (${timeZone}); stored as UTC.`,
+                        : `Entered in your timezone (${timeZone}); stored as UTC.`,
                   },
                   field: { clearable: true },
                 }}

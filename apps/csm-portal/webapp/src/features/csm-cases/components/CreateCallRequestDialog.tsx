@@ -278,14 +278,14 @@ export function CreateCallRequestDialog({
               UTC. Each must be at least {formatLeadTime(leadMinutes)} from now.
               Add up to {MAX_TIME_SLOTS} options.
             </Typography>
-            {timeslots.map((slot, i) => {
-              const status = slotStatus(slot, timeZone, minAllowedMs, leadMinutes);
-              return (
-                <Box
-                  key={i}
-                  sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}
-                >
-                  <LocalizationProvider dateAdapter={AdapterDateFns}>
+            <LocalizationProvider dateAdapter={AdapterDateFns}>
+              {timeslots.map((slot, i) => {
+                const status = slotStatus(slot, timeZone, minAllowedMs, leadMinutes);
+                return (
+                  <Box
+                    key={i}
+                    sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}
+                  >
                     <DateTimePicker
                       value={parseDateTimeLocal(slot)}
                       onChange={(next) =>
@@ -309,21 +309,21 @@ export function CreateCallRequestDialog({
                         field: { clearable: true },
                       }}
                     />
-                  </LocalizationProvider>
-                  {timeslots.length > 1 && (
-                    <Button
-                      size="small"
-                      color="inherit"
-                      onClick={() => removeTimeslot(i)}
-                      disabled={submitting}
-                      sx={{ minWidth: 0, px: 1, mt: 0.5 }}
-                    >
-                      Remove
-                    </Button>
-                  )}
-                </Box>
-              );
-            })}
+                    {timeslots.length > 1 && (
+                      <Button
+                        size="small"
+                        color="inherit"
+                        onClick={() => removeTimeslot(i)}
+                        disabled={submitting}
+                        sx={{ minWidth: 0, px: 1, mt: 0.5 }}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </Box>
+                );
+              })}
+            </LocalizationProvider>
             {timeslots.length < MAX_TIME_SLOTS && (
               <Button
                 size="small"
