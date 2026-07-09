@@ -215,9 +215,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
   // Adjusted during render (React's recommended pattern for this) rather
   // than in an effect, which would call setState synchronously post-commit.
   const { data: me } = useGetUsersMe();
-  const meLabel = me
-    ? [me.firstName, me.lastName].filter(Boolean).join(" ").trim() || me.email
-    : undefined;
+  const meLabel = me ? userLabel(me) : undefined;
   const autoFilledRequester = useRef(false);
   if (me?.id && !autoFilledRequester.current) {
     autoFilledRequester.current = true;
