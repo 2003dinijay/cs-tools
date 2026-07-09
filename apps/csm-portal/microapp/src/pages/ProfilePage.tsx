@@ -58,10 +58,16 @@ function ProfileContent() {
   const [phoneNumber, setPhoneNumber] = useState(profile.phoneNumber ?? "");
   const [timeZone, setTimeZone] = useState(profile.timeZone ?? "");
 
+  const isDirty = phoneNumber !== (profile.phoneNumber ?? "") || timeZone !== (profile.timeZone ?? "");
+
+  // A background refetch (window refocus, cache invalidation elsewhere) must not clobber an
+  // in-progress edit. Only re-seed from the server once the local draft matches it again, e.g.
+  // right after this page's own save invalidates the query.
   useEffect(() => {
+    if (isDirty) return;
     setPhoneNumber(profile.phoneNumber ?? "");
     setTimeZone(profile.timeZone ?? "");
-  }, [profile]);
+  }, [profile, isDirty]);
 
   const mutation = useMutation({
     mutationFn: users.updateMe,
@@ -69,8 +75,6 @@ function ProfileContent() {
       void queryClient.invalidateQueries({ queryKey: ["users", "me"] });
     },
   });
-
-  const isDirty = phoneNumber !== (profile.phoneNumber ?? "") || timeZone !== (profile.timeZone ?? "");
 
   const handleSave = () => {
     const payload: UserMeUpdateDto = {};
@@ -91,20 +95,33 @@ function ProfileContent() {
         <TextField
           label="Phone Number"
           value={phoneNumber}
-          onChange={(event) => setPhoneNumber(event.target.value)}
+          onChange={(event) => {
+            if (mutation.isSuccess || mutation.isError) mutation.reset();
+            setPhoneNumber(event.target.value);
+          }}
           size="small"
           fullWidth
           disabled={mutation.isPending}
         />
 
         <FormControl size="small" fullWidth disabled={mutation.isPending}>
-          <InputLabel id="profile-timezone-label">Time Zone</InputLabel>
+          <InputLabel id="profile-timezone-label" shrink>
+            Time Zone
+          </InputLabel>
           <Select
             labelId="profile-timezone-label"
             label="Time Zone"
             value={timeZone}
-            onChange={(event) => setTimeZone(event.target.value)}
+            displayEmpty
+            notched
+            onChange={(event) => {
+              if (mutation.isSuccess || mutation.isError) mutation.reset();
+              setTimeZone(event.target.value);
+            }}
           >
+            <MenuItem value="" disabled>
+              <em>Select a time zone</em>
+            </MenuItem>
             {timeZoneOptions.map((tz) => (
               <MenuItem key={tz} value={tz}>
                 {tz}
