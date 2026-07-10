@@ -137,3 +137,36 @@ describe("CsmAnnouncementsPage — filters default to show-all", () => {
     expect(lastCall[0].severities).toContain("S0");
   });
 });
+
+describe("CsmAnnouncementsPage — loading and pagination", () => {
+  it("renders skeleton rows while the first page is loading", () => {
+    mockResult({ isLoading: true, isFetching: true });
+    const { container } = render(<CsmAnnouncementsPage />);
+    expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/no announcements found/i)).not.toBeInTheDocument();
+  });
+
+  it("advances the page when the next-page control is clicked", () => {
+    mockResult({
+      data: { announcements: [ROW], total: 50, limit: 20, offset: 0, hasMore: true },
+    });
+    render(<CsmAnnouncementsPage />);
+    fireEvent.click(screen.getByRole("button", { name: /go to next page/i }));
+    // useSearchAnnouncements(filters, page, pageSize) — page is the 2nd arg.
+    const lastCall = mockedUseSearch.mock.calls.at(-1)!;
+    expect(lastCall[1]).toBe(1);
+  });
+
+  it("passes an updated page size when rows-per-page changes", () => {
+    mockResult({
+      data: { announcements: [ROW], total: 50, limit: 20, offset: 0, hasMore: true },
+    });
+    render(<CsmAnnouncementsPage />);
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: /rows per page/i }));
+    fireEvent.click(screen.getByRole("option", { name: "50" }));
+    // pageSize is the 3rd arg; changing rows-per-page also resets page to 0.
+    const lastCall = mockedUseSearch.mock.calls.at(-1)!;
+    expect(lastCall[2]).toBe(50);
+    expect(lastCall[1]).toBe(0);
+  });
+});
