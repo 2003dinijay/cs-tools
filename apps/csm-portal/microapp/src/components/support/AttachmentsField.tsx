@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { useRef, useState } from "react";
+import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Button, IconButton, Stack, Typography } from "@wso2/oxygen-ui";
 import { FileText, Paperclip, Trash2 } from "@wso2/oxygen-ui-icons-react";
 import {
@@ -26,7 +26,10 @@ import {
 
 interface AttachmentsFieldProps {
   attachments: PendingAttachment[];
-  onChange: (attachments: PendingAttachment[]) => void;
+  // A setter (not a plain callback) so add/remove can use the functional-updater form and derive
+  // the next array from the latest state, instead of a captured `attachments` closure that a
+  // concurrent add/remove could stomp on.
+  onChange: Dispatch<SetStateAction<PendingAttachment[]>>;
   disabled?: boolean;
 }
 
@@ -49,9 +52,14 @@ export function AttachmentsField({ attachments, onChange, disabled }: Attachment
       return;
     }
 
-    const encoded = await Promise.all(files.map(toPendingAttachment));
-    onChange([...attachments, ...encoded]);
-    if (inputRef.current) inputRef.current.value = "";
+    try {
+      const encoded = await Promise.all(files.map(toPendingAttachment));
+      onChange((prev) => [...prev, ...encoded]);
+    } catch {
+      setError("Could not read one or more files. Please try again.");
+    } finally {
+      if (inputRef.current) inputRef.current.value = "";
+    }
   };
 
   return (
@@ -101,7 +109,7 @@ export function AttachmentsField({ attachments, onChange, disabled }: Attachment
             size="small"
             aria-label={`Remove ${attachment.name}`}
             disabled={disabled}
-            onClick={() => onChange(attachments.filter((a) => a.id !== attachment.id))}
+            onClick={() => onChange((prev) => prev.filter((a) => a.id !== attachment.id))}
           >
             <Trash2 size={14} />
           </IconButton>

@@ -69,6 +69,10 @@ export default function NewCasePage() {
   const [description, setDescription] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // createCase.isPending alone only covers the case-creation call — it flips back to false while
+  // the attachment uploads below are still in flight, which would let the button re-enable and
+  // fire a duplicate submission. Tracks the whole handleSubmit lifecycle instead.
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const isCloudProject = project ? isCloudSupportProject(project) : false;
 
@@ -105,11 +109,13 @@ export default function NewCasePage() {
     !!issueType &&
     subject.trim().length > 0 &&
     description.trim().length > 0 &&
-    !createCase.isPending;
+    !createCase.isPending &&
+    !isSubmitting;
 
   const handleSubmit = async () => {
     if (!canSubmit || !project || !severity || !issueType) return;
     setSubmitError(null);
+    setIsSubmitting(true);
 
     try {
       const created = await createCase.mutateAsync({
@@ -144,6 +150,8 @@ export default function NewCasePage() {
       navigate(`/cases/${created.id}`);
     } catch {
       setSubmitError("Could not create the case. Please try again.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -261,7 +269,7 @@ export default function NewCasePage() {
             Cancel
           </Button>
           <Button variant="contained" disabled={!canSubmit} onClick={() => void handleSubmit()}>
-            {createCase.isPending ? "Creating…" : "Create Case"}
+            {isSubmitting ? "Creating…" : "Create Case"}
           </Button>
         </Stack>
       </Stack>
