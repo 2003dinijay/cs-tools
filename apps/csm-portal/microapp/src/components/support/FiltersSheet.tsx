@@ -29,15 +29,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { X } from "@wso2/oxygen-ui-icons-react";
-import type { CaseState } from "@src/types";
-import {
-  ALL_SEVERITIES,
-  ALL_WORK_STATES,
-  FILTERABLE_STATES,
-  SEVERITY_LABELS,
-  STATE_LABELS,
-  WORK_STATE_LABEL,
-} from "./config";
+import { ALL_SEVERITIES, ALL_WORK_STATES, SEVERITY_LABELS, WORK_STATE_LABEL } from "./config";
 import { EMPTY_FILTERS, type CaseFilters } from "./filters";
 
 function toggle<T>(list: T[], value: T): T[] {
@@ -81,12 +73,13 @@ interface FiltersSheetProps {
 }
 
 // Mobile bottom-sheet-style equivalent of the webapp's CasesFilterBar collapsible panel: severity
-// and state are picked from the same fixed enums the webapp filters on
-// (apps/csm-portal/webapp/src/features/csm-cases/components/CasesFilterBar.tsx — ALL_SEVERITIES,
-// PRIMARY_STATES), work state is only enabled once "Work in progress" is among the selected
-// states (same invariant the webapp enforces). Assignee/project/product filters are deliberately
-// scoped out here in favor of simple "Assigned to me" / "Created by me" toggles — the webapp's
-// full async assignee/project search pickers aren't a good fit for a mobile filter sheet.
+// is picked from the same fixed enum the webapp filters on
+// (apps/csm-portal/webapp/src/features/csm-cases/components/CasesFilterBar.tsx — ALL_SEVERITIES).
+// State lives in its own tab row above the list (not here) — work state is only enabled once
+// "Work in progress" is the selected state (same invariant the webapp enforces). Assignee/project/
+// product filters are deliberately scoped out here in favor of simple "Assigned to me" / "Created
+// by me" toggles — the webapp's full async assignee/project search pickers aren't a good fit for a
+// mobile filter sheet.
 export function FiltersSheet({ open, onClose, filters, onApply }: FiltersSheetProps) {
   const [draft, setDraft] = useState<CaseFilters>(filters);
 
@@ -98,12 +91,6 @@ export function FiltersSheet({ open, onClose, filters, onApply }: FiltersSheetPr
   }, [open]);
 
   const workStateDisabled = !draft.states.includes("work_in_progress");
-
-  const handleToggleState = (state: CaseState) => {
-    const states = toggle(draft.states, state);
-    const workStates = states.includes("work_in_progress") ? draft.workStates : [];
-    setDraft({ ...draft, states, workStates });
-  };
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
@@ -125,16 +112,6 @@ export function FiltersSheet({ open, onClose, filters, onApply }: FiltersSheetPr
               selected={draft.severities}
               labels={SEVERITY_LABELS}
               onToggle={(severity) => setDraft({ ...draft, severities: toggle(draft.severities, severity) })}
-            />
-          </Stack>
-
-          <Stack gap={1}>
-            <Typography variant="subtitle2">State</Typography>
-            <ToggleChipGroup
-              options={FILTERABLE_STATES}
-              selected={draft.states}
-              labels={STATE_LABELS}
-              onToggle={handleToggleState}
             />
           </Stack>
 

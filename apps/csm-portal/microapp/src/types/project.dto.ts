@@ -14,22 +14,32 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import type { UserMeDto } from "./user.dto";
+export type ProjectSubscriptionType =
+  | "development_support"
+  | "managed_cloud_subscription"
+  | "evaluation_subscription"
+  | "subscription"
+  | "cloud_evaluation_support"
+  | "internal"
+  | "platformer_subscription"
+  | "cloud_support"
+  | "professional_services";
 
-export interface UserProfile {
-  id: string | null;
-  email: string;
-  fullName: string;
-  phoneNumber: string | null;
-  timeZone: string | null;
+export interface ProjectDto {
+  id: string;
+  name: string;
+  subscriptionType: ProjectSubscriptionType;
 }
 
-export function toUserProfile(dto: UserMeDto): UserProfile {
-  return {
-    id: dto.id ?? null,
-    email: dto.email,
-    fullName: [dto.firstName, dto.lastName].filter(Boolean).join(" ").trim() || dto.email,
-    phoneNumber: dto.phoneNumber ?? null,
-    timeZone: dto.timeZone ?? null,
-  };
+export interface ProjectSearchPayloadDto {
+  pagination?: { offset?: number; limit?: number };
+  searchQuery?: string;
+}
+
+export interface ProjectSearchResponseDto {
+  projects: ProjectDto[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
 }

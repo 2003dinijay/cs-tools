@@ -14,22 +14,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import type { UserMeDto } from "./user.dto";
+import { ATTACHMENTS_ENDPOINT } from "@config/endpoints";
+import type { AttachmentCreatePayloadDto, AttachmentCreateResponseDto, AttachmentDetailDto } from "@src/types";
+import apiClient from "./apiClient";
 
-export interface UserProfile {
-  id: string | null;
-  email: string;
-  fullName: string;
-  phoneNumber: string | null;
-  timeZone: string | null;
-}
+const createAttachment = async (payload: AttachmentCreatePayloadDto): Promise<AttachmentDetailDto> => {
+  const { data } = await apiClient.post<AttachmentCreateResponseDto>(ATTACHMENTS_ENDPOINT, payload);
+  return data.attachment;
+};
 
-export function toUserProfile(dto: UserMeDto): UserProfile {
-  return {
-    id: dto.id ?? null,
-    email: dto.email,
-    fullName: [dto.firstName, dto.lastName].filter(Boolean).join(" ").trim() || dto.email,
-    phoneNumber: dto.phoneNumber ?? null,
-    timeZone: dto.timeZone ?? null,
-  };
-}
+export const attachments = {
+  create: createAttachment,
+};

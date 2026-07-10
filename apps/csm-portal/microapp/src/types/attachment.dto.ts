@@ -14,22 +14,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import type { UserMeDto } from "./user.dto";
+export type AttachmentReferenceType = "case" | "conversation" | "change_request" | "deployment";
 
-export interface UserProfile {
-  id: string | null;
-  email: string;
-  fullName: string;
-  phoneNumber: string | null;
-  timeZone: string | null;
+export interface AttachmentCreatePayloadDto {
+  referenceId: string;
+  referenceType: AttachmentReferenceType;
+  name: string;
+  type: string;
+  /** Base64 data URI, e.g. "data:image/png;base64,...". Max 10 MB decoded. */
+  file: string;
 }
 
-export function toUserProfile(dto: UserMeDto): UserProfile {
-  return {
-    id: dto.id ?? null,
-    email: dto.email,
-    fullName: [dto.firstName, dto.lastName].filter(Boolean).join(" ").trim() || dto.email,
-    phoneNumber: dto.phoneNumber ?? null,
-    timeZone: dto.timeZone ?? null,
-  };
+export interface AttachmentDetailDto {
+  id: string;
+  sizeBytes?: number;
+  downloadUrl?: string;
+}
+
+export interface AttachmentCreateResponseDto {
+  message?: string;
+  attachment: AttachmentDetailDto;
 }
