@@ -26,11 +26,22 @@ import { ErrorBoundary } from "@components/common/ErrorBoundary";
 import { CaseCard, CaseCardSkeleton } from "@components/support/CaseCard";
 import { EmptyState } from "@components/support/EmptyState";
 import { ErrorState } from "@components/support/ErrorState";
+import { ItemListHeader } from "@components/support/ItemListHeader";
 import { SearchBar } from "@components/support/SearchBar";
 import { FiltersSheet } from "@components/support/FiltersSheet";
-import { countActiveFilters, EMPTY_FILTERS, toCaseSearchFilters, type CaseFilters } from "@components/support/filters";
+import {
+  countActiveFilters,
+  EMPTY_FILTERS,
+  filtersToSearchParams,
+  toCaseSearchFilters,
+  type CaseFilters,
+} from "@components/support/filters";
 import { TABS, TAB_CONFIG } from "@components/support/config";
 import { useDebouncedValue } from "@utils/useDebouncedValue";
+
+// Recent-items preview above the tab's "View All" link, mirroring the customer-portal
+// microapp's SupportPage (ItemListView + a 5-item recent query).
+const RECENT_CASES_LIMIT = 5;
 
 export default function SupportPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -56,6 +67,8 @@ export default function SupportPage() {
     );
   };
 
+  const viewAllPath = `/support/${tab}/all?${filtersToSearchParams(debouncedSearch, filters).toString()}`;
+
   return (
     <Stack gap={2}>
       <Typography variant="h5">Support</Typography>
@@ -75,16 +88,18 @@ export default function SupportPage() {
         ))}
       </Tabs>
 
-      <CaseListErrorBoundary>
-        <Suspense fallback={<CaseListSkeleton />}>
-          <CaseListContent
-            type={tab}
-            search={debouncedSearch}
-            filters={filters}
-            currentUserId={currentUserId ?? null}
-          />
-        </Suspense>
-      </CaseListErrorBoundary>
+      <ItemListHeader title={TAB_CONFIG[tab].title} viewAllPath={viewAllPath}>
+        <CaseListErrorBoundary>
+          <Suspense fallback={<CaseListSkeleton />}>
+            <CaseListContent
+              type={tab}
+              search={debouncedSearch}
+              filters={filters}
+              currentUserId={currentUserId ?? null}
+            />
+          </Suspense>
+        </CaseListErrorBoundary>
+      </ItemListHeader>
 
       <FiltersSheet open={filtersOpen} onClose={() => setFiltersOpen(false)} filters={filters} onApply={setFilters} />
     </Stack>
@@ -106,7 +121,7 @@ function CaseListContent({
     cases.all({
       filters: toCaseSearchFilters(type, search, filters, currentUserId),
       sortBy: { field: "updatedOn", order: "desc" },
-      pagination: { limit: 20 },
+      pagination: { limit: RECENT_CASES_LIMIT },
     }),
   );
 

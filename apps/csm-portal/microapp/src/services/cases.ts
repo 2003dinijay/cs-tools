@@ -14,10 +14,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { queryOptions } from "@tanstack/react-query";
+import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import { CASES_SEARCH_ENDPOINT, CASE_COMMENTS_SEARCH_ENDPOINT, CASE_DETAILS_ENDPOINT } from "@config/endpoints";
 import type {
   CaseCommentSearchResponseDto,
+  CaseSearchFiltersDto,
   CaseSearchPayloadDto,
   CaseSearchResponseDto,
   CaseViewDto,
@@ -56,11 +57,28 @@ const getCaseComments = async (id: string): Promise<Comment[]> => {
   return data.comments.map(toComment);
 };
 
+const CASES_PAGE_LIMIT = 20;
+
 export const cases = {
   all: (payload: CaseSearchPayloadDto = {}) =>
     queryOptions({
       queryKey: ["cases", payload],
       queryFn: () => getAllCases(payload),
+    }),
+
+  // The full "View All" list page: same filters as the recent-5 view but paged via infinite
+  // scroll, mirroring the webapp's useGetCsmCases.ts (updatedOn desc, page-by-offset).
+  infinite: (filters: CaseSearchFiltersDto) =>
+    infiniteQueryOptions({
+      queryKey: ["cases", "infinite", filters],
+      queryFn: ({ pageParam }) =>
+        getAllCases({
+          filters,
+          sortBy: { field: "updatedOn", order: "desc" },
+          pagination: { offset: pageParam, limit: CASES_PAGE_LIMIT },
+        }),
+      initialPageParam: 0,
+      getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.offset + lastPage.limit : undefined),
     }),
 
   get: (id: string) =>
