@@ -21,11 +21,7 @@ import {
 } from "@tanstack/react-query";
 import { useBackendApi } from "@api/backend/client";
 import { ApiQueryKeys } from "@constants/apiConstants";
-import {
-  beStateFromUi,
-  priorityFromSeverity,
-  uiStateFromBe,
-} from "@api/backend/mappers";
+import { beStateFromUi, uiStateFromBe } from "@api/backend/mappers";
 import type {
   BeCaseSearchPayload,
   BeCaseSearchResponse,
@@ -44,10 +40,10 @@ import type {
  * subject / number); the backend paginates and sorts by last-updated
  * descending, so the most recent announcements load on arrival.
  *
- * The state / severity / project filters are pushed into the search payload:
- * UI `CaseState` → `beStateFromUi`, UI `Severity` → `priorityFromSeverity`,
- * project ids as-is. Empty filter arrays are omitted, so the list shows every
- * state and severity across all projects by default.
+ * The state / project filters are pushed into the search payload: UI
+ * `CaseState` → `beStateFromUi`, project ids as-is. Empty filter arrays are
+ * omitted, so the list shows every state across all projects by default.
+ * (No severity filter — announcements don't carry a severity of their own.)
  *
  * Creating / targeting / unpublishing announcements is not covered here — it
  * needs the dedicated announcement backend (digiops-cs#2053), which isn't
@@ -69,7 +65,6 @@ export function useSearchAnnouncements(
       ApiQueryKeys.CSM_ANNOUNCEMENTS,
       q,
       [...filters.states].sort(),
-      [...filters.severities].sort(),
       [...filters.projectIds].sort(),
       page,
       pageSize,
@@ -85,9 +80,6 @@ export function useSearchAnnouncements(
             ...(q.length > 0 && { searchQuery: q }),
             ...(filters.states.length > 0 && {
               states: filters.states.map(beStateFromUi),
-            }),
-            ...(filters.severities.length > 0 && {
-              severities: filters.severities.map(priorityFromSeverity),
             }),
             ...(filters.projectIds.length > 0 && {
               projectIds: filters.projectIds,
