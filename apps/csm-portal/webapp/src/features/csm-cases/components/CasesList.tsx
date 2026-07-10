@@ -19,7 +19,6 @@ import {
   Chip,
   Skeleton,
   TableSortLabel,
-  Tooltip,
   Typography,
   useTheme,
 } from "@wso2/oxygen-ui";
@@ -274,15 +273,8 @@ export default function CasesList({
                 )}
               </Box>
               <Typography variant="caption" color="text.secondary" noWrap>
-                {c.updatedAtIsCreatedFallback ? (
-                  <Tooltip title="No update recorded for this case — showing when it was created.">
-                    <Box component="span">
-                      Created <RelativeTime iso={c.updatedAt} />
-                    </Box>
-                  </Tooltip>
-                ) : (
-                  <RelativeTime iso={c.updatedAt} />
-                )}
+                {c.updatedAtIsCreatedFallback && "Created "}
+                <RelativeTime iso={c.updatedAt} />
               </Typography>
             </Box>
           );
