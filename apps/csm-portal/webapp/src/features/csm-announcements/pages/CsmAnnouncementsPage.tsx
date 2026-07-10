@@ -40,7 +40,7 @@ import type { SelectChangeEvent } from "@wso2/oxygen-ui";
 import { Search, X } from "@wso2/oxygen-ui-icons-react";
 import { useState, type ChangeEvent, type JSX } from "react";
 import QueryErrorState from "@components/QueryErrorState";
-import StateChip from "@components/StateChip";
+import SemanticChip, { type SemanticRole } from "@components/SemanticChip";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
@@ -71,6 +71,22 @@ const STATE_OPTIONS: { value: CaseState; label: string }[] = (
 const SEVERITY_OPTIONS: { value: Severity; label: string }[] = (
   ["S0", "S1", "S2", "S3", "S4"] as Severity[]
 ).map((s) => ({ value: s, label: SEVERITY_LABEL[s] }));
+
+/**
+ * Chip colour for an announcement's lifecycle state — announcement-specific,
+ * not the case-state palette (which paints a closed case green). Here an Open
+ * announcement is live/published → green, a Closed one is inactive → grey.
+ */
+function announcementStateRole(state?: CaseState): SemanticRole {
+  switch (state) {
+    case "open":
+      return "success";
+    case "closed":
+      return "default";
+    default:
+      return "info";
+  }
+}
 
 function formatDate(value?: string | null): string {
   return (
@@ -293,7 +309,16 @@ export default function CsmAnnouncementsPage(): JSX.Element {
                     <TableCell>{a.number || "—"}</TableCell>
                     <TableCell>{a.subject}</TableCell>
                     <TableCell>{a.projectName}</TableCell>
-                    <TableCell>{a.state ? <StateChip state={a.state} /> : "—"}</TableCell>
+                    <TableCell>
+                      {a.state ? (
+                        <SemanticChip
+                          role={announcementStateRole(a.state)}
+                          label={STATE_LABEL[a.state] ?? a.state}
+                        />
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
                     <TableCell>{a.createdBy || "—"}</TableCell>
                     <TableCell>{formatDate(a.updatedAt)}</TableCell>
                   </TableRow>
