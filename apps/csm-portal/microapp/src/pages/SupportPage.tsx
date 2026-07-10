@@ -14,10 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Suspense, useState, type ReactNode } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { Badge, IconButton, Stack, Tab, Tabs, Typography } from "@wso2/oxygen-ui";
-import { Plus, SlidersHorizontal } from "@wso2/oxygen-ui-icons-react";
+import { Suspense, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
+import { Stack, Tab, Tabs, Typography } from "@wso2/oxygen-ui";
 import { useQuery, useQueryErrorResetBoundary, useSuspenseQuery } from "@tanstack/react-query";
 import { cases } from "@src/services/cases";
 import { currentUser } from "@src/services/currentUser";
@@ -27,34 +26,19 @@ import { CaseCard, CaseCardSkeleton } from "@components/support/CaseCard";
 import { EmptyState } from "@components/support/EmptyState";
 import { ErrorState } from "@components/support/ErrorState";
 import { ItemListHeader } from "@components/support/ItemListHeader";
-import { SearchBar } from "@components/support/SearchBar";
-import { FiltersSheet } from "@components/support/FiltersSheet";
-import {
-  countActiveFilters,
-  EMPTY_FILTERS,
-  filtersToSearchParams,
-  toCaseSearchFilters,
-  type CaseFilters,
-} from "@components/support/filters";
+import { EMPTY_FILTERS, toCaseSearchFilters } from "@components/support/filters";
 import { TABS, TAB_CONFIG } from "@components/support/config";
-import { useDebouncedValue } from "@utils/useDebouncedValue";
 
 // Recent-items preview above the tab's "View All" link, mirroring the customer-portal
-// microapp's SupportPage (ItemListView + a 5-item recent query).
+// microapp's SupportPage (ItemListView + a 5-item recent query). Search/filters live on the
+// "View All" page only — the recent view is a quick, uncluttered glance.
 const RECENT_CASES_LIMIT = 5;
 
 export default function SupportPage() {
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   // Derived directly from the URL (not local state) so browser back/forward navigation that
   // changes ?tab= is reflected immediately, instead of showing a stale tab.
   const tab = TABS.find((t) => t === searchParams.get("tab")) ?? "case";
-
-  const [search, setSearch] = useState("");
-  const debouncedSearch = useDebouncedValue(search, 300);
-  const [filters, setFilters] = useState<CaseFilters>(EMPTY_FILTERS);
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const activeFilterCount = countActiveFilters(filters);
 
   const { data: currentUserId } = useQuery(currentUser.id());
 
@@ -68,25 +52,9 @@ export default function SupportPage() {
     );
   };
 
-  const viewAllPath = `/support/${tab}/all?${filtersToSearchParams(debouncedSearch, filters).toString()}`;
-
   return (
     <Stack gap={2}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between">
-        <Typography variant="h5">Support</Typography>
-        <IconButton aria-label="New case" onClick={() => navigate("/cases/new")}>
-          <Plus size={20} />
-        </IconButton>
-      </Stack>
-
-      <Stack direction="row" gap={1} alignItems="center">
-        <SearchBar value={search} onChange={setSearch} />
-        <Badge badgeContent={activeFilterCount} color="primary" invisible={activeFilterCount === 0}>
-          <IconButton aria-label="Filters" onClick={() => setFiltersOpen(true)}>
-            <SlidersHorizontal size={18} />
-          </IconButton>
-        </Badge>
-      </Stack>
+      <Typography variant="h5">Support</Typography>
 
       <Tabs variant="scrollable" value={tab} onChange={(_, value) => handleTabChange(value)}>
         {TABS.map((t) => (
@@ -94,38 +62,21 @@ export default function SupportPage() {
         ))}
       </Tabs>
 
-      <ItemListHeader title={TAB_CONFIG[tab].title} viewAllPath={viewAllPath}>
+      <ItemListHeader title={TAB_CONFIG[tab].title} viewAllPath={`/support/${tab}/all`}>
         <CaseListErrorBoundary>
           <Suspense fallback={<CaseListSkeleton />}>
-            <CaseListContent
-              type={tab}
-              search={debouncedSearch}
-              filters={filters}
-              currentUserId={currentUserId ?? null}
-            />
+            <CaseListContent type={tab} currentUserId={currentUserId ?? null} />
           </Suspense>
         </CaseListErrorBoundary>
       </ItemListHeader>
-
-      <FiltersSheet open={filtersOpen} onClose={() => setFiltersOpen(false)} filters={filters} onApply={setFilters} />
     </Stack>
   );
 }
 
-function CaseListContent({
-  type,
-  search,
-  filters,
-  currentUserId,
-}: {
-  type: CaseType;
-  search: string;
-  filters: CaseFilters;
-  currentUserId: string | null;
-}) {
+function CaseListContent({ type, currentUserId }: { type: CaseType; currentUserId: string | null }) {
   const { data } = useSuspenseQuery(
     cases.all({
-      filters: toCaseSearchFilters(type, search, filters, currentUserId),
+      filters: toCaseSearchFilters(type, "", EMPTY_FILTERS, currentUserId),
       sortBy: { field: "updatedOn", order: "desc" },
       pagination: { limit: RECENT_CASES_LIMIT },
     }),

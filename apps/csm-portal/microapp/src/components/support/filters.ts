@@ -32,10 +32,11 @@ export const EMPTY_FILTERS: CaseFilters = {
   createdByMe: false,
 };
 
+// Excludes `states` — state has its own dedicated tab row (not the filter sheet), so it
+// shouldn't double-count against the sheet's "N filters active" badge.
 export function countActiveFilters(filters: CaseFilters): number {
   return (
     filters.severities.length +
-    filters.states.length +
     filters.workStates.length +
     (filters.assignedToMe ? 1 : 0) +
     (filters.createdByMe ? 1 : 0)

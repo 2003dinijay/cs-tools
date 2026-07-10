@@ -16,12 +16,12 @@
 
 import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Badge, IconButton, Stack, Typography, pxToRem } from "@wso2/oxygen-ui";
-import { ArrowLeft, SlidersHorizontal } from "@wso2/oxygen-ui-icons-react";
+import { Badge, IconButton, Stack, Tab, Tabs, Typography, pxToRem } from "@wso2/oxygen-ui";
+import { ArrowLeft, Plus, SlidersHorizontal } from "@wso2/oxygen-ui-icons-react";
 import { useQuery, useQueryErrorResetBoundary, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { cases } from "@src/services/cases";
 import { currentUser } from "@src/services/currentUser";
-import type { CaseType } from "@src/types";
+import type { CaseState, CaseType } from "@src/types";
 import { ErrorBoundary } from "@components/common/ErrorBoundary";
 import { CaseCard, CaseCardSkeleton } from "@components/support/CaseCard";
 import { EmptyState } from "@components/support/EmptyState";
@@ -34,8 +34,11 @@ import {
   toCaseSearchFilters,
   type CaseFilters,
 } from "@components/support/filters";
-import { TAB_CONFIG } from "@components/support/config";
+import { FILTERABLE_STATES, STATE_LABELS, TAB_CONFIG } from "@components/support/config";
 import { useDebouncedValue } from "@utils/useDebouncedValue";
+
+const ALL_STATES_TAB = "all" as const;
+type StateTabValue = CaseState | typeof ALL_STATES_TAB;
 
 // The full, infinite-scrolled list behind a tab's "View All" link (mirrors the customer-portal
 // microapp's AllItemsPage.tsx). Search/filters are seeded once from the URL the recent-5 view
@@ -56,13 +59,36 @@ export default function AllCasesPage() {
 
   const { data: currentUserId } = useQuery(currentUser.id());
 
+  // Single-select state tab, mirroring the type-tab pattern on the Support page. "All" clears the
+  // states filter entirely; picking a state resets work state unless it's "Work in progress" (the
+  // only state work state is meaningful for), same invariant the webapp's filter bar enforces.
+  const stateTab: StateTabValue = filters.states[0] ?? ALL_STATES_TAB;
+  const handleStateTabChange = (value: StateTabValue) => {
+    const states = value === ALL_STATES_TAB ? [] : [value];
+    const workStates = value === "work_in_progress" ? filters.workStates : [];
+    setFilters({ ...filters, states, workStates });
+  };
+
   return (
     <Stack gap={2}>
-      <Stack direction="row" alignItems="center" gap={1}>
-        <IconButton onClick={() => navigate(-1)} size="small" aria-label="Go back">
-          <ArrowLeft size={pxToRem(20)} />
+      <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1}>
+        <Stack direction="row" alignItems="center" gap={1}>
+          <IconButton onClick={() => navigate(-1)} size="small" aria-label="Go back">
+            <ArrowLeft size={pxToRem(20)} />
+          </IconButton>
+          <Typography variant="h6">{TAB_CONFIG[caseType].title}</Typography>
+        </Stack>
+        <IconButton
+          aria-label="Create case"
+          onClick={() => navigate("/cases/new")}
+          sx={{
+            bgcolor: "primary.main",
+            color: "primary.contrastText",
+            "&:hover": { bgcolor: "primary.dark" },
+          }}
+        >
+          <Plus size={20} />
         </IconButton>
-        <Typography variant="h6">{TAB_CONFIG[caseType].title}</Typography>
       </Stack>
 
       <Stack direction="row" gap={1} alignItems="center">
@@ -73,6 +99,13 @@ export default function AllCasesPage() {
           </IconButton>
         </Badge>
       </Stack>
+
+      <Tabs variant="scrollable" value={stateTab} onChange={(_, value: StateTabValue) => handleStateTabChange(value)}>
+        <Tab label="All" value={ALL_STATES_TAB} disableRipple />
+        {FILTERABLE_STATES.map((state) => (
+          <Tab key={state} label={STATE_LABELS[state]} value={state} disableRipple />
+        ))}
+      </Tabs>
 
       <AllCasesErrorBoundary>
         <Suspense fallback={<AllCasesSkeleton />}>
