@@ -382,6 +382,29 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // Email of the signed-in engineer, for the "Assign to me" shortcut.
   const currentUserEmail = claims?.email ?? undefined;
 
+  // This page stays mounted across case-to-case navigation (route pattern is
+  // the same, only :caseId changes), so state left over from the previous
+  // case — e.g. a sticky "requested more info" banner, or an open dialog —
+  // would otherwise leak into the newly opened case. Reset it synchronously
+  // during render (React's recommended pattern for resetting state when a
+  // prop changes) rather than in an effect, to avoid an extra render pass.
+  const [prevCaseId, setPrevCaseId] = useState(caseId);
+  if (caseId !== prevCaseId) {
+    setPrevCaseId(caseId);
+    setFeedback(null);
+    setComposerOpen(false);
+    setAssignOpen(false);
+    setResolutionDialog(null);
+    setSeverityOpen(false);
+    setLogTimeOpen(false);
+    setAutoOpenCallCreate(false);
+    setGithubIssueOpen(false);
+    setGithubIssueError(null);
+    setGithubIssueResult(null);
+    setPendingDelete(null);
+    setPauseConflict(null);
+  }
+
   // Twitter-style permalinks: when the URL has a fragment matching an entry id,
   // jump to the Activities tab, scroll the entry into view vertically, and
   // flash it. The browser's default hash-anchor `scrollIntoView` also drags
