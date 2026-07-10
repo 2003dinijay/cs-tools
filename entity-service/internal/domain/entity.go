@@ -2136,6 +2136,17 @@ type TaskSlaDetail struct {
 	Schedule                  *TaskSlaScheduleRef      `json:"schedule"`
 }
 
+// IncidentPriority represents the priority level of an incident.
+type IncidentPriority string
+
+const (
+	IncidentPriorityCritical IncidentPriority = "CRITICAL"
+	IncidentPriorityHigh     IncidentPriority = "HIGH"
+	IncidentPriorityModerate IncidentPriority = "MODERATE"
+	IncidentPriorityLow      IncidentPriority = "LOW"
+	IncidentPriorityPlanning IncidentPriority = "PLANNING"
+)
+
 // IncidentSortField enumerates the columns available for sorting incident search results.
 type IncidentSortField string
 
@@ -2161,9 +2172,9 @@ type IncidentSort struct {
 
 // SearchIncidentsFilters holds all optional filter criteria for an incident search.
 type SearchIncidentsFilters struct {
-	SearchQuery string   `json:"searchQuery"`
-	PriorityKeys []int   `json:"priorityKeys"`
-	ParentIDs   []string `json:"parentIds"`
+	SearchQuery string             `json:"searchQuery"`
+	Priorities  []IncidentPriority `json:"priorities"`
+	ParentIDs   []string           `json:"parentIds"`
 }
 
 // SearchIncidentsRequest is the input for POST /incidents/search.

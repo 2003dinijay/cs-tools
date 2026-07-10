@@ -5237,10 +5237,11 @@ components:
           properties:
             searchQuery:
               type: string
-            priorityKeys:
+            priorities:
               type: array
               items:
-                type: integer
+                type: string
+                enum: [CRITICAL, HIGH, MODERATE, LOW, PLANNING]
             parentIds:
               type: array
               items:

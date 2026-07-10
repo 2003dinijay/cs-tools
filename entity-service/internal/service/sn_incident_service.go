@@ -82,16 +82,34 @@ type snIncidentSort struct {
 
 type snIncidentFilters struct {
 	SearchQuery  string   `json:"searchQuery,omitempty"`
-	PriorityKeys []int    `json:"priorityKeys,omitempty"`
+	PriorityKeys []int    `json:"priorityKeys,omitempty"` // SN expects int keys
 	ParentIDs    []string `json:"parentIds,omitempty"`
 }
 
+// snIncidentPriorityKeyMap maps domain IncidentPriority enums to SN numeric priority keys.
+var snIncidentPriorityKeyMap = map[domain.IncidentPriority]int{
+	domain.IncidentPriorityCritical: 1,
+	domain.IncidentPriorityHigh:     2,
+	domain.IncidentPriorityModerate: 3,
+	domain.IncidentPriorityLow:      4,
+	domain.IncidentPriorityPlanning: 5,
+}
+
+// snIncidentPriorityLabelMap maps SN numeric priority keys to domain enum strings.
 var snIncidentPriorityLabelMap = map[int]string{
 	1: "CRITICAL",
 	2: "HIGH",
 	3: "MODERATE",
 	4: "LOW",
 	5: "PLANNING",
+}
+
+var validIncidentPriority = map[domain.IncidentPriority]bool{
+	domain.IncidentPriorityCritical: true,
+	domain.IncidentPriorityHigh:     true,
+	domain.IncidentPriorityModerate: true,
+	domain.IncidentPriorityLow:      true,
+	domain.IncidentPriorityPlanning: true,
 }
 
 var snIncidentStateLabelMap = map[int]string{
@@ -142,6 +160,11 @@ func (s *snIncidentService) SearchIncidents(ctx context.Context, req domain.Sear
 	if req.SortBy.Order != "" && !validIncidentSortOrder[req.SortBy.Order] {
 		return domain.SearchIncidentsResponse{}, &apierror.ValidationError{Msg: "sortBy.order contains invalid value: " + string(req.SortBy.Order)}
 	}
+	for _, p := range req.Filters.Priorities {
+		if !validIncidentPriority[p] {
+			return domain.SearchIncidentsResponse{}, &apierror.ValidationError{Msg: "priorities contains invalid value: " + string(p)}
+		}
+	}
 	if err := validateUUIDs("parentIds", req.Filters.ParentIDs); err != nil {
 		return domain.SearchIncidentsResponse{}, err
 	}
@@ -160,10 +183,15 @@ func (s *snIncidentService) SearchIncidents(ctx context.Context, req domain.Sear
 		snSortBy = &snIncidentSort{Field: string(req.SortBy.Field), Order: order}
 	}
 
+	priorityKeys := make([]int, 0, len(req.Filters.Priorities))
+	for _, p := range req.Filters.Priorities {
+		priorityKeys = append(priorityKeys, snIncidentPriorityKeyMap[p])
+	}
+
 	payload := snIncidentSearchPayload{
 		Filters: snIncidentFilters{
 			SearchQuery:  req.Filters.SearchQuery,
-			PriorityKeys: req.Filters.PriorityKeys,
+			PriorityKeys: priorityKeys,
 			ParentIDs:    uuidsToSysids(req.Filters.ParentIDs),
 		},
 		SortBy:     snSortBy,
