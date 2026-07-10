@@ -16,8 +16,15 @@
 
 import {
   Box,
+  Button,
+  Checkbox,
+  FormControl,
   IconButton,
   InputAdornment,
+  InputLabel,
+  ListItemText,
+  MenuItem,
+  Select,
   Skeleton,
   Table,
   TableBody,
@@ -29,16 +36,41 @@ import {
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
+import type { SelectChangeEvent } from "@wso2/oxygen-ui";
 import { Search, X } from "@wso2/oxygen-ui-icons-react";
 import { useState, type ChangeEvent, type JSX } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import StateChip from "@components/StateChip";
+import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { useSearchAnnouncements } from "@features/csm-announcements/api/useSearchAnnouncements";
+import {
+  DEFAULT_ANNOUNCEMENT_FILTERS,
+  type AnnouncementFilters,
+} from "@features/csm-announcements/types/csmAnnouncements";
+import { SEVERITY_LABEL, STATE_LABEL } from "@features/csm-dashboard/utils/abtDashboard";
+import type { CaseState, Severity } from "@features/csm-dashboard/types/abtDashboard";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
+
+// `reopened` is intentionally excluded — it only appears as a `nextStates`
+// signal, never as a case's own state (see CaseState's doc).
+const STATE_OPTIONS: { value: CaseState; label: string }[] = (
+  [
+    "open",
+    "work_in_progress",
+    "solution_proposed",
+    "awaiting_info",
+    "waiting_on_wso2",
+    "closed",
+  ] as CaseState[]
+).map((s) => ({ value: s, label: STATE_LABEL[s] }));
+
+const SEVERITY_OPTIONS: { value: Severity; label: string }[] = (
+  ["S0", "S1", "S2", "S3", "S4"] as Severity[]
+).map((s) => ({ value: s, label: SEVERITY_LABEL[s] }));
 
 function formatDate(value?: string | null): string {
   return (
@@ -50,20 +82,68 @@ function formatDate(value?: string | null): string {
   );
 }
 
+interface MultiSelectProps<T extends string> {
+  id: string;
+  label: string;
+  values: T[];
+  options: { value: T; label: string }[];
+  onChange: (next: T[]) => void;
+}
+
+/** Checkbox multi-select over a fixed enum (State / Severity). */
+function MultiSelect<T extends string>({
+  id,
+  label,
+  values,
+  options,
+  onChange,
+}: MultiSelectProps<T>): JSX.Element {
+  const handleChange = (event: SelectChangeEvent<string[]>): void => {
+    const val = event.target.value;
+    onChange((Array.isArray(val) ? val : [val]) as T[]);
+  };
+  return (
+    <FormControl fullWidth size="small">
+      <InputLabel id={`${id}-label`}>{label}</InputLabel>
+      <Select
+        multiple
+        labelId={`${id}-label`}
+        id={id}
+        value={values as unknown as string[]}
+        label={label}
+        onChange={handleChange}
+        renderValue={(selected) =>
+          (Array.isArray(selected) ? selected : [])
+            .map((v) => options.find((o) => o.value === v)?.label ?? v)
+            .join(", ")
+        }
+      >
+        {options.map((opt) => (
+          <MenuItem key={opt.value} value={opt.value} sx={{ py: 0.5 }}>
+            <Checkbox size="small" checked={values.includes(opt.value)} sx={{ mr: 1, p: 0.25 }} />
+            <ListItemText primary={opt.label} />
+          </MenuItem>
+        ))}
+      </Select>
+    </FormControl>
+  );
+}
+
 /**
  * Read-only announcements list. Announcements are cases of
- * `type: "announcement"` surfaced via `POST /cases/search`. Creating /
+ * `type: "announcement"` surfaced via `POST /cases/search`. Filterable by
+ * state, severity, and project (all default to "show all"). Creating /
  * targeting / unpublishing needs the dedicated announcement backend
  * (digiops-cs#2053), which isn't built yet, so this page is view-only for now.
  */
 export default function CsmAnnouncementsPage(): JSX.Element {
-  const [search, setSearch] = useState("");
+  const [filters, setFilters] = useState<AnnouncementFilters>(DEFAULT_ANNOUNCEMENT_FILTERS);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
-  const debouncedSearch = useDebouncedValue(search.trim(), 300);
+  const debouncedSearch = useDebouncedValue(filters.search.trim(), 300);
 
   const { data, isLoading, isFetching, isError, error } = useSearchAnnouncements(
-    debouncedSearch,
+    { ...filters, search: debouncedSearch },
     page,
     rowsPerPage,
   );
@@ -71,10 +151,14 @@ export default function CsmAnnouncementsPage(): JSX.Element {
   const announcements = data?.announcements ?? [];
   const total = data?.total ?? 0;
 
-  const handleSearchChange = (e: ChangeEvent<HTMLInputElement>): void => {
-    setSearch(e.target.value);
+  // Any filter change resets to the first page.
+  const patchFilters = (patch: Partial<AnnouncementFilters>): void => {
+    setFilters((prev) => ({ ...prev, ...patch }));
     setPage(0);
   };
+
+  const activeFilterCount =
+    filters.states.length + filters.severities.length + filters.projectIds.length;
 
   const handleChangeRowsPerPage = (e: ChangeEvent<HTMLInputElement>): void => {
     setRowsPerPage(parseInt(e.target.value, 10));
@@ -90,38 +174,75 @@ export default function CsmAnnouncementsPage(): JSX.Element {
         </Typography>
       </Box>
 
-      <Box sx={{ maxWidth: 360 }}>
-        <TextField
-          fullWidth
-          size="small"
-          placeholder="Search by subject or number…"
-          value={search}
-          onChange={handleSearchChange}
-          slotProps={{
-            input: {
-              startAdornment: (
-                <InputAdornment position="start">
-                  <Search size={16} />
-                </InputAdornment>
-              ),
-              endAdornment: search ? (
-                <InputAdornment position="end">
-                  <IconButton
-                    size="small"
-                    edge="end"
-                    onClick={() => {
-                      setSearch("");
-                      setPage(0);
-                    }}
-                    aria-label="Clear search"
-                  >
-                    <X size={16} />
-                  </IconButton>
-                </InputAdornment>
-              ) : undefined,
-            },
-          }}
-        />
+      {/* Filters — search + state / severity / project, all "show all" by default */}
+      <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap", alignItems: "center" }}>
+        <Box sx={{ flex: "1 1 260px", minWidth: 220 }}>
+          <TextField
+            fullWidth
+            size="small"
+            placeholder="Search by subject or number…"
+            value={filters.search}
+            onChange={(e) => patchFilters({ search: e.target.value })}
+            slotProps={{
+              input: {
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <Search size={16} />
+                  </InputAdornment>
+                ),
+                endAdornment: filters.search ? (
+                  <InputAdornment position="end">
+                    <IconButton
+                      size="small"
+                      edge="end"
+                      onClick={() => patchFilters({ search: "" })}
+                      aria-label="Clear search"
+                    >
+                      <X size={16} />
+                    </IconButton>
+                  </InputAdornment>
+                ) : undefined,
+              },
+            }}
+          />
+        </Box>
+        <Box sx={{ flex: "1 1 160px", minWidth: 150 }}>
+          <MultiSelect
+            id="announcements-filter-state"
+            label="State"
+            values={filters.states}
+            options={STATE_OPTIONS}
+            onChange={(next) => patchFilters({ states: next })}
+          />
+        </Box>
+        <Box sx={{ flex: "1 1 160px", minWidth: 150 }}>
+          <MultiSelect
+            id="announcements-filter-severity"
+            label="Severity"
+            values={filters.severities}
+            options={SEVERITY_OPTIONS}
+            onChange={(next) => patchFilters({ severities: next })}
+          />
+        </Box>
+        <Box sx={{ flex: "1 1 220px", minWidth: 200 }}>
+          <AsyncProjectMultiSelect
+            id="announcements-filter-project"
+            label="Project"
+            values={filters.projectIds}
+            onChange={(next) => patchFilters({ projectIds: next })}
+          />
+        </Box>
+        {activeFilterCount > 0 && (
+          <Button
+            variant="text"
+            size="small"
+            color="primary"
+            startIcon={<X size={16} />}
+            onClick={() => patchFilters({ states: [], severities: [], projectIds: [] })}
+          >
+            Clear filters
+          </Button>
+        )}
       </Box>
 
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
