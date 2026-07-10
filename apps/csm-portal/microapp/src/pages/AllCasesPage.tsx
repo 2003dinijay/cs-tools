@@ -137,7 +137,8 @@ function AllCasesListContent({
         <CaseCard key={item.id} item={item} />
       ))}
 
-      <div ref={sentinelRef} />
+      {/* IntersectionObserver can miss a zero-height target, so give the sentinel 1px to observe. */}
+      <div ref={sentinelRef} style={{ height: 1 }} />
 
       {isFetchingNextPage && <CaseCardSkeleton />}
       {!hasNextPage && (
