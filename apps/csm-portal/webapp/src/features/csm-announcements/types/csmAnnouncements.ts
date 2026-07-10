@@ -15,6 +15,30 @@
 // under the License.
 
 import type { BeCaseState } from "@api/backend/types";
+import type {
+  CaseState,
+  Severity,
+} from "@features/csm-dashboard/types/abtDashboard";
+
+/**
+ * Filter state for the announcements list. All arrays are multi-select and
+ * empty by default, so the list shows every state and severity across all
+ * projects until the user narrows it. `search` matches subject / number.
+ */
+export interface AnnouncementFilters {
+  search: string;
+  states: CaseState[];
+  severities: Severity[];
+  /** Project ids (the project filter is id-based). */
+  projectIds: string[];
+}
+
+export const DEFAULT_ANNOUNCEMENT_FILTERS: AnnouncementFilters = {
+  search: "",
+  states: [],
+  severities: [],
+  projectIds: [],
+};
 
 /**
  * A single announcement row for the list. Announcements are stored as cases of
