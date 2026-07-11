@@ -55,6 +55,46 @@ func TestSearchIncidents(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
+	t.Run("rejects unknown priority enum value", func(t *testing.T) {
+		h := NewIncidentHandler(&mockEntityIncidentClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/incidents/search", strings.NewReader(`{"filters":{"priorities":["URGENT"]}}`)))
+		w := httptest.NewRecorder()
+		h.SearchIncidents(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects non-UUID parentIds entry", func(t *testing.T) {
+		h := NewIncidentHandler(&mockEntityIncidentClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/incidents/search", strings.NewReader(`{"filters":{"parentIds":["not-a-uuid"]}}`)))
+		w := httptest.NewRecorder()
+		h.SearchIncidents(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects invalid sortBy field", func(t *testing.T) {
+		h := NewIncidentHandler(&mockEntityIncidentClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/incidents/search", strings.NewReader(`{"sortBy":{"field":"subject","order":"asc"}}`)))
+		w := httptest.NewRecorder()
+		h.SearchIncidents(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects invalid sortBy order", func(t *testing.T) {
+		h := NewIncidentHandler(&mockEntityIncidentClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/incidents/search", strings.NewReader(`{"sortBy":{"field":"createdOn","order":"sideways"}}`)))
+		w := httptest.NewRecorder()
+		h.SearchIncidents(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
 	t.Run("forwards body to upstream and returns 200 with response", func(t *testing.T) {
 		const reqPayload = `{"filters":{"searchQuery":"outage","priorities":["CRITICAL"]},"pagination":{"limit":10,"offset":0}}`
 		var capturedBody []byte

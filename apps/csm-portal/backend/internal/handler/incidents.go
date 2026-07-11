@@ -32,6 +32,59 @@ type entityIncidentClient interface {
 	SearchIncidents(ctx context.Context, body []byte) ([]byte, error)
 }
 
+// searchIncidentsRequest mirrors the enum/format-constrained fields of the documented
+// IncidentSearchPayload schema. It is decoded only to validate those fields at the
+// boundary; the original raw body is still forwarded to the entity service unchanged.
+type searchIncidentsRequest struct {
+	Filters struct {
+		Priorities []string `json:"priorities"`
+		ParentIDs  []string `json:"parentIds"`
+	} `json:"filters"`
+	SortBy struct {
+		Field string `json:"field"`
+		Order string `json:"order"`
+	} `json:"sortBy"`
+}
+
+var (
+	validIncidentPriorities = map[string]bool{
+		"CRITICAL": true,
+		"HIGH":     true,
+		"MODERATE": true,
+		"LOW":      true,
+		"PLANNING": true,
+	}
+	validIncidentSortFields = map[string]bool{"createdOn": true, "updatedOn": true, "openedOn": true}
+	validIncidentSortOrders = map[string]bool{"asc": true, "desc": true}
+)
+
+// validateSearchIncidentsBody checks the filter/sort fields with a known, fixed set of
+// valid values (priority enums, parentIds as UUIDs, sort field/order enums) so obviously
+// invalid requests are rejected before reaching the entity service.
+func validateSearchIncidentsBody(body []byte) bool {
+	var req searchIncidentsRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return false
+	}
+	for _, p := range req.Filters.Priorities {
+		if !validIncidentPriorities[p] {
+			return false
+		}
+	}
+	for _, id := range req.Filters.ParentIDs {
+		if !uuidRe.MatchString(id) {
+			return false
+		}
+	}
+	if req.SortBy.Field != "" && !validIncidentSortFields[req.SortBy.Field] {
+		return false
+	}
+	if req.SortBy.Order != "" && !validIncidentSortOrders[req.SortBy.Order] {
+		return false
+	}
+	return true
+}
+
 // IncidentHandler handles HTTP requests for incident operations, delegating to the
 // entity service for data access.
 type IncidentHandler struct {
@@ -68,7 +121,10 @@ func (h *IncidentHandler) SearchIncidents(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// TODO: Decode into a typed SearchIncidentsRequest and validate fields before forwarding.
+	if !validateSearchIncidentsBody(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
 
 	result, err := h.entity.SearchIncidents(r.Context(), body)
 	if err != nil {
