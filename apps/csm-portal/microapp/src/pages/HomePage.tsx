@@ -14,22 +14,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box } from "@wso2/oxygen-ui";
-import { Outlet } from "react-router-dom";
-import { TabBar } from "./TabBar";
-import { TopBar } from "./TopBar";
+import { ComingSoonPage } from "@components/common/ComingSoonPage";
 
-// Mirrors the customer-portal microapp's own MainLayout
-// (apps/customer-portal/microapp/src/components/layout/MainLayout.tsx): a sticky top bar, a
-// flex-growing scrollable content area, and a fixed bottom tab bar.
-export default function MainLayout() {
+export default function HomePage() {
   return (
-    <>
-      <TopBar />
-      <Box component="main" flexGrow={1} p={2} pb={15}>
-        <Outlet />
-      </Box>
-      <TabBar />
-    </>
+    <ComingSoonPage
+      title="Home"
+      description="A personalized home view — mirroring the webapp's Dashboard — is on the way."
+    />
   );
 }
