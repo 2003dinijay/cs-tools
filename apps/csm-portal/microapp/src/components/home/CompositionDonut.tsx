@@ -28,7 +28,6 @@ export interface CompositionSlice {
 
 interface CompositionDonutProps {
   title: string;
-  description: string;
   slices: CompositionSlice[];
   total: number;
   isLoading: boolean;
@@ -44,7 +43,6 @@ interface CompositionDonutProps {
 // Zero-value slices drop from the ring but stay in the legend so every category remains visible.
 export function CompositionDonut({
   title,
-  description,
   slices,
   total,
   isLoading,
@@ -59,9 +57,6 @@ export function CompositionDonut({
     <Card sx={{ p: 1.5, height: "100%" }}>
       <Typography variant="subtitle1" fontWeight={600}>
         {title}
-      </Typography>
-      <Typography variant="caption" color="text.secondary">
-        {description}
       </Typography>
 
       {isLoading ? (
@@ -104,6 +99,7 @@ export function CompositionDonut({
               width="100%"
               height={DONUT_SIZE}
               margin={{ top: 0, right: 0, bottom: 5, left: 0 }}
+              isAnimationActive={false}
               pies={[
                 {
                   dataKey: "value",

@@ -25,21 +25,12 @@ import { EMPTY_FILTERS, filtersToSearchParams } from "@components/support/filter
 import { COMPOSITION_STATES, SEVERITY_SHORT_LABELS, SEVERITY_SLICE_COLOR, STATE_SLICE_COLOR } from "./config";
 import { CompositionDonut, type CompositionSlice } from "./CompositionDonut";
 
-// Mirrors the webapp's CaseCompositionCharts onSliceClick (navigate(casesHref({...}))): clicking
-// a slice replaces whatever's currently on Support with just that one filter, rather than merging
-// with it — same behavior as the webapp, since a dashboard drill-down is meant to start fresh.
 function supportHref(overrides: Partial<{ severities: CaseSeverity[]; states: CaseState[] }>): string {
   const params = filtersToSearchParams("", { ...EMPTY_FILTERS, ...overrides });
   const qs = params.toString();
   return qs ? `/support?${qs}` : "/support";
 }
 
-// Two donuts — severity composition and state composition of active cases — mirrors the webapp's
-// CaseCompositionCharts (apps/csm-portal/webapp/src/features/csm-dashboard/components/CaseCompositionCharts.tsx),
-// laid out side by side via the same 2-column Grid the customer-portal microapp's Home page uses
-// for its own pie-chart widgets. Self-contained plain useQuery rather than Suspense, matching how
-// TimeCardsPage.tsx already handles independent, non-blocking widgets in this app — one
-// failed/slow widget shouldn't hold up the rest of the Home page.
 export function CaseCompositionSection() {
   const navigate = useNavigate();
   const { data, isLoading, isError } = useQuery(dashboard.composition());
@@ -76,7 +67,6 @@ export function CaseCompositionSection() {
         <Grid size={6}>
           <CompositionDonut
             title="Cases by severity"
-            description="Share of active cases at each severity level, excluding closed."
             slices={severitySlices}
             total={data?.severityTotal ?? 0}
             isLoading={isLoading}
@@ -87,7 +77,6 @@ export function CaseCompositionSection() {
         <Grid size={6}>
           <CompositionDonut
             title="Cases by state"
-            description="Share of active cases in each lifecycle state, excluding closed."
             slices={stateSlices}
             total={data?.stateTotal ?? 0}
             onSliceClick={(id) => navigate(supportHref({ states: [id as CaseState] }))}
