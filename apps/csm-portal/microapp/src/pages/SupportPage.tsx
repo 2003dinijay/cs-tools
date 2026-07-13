@@ -14,81 +14,148 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Suspense, type ReactNode } from "react";
-import { useSearchParams } from "react-router-dom";
-import { Stack, Tab, Tabs, Typography } from "@wso2/oxygen-ui";
-import { useQuery, useQueryErrorResetBoundary, useSuspenseQuery } from "@tanstack/react-query";
+import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
+import { Badge, IconButton, Stack, Tab, Tabs, Typography } from "@wso2/oxygen-ui";
+import { Plus, SlidersHorizontal } from "@wso2/oxygen-ui-icons-react";
+import { useQuery, useQueryErrorResetBoundary, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { cases } from "@src/services/cases";
 import { currentUser } from "@src/services/currentUser";
-import type { CaseType } from "@src/types";
+import type { CaseState } from "@src/types";
 import { ErrorBoundary } from "@components/common/ErrorBoundary";
 import { CaseCard, CaseCardSkeleton } from "@components/support/CaseCard";
 import { EmptyState } from "@components/support/EmptyState";
 import { ErrorState } from "@components/support/ErrorState";
-import { ItemListHeader } from "@components/support/ItemListHeader";
-import { EMPTY_FILTERS, toCaseSearchFilters } from "@components/support/filters";
-import { TABS, TAB_CONFIG } from "@components/support/config";
+import { SearchBar } from "@components/support/SearchBar";
+import { FiltersSheet } from "@components/support/FiltersSheet";
+import { countActiveFilters, EMPTY_FILTERS, toCaseSearchFilters, type CaseFilters } from "@components/support/filters";
+import { FILTERABLE_STATES, STATE_LABELS, TAB_CONFIG } from "@components/support/config";
+import { useDebouncedValue } from "@utils/useDebouncedValue";
 
-// Recent-items preview above the tab's "View All" link, mirroring the customer-portal
-// microapp's SupportPage (ItemListView + a 5-item recent query). Search/filters live on the
-// "View All" page only — the recent view is a quick, uncluttered glance.
-const RECENT_CASES_LIMIT = 5;
+const ALL_STATES_TAB = "all" as const;
+type StateTabValue = CaseState | typeof ALL_STATES_TAB;
 
+// Cases only (mirrors AllCasesPage's former "View All" list, now the Support page itself): a
+// single infinite-scrolled, most-recently-updated-first list with search/filters/create inline,
+// no separate recent-preview + "View All" hop.
 export default function SupportPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  // Derived directly from the URL (not local state) so browser back/forward navigation that
-  // changes ?tab= is reflected immediately, instead of showing a stale tab.
-  const tab = TABS.find((t) => t === searchParams.get("tab")) ?? "case";
+  const navigate = useNavigate();
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
+  const [filters, setFilters] = useState<CaseFilters>(EMPTY_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const activeFilterCount = countActiveFilters(filters);
 
   const { data: currentUserId } = useQuery(currentUser.id());
 
-  const handleTabChange = (value: CaseType) => {
-    setSearchParams(
-      (prev) => {
-        prev.set("tab", value);
-        return prev;
-      },
-      { replace: true },
-    );
+  // Single-select state tab. "All" clears the states filter entirely; picking a state resets
+  // work state unless it's "Work in progress" (the only state work state is meaningful for),
+  // same invariant the webapp's filter bar enforces.
+  const stateTab: StateTabValue = filters.states[0] ?? ALL_STATES_TAB;
+  const handleStateTabChange = (value: StateTabValue) => {
+    const states = value === ALL_STATES_TAB ? [] : [value];
+    const workStates = value === "work_in_progress" ? filters.workStates : [];
+    setFilters({ ...filters, states, workStates });
   };
 
   return (
     <Stack gap={2}>
-      <Typography variant="h5">Support</Typography>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1}>
+        <Typography variant="h5">Support</Typography>
+        <IconButton
+          aria-label="Create case"
+          onClick={() => navigate("/cases/new")}
+          sx={{
+            bgcolor: "primary.main",
+            color: "primary.contrastText",
+            "&:hover": { bgcolor: "primary.dark" },
+          }}
+        >
+          <Plus size={20} />
+        </IconButton>
+      </Stack>
 
-      <Tabs variant="scrollable" value={tab} onChange={(_, value) => handleTabChange(value)}>
-        {TABS.map((t) => (
-          <Tab key={t} label={TAB_CONFIG[t].title} value={t} disableRipple />
+      <Stack direction="row" gap={1} alignItems="center">
+        <SearchBar value={search} onChange={setSearch} />
+        <Badge badgeContent={activeFilterCount} color="primary" invisible={activeFilterCount === 0}>
+          <IconButton aria-label="Filters" onClick={() => setFiltersOpen(true)}>
+            <SlidersHorizontal size={18} />
+          </IconButton>
+        </Badge>
+      </Stack>
+
+      <Tabs variant="scrollable" value={stateTab} onChange={(_, value: StateTabValue) => handleStateTabChange(value)}>
+        <Tab label="All" value={ALL_STATES_TAB} disableRipple />
+        {FILTERABLE_STATES.map((state) => (
+          <Tab key={state} label={STATE_LABELS[state]} value={state} disableRipple />
         ))}
       </Tabs>
 
-      <ItemListHeader title={TAB_CONFIG[tab].title} viewAllPath={`/support/${tab}/all`}>
-        <CaseListErrorBoundary>
-          <Suspense fallback={<CaseListSkeleton />}>
-            <CaseListContent type={tab} currentUserId={currentUserId ?? null} />
-          </Suspense>
-        </CaseListErrorBoundary>
-      </ItemListHeader>
+      <CaseListErrorBoundary>
+        <Suspense fallback={<CaseListSkeleton />}>
+          <CaseListContent search={debouncedSearch} filters={filters} currentUserId={currentUserId ?? null} />
+        </Suspense>
+      </CaseListErrorBoundary>
+
+      <FiltersSheet open={filtersOpen} onClose={() => setFiltersOpen(false)} filters={filters} onApply={setFilters} />
     </Stack>
   );
 }
 
-function CaseListContent({ type, currentUserId }: { type: CaseType; currentUserId: string | null }) {
-  const { data } = useSuspenseQuery(
-    cases.all({
-      filters: toCaseSearchFilters(type, "", EMPTY_FILTERS, currentUserId),
-      sortBy: { field: "updatedOn", order: "desc" },
-      pagination: { limit: RECENT_CASES_LIMIT },
-    }),
+function CaseListContent({
+  search,
+  filters,
+  currentUserId,
+}: {
+  search: string;
+  filters: CaseFilters;
+  currentUserId: string | null;
+}) {
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage } = useSuspenseInfiniteQuery(
+    cases.infinite(toCaseSearchFilters("case", search, filters, currentUserId)),
   );
 
-  if (data.items.length === 0) return <EmptyState message={TAB_CONFIG[type].emptyMessage} />;
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting && hasNextPage && !isFetchingNextPage) {
+          void fetchNextPage();
+        }
+      },
+      { threshold: 0.1 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+  const items = data.pages.flatMap((page) => page.items);
+  const total = data.pages[0]?.total ?? items.length;
+
+  if (items.length === 0) return <EmptyState message={TAB_CONFIG.case.emptyMessage} />;
 
   return (
     <Stack gap={1.5}>
-      {data.items.map((item) => (
+      <Typography variant="caption" color="text.secondary">
+        {items.length} of {total}
+      </Typography>
+
+      {items.map((item) => (
         <CaseCard key={item.id} item={item} />
       ))}
+
+      {/* IntersectionObserver can miss a zero-height target, so give the sentinel 1px to observe. */}
+      <div ref={sentinelRef} style={{ height: 1 }} />
+
+      {isFetchingNextPage && <CaseCardSkeleton />}
+      {!hasNextPage && (
+        <Typography variant="body2" color="text.secondary" textAlign="center" py={2}>
+          You're all caught up!
+        </Typography>
+      )}
     </Stack>
   );
 }
@@ -96,7 +163,7 @@ function CaseListContent({ type, currentUserId }: { type: CaseType; currentUserI
 function CaseListSkeleton() {
   return (
     <Stack gap={1.5}>
-      {Array.from({ length: 4 }).map((_, index) => (
+      {Array.from({ length: 6 }).map((_, index) => (
         <CaseCardSkeleton key={index} />
       ))}
     </Stack>

@@ -18,8 +18,6 @@ import { colors, type ChipProps } from "@wso2/oxygen-ui";
 import { Briefcase, Megaphone, OctagonAlert, Settings, Shield, type LucideIcon } from "@wso2/oxygen-ui-icons-react";
 import type { CaseIssueType, CaseSeverity, CaseState, CaseType, CaseWorkState } from "@src/types";
 
-export const TABS: CaseType[] = ["case", "service_request", "security_report_analysis", "engagement", "announcement"];
-
 export const TYPE_CONFIG: Record<CaseType, { icon: LucideIcon; color: string }> = {
   case: { icon: OctagonAlert, color: colors.red[500] },
   service_request: { icon: Settings, color: colors.purple[500] },
