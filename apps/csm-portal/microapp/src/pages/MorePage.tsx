@@ -20,8 +20,8 @@ import {
   Briefcase,
   ChevronRight,
   Clock,
+  Megaphone,
   RefreshCw,
-  Settings,
   Shield,
   type LucideIcon,
 } from "@wso2/oxygen-ui-icons-react";
@@ -36,6 +36,7 @@ interface MoreItem {
 // CSM_NAV_ITEMS (apps/csm-portal/webapp/src/config/csmNavItems.ts) — Customers is deliberately
 // left out here. Settings is last, same position it has in CSM_NAV_ITEMS.
 const MORE_ITEMS: MoreItem[] = [
+  { label: "Announcements", path: "/more/announcements", icon: Megaphone },
   { label: "Time Cards", path: "/more/time-cards", icon: Clock },
   { label: "Security Center", path: "/more/security-center", icon: Shield },
   { label: "Updates", path: "/more/updates", icon: RefreshCw },
