@@ -37,7 +37,7 @@ export function AnnouncementCard({ item }: { item: CaseSummary }) {
           {item.project?.name ?? "—"}
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          {item.createdBy?.email || "—"} · Updated {fromNow(item.updatedOn)}
+          {item.createdBy || "—"} · Updated {fromNow(item.updatedOn)}
         </Typography>
       </Stack>
     </Card>
