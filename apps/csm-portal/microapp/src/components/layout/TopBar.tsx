@@ -15,21 +15,17 @@
 // under the License.
 
 import { useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Avatar, Box, IconButton, Typography } from "@wso2/oxygen-ui";
+import { useLocation, useNavigate } from "react-router-dom";
+import { Box, IconButton, Typography } from "@wso2/oxygen-ui";
 import { ArrowLeft, Grip } from "@wso2/oxygen-ui-icons-react";
-import { useUserStore } from "@src/store/user";
 import { goToMyAppsScreen } from "@components/microapp-bridge";
 import { ConfirmDialog } from "@components/common/ConfirmDialog";
-import { initialsOf } from "@utils/initials";
 
-const ROOT_PATHS = ["/", "/support", "/operations", "/more", "/profile"];
+const ROOT_PATHS = ["/", "/support", "/operations", "/more"];
 
 export function TopBar() {
   const location = useLocation();
   const navigate = useNavigate();
-  const user = useUserStore((state) => state.user);
-  const isProfileActive = location.pathname.startsWith("/profile");
   const isRootPath = ROOT_PATHS.includes(location.pathname);
 
   return (
@@ -38,7 +34,6 @@ export function TopBar() {
       top={0}
       bgcolor="background.paper"
       display="flex"
-      justifyContent="space-between"
       alignItems="center"
       px={2}
       pb={1}
@@ -58,21 +53,6 @@ export function TopBar() {
           </IconButton>
         )}
       </Box>
-
-      <IconButton component={Link} to="/profile" aria-label="Profile" size="small">
-        <Avatar
-          src={user?.avatarUrl}
-          slotProps={{ img: { referrerPolicy: "no-referrer" } }}
-          sx={{
-            width: 28,
-            height: 28,
-            fontSize: 13,
-            bgcolor: isProfileActive ? "primary.main" : "grey.400",
-          }}
-        >
-          {initialsOf(user?.name ?? "")}
-        </Avatar>
-      </IconButton>
     </Box>
   );
 }

@@ -24,6 +24,7 @@ import {
   RefreshCw,
   Settings,
   Shield,
+  User,
   type LucideIcon,
 } from "@wso2/oxygen-ui-icons-react";
 
@@ -35,7 +36,8 @@ interface MoreItem {
 
 // Secondary sections that don't get their own tab, mirroring a subset of the webapp's
 // CSM_NAV_ITEMS (apps/csm-portal/webapp/src/config/csmNavItems.ts) — Customers is deliberately
-// left out here. Settings is last, same position it has in CSM_NAV_ITEMS.
+// left out here. Settings is last, same position it has in CSM_NAV_ITEMS. Profile comes after
+// Settings — it moved here from the TopBar's avatar shortcut.
 const MORE_ITEMS: MoreItem[] = [
   { label: "Announcements", path: "/more/announcements", icon: Megaphone },
   { label: "Time Cards", path: "/more/time-cards", icon: Clock },
@@ -43,6 +45,7 @@ const MORE_ITEMS: MoreItem[] = [
   { label: "Updates", path: "/more/updates", icon: RefreshCw },
   { label: "Engagements", path: "/more/engagements", icon: Briefcase },
   { label: "Settings", path: "/more/settings", icon: Settings },
+  { label: "Profile", path: "/profile", icon: User },
 ];
 
 export default function MorePage() {
