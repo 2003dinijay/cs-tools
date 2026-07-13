@@ -16,7 +16,7 @@
 
 import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Badge, Chip, IconButton, Stack, Tab, Tabs, Typography } from "@wso2/oxygen-ui";
+import { Badge, Chip, Fab, IconButton, Stack, Tab, Tabs, Typography } from "@wso2/oxygen-ui";
 import { Plus, SlidersHorizontal } from "@wso2/oxygen-ui-icons-react";
 import { useQuery, useQueryErrorResetBoundary, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { cases } from "@src/services/cases";
@@ -74,21 +74,6 @@ export default function SupportPage() {
 
   return (
     <Stack gap={2}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1}>
-        <Typography variant="h5">Support</Typography>
-        <IconButton
-          aria-label="Create case"
-          onClick={() => navigate("/cases/new")}
-          sx={{
-            bgcolor: "primary.main",
-            color: "primary.contrastText",
-            "&:hover": { bgcolor: "primary.dark" },
-          }}
-        >
-          <Plus size={20} />
-        </IconButton>
-      </Stack>
-
       <Stack direction="row" gap={1} alignItems="center">
         <SearchBar value={search} onChange={setSearch} />
         <Badge badgeContent={activeFilterCount} color="primary" invisible={activeFilterCount === 0}>
@@ -114,6 +99,19 @@ export default function SupportPage() {
       </CaseListErrorBoundary>
 
       <FiltersSheet open={filtersOpen} onClose={() => setFiltersOpen(false)} filters={filters} onApply={setFilters} />
+
+      {/* Floating rather than inline in the header — mirrors the customer-portal microapp's own
+          Fab (components/core/Fab.tsx): fixed bottom-right, offset above the fixed TabBar by its
+          live-measured height (--tab-bar-height) plus some breathing room. */}
+      <Fab
+        aria-label="Create case"
+        size="medium"
+        color="primary"
+        onClick={() => navigate("/cases/new")}
+        sx={{ position: "fixed", right: 10, bottom: "calc(var(--tab-bar-height) + 60px)" }}
+      >
+        <Plus size={20} />
+      </Fab>
     </Stack>
   );
 }
