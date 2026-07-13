@@ -14,13 +14,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { ComingSoonPage } from "@components/common/ComingSoonPage";
+import { Stack, Typography } from "@wso2/oxygen-ui";
+import { AssignedToMeSection } from "@components/home/AssignedToMeSection";
+import { CaseCompositionSection } from "@components/home/CaseCompositionSection";
 
+// Mirrors the webapp's Dashboard (apps/csm-portal/webapp/src/features/csm-dashboard/pages/CsmDashboardPage.tsx):
+// "Assigned to me" and the case composition donuts, its two widgets with real data. The
+// severity×state matrix table is deliberately left out — it costs 25 extra fan-out requests on
+// top of the donuts' 11, with no aggregation endpoint to make it cheap, and doesn't fit a mobile
+// screen well anyway. The ABT-scope header is skipped too since it's feature-flagged off
+// (CSM_DASHBOARD_API_IMPLEMENTED = false) and only ever shows a static fallback in the webapp.
 export default function HomePage() {
   return (
-    <ComingSoonPage
-      title="Home"
-      description="A personalized home view — mirroring the webapp's Dashboard — is on the way."
-    />
+    <Stack gap={3}>
+      <Typography variant="h5">Home</Typography>
+      <AssignedToMeSection />
+      <CaseCompositionSection />
+    </Stack>
   );
 }

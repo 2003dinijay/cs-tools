@@ -41,7 +41,11 @@ export interface CaseSearchResult {
   hasMore: boolean;
 }
 
-const getAllCases = async (payload: CaseSearchPayloadDto = {}): Promise<CaseSearchResult> => {
+// Exported (not just used internally) so the Home dashboard's composition query can fan out
+// count-only searches (`pagination: { limit: 1 }`, read `.total`) without going through the
+// `cases.all` query-options wrapper — mirrors the webapp's useCaseComposition.ts, which calls its
+// api client directly for the same reason.
+export const getAllCases = async (payload: CaseSearchPayloadDto = {}): Promise<CaseSearchResult> => {
   const { data } = await apiClient.post<CaseSearchResponseDto>(CASES_SEARCH_ENDPOINT, payload);
   return {
     items: data.cases.map(toCaseSummary),
