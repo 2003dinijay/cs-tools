@@ -15,7 +15,7 @@
 // under the License.
 
 import { useMemo } from "react";
-import { Stack, Typography } from "@wso2/oxygen-ui";
+import { Grid, Stack, Typography } from "@wso2/oxygen-ui";
 import { useQuery } from "@tanstack/react-query";
 import { dashboard } from "@src/services/dashboard";
 import { ALL_SEVERITIES, SEVERITY_LABELS, STATE_LABELS } from "@components/support/config";
@@ -24,10 +24,10 @@ import { CompositionDonut, type CompositionSlice } from "./CompositionDonut";
 
 // Two donuts — severity composition and state composition of active cases — mirrors the webapp's
 // CaseCompositionCharts (apps/csm-portal/webapp/src/features/csm-dashboard/components/CaseCompositionCharts.tsx),
-// stacked instead of side-by-side (the webapp's own grid already collapses to one column below its
-// "md" breakpoint, which is every phone width anyway). Self-contained plain useQuery rather than
-// Suspense, matching how TimeCardsPage.tsx already handles independent, non-blocking widgets in
-// this app — one failed/slow widget shouldn't hold up the rest of the Home page.
+// laid out side by side via the same 2-column Grid the customer-portal microapp's Home page uses
+// for its own pie-chart widgets. Self-contained plain useQuery rather than Suspense, matching how
+// TimeCardsPage.tsx already handles independent, non-blocking widgets in this app — one
+// failed/slow widget shouldn't hold up the rest of the Home page.
 export function CaseCompositionSection() {
   const { data, isLoading, isError } = useQuery(dashboard.composition());
 
@@ -59,24 +59,28 @@ export function CaseCompositionSection() {
     <Stack gap={1.5}>
       <Typography variant="subtitle1">Case composition</Typography>
 
-      <Stack gap={1.5}>
-        <CompositionDonut
-          title="Cases by severity"
-          description="Share of active cases at each severity level, excluding closed."
-          slices={severitySlices}
-          total={data?.severityTotal ?? 0}
-          isLoading={isLoading}
-          isError={isError}
-        />
-        <CompositionDonut
-          title="Cases by state"
-          description="Share of active cases in each lifecycle state, excluding closed."
-          slices={stateSlices}
-          total={data?.stateTotal ?? 0}
-          isLoading={isLoading}
-          isError={isError}
-        />
-      </Stack>
+      <Grid container spacing={1.5}>
+        <Grid size={6}>
+          <CompositionDonut
+            title="Cases by severity"
+            description="Share of active cases at each severity level, excluding closed."
+            slices={severitySlices}
+            total={data?.severityTotal ?? 0}
+            isLoading={isLoading}
+            isError={isError}
+          />
+        </Grid>
+        <Grid size={6}>
+          <CompositionDonut
+            title="Cases by state"
+            description="Share of active cases in each lifecycle state, excluding closed."
+            slices={stateSlices}
+            total={data?.stateTotal ?? 0}
+            isLoading={isLoading}
+            isError={isError}
+          />
+        </Grid>
+      </Grid>
 
       {/* Reconciles with the donuts: both show active cases only, so the closed count is called
           out here rather than mixed into a slice — same as the webapp. */}
