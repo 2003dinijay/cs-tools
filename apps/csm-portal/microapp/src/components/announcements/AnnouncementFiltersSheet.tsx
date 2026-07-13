@@ -123,6 +123,7 @@ export function AnnouncementFiltersSheet({ open, onClose, filters, onApply }: An
                     key={state}
                     label={STATE_LABELS[state] ?? state}
                     size="small"
+                    aria-pressed={isSelected}
                     variant={isSelected ? "filled" : "outlined"}
                     color={isSelected ? "primary" : "default"}
                     onClick={() => setDraft({ ...draft, states: toggleState(draft.states, state) })}
