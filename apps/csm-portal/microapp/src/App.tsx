@@ -23,7 +23,6 @@ import { Logger } from "@utils/logger";
 import HomePage from "@pages/HomePage";
 import SupportPage from "@pages/SupportPage";
 import CaseDetailPage from "@pages/CaseDetailPage";
-import AllCasesPage from "@pages/AllCasesPage";
 import NewCasePage from "@pages/NewCasePage";
 import OperationsPage from "@pages/OperationsPage";
 import MorePage from "@pages/MorePage";
@@ -61,7 +60,6 @@ export default function App() {
         <Route element={<MainLayout />}>
           <Route path="/" element={<HomePage />} />
           <Route path="/support" element={<SupportPage />} />
-          <Route path="/support/:type/all" element={<AllCasesPage />} />
           <Route path="/cases/new" element={<NewCasePage />} />
           <Route path="/cases/:id" element={<CaseDetailPage />} />
           <Route path="/operations" element={<OperationsPage />} />
