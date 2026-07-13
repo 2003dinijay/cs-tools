@@ -41,7 +41,7 @@ export function AssignedToMeSection() {
         </Button>
       </Stack>
 
-      {isLoading ? (
+      {isPending ? (
         <Stack gap={1.5}>
           {Array.from({ length: 3 }).map((_, index) => (
             <CaseCardSkeleton key={index} />
