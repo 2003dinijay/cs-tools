@@ -2152,6 +2152,8 @@ public type ConversationStateIds record {|
     int resolved;
     # Abandoned state ID
     int abandonded;
+    # Close state ID
+    int close;
 |};
 
 # Variable data for service request.

@@ -42,7 +42,7 @@ import { useLoader } from "@context/linear-loader/LoaderContext";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import useGetProjectFilters from "@api/useGetProjectFilters";
 import { useSearchConversations } from "@features/support/api/useSearchConversations";
-import { useAbandonConversation } from "@features/support/api/useAbandonConversation";
+import { useCloseConversation } from "@features/support/api/useCloseConversation";
 import type {
   AllConversationsFilterValues,
   Conversation,
@@ -192,7 +192,7 @@ export default function AllConversationsPage(): JSX.Element {
   const totalRecords = data?.totalRecords ?? 0;
 
   const { showError } = useErrorBanner();
-  const abandonConversation = useAbandonConversation(projectId || "");
+  const closeConversation = useCloseConversation(projectId || "");
   const [chatToClose, setChatToClose] = useState<Conversation | null>(null);
 
   const handleCloseConversation = (conv: Conversation) => {
@@ -201,7 +201,7 @@ export default function AllConversationsPage(): JSX.Element {
 
   const handleConfirmClose = () => {
     if (!chatToClose) return;
-    abandonConversation.mutate(chatToClose.id, {
+    closeConversation.mutate(chatToClose.id, {
       onSuccess: () => setChatToClose(null),
       onError: (error: Error) => {
         setChatToClose(null);
@@ -362,7 +362,7 @@ export default function AllConversationsPage(): JSX.Element {
       <Dialog
         open={chatToClose !== null}
         onClose={
-          abandonConversation.isPending ? undefined : () => setChatToClose(null)
+          closeConversation.isPending ? undefined : () => setChatToClose(null)
         }
         maxWidth="xs"
         fullWidth
@@ -377,7 +377,7 @@ export default function AllConversationsPage(): JSX.Element {
         <DialogActions>
           <Button
             onClick={() => setChatToClose(null)}
-            disabled={abandonConversation.isPending}
+            disabled={closeConversation.isPending}
           >
             Cancel
           </Button>
@@ -385,9 +385,9 @@ export default function AllConversationsPage(): JSX.Element {
             variant="contained"
             color="error"
             onClick={handleConfirmClose}
-            disabled={abandonConversation.isPending}
+            disabled={closeConversation.isPending}
           >
-            {abandonConversation.isPending ? "Closing…" : "Close chat"}
+            {closeConversation.isPending ? "Closing…" : "Close chat"}
           </Button>
         </DialogActions>
       </Dialog>

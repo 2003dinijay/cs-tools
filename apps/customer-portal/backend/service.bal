@@ -2067,8 +2067,8 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
     }
 
     # Abandon a conversation, moving it to a terminal state so it can no longer
-    # be resumed. Used when a user explicitly closes a chat, or when a case is
-    # created from a chat before the assistant has responded.
+    # be resumed. Used when a case is created from a chat before the assistant
+    # has responded.
     #
     # + id - ID of the conversation to abandon
     # + return - Ok on success or error
@@ -2106,6 +2106,55 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
             }
 
             string customError = string `Failed to abandon conversation with ID: ${id}.`;
+            log:printError(customError, response);
+            return <http:InternalServerError>{
+                body: {
+                    message: customError
+                }
+            };
+        }
+        return http:OK;
+    }
+
+    # Close a conversation, moving it to a terminal state so it can no longer
+    # be resumed. Used when a user explicitly closes a chat from the chat list.
+    #
+    # + id - ID of the conversation to close
+    # + return - Ok on success or error
+    resource function post conversations/[entity:IdString id]/close(http:RequestContext ctx)
+        returns http:Ok|http:Unauthorized|http:Forbidden|http:InternalServerError {
+
+        authorization:UserInfoPayload|error userInfo = ctx.getWithType(authorization:HEADER_USER_INFO);
+        if userInfo is error {
+            return <http:InternalServerError>{
+                body: {
+                    message: ERR_MSG_USER_INFO_HEADER_NOT_FOUND
+                }
+            };
+        }
+
+        entity:ConversationUpdateResponse|error response = entity:updateConversation(userInfo.idToken, id,
+                {stateKey: entity:conversationStateIds.close});
+        if response is error {
+            if getStatusCode(response) == http:STATUS_UNAUTHORIZED {
+                log:printWarn(string `User: ${userInfo.userId} is not authorized to access the customer portal!`);
+                return <http:Unauthorized>{
+                    body: {
+                        message: ERR_MSG_UNAUTHORIZED_ACCESS
+                    }
+                };
+            }
+
+            if getStatusCode(response) == http:STATUS_FORBIDDEN {
+                log:printWarn(string `User: ${userInfo.userId} is forbidden to update conversation with ID: ${id}!`);
+                return <http:Forbidden>{
+                    body: {
+                        message: "You're not authorized to close the requested conversation."
+                    }
+                };
+            }
+
+            string customError = string `Failed to close conversation with ID: ${id}.`;
             log:printError(customError, response);
             return <http:InternalServerError>{
                 body: {
