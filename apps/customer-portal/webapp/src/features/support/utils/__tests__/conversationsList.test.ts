@@ -59,4 +59,9 @@ describe("isConversationResumable", () => {
     expect(isConversationResumable("Converted")).toBe(false);
     expect(isConversationResumable(null)).toBe(false);
   });
+
+  it("is false for labels that only contain 'open'/'active' as a substring", () => {
+    expect(isConversationResumable("Reopened")).toBe(false);
+    expect(isConversationResumable("Inactive")).toBe(false);
+  });
 });

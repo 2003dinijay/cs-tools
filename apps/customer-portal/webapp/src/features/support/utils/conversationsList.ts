@@ -24,10 +24,11 @@ enum ConversationStateCategory {
 function normalizeConversationStateCategory(
   stateLabel?: string | null,
 ): ConversationStateCategory {
-  const label = stateLabel?.toLowerCase() ?? "";
-  // "Abandoned" is a terminal (closed) state and is intentionally excluded
-  // here so abandoned chats are View-only and cannot be resumed.
-  return label.includes("open") || label.includes("active")
+  const label = stateLabel?.trim().toLowerCase() ?? "";
+  // Exact match only: substring matching would mis-classify terminal states
+  // like "Reopened" (contains "open") or "Inactive" (contains "active").
+  // Abandoned, Resolved and Converted are terminal and stay View-only.
+  return label === "open" || label === "active"
     ? ConversationStateCategory.OpenLike
     : ConversationStateCategory.Other;
 }
