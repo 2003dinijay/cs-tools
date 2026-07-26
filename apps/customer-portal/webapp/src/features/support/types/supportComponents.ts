@@ -481,6 +481,7 @@ export type ChatHistoryListProps = {
   isLoading?: boolean;
   isError?: boolean;
   onItemAction?: (chatId: string, action: ChatAction) => void;
+  onCloseChat?: (chatId: string) => void;
 };
 
 export type ChatInputProps = {
