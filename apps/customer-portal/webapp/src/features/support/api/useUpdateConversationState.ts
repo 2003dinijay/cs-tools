@@ -25,7 +25,7 @@ import { ApiQueryKeys } from "@constants/apiConstants";
 import { parseApiResponseMessage } from "@utils/ApiError";
 
 /** Terminal status a conversation can be moved to via PATCH /conversations/:id. */
-export type ConversationStatusAction = "closed" | "abandoned";
+export type ConversationStatusAction = "closed" | "abandoned" | "converted";
 
 /**
  * Moves a Novera conversation to a terminal state via
