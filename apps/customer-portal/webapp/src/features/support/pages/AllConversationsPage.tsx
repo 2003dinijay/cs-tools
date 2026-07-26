@@ -29,20 +29,14 @@ import {
 } from "react";
 import { useSessionState } from "@hooks/useSessionState";
 import {
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle,
   Divider,
   Stack,
 } from "@wso2/oxygen-ui";
 import { useLoader } from "@context/linear-loader/LoaderContext";
-import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import useGetProjectFilters from "@api/useGetProjectFilters";
 import { useSearchConversations } from "@features/support/api/useSearchConversations";
-import { useUpdateConversationState } from "@features/support/api/useUpdateConversationState";
+import { useCloseConversationFlow } from "@features/support/hooks/useCloseConversationFlow";
+import CloseChatConfirmDialog from "@features/support/components/close-chat/CloseChatConfirmDialog";
 import type {
   AllConversationsFilterValues,
   Conversation,
@@ -191,24 +185,7 @@ export default function AllConversationsPage(): JSX.Element {
   const conversations = data?.conversations ?? [];
   const totalRecords = data?.totalRecords ?? 0;
 
-  const { showError } = useErrorBanner();
-  const closeConversation = useUpdateConversationState(projectId || "", "closed");
-  const [chatToClose, setChatToClose] = useState<Conversation | null>(null);
-
-  const handleCloseConversation = (conv: Conversation) => {
-    setChatToClose(conv);
-  };
-
-  const handleConfirmClose = () => {
-    if (!chatToClose) return;
-    closeConversation.mutate(chatToClose.id, {
-      onSuccess: () => setChatToClose(null),
-      onError: (error: Error) => {
-        setChatToClose(null);
-        showError(error.message || "Failed to close the chat. Please try again.");
-      },
-    });
-  };
+  const closeFlow = useCloseConversationFlow(projectId || "");
 
   const handleConversationClick = (conv: Conversation) => {
     if (!projectId) return;
@@ -348,7 +325,7 @@ export default function AllConversationsPage(): JSX.Element {
         isError={isConversationsError}
         hasListRefinement={listHasRefinement}
         onConversationClick={handleConversationClick}
-        onCloseConversation={handleCloseConversation}
+        onCloseConversation={(conv) => closeFlow.requestClose(conv.id)}
       />
 
       <ListPagination
@@ -359,38 +336,12 @@ export default function AllConversationsPage(): JSX.Element {
         onRowsPerPageChange={handleRowsPerPageChange}
       />
 
-      <Dialog
-        open={chatToClose !== null}
-        onClose={
-          closeConversation.isPending ? undefined : () => setChatToClose(null)
-        }
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Close this chat?</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            This chat will be closed and can no longer be resumed. Any case
-            created from it is not affected.
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => setChatToClose(null)}
-            disabled={closeConversation.isPending}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            color="error"
-            onClick={handleConfirmClose}
-            disabled={closeConversation.isPending}
-          >
-            {closeConversation.isPending ? "Closing…" : "Close chat"}
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <CloseChatConfirmDialog
+        open={closeFlow.isConfirmOpen}
+        isClosing={closeFlow.isClosing}
+        onCancel={closeFlow.cancelClose}
+        onConfirm={closeFlow.confirmClose}
+      />
     </Stack>
   );
 }
