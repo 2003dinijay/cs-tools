@@ -27,7 +27,7 @@ import { flushSync } from "react-dom";
 import { useNavigate, useParams, useLocation } from "react-router";
 import { usePostProjectDeploymentsSearchAll } from "@api/usePostProjectDeploymentsSearch";
 import { useGetConversationMessages } from "@features/support/api/useGetConversationMessages";
-import { useAbandonConversation } from "@features/support/api/useAbandonConversation";
+import { useUpdateConversationState } from "@features/support/api/useUpdateConversationState";
 import useGetUserDetails from "@features/settings/api/useGetUserDetails";
 import { usePostCaseClassifications } from "@features/support/api/usePostCaseClassifications";
 import { useChatWebSocket } from "@features/support/api/useChatWebSocket";
@@ -50,6 +50,7 @@ import {
   CHAT_TYPING_INTERVAL_MS,
   NOVERA_ANALYZING_PLACEHOLDER_TEXT,
   NOVERA_INITIAL_WELCOME_TEXT,
+  NOVERA_WELCOME_MESSAGE_ID,
 } from "@features/support/constants/chatConstants";
 import {
   formatChatHistoryForClassification,
@@ -144,7 +145,10 @@ export default function NoveraChatPage(): JSX.Element {
   const [conversationId, setConversationId] = useState<string | null>(
     () => urlConversationId ?? conversationResponse?.conversationId ?? null,
   );
-  const abandonConversation = useAbandonConversation(projectId || "");
+  const abandonConversation = useUpdateConversationState(
+    projectId || "",
+    "abandoned",
+  );
   // Set when the user creates a case before the conversation id has been
   // received; the conversation is then abandoned once conversation_created fires.
   const pendingAbandonRef = useRef(false);
@@ -206,7 +210,7 @@ export default function NoveraChatPage(): JSX.Element {
     }
 
     const botWelcome: Message = {
-      id: "1",
+      id: NOVERA_WELCOME_MESSAGE_ID,
       text: NOVERA_INITIAL_WELCOME_TEXT,
       sender: ChatSender.BOT,
       timestamp: new Date(),
@@ -340,10 +344,13 @@ export default function NoveraChatPage(): JSX.Element {
 
     // If the user creates a case before Novera has produced any response, mark
     // the conversation Abandoned so it isn't left counted as an open chat.
-    // ("1" is the static welcome message id; real bot replies have non-empty text.)
+    // (The welcome message is static; real bot replies have non-empty text.)
     const userAsked = messages.some((m) => m.sender === ChatSender.USER);
     const aiResponded = messages.some(
-      (m) => m.sender === ChatSender.BOT && m.id !== "1" && m.text.trim() !== "",
+      (m) =>
+        m.sender === ChatSender.BOT &&
+        m.id !== NOVERA_WELCOME_MESSAGE_ID &&
+        m.text.trim() !== "",
     );
     if (userAsked && !aiResponded) {
       if (conversationId) {

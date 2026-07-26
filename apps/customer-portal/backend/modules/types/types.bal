@@ -1632,6 +1632,13 @@ public type ConversationResponse record {|
     json...;
 |};
 
+# Payload to update a conversation's status via PATCH /conversations/{id}.
+public type ConversationStatusUpdate record {|
+    # Target status: "closed" (user-initiated) or "abandoned" (set
+    # automatically when a case is created before the assistant responds).
+    string status;
+|};
+
 # Overall conversation statistics for a project.
 public type OverallConversationStats record {|
     # Chat sessions count

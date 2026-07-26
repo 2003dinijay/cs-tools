@@ -42,7 +42,7 @@ import { useLoader } from "@context/linear-loader/LoaderContext";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import useGetProjectFilters from "@api/useGetProjectFilters";
 import { useSearchConversations } from "@features/support/api/useSearchConversations";
-import { useCloseConversation } from "@features/support/api/useCloseConversation";
+import { useUpdateConversationState } from "@features/support/api/useUpdateConversationState";
 import type {
   AllConversationsFilterValues,
   Conversation,
@@ -192,7 +192,7 @@ export default function AllConversationsPage(): JSX.Element {
   const totalRecords = data?.totalRecords ?? 0;
 
   const { showError } = useErrorBanner();
-  const closeConversation = useCloseConversation(projectId || "");
+  const closeConversation = useUpdateConversationState(projectId || "", "closed");
   const [chatToClose, setChatToClose] = useState<Conversation | null>(null);
 
   const handleCloseConversation = (conv: Conversation) => {

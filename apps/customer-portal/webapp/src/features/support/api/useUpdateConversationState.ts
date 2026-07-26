@@ -24,16 +24,23 @@ import { useLogger } from "@hooks/useLogger";
 import { ApiQueryKeys } from "@constants/apiConstants";
 import { parseApiResponseMessage } from "@utils/ApiError";
 
+/** Terminal status a conversation can be moved to via PATCH /conversations/:id. */
+export type ConversationStatusAction = "closed" | "abandoned";
+
 /**
- * Abandons (closes) a Novera conversation via POST /conversations/:id/abandon,
- * moving it to a terminal state so it can no longer be resumed. On success,
- * refreshes the conversation list and stats for the project.
+ * Moves a Novera conversation to a terminal state via
+ * PATCH /conversations/:id, so it can no longer be resumed. "closed" is a
+ * user-initiated close from the chat list; "abandoned" is set automatically
+ * when a case is created before the assistant responds. On success, refreshes
+ * the conversation list and stats for the project.
  *
  * @param {string} projectId - Project ID for cache invalidation.
+ * @param {ConversationStatusAction} status - Target terminal status.
  * @returns {UseMutationResult<void, Error, string>} Mutation keyed by conversationId.
  */
-export function useAbandonConversation(
+export function useUpdateConversationState(
   projectId: string,
+  status: ConversationStatusAction,
 ): UseMutationResult<void, Error, string> {
   const logger = useLogger();
   const queryClient = useQueryClient();
@@ -43,10 +50,10 @@ export function useAbandonConversation(
   return useMutation<void, Error, string>({
     mutationFn: async (conversationId: string): Promise<void> => {
       if (!conversationId) {
-        throw new Error("Conversation ID is required to close a chat");
+        throw new Error("Conversation ID is required to update a chat");
       }
       if (!isSignedIn || isAuthLoading) {
-        throw new Error("User must be signed in to close a chat");
+        throw new Error("User must be signed in to update a chat");
       }
 
       const baseUrl = window.config?.CUSTOMER_PORTAL_BACKEND_BASE_URL;
@@ -55,8 +62,11 @@ export function useAbandonConversation(
       }
 
       const response = await authFetch(
-        `${baseUrl}/conversations/${conversationId}/abandon`,
-        { method: "POST" },
+        `${baseUrl}/conversations/${conversationId}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ status }),
+        },
       );
       if (!response.ok) {
         const text = await response.text();
@@ -64,8 +74,9 @@ export function useAbandonConversation(
           parseApiResponseMessage(text, response.status, response.statusText),
         );
       }
-      logger.debug("[useAbandonConversation] Conversation closed:", {
+      logger.debug("[useUpdateConversationState] Conversation updated:", {
         conversationId,
+        status,
       });
     },
     onSuccess: () => {

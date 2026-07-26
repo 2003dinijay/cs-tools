@@ -2066,14 +2066,17 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
         return mapConversationResponse(conversationResponse);
     }
 
-    # Abandon a conversation, moving it to a terminal state so it can no longer
-    # be resumed. Used when a case is created from a chat before the assistant
-    # has responded.
+    # Update a conversation's status, moving it to a terminal state so it can no
+    # longer be resumed. "closed" is a user-initiated close from the chat list;
+    # "abandoned" is set automatically when a case is created from a chat before
+    # the assistant has responded.
     #
-    # + id - ID of the conversation to abandon
+    # + id - ID of the conversation to update
+    # + payload - Target status ("closed" or "abandoned")
     # + return - Ok on success or error
-    resource function post conversations/[entity:IdString id]/abandon(http:RequestContext ctx)
-        returns http:Ok|http:Unauthorized|http:Forbidden|http:InternalServerError {
+    resource function patch conversations/[entity:IdString id](http:RequestContext ctx,
+            types:ConversationStatusUpdate payload)
+        returns http:Ok|http:BadRequest|http:Unauthorized|http:Forbidden|http:InternalServerError {
 
         authorization:UserInfoPayload|error userInfo = ctx.getWithType(authorization:HEADER_USER_INFO);
         if userInfo is error {
@@ -2084,8 +2087,22 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
             };
         }
 
-        entity:ConversationUpdateResponse|error response = entity:updateConversation(userInfo.idToken, id,
-                {stateKey: entity:conversationStateIds.abandonded});
+        int stateKey;
+        if payload.status == CONVERSATION_STATUS_CLOSED {
+            stateKey = entity:conversationStateIds.close;
+        } else if payload.status == CONVERSATION_STATUS_ABANDONED {
+            stateKey = entity:conversationStateIds.abandonded;
+        } else {
+            return <http:BadRequest>{
+                body: {
+                    message: string `Invalid conversation status: '${payload.status}'. ` +
+                        string `Allowed values: ${CONVERSATION_STATUS_CLOSED}, ${CONVERSATION_STATUS_ABANDONED}.`
+                }
+            };
+        }
+
+        entity:ConversationUpdateResponse|error response =
+                entity:updateConversation(userInfo.idToken, id, {stateKey});
         if response is error {
             if getStatusCode(response) == http:STATUS_UNAUTHORIZED {
                 log:printWarn(string `User: ${userInfo.userId} is not authorized to access the customer portal!`);
@@ -2100,61 +2117,12 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
                 log:printWarn(string `User: ${userInfo.userId} is forbidden to update conversation with ID: ${id}!`);
                 return <http:Forbidden>{
                     body: {
-                        message: "You're not authorized to close the requested conversation."
+                        message: "You're not authorized to update the requested conversation."
                     }
                 };
             }
 
-            string customError = string `Failed to abandon conversation with ID: ${id}.`;
-            log:printError(customError, response);
-            return <http:InternalServerError>{
-                body: {
-                    message: customError
-                }
-            };
-        }
-        return http:OK;
-    }
-
-    # Close a conversation, moving it to a terminal state so it can no longer
-    # be resumed. Used when a user explicitly closes a chat from the chat list.
-    #
-    # + id - ID of the conversation to close
-    # + return - Ok on success or error
-    resource function post conversations/[entity:IdString id]/close(http:RequestContext ctx)
-        returns http:Ok|http:Unauthorized|http:Forbidden|http:InternalServerError {
-
-        authorization:UserInfoPayload|error userInfo = ctx.getWithType(authorization:HEADER_USER_INFO);
-        if userInfo is error {
-            return <http:InternalServerError>{
-                body: {
-                    message: ERR_MSG_USER_INFO_HEADER_NOT_FOUND
-                }
-            };
-        }
-
-        entity:ConversationUpdateResponse|error response = entity:updateConversation(userInfo.idToken, id,
-                {stateKey: entity:conversationStateIds.close});
-        if response is error {
-            if getStatusCode(response) == http:STATUS_UNAUTHORIZED {
-                log:printWarn(string `User: ${userInfo.userId} is not authorized to access the customer portal!`);
-                return <http:Unauthorized>{
-                    body: {
-                        message: ERR_MSG_UNAUTHORIZED_ACCESS
-                    }
-                };
-            }
-
-            if getStatusCode(response) == http:STATUS_FORBIDDEN {
-                log:printWarn(string `User: ${userInfo.userId} is forbidden to update conversation with ID: ${id}!`);
-                return <http:Forbidden>{
-                    body: {
-                        message: "You're not authorized to close the requested conversation."
-                    }
-                };
-            }
-
-            string customError = string `Failed to close conversation with ID: ${id}.`;
+            string customError = string `Failed to update conversation with ID: ${id}.`;
             log:printError(customError, response);
             return <http:InternalServerError>{
                 body: {
