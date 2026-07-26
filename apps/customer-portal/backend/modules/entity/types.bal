@@ -2152,8 +2152,10 @@ public type ConversationStateIds record {|
     int resolved;
     # Abandoned state ID
     int abandonded;
-    # Close state ID
-    int close;
+    # Close state ID. Defaults to 6 so environment configs that override
+    # conversationStateIds without this newer field still resolve (rather than
+    # erroring on a missing required field in this closed record).
+    int close = 6;
 |};
 
 # Variable data for service request.
