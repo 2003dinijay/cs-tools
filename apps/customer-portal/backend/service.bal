@@ -2092,11 +2092,13 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
             stateKey = entity:conversationStateIds.close;
         } else if payload.status == CONVERSATION_STATUS_ABANDONED {
             stateKey = entity:conversationStateIds.abandonded;
+        } else if payload.status == CONVERSATION_STATUS_CONVERTED {
+            stateKey = entity:conversationStateIds.converted;
         } else {
             return <http:BadRequest>{
                 body: {
                     message: string `Invalid conversation status: '${payload.status}'. ` +
-                        string `Allowed values: ${CONVERSATION_STATUS_CLOSED}, ${CONVERSATION_STATUS_ABANDONED}.`
+                        string `Allowed values: ${CONVERSATION_STATUS_CLOSED}, ${CONVERSATION_STATUS_ABANDONED}, ${CONVERSATION_STATUS_CONVERTED}.`
                 }
             };
         }

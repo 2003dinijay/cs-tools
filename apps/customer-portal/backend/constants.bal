@@ -31,6 +31,7 @@ const ERR_MSG_CONVERSATION_STATISTICS = "Failed to retrieve project conversation
 // Conversation status update actions (PATCH /conversations/{id}).
 const CONVERSATION_STATUS_CLOSED = "closed";
 const CONVERSATION_STATUS_ABANDONED = "abandoned";
+const CONVERSATION_STATUS_CONVERTED = "converted";
 
 // Default Pagination Values
 public const int DEFAULT_OFFSET = 0;

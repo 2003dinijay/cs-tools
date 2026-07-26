@@ -146,13 +146,13 @@ export default function NoveraChatPage(): JSX.Element {
   const [conversationId, setConversationId] = useState<string | null>(
     () => urlConversationId ?? conversationResponse?.conversationId ?? null,
   );
-  const abandonConversation = useUpdateConversationState(
+  const convertConversation = useUpdateConversationState(
     projectId || "",
-    "abandoned",
+    "converted",
   );
   // Set when the user creates a case before the conversation id has been
-  // received; the conversation is then abandoned once conversation_created fires.
-  const pendingAbandonRef = useRef(false);
+  // received; the conversation is then converted once conversation_created fires.
+  const pendingConvertRef = useRef(false);
 
   const {
     data: conversationHistory,
@@ -343,24 +343,14 @@ export default function NoveraChatPage(): JSX.Element {
   const handleCreateCase = useCallback(() => {
     setIsCreateCaseLoading(true);
 
-    // If the user creates a case before Novera has produced any response, mark
-    // the conversation Abandoned so it isn't left counted as an open chat.
-    // (The welcome message is static; real bot replies have non-empty text.)
-    const userAsked = messages.some((m) => m.sender === ChatSender.USER);
-    const aiResponded = messages.some(
-      (m) =>
-        m.sender === ChatSender.BOT &&
-        m.id !== NOVERA_WELCOME_MESSAGE_ID &&
-        m.text.trim() !== "",
-    );
-    if (userAsked && !aiResponded) {
-      if (conversationId) {
-        abandonConversation.mutate(conversationId);
-      } else {
-        // Conversation id not received yet (very fast bail). Defer the abandon
-        // until the conversation_created event arrives.
-        pendingAbandonRef.current = true;
-      }
+    // A case is being created from this chat, so mark the conversation
+    // Converted so it is no longer counted as an open chat.
+    if (conversationId) {
+      convertConversation.mutate(conversationId);
+    } else {
+      // Conversation id not received yet (very fast bail). Defer the update
+      // until the conversation_created event arrives.
+      pendingConvertRef.current = true;
     }
 
     if (isAllProductsLoading) {
@@ -371,9 +361,8 @@ export default function NoveraChatPage(): JSX.Element {
   }, [
     isAllProductsLoading,
     performClassification,
-    messages,
     conversationId,
-    abandonConversation,
+    convertConversation,
   ]);
 
   useEffect(() => {
@@ -505,10 +494,10 @@ export default function NoveraChatPage(): JSX.Element {
           const nextConversationId = String(event.conversationId ?? "");
           if (nextConversationId) {
             setConversationId(nextConversationId);
-            // The user created a case before the id was available — abandon now.
-            if (pendingAbandonRef.current) {
-              pendingAbandonRef.current = false;
-              abandonConversation.mutate(nextConversationId);
+            // The user created a case before the id was available — convert now.
+            if (pendingConvertRef.current) {
+              pendingConvertRef.current = false;
+              convertConversation.mutate(nextConversationId);
             }
             if (!urlConversationId && projectId) {
               navigate(
