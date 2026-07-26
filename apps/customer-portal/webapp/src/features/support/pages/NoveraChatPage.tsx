@@ -27,6 +27,7 @@ import { flushSync } from "react-dom";
 import { useNavigate, useParams, useLocation } from "react-router";
 import { usePostProjectDeploymentsSearchAll } from "@api/usePostProjectDeploymentsSearch";
 import { useGetConversationMessages } from "@features/support/api/useGetConversationMessages";
+import { useUpdateConversationState } from "@features/support/api/useUpdateConversationState";
 import useGetUserDetails from "@features/settings/api/useGetUserDetails";
 import { usePostCaseClassifications } from "@features/support/api/usePostCaseClassifications";
 import { useChatWebSocket } from "@features/support/api/useChatWebSocket";
@@ -49,6 +50,7 @@ import {
   CHAT_TYPING_INTERVAL_MS,
   NOVERA_ANALYZING_PLACEHOLDER_TEXT,
   NOVERA_INITIAL_WELCOME_TEXT,
+  NOVERA_WELCOME_MESSAGE_ID,
 } from "@features/support/constants/chatConstants";
 import {
   formatChatHistoryForClassification,
@@ -144,6 +146,13 @@ export default function NoveraChatPage(): JSX.Element {
   const [conversationId, setConversationId] = useState<string | null>(
     () => urlConversationId ?? conversationResponse?.conversationId ?? null,
   );
+  const abandonConversation = useUpdateConversationState(
+    projectId || "",
+    "abandoned",
+  );
+  // Set when the user creates a case before the conversation id has been
+  // received; the conversation is then abandoned once conversation_created fires.
+  const pendingAbandonRef = useRef(false);
 
   const {
     data: conversationHistory,
@@ -202,7 +211,7 @@ export default function NoveraChatPage(): JSX.Element {
     }
 
     const botWelcome: Message = {
-      id: "1",
+      id: NOVERA_WELCOME_MESSAGE_ID,
       text: NOVERA_INITIAL_WELCOME_TEXT,
       sender: ChatSender.BOT,
       timestamp: new Date(),
@@ -334,12 +343,38 @@ export default function NoveraChatPage(): JSX.Element {
   const handleCreateCase = useCallback(() => {
     setIsCreateCaseLoading(true);
 
+    // If the user creates a case before Novera has produced any response, mark
+    // the conversation Abandoned so it isn't left counted as an open chat.
+    // (The welcome message is static; real bot replies have non-empty text.)
+    const userAsked = messages.some((m) => m.sender === ChatSender.USER);
+    const aiResponded = messages.some(
+      (m) =>
+        m.sender === ChatSender.BOT &&
+        m.id !== NOVERA_WELCOME_MESSAGE_ID &&
+        m.text.trim() !== "",
+    );
+    if (userAsked && !aiResponded) {
+      if (conversationId) {
+        abandonConversation.mutate(conversationId);
+      } else {
+        // Conversation id not received yet (very fast bail). Defer the abandon
+        // until the conversation_created event arrives.
+        pendingAbandonRef.current = true;
+      }
+    }
+
     if (isAllProductsLoading) {
       setIsWaitingForClassification(true);
     } else {
       performClassification();
     }
-  }, [isAllProductsLoading, performClassification]);
+  }, [
+    isAllProductsLoading,
+    performClassification,
+    messages,
+    conversationId,
+    abandonConversation,
+  ]);
 
   useEffect(() => {
     if (isWaitingForClassification && !isAllProductsLoading) {
@@ -470,6 +505,11 @@ export default function NoveraChatPage(): JSX.Element {
           const nextConversationId = String(event.conversationId ?? "");
           if (nextConversationId) {
             setConversationId(nextConversationId);
+            // The user created a case before the id was available — abandon now.
+            if (pendingAbandonRef.current) {
+              pendingAbandonRef.current = false;
+              abandonConversation.mutate(nextConversationId);
+            }
             if (!urlConversationId && projectId) {
               navigate(
                 `/projects/${projectId}/support/chat/${nextConversationId}`,

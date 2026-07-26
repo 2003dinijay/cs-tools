@@ -28,6 +28,10 @@ const ERR_MSG_UNAUTHORIZED_ACCESS = "You are not authorized to perform this acti
 const ERR_MSG_CASES_STATISTICS = "Failed to retrieve project case statistics.";
 const ERR_MSG_CONVERSATION_STATISTICS = "Failed to retrieve project conversation statistics.";
 
+// Conversation status update actions (PATCH /conversations/{id}).
+const CONVERSATION_STATUS_CLOSED = "closed";
+const CONVERSATION_STATUS_ABANDONED = "abandoned";
+
 // Default Pagination Values
 public const int DEFAULT_OFFSET = 0;
 public const int DEFAULT_LIMIT = 10;
