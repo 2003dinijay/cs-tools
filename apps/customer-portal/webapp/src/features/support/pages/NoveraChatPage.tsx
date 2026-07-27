@@ -302,6 +302,19 @@ export default function NoveraChatPage(): JSX.Element {
       return;
     }
 
+    // A case is being created from this chat, so mark the conversation
+    // Converted before we navigate into the case flow. This is awaited on
+    // purpose: firing it without awaiting lets the imminent navigation cancel
+    // the in-flight request, so the state change is lost. A conversion failure
+    // must not block case creation, so the error is swallowed.
+    if (conversationId) {
+      try {
+        await convertConversation.mutateAsync(conversationId);
+      } catch {
+        // Non-blocking: proceed with case creation even if the update fails.
+      }
+    }
+
     try {
       const chatHistory = formatChatHistoryForClassification(messages);
       if (chatHistory) {
@@ -338,18 +351,16 @@ export default function NoveraChatPage(): JSX.Element {
     classifyCase,
     conversationId,
     projectTypeId,
+    convertConversation,
   ]);
 
   const handleCreateCase = useCallback(() => {
     setIsCreateCaseLoading(true);
 
-    // A case is being created from this chat, so mark the conversation
-    // Converted so it is no longer counted as an open chat.
-    if (conversationId) {
-      convertConversation.mutate(conversationId);
-    } else {
-      // Conversation id not received yet (very fast bail). Defer the update
-      // until the conversation_created event arrives.
+    if (!conversationId) {
+      // Conversation id not received yet (very fast bail). Defer the convert
+      // until the conversation_created event arrives. When the id is present,
+      // performClassification converts (awaited) before navigating away.
       pendingConvertRef.current = true;
     }
 
@@ -358,12 +369,7 @@ export default function NoveraChatPage(): JSX.Element {
     } else {
       performClassification();
     }
-  }, [
-    isAllProductsLoading,
-    performClassification,
-    conversationId,
-    convertConversation,
-  ]);
+  }, [isAllProductsLoading, performClassification, conversationId]);
 
   useEffect(() => {
     if (isWaitingForClassification && !isAllProductsLoading) {
