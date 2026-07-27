@@ -186,8 +186,14 @@ export default function CaseMetaBand({
   // until the backend exposes it as a first-class field.
   const projectType = c.projectName?.split(" - ")[1]?.trim() || "—";
   // One-line digest shown when the band is collapsed, so collapsing doesn't
-  // hide every triage fact — account, tier, and who owns the case stay visible.
-  const collapsedSummary = [c.customer, tierLabel(tier), c.assignee]
+  // hide every triage fact — project, deployment, product, and who owns the
+  // case stay visible.
+  const collapsedSummary = [
+    c.projectName,
+    product.deployment,
+    product.product,
+    c.assignee,
+  ]
     .filter(Boolean)
     .join(" · ");
 
