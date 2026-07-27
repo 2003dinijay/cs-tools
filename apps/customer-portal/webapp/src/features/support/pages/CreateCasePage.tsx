@@ -974,6 +974,7 @@ export default function CreateCasePage(): JSX.Element {
       onSuccess: async (data) => {
         setIsNavigatingAfterCreate(true);
         const caseId = data.id;
+        showSuccess("Case created successfully");
         const createdCase = data as {
           isSecurityReport?: boolean;
           reportType?: string;
@@ -1026,11 +1027,10 @@ export default function CreateCasePage(): JSX.Element {
             void uploadPromise.then((failed) => {
               if (failed.length > 0) {
                 showError(
-                  `Case created, but failed to upload: ${failed.join(", ")}. You can retry from the Attachments tab.`,
+                  `Failed to upload: ${failed.join(", ")}. You can retry from the Attachments tab.`,
                 );
-              } else {
-                showSuccess("Attachments uploaded successfully.");
               }
+              // no-op on success: the case-created confirmation was already shown above
             });
           } else {
             setIsPreparingAttachments(false);
@@ -1079,14 +1079,10 @@ export default function CreateCasePage(): JSX.Element {
           navigate(`/projects/${projectId}/support/cases/${caseId}`);
         }
 
-        if (!attachmentsStillUploading) {
-          if (failedAttachmentNames.length > 0) {
-            showError(
-              `Case created, but failed to upload: ${failedAttachmentNames.join(", ")}. You can retry from the Attachments tab.`,
-            );
-          } else {
-            showSuccess("Case created successfully");
-          }
+        if (!attachmentsStillUploading && failedAttachmentNames.length > 0) {
+          showError(
+            `Failed to upload: ${failedAttachmentNames.join(", ")}. You can retry from the Attachments tab.`,
+          );
         }
       },
       onError: (error) => {
