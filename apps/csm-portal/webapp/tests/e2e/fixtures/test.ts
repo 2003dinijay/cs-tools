@@ -29,11 +29,15 @@ import path from "node:path";
 
 export type TimecardRole = "approver" | "engineer";
 
-/** A captured session: the origin's localStorage + sessionStorage snapshots. */
+/** A captured session: the origin's localStorage + sessionStorage snapshots.
+ * `cookies` (optional) carries the IdP-domain cookies so the SDK's silent
+ * token refresh can succeed mid-run when the short-lived access token expires;
+ * older bundles without it still replay fine (access token valid for its TTL). */
 interface SessionBundle {
   origin?: string;
   localStorage?: Record<string, string>;
   sessionStorage?: Record<string, string>;
+  cookies?: Parameters<BrowserContext["addCookies"]>[0];
 }
 
 /** Absolute path to a role's captured session bundle. */
@@ -51,6 +55,19 @@ function readBundle(role: TimecardRole): SessionBundle {
 
 async function applySession(context: BrowserContext, role: TimecardRole): Promise<void> {
   const bundle = readBundle(role);
+  if (bundle.cookies?.length) {
+    // Best-effort: lets the SDK's hidden-iframe silent refresh reach the IdP
+    // with an existing session when the access token expires during a long run.
+    // A malformed cookies array (bad domain/path/sameSite combo) must not abort
+    // the whole role's beforeEach — degrade gracefully, same as the storage
+    // replay below.
+    try {
+      await context.addCookies(bundle.cookies);
+    } catch {
+      // Cookies not applicable to this context; the silent refresh path just
+      // won't have an IdP session to lean on, which is safe to ignore here.
+    }
+  }
   await context.addInitScript((b: SessionBundle) => {
     try {
       for (const [k, v] of Object.entries(b.localStorage ?? {})) {

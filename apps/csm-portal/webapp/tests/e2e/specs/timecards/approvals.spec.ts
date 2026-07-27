@@ -47,12 +47,12 @@ test.describe("time cards — approvals queue", () => {
       { timeout: 15_000 },
     );
     await tc.openFilters();
-    await expect(page.getByLabel("Project")).toBeVisible();
+    await expect(page.getByRole("combobox", { name: /^Project\s*\*?$/ })).toBeVisible();
     // No State control here: Approvals is server-forced to "submitted"
     // (see useApprovalQueue), so FilterBar hides it via hideStateFilter
     // rather than showing a filter that can't narrow anything.
-    await expect(page.getByLabel("State")).toHaveCount(0);
-    await expect(page.getByLabel("Engineer")).toBeVisible();
+    await expect(page.getByRole("combobox", { name: /^State\s*\*?$/ })).toHaveCount(0);
+    await expect(page.getByRole("combobox", { name: /^Engineer\s*\*?$/ })).toBeVisible();
   });
 
   test("approving a card created by a different signed-in user clears it from the queue", async ({

@@ -35,18 +35,18 @@ export class ChangeRequestCreatePage {
     ).toBeVisible();
   }
 
-  /** Not `exact` — MUI's required-field asterisk (`aria-hidden` but still
-   * folded into the computed accessible name) makes an exact "Subject"
-   * match find nothing; the loose match is unambiguous (only one field on
-   * this form is labelled anything starting with "Subject"). */
+  /** MUI's required-field asterisk (a thin-space + `*` folded into the
+   * computed accessible name) makes an exact "Subject" match find nothing —
+   * this anchored, marker-tolerant regex matches either way. */
   subjectField(): Locator {
-    return this.page.getByLabel("Subject");
+    return this.page.getByRole("textbox", { name: /^Subject\s*\*?$/ });
   }
 
   /** Reads a pre-selected enum dropdown's current visible value (Type,
    * Category, Impact, Risk, Priority) without opening it. */
   selectValue(label: string): Locator {
-    return this.page.getByLabel(label, { exact: true });
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return this.page.getByRole("combobox", { name: new RegExp(`^${escaped}\\s*\\*?$`) });
   }
 
   createButton(): Locator {
@@ -54,12 +54,17 @@ export class ChangeRequestCreatePage {
   }
 
   /** Fills the only required field and submits. Returns once the app has
-   * navigated to the new CR's detail page (`/operations/change-requests/:id`). */
+   * navigated to the new CR's detail page (`/operations/change-requests/:id`).
+   * The id segment must not match the literal "new" of this very create
+   * route — a bare `[^/]+$` is satisfied by `/operations/change-requests/new`
+   * itself, which would let this assertion pass instantly on a still-pending
+   * (or failed) submit, before the app ever navigates to the created
+   * record's real id. */
   async fillSubjectAndSubmit(subject: string): Promise<void> {
     await this.subjectField().fill(subject);
     await expect(this.createButton()).toBeEnabled();
     await this.createButton().click();
-    await expect(this.page).toHaveURL(/\/operations\/change-requests\/[^/]+$/, {
+    await expect(this.page).toHaveURL(/\/operations\/change-requests\/(?!new(?:[/?#]|$))[^/]+$/, {
       timeout: 15_000,
     });
   }

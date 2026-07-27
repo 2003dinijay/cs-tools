@@ -69,7 +69,15 @@ export class LogTimeDialog {
     // one activity" — use the first row ("Analysis and debugging").
     await dialog.getByLabel("Analysis and debugging").fill(String(opts.hours));
 
-    await dialog.getByLabel("Work log comment").fill(opts.workLogComment);
+    // Not `getByLabel("Work log comment")`: the field is a rich-text Editor
+    // inside a `role="group"` container (labelled via `aria-labelledby`, not
+    // a real <label>/form control), so `getByLabel` resolves the group div
+    // itself — not fillable. `Editor.tsx`'s `ContentEditable` carries a fixed
+    // `data-testid="case-description-editor"` regardless of which feature
+    // embeds it (mirrors `CaseCreatePage.descriptionEditor()`).
+    const workLogEditor = dialog.getByTestId("case-description-editor");
+    await workLogEditor.click();
+    await workLogEditor.fill(opts.workLogComment);
 
     await dialog
       .getByPlaceholder("Search engineers by name or email…")

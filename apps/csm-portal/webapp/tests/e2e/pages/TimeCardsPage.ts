@@ -86,30 +86,41 @@ export class TimeCardsPage {
    * toggle button) if the fields inside it aren't already visible. */
   async openFilters(): Promise<void> {
     const isOpen = await this.page
-      .getByLabel("Work item")
+      .getByRole("combobox", { name: /^Work item\s*\*?$/ })
       .isVisible()
       .catch(() => false);
     if (!isOpen) {
       await this.page.getByRole("button", { name: /^filters/i }).click();
-      await expect(this.page.getByLabel("Work item")).toBeVisible();
+      await expect(this.page.getByRole("combobox", { name: /^Work item\s*\*?$/ })).toBeVisible();
     }
   }
 
-  /** Set the State filter select (label "State") to an option label. */
+  /** Set the State filter select (label "State") to an option label. Options
+   * are scoped to the just-opened MUI listbox (`getByRole("listbox")`),
+   * never queried page-wide — see `CaseCreatePage.selectOption` for why an
+   * unscoped `getByRole("option")` is unsafe on any page that also embeds
+   * the rich-text description editor. */
   async filterState(optionLabel: string): Promise<void> {
     await this.openFilters();
-    await this.page.getByLabel("State").click();
-    await this.page.getByRole("option", { name: optionLabel, exact: true }).click();
+    await this.page.getByRole("combobox", { name: /^State\s*\*?$/ }).click();
+    await this.page
+      .getByRole("listbox")
+      .getByRole("option", { name: optionLabel, exact: true })
+      .click();
   }
 
   /** Type into the Work item filter and pick the matching option — it's a
    * multi-select autocomplete sourced from case numbers on the current page
    * (`SearchableMultiSelect`), not a plain free-text field, so typing alone
-   * doesn't apply anything until an option is actually selected. */
+   * doesn't apply anything until an option is actually selected. Scoped to
+   * the open listbox — see `filterState` above. */
   async filterWorkItem(caseNumber: string): Promise<void> {
     await this.openFilters();
-    await this.page.getByLabel("Work item").fill(caseNumber);
-    await this.page.getByRole("option", { name: caseNumber, exact: true }).click();
+    await this.page.getByRole("combobox", { name: /^Work item\s*\*?$/ }).fill(caseNumber);
+    await this.page
+      .getByRole("listbox")
+      .getByRole("option", { name: caseNumber, exact: true })
+      .click();
   }
 
   /** Clears every active filter via the filter bar's "Clear filters" button

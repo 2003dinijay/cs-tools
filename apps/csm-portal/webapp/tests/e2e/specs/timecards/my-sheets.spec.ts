@@ -22,11 +22,43 @@
 // project filter is picked, so a just-created card is expected to appear
 // here without the user touching the project filter.
 //
+// Unlike the Approvals/Reject tabs' card component, the "My time sheets"
+// card (`TimeSheetCard`) doesn't render the case number as row text at all
+// (confirmed live, 2026-07-26 — a row only shows the project, a relative
+// timestamp, duration, billable state, and a status chip) — it only shows
+// up once you open that row's own "View details" dialog. So
+// `TimeCardsPage.cardRow()`'s hasText match (which works fine on the other
+// tabs) can never find a row here by case number; `expectNewestRowForCase`
+// below verifies identity through that dialog instead. Cards render
+// newest-first within this tab (see `cardRow`'s doc comment on ordering),
+// so the newest is always the very first row on the page — including after
+// narrowing by the Work item filter, since that only ever removes rows.
+//
 
 import { test, expect, withRole, approverSearchQuery } from "../../fixtures/test";
 import { TimeCardsPage } from "../../pages/TimeCardsPage";
 import { LogTimeDialog } from "../../pages/LogTimeDialog";
 import { e2eWorkLogComment } from "../../utils/selectors";
+
+/** Opens the first (newest) row's "View details" dialog and asserts it's
+ * for `caseNumber`, then closes it. See the file-level note above for why
+ * this — not `TimeCardsPage.cardRow()` — is how identity is checked here. */
+async function expectNewestRowForCase(
+  page: import("@playwright/test").Page,
+  tc: TimeCardsPage,
+  caseNumber: string,
+): Promise<void> {
+  // The list renders loading-skeleton rows immediately, then swaps in real
+  // rows once `POST /time-cards/search` resolves — comfortably under 3s in
+  // practice, but a freshly reloaded page (auth restore + the fetch itself)
+  // can take noticeably longer than that, so this needs a generous timeout
+  // rather than the page's own load event being enough of a signal.
+  const firstRow = page.locator('[data-testid^="timecard-row-"]').first();
+  await expect(firstRow).toBeVisible({ timeout: 10_000 });
+  await firstRow.getByRole("button", { name: "View details" }).click();
+  await expect(tc.reviewDialog().getByText(caseNumber, { exact: false }).first()).toBeVisible({ timeout: 5_000 });
+  await tc.reviewDialog().getByRole("button", { name: "Close" }).click();
+}
 
 withRole(test, "approver");
 
@@ -71,32 +103,45 @@ test.describe("time cards — my time sheets", () => {
     await tc.goto();
     await expect(tc.myTab()).toBeVisible();
     await tc.openFilters();
-    await expect(page.getByLabel("Project")).toBeVisible();
-    await expect(page.getByLabel("Work item")).toBeVisible();
-    await expect(page.getByLabel("State")).toBeVisible();
+    await expect(page.getByRole("combobox", { name: /^Project\s*\*?$/ })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: /^Work item\s*\*?$/ })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: /^State\s*\*?$/ })).toBeVisible();
     await expect(page.getByText("Could not load your time sheets.")).toHaveCount(0);
   });
 
   test("a newly logged card appears grouped in My time sheets", async ({ page }) => {
+    test.setTimeout(90_000);
     const caseNumber = await logTimeOnFirstCase(page, "my-sheets display");
     test.skip(!caseNumber, "No open case available to log time against.");
 
     const tc = new TimeCardsPage(page);
-    await tc.goto();
-    await expect(tc.cardRow(caseNumber!)).toBeVisible({ timeout: 15_000 });
+    // A just-submitted card isn't always retrievable from
+    // `POST /time-cards/search` the instant we land back on the list — the
+    // real backend can lag between the create write and the record showing
+    // up in a search/list read. Retry the list load (full reload) until the
+    // just-logged card's row actually renders (identity checked via its
+    // "View details" dialog — see the file-level note above).
+    await expect(async () => {
+      await tc.goto();
+      await expectNewestRowForCase(page, tc, caseNumber!);
+    }).toPass({ timeout: 60_000, intervals: [2_000, 3_000, 5_000, 8_000] });
   });
 
   test("state and work-item filters narrow to the matching card", async ({ page }) => {
     // Creates a real card (network round trip against live staging) *and*
     // drives three sequential filter interactions afterward — comfortably
     // exceeds the config default of 30s.
-    test.setTimeout(60_000);
+    test.setTimeout(90_000);
     const caseNumber = await logTimeOnFirstCase(page, "my-sheets filters");
     test.skip(!caseNumber, "No open case available to log time against.");
 
     const tc = new TimeCardsPage(page);
-    await tc.goto();
-    await expect(tc.cardRow(caseNumber!)).toBeVisible({ timeout: 15_000 });
+    // See the eventual-consistency note above — the card may not be
+    // retrievable the instant we land back on the list.
+    await expect(async () => {
+      await tc.goto();
+      await expectNewestRowForCase(page, tc, caseNumber!);
+    }).toPass({ timeout: 60_000, intervals: [2_000, 3_000, 5_000, 8_000] });
 
     // Work item filter narrows to the matching card. It's a multi-select
     // sourced from case numbers on the current page, not free text, so
@@ -104,7 +149,7 @@ test.describe("time cards — my time sheets", () => {
     // (nothing to select if it doesn't exist) — clearing instead confirms
     // the filter was actually applied and removable.
     await tc.filterWorkItem(caseNumber!);
-    await expect(tc.cardRow(caseNumber!)).toBeVisible();
+    await expectNewestRowForCase(page, tc, caseNumber!);
     await tc.clearFilters();
     // "Clear filters" only shows up while a filter is active, so it going
     // away means the work item filter actually got removed.
@@ -112,6 +157,6 @@ test.describe("time cards — my time sheets", () => {
 
     // State filter: the card was just created, so it's "submitted".
     await tc.filterState("Submitted");
-    await expect(tc.cardRow(caseNumber!)).toBeVisible();
+    await expectNewestRowForCase(page, tc, caseNumber!);
   });
 });
