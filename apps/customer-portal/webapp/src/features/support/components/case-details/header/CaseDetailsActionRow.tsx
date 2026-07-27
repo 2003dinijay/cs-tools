@@ -224,7 +224,10 @@ export default function CaseDetailsActionRow({
         </Button>
       )}
       {showDeescalateButton && (
-        <Tooltip title={canDeescalateCase ? "" : DEESCALATE_PERMISSION_TOOLTIP}>
+        <Tooltip
+          title={canDeescalateCase ? "" : DEESCALATE_PERMISSION_TOOLTIP}
+          describeChild
+        >
           <Box component="span">
             <Button
               variant="outlined"
