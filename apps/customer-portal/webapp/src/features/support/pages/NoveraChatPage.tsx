@@ -294,7 +294,8 @@ export default function NoveraChatPage(): JSX.Element {
     }
   }, [urlConversationId, conversationResponse, projectId, navigate]);
 
-  const performClassification = useCallback(async () => {
+  const performClassification = useCallback(async (overrideConversationId?: string) => {
+    const activeConversationId = overrideConversationId ?? conversationId;
     if (!projectId) {
       navigate("/");
       setIsCreateCaseLoading(false);
@@ -307,9 +308,9 @@ export default function NoveraChatPage(): JSX.Element {
     // purpose: firing it without awaiting lets the imminent navigation cancel
     // the in-flight request, so the state change is lost. A conversion failure
     // must not block case creation, so the error is swallowed.
-    if (conversationId) {
+    if (activeConversationId) {
       try {
-        await convertConversation.mutateAsync(conversationId);
+        await convertConversation.mutateAsync(activeConversationId);
       } catch {
         // Non-blocking: proceed with case creation even if the update fails.
       }
@@ -327,16 +328,20 @@ export default function NoveraChatPage(): JSX.Element {
             projectTypeId,
           });
           navigate(`/projects/${projectId}/support/chat/create-case`, {
-            state: { messages, classificationResponse, conversationId },
+            state: {
+              messages,
+              classificationResponse,
+              conversationId: activeConversationId,
+            },
           });
         } catch {
           navigate(`/projects/${projectId}/support/chat/create-case`, {
-            state: { messages, conversationId },
+            state: { messages, conversationId: activeConversationId },
           });
         }
       } else {
         navigate(`/projects/${projectId}/support/chat/create-case`, {
-          state: { messages, conversationId },
+          state: { messages, conversationId: activeConversationId },
         });
       }
     } finally {
@@ -358,10 +363,11 @@ export default function NoveraChatPage(): JSX.Element {
     setIsCreateCaseLoading(true);
 
     if (!conversationId) {
-      // Conversation id not received yet (very fast bail). Defer the convert
-      // until the conversation_created event arrives. When the id is present,
-      // performClassification converts (awaited) before navigating away.
+      // Conversation id not received yet. Defer the whole create-case flow
+      // (convert + classify + navigate) until conversation_created arrives, so
+      // the conversion runs with a real id and is awaited before navigation.
       pendingConvertRef.current = true;
+      return;
     }
 
     if (isAllProductsLoading) {
@@ -500,12 +506,17 @@ export default function NoveraChatPage(): JSX.Element {
           const nextConversationId = String(event.conversationId ?? "");
           if (nextConversationId) {
             setConversationId(nextConversationId);
-            // The user created a case before the id was available — convert now.
             if (pendingConvertRef.current) {
+              // A case was requested before the id arrived — resume the
+              // create-case flow now with the fresh id, so the conversion is
+              // awaited before navigation instead of being fired-and-cancelled.
               pendingConvertRef.current = false;
-              convertConversation.mutate(nextConversationId);
-            }
-            if (!urlConversationId && projectId) {
+              if (isAllProductsLoading) {
+                setIsWaitingForClassification(true);
+              } else {
+                performClassification(nextConversationId);
+              }
+            } else if (!urlConversationId && projectId) {
               navigate(
                 `/projects/${projectId}/support/chat/${nextConversationId}`,
                 {
