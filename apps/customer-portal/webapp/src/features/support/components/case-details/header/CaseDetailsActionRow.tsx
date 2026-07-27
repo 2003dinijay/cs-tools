@@ -16,9 +16,11 @@
 
 import type { CaseDetailsActionRowProps } from "@features/support/types/supportComponents";
 import {
+  Box,
   Button,
   CircularProgress,
   Stack,
+  Tooltip,
   alpha,
   useTheme,
   type Theme,
@@ -49,6 +51,8 @@ import {
 import { TriangleAlert } from "@wso2/oxygen-ui-icons-react";
 
 const ACTION_BUTTON_ICON_SIZE = 12;
+const DEESCALATE_PERMISSION_TOOLTIP =
+  "Only customer admins, project leads, or the user who created an escalation on this case can de-escalate it.";
 
 function getActionButtonSx(
   theme: Theme,
@@ -131,7 +135,8 @@ export default function CaseDetailsActionRow({
     resolvedEscalationLevelId !== ESCALATION_MAX_LEVEL_ID &&
     !!escalationLevelInfo &&
     (!needsLead || isCurrentUserLead === true);
-  const showDeescalateButton = isEscalated === true && canDeescalate === true;
+  const showDeescalateButton = isEscalated === true;
+  const canDeescalateCase = canDeescalate === true;
 
   const availableActions = getAvailableCaseActions(statusLabel).filter(
     (label) => {
@@ -219,15 +224,20 @@ export default function CaseDetailsActionRow({
         </Button>
       )}
       {showDeescalateButton && (
-        <Button
-          variant="outlined"
-          size="small"
-          startIcon={<TriangleAlert size={ACTION_BUTTON_ICON_SIZE} />}
-          onClick={() => setDeescalateModalOpen(true)}
-          sx={getActionButtonSx(theme, "info") as Record<string, unknown>}
-        >
-          De-escalate Case
-        </Button>
+        <Tooltip title={canDeescalateCase ? "" : DEESCALATE_PERMISSION_TOOLTIP}>
+          <Box component="span">
+            <Button
+              variant="outlined"
+              size="small"
+              disabled={!canDeescalateCase}
+              startIcon={<TriangleAlert size={ACTION_BUTTON_ICON_SIZE} />}
+              onClick={() => setDeescalateModalOpen(true)}
+              sx={getActionButtonSx(theme, "info") as Record<string, unknown>}
+            >
+              De-escalate Case
+            </Button>
+          </Box>
+        </Tooltip>
       )}
       <CaseStateConfirmDialog
         open={!!confirmAction}
