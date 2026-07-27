@@ -123,7 +123,7 @@ func TestCreateCaseAttachment_OverNewLimit(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 Bad Request, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "attachment exceeds the maximum allowed size of 10 MB") {
+	if !strings.Contains(rec.Body.String(), attachmentTooLargeMsg) {
 		t.Fatalf("expected the attachment-specific too-large message, got: %s", rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), "request body too large") {
