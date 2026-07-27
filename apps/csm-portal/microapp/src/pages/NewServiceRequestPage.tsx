@@ -172,7 +172,8 @@ export default function NewServiceRequestPage() {
       }
 
       navigate(`/cases/${created.id}`);
-    } catch {
+    } catch (error) {
+      Logger.warn("Could not create the service request", error);
       setSubmitError("Could not create the service request. Please try again.");
     } finally {
       setIsSubmitting(false);
@@ -184,9 +185,13 @@ export default function NewServiceRequestPage() {
       <Typography variant="h6">New Service Request</Typography>
 
       <Stack gap={2}>
-        <ProjectSelect value={project} onChange={handleProjectChange} disabled={createCase.isPending} />
+        <ProjectSelect value={project} onChange={handleProjectChange} disabled={createCase.isPending || isSubmitting} />
 
-        <FormControl size="small" fullWidth disabled={!project || deploymentsQuery.isLoading || createCase.isPending}>
+        <FormControl
+          size="small"
+          fullWidth
+          disabled={!project || deploymentsQuery.isLoading || createCase.isPending || isSubmitting}
+        >
           <InputLabel id="sr-deployment-label">Deployment</InputLabel>
           <Select
             labelId="sr-deployment-label"
@@ -209,7 +214,11 @@ export default function NewServiceRequestPage() {
           ) : null}
         </FormControl>
 
-        <FormControl size="small" fullWidth disabled={!deploymentId || productsQuery.isLoading || createCase.isPending}>
+        <FormControl
+          size="small"
+          fullWidth
+          disabled={!deploymentId || productsQuery.isLoading || createCase.isPending || isSubmitting}
+        >
           <InputLabel id="sr-product-label">Deployed Product</InputLabel>
           <Select
             labelId="sr-product-label"
@@ -235,7 +244,7 @@ export default function NewServiceRequestPage() {
         <FormControl
           size="small"
           fullWidth
-          disabled={!deployedProductId || catalogsQuery.isLoading || noCatalogs || createCase.isPending}
+          disabled={!deployedProductId || catalogsQuery.isLoading || noCatalogs || createCase.isPending || isSubmitting}
         >
           <InputLabel id="sr-catalog-label">Catalog</InputLabel>
           <Select
@@ -261,7 +270,7 @@ export default function NewServiceRequestPage() {
           ) : null}
         </FormControl>
 
-        <FormControl size="small" fullWidth disabled={!catalogId || createCase.isPending}>
+        <FormControl size="small" fullWidth disabled={!catalogId || createCase.isPending || isSubmitting}>
           <InputLabel id="sr-catalog-item-label">Catalog Item</InputLabel>
           <Select
             labelId="sr-catalog-item-label"
@@ -301,7 +310,7 @@ export default function NewServiceRequestPage() {
               <CatalogVariableFields
                 variables={renderableVars}
                 values={answers}
-                disabled={createCase.isPending}
+                disabled={createCase.isPending || isSubmitting}
                 onChange={(id, value) => setAnswers((prev) => ({ ...prev, [id]: value }))}
               />
             )}
@@ -309,7 +318,11 @@ export default function NewServiceRequestPage() {
         )}
 
         {catalogItemId && !variablesQuery.isLoading && !variablesQuery.isError && (
-          <AttachmentsField attachments={attachments} onChange={setAttachments} disabled={createCase.isPending} />
+          <AttachmentsField
+            attachments={attachments}
+            onChange={setAttachments}
+            disabled={createCase.isPending || isSubmitting}
+          />
         )}
 
         {firstEmptyRequired && !variablesQuery.isLoading && catalogItemId && (
@@ -325,7 +338,7 @@ export default function NewServiceRequestPage() {
         )}
 
         <Stack direction="row" gap={1} justifyContent="flex-end">
-          <Button onClick={() => navigate(-1)} disabled={createCase.isPending}>
+          <Button onClick={() => navigate(-1)} disabled={createCase.isPending || isSubmitting}>
             Cancel
           </Button>
           <Button variant="contained" disabled={!canSubmit} onClick={() => void handleSubmit()}>
