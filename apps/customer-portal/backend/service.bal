@@ -7005,19 +7005,30 @@ isolated service class WsProxyService {
             }
         }
 
-        // Update conversation state if issue is resolved
+        // Update conversation state if issue is resolved. Do not downgrade a
+        // conversation that has already been Converted (a case was created from
+        // it) — Converted takes precedence over Resolved.
         json resolvedVal = result["resolved"] ?: ();
         if resolvedVal is boolean && resolvedVal {
-            log:printInfo(string `Issue resolved for conversation ID: ${conversationId}, updating state`);
-            entity:ConversationUpdateResponse|error conversationUpdateResponse =
-                    entity:updateConversation(self.idToken, conversationId,
-                    {stateKey: entity:RESOLVED});
-            if conversationUpdateResponse is error {
-                string customError = "Failed to update conversation state to resolved.";
-                log:printError(customError, conversationUpdateResponse);
+            entity:ConversationResponse|error currentConversation =
+                    entity:getConversation(self.idToken, conversationId);
+            boolean alreadyConverted = currentConversation is entity:ConversationResponse &&
+                    currentConversation.state?.id == entity:conversationStateIds.converted;
+            if alreadyConverted {
+                log:printDebug(string `Conversation ID: ${conversationId} is already Converted; ` +
+                        string `skipping Resolved transition.`);
             } else {
-                log:printDebug(string `Updated conversation state to resolved for conversation ID: ${
-                        conversationId}`);
+                log:printInfo(string `Issue resolved for conversation ID: ${conversationId}, updating state`);
+                entity:ConversationUpdateResponse|error conversationUpdateResponse =
+                        entity:updateConversation(self.idToken, conversationId,
+                        {stateKey: entity:RESOLVED});
+                if conversationUpdateResponse is error {
+                    string customError = "Failed to update conversation state to resolved.";
+                    log:printError(customError, conversationUpdateResponse);
+                } else {
+                    log:printDebug(string `Updated conversation state to resolved for conversation ID: ${
+                            conversationId}`);
+                }
             }
         }
     }
