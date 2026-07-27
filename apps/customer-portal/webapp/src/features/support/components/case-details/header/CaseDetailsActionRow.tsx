@@ -232,7 +232,7 @@ export default function CaseDetailsActionRow({
               disabled={!canDeescalateCase}
               startIcon={<TriangleAlert size={ACTION_BUTTON_ICON_SIZE} />}
               onClick={() => setDeescalateModalOpen(true)}
-              sx={getActionButtonSx(theme, "info") as Record<string, unknown>}
+              sx={getActionButtonSx(theme, "success") as Record<string, unknown>}
             >
               De-escalate Case
             </Button>
