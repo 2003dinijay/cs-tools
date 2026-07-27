@@ -27,8 +27,9 @@ import {
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
-import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
+import { ArrowLeft, Lock } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type JSX } from "react";
+import { useSearchParams } from "react-router";
 
 import { BackendApiError } from "@api/backend/client";
 import Editor from "@components/rich-text-editor/Editor";
@@ -39,6 +40,7 @@ import {
 } from "@components/attachments/encodeAttachment";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import AsyncProjectSelect from "@features/csm-cases/components/AsyncProjectSelect";
+import { useGetProject } from "@features/csm-projects/api/useGetProject";
 import { useSearchDeployments } from "@features/csm-cases/api/useSearchDeployments";
 import { useDeployedProductOptions } from "@features/csm-cases/api/useDeployedProductOptions";
 import { usePostCsmCase } from "@features/csm-cases/api/usePostCsmCase";
@@ -66,7 +68,16 @@ export default function CreateSecurityReportPage(): JSX.Element {
   const navigate = useNavTransition();
   const { showError } = useErrorBanner();
 
-  const [projectId, setProjectId] = useState("");
+  // When opened from a project's page (`/security-center/reports/new?projectId=…`),
+  // the project is fixed and shown read-only, mirroring CsmCaseCreatePage's
+  // `?projectId=` lock — the engineer can't accidentally file against the
+  // wrong project. Opened without the param (the Security Center list entry),
+  // the searchable picker is shown.
+  const [searchParams] = useSearchParams();
+  const lockedProjectId = searchParams.get("projectId") ?? "";
+  const isProjectLocked = !!lockedProjectId;
+
+  const [projectId, setProjectId] = useState(lockedProjectId);
   const [deploymentId, setDeploymentId] = useState("");
   const [deployedProductId, setDeployedProductId] = useState("");
   const [subject, setSubject] = useState("");
@@ -75,6 +86,17 @@ export default function CreateSecurityReportPage(): JSX.Element {
   const [subjectEdited, setSubjectEdited] = useState(false);
   const [description, setDescription] = useState("");
   const [attachments, setAttachments] = useState<EncodedAttachment[]>([]);
+
+  // Details for the locked project. Gives the display name for the locked
+  // read-only field (falls back to the raw id while loading).
+  const selectedProject = useGetProject(
+    isProjectLocked ? lockedProjectId : undefined,
+  );
+  const lockedProjectLabel = selectedProject.data?.name
+    ? selectedProject.data.name
+    : selectedProject.isLoading
+      ? "Loading project…"
+      : lockedProjectId;
 
   const deployments = useSearchDeployments(projectId || undefined);
   const deployedProducts = useDeployedProductOptions(deploymentId || undefined);
@@ -207,11 +229,31 @@ export default function CreateSecurityReportPage(): JSX.Element {
 
         <Grid container spacing={2.5}>
           <Grid size={{ xs: 12, md: 4 }}>
-            <AsyncProjectSelect
-              value={projectId}
-              onChange={onProjectChange}
-              required
-            />
+            {isProjectLocked ? (
+              <TextField
+                fullWidth
+                size="small"
+                label="Project"
+                required
+                value={lockedProjectLabel}
+                slotProps={{
+                  input: {
+                    readOnly: true,
+                    endAdornment: (
+                      <Lock size={16} aria-hidden style={{ opacity: 0.6 }} />
+                    ),
+                  },
+                  htmlInput: { "aria-readonly": true },
+                }}
+                helperText="Locked to the project you opened this from. To file against another project, open that project first."
+              />
+            ) : (
+              <AsyncProjectSelect
+                value={projectId}
+                onChange={onProjectChange}
+                required
+              />
+            )}
           </Grid>
 
           <Grid size={{ xs: 12, md: 4 }}>

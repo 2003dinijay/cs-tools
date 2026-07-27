@@ -30,7 +30,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { ArrowLeft, Lock } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type JSX } from "react";
-import { useLocation } from "react-router";
+import { useLocation, useSearchParams } from "react-router";
 
 import { BackendApiError } from "@api/backend/client";
 import AttachmentsField from "@components/attachments/AttachmentsField";
@@ -75,7 +75,15 @@ export default function CreateServiceRequestPage(): JSX.Element {
     | CreateServiceRequestFromCaseNavState
     | undefined;
 
-  const lockedProjectId = relatedCaseState?.projectId ?? "";
+  // When opened from a project's page
+  // (`/operations/service-requests/new?projectId=…`), the project is fixed
+  // and shown read-only, mirroring CsmCaseCreatePage's `?projectId=` lock —
+  // the engineer can't accidentally file against the wrong project. Opened
+  // without either source (the operations-list entry), the searchable picker
+  // is shown.
+  const [searchParams] = useSearchParams();
+  const lockedProjectId =
+    searchParams.get("projectId") ?? relatedCaseState?.projectId ?? "";
   const isProjectLocked = !!lockedProjectId;
   const relatedCaseId = relatedCaseState?.relatedCaseId;
   const relatedCaseNumber = relatedCaseState?.relatedCaseNumber;
@@ -93,7 +101,9 @@ export default function CreateServiceRequestPage(): JSX.Element {
 
   // Details for the locked project — gives the display name for the
   // read-only field (mirrors CsmCaseCreatePage.tsx).
-  const selectedProject = useGetProject(projectId || undefined);
+  const selectedProject = useGetProject(
+    isProjectLocked ? lockedProjectId : undefined,
+  );
   const lockedProjectLabel = selectedProject.data?.name
     ? selectedProject.data.name
     : selectedProject.isLoading
