@@ -1985,6 +1985,22 @@ export default function CsmCaseDetailPage(): JSX.Element {
             onRemove={isClosed ? undefined : (t) => onRemoveTag(t.id)}
             removingId={removeTag.isPending ? removeTag.variables : null}
           />
+        </Box>
+      )}
+
+      {activeTab === "related" && (
+        <Box
+          sx={{
+            display: "grid",
+            gap: 2,
+            gridTemplateColumns: {
+              xs: "1fr",
+              md: "repeat(2, minmax(0, 1fr))",
+            },
+            alignItems: "start",
+          }}
+        >
+          <ChildCasesWidget caseId={c.id} />
           <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
             <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <Typography variant="subtitle2">Linked service requests</Typography>
@@ -2017,12 +2033,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
               </Typography>
             )}
           </Card>
-        </Box>
-      )}
-
-      {activeTab === "related" && (
-        <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: "1fr" }}>
-          <ChildCasesWidget caseId={c.id} />
         </Box>
       )}
 
