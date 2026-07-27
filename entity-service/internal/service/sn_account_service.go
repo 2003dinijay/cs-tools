@@ -164,13 +164,13 @@ func nilIfEmpty(s *string) *string {
 func snAccountCommonFields(a snAccount) (deactivationDate *string, technicalOwner, accountManager, renewalAccountManager *domain.PersonRef) {
 	deactivationDate = nilIfEmpty(a.DeactivationDate)
 	if a.TechnicalOwner != nil && a.TechnicalOwner.ID != "" {
-		technicalOwner = &domain.PersonRef{ID: sysidToUUID(a.TechnicalOwner.ID), Name: a.TechnicalOwner.Name, Email: a.TechnicalOwner.Email}
+		technicalOwner = &domain.PersonRef{ID: sysidToUUID(a.TechnicalOwner.ID), Name: a.TechnicalOwner.Name, Email: nilIfEmpty(a.TechnicalOwner.Email)}
 	}
 	if a.Owner != nil && a.Owner.ID != "" {
-		accountManager = &domain.PersonRef{ID: sysidToUUID(a.Owner.ID), Name: a.Owner.Name, Email: a.Owner.Email}
+		accountManager = &domain.PersonRef{ID: sysidToUUID(a.Owner.ID), Name: a.Owner.Name, Email: nilIfEmpty(a.Owner.Email)}
 	}
 	if a.RenewalAccountManager != nil && a.RenewalAccountManager.ID != "" {
-		renewalAccountManager = &domain.PersonRef{ID: sysidToUUID(a.RenewalAccountManager.ID), Name: a.RenewalAccountManager.Name, Email: a.RenewalAccountManager.Email}
+		renewalAccountManager = &domain.PersonRef{ID: sysidToUUID(a.RenewalAccountManager.ID), Name: a.RenewalAccountManager.Name, Email: nilIfEmpty(a.RenewalAccountManager.Email)}
 	}
 	return
 }
