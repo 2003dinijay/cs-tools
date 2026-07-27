@@ -105,10 +105,6 @@ function isPicked(
   return !("skip" in result);
 }
 
-/** Runs a search using the first available option at each cascade step, then
- * waits for either a results table or the "no updates found" empty state.
- * Returns `null` when the catalog didn't support building a search (caller
- * should `test.skip`). */
 /** True when the page rendered the "Could not load product catalog" error
  * banner instead of the cascading filters — a live-backend data gap (the
  * product-update-levels lookup failing), not a spec/selector bug. Callers
@@ -117,6 +113,10 @@ async function catalogFailedToLoad(page: Page): Promise<boolean> {
   return (await page.getByText(/Could not load product catalog/).count()) > 0;
 }
 
+/** Runs a search using the first available option at each cascade step, then
+ * waits for either a results table or the "no updates found" empty state.
+ * Returns `null` when the catalog didn't support building a search (caller
+ * should `test.skip`). */
 async function runFirstAvailableSearch(
   page: Page,
   updates: UpdatesPage,

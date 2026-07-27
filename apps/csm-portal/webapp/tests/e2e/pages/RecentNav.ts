@@ -105,7 +105,13 @@ export class RecentNav {
    * rendered as a `Form.CardButton`/`QuickNavCaseCard`, neither of which
    * carries a fixed `aria-label`, so this matches on visible text instead). */
   quickNavResult(label: string): Locator {
-    return this.page.getByText(label, { exact: false }).first();
+    // Scope to the open QuickNav palette (a MUI `Modal` — `role="presentation"`
+    // wrapper containing the search input) so a page-wide match can't hit
+    // duplicate sidebar/page text outside the palette.
+    const palette = this.page.locator('[role="presentation"]', {
+      has: this.quickNavSearchInput(),
+    });
+    return palette.getByText(label, { exact: false }).first();
   }
 
   async chooseQuickNavResult(label: string): Promise<void> {
@@ -131,9 +137,12 @@ export class RecentNav {
     }).toPass({ timeout: 10_000 });
   }
 
-  /** A row in the Recently viewed panel, by its title text. */
+  /** A row in the Recently viewed panel, by its title text. The title is
+   * regex-escaped so a value containing regex metacharacters (e.g. `[`, `(`)
+   * doesn't break locator construction or match the wrong row. */
   recentViewRow(title: string): Locator {
-    return this.page.getByRole("button", { name: new RegExp(`^${title}`) });
+    const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return this.page.getByRole("button", { name: new RegExp(`^${escaped}`) });
   }
 
   async openRecentView(title: string): Promise<void> {

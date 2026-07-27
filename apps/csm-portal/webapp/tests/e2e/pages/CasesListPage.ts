@@ -191,7 +191,10 @@ export class CasesListPage {
    * views menu. */
   async applySavedView(name: string): Promise<void> {
     await this.openSavedViewsMenu();
-    await this.page.getByRole("menuitem", { name, exact: false }).click();
+    // Exact match: a view name that's a substring of another menu item (e.g.
+    // "Save current view…" or a longer view name) would otherwise resolve to
+    // multiple items and throw a strict-mode error.
+    await this.page.getByRole("menuitem", { name, exact: true }).click();
   }
 
   /** Deletes a saved view via its row's trash icon

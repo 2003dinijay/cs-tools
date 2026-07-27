@@ -115,7 +115,11 @@ async function provisionCase(
   await create.subjectField().fill(subject);
   await create.fillDescription(`[E2E] ${label} — provisioned by detail-lifecycle.spec.ts.`);
 
-  const enabled = await create.createButton().isEnabled().catch(() => false);
+  const enabled = await expect
+    .poll(() => create.createButton().isEnabled(), { timeout: 10_000 })
+    .toBe(true)
+    .then(() => true)
+    .catch(() => false);
   if (!enabled) return undefined;
   await create.createButton().click();
 

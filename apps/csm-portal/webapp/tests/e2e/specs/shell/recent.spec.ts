@@ -94,7 +94,12 @@ async function visitFirstCase(
   await expect(page.getByRole("tablist")).toBeVisible();
 
   const entries = await readStoredRecentViews(page);
-  const caseEntry = entries.find((e) => e.kind === "case");
+  // Match the entry for the case we just opened (by href), not merely the
+  // first stored case — an older recorded view must not satisfy this.
+  const current = page.url();
+  const caseEntry = entries.find(
+    (e) => e.kind === "case" && !!e.href && current.includes(e.href),
+  );
   if (!caseEntry) return null;
 
   // `title` is `"{caseIdLabel} · {subject}"` (see `CsmCaseDetailPage.tsx`) —

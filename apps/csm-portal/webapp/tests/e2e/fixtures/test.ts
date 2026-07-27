@@ -58,7 +58,15 @@ async function applySession(context: BrowserContext, role: TimecardRole): Promis
   if (bundle.cookies?.length) {
     // Best-effort: lets the SDK's hidden-iframe silent refresh reach the IdP
     // with an existing session when the access token expires during a long run.
-    await context.addCookies(bundle.cookies);
+    // A malformed cookies array (bad domain/path/sameSite combo) must not abort
+    // the whole role's beforeEach — degrade gracefully, same as the storage
+    // replay below.
+    try {
+      await context.addCookies(bundle.cookies);
+    } catch {
+      // Cookies not applicable to this context; the silent refresh path just
+      // won't have an IdP session to lean on, which is safe to ignore here.
+    }
   }
   await context.addInitScript((b: SessionBundle) => {
     try {

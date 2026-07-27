@@ -60,7 +60,8 @@ test.describe("case creation — page structure", () => {
       await deploymentField.click();
       const deploymentOption = page.getByRole("listbox").getByRole("option").first();
       const hasDeployment = await deploymentOption
-        .isVisible({ timeout: 10_000 })
+        .waitFor({ state: "visible", timeout: 10_000 })
+        .then(() => true)
         .catch(() => false);
       test.skip(!hasDeployment, "No deployments available for this project in staging.");
       await deploymentOption.click();
@@ -71,7 +72,10 @@ test.describe("case creation — page structure", () => {
     await expect(productField).toBeEnabled({ timeout: 10_000 });
     await productField.click();
     const productOption = page.getByRole("listbox").getByRole("option").first();
-    const hasProduct = await productOption.isVisible({ timeout: 10_000 }).catch(() => false);
+    const hasProduct = await productOption
+      .waitFor({ state: "visible", timeout: 10_000 })
+      .then(() => true)
+      .catch(() => false);
     test.skip(!hasProduct, "No deployed products available for this project/deployment in staging.");
     await productOption.click();
     await expect(create.createButton()).toBeDisabled();
@@ -111,7 +115,8 @@ test.describe("case creation — happy path", () => {
       await deploymentField.click();
       const deploymentOption = page.getByRole("listbox").getByRole("option").first();
       const hasDeployment = await deploymentOption
-        .isVisible({ timeout: 10_000 })
+        .waitFor({ state: "visible", timeout: 10_000 })
+        .then(() => true)
         .catch(() => false);
       test.skip(!hasDeployment, "No deployments available for this project in staging.");
       await deploymentOption.click();
@@ -121,7 +126,10 @@ test.describe("case creation — happy path", () => {
     await expect(productField).toBeEnabled({ timeout: 10_000 });
     await productField.click();
     const productOption = page.getByRole("listbox").getByRole("option").first();
-    const hasProduct = await productOption.isVisible({ timeout: 10_000 }).catch(() => false);
+    const hasProduct = await productOption
+      .waitFor({ state: "visible", timeout: 10_000 })
+      .then(() => true)
+      .catch(() => false);
     test.skip(!hasProduct, "No deployed products available for this project/deployment in staging.");
     await productOption.click();
 

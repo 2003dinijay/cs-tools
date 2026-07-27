@@ -135,6 +135,6 @@ export class CaseCreatePage {
 
     await expect(this.createButton()).toBeEnabled();
     await this.createButton().click();
-    await expect(this.page).toHaveURL(/\/cases\/[^/]+$/, { timeout: 15_000 });
+    await expect(this.page).toHaveURL(/\/cases\/(?!new$)[^/]+$/, { timeout: 15_000 });
   }
 }
