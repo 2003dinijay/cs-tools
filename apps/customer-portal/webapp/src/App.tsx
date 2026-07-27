@@ -49,6 +49,8 @@ import SettingsPage from "@features/settings/pages/SettingsPage";
 import ServiceNowCaseRedirectPage from "@features/project-hub/pages/ServiceNowCaseRedirectPage";
 import PartnerProjectsPage from "@features/project-hub/pages/PartnerProjectsPage";
 import PartnerCasesPage from "@features/project-hub/pages/PartnerCasesPage";
+import UserProjectsPage from "@features/project-hub/pages/UserProjectsPage";
+import UserCasesPage from "@features/project-hub/pages/UserCasesPage";
 import PartnerGuard from "@layouts/PartnerGuard";
 import Error401Page from "@components/error/Error401Page";
 import Error403Page from "@components/error/Error403Page";
@@ -107,6 +109,10 @@ export default function App(): JSX.Element {
                   <Route path="partner/projects" element={<PartnerProjectsPage />} />
                   <Route path="partner/cases" element={<PartnerCasesPage />} />
                 </Route>
+
+                {/* Home overview drill-down pages for non-partner users with multiple projects */}
+                <Route path="projects" element={<UserProjectsPage />} />
+                <Route path="cases" element={<UserCasesPage />} />
 
                 {/* Project Specific Routes */}
                 <Route path="projects/:projectId" element={<ProjectGuard />}>
