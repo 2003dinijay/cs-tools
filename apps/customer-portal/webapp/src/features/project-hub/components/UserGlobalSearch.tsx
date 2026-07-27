@@ -38,7 +38,6 @@ import {
 import { ChevronDown, Download, FileText, FolderOpen, Search, X } from "@wso2/oxygen-ui-icons-react";
 import { type JSX, type MouseEvent, useCallback, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import useInfiniteProjects, { flattenProjectPages, getTotalRecords } from "@api/useGetProjects";
 import { useGetGlobalSearch } from "@api/useGetGlobalSearch";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useAuthApiClient } from "@/hooks/useAuthApiClient";
@@ -57,7 +56,7 @@ import {
 import { getSeverityLegendColor } from "@features/dashboard/utils/dashboard";
 import { formatCasesTableCaseIdentifier, getStatusColor } from "@features/dashboard/utils/casesTable";
 import { mapSeverityToDisplay } from "@features/support/utils/support";
-import type { GlobalSearchCase } from "@features/project-hub/types/globalSearch";
+import type { GlobalSearchCase, GlobalSearchProject } from "@features/project-hub/types/globalSearch";
 import { getCaseNavigationPath, getCaseTypeChipProps } from "@features/project-hub/utils/globalSearchNavigation";
 
 type ExportFormat = "csv" | "pdf";
@@ -170,33 +169,28 @@ export default function UserGlobalSearch(): JSX.Element {
 
   const isExportingCases = exportingCasesFormat !== null;
 
-  // Projects come from /projects/search so counts (action required, outstanding,
-  // active chats) are available — the generic /search endpoint doesn't return them.
+  // Both projects and cases come from the unified /search endpoint, same as
+  // the partner view — GlobalSearchProject includes the action required/
+  // outstanding/active chats counts this table needs.
   const {
-    data: projectsData,
-    isLoading: isLoadingProjects,
-    isError: isErrorProjects,
-  } = useInfiniteProjects({
-    searchQuery: debouncedSearchQuery || undefined,
-    pageSize: SUMMARY_PAGE_SIZE,
-  });
-  const projects = flattenProjectPages(projectsData);
-  const projectsTotal = getTotalRecords(projectsData);
-
-  // Cases come from the unified /search endpoint, same as the partner view.
-  const {
-    data: casesData,
-    isLoading: isLoadingCases,
-    isError: isErrorCases,
+    data: searchData,
+    isLoading: isLoadingSearch,
+    isError: isErrorSearch,
   } = useGetGlobalSearch({
-    filters: {
-      types: ["cases"],
-      ...(debouncedSearchQuery ? { searchQuery: debouncedSearchQuery } : {}),
-    },
+    ...(debouncedSearchQuery ? { filters: { searchQuery: debouncedSearchQuery } } : {}),
+    projectsPagination: { offset: 0, limit: SUMMARY_PAGE_SIZE },
     casesPagination: { offset: 0, limit: SUMMARY_PAGE_SIZE },
   });
-  const cases: GlobalSearchCase[] = casesData?.cases ?? [];
-  const casesTotal = casesData?.casesTotal ?? 0;
+
+  const isLoadingProjects = isLoadingSearch;
+  const isErrorProjects = isErrorSearch;
+  const projects: GlobalSearchProject[] = searchData?.projects ?? [];
+  const projectsTotal = searchData?.projectsTotal ?? 0;
+
+  const isLoadingCases = isLoadingSearch;
+  const isErrorCases = isErrorSearch;
+  const cases: GlobalSearchCase[] = searchData?.cases ?? [];
+  const casesTotal = searchData?.casesTotal ?? 0;
 
   const projectsMoreCount = Math.max(0, projectsTotal - projects.length);
   const casesMoreCount = Math.max(0, casesTotal - cases.length);
