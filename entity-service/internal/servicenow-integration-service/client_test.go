@@ -115,3 +115,16 @@ func TestClient_TaggedDownstreamMessage_NotLeakedToClient(t *testing.T) {
 		t.Errorf("ConflictError.Msg = %q, want %q (internal tag must not reach the client-facing message)", ce.Msg, wantMsg)
 	}
 }
+
+// TestExtractDownstreamMessage_TagOnly_FallsBackToDefault covers a downstream
+// payload whose "message" is nothing but the internal tag (no text after it).
+// Stripping the tag would otherwise leave an empty client-facing message.
+func TestExtractDownstreamMessage_TagOnly_FallsBackToDefault(t *testing.T) {
+	const defaultMsg = "request conflicts with current state of the resource"
+	body := []byte(`{"message":"[SERVICENOW_ERROR]"}`)
+
+	got := extractDownstreamMessage(body, defaultMsg)
+	if got != defaultMsg {
+		t.Errorf("extractDownstreamMessage() = %q, want fallback %q", got, defaultMsg)
+	}
+}

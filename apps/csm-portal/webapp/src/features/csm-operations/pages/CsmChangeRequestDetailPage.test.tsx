@@ -160,6 +160,20 @@ describe("CsmChangeRequestDetailPage — Request approval (New -> Assess)", () =
     expect(patchMutateMock).not.toHaveBeenCalled();
   });
 
+  it("exposes the blocked reason to keyboard users via a focusable, labeled wrapper", () => {
+    mockQueryResult({
+      data: { ...BASE_CR, legalNextStates: ["assess"], assignedTeam: null },
+    });
+    render(<CsmChangeRequestDetailPage />);
+    const button = screen.getByRole("button", { name: /request approval/i });
+    const focusTarget = button.closest('[tabindex="0"]');
+    expect(focusTarget).not.toBeNull();
+    expect(focusTarget).toHaveAttribute(
+      "aria-label",
+      "Request approval: Set an assigned team before requesting approval",
+    );
+  });
+
   it("leaves Request approval enabled when both the state and the assigned team allow it", () => {
     mockQueryResult({
       data: { ...BASE_CR, legalNextStates: ["assess"], assignedTeam: { id: "team-1", name: "Platform" } },

@@ -287,7 +287,12 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
           {stateAllowsRequestApproval && (
             requestApprovalBlockedReason ? (
               <Tooltip title={requestApprovalBlockedReason}>
-                <Box component="span" sx={{ ml: "auto", flexShrink: 0 }}>
+                <Box
+                  component="span"
+                  tabIndex={0}
+                  aria-label={`Request approval: ${requestApprovalBlockedReason}`}
+                  sx={{ ml: "auto", flexShrink: 0 }}
+                >
                   <Button
                     variant="contained"
                     color="primary"

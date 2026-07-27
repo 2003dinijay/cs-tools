@@ -340,7 +340,13 @@ func extractDownstreamMessage(body []byte, defaultMsg string) string {
 	if err := json.Unmarshal(body, &payload); err == nil && payload.Message != "" {
 		clientMsg, tag := stripInternalErrorTag(payload.Message)
 		if tag != "" {
-			log.Printf("snclient: downstream error tagged %s: %s", sanitizeLog(tag), sanitizeLog(clientMsg)) // #nosec G706 -- tag and message sanitized
+			// Log only the tag, never the downstream-controlled message text —
+			// the message is attacker/upstream-influenced and must not be
+			// persisted verbatim per this repo's logging guidelines.
+			log.Printf("snclient: downstream error tagged %s", sanitizeLog(tag)) // #nosec G706 -- tag sanitized
+		}
+		if clientMsg == "" {
+			return defaultMsg
 		}
 		return clientMsg
 	}
