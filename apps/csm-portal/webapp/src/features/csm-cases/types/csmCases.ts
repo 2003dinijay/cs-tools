@@ -393,6 +393,8 @@ export interface CreateIncidentFromCaseNavState {
   caseId: string;
   caseNumber?: string;
   subject?: string;
+  /** Plain text — the case's rich-text description with tags stripped. */
+  description?: string;
 }
 
 /**

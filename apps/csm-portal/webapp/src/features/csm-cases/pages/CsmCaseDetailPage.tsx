@@ -126,6 +126,7 @@ import { formatAbsoluteForUser } from "@utils/dateTime";
 import {
   isBlankHtml,
   sanitizeDescriptionHtml,
+  stripHtmlTags,
   stripLightModeInlineStyles,
 } from "@utils/sanitizeHtml";
 import { useDarkMode } from "@utils/useDarkMode";
@@ -491,6 +492,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
     setPendingDelete(null);
     setPauseConflict(null);
     setLinkCaseOpen(false);
+    setLinkIncidentOpen(false);
     setAutocloseHoldOpen(false);
     setEditDetailsOpen(false);
     setCreateTaskOpen(false);
@@ -835,6 +837,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
           caseId: data.id,
           caseNumber: data.caseNumber,
           subject: data.subject,
+          // The case description is rich-text HTML; the incident form's
+          // Description field is plain text (sent as additionalComments), so
+          // strip tags rather than carrying markup through as visible text.
+          description: isBlankHtml(data.description)
+            ? undefined
+            : stripHtmlTags(data.description),
         };
         navigate("/operations/incidents/new", { state: navState });
         return;

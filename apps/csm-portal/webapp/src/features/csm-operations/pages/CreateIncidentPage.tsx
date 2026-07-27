@@ -107,7 +107,7 @@ export default function CreateIncidentPage(): JSX.Element {
       ? `Incident from case ${originCaseState.caseNumber ?? originCaseState.caseId}: ${originCaseState.subject}`
       : "",
   );
-  const [description, setDescription] = useState("");
+  const [description, setDescription] = useState(originCaseState?.description ?? "");
   const [category, setCategory] = useState<BeIncidentCategory | "">(UNSET);
   const [subcategory, setSubcategory] = useState<BeIncidentSubcategory | "">(UNSET);
   const [contactType, setContactType] = useState<BeIncidentContactType | "">(UNSET);
