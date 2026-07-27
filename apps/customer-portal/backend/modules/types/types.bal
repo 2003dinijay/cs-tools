@@ -2080,6 +2080,12 @@ public type GlobalSearchProject record {|
     string? closureState;
     # Associated account
     ReferenceItem account;
+    # Number of active chats in the project
+    int activeChatsCount;
+    # Number of cases requiring action in the project
+    int actionRequiredCount;
+    # Number of outstanding cases in the project
+    int outstandingCount;
 |};
 
 # Case item in a global search response.
