@@ -73,16 +73,18 @@ export default function UserProjectsPage(): JSX.Element {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
 
+  const normalizedQuery = debouncedSearchQuery.trim();
+
   useEffect(() => {
     setPage(0);
-  }, [debouncedSearchQuery]);
+  }, [normalizedQuery]);
 
   useEffect(() => {
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
-        if (debouncedSearchQuery.trim()) {
-          next.set("q", debouncedSearchQuery.trim());
+        if (normalizedQuery) {
+          next.set("q", normalizedQuery);
         } else {
           next.delete("q");
         }
@@ -90,12 +92,12 @@ export default function UserProjectsPage(): JSX.Element {
       },
       { replace: true },
     );
-  }, [debouncedSearchQuery, setSearchParams]);
+  }, [normalizedQuery, setSearchParams]);
 
   const { data, isLoading, isError } = useGetGlobalSearch({
     filters: {
       types: ["projects"],
-      ...(debouncedSearchQuery ? { searchQuery: debouncedSearchQuery } : {}),
+      ...(normalizedQuery ? { searchQuery: normalizedQuery } : {}),
     },
     projectsPagination: { offset: page * rowsPerPage, limit: rowsPerPage },
   });
@@ -119,7 +121,7 @@ export default function UserProjectsPage(): JSX.Element {
       isExportingRef.current = true;
       setExportingFormat(format);
       try {
-        const allProjects = await fetchAllProjectsForExport(authFetch, debouncedSearchQuery);
+        const allProjects = await fetchAllProjectsForExport(authFetch, normalizedQuery);
         if (allProjects.length === 0) {
           showError("No projects to export.");
           return;
@@ -136,7 +138,7 @@ export default function UserProjectsPage(): JSX.Element {
         setExportingFormat(null);
       }
     },
-    [authFetch, debouncedSearchQuery, showError],
+    [authFetch, normalizedQuery, showError],
   );
 
   const isExporting = exportingFormat !== null;
@@ -225,10 +227,10 @@ export default function UserProjectsPage(): JSX.Element {
       </Box>
 
       {/* Filtered-results hint */}
-      {debouncedSearchQuery.trim() && !isLoading && (
+      {normalizedQuery && !isLoading && (
         <Box sx={{ flexShrink: 0, pb: 0.5, px: 2 }}>
           <Typography color="text.secondary" variant="caption">
-            Showing results for &ldquo;{debouncedSearchQuery.trim()}&rdquo;
+            Showing results for &ldquo;{normalizedQuery}&rdquo;
           </Typography>
         </Box>
       )}

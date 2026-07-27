@@ -37,7 +37,7 @@ export default function NonPartnerGuard(): JSX.Element {
     );
   }
 
-  if (isError) {
+  if (isError || !userDetails) {
     return (
       <Box sx={{ alignItems: "center", display: "flex", flex: 1, justifyContent: "center" }}>
         <Typography color="text.secondary" variant="body2">
@@ -47,7 +47,7 @@ export default function NonPartnerGuard(): JSX.Element {
     );
   }
 
-  const isPartner = hasPartnerAccess(userDetails?.roles ?? []);
+  const isPartner = hasPartnerAccess(userDetails.roles ?? []);
 
   if (isPartner) {
     return <Navigate replace to="/" />;
