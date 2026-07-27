@@ -1280,8 +1280,10 @@ public type CallRequestCreatePayload record {|
 
 # Request payload for creating an escalation.
 public type EscalationCreatePayload record {|
-    # Reason for the escalation
-    string reason;
+    # Reason for the escalation. Mandatory when action is ESCALATE
+    string reason?;
+    # Action to perform. One of "ESCALATE" (default) or "DEESCALATE", case-insensitive
+    string action?;
 |};
 
 # Created escalation details.
