@@ -39,6 +39,10 @@ export const SLAS_SEARCH_ENDPOINT = "/slas/search";
 export const CHANGE_REQUESTS_SEARCH_ENDPOINT = "/change-requests/search";
 export const CHANGE_REQUEST_ENDPOINT = (id: string) => `/change-requests/${id}`;
 
+export const INCIDENTS_SEARCH_ENDPOINT = "/incidents/search";
+export const INCIDENT_ENDPOINT = (id: string) => `/incidents/${id}`;
+export const INCIDENT_COMMENTS_SEARCH_ENDPOINT = (id: string) => `/incidents/${id}/comments/search`;
+
 export const ACCOUNTS_SEARCH_ENDPOINT = "/accounts/search";
 export const ACCOUNT_ENDPOINT = (id: string) => `/accounts/${id}`;
 

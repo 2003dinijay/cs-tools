@@ -39,6 +39,8 @@ export * from "./timecard.dto";
 export * from "./timecard.model";
 export * from "./changeRequest.dto";
 export * from "./changeRequest.model";
+export * from "./incident.dto";
+export * from "./incident.model";
 export * from "./updates.dto";
 export * from "./updates.model";
 export * from "./vulnerability.dto";
