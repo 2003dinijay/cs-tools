@@ -207,7 +207,10 @@ interface SecondaryItem {
  *   - Hold auto-closure              → ISSU-027 (PATCH /cases/{id} { autocloseHoldUntil }, see SetAutocloseHoldDialog.tsx)
  *   - Edit case details              → subject/description/deployment/deployed product (see EditCaseDetailsDialog.tsx)
  *   - Link to another case           → parent or related case (see LinkCaseDialog.tsx)
- *   - Create incident / link incident → ISSU-021
+ *   - Create incident from case      → ISSU-021 (POST /incidents { parentId }, see
+ *                                       CreateIncidentPage.tsx's read of the nav state)
+ *   - Link to incident               → ISSU-021 (PATCH /cases/{id} { parentId }, see
+ *                                       LinkIncidentDialog.tsx)
  *   - Raise Git issue                → ISSU-020
  *   - Create task                    → ISSU-025 (POST /cases/{caseId}/tasks, see CreateTaskDialog.tsx)
  *   - Set fix ETA                    → PATCH /cases/{id} { fixEta }, see SetFixEtaDialog.tsx
@@ -269,16 +272,6 @@ function buildSecondaryItems(caseDetail: CsmCaseDetail): SecondaryItem[] {
     caseDetail.state,
   );
 
-  // Roadmap items with no backend flow yet: kept visible (so the menu still
-  // advertises what's coming) but disabled with a tooltip explaining why,
-  // rather than clickable and silently no-op'ing or toasting a mock message.
-  // "Hold auto-closure…" belongs here too — it isn't state-gated, it's simply
-  // not built yet, regardless of the case's current state.
-  const NOT_BUILT_YET = "Not available yet — this action is planned but not built.";
-
-  // Only "Create incident from case…" and "Link to incident…" remain
-  // disabled/not-built — every other item below (including "Create task…"
-  // and "Set fix ETA…") is wired up.
   items.push(
     {
       key: "raise_git_issue",
@@ -341,8 +334,21 @@ function buildSecondaryItems(caseDetail: CsmCaseDetail): SecondaryItem[] {
       disabled: caseClosed,
       tooltip: caseClosed ? "This case is closed — it's read-only." : undefined,
     },
-    { key: "create_incident", label: "Create incident from case…", icon: <AlertTriangle size={16} />, disabled: true, tooltip: NOT_BUILT_YET },
-    { key: "link_incident", label: "Link to incident…", icon: <LinkIcon size={16} />, divider: true, disabled: true, tooltip: NOT_BUILT_YET },
+    {
+      key: "create_incident",
+      label: "Create incident from case…",
+      icon: <AlertTriangle size={16} />,
+      disabled: caseClosed,
+      tooltip: caseClosed ? "This case is closed — it's read-only." : undefined,
+    },
+    {
+      key: "link_incident",
+      label: "Link to incident…",
+      icon: <LinkIcon size={16} />,
+      divider: true,
+      disabled: caseClosed,
+      tooltip: caseClosed ? "This case is closed — it's read-only." : undefined,
+    },
     {
       key: "create_task",
       label: "Create task…",

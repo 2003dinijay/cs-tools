@@ -88,6 +88,7 @@ import SetAutocloseHoldDialog from "@features/csm-cases/components/SetAutocloseH
 import EditCaseDetailsDialog, {
   type FieldSaveResult,
 } from "@features/csm-cases/components/EditCaseDetailsDialog";
+import LinkIncidentDialog from "@features/csm-cases/components/LinkIncidentDialog";
 import LinkCaseDialog, {
   type CaseLinkType,
 } from "@features/csm-cases/components/LinkCaseDialog";
@@ -144,6 +145,7 @@ import type {
   CaseAttachment,
   CaseLifecycleAction,
   CaseWatcher,
+  CreateIncidentFromCaseNavState,
   CreateRelatedCaseNavState,
 } from "@features/csm-cases/types/csmCases";
 import type { CaseState } from "@features/csm-dashboard/types/abtDashboard";
@@ -426,6 +428,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const [composerOpen, setComposerOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
   const [linkCaseOpen, setLinkCaseOpen] = useState(false);
+  const [linkIncidentOpen, setLinkIncidentOpen] = useState(false);
   const [autocloseHoldOpen, setAutocloseHoldOpen] = useState(false);
   const [editDetailsOpen, setEditDetailsOpen] = useState(false);
   const [createTaskOpen, setCreateTaskOpen] = useState(false);
@@ -823,6 +826,27 @@ export default function CsmCaseDetailPage(): JSX.Element {
         return;
       }
 
+      // Create incident from case navigates to the create-incident form,
+      // pre-filled with this case as the new incident's parent (ServiceNow's
+      // generic task-parent reference — see CreateIncidentPage.tsx's read of
+      // the nav state).
+      if (action.secondary === "create_incident" && data) {
+        const navState: CreateIncidentFromCaseNavState = {
+          caseId: data.id,
+          caseNumber: data.caseNumber,
+          subject: data.subject,
+        };
+        navigate("/operations/incidents/new", { state: navState });
+        return;
+      }
+
+      // Link to incident opens the search-and-pick dialog; the PATCH happens
+      // in onLinkIncident once a target incident is chosen.
+      if (action.secondary === "link_incident") {
+        setLinkIncidentOpen(true);
+        return;
+      }
+
       // Create task opens the task-create form; the POST happens in
       // onCreateTask once it's submitted.
       if (action.secondary === "create_task") {
@@ -1211,6 +1235,26 @@ export default function CsmCaseDetailPage(): JSX.Element {
             });
           },
           onError: (err) => showError("Could not link this case.", err),
+        },
+      );
+    },
+    [patchCase, showError],
+  );
+
+  const onLinkIncident = useCallback(
+    (targetIncidentId: string) => {
+      patchCase.mutate(
+        { parentId: targetIncidentId },
+        {
+          onSuccess: () => {
+            setLinkIncidentOpen(false);
+            setFeedback({
+              message: "Incident linked as parent.",
+              severity: "success",
+              sticky: false,
+            });
+          },
+          onError: (err) => showError("Could not link this incident.", err),
         },
       );
     },
@@ -2108,6 +2152,14 @@ export default function CsmCaseDetailPage(): JSX.Element {
           isLinking={patchCase.isPending}
           onClose={() => setLinkCaseOpen(false)}
           onLink={onLinkCase}
+        />
+      )}
+
+      {linkIncidentOpen && (
+        <LinkIncidentDialog
+          isLinking={patchCase.isPending}
+          onClose={() => setLinkIncidentOpen(false)}
+          onLink={onLinkIncident}
         />
       )}
 
