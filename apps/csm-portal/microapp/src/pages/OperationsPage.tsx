@@ -16,9 +16,9 @@
 
 import { useState } from "react";
 import { Stack, Tab, Tabs } from "@wso2/oxygen-ui";
-import { ComingSoonPage } from "@components/common/ComingSoonPage";
 import { ServiceRequestsTab } from "@components/operations/ServiceRequestsTab";
 import { ChangeRequestsTab } from "@components/operations/ChangeRequestsTab";
+import { IncidentsTab } from "@components/operations/IncidentsTab";
 
 type OperationsTabId = "service_requests" | "change_requests" | "incidents";
 
@@ -30,11 +30,13 @@ const TABS: { id: OperationsTabId; label: string }[] = [
 
 // Mirrors the webapp's OperationsPage (apps/csm-portal/webapp/src/features/csm-operations/pages/OperationsPage.tsx):
 // three tabs — Service requests (cases with type=service_request, reusing the Support page's own
-// list/pagination/filter infra), Change requests (its own list/detail/edit, with its own "Create
-// change request" Fab — see ChangeRequestsTab.tsx), and Incidents (no backend endpoint exists yet,
-// in this repo or the webapp's — kept as a placeholder like the webapp's own
-// IssuesListUnavailable). "Create service request" is deliberately out of scope for this pass —
-// it's its own large form (cascading project/deployment/catalog selects with dynamic variables).
+// list/pagination/filter infra, with its own "Create service request" Fab — see
+// ServiceRequestsTab.tsx), Change requests (its own list/detail/edit, with its own "Create change
+// request" Fab — see ChangeRequestsTab.tsx), and Incidents (list + read-only detail with comments
+// — see IncidentsTab.tsx/IncidentDetailPage.tsx). "Create incident" is deliberately out of scope
+// for this pass — it's its own form with an impact×urgency priority matrix and 34 ServiceNow
+// subcategories; incidents' Edit dialog (state transitions, watch list management) is similarly
+// out of scope.
 export default function OperationsPage() {
   const [activeTab, setActiveTab] = useState<OperationsTabId>("service_requests");
 
@@ -48,13 +50,7 @@ export default function OperationsPage() {
 
       {activeTab === "service_requests" && <ServiceRequestsTab />}
       {activeTab === "change_requests" && <ChangeRequestsTab />}
-      {activeTab === "incidents" && (
-        <ComingSoonPage
-          title="Incidents"
-          description="Incident tracking is still under construction."
-          showTitle={false}
-        />
-      )}
+      {activeTab === "incidents" && <IncidentsTab />}
     </Stack>
   );
 }
