@@ -1315,6 +1315,21 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
                 }
             };
         }
+
+        // If the case was created from a Novera chat, mark that conversation
+        // Converted so it no longer counts as an active chat. Non-blocking: the
+        // case is already created, so a conversion failure must not fail it.
+        entity:IdString? chatConversationId = payload.conversationId;
+        if chatConversationId is entity:IdString {
+            entity:ConversationUpdateResponse|error conversationUpdate =
+                    entity:updateConversation(userInfo.idToken, chatConversationId,
+                    {stateKey: entity:conversationStateIds.converted});
+            if conversationUpdate is error {
+                log:printError(string `Failed to mark conversation ${chatConversationId} as ` +
+                        string `Converted after creating a case from it.`, conversationUpdate);
+            }
+        }
+
         return <http:Created>{
             body: mapCreatedCase(createdCaseResponse.case)
         };
@@ -6990,19 +7005,30 @@ isolated service class WsProxyService {
             }
         }
 
-        // Update conversation state if issue is resolved
+        // Update conversation state if issue is resolved. Do not downgrade a
+        // conversation that has already been Converted (a case was created from
+        // it) — Converted takes precedence over Resolved.
         json resolvedVal = result["resolved"] ?: ();
         if resolvedVal is boolean && resolvedVal {
-            log:printInfo(string `Issue resolved for conversation ID: ${conversationId}, updating state`);
-            entity:ConversationUpdateResponse|error conversationUpdateResponse =
-                    entity:updateConversation(self.idToken, conversationId,
-                    {stateKey: entity:RESOLVED});
-            if conversationUpdateResponse is error {
-                string customError = "Failed to update conversation state to resolved.";
-                log:printError(customError, conversationUpdateResponse);
+            entity:ConversationResponse|error currentConversation =
+                    entity:getConversation(self.idToken, conversationId);
+            boolean alreadyConverted = currentConversation is entity:ConversationResponse &&
+                    currentConversation.state?.id == entity:conversationStateIds.converted;
+            if alreadyConverted {
+                log:printDebug(string `Conversation ID: ${conversationId} is already Converted; ` +
+                        string `skipping Resolved transition.`);
             } else {
-                log:printDebug(string `Updated conversation state to resolved for conversation ID: ${
-                        conversationId}`);
+                log:printInfo(string `Issue resolved for conversation ID: ${conversationId}, updating state`);
+                entity:ConversationUpdateResponse|error conversationUpdateResponse =
+                        entity:updateConversation(self.idToken, conversationId,
+                        {stateKey: entity:RESOLVED});
+                if conversationUpdateResponse is error {
+                    string customError = "Failed to update conversation state to resolved.";
+                    log:printError(customError, conversationUpdateResponse);
+                } else {
+                    log:printDebug(string `Updated conversation state to resolved for conversation ID: ${
+                            conversationId}`);
+                }
             }
         }
     }
