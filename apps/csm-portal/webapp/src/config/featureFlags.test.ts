@@ -19,6 +19,7 @@ import {
   enabledNavChildren,
   featureState,
   featureStateForPath,
+  firstEnabledDestination,
   isFeatureEnabled,
   isFeatureVisible,
   navigableNavNodes,
@@ -26,7 +27,7 @@ import {
   visibleNavChildren,
   visibleNavSections,
 } from "@config/featureFlags";
-import { navNodeById } from "@config/csmNavItems";
+import { CSM_NAV_ITEMS, navNodeById } from "@config/csmNavItems";
 
 function setOverrides(value: unknown): void {
   window.config = {
@@ -184,6 +185,25 @@ describe("navigation helpers", () => {
     expect(incidents?.label).toBe("Incidents");
     expect(incidents?.sublabel).toBe("Operations");
     expect(incidents?.href).toBe("/operations?tab=incidents");
+  });
+});
+
+describe("firstEnabledDestination", () => {
+  it("defaults to the first section in the tree", () => {
+    expect(firstEnabledDestination()).toBe("/dashboard");
+  });
+
+  it("skips restricted sections so a hidden page never redirects into one", () => {
+    setOverrides({ dashboard: "hidden", support: "wip" });
+    expect(firstEnabledDestination()).toBe("/operations");
+  });
+
+  it("returns undefined when the config leaves nothing reachable", () => {
+    const everything = Object.fromEntries(
+      CSM_NAV_ITEMS.map((section) => [section.id, "hidden"]),
+    );
+    setOverrides(everything);
+    expect(firstEnabledDestination()).toBeUndefined();
   });
 });
 

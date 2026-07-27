@@ -58,6 +58,13 @@ export interface CsmNavNode {
    * deep links are disabled with it.
    */
   routes?: string[];
+  /**
+   * True when this page already renders its own, more specific unavailable
+   * message — one that names what it is blocked on, say. The route guard then
+   * lets a `wip` page render that instead of replacing it with the generic
+   * "coming soon" fallback, which would be a downgrade.
+   */
+  rendersOwnWipPage?: boolean;
   icon?: ComponentType<{ size?: number | string }>;
   children?: CsmNavNode[];
 }
@@ -198,12 +205,25 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     icon: Settings,
     children: [
       { id: "admin.users", label: "Users", href: "/admin/users" },
-      { id: "admin.roles", label: "Roles", href: "/admin/roles" },
-      { id: "admin.groups", label: "Groups", href: "/admin/groups" },
+      // These three route to placeholders that already name their backend
+      // blocker, so they render themselves rather than the generic WIP page.
+      {
+        id: "admin.roles",
+        label: "Roles",
+        href: "/admin/roles",
+        rendersOwnWipPage: true,
+      },
+      {
+        id: "admin.groups",
+        label: "Groups",
+        href: "/admin/groups",
+        rendersOwnWipPage: true,
+      },
       {
         id: "admin.permissions",
         label: "Permissions",
         href: "/admin/permissions",
+        rendersOwnWipPage: true,
       },
     ],
   },
@@ -244,26 +264,43 @@ function matchesPrefix(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
+/** A nav node together with the route prefix of its that `pathname` matched. */
+export interface CsmNavMatch {
+  node: CsmNavNode;
+  /**
+   * The matched prefix — the node's canonical path for this URL. Prefer it over
+   * {@link navNodePath} for a query-param tab, whose `href` pathname is the
+   * parent's landing route rather than the tab's own routes.
+   */
+  prefix: string;
+}
+
 /**
  * The most specific nav node owning `pathname`, by longest matching route
  * prefix. `/operations/incidents/42` resolves to the Incidents tab rather than
  * to Operations, which is what lets a single finished tab stay reachable inside
  * an otherwise-unfinished section.
  */
-export function navNodeForPath(pathname: string): CsmNavNode | undefined {
-  let best: CsmNavNode | undefined;
-  let bestLength = -1;
+export function navNodeMatchForPath(pathname: string): CsmNavMatch | undefined {
+  let best: CsmNavMatch | undefined;
 
   for (const node of flattenNavNodes()) {
     for (const prefix of navNodeRoutes(node)) {
-      if (matchesPrefix(pathname, prefix) && prefix.length > bestLength) {
-        best = node;
-        bestLength = prefix.length;
+      if (
+        matchesPrefix(pathname, prefix) &&
+        prefix.length > (best?.prefix.length ?? -1)
+      ) {
+        best = { node, prefix };
       }
     }
   }
 
   return best;
+}
+
+/** {@link navNodeMatchForPath}, when only the node matters. */
+export function navNodeForPath(pathname: string): CsmNavNode | undefined {
+  return navNodeMatchForPath(pathname)?.node;
 }
 
 /** The top-level section owning `pathname`, ignoring its tabs. */

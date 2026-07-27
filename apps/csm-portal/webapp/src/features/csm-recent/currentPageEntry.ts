@@ -15,9 +15,9 @@
 // under the License.
 
 import {
-  CSM_NAV_ITEMS,
-  navNodePath,
-  navSectionForPath,
+  flattenNavNodes,
+  navNodeMatchForPath,
+  navNodeRoutes,
 } from "@config/csmNavItems";
 import type { RecentView } from "@features/csm-recent/hooks/useRecentViews";
 
@@ -55,11 +55,17 @@ function summarizeQuery(search: string): string {
  */
 export function currentPageEntry(pathname: string, search: string): PageEntry {
   const href = pathname + search;
-  const nav = navSectionForPath(pathname);
-  const onNavRoot = nav && pathname === navNodePath(nav);
+  // Match the most specific node, so a second-level tab pins under its own name
+  // ("Accounts") rather than its section's ("Customers"). The matched prefix is
+  // the node's canonical path here — a query-param tab's `href` points at the
+  // section landing route, which is not what was navigated to.
+  const match = navNodeMatchForPath(pathname);
+  const onNavRoot = match && pathname === match.prefix;
 
   if (search && search !== "?") {
-    const base = onNavRoot ? nav.label : humanizeSegment(pathname.split("/")[1] ?? "");
+    const base = onNavRoot
+      ? match.node.label
+      : humanizeSegment(pathname.split("/")[1] ?? "");
     return {
       kind: "search",
       id: href,
@@ -69,8 +75,12 @@ export function currentPageEntry(pathname: string, search: string): PageEntry {
   }
 
   if (onNavRoot) {
-    const navPath = navNodePath(nav);
-    return { kind: "page", id: navPath, title: nav.label, href: navPath };
+    return {
+      kind: "page",
+      id: match.prefix,
+      title: match.node.label,
+      href: match.prefix,
+    };
   }
 
   // Unknown route (or a sub-route we don't have a recorder for): label from the
@@ -84,7 +94,12 @@ export function currentPageEntry(pathname: string, search: string): PageEntry {
   };
 }
 
-/** True when the current route maps onto one of the known nav pages. */
+/**
+ * True when the current route maps onto one of the known nav pages — a section
+ * landing route or a second-level tab's own route.
+ */
 export function isKnownPage(pathname: string): boolean {
-  return CSM_NAV_ITEMS.some((i) => pathname === navNodePath(i));
+  return flattenNavNodes().some((node) =>
+    navNodeRoutes(node).includes(pathname),
+  );
 }

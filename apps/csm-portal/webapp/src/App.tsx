@@ -19,7 +19,10 @@ import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "react-r
 import AuthGuard from "@layouts/AuthGuard";
 import { SectionIndexRedirect } from "@components/section-tabs/SectionTabs";
 import { navNodeForPath } from "@config/csmNavItems";
-import { featureStateForPath } from "@config/featureFlags";
+import {
+  featureStateForPath,
+  firstEnabledDestination,
+} from "@config/featureFlags";
 import {
   POST_LOGIN_REDIRECT_KEY,
   PostLoginRedirectConsumer,
@@ -136,24 +139,33 @@ function RootLanding(): JSX.Element | null {
  * a direct, pinned or shared link can't reach a page the deployment restricts.
  *
  * A `wip` page renders the shared "coming soon" message in place — the URL
- * survives and the wording matches the nav's "work in progress" tooltip. A
- * `hidden` page has no nav entry at all, so there is nothing to be consistent
- * with and the link is bounced to the dashboard. Anything else renders
- * normally.
+ * survives and the wording matches the nav's "work in progress" tooltip. The
+ * exception is a page that already renders a more specific unavailable message
+ * of its own (`rendersOwnWipPage`), which is let through rather than downgraded
+ * to the generic one.
+ *
+ * A `hidden` page has no nav entry at all, so there is nothing to stay
+ * consistent with and the link is bounced to the first destination this
+ * deployment does offer. That target is never assumed to exist: a config that
+ * hides everything, or that hides the target itself, falls through to `/404`,
+ * which sits outside this guard and so cannot bounce back here.
  *
  * The path resolves to the most specific nav node, so restricting a section
  * does not restrict a finished tab inside it (and vice versa).
  */
 function FeatureRouteGuard(): JSX.Element {
   const { pathname } = useLocation();
+  const node = navNodeForPath(pathname);
   const state = featureStateForPath(pathname);
 
   if (state === "hidden") {
-    return <Navigate to="/dashboard" replace />;
+    const fallback = firstEnabledDestination();
+    const samePath = fallback !== undefined && fallback.split(/[?#]/)[0] === pathname;
+    return <Navigate to={!fallback || samePath ? "/404" : fallback} replace />;
   }
 
-  if (state === "wip") {
-    const label = navNodeForPath(pathname)?.label ?? "This section";
+  if (state === "wip" && !node?.rendersOwnWipPage) {
+    const label = node?.label ?? "This section";
     return (
       <CsmComingSoonPage
         title={label}

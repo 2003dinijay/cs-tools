@@ -236,7 +236,7 @@ export function navigableNavNodes(): NavigableNavNode[] {
       href: section.href,
       icon: section.icon,
     };
-    const tabs = enabledNavChildren(section).map((child) => ({
+    const tabs: NavigableNavNode[] = enabledNavChildren(section).map((child) => ({
       id: child.id,
       label: child.label,
       sublabel: section.label,
@@ -245,4 +245,14 @@ export function navigableNavNodes(): NavigableNavNode[] {
     }));
     return [self, ...tabs];
   });
+}
+
+/**
+ * Where to send someone who lands on a hidden page: the first destination this
+ * deployment actually offers. `undefined` when the config hides everything —
+ * callers must handle that rather than redirect into a page that is itself
+ * hidden, which would bounce the router between two hidden paths forever.
+ */
+export function firstEnabledDestination(): string | undefined {
+  return navigableNavNodes()[0]?.href;
 }
