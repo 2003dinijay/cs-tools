@@ -1315,6 +1315,21 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
                 }
             };
         }
+
+        // If the case was created from a Novera chat, mark that conversation
+        // Converted so it no longer counts as an active chat. Non-blocking: the
+        // case is already created, so a conversion failure must not fail it.
+        entity:IdString? chatConversationId = payload.conversationId;
+        if chatConversationId is entity:IdString {
+            entity:ConversationUpdateResponse|error conversationUpdate =
+                    entity:updateConversation(userInfo.idToken, chatConversationId,
+                    {stateKey: entity:conversationStateIds.converted});
+            if conversationUpdate is error {
+                log:printError(string `Failed to mark conversation ${chatConversationId} as ` +
+                        string `Converted after creating a case from it.`, conversationUpdate);
+            }
+        }
+
         return <http:Created>{
             body: mapCreatedCase(createdCaseResponse.case)
         };
