@@ -16,6 +16,7 @@
 
 export * from "./case.dto";
 export * from "./case.model";
+export * from "./catalog.dto";
 export * from "./account.dto";
 export * from "./account.model";
 export * from "./activity.dto";
@@ -38,6 +39,7 @@ export * from "./timecard.dto";
 export * from "./timecard.model";
 export * from "./changeRequest.dto";
 export * from "./changeRequest.model";
+export * from "./changeRequestLookup.dto";
 export * from "./updates.dto";
 export * from "./updates.model";
 export * from "./vulnerability.dto";

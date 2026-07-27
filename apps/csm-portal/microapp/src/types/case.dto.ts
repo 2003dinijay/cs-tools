@@ -288,8 +288,7 @@ export type CaseCause =
   | "INFRASTRUCTURE_SAAS_SIDE_OTHER"
   | "UNKNOWN";
 
-// Mirrors the webapp's BeCaseCreatePayload (the "case" type variant only — service_request
-// creation isn't in the microapp's scope, see NewCasePage.tsx).
+// Mirrors the webapp's BeCaseCreatePayload (the "case" type variant).
 export interface CaseCreatePayloadDto {
   type: "case";
   projectId: string;
@@ -313,6 +312,29 @@ export interface SecurityReportCreatePayloadDto {
   subject: string;
   description: string;
   attachments: { name: string; file: string }[];
+}
+
+/** A single answered catalog-item variable in a service-request create. */
+export interface CaseVariableDto {
+  /** Variable (question) id, as returned by the catalog-item variables endpoint. */
+  id: string;
+  /** The engineer's answer for this variable. */
+  value: string;
+}
+
+// The "service_request" type variant — see NewServiceRequestPage.tsx. Mirrors the webapp's
+// BeServiceRequestCreatePayload: catalog/catalogItem come from the deployed-product-scoped
+// catalog cascade, variables from that catalog item's form. Like the "case" type, attachments
+// upload separately via POST /attachments after the case exists (the create endpoint only
+// embeds attachments for "security_report_analysis").
+export interface ServiceRequestCreatePayloadDto {
+  type: "service_request";
+  projectId: string;
+  deploymentId: string;
+  deployedProductId: string;
+  catalogId: string;
+  catalogItemId: string;
+  variables: CaseVariableDto[];
 }
 
 export interface CreatedCaseDto {

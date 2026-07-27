@@ -36,6 +36,7 @@ import type {
   CaseViewDto,
   CreatedCaseDto,
   SecurityReportCreatePayloadDto,
+  ServiceRequestCreatePayloadDto,
   UpdateCaseResponseDto,
 } from "@src/types";
 import { toCaseDetail, toCaseSummary, toComment, type CaseDetail, type CaseSummary, type Comment } from "@src/types";
@@ -202,7 +203,9 @@ const getCaseComments = async (id: string): Promise<Comment[]> => {
   return data.comments.map(toComment);
 };
 
-const createCase = async (payload: CaseCreatePayloadDto | SecurityReportCreatePayloadDto): Promise<CreatedCaseDto> => {
+const createCase = async (
+  payload: CaseCreatePayloadDto | SecurityReportCreatePayloadDto | ServiceRequestCreatePayloadDto,
+): Promise<CreatedCaseDto> => {
   const { data } = await apiClient.post<CaseCreateResponseDto>(CASES_ENDPOINT, payload);
   return data.case;
 };

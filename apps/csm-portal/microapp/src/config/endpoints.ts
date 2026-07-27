@@ -36,8 +36,14 @@ export const CASE_ACTIVITIES_SEARCH_ENDPOINT = (id: string) => `/cases/${id}/act
 
 export const SLAS_SEARCH_ENDPOINT = "/slas/search";
 
+export const CHANGE_REQUESTS_ENDPOINT = "/change-requests";
 export const CHANGE_REQUESTS_SEARCH_ENDPOINT = "/change-requests/search";
 export const CHANGE_REQUEST_ENDPOINT = (id: string) => `/change-requests/${id}`;
+
+export const GROUPS_SEARCH_ENDPOINT = "/groups/search";
+export const IT_SERVICES_SEARCH_ENDPOINT = "/services/search";
+export const SERVICE_OFFERINGS_SEARCH_ENDPOINT = "/service-offerings/search";
+export const CONFIGURATION_ITEMS_SEARCH_ENDPOINT = "/configuration-items/search";
 
 export const ACCOUNTS_SEARCH_ENDPOINT = "/accounts/search";
 export const ACCOUNT_ENDPOINT = (id: string) => `/accounts/${id}`;
@@ -50,6 +56,10 @@ export const PRODUCT_VULNERABILITY_ENDPOINT = (id: string) => `/products/vulnera
 export const DEPLOYMENTS_SEARCH_ENDPOINT = "/deployments/search";
 export const DEPLOYMENT_PRODUCTS_SEARCH_ENDPOINT = (deploymentId: string) =>
   `/deployments/${deploymentId}/products/search`;
+
+export const CATALOGS_SEARCH_ENDPOINT = "/catalogs/search";
+export const CATALOG_ITEM_VARIABLES_ENDPOINT = (catalogId: string, catalogItemId: string) =>
+  `/catalogs/${catalogId}/items/${catalogItemId}/variables`;
 
 export const ATTACHMENTS_ENDPOINT = "/attachments";
 export const ATTACHMENTS_SEARCH_ENDPOINT = "/attachments/search";

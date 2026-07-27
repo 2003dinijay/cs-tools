@@ -15,8 +15,9 @@
 // under the License.
 
 import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
-import { Badge, Chip, IconButton, Stack, Tab, Tabs } from "@wso2/oxygen-ui";
-import { SlidersHorizontal } from "@wso2/oxygen-ui-icons-react";
+import { useNavigate } from "react-router-dom";
+import { Badge, Chip, Fab, IconButton, Stack, Tab, Tabs } from "@wso2/oxygen-ui";
+import { Plus, SlidersHorizontal } from "@wso2/oxygen-ui-icons-react";
 import { useQuery, useQueryErrorResetBoundary, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { cases } from "@src/services/cases";
 import { currentUser } from "@src/services/currentUser";
@@ -39,6 +40,7 @@ type StateTabValue = CaseState | typeof ALL_STATES_TAB;
 // hides its severity filter the same way when locked to a non-"case" type); work state stays,
 // same as the webapp.
 export function ServiceRequestsTab() {
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 300);
   const [filters, setFilters] = useState<CaseFilters>(EMPTY_FILTERS);
@@ -85,6 +87,19 @@ export function ServiceRequestsTab() {
         filters={filters}
         onApply={setFilters}
       />
+
+      {/* Mirrors the webapp's "Create service request" button (OperationsPage.tsx's `actions`
+          prop on CsmIssuesView), rendered as this app's own floating create affordance — same
+          Fab convention as SupportPage.tsx's "Create case" button. */}
+      <Fab
+        aria-label="Create service request"
+        size="medium"
+        color="primary"
+        onClick={() => navigate("/operations/service-requests/new")}
+        sx={{ position: "fixed", right: 10, bottom: "calc(var(--tab-bar-height) + 60px)" }}
+      >
+        <Plus size={20} />
+      </Fab>
     </Stack>
   );
 }
