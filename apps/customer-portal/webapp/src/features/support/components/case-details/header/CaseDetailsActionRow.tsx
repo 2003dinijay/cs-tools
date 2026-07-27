@@ -52,7 +52,7 @@ import { TriangleAlert } from "@wso2/oxygen-ui-icons-react";
 
 const ACTION_BUTTON_ICON_SIZE = 12;
 const DEESCALATE_PERMISSION_TOOLTIP =
-  "Only customer admins, project leads, or the user who created an escalation on this case can de-escalate it.";
+  "Only customer admins, project leads, or (at escalation level 1-3) the user who created the escalation can de-escalate this case.";
 
 function getActionButtonSx(
   theme: Theme,

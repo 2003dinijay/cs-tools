@@ -42,6 +42,7 @@ import {
 } from "@features/support/utils/support";
 import {
   CALL_SCHEDULABLE_CASE_STATUSES,
+  ESCALATION_DEESCALATE_ADMIN_LEAD_ONLY_LEVELS,
   type CaseStatus,
 } from "@features/support/constants/supportConstants";
 import ErrorIndicator from "@components/error-indicator/ErrorIndicator";
@@ -212,9 +213,9 @@ export default function CaseDetailsContent({
         )?.isLead
       : undefined;
 
-  // De-escalation is allowed for customer admins, leads, and users who created
-  // at least one escalation on this case (matched by email against the
-  // escalation history's createdBy).
+  // De-escalation is allowed at any level (EL1-EL5). At EL4/EL5, only customer
+  // admins and project leads are eligible. At EL1-EL3, users who created an
+  // escalation on this case are also eligible, in addition to admins/leads.
   const isCurrentUserCsAdmin: boolean | undefined = isUserDetailsLoading
     ? undefined
     : (userDetails?.roles ?? []).includes(SETTINGS_CUSTOMER_ADMIN_ROLE);
@@ -226,7 +227,8 @@ export default function CaseDetailsContent({
   const canDeescalate =
     isCurrentUserCsAdmin === true ||
     isCurrentUserLead === true ||
-    hasCreatedEscalation;
+    (!ESCALATION_DEESCALATE_ADMIN_LEAD_ONLY_LEVELS.has(escalationLevelId) &&
+      hasCreatedEscalation);
 
   const visibleTabs = useMemo(
     () => [
