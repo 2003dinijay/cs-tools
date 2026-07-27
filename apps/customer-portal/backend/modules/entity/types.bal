@@ -2538,7 +2538,7 @@ public type CreatedEscalation record {|
     # Created date and time
     string createdOn;
     # Reason for the escalation
-    string reason;
+    string? reason;
     # Users notified about the escalation
     record {|
         # System ID of the user
@@ -2579,7 +2579,7 @@ public type Escalation record {|
     # Updated date and time
     string updatedOn;
     # Reason for the escalation
-    string reason;
+    string? reason;
     # Users notified about the escalation
     record {|
         # System ID of the user

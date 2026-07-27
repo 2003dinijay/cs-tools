@@ -7339,6 +7339,7 @@ components:
           description: Created date and time
         reason:
           type: string
+          nullable: true
           description: Reason for the escalation
         notificationSentTo:
           type: array
@@ -7410,6 +7411,7 @@ components:
           description: Updated date and time
         reason:
           type: string
+          nullable: true
           description: Reason for the escalation
         notificationSentTo:
           type: array
