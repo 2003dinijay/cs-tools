@@ -16,13 +16,13 @@
 
 import { Box, Button, Typography } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
-import { type JSX } from "react";
+import { useState, type JSX } from "react";
+import CreateFromProjectRequiredDialog from "@components/CreateFromProjectRequiredDialog";
 import SectionTabs from "@components/section-tabs/SectionTabs";
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
 import ChangeRequestsTab from "@features/csm-operations/components/ChangeRequestsTab";
 import IncidentsTab from "@features/csm-operations/components/IncidentsTab";
 import ProblemsTab from "@features/csm-operations/components/ProblemsTab";
-import { useNavTransition } from "@hooks/useNavTransition";
 import { useQueryTabs } from "@hooks/useSectionTabs";
 
 /**
@@ -35,11 +35,11 @@ import { useQueryTabs } from "@hooks/useSectionTabs";
  * one through `CSM_PORTAL_FEATURE_OVERRIDES` without touching this page.
  */
 export default function OperationsPage(): JSX.Element {
-  const navigate = useNavTransition();
   // Active tab lives in the URL (`?tab=`) so the change-request detail page can
   // link back to the right tab, and the tab survives a refresh / share.
   const tabs = useQueryTabs("operations");
   const activeTab = tabs.activeKey;
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -64,7 +64,7 @@ export default function OperationsPage(): JSX.Element {
               color="primary"
               size="small"
               startIcon={<Plus size={16} />}
-              onClick={() => navigate("/operations/service-requests/new")}
+              onClick={() => setShowCreateDialog(true)}
             >
               Create service request
             </Button>
@@ -77,6 +77,12 @@ export default function OperationsPage(): JSX.Element {
       {activeTab === "incidents" && <IncidentsTab />}
 
       {activeTab === "problems" && <ProblemsTab />}
+
+      <CreateFromProjectRequiredDialog
+        open={showCreateDialog}
+        entityNoun="service request"
+        onClose={() => setShowCreateDialog(false)}
+      />
     </Box>
   );
 }

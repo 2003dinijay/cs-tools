@@ -16,36 +16,43 @@
 
 import { Button } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
-import { type JSX } from "react";
+import { useState, type JSX } from "react";
 
+import CreateFromProjectRequiredDialog from "@components/CreateFromProjectRequiredDialog";
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
-import { useNavTransition } from "@hooks/useNavTransition";
 
 /** All-cases list — the shared issues view across every case type. */
 export default function CsmCasesPage(): JSX.Element {
-  const navigate = useNavTransition();
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
 
   return (
-    <CsmIssuesView
-      title="Cases"
-      entityNoun="cases"
-      // Cases list is support cases only. The other issue types have dedicated
-      // homes — service requests under Operations, engagements under
-      // Engagements, security reports under Security Center — so they're locked
-      // out here (and the type filter is hidden since it's fixed to `case`).
-      lockedFilters={{ caseTypes: ["case"] }}
-      hideTypeFilter
-      actions={
-        <Button
-          variant="contained"
-          color="primary"
-          size="small"
-          startIcon={<Plus size={16} />}
-          onClick={() => navigate("/cases/new")}
-        >
-          Create case
-        </Button>
-      }
-    />
+    <>
+      <CsmIssuesView
+        title="Cases"
+        entityNoun="cases"
+        // Cases list is support cases only. The other issue types have dedicated
+        // homes — service requests under Operations, engagements under
+        // Engagements, security reports under Security Center — so they're locked
+        // out here (and the type filter is hidden since it's fixed to `case`).
+        lockedFilters={{ caseTypes: ["case"] }}
+        hideTypeFilter
+        actions={
+          <Button
+            variant="contained"
+            color="primary"
+            size="small"
+            startIcon={<Plus size={16} />}
+            onClick={() => setShowCreateDialog(true)}
+          >
+            Create case
+          </Button>
+        }
+      />
+      <CreateFromProjectRequiredDialog
+        open={showCreateDialog}
+        entityNoun="case"
+        onClose={() => setShowCreateDialog(false)}
+      />
+    </>
   );
 }
