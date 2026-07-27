@@ -33,7 +33,10 @@ import { Link as RouterLink } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useSearchAccounts } from "@features/csm-accounts/api/useSearchAccounts";
-import type { SearchAccountsRequest } from "@features/csm-accounts/types/csmAccounts";
+import {
+  resolveAccountTier,
+  type SearchAccountsRequest,
+} from "@features/csm-accounts/types/csmAccounts";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
@@ -59,13 +62,15 @@ export default function CsmAccountsPage(): JSX.Element {
 
   const debouncedSearch = useDebouncedValue(searchInput, 300);
 
-  const request = useMemo<SearchAccountsRequest>(
-    () => ({
+  const request = useMemo<SearchAccountsRequest>(() => {
+    const searchQuery = debouncedSearch.trim() || undefined;
+    return {
       pagination: { limit: rowsPerPage, offset: page * rowsPerPage },
-      searchQuery: debouncedSearch.trim() || undefined,
-    }),
-    [debouncedSearch, page, rowsPerPage],
-  );
+      // Filter fields are nested under `filters` (matches the `/cases/search`
+      // payload shape).
+      ...(searchQuery && { filters: { searchQuery } }),
+    };
+  }, [debouncedSearch, page, rowsPerPage]);
 
   const { data, isLoading, isFetching, isError, error } = useSearchAccounts(request);
 
@@ -141,37 +146,44 @@ export default function CsmAccountsPage(): JSX.Element {
                   </TableCell>
                 </TableRow>
               ) : (
-                accounts.map((a) => (
-                  <TableRow key={a.id} hover>
-                    <TableCell>
-                      <Typography
-                        component={RouterLink}
-                        to={`/customers/accounts/${a.id}`}
-                        variant="body2"
-                        sx={(t) => ({
-                          textDecoration: "none",
-                          color: t.palette.primary.dark,
-                          ...t.applyStyles("dark", { color: t.palette.primary.main }),
-                          "&:hover": { textDecoration: "underline" },
-                        })}
-                      >
-                        {a.name}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>{a.sfId}</TableCell>
-                    <TableCell>
-                      <Chip
-                        size="small"
-                        label={a.tier}
-                        color={a.tier === "enterprise" ? "primary" : "default"}
-                        variant="outlined"
-                      />
-                    </TableCell>
-                    <TableCell>{a.region ?? "—"}</TableCell>
-                    <TableCell>{formatDate(a.activationDate)}</TableCell>
-                    <TableCell>{formatDate(a.deactivationDate)}</TableCell>
-                  </TableRow>
-                ))
+                accounts.map((a) => {
+                  const tier = resolveAccountTier(a);
+                  return (
+                    <TableRow key={a.id} hover>
+                      <TableCell>
+                        <Typography
+                          component={RouterLink}
+                          to={`/customers/accounts/${a.id}`}
+                          variant="body2"
+                          sx={(t) => ({
+                            textDecoration: "none",
+                            color: t.palette.primary.dark,
+                            ...t.applyStyles("dark", { color: t.palette.primary.main }),
+                            "&:hover": { textDecoration: "underline" },
+                          })}
+                        >
+                          {a.name}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>{a.sfId || "—"}</TableCell>
+                      <TableCell>
+                        {tier ? (
+                          <Chip
+                            size="small"
+                            label={tier}
+                            color={tier === "enterprise" ? "primary" : "default"}
+                            variant="outlined"
+                          />
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
+                      <TableCell>{a.region ?? "—"}</TableCell>
+                      <TableCell>{formatDate(a.activationDate)}</TableCell>
+                      <TableCell>{formatDate(a.deactivationDate)}</TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>

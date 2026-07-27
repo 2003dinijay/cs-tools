@@ -296,7 +296,7 @@ const TAB_DEFS: Array<{
   { id: "details", label: "Details", icon: <ListChecks size={16} /> },
   { id: "related", label: "Related", icon: <Users size={16} /> },
   { id: "watchers", label: "Watchers", icon: <Eye size={16} /> },
-  { id: "sla", label: "SLAs", icon: <Clock size={16} /> },
+  { id: "sla", label: "SLAs", icon: <Clock size={16} />, hidden: true },
   { id: "attachments", label: "Attachments", icon: <Paperclip size={16} /> },
   { id: "time", label: "Time tracking", icon: <Layers size={16} /> },
   { id: "call-requests", label: "Call requests", icon: <Phone size={16} /> },
@@ -447,10 +447,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
   } | null>(null);
   const [severityOpen, setSeverityOpen] = useState(false);
   const [logTimeOpen, setLogTimeOpen] = useState(false);
-  // One-shot: true to pop open the Call requests tab's "Create call request"
-  // dialog from the action bar's "Request a call" item. The widget flips it
-  // back to false once handled, so switching tabs afterwards doesn't reopen it.
-  const [autoOpenCallCreate, setAutoOpenCallCreate] = useState(false);
   const [githubIssueOpen, setGithubIssueOpen] = useState(false);
   // Inline error shown inside the Git-issue dialog (e.g. the SN routing 422 /
   // state 409). Cleared when the dialog opens or a submit is retried.
@@ -488,7 +484,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
     setResolutionDialog(null);
     setSeverityOpen(false);
     setLogTimeOpen(false);
-    setAutoOpenCallCreate(false);
     setGithubIssueOpen(false);
     setGithubIssueError(null);
     setGithubIssueResult(null);
@@ -804,13 +799,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
         return;
       }
 
-      // Manage watchers jumps to the Watchers tab, which edits the watch
-      // list inline (add/remove chips) rather than opening a separate dialog.
-      if (action.secondary === "manage_watchers") {
-        setActiveTab("watchers");
-        return;
-      }
-
       // Hold auto-closure opens the date picker; the PATCH happens in
       // onSetAutocloseHold once a date is confirmed.
       if (action.secondary === "hold_auto_close") {
@@ -822,13 +810,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
       // product form; the sequential PATCHes happen in onEditCaseDetails.
       if (action.secondary === "edit_case_details") {
         setEditDetailsOpen(true);
-        return;
-      }
-
-      // Link to another case opens the search-and-pick dialog; the PATCH
-      // happens in onLinkCase once a target case and link type are chosen.
-      if (action.secondary === "link_case") {
-        setLinkCaseOpen(true);
         return;
       }
 
@@ -960,14 +941,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
       if (action.secondary === "raise_git_issue") {
         setGithubIssueError(null);
         setGithubIssueOpen(true);
-        return;
-      }
-
-      // Jump to the Call requests tab and pop its own "Create call request"
-      // dialog, rather than a second/duplicate entry point for the same form.
-      if (action.secondary === "request_call") {
-        setActiveTab("call-requests");
-        setAutoOpenCallCreate(true);
         return;
       }
 
@@ -1985,6 +1958,22 @@ export default function CsmCaseDetailPage(): JSX.Element {
             onRemove={isClosed ? undefined : (t) => onRemoveTag(t.id)}
             removingId={removeTag.isPending ? removeTag.variables : null}
           />
+        </Box>
+      )}
+
+      {activeTab === "related" && (
+        <Box
+          sx={{
+            display: "grid",
+            gap: 2,
+            gridTemplateColumns: {
+              xs: "1fr",
+              md: "repeat(2, minmax(0, 1fr))",
+            },
+            alignItems: "start",
+          }}
+        >
+          <ChildCasesWidget caseId={c.id} />
           <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
             <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <Typography variant="subtitle2">Linked service requests</Typography>
@@ -2017,12 +2006,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
               </Typography>
             )}
           </Card>
-        </Box>
-      )}
-
-      {activeTab === "related" && (
-        <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: "1fr" }}>
-          <ChildCasesWidget caseId={c.id} />
         </Box>
       )}
 
@@ -2082,8 +2065,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
           <CallRequestsWidget
             caseId={caseId}
             severity={c.severity}
-            autoOpenCreate={autoOpenCallCreate}
-            onAutoOpenCreateHandled={() => setAutoOpenCallCreate(false)}
             isClosed={isClosed}
           />
         </Box>

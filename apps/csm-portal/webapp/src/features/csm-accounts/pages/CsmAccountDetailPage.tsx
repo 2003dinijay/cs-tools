@@ -26,6 +26,7 @@ import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
 import { type JSX, type ReactNode } from "react";
 import {  useParams } from "react-router";
 import { useGetAccount } from "@features/csm-accounts/api/useGetAccount";
+import { resolveAccountTier } from "@features/csm-accounts/types/csmAccounts";
 import { useNavTransition } from "@hooks/useNavTransition";
 
 function formatDate(value?: string | null): string {
@@ -121,6 +122,7 @@ export default function CsmAccountDetailPage(): JSX.Element {
   }
 
   const a = data;
+  const tier = resolveAccountTier(a);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
@@ -129,12 +131,14 @@ export default function CsmAccountDetailPage(): JSX.Element {
       <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
           <Typography variant="h5">{a.name}</Typography>
-          <Chip
-            size="small"
-            label={a.tier}
-            color={a.tier === "enterprise" ? "primary" : "default"}
-            variant="outlined"
-          />
+          {tier && (
+            <Chip
+              size="small"
+              label={tier}
+              color={tier === "enterprise" ? "primary" : "default"}
+              variant="outlined"
+            />
+          )}
           {a.deactivationDate && (
             <Chip size="small" label="Deactivated" color="default" variant="outlined" />
           )}
@@ -159,7 +163,7 @@ export default function CsmAccountDetailPage(): JSX.Element {
         >
           <MetaCell label="Tier">
             <Typography variant="body2" sx={{ textTransform: "capitalize" }}>
-              {a.tier}
+              {tier ?? "—"}
             </Typography>
           </MetaCell>
           <MetaCell label="Region">
@@ -197,10 +201,10 @@ export default function CsmAccountDetailPage(): JSX.Element {
             <Mono>{a.technicalOwnerId || "—"}</Mono>
           </MetaCell>
           <MetaCell label="Created">
-            <Typography variant="body2">{formatDate(a.createdAt)}</Typography>
+            <Typography variant="body2">{formatDate(a.createdOn)}</Typography>
           </MetaCell>
           <MetaCell label="Last updated">
-            <Typography variant="body2">{formatDate(a.updatedAt)}</Typography>
+            <Typography variant="body2">{formatDate(a.updatedOn)}</Typography>
           </MetaCell>
           <MetaCell label="Account ID">
             <Mono>{a.id}</Mono>
