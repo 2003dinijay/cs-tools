@@ -63,10 +63,11 @@ func (c *Client) SearchProjectContacts(ctx context.Context, projectID string, bo
 }
 
 // UpdateProject calls PATCH /projects/{id}. This is a
-// ServiceNow-data-source-only operation — it requires a forwarded
-// x-user-id-token, which this client never has (see Client's doc comment);
-// calls will 401 until the M2M-auth open dependency is resolved. Response is
-// returned as raw JSON; typed response structs are deferred to the caller.
+// ServiceNow-data-source-only operation. M2M-only auth (no forwarded
+// x-user-id-token) is confirmed sufficient for this call — verified via a
+// real write against the dedicated test project
+// (e3e87599-1bc7-6650-182c-0dc5604bcb68), not inferred. Response is returned
+// as raw JSON; typed response structs are deferred to the caller.
 func (c *Client) UpdateProject(ctx context.Context, id string, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/projects/%s", url.PathEscape(id)), body)
 }
