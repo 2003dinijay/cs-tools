@@ -2173,6 +2173,18 @@ paths:
           description: Unauthorized
         "403":
           description: Forbidden
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
   /cases/{caseId}/escalations/search:
@@ -7240,15 +7252,36 @@ components:
       additionalProperties: false
       description: Watch list information.
     EscalationCreatePayload:
-      required:
-      - reason
-      type: object
-      properties:
-        reason:
-          type: string
-          description: Reason for the escalation
-      additionalProperties: false
       description: Request payload for creating an escalation.
+      oneOf:
+      - type: object
+        title: Escalate
+        required:
+        - reason
+        properties:
+          reason:
+            type: string
+            minLength: 1
+            description: Reason for the escalation. Mandatory when action is ESCALATE
+          action:
+            type: string
+            pattern: (?i)^ESCALATE$
+            default: ESCALATE
+            description: Action to perform. Defaults to ESCALATE, case-insensitive
+        additionalProperties: false
+      - type: object
+        title: Deescalate
+        required:
+        - action
+        properties:
+          reason:
+            type: string
+            description: Reason for the escalation. Mandatory when action is ESCALATE
+          action:
+            type: string
+            pattern: (?i)^DEESCALATE$
+            description: Action to perform. Defaults to ESCALATE, case-insensitive
+        additionalProperties: false
     EscalationSortField:
       type: string
       description: Valid escalation sort field values.
@@ -7306,6 +7339,7 @@ components:
           description: Created date and time
         reason:
           type: string
+          nullable: true
           description: Reason for the escalation
         notificationSentTo:
           type: array
@@ -7377,6 +7411,7 @@ components:
           description: Updated date and time
         reason:
           type: string
+          nullable: true
           description: Reason for the escalation
         notificationSentTo:
           type: array

@@ -2518,7 +2518,9 @@ public type EscalationCreatePayload record {|
     # Case ID
     IdString caseId;
     # Reason for the escalation
-    string reason;
+    string reason?;
+    # Action to perform. One of "ESCALATE" or "DEESCALATE"
+    string action?;
 |};
 
 # Created escalation details.
@@ -2536,7 +2538,7 @@ public type CreatedEscalation record {|
     # Created date and time
     string createdOn;
     # Reason for the escalation
-    string reason;
+    string? reason;
     # Users notified about the escalation
     record {|
         # System ID of the user
@@ -2577,7 +2579,7 @@ public type Escalation record {|
     # Updated date and time
     string updatedOn;
     # Reason for the escalation
-    string reason;
+    string? reason;
     # Users notified about the escalation
     record {|
         # System ID of the user

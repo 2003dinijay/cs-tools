@@ -1280,8 +1280,10 @@ public type CallRequestCreatePayload record {|
 
 # Request payload for creating an escalation.
 public type EscalationCreatePayload record {|
-    # Reason for the escalation
-    string reason;
+    # Reason for the escalation. Mandatory when action is ESCALATE
+    string reason?;
+    # Action to perform. One of "ESCALATE" (default) or "DEESCALATE", case-insensitive
+    string action?;
 |};
 
 # Created escalation details.
@@ -1299,7 +1301,7 @@ public type CreatedEscalation record {|
     # Created date and time
     string createdOn;
     # Reason for the escalation
-    string reason;
+    string? reason;
     # Users notified about the escalation
     record {|
         # ID of the user
@@ -1351,7 +1353,7 @@ public type Escalation record {|
     # Updated date and time
     string updatedOn;
     # Reason for the escalation
-    string reason;
+    string? reason;
     # Users notified about the escalation
     record {|
         # ID of the user

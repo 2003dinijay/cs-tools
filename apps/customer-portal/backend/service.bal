@@ -6652,7 +6652,8 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
     # + return - Created escalation details or error response
     resource function post cases/[entity:IdString caseId]/escalations(
             http:RequestContext ctx, types:EscalationCreatePayload payload)
-        returns http:Created|http:BadRequest|http:Unauthorized|http:Forbidden|http:InternalServerError {
+        returns http:Created|http:BadRequest|http:Unauthorized|http:Forbidden|http:NotFound|http:Conflict|
+            http:InternalServerError {
 
         authorization:UserInfoPayload|error userInfo = ctx.getWithType(authorization:HEADER_USER_INFO);
         if userInfo is error {
@@ -6663,10 +6664,27 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
             };
         }
 
+        string action = (payload.action ?: ESCALATION_ACTION_ESCALATE).toUpperAscii();
+        if action != ESCALATION_ACTION_ESCALATE && action != ESCALATION_ACTION_DEESCALATE {
+            return <http:BadRequest>{
+                body: {
+                    message: ERR_MSG_ESCALATION_INVALID_ACTION
+                }
+            };
+        }
+        if action == ESCALATION_ACTION_ESCALATE && (payload.reason ?: "").trim().length() == 0 {
+            return <http:BadRequest>{
+                body: {
+                    message: ERR_MSG_ESCALATION_REASON_REQUIRED
+                }
+            };
+        }
+
         entity:EscalationCreateResponse|error response = entity:createEscalation(userInfo.idToken,
                 {
                     caseId: caseId,
-                    reason: payload.reason
+                    reason: payload.reason,
+                    action: action
                 });
         if response is error {
             if getStatusCode(response) == http:STATUS_UNAUTHORIZED {
@@ -6682,6 +6700,20 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
                 return <http:Forbidden>{
                     body: {
                         message: ERR_MSG_CASE_ACCESS_FORBIDDEN
+                    }
+                };
+            }
+            if getStatusCode(response) == http:STATUS_NOT_FOUND {
+                return <http:NotFound>{
+                    body: {
+                        message: ERR_MSG_CASE_NOT_FOUND_FOR_ESCALATION
+                    }
+                };
+            }
+            if getStatusCode(response) == http:STATUS_CONFLICT {
+                return <http:Conflict>{
+                    body: {
+                        message: ERR_MSG_CASE_CLOSED_FOR_ESCALATION
                     }
                 };
             }
