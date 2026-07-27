@@ -337,9 +337,14 @@ export const ESCALATION_MAX_LEVEL_ID = "5";
 // Escalation levels that require the user to have isLead: true (EL3→EL4 and EL4→EL5).
 export const ESCALATION_LEAD_REQUIRED_FROM_LEVEL = new Set(["3", "4"]);
 
-// At these escalation levels, only customer admins and project leads may
-// de-escalate — the user who created the escalation is not eligible.
-export const ESCALATION_DEESCALATE_ADMIN_LEAD_ONLY_LEVELS = new Set(["4", "5"]);
+// Only at these escalation levels is the user who created the escalation
+// (in addition to customer admins and project leads) eligible to de-escalate.
+// Any other/unknown level (including EL4/EL5) fails closed to admins/leads only.
+export const ESCALATION_DEESCALATE_CREATOR_ELIGIBLE_LEVELS = new Set([
+  "1",
+  "2",
+  "3",
+]);
 
 export const ESCALATION_NEXT_LEVEL: Record<
   string,
