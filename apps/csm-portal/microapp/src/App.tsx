@@ -27,6 +27,7 @@ import NewCasePage from "@pages/NewCasePage";
 import OperationsPage from "@pages/OperationsPage";
 import NewServiceRequestPage from "@pages/NewServiceRequestPage";
 import ChangeRequestDetailPage from "@pages/ChangeRequestDetailPage";
+import IncidentDetailPage from "@pages/IncidentDetailPage";
 import MorePage from "@pages/MorePage";
 import AnnouncementsPage from "@pages/AnnouncementsPage";
 import TimeCardsPage from "@pages/TimeCardsPage";
@@ -74,6 +75,7 @@ export default function App() {
           <Route path="/operations" element={<OperationsPage />} />
           <Route path="/operations/service-requests/new" element={<NewServiceRequestPage />} />
           <Route path="/operations/change-requests/:id" element={<ChangeRequestDetailPage />} />
+          <Route path="/operations/incidents/:id" element={<IncidentDetailPage />} />
           <Route path="/more" element={<MorePage />} />
           <Route path="/more/announcements" element={<AnnouncementsPage />} />
           <Route path="/more/time-cards" element={<TimeCardsPage />} />
