@@ -290,6 +290,15 @@ const DEFAULT_EDITOR_CONFIG = {
     list: {
       ul: "editor-list-ul",
       ol: "editor-list-ol",
+      // Indenting a list item wraps it in a new, textless parent <li> that exists only
+      // to hold the nested <ul>/<ol> ($handleIndent in @lexical/list). Lexical tags that
+      // wrapper with this class (see $setListItemThemeClassNames) whenever a list item's
+      // children include a nested list, so its own bullet/number can be hidden below —
+      // otherwise it renders an empty marker next to nothing, above the actually-indented
+      // item's marker.
+      nested: {
+        listitem: "editor-list-item-nested",
+      },
     },
     link: "editor-link",
     code: "editor-code",
@@ -463,6 +472,7 @@ const Editor = ({
             },
             "& .editor-list-ul": { ml: 3, listStyleType: "disc" },
             "& .editor-list-ol": { ml: 3, listStyleType: "decimal" },
+            "& .editor-list-item-nested": { listStyleType: "none" },
             "& .editor-link": {
               color: "primary.main",
               textDecoration: "underline",
