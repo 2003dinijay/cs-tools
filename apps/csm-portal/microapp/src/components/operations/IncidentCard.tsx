@@ -34,16 +34,18 @@ export function IncidentCard({ item }: { item: IncidentSummary }) {
         <Typography variant="subtitle2" color="text.secondary">
           {item.number}
         </Typography>
-        <ChevronRight size={pxToRem(18)} color={theme.palette.text.secondary} />
+        {item.id && <ChevronRight size={pxToRem(18)} color={theme.palette.text.secondary} />}
       </Stack>
 
       <Typography variant="body1" color="text.primary" noWrap>
         {item.subject}
       </Typography>
 
-      <Typography variant="subtitle2" color="text.secondary" noWrap>
-        {item.caller?.name}
-      </Typography>
+      {item.caller?.name && (
+        <Typography variant="subtitle2" color="text.secondary" noWrap>
+          {item.caller.name}
+        </Typography>
+      )}
 
       <Stack direction="row" alignItems="center" gap={1} flexWrap="wrap">
         {item.state && (
