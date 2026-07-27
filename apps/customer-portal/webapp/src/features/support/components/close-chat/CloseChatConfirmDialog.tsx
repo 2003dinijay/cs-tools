@@ -59,8 +59,8 @@ export default function CloseChatConfirmDialog({
       <DialogTitle>Close this chat?</DialogTitle>
       <DialogContent>
         <DialogContentText>
-          This chat will be closed and can no longer be resumed. Any case
-          created from it is not affected.
+          This chat is about to be permanently closed. Once closed, it cannot be
+          resumed.
         </DialogContentText>
       </DialogContent>
       <DialogActions>
