@@ -49,6 +49,9 @@ export interface GlobalSearchProject {
   hasPdpSubscription: boolean;
   closureState?: string | null;
   account: ReferenceItem;
+  activeChatsCount: number;
+  actionRequiredCount: number;
+  outstandingCount: number;
 }
 
 export interface GlobalSearchCase {

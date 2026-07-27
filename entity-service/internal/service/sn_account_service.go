@@ -40,8 +40,9 @@ type snSupportTier struct {
 }
 
 type snPersonRef struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Email *string `json:"email"`
 }
 
 type snAccount struct {
@@ -56,12 +57,16 @@ type snAccount struct {
 	ActivationDate   string         `json:"activationDate"`
 	DeactivationDate *string        `json:"deactivationDate"`
 	TechnicalOwner   *snPersonRef   `json:"technicalOwner"`
-	Owner            *snPersonRef   `json:"owner"`
-	HasAgent         bool           `json:"hasAgent"`
-	HasKbReferences  bool           `json:"hasKbReferences"`
-	CreatedOn        string         `json:"createdOn"`
-	CreatedBy        *string        `json:"createdBy"`
-	UpdatedOn        string         `json:"updatedOn"`
+	// Owner is Ballerina's own wire key and stays "owner" on the wire even
+	// though the entity-service's own output renames this concept to
+	// "accountManager" (see snAccountCommonFields / snAccountToDomain).
+	Owner                 *snPersonRef `json:"owner"`
+	RenewalAccountManager *snPersonRef `json:"renewalAccountManager"`
+	HasAgent              bool         `json:"hasAgent"`
+	HasKbReferences       bool         `json:"hasKbReferences"`
+	CreatedOn             string       `json:"createdOn"`
+	CreatedBy             *string      `json:"createdBy"`
+	UpdatedOn             string       `json:"updatedOn"`
 }
 
 // snAccountSearchPayload is the Choreo POST /accounts/search request body.
@@ -157,19 +162,22 @@ func nilIfEmpty(s *string) *string {
 	return s
 }
 
-func snAccountCommonFields(a snAccount) (deactivationDate *string, technicalOwner, owner *domain.EntityRef) {
+func snAccountCommonFields(a snAccount) (deactivationDate *string, technicalOwner, accountManager, renewalAccountManager *domain.PersonRef) {
 	deactivationDate = nilIfEmpty(a.DeactivationDate)
 	if a.TechnicalOwner != nil && a.TechnicalOwner.ID != "" {
-		technicalOwner = &domain.EntityRef{ID: sysidToUUID(a.TechnicalOwner.ID), Name: a.TechnicalOwner.Name}
+		technicalOwner = &domain.PersonRef{ID: sysidToUUID(a.TechnicalOwner.ID), Name: a.TechnicalOwner.Name, Email: nilIfEmpty(a.TechnicalOwner.Email)}
 	}
 	if a.Owner != nil && a.Owner.ID != "" {
-		owner = &domain.EntityRef{ID: sysidToUUID(a.Owner.ID), Name: a.Owner.Name}
+		accountManager = &domain.PersonRef{ID: sysidToUUID(a.Owner.ID), Name: a.Owner.Name, Email: nilIfEmpty(a.Owner.Email)}
+	}
+	if a.RenewalAccountManager != nil && a.RenewalAccountManager.ID != "" {
+		renewalAccountManager = &domain.PersonRef{ID: sysidToUUID(a.RenewalAccountManager.ID), Name: a.RenewalAccountManager.Name, Email: nilIfEmpty(a.RenewalAccountManager.Email)}
 	}
 	return
 }
 
 func snAccountToDomain(a snAccount) domain.SNAccountView {
-	deactivationDate, technicalOwner, owner := snAccountCommonFields(a)
+	deactivationDate, technicalOwner, accountManager, renewalAccountManager := snAccountCommonFields(a)
 
 	var supportTier *string
 	if a.SupportTier != nil && a.SupportTier.Label != "" {
@@ -177,28 +185,29 @@ func snAccountToDomain(a snAccount) domain.SNAccountView {
 	}
 
 	return domain.SNAccountView{
-		ID:               sysidToUUID(a.ID),
-		Name:             a.Name,
-		Classification:   a.Classification,
-		Pod:              nilIfEmpty(a.Pod),
-		SfID:             nilIfEmpty(a.SfID),
-		Region:           nilIfEmpty(a.Region),
-		SupportTier:      supportTier,
-		ArrToday:         nilIfEmpty(a.ArrToday),
-		TechnicalOwner:   technicalOwner,
-		Owner:            owner,
-		ActivationDate:   a.ActivationDate,
-		DeactivationDate: deactivationDate,
-		HasAgent:         a.HasAgent,
-		HasKbReferences:  a.HasKbReferences,
-		CreatedOn:        a.CreatedOn,
-		CreatedBy:        nilIfEmpty(a.CreatedBy),
-		UpdatedOn:        a.UpdatedOn,
+		ID:                    sysidToUUID(a.ID),
+		Name:                  a.Name,
+		Classification:        a.Classification,
+		Pod:                   nilIfEmpty(a.Pod),
+		SfID:                  nilIfEmpty(a.SfID),
+		Region:                nilIfEmpty(a.Region),
+		SupportTier:           supportTier,
+		ArrToday:              nilIfEmpty(a.ArrToday),
+		TechnicalOwner:        technicalOwner,
+		AccountManager:        accountManager,
+		RenewalAccountManager: renewalAccountManager,
+		ActivationDate:        a.ActivationDate,
+		DeactivationDate:      deactivationDate,
+		HasAgent:              a.HasAgent,
+		HasKbReferences:       a.HasKbReferences,
+		CreatedOn:             a.CreatedOn,
+		CreatedBy:             nilIfEmpty(a.CreatedBy),
+		UpdatedOn:             a.UpdatedOn,
 	}
 }
 
 func snAccountToDetail(a snAccount) domain.SNAccountDetail {
-	deactivationDate, technicalOwner, owner := snAccountCommonFields(a)
+	deactivationDate, technicalOwner, accountManager, renewalAccountManager := snAccountCommonFields(a)
 
 	var supportTier *domain.SNSupportTierRef
 	if a.SupportTier != nil && a.SupportTier.ID != "" {
@@ -209,23 +218,24 @@ func snAccountToDetail(a snAccount) domain.SNAccountDetail {
 	}
 
 	return domain.SNAccountDetail{
-		ID:               sysidToUUID(a.ID),
-		Name:             a.Name,
-		Classification:   a.Classification,
-		Pod:              nilIfEmpty(a.Pod),
-		SfID:             nilIfEmpty(a.SfID),
-		Region:           nilIfEmpty(a.Region),
-		SupportTier:      supportTier,
-		ArrToday:         nilIfEmpty(a.ArrToday),
-		TechnicalOwner:   technicalOwner,
-		Owner:            owner,
-		ActivationDate:   a.ActivationDate,
-		DeactivationDate: deactivationDate,
-		HasAgent:         a.HasAgent,
-		HasKbReferences:  a.HasKbReferences,
-		CreatedOn:        a.CreatedOn,
-		CreatedBy:        nilIfEmpty(a.CreatedBy),
-		UpdatedOn:        a.UpdatedOn,
+		ID:                    sysidToUUID(a.ID),
+		Name:                  a.Name,
+		Classification:        a.Classification,
+		Pod:                   nilIfEmpty(a.Pod),
+		SfID:                  nilIfEmpty(a.SfID),
+		Region:                nilIfEmpty(a.Region),
+		SupportTier:           supportTier,
+		ArrToday:              nilIfEmpty(a.ArrToday),
+		TechnicalOwner:        technicalOwner,
+		AccountManager:        accountManager,
+		RenewalAccountManager: renewalAccountManager,
+		ActivationDate:        a.ActivationDate,
+		DeactivationDate:      deactivationDate,
+		HasAgent:              a.HasAgent,
+		HasKbReferences:       a.HasKbReferences,
+		CreatedOn:             a.CreatedOn,
+		CreatedBy:             nilIfEmpty(a.CreatedBy),
+		UpdatedOn:             a.UpdatedOn,
 	}
 }
 

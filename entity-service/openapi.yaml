@@ -2869,11 +2869,15 @@ components:
         technicalOwner:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
-        owner:
+            - $ref: '#/components/schemas/PersonRef'
+        accountManager:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
+            - $ref: '#/components/schemas/PersonRef'
+        renewalAccountManager:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
         activationDate:
           type: string
         deactivationDate:
@@ -2930,11 +2934,15 @@ components:
         technicalOwner:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
-        owner:
+            - $ref: '#/components/schemas/PersonRef'
+        accountManager:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
+            - $ref: '#/components/schemas/PersonRef'
+        renewalAccountManager:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
         activationDate:
           type: string
         deactivationDate:
@@ -4321,6 +4329,21 @@ components:
           format: uuid
         name:
           type: string
+
+    PersonRef:
+      type: object
+      description: >-
+        A compact reference to a person (e.g. an account's manager or
+        technical owner), carrying an optional email alongside id/name.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          nullable: true
 
     DeployedProductRef:
       type: object

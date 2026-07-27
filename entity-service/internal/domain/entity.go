@@ -226,23 +226,24 @@ type SearchAccountsResponse struct {
 // Timestamp fields are kept as strings to accommodate empty values from ServiceNow.
 // SupportTier is returned as a plain label string (no ID).
 type SNAccountView struct {
-	ID               string     `json:"id"`
-	Name             string     `json:"name"`
-	Classification   string     `json:"classification"`
-	Pod              *string    `json:"pod"`
-	SfID             *string    `json:"sfId"`
-	Region           *string    `json:"region"`
-	SupportTier      *string    `json:"supportTier"`
-	ArrToday         *string    `json:"arrToday"`
-	TechnicalOwner   *EntityRef `json:"technicalOwner"`
-	Owner            *EntityRef `json:"owner"`
-	ActivationDate   string     `json:"activationDate"`
-	DeactivationDate *string    `json:"deactivationDate"`
-	HasAgent         bool       `json:"hasAgent"`
-	HasKbReferences  bool       `json:"hasKbReferences"`
-	CreatedOn        string     `json:"createdOn"`
-	CreatedBy        *string    `json:"createdBy"`
-	UpdatedOn        string     `json:"updatedOn"`
+	ID                    string     `json:"id"`
+	Name                  string     `json:"name"`
+	Classification        string     `json:"classification"`
+	Pod                   *string    `json:"pod"`
+	SfID                  *string    `json:"sfId"`
+	Region                *string    `json:"region"`
+	SupportTier           *string    `json:"supportTier"`
+	ArrToday              *string    `json:"arrToday"`
+	TechnicalOwner        *PersonRef `json:"technicalOwner"`
+	AccountManager        *PersonRef `json:"accountManager"`
+	RenewalAccountManager *PersonRef `json:"renewalAccountManager"`
+	ActivationDate        string     `json:"activationDate"`
+	DeactivationDate      *string    `json:"deactivationDate"`
+	HasAgent              bool       `json:"hasAgent"`
+	HasKbReferences       bool       `json:"hasKbReferences"`
+	CreatedOn             string     `json:"createdOn"`
+	CreatedBy             *string    `json:"createdBy"`
+	UpdatedOn             string     `json:"updatedOn"`
 }
 
 // SearchSNAccountsResponse is the paginated result of a ServiceNow account search.
@@ -263,23 +264,24 @@ type SNSupportTierRef struct {
 // SNAccountDetail is the full account detail returned by the ServiceNow data source
 // for GET /accounts/{id}. SupportTier is returned as an {id, label} object.
 type SNAccountDetail struct {
-	ID               string            `json:"id"`
-	Name             string            `json:"name"`
-	Classification   string            `json:"classification"`
-	Pod              *string           `json:"pod"`
-	SfID             *string           `json:"sfId"`
-	Region           *string           `json:"region"`
-	SupportTier      *SNSupportTierRef `json:"supportTier"`
-	ArrToday         *string           `json:"arrToday"`
-	TechnicalOwner   *EntityRef        `json:"technicalOwner"`
-	Owner            *EntityRef        `json:"owner"`
-	ActivationDate   string            `json:"activationDate"`
-	DeactivationDate *string           `json:"deactivationDate"`
-	HasAgent         bool              `json:"hasAgent"`
-	HasKbReferences  bool              `json:"hasKbReferences"`
-	CreatedOn        string            `json:"createdOn"`
-	CreatedBy        *string           `json:"createdBy"`
-	UpdatedOn        string            `json:"updatedOn"`
+	ID                    string            `json:"id"`
+	Name                  string            `json:"name"`
+	Classification        string            `json:"classification"`
+	Pod                   *string           `json:"pod"`
+	SfID                  *string           `json:"sfId"`
+	Region                *string           `json:"region"`
+	SupportTier           *SNSupportTierRef `json:"supportTier"`
+	ArrToday              *string           `json:"arrToday"`
+	TechnicalOwner        *PersonRef        `json:"technicalOwner"`
+	AccountManager        *PersonRef        `json:"accountManager"`
+	RenewalAccountManager *PersonRef        `json:"renewalAccountManager"`
+	ActivationDate        string            `json:"activationDate"`
+	DeactivationDate      *string           `json:"deactivationDate"`
+	HasAgent              bool              `json:"hasAgent"`
+	HasKbReferences       bool              `json:"hasKbReferences"`
+	CreatedOn             string            `json:"createdOn"`
+	CreatedBy             *string           `json:"createdBy"`
+	UpdatedOn             string            `json:"updatedOn"`
 }
 
 // SubscriptionType classifies the subscription type of a project.
@@ -1001,6 +1003,17 @@ type UserIDEmailRef struct {
 type EntityRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+// PersonRef is a compact reference to a person (e.g. an account's manager or
+// technical owner), carrying an optional email alongside id/name. Kept
+// separate from EntityRef because EntityRef is also used for many
+// non-person references (projects, deployments, products, catalogs, ...)
+// where an email field would be semantically meaningless.
+type PersonRef struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Email *string `json:"email"`
 }
 
 // DeployedProductRef is a compact reference to a deployed product with a
