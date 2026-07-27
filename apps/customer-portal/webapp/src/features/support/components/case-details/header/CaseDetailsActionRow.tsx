@@ -25,6 +25,7 @@ import {
 } from "@wso2/oxygen-ui";
 import CaseStateConfirmDialog from "@features/support/components/case-details/dialogs/CaseStateConfirmDialog";
 import EscalateCaseModal from "../escalation/EscalateCaseModal";
+import DeescalateCaseModal from "../escalation/DeescalateCaseModal";
 import CaseFeedbackModal from "../feedback/CaseFeedbackModal";
 import { type JSX, useState } from "react";
 import {
@@ -97,6 +98,9 @@ export default function CaseDetailsActionRow({
   escalationLevelId,
   onEscalateSuccess,
   isCurrentUserLead,
+  isEscalated,
+  canDeescalate,
+  onDeescalateSuccess,
 }: CaseDetailsActionRowProps): JSX.Element {
   void assignedEngineer;
   void engineerInitials;
@@ -115,6 +119,7 @@ export default function CaseDetailsActionRow({
     stateKey: number;
   } | null>(null);
   const [escalateModalOpen, setEscalateModalOpen] = useState(false);
+  const [deescalateModalOpen, setDeescalateModalOpen] = useState(false);
   const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
 
   const resolvedEscalationLevelId = escalationLevelId != null ? String(escalationLevelId) : null;
@@ -126,6 +131,7 @@ export default function CaseDetailsActionRow({
     resolvedEscalationLevelId !== ESCALATION_MAX_LEVEL_ID &&
     !!escalationLevelInfo &&
     (!needsLead || isCurrentUserLead === true);
+  const showDeescalateButton = isEscalated === true && canDeescalate === true;
 
   const availableActions = getAvailableCaseActions(statusLabel).filter(
     (label) => {
@@ -212,6 +218,17 @@ export default function CaseDetailsActionRow({
           Escalate Case
         </Button>
       )}
+      {showDeescalateButton && (
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<TriangleAlert size={ACTION_BUTTON_ICON_SIZE} />}
+          onClick={() => setDeescalateModalOpen(true)}
+          sx={getActionButtonSx(theme, "info") as Record<string, unknown>}
+        >
+          De-escalate Case
+        </Button>
+      )}
       <CaseStateConfirmDialog
         open={!!confirmAction}
         actionLabel={confirmAction ? toPresentTenseActionLabel(confirmAction.label) : ""}
@@ -254,6 +271,18 @@ export default function CaseDetailsActionRow({
           onSuccess={() => {
             showSuccess("Case escalated successfully.");
             onEscalateSuccess?.();
+          }}
+          onError={(msg) => showError(msg)}
+        />
+      )}
+      {showDeescalateButton && (
+        <DeescalateCaseModal
+          open={deescalateModalOpen}
+          caseId={caseId}
+          onClose={() => setDeescalateModalOpen(false)}
+          onSuccess={() => {
+            showSuccess("Case de-escalated successfully.");
+            onDeescalateSuccess?.();
           }}
           onError={(msg) => showError(msg)}
         />
