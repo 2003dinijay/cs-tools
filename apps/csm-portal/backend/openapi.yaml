@@ -976,7 +976,8 @@ paths:
       description: >
         Returns full account detail. The response takes one of two shapes:
         Account, or AccountDetail (supportTier as an {id, label} object,
-        owner/technicalOwner as {id, name} references).
+        accountManager/technicalOwner/renewalAccountManager as {id, name, email}
+        references).
       operationId: getAccountsId
       parameters:
         - name: id
@@ -1031,8 +1032,8 @@ paths:
       description: >
         Returns a paginated list of accounts. The response takes one of two
         shapes: AccountSearchResponse, or AccountViewSearchResponse
-        (supportTier as a plain label string, owner/technicalOwner as
-        {id, name} references).
+        (supportTier as a plain label string, accountManager/technicalOwner/
+        renewalAccountManager as {id, name, email} references).
       operationId: postAccountsSearch
       requestBody:
         description: Account search payload
@@ -5056,6 +5057,19 @@ components:
         name:
           type: string
 
+    PersonRef:
+      description: A reference to a person, including their email (unlike EntityRef, which is used for non-person references).
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          nullable: true
+
     DeployedProductRef:
       type: object
       properties:
@@ -5739,14 +5753,18 @@ components:
         arrToday:
           type: string
           nullable: true
-        owner:
+        accountManager:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
+            - $ref: '#/components/schemas/PersonRef'
         technicalOwner:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
+            - $ref: '#/components/schemas/PersonRef'
+        renewalAccountManager:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
         activationDate:
           type: string
         deactivationDate:
@@ -5797,14 +5815,18 @@ components:
         arrToday:
           type: string
           nullable: true
-        owner:
+        accountManager:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
+            - $ref: '#/components/schemas/PersonRef'
         technicalOwner:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
+            - $ref: '#/components/schemas/PersonRef'
+        renewalAccountManager:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
         activationDate:
           type: string
         deactivationDate:
