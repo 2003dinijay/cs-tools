@@ -30,11 +30,11 @@ const TABS: { id: OperationsTabId; label: string }[] = [
 
 // Mirrors the webapp's OperationsPage (apps/csm-portal/webapp/src/features/csm-operations/pages/OperationsPage.tsx):
 // three tabs — Service requests (cases with type=service_request, reusing the Support page's own
-// list/pagination/filter infra), Change requests (its own list/detail/edit), and Incidents (no
-// backend endpoint exists yet, in this repo or the webapp's — kept as a placeholder like the
-// webapp's own IssuesListUnavailable). "Create service request"/"Create change request" are
-// deliberately out of scope for this pass — each is its own large form (cascading
-// project/deployment/catalog selects with dynamic variables, or a 15+ field change-request form).
+// list/pagination/filter infra, with its own "Create service request" Fab — see
+// ServiceRequestsTab.tsx), Change requests (its own list/detail/edit), and Incidents (no backend
+// endpoint exists yet, in this repo or the webapp's — kept as a placeholder like the webapp's own
+// IssuesListUnavailable). "Create change request" is deliberately out of scope for this pass —
+// it's its own 15+ field form.
 export default function OperationsPage() {
   const [activeTab, setActiveTab] = useState<OperationsTabId>("service_requests");
 

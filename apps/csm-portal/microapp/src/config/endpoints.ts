@@ -51,6 +51,10 @@ export const DEPLOYMENTS_SEARCH_ENDPOINT = "/deployments/search";
 export const DEPLOYMENT_PRODUCTS_SEARCH_ENDPOINT = (deploymentId: string) =>
   `/deployments/${deploymentId}/products/search`;
 
+export const CATALOGS_SEARCH_ENDPOINT = "/catalogs/search";
+export const CATALOG_ITEM_VARIABLES_ENDPOINT = (catalogId: string, catalogItemId: string) =>
+  `/catalogs/${catalogId}/items/${catalogItemId}/variables`;
+
 export const ATTACHMENTS_ENDPOINT = "/attachments";
 export const ATTACHMENTS_SEARCH_ENDPOINT = "/attachments/search";
 
