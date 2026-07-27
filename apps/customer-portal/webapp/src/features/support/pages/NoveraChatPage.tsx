@@ -81,6 +81,11 @@ import {
   dateFromApiCreatedOn,
 } from "@features/support/utils/support";
 
+// Max time (ms) to wait for the conversation "Converted" update before
+// proceeding with case creation. Bounds the await so a slow or hung request
+// can never block the case-creation flow.
+const CONVERT_STATE_TIMEOUT_MS = 5000;
+
 /**
  * NoveraChatPage component to provide AI-powered support assistance.
  *
@@ -309,8 +314,16 @@ export default function NoveraChatPage(): JSX.Element {
     // the in-flight request, so the state change is lost. A conversion failure
     // must not block case creation, so the error is swallowed.
     if (activeConversationId) {
+      // Bound the wait: a conversion failure (caught below) or a hung request
+      // (the timeout) must never block case creation. The convert still runs;
+      // we simply stop waiting on it once the timeout elapses.
       try {
-        await convertConversation.mutateAsync(activeConversationId);
+        await Promise.race([
+          convertConversation.mutateAsync(activeConversationId),
+          new Promise<void>((resolve) =>
+            setTimeout(resolve, CONVERT_STATE_TIMEOUT_MS),
+          ),
+        ]);
       } catch {
         // Non-blocking: proceed with case creation even if the update fails.
       }
