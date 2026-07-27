@@ -1282,7 +1282,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
             : { worstCaseFixEta: valueDateOnly };
       patchCase.mutate(payload, {
         onSuccess: () => {
-          setFixEtaOpen(false);
           setFeedback({
             message: "Fix ETA updated.",
             severity: "success",
