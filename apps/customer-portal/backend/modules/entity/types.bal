@@ -2518,7 +2518,9 @@ public type EscalationCreatePayload record {|
     # Case ID
     IdString caseId;
     # Reason for the escalation
-    string reason;
+    string reason?;
+    # Action to perform. One of "ESCALATE" or "DEESCALATE"
+    string action?;
 |};
 
 # Created escalation details.
