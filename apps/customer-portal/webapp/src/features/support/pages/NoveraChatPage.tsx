@@ -155,9 +155,6 @@ export default function NoveraChatPage(): JSX.Element {
     projectId || "",
     "converted",
   );
-  // Set when the user creates a case before the conversation id has been
-  // received; the conversation is then converted once conversation_created fires.
-  const pendingConvertRef = useRef(false);
 
   const {
     data: conversationHistory,
@@ -299,8 +296,7 @@ export default function NoveraChatPage(): JSX.Element {
     }
   }, [urlConversationId, conversationResponse, projectId, navigate]);
 
-  const performClassification = useCallback(async (overrideConversationId?: string) => {
-    const activeConversationId = overrideConversationId ?? conversationId;
+  const performClassification = useCallback(async () => {
     if (!projectId) {
       navigate("/");
       setIsCreateCaseLoading(false);
@@ -313,13 +309,13 @@ export default function NoveraChatPage(): JSX.Element {
     // purpose: firing it without awaiting lets the imminent navigation cancel
     // the in-flight request, so the state change is lost. A conversion failure
     // must not block case creation, so the error is swallowed.
-    if (activeConversationId) {
+    if (conversationId) {
       // Bound the wait: a conversion failure (caught below) or a hung request
       // (the timeout) must never block case creation. The convert still runs;
       // we simply stop waiting on it once the timeout elapses.
       try {
         await Promise.race([
-          convertConversation.mutateAsync(activeConversationId),
+          convertConversation.mutateAsync(conversationId),
           new Promise<void>((resolve) =>
             setTimeout(resolve, CONVERT_STATE_TIMEOUT_MS),
           ),
@@ -341,20 +337,16 @@ export default function NoveraChatPage(): JSX.Element {
             projectTypeId,
           });
           navigate(`/projects/${projectId}/support/chat/create-case`, {
-            state: {
-              messages,
-              classificationResponse,
-              conversationId: activeConversationId,
-            },
+            state: { messages, classificationResponse, conversationId },
           });
         } catch {
           navigate(`/projects/${projectId}/support/chat/create-case`, {
-            state: { messages, conversationId: activeConversationId },
+            state: { messages, conversationId },
           });
         }
       } else {
         navigate(`/projects/${projectId}/support/chat/create-case`, {
-          state: { messages, conversationId: activeConversationId },
+          state: { messages, conversationId },
         });
       }
     } finally {
@@ -375,20 +367,15 @@ export default function NoveraChatPage(): JSX.Element {
   const handleCreateCase = useCallback(() => {
     setIsCreateCaseLoading(true);
 
-    if (!conversationId) {
-      // Conversation id not received yet. Defer the whole create-case flow
-      // (convert + classify + navigate) until conversation_created arrives, so
-      // the conversion runs with a real id and is awaited before navigation.
-      pendingConvertRef.current = true;
-      return;
-    }
-
+    // Case creation must never block on the conversation id or the WebSocket.
+    // Always proceed; performClassification converts first only when the id is
+    // already known (best-effort, bounded), then navigates to the case flow.
     if (isAllProductsLoading) {
       setIsWaitingForClassification(true);
     } else {
       performClassification();
     }
-  }, [isAllProductsLoading, performClassification, conversationId]);
+  }, [isAllProductsLoading, performClassification]);
 
   useEffect(() => {
     if (isWaitingForClassification && !isAllProductsLoading) {
@@ -519,17 +506,7 @@ export default function NoveraChatPage(): JSX.Element {
           const nextConversationId = String(event.conversationId ?? "");
           if (nextConversationId) {
             setConversationId(nextConversationId);
-            if (pendingConvertRef.current) {
-              // A case was requested before the id arrived — resume the
-              // create-case flow now with the fresh id, so the conversion is
-              // awaited before navigation instead of being fired-and-cancelled.
-              pendingConvertRef.current = false;
-              if (isAllProductsLoading) {
-                setIsWaitingForClassification(true);
-              } else {
-                performClassification(nextConversationId);
-              }
-            } else if (!urlConversationId && projectId) {
+            if (!urlConversationId && projectId) {
               navigate(
                 `/projects/${projectId}/support/chat/${nextConversationId}`,
                 {
