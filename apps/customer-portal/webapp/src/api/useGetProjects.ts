@@ -16,9 +16,7 @@
 
 import {
   useInfiniteQuery,
-  useQuery,
   type UseInfiniteQueryResult,
-  type UseQueryResult,
   type InfiniteData,
 } from "@tanstack/react-query";
 import { useAsgardeo } from "@asgardeo/react";
@@ -140,78 +138,6 @@ export default function useInfiniteProjects({
       return totalFetched;
     },
     initialPageParam: 0,
-    staleTime: 5 * 60 * 1000,
-  });
-}
-
-interface UseGetProjectsPageParams {
-  offset: number;
-  limit: number;
-  searchQuery?: string;
-}
-
-/**
- * Custom hook to fetch a single offset/limit page of projects.
- * Use this over useInfiniteProjects when the caller drives pagination itself
- * (e.g. a TablePagination component) rather than infinite scroll.
- *
- * @param {UseGetProjectsPageParams} params - Offset, limit, and search query.
- * @returns {UseQueryResult} The query result object with the project page.
- */
-export function useGetProjectsPage({
-  offset,
-  limit,
-  searchQuery,
-}: UseGetProjectsPageParams): UseQueryResult<SearchProjectsResponse, Error> {
-  const logger = useLogger();
-  const { isSignedIn, isLoading: isAuthLoading } = useAsgardeo();
-  const authFetch = useAuthApiClient();
-
-  const normalizedSearchQuery = searchQuery?.trim() || undefined;
-
-  return useQuery<SearchProjectsResponse, Error>({
-    queryKey: [ApiQueryKeys.PROJECTS, "page", offset, limit, normalizedSearchQuery],
-    enabled: isSignedIn && !isAuthLoading,
-    queryFn: async (): Promise<SearchProjectsResponse> => {
-      const baseUrl = window.config?.CUSTOMER_PORTAL_BACKEND_BASE_URL;
-      if (!baseUrl) {
-        throw new Error("CUSTOMER_PORTAL_BACKEND_BASE_URL is not configured");
-      }
-
-      const body: SearchProjectsRequest = {
-        pagination: { offset, limit },
-        ...(normalizedSearchQuery
-          ? { filters: { searchQuery: normalizedSearchQuery } }
-          : {}),
-      };
-
-      const response = await authFetch(`${baseUrl}/projects/search`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-
-      if (!response.ok) {
-        let apiMessage: string | undefined;
-        try {
-          const errBody = await response.json();
-          if (typeof errBody?.message === "string") {
-            apiMessage = errBody.message;
-          }
-        } catch {
-          // ignore – body may not be JSON
-        }
-        throw new ApiError(
-          response.status,
-          response.statusText,
-          apiMessage ?? `Error fetching projects: ${response.statusText}`,
-        );
-      }
-
-      logger.debug(
-        `[useGetProjectsPage] Fetched projects, offset: ${offset}, limit: ${limit}`,
-      );
-      return response.json();
-    },
     staleTime: 5 * 60 * 1000,
   });
 }
