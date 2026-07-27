@@ -55,6 +55,11 @@ func decodeRequestWithLimit[T any](w http.ResponseWriter, r *http.Request, dst *
 		return false
 	}
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			apierror.WriteJSON(w, http.StatusBadRequest, decodeErrMsgWithLimit(err, tooLargeMsg))
+			return false
+		}
 		apierror.WriteJSON(w, http.StatusBadRequest, "request body must contain a single JSON object")
 		return false
 	}

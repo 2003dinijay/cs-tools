@@ -260,7 +260,9 @@ describe("useRecentViews + useRecordRecentView", () => {
       // already-known bucket the reader is watching, not a stale "pending"
       // one, because the write forces its own instance to a definitive key
       // once known, and otherwise fall back to whatever is already resolved.
+      mockUserid = undefined;
       const recorder = renderHook(() => useRecordRecentView());
+      mockUserid = "u1";
       act(() => recorder.result.current(entry("2")));
 
       expect(reader.result.current.map((v) => v.id)).toEqual(["2"]);
