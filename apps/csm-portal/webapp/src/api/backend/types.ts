@@ -411,6 +411,14 @@ export interface BeServiceRequestCreatePayload {
   catalogId: string;
   catalogItemId: string;
   variables: BeCaseVariable[];
+  /**
+   * UUID of the case this service request is linked to as its parent, when
+   * created from a case's "Create service request" action. Mirrors
+   * {@link BeCaseCreatePayload.relatedCaseId}, but for a service request the
+   * link is to the (typically still-open) originating case rather than a
+   * closed case within a reopen window.
+   */
+  relatedCaseId?: string;
 }
 
 /**

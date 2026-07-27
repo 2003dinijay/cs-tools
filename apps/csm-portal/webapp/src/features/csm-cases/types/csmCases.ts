@@ -379,6 +379,26 @@ export interface CreateRelatedCaseNavState {
 
 /**
  * Router (`navigate(..., { state })`) payload carried from a case's "Create
+ * service request" action (Related tab, Linked service requests card) to
+ * `/operations/service-requests/new`, so the create-service-request form can
+ * prefill from the originating case and file the new SR as linked to it in
+ * one step — no separate create-then-link round trip. `projectId` seeds the
+ * form's Project field locked read-only (mirrors
+ * {@link CreateRelatedCaseNavState} / CsmCaseCreatePage.tsx); `deploymentId` /
+ * `deployedProductId` are just starting values and stay fully editable. See
+ * CsmCaseDetailPage.tsx's "Create service request" button and
+ * CreateServiceRequestPage.tsx's read of `useLocation().state`.
+ */
+export interface CreateServiceRequestFromCaseNavState {
+  projectId: string;
+  relatedCaseId: string;
+  relatedCaseNumber?: string;
+  deploymentId?: string;
+  deployedProductId?: string;
+}
+
+/**
+ * Router (`navigate(..., { state })`) payload carried from a case's "Create
  * incident from case…" action to `/operations/incidents/new`, so the
  * create-incident form can prefill from the originating case without a
  * query-string round trip or a full page load. `caseId` seeds the incident's
