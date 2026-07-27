@@ -190,9 +190,7 @@ export default function CaseMetaBand({
   // case stay visible.
   const collapsedSummary = [
     c.projectName,
-    product.deployment,
-    product.product,
-    c.assignee,
+    ...(isAnnouncement ? [] : [product.deployment, product.product, c.assignee]),
   ]
     .filter(Boolean)
     .join(" · ");
