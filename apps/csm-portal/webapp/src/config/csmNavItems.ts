@@ -303,6 +303,20 @@ export function navNodeForPath(pathname: string): CsmNavNode | undefined {
   return navNodeMatchForPath(pathname)?.node;
 }
 
+/**
+ * The child selected by a `?tab=` value in `search`, for sections that keep
+ * their tab in the query rather than in child routes. Path matching alone can't
+ * find these: every such tab shares its section's pathname.
+ */
+export function navTabForSearch(
+  node: CsmNavNode,
+  search: string,
+): CsmNavNode | undefined {
+  const tab = new URLSearchParams(search).get("tab");
+  if (!tab) return undefined;
+  return node.children?.find((child) => child.tab === tab);
+}
+
 /** The top-level section owning `pathname`, ignoring its tabs. */
 export function navSectionForPath(pathname: string): CsmNavSection | undefined {
   return CSM_NAV_ITEMS.find((section) =>

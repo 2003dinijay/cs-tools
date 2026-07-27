@@ -18,6 +18,7 @@ import {
   flattenNavNodes,
   navNodeMatchForPath,
   navNodeRoutes,
+  navTabForSearch,
 } from "@config/csmNavItems";
 import type { RecentView } from "@features/csm-recent/hooks/useRecentViews";
 
@@ -28,6 +29,18 @@ function humanizeSegment(segment: string): string {
   const words = segment.replace(/[-_]+/g, " ").trim();
   if (!words) return "Page";
   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * `search` with the `tab` parameter removed, once it has been resolved to a nav
+ * node. It selects the destination rather than filtering it, so counting it as
+ * a filter would label the Incidents tab "Operations: 1 filter".
+ */
+function searchWithoutTab(search: string): string {
+  const params = new URLSearchParams(search);
+  params.delete("tab");
+  const rest = params.toString();
+  return rest ? `?${rest}` : "";
 }
 
 /** Short, human summary of a filter query string for a "search" label. */
@@ -62,24 +75,33 @@ export function currentPageEntry(pathname: string, search: string): PageEntry {
   const match = navNodeMatchForPath(pathname);
   const onNavRoot = match && pathname === match.prefix;
 
-  if (search && search !== "?") {
-    const base = onNavRoot
-      ? match.node.label
+  // A `?tab=` value names a destination, not a filter, and is more specific
+  // than the section it sits on — so resolve it before the rest of the query is
+  // read as filters. Its canonical href keeps the tab, so each tab pins
+  // separately.
+  const tab = onNavRoot ? navTabForSearch(match.node, search) : undefined;
+  const node = tab ?? (onNavRoot ? match.node : undefined);
+  const canonicalHref = tab ? tab.href : match?.prefix;
+  const filters = tab ? searchWithoutTab(search) : search;
+
+  if (filters && filters !== "?") {
+    const base = node
+      ? node.label
       : humanizeSegment(pathname.split("/")[1] ?? "");
     return {
       kind: "search",
       id: href,
-      title: `${base}: ${summarizeQuery(search)}`,
+      title: `${base}: ${summarizeQuery(filters)}`,
       href,
     };
   }
 
-  if (onNavRoot) {
+  if (node && canonicalHref) {
     return {
       kind: "page",
-      id: match.prefix,
-      title: match.node.label,
-      href: match.prefix,
+      id: canonicalHref,
+      title: node.label,
+      href: canonicalHref,
     };
   }
 
