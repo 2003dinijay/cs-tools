@@ -378,6 +378,26 @@ export interface CreateRelatedCaseNavState {
 }
 
 /**
+ * Router (`navigate(..., { state })`) payload carried from a case's "Create
+ * incident from case…" action to `/operations/incidents/new`, so the
+ * create-incident form can prefill from the originating case without a
+ * query-string round trip or a full page load. `caseId` seeds the incident's
+ * `parentId` (ServiceNow's generic task-parent reference — the same field
+ * used for the case-to-case/case-to-incident hierarchical link, not the
+ * incident-specific `parentIncidentId`); every field is just a starting
+ * value the form leaves editable. See CsmCaseDetailPage.tsx's
+ * `create_incident` handler and CreateIncidentPage.tsx's read of
+ * `useLocation().state`.
+ */
+export interface CreateIncidentFromCaseNavState {
+  caseId: string;
+  caseNumber?: string;
+  subject?: string;
+  /** Plain text — the case's rich-text description with tags stripped. */
+  description?: string;
+}
+
+/**
  * Full case detail used by the case detail page. Extends the lightweight
  * row type used in lists with all the side-widget data plus a curated set
  * of state-driven primary actions.

@@ -33,9 +33,10 @@ import {
 } from "@wso2/oxygen-ui";
 import { ArrowLeft, ChevronDown } from "@wso2/oxygen-ui-icons-react";
 import { useRef, useState, type JSX } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
+import type { CreateIncidentFromCaseNavState } from "@features/csm-cases/types/csmCases";
 import { usePostIncident } from "@features/csm-operations/api/usePostIncident";
 import { useGetUsersMe } from "@features/settings/api/useGetUsersMe";
 import { useSearchGroups } from "@api/useSearchGroups";
@@ -92,8 +93,21 @@ export default function CreateIncidentPage(): JSX.Element {
   const { showError } = useErrorBanner();
   const postIncident = usePostIncident();
 
-  const [shortDescription, setShortDescription] = useState("");
-  const [description, setDescription] = useState("");
+  // Set when opened from a case's "Create incident from case…" action, which
+  // navigates here with router state (not query params) so the case's id
+  // carries over as the new incident's parent without a query-string round
+  // trip or a full page load. See CsmCaseDetailPage.tsx's `create_incident`
+  // handler.
+  const originCaseState = useLocation().state as
+    | CreateIncidentFromCaseNavState
+    | undefined;
+
+  const [shortDescription, setShortDescription] = useState(
+    originCaseState?.subject
+      ? `Incident from case ${originCaseState.caseNumber ?? originCaseState.caseId}: ${originCaseState.subject}`
+      : "",
+  );
+  const [description, setDescription] = useState(originCaseState?.description ?? "");
   const [category, setCategory] = useState<BeIncidentCategory | "">(UNSET);
   const [subcategory, setSubcategory] = useState<BeIncidentSubcategory | "">(UNSET);
   const [contactType, setContactType] = useState<BeIncidentContactType | "">(UNSET);
@@ -107,7 +121,7 @@ export default function CreateIncidentPage(): JSX.Element {
   const [assignedEngineerId, setAssignedEngineerId] = useState("");
   const [watchList, setWatchList] = useState<string[]>([]);
   const [workNotes, setWorkNotes] = useState("");
-  const [parentId, setParentId] = useState("");
+  const [parentId, setParentId] = useState(originCaseState?.caseId ?? "");
   const [changeRequestId, setChangeRequestId] = useState("");
   const [problemId, setProblemId] = useState("");
   const [causedById, setCausedById] = useState("");
@@ -280,9 +294,15 @@ export default function CreateIncidentPage(): JSX.Element {
       >
         Back to operations
       </Button>
-      <Typography variant="h5" sx={{ mb: 2 }}>
+      <Typography variant="h5" sx={{ mb: originCaseState ? 0.5 : 2 }}>
         New incident
       </Typography>
+      {originCaseState && (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Linked to case {originCaseState.caseNumber ?? originCaseState.caseId} — its id is
+          carried through automatically as this incident's parent.
+        </Typography>
+      )}
 
       <Card variant="outlined" sx={{ p: 3 }}>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -547,11 +567,16 @@ export default function CreateIncidentPage(): JSX.Element {
               </Typography>
               <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
                 <TextField
-                  label="Parent incident ID"
+                  label="Parent ID (case / incident / CR / problem)"
                   size="small"
                   value={parentId}
                   onChange={(e) => setParentId(e.target.value)}
                   disabled={postIncident.isPending}
+                  helperText={
+                    originCaseState
+                      ? `Carried through from case ${originCaseState.caseNumber ?? originCaseState.caseId}.`
+                      : undefined
+                  }
                   sx={{ flex: "1 1 220px" }}
                 />
                 <TextField
