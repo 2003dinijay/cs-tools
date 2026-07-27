@@ -7240,13 +7240,17 @@ components:
       additionalProperties: false
       description: Watch list information.
     EscalationCreatePayload:
-      required:
-      - reason
       type: object
       properties:
         reason:
           type: string
-          description: Reason for the escalation
+          description: Reason for the escalation. Mandatory when action is ESCALATE
+        action:
+          type: string
+          enum:
+          - ESCALATE
+          - DEESCALATE
+          description: Action to perform. Defaults to ESCALATE, case-insensitive
       additionalProperties: false
       description: Request payload for creating an escalation.
     EscalationSortField:
