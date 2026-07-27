@@ -17,7 +17,9 @@
 import { type JSX, lazy } from "react";
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "react-router";
 import AuthGuard from "@layouts/AuthGuard";
-import { isDisabledWipPath, navItemForPath } from "@config/csmNavItems";
+import { SectionIndexRedirect } from "@components/section-tabs/SectionTabs";
+import { navNodeForPath } from "@config/csmNavItems";
+import { featureStateForPath } from "@config/featureFlags";
 import {
   POST_LOGIN_REDIRECT_KEY,
   PostLoginRedirectConsumer,
@@ -130,17 +132,28 @@ function RootLanding(): JSX.Element | null {
 }
 
 /**
- * Layout guard for WIP sections. When `CSM_PORTAL_DISABLE_WIP_FEATURES` is on, a
- * direct or pinned link to a disabled WIP path (e.g. `/operations`,
- * `/customers`) renders the shared "coming soon" page instead of the unfinished
- * feature — the URL survives and the message matches the nav's "work in
- * progress" tooltip. The same flag disables these items in the nav. Renders the
- * matched route otherwise.
+ * Layout guard honouring the `CSM_PORTAL_FEATURE_OVERRIDES` runtime config, so
+ * a direct, pinned or shared link can't reach a page the deployment restricts.
+ *
+ * A `wip` page renders the shared "coming soon" message in place — the URL
+ * survives and the wording matches the nav's "work in progress" tooltip. A
+ * `hidden` page has no nav entry at all, so there is nothing to be consistent
+ * with and the link is bounced to the dashboard. Anything else renders
+ * normally.
+ *
+ * The path resolves to the most specific nav node, so restricting a section
+ * does not restrict a finished tab inside it (and vice versa).
  */
-function WipRouteGuard(): JSX.Element {
+function FeatureRouteGuard(): JSX.Element {
   const { pathname } = useLocation();
-  if (isDisabledWipPath(pathname)) {
-    const label = navItemForPath(pathname)?.label ?? "This section";
+  const state = featureStateForPath(pathname);
+
+  if (state === "hidden") {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  if (state === "wip") {
+    const label = navNodeForPath(pathname)?.label ?? "This section";
     return (
       <CsmComingSoonPage
         title={label}
@@ -148,6 +161,7 @@ function WipRouteGuard(): JSX.Element {
       />
     );
   }
+
   return <Outlet />;
 }
 
@@ -199,7 +213,7 @@ export default function App(): JSX.Element {
               />
 
               <Route element={<AuthGuard />}>
-                <Route element={<WipRouteGuard />}>
+                <Route element={<FeatureRouteGuard />}>
                   <Route path="/" element={<RootLanding />} />
 
                   {/* Customers — Accounts + Projects under one tabbed section.
@@ -208,7 +222,7 @@ export default function App(): JSX.Element {
                   <Route path="customers" element={<CsmCustomersLayout />}>
                     <Route
                       index
-                      element={<Navigate to="/customers/accounts" replace />}
+                      element={<SectionIndexRedirect sectionId="customers" />}
                     />
                     <Route path="accounts" element={<CsmAccountsPage />} />
                     <Route path="projects" element={<CsmProjectsPage />} />
@@ -242,7 +256,10 @@ export default function App(): JSX.Element {
 
                   {/* Administration — Users tab is real, others are WIP */}
                   <Route path="admin" element={<CsmAdminLayout />}>
-                    <Route index element={<Navigate to="/admin/users" replace />} />
+                    <Route
+                      index
+                      element={<SectionIndexRedirect sectionId="admin" />}
+                    />
                     <Route path="users" element={<CsmUsersPage />} />
                     <Route
                       path="roles"

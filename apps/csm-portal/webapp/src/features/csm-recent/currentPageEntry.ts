@@ -14,7 +14,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { CSM_NAV_ITEMS, navItemForPath } from "@config/csmNavItems";
+import {
+  CSM_NAV_ITEMS,
+  navNodePath,
+  navSectionForPath,
+} from "@config/csmNavItems";
 import type { RecentView } from "@features/csm-recent/hooks/useRecentViews";
 
 type PageEntry = Omit<RecentView, "visitedAt" | "pinned">;
@@ -51,8 +55,8 @@ function summarizeQuery(search: string): string {
  */
 export function currentPageEntry(pathname: string, search: string): PageEntry {
   const href = pathname + search;
-  const nav = navItemForPath(pathname);
-  const onNavRoot = nav && pathname === nav.path;
+  const nav = navSectionForPath(pathname);
+  const onNavRoot = nav && pathname === navNodePath(nav);
 
   if (search && search !== "?") {
     const base = onNavRoot ? nav.label : humanizeSegment(pathname.split("/")[1] ?? "");
@@ -65,7 +69,8 @@ export function currentPageEntry(pathname: string, search: string): PageEntry {
   }
 
   if (onNavRoot) {
-    return { kind: "page", id: nav.path, title: nav.label, href: nav.path };
+    const navPath = navNodePath(nav);
+    return { kind: "page", id: navPath, title: nav.label, href: navPath };
   }
 
   // Unknown route (or a sub-route we don't have a recorder for): label from the
@@ -81,5 +86,5 @@ export function currentPageEntry(pathname: string, search: string): PageEntry {
 
 /** True when the current route maps onto one of the known nav pages. */
 export function isKnownPage(pathname: string): boolean {
-  return CSM_NAV_ITEMS.some((i) => pathname === i.path);
+  return CSM_NAV_ITEMS.some((i) => pathname === navNodePath(i));
 }
