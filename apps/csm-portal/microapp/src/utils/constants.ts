@@ -27,10 +27,9 @@ export const ErrorMessages = {
 // short-circuit could reuse a still-unexpired token issued by a different
 // environment's IdP, which only surfaced as "the app doesn't work" until the
 // superapp was uninstalled and reinstalled to clear the stale cached value.
-const APP_ENV = import.meta.env.VITE_APP_ENV;
-if (!APP_ENV) {
-  throw new Error("VITE_APP_ENV is not defined");
-}
+// Falls back to "prod" (rather than throwing) when unset, since prod is the default
+// build target and this must not hard-fail a build that hasn't been updated yet.
+const APP_ENV = import.meta.env.VITE_APP_ENV || "prod";
 
 // Prefixed per-app so a token cached here can never be picked up by a sibling
 // microapp (e.g. customer-portal) sharing the same storage partition. Each
