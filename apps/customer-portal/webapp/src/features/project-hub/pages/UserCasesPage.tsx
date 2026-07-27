@@ -85,26 +85,29 @@ export default function UserCasesPage(): JSX.Element {
   const authFetch = useAuthApiClient();
   const { showError } = useErrorBanner();
   const [searchParams, setSearchParams] = useSearchParams();
-  const urlQuery = searchParams.get("q") ?? "";
-
-  const [searchQuery, setSearchQuery] = useState(urlQuery);
+  const [searchQuery, setSearchQuery] = useState(() => searchParams.get("q") ?? "");
   const debouncedSearchQuery = useDebouncedValue(searchQuery, PROJECT_HUB_SEARCH_DEBOUNCE_MS);
 
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
 
   useEffect(() => {
-    setSearchQuery(urlQuery);
-  }, [urlQuery]);
-
-  useEffect(() => {
     setPage(0);
   }, [debouncedSearchQuery]);
 
   useEffect(() => {
-    const params: Record<string, string> = {};
-    if (debouncedSearchQuery.trim()) params.q = debouncedSearchQuery.trim();
-    setSearchParams(params, { replace: true });
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (debouncedSearchQuery.trim()) {
+          next.set("q", debouncedSearchQuery.trim());
+        } else {
+          next.delete("q");
+        }
+        return next;
+      },
+      { replace: true },
+    );
   }, [debouncedSearchQuery, setSearchParams]);
 
   const { data, isLoading, isError } = useGetGlobalSearch({
