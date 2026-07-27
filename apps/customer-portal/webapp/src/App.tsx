@@ -52,6 +52,7 @@ import PartnerCasesPage from "@features/project-hub/pages/PartnerCasesPage";
 import UserProjectsPage from "@features/project-hub/pages/UserProjectsPage";
 import UserCasesPage from "@features/project-hub/pages/UserCasesPage";
 import PartnerGuard from "@layouts/PartnerGuard";
+import NonPartnerGuard from "@layouts/NonPartnerGuard";
 import Error401Page from "@components/error/Error401Page";
 import Error403Page from "@components/error/Error403Page";
 import Error404Page from "@components/error/Error404Page";
@@ -111,8 +112,10 @@ export default function App(): JSX.Element {
                 </Route>
 
                 {/* Home overview drill-down pages for non-partner users with multiple projects */}
-                <Route path="projects" element={<UserProjectsPage />} />
-                <Route path="cases" element={<UserCasesPage />} />
+                <Route element={<NonPartnerGuard />}>
+                  <Route path="projects" element={<UserProjectsPage />} />
+                  <Route path="cases" element={<UserCasesPage />} />
+                </Route>
 
                 {/* Project Specific Routes */}
                 <Route path="projects/:projectId" element={<ProjectGuard />}>
