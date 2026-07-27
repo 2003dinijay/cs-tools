@@ -7512,6 +7512,9 @@ components:
         - createdOn
         - hasPdpSubscription
         - account
+        - activeChatsCount
+        - actionRequiredCount
+        - outstandingCount
       properties:
         id:
           $ref: '#/components/schemas/IdString'
@@ -7547,6 +7550,18 @@ components:
           nullable: true
         account:
           $ref: '#/components/schemas/ReferenceItem'
+        activeChatsCount:
+          type: integer
+          description: Number of active chats in the project
+          format: int64
+        actionRequiredCount:
+          type: integer
+          description: Number of cases requiring action in the project
+          format: int64
+        outstandingCount:
+          type: integer
+          description: Number of outstanding cases in the project
+          format: int64
       additionalProperties: false
       description: Project item in a global search response.
     GlobalSearchCase:

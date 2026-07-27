@@ -45,6 +45,9 @@ const ERR_MSG_CASE_CLOSED_FOR_ESCALATION = "Cannot create an escalation for a cl
 public const int DEFAULT_OFFSET = 0;
 public const int DEFAULT_LIMIT = 10;
 
+// Maximum allowed limit for projects pagination in global search
+public const int GLOBAL_SEARCH_PROJECTS_MAX_LIMIT = 50;
+
 public const ERR_STATUS_CODE = "statusCode";
 public const ERR_BODY = "body";
 public const ERR_MESSAGE = "message";
