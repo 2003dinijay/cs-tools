@@ -318,27 +318,36 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const isEngagementRoute = location.pathname.startsWith("/engagements/");
   const isServiceRequestRoute = location.pathname.startsWith("/operations/service-requests/");
   const isAnnouncementRoute = location.pathname.startsWith("/announcements/");
+  const isSecurityReportRoute = location.pathname.startsWith(
+    "/security-center/security-reports/",
+  );
   const backPath = isEngagementRoute
     ? "/engagements"
     : isServiceRequestRoute
       ? "/operations?tab=service_requests"
       : isAnnouncementRoute
         ? "/announcements"
-        : "/cases";
+        : isSecurityReportRoute
+          ? "/security-center?tab=security_reports"
+          : "/cases";
   const backLabel = isEngagementRoute
     ? "Back to engagements"
     : isServiceRequestRoute
       ? "Back to service requests"
       : isAnnouncementRoute
         ? "Back to announcements"
-        : "Back to cases";
+        : isSecurityReportRoute
+          ? "Back to security reports"
+          : "Back to cases";
   const detailPath = isEngagementRoute
     ? `/engagements/${caseId}`
     : isServiceRequestRoute
       ? `/operations/service-requests/${caseId}`
       : isAnnouncementRoute
         ? `/announcements/${caseId}`
-        : `/cases/${caseId}`;
+        : isSecurityReportRoute
+          ? `/security-center/security-reports/${caseId}`
+          : `/cases/${caseId}`;
   const { data, isLoading, isError, error } = useGetCsmCaseDetail(caseId);
   // The route alone isn't a reliable signal once data has loaded: a "Related
   // case" link always points at /cases/:id regardless of the target's actual
@@ -349,6 +358,47 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // severity, so combine the route with the loaded case's own caseType.
   const isServiceRequest =
     isServiceRequestRoute || data?.caseType === "service_request";
+  // Engagements, Announcements, Service Requests, and Security Reports each
+  // have a dedicated route; opening one of them under a mismatched route
+  // (e.g. a "Related case" link, which always points at /cases/:id) should
+  // redirect to its real destination rather than silently rendering under
+  // the wrong section.
+  const isMisroutedEngagement =
+    data?.caseType === "engagement" && !isEngagementRoute;
+  const isMisroutedAnnouncement =
+    data?.caseType === "announcement" && !isAnnouncementRoute;
+  const isMisroutedServiceRequest =
+    data?.caseType === "service_request" && !isServiceRequestRoute;
+  const isMisroutedSecurityReport =
+    data?.caseType === "security_report_analysis" && !isSecurityReportRoute;
+  const isMisrouted =
+    isMisroutedEngagement ||
+    isMisroutedAnnouncement ||
+    isMisroutedServiceRequest ||
+    isMisroutedSecurityReport;
+
+  useEffect(() => {
+    if (!caseId) return;
+    if (isMisroutedEngagement) {
+      navigate(`/engagements/${caseId}`, { replace: true });
+    } else if (isMisroutedAnnouncement) {
+      navigate(`/announcements/${caseId}`, { replace: true });
+    } else if (isMisroutedServiceRequest) {
+      navigate(`/operations/service-requests/${caseId}`, { replace: true });
+    } else if (isMisroutedSecurityReport) {
+      navigate(`/security-center/security-reports/${caseId}`, {
+        replace: true,
+      });
+    }
+  }, [
+    isMisroutedEngagement,
+    isMisroutedAnnouncement,
+    isMisroutedServiceRequest,
+    isMisroutedSecurityReport,
+    caseId,
+    navigate,
+  ]);
+
   const {
     data: comments,
     isLoading: isCommentsLoading,
@@ -1396,7 +1446,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
     );
   }, [caseId, pendingDelete, deleteAttachment, showError]);
 
-  if (isLoading) {
+  if (isLoading || isMisrouted) {
     return (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
         <Skeleton variant="rounded" height={32} width={240} />

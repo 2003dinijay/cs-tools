@@ -67,7 +67,9 @@ export default function ProductNameMultiSelect({
       value={values}
       loading={isFetching && !data}
       disableCloseOnSelect
-      sx={{ "& .MuiAutocomplete-inputRoot": { flexWrap: "nowrap" } }}
+      sx={{
+        "& .MuiAutocomplete-inputRoot": { flexWrap: "nowrap", minHeight: 40 },
+      }}
       getOptionLabel={(opt) => opt}
       isOptionEqualToValue={(opt, val) => opt === val}
       onChange={(_event, next) => onChange(next)}

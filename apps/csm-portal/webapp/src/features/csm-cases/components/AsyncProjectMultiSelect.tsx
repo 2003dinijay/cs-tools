@@ -128,7 +128,9 @@ export default function AsyncProjectMultiSelect({
       // Spinner only while the first page loads; later pages append on scroll.
       loading={isFetching && projects.length === 0}
       disableCloseOnSelect
-      sx={{ "& .MuiAutocomplete-inputRoot": { flexWrap: "nowrap" } }}
+      sx={{
+        "& .MuiAutocomplete-inputRoot": { flexWrap: "nowrap", minHeight: 40 },
+      }}
       // The backend already filtered by the typed term; don't re-filter locally.
       filterOptions={(opts) => opts}
       getOptionLabel={(opt) => opt.name}
