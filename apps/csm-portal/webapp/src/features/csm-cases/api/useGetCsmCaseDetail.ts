@@ -81,7 +81,7 @@ function detailFromBeCase(
       ? { id: c.relatedCase.id, caseNumber: c.relatedCase.number }
       : undefined,
     parentCase: c.parentCase
-      ? { id: c.parentCase.id, caseNumber: c.parentCase.number }
+      ? { id: c.parentCase.id, caseNumber: c.parentCase.number, type: c.parentCase.type }
       : undefined,
     linkedServiceRequests: c.linkedServiceRequests ?? undefined,
     autoclosureStep: c.autoclosureStep ?? undefined,

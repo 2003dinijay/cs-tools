@@ -288,6 +288,29 @@ function findVerticalScrollAncestor(el: HTMLElement): HTMLElement {
   return (document.scrollingElement as HTMLElement | null) ?? document.documentElement;
 }
 
+/**
+ * Route for a case's parentCase chip. A case's parent can be any task-derived
+ * record (case, incident, change request, or problem), so this can't always
+ * assume `/cases/{id}` -- `type` is undefined/null only for older data the
+ * backend can't resolve a type for, which predates cross-table parents ever
+ * being possible, so "case" is the correct fallback.
+ */
+function parentCasePath(
+  parentCase: { id: string; type?: string | null } | undefined,
+): string {
+  if (!parentCase) return "/cases";
+  switch (parentCase.type) {
+    case "incident":
+      return `/operations/incidents/${parentCase.id}`;
+    case "change_request":
+      return `/operations/change-requests/${parentCase.id}`;
+    case "problem":
+      return `/operations/problems/${parentCase.id}`;
+    default:
+      return `/cases/${parentCase.id}`;
+  }
+}
+
 const TAB_DEFS: Array<{
   id: CaseTabId;
   label: string;
@@ -1623,7 +1646,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 clickable
                 icon={<LinkIcon size={14} />}
                 label={`Parent: ${c.parentCase.caseNumber ?? c.parentCase.id}`}
-                onClick={() => navigate(`/cases/${c.parentCase?.id}`)}
+                onClick={() => navigate(parentCasePath(c.parentCase))}
                 sx={{ fontWeight: 600 }}
               />
             )}

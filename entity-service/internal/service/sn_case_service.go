@@ -136,8 +136,9 @@ type snCaseDeployedProduct struct {
 }
 
 type snCaseRef struct {
-	ID     string `json:"id"`
-	Number string `json:"number"`
+	ID     string  `json:"id"`
+	Number string  `json:"number"`
+	Type   *string `json:"type"`
 }
 
 type snLinkedServiceRequestRef struct {
@@ -661,7 +662,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
 	}
 	if c.ParentCase != nil {
-		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number}
+		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number, Type: c.ParentCase.Type}
 	}
 	if c.RelatedCase != nil {
 		cv.RelatedCase = &domain.CaseNumberRef{ID: sysidToUUID(c.RelatedCase.ID), Number: c.RelatedCase.Number}

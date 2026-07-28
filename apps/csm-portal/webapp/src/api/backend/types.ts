@@ -188,9 +188,15 @@ export interface BeEntityRef {
 }
 
 /** A referenced case carrying only its display number, e.g. the related case. */
+export type BeParentCaseType = "case" | "incident" | "change_request" | "problem";
+
 export interface BeCaseNumberRef {
   id: string;
   number?: string;
+  /** Only populated on `parentCase`, since a case's parent can be any of these
+   * task-derived record types; absent/undefined elsewhere (e.g. `relatedCase`,
+   * always another case). */
+  type?: BeParentCaseType | null;
 }
 
 /**

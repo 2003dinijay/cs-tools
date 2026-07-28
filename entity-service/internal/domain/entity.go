@@ -975,6 +975,11 @@ type AssignedEngineerRef struct {
 type CaseNumberRef struct {
 	ID     string `json:"id"`
 	Number string `json:"number"`
+	// Type discriminates what kind of record this reference points at
+	// ("case", "incident", "change_request", "problem") -- a task-derived reference
+	// like ParentCase can point at any of these, not just another case. Nil when the
+	// backing data source doesn't resolve a type (ServiceNow data source only).
+	Type *string `json:"type"`
 }
 
 // LinkedServiceRequestRef is a compact reference to a service-request case linked to
