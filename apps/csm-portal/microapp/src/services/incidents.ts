@@ -15,9 +15,16 @@
 // under the License.
 
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
-import { INCIDENTS_SEARCH_ENDPOINT, INCIDENT_COMMENTS_SEARCH_ENDPOINT, INCIDENT_ENDPOINT } from "@config/endpoints";
+import {
+  INCIDENTS_ENDPOINT,
+  INCIDENTS_SEARCH_ENDPOINT,
+  INCIDENT_COMMENTS_SEARCH_ENDPOINT,
+  INCIDENT_ENDPOINT,
+} from "@config/endpoints";
 import type {
   CaseCommentSearchResponseDto,
+  IncidentCreatePayloadDto,
+  IncidentCreateResponseDto,
   IncidentDetailDto,
   IncidentSearchPayloadDto,
   IncidentSearchResponseDto,
@@ -65,6 +72,11 @@ const getIncidentComments = async (id: string): Promise<Comment[]> => {
   return data.comments.map(toComment);
 };
 
+const createIncident = async (payload: IncidentCreatePayloadDto): Promise<IncidentCreateResponseDto> => {
+  const { data } = await apiClient.post<IncidentCreateResponseDto>(INCIDENTS_ENDPOINT, payload);
+  return data;
+};
+
 const INCIDENT_PAGE_LIMIT = 20;
 
 export const incidents = {
@@ -88,4 +100,6 @@ export const incidents = {
       queryKey: ["incident", id, "comments"],
       queryFn: () => getIncidentComments(id),
     }),
+
+  create: createIncident,
 };

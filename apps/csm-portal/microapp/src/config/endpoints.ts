@@ -45,6 +45,7 @@ export const IT_SERVICES_SEARCH_ENDPOINT = "/services/search";
 export const SERVICE_OFFERINGS_SEARCH_ENDPOINT = "/service-offerings/search";
 export const CONFIGURATION_ITEMS_SEARCH_ENDPOINT = "/configuration-items/search";
 
+export const INCIDENTS_ENDPOINT = "/incidents";
 export const INCIDENTS_SEARCH_ENDPOINT = "/incidents/search";
 export const INCIDENT_ENDPOINT = (id: string) => `/incidents/${id}`;
 export const INCIDENT_COMMENTS_SEARCH_ENDPOINT = (id: string) => `/incidents/${id}/comments/search`;
