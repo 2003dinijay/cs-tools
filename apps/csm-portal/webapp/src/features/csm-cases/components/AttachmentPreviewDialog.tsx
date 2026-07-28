@@ -167,13 +167,16 @@ export default function AttachmentPreviewDialog({
             // same-origin `blob:` URL. `allow-same-origin` is required for
             // Chrome/Firefox's built-in PDF viewer to render at all inside a
             // sandboxed iframe (verified: without it the viewer shows a
-            // broken-plugin placeholder instead of the PDF); `allow-scripts`
-            // and `allow-forms` are kept per CodeRabbit's suggested value
-            // because a live-browser attempt to narrow further (e.g.
-            // `allow-same-origin` alone) crashed the local test harness
-            // before it could confirm the native viewer still renders, so
-            // that narrower value was not independently verified.
-            sandbox="allow-same-origin allow-forms allow-scripts"
+            // broken-plugin placeholder instead of the PDF). Deliberately NOT
+            // combined with `allow-scripts`: `allow-same-origin` +
+            // `allow-scripts` together is a known sandbox-defeating pattern
+            // (the frame gets both a real origin and the ability to run
+            // script, so any embedded PDF JS action could reach this page's
+            // own origin/session). The browser's built-in PDF viewer is a
+            // native renderer, not scripted web content, so it doesn't need
+            // `allow-scripts` to display/scroll/zoom a PDF; `allow-forms`
+            // isn't needed for a read-only preview either.
+            sandbox="allow-same-origin"
             sx={{ width: "100%", height: "70vh", border: 0 }}
           />
         ) : null}
