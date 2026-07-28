@@ -94,11 +94,11 @@ func ResolveCustomerContact(projectContacts []ProjectContact, accountContacts []
 }
 
 // StubOwnerEmail is the seam for resolving an account's Account Manager
-// email from ownerId. No API path exists yet for this today: entity-service
-// has no GET /users/{id} route and no ID-list filter on SearchUsers, so
-// there is no confirmed way to turn an owner ID into an email address.
-// Open dependency — entity-service team. Swap this function's body once a
-// resolution path exists; no other code needs to change.
+// email from ownerId. No path exists yet today, but one is confirmed in
+// progress (Sajith): a new endpoint returning users with id, name, and email
+// directly, covering both Owner and the in-progress Renewal Account
+// Manager. Swap this function's body once that ships; no other code needs
+// to change.
 func StubOwnerEmail(accountID string) (string, error) {
 	return "", nil
 }
