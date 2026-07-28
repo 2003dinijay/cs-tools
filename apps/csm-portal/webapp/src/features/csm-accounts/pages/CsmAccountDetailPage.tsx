@@ -20,14 +20,26 @@ import {
   Card,
   Chip,
   Skeleton,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   Typography,
 } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
 import { type JSX, type ReactNode } from "react";
-import {  useParams } from "react-router";
+import { Link as RouterLink, useParams } from "react-router";
+import { useAccountProjects } from "@features/csm-accounts/api/useAccountProjects";
 import { useGetAccount } from "@features/csm-accounts/api/useGetAccount";
 import { resolveAccountTier } from "@features/csm-accounts/types/csmAccounts";
+import QueryErrorState from "@components/QueryErrorState";
 import { useNavTransition } from "@hooks/useNavTransition";
+
+function formatSubscriptionType(value: string): string {
+  return value.replace(/_/g, " ");
+}
 
 function formatDate(value?: string | null): string {
   if (!value) return "—";
@@ -81,6 +93,92 @@ function BackButton({ onClick }: { onClick: () => void }): JSX.Element {
     >
       Back to accounts
     </Button>
+  );
+}
+
+/**
+ * Projects belonging to this account. Filtered client-side (see
+ * `useAccountProjects`) since `POST /projects/search` has no account filter —
+ * confirmed against the ServiceNow scripted API this endpoint proxies today.
+ */
+function ProjectsSection({ accountId }: { accountId: string }): JSX.Element {
+  const { data, isLoading, isError, error } = useAccountProjects(accountId);
+  const projects = data ?? [];
+
+  return (
+    <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+      <Typography variant="subtitle2">Projects</Typography>
+      <TableContainer sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}>
+        <Table size="small" sx={{ "& .MuiTableCell-root": { borderColor: "divider" } }}>
+          <TableHead>
+            <TableRow sx={{ bgcolor: "action.hover" }}>
+              <TableCell>Name</TableCell>
+              <TableCell>Project key</TableCell>
+              <TableCell>Subscription</TableCell>
+              <TableCell>End date</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {isLoading ? (
+              Array.from({ length: 3 }).map((_, i) => (
+                <TableRow key={i}>
+                  <TableCell><Skeleton variant="rounded" width="70%" height={18} /></TableCell>
+                  <TableCell><Skeleton variant="rounded" width="50%" height={18} /></TableCell>
+                  <TableCell><Skeleton variant="rounded" width={90} height={22} /></TableCell>
+                  <TableCell><Skeleton variant="rounded" width={80} height={18} /></TableCell>
+                </TableRow>
+              ))
+            ) : isError ? (
+              <TableRow>
+                <TableCell colSpan={4} align="center">
+                  <QueryErrorState
+                    message={`Failed to load projects: ${error instanceof Error ? error.message : "unknown error"}`}
+                    error={error}
+                  />
+                </TableCell>
+              </TableRow>
+            ) : projects.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={4} align="center" sx={{ py: 4 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    No projects found for this account.
+                  </Typography>
+                </TableCell>
+              </TableRow>
+            ) : (
+              projects.map((p) => (
+                <TableRow key={p.id} hover>
+                  <TableCell>
+                    <Typography
+                      component={RouterLink}
+                      to={`/customers/projects/${p.id}`}
+                      variant="body2"
+                      sx={(t) => ({
+                        textDecoration: "none",
+                        color: t.palette.primary.dark,
+                        ...t.applyStyles("dark", { color: t.palette.primary.main }),
+                        "&:hover": { textDecoration: "underline" },
+                      })}
+                    >
+                      {p.name}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>{p.key}</TableCell>
+                  <TableCell>
+                    <Chip
+                      size="small"
+                      label={formatSubscriptionType(p.subscriptionType)}
+                      variant="outlined"
+                    />
+                  </TableCell>
+                  <TableCell>{formatDate(p.endDate)}</TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Card>
   );
 }
 
@@ -211,6 +309,8 @@ export default function CsmAccountDetailPage(): JSX.Element {
           </MetaCell>
         </Box>
       </Card>
+
+      <ProjectsSection accountId={a.id} />
     </Box>
   );
 }
