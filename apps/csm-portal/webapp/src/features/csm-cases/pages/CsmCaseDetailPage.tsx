@@ -319,27 +319,36 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const isEngagementRoute = location.pathname.startsWith("/engagements/");
   const isServiceRequestRoute = location.pathname.startsWith("/operations/service-requests/");
   const isAnnouncementRoute = location.pathname.startsWith("/announcements/");
+  const isSecurityReportRoute = location.pathname.startsWith(
+    "/security-center/security-reports/",
+  );
   const backPath = isEngagementRoute
     ? "/engagements"
     : isServiceRequestRoute
       ? "/operations?tab=service_requests"
       : isAnnouncementRoute
         ? "/announcements"
-        : "/cases";
+        : isSecurityReportRoute
+          ? "/security-center?tab=security_reports"
+          : "/cases";
   const backLabel = isEngagementRoute
     ? "Back to engagements"
     : isServiceRequestRoute
       ? "Back to service requests"
       : isAnnouncementRoute
         ? "Back to announcements"
-        : "Back to cases";
+        : isSecurityReportRoute
+          ? "Back to security reports"
+          : "Back to cases";
   const detailPath = isEngagementRoute
     ? `/engagements/${caseId}`
     : isServiceRequestRoute
       ? `/operations/service-requests/${caseId}`
       : isAnnouncementRoute
         ? `/announcements/${caseId}`
-        : `/cases/${caseId}`;
+        : isSecurityReportRoute
+          ? `/security-center/security-reports/${caseId}`
+          : `/cases/${caseId}`;
   const { data, isLoading, isError, error } = useGetCsmCaseDetail(caseId);
   // The route alone isn't a reliable signal once data has loaded: a "Related
   // case" link always points at /cases/:id regardless of the target's actual
@@ -356,6 +365,30 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // Same reasoning as isAnnouncement above — Engagements don't carry a
   // severity, so combine the route with the loaded case's own caseType.
   const isEngagement = isEngagementRoute || data?.caseType === "engagement";
+
+  // Engagements, Announcements, Service Requests, and Security Reports each
+  // have a dedicated route; opening a case under any route other than its own
+  // canonical one (e.g. a "Related case" link, which always points at
+  // /cases/:id, or a dedicated route reached with a case of a different
+  // type) should redirect to its real destination rather than silently
+  // rendering under the wrong section.
+  const canonicalDetailPath =
+    data?.caseType === "engagement"
+      ? `/engagements/${caseId}`
+      : data?.caseType === "announcement"
+        ? `/announcements/${caseId}`
+        : data?.caseType === "service_request"
+          ? `/operations/service-requests/${caseId}`
+          : data?.caseType === "security_report_analysis"
+            ? `/security-center/security-reports/${caseId}`
+            : `/cases/${caseId}`;
+  const isMisrouted = !!data && detailPath !== canonicalDetailPath;
+
+  useEffect(() => {
+    if (!caseId || !isMisrouted) return;
+    navigate(canonicalDetailPath, { replace: true });
+  }, [isMisrouted, canonicalDetailPath, caseId, navigate]);
+
   const {
     data: comments,
     isLoading: isCommentsLoading,
@@ -1404,7 +1437,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
     );
   }, [caseId, pendingDelete, deleteAttachment, showError]);
 
-  if (isLoading) {
+  if (isLoading || isMisrouted) {
     return (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
         <Skeleton variant="rounded" height={32} width={240} />
