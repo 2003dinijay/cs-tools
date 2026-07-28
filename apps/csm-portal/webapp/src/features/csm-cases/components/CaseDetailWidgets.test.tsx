@@ -30,23 +30,29 @@ import type {
   CaseWatcher,
 } from "@features/csm-cases/types/csmCases";
 
-// `previewTarget`/`onPreviewTargetChange` are lifted to the parent page (see
-// CsmCaseDetailPage) so the preview dialog resets on case-to-case navigation.
-// This harness owns that bit of state locally, standing in for the parent.
-function AttachmentsWidgetHarness(
-  props: Omit<
-    ComponentProps<typeof AttachmentsWidget>,
-    "previewTarget" | "onPreviewTargetChange"
-  >,
-): JSX.Element {
+// `previewTarget`/`onPreviewTargetChange` (part of the widget's `preview`
+// prop) are lifted to the parent page (see CsmCaseDetailPage) so the preview
+// dialog resets on case-to-case navigation. This harness owns that bit of
+// state locally, standing in for the parent, and keeps the flat
+// `onGetPreviewContent` shape for individual tests below so only this
+// harness needs to know about the grouped `preview` prop.
+function AttachmentsWidgetHarness({
+  onGetPreviewContent,
+  ...props
+}: Omit<ComponentProps<typeof AttachmentsWidget>, "preview"> & {
+  onGetPreviewContent?: (attachment: CaseAttachment) => Promise<Blob>;
+}): JSX.Element {
   const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(
     null,
   );
   return (
     <AttachmentsWidget
       {...props}
-      previewTarget={previewTarget}
-      onPreviewTargetChange={setPreviewTarget}
+      preview={
+        onGetPreviewContent
+          ? { onGetPreviewContent, previewTarget, onPreviewTargetChange: setPreviewTarget }
+          : undefined
+      }
     />
   );
 }

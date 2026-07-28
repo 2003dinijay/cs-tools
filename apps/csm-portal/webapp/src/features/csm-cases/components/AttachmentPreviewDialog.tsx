@@ -59,19 +59,28 @@ export default function AttachmentPreviewDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Track which attachment the state above belongs to, and reconcile it
+  // *synchronously during render* the moment `attachment` changes (React's
+  // "adjusting state when a prop changes" pattern). Effects only run after
+  // the render has already committed to the DOM, so resetting this state
+  // from inside a `useEffect` leaves a frame where the dialog still paints
+  // the *previous* attachment's stale objectUrl/error before the effect
+  // fires — a visible flash of the wrong preview. Comparing here and calling
+  // the setters directly in the render body avoids that: React re-renders
+  // immediately with the reset state before the browser paints anything.
+  const [renderedFor, setRenderedFor] = useState(attachment);
+  if (attachment !== renderedFor) {
+    setRenderedFor(attachment);
+    setObjectUrl(null);
+    setError(null);
+    setLoading(!!attachment);
+  }
+
   useEffect(() => {
-    if (!attachment) {
-      setObjectUrl(null);
-      setError(null);
-      setLoading(false);
-      return;
-    }
+    if (!attachment) return;
 
     let cancelled = false;
     let createdUrl: string | null = null;
-    setLoading(true);
-    setError(null);
-    setObjectUrl(null);
 
     void fetchContent(attachment)
       .then((blob) => {

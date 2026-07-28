@@ -667,9 +667,7 @@ export function AttachmentsWidget({
   onDownload,
   onDelete,
   deletingId,
-  onGetPreviewContent,
-  previewTarget,
-  onPreviewTargetChange,
+  preview,
 }: {
   attachments: CaseAttachment[];
   /** List query is loading. */
@@ -689,18 +687,24 @@ export function AttachmentsWidget({
   /** Id of the attachment whose delete is in flight; disables its row actions. */
   deletingId?: string | null;
   /**
-   * Fetch an attachment's raw bytes for inline preview. Omit to hide the
-   * per-row Preview affordance entirely (e.g. in contexts without network
-   * access, such as tests/storybook).
+   * Inline attachment preview. All three fields are required together —
+   * fetching content, tracking which attachment is open, and closing the
+   * dialog are one feature, not three independent knobs — so omit the whole
+   * object to hide the per-row Preview affordance entirely (e.g. in contexts
+   * without network access, such as tests/storybook) rather than supplying
+   * only some of the fields.
    */
-  onGetPreviewContent?: (attachment: CaseAttachment) => Promise<Blob>;
-  /**
-   * Attachment currently shown in the preview dialog, lifted to the parent
-   * page so it can be reset on case-to-case navigation (this widget stays
-   * mounted while the page's `caseId` route param changes).
-   */
-  previewTarget?: CaseAttachment | null;
-  onPreviewTargetChange?: (attachment: CaseAttachment | null) => void;
+  preview?: {
+    /** Fetch an attachment's raw bytes for inline preview. */
+    onGetPreviewContent: (attachment: CaseAttachment) => Promise<Blob>;
+    /**
+     * Attachment currently shown in the preview dialog, lifted to the parent
+     * page so it can be reset on case-to-case navigation (this widget stays
+     * mounted while the page's `caseId` route param changes).
+     */
+    previewTarget: CaseAttachment | null;
+    onPreviewTargetChange: (attachment: CaseAttachment | null) => void;
+  };
 }): JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sorted = [...attachments].sort(
@@ -834,13 +838,13 @@ export function AttachmentsWidget({
                     {a.uploadedBy} · <RelativeTime iso={a.uploadedAt} />
                   </Typography>
                 </Box>
-                {onGetPreviewContent &&
+                {preview &&
                   getAttachmentPreviewKind(a.contentType) && (
                     <Button
                       size="small"
                       variant="outlined"
                       startIcon={<Eye size={14} />}
-                      onClick={() => onPreviewTargetChange?.(a)}
+                      onClick={() => preview.onPreviewTargetChange(a)}
                       aria-label={`Preview ${a.filename}`}
                       sx={{ flexShrink: 0 }}
                     >
@@ -878,11 +882,11 @@ export function AttachmentsWidget({
           </Box>
         )}
       </WidgetCard>
-      {onGetPreviewContent && (
+      {preview && (
         <AttachmentPreviewDialog
-          attachment={previewTarget ?? null}
-          onClose={() => onPreviewTargetChange?.(null)}
-          fetchContent={onGetPreviewContent}
+          attachment={preview.previewTarget}
+          onClose={() => preview.onPreviewTargetChange(null)}
+          fetchContent={preview.onGetPreviewContent}
         />
       )}
     </>

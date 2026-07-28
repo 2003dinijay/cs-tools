@@ -2121,9 +2121,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
             onDownload={onDownloadAttachment}
             onDelete={setPendingDelete}
             deletingId={deleteAttachment.isPending ? pendingDelete?.id : null}
-            onGetPreviewContent={getAttachmentPreviewContent}
-            previewTarget={previewTarget}
-            onPreviewTargetChange={setPreviewTarget}
+            preview={{
+              onGetPreviewContent: getAttachmentPreviewContent,
+              previewTarget,
+              onPreviewTargetChange: setPreviewTarget,
+            }}
           />
         </Box>
       )}
