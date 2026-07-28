@@ -16,11 +16,11 @@
 
 import { Box, Button, Typography } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
-import { useState, type JSX } from "react";
-import CreateFromProjectRequiredDialog from "@components/CreateFromProjectRequiredDialog";
+import { type JSX } from "react";
 import SectionTabs from "@components/section-tabs/SectionTabs";
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
 import ProductVulnerabilitiesTab from "@features/csm-security-center/components/ProductVulnerabilitiesTab";
+import { useNavTransition } from "@hooks/useNavTransition";
 import { useQueryTabs } from "@hooks/useSectionTabs";
 
 /**
@@ -35,7 +35,7 @@ import { useQueryTabs } from "@hooks/useSectionTabs";
 export default function CsmSecurityCenterPage(): JSX.Element {
   const tabs = useQueryTabs("security-center");
   const activeTab = tabs.activeKey;
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const navigate = useNavTransition();
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -61,7 +61,7 @@ export default function CsmSecurityCenterPage(): JSX.Element {
               color="primary"
               size="small"
               startIcon={<Plus size={16} />}
-              onClick={() => setShowCreateDialog(true)}
+              onClick={() => navigate("/security-center/reports/new")}
             >
               New security report
             </Button>
@@ -70,12 +70,6 @@ export default function CsmSecurityCenterPage(): JSX.Element {
       )}
 
       {activeTab === "vulnerabilities" && <ProductVulnerabilitiesTab />}
-
-      <CreateFromProjectRequiredDialog
-        open={showCreateDialog}
-        entityNoun="security report"
-        onClose={() => setShowCreateDialog(false)}
-      />
     </Box>
   );
 }
