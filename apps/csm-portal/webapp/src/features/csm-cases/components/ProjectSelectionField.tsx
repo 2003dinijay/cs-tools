@@ -231,9 +231,14 @@ export default function ProjectSelectionField({
       <Box sx={{ display: "flex", color: "success.main", flexShrink: 0 }}>
         <CheckCircle size={16} aria-hidden />
       </Box>
+      {/* Name+key and account each get an equal, independently-shrinkable share
+          of whatever room is left after the fixed icon/button chrome — neither
+          is allowed to claim its full natural width unconditionally, which is
+          what previously let one (e.g. a long key or account name) squeeze the
+          other to zero width instead of both truncating gracefully. */}
       <Box
         sx={{
-          minWidth: 0,
+          minWidth: 40,
           flex: 1,
           lineHeight: 1.2,
           display: "flex",
@@ -241,11 +246,20 @@ export default function ProjectSelectionField({
           gap: 0.75,
         }}
       >
-        <Typography variant="body2" noWrap sx={{ fontWeight: 600, lineHeight: 1.3, minWidth: 0 }}>
+        <Typography
+          variant="body2"
+          noWrap
+          sx={{ fontWeight: 600, lineHeight: 1.3, minWidth: 0, flex: "3 1 0%" }}
+        >
           {projectLabel}
         </Typography>
         {selectedProject.data?.key && (
-          <Typography variant="caption" color="text.secondary" noWrap sx={{ flexShrink: 0 }}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            noWrap
+            sx={{ minWidth: 0, maxWidth: 90, flex: "1 1 0%" }}
+          >
             {selectedProject.data.key}
           </Typography>
         )}
@@ -255,7 +269,7 @@ export default function ProjectSelectionField({
           variant="caption"
           color="text.secondary"
           noWrap
-          sx={{ maxWidth: 140, flexShrink: 0 }}
+          sx={{ minWidth: 40, maxWidth: 140, flex: 1, flexShrink: 1 }}
         >
           {accountLabel}
         </Typography>
