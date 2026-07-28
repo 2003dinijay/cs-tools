@@ -15,8 +15,9 @@
 // under the License.
 
 import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
-import { Badge, Chip, IconButton, Stack } from "@wso2/oxygen-ui";
-import { SlidersHorizontal } from "@wso2/oxygen-ui-icons-react";
+import { useNavigate } from "react-router-dom";
+import { Badge, Chip, Fab, IconButton, Stack } from "@wso2/oxygen-ui";
+import { Plus, SlidersHorizontal } from "@wso2/oxygen-ui-icons-react";
 import { useQueryErrorResetBoundary, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { incidents } from "@src/services/incidents";
 import { ErrorBoundary } from "@components/common/ErrorBoundary";
@@ -35,9 +36,9 @@ import {
 } from "./incidentConfig";
 
 // Mirrors the shape of ChangeRequestsTab.tsx's own list content (search + filter sheet + infinite
-// scroll), scoped to incidents. Read-only for now — no create Fab (see the scope note on
-// OperationsPage.tsx).
+// scroll), scoped to incidents.
 export function IncidentsTab() {
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 300);
   const [filters, setFilters] = useState<IncidentFilters>(EMPTY_INCIDENT_FILTERS);
@@ -69,6 +70,17 @@ export function IncidentsTab() {
         filters={filters}
         onApply={setFilters}
       />
+
+      {/* Same floating create affordance as ChangeRequestsTab.tsx's own Fab. */}
+      <Fab
+        aria-label="Create incident"
+        size="medium"
+        color="primary"
+        onClick={() => navigate("/operations/incidents/new")}
+        sx={{ position: "fixed", right: 10, bottom: "calc(var(--tab-bar-height) + 60px)" }}
+      >
+        <Plus size={20} />
+      </Fab>
     </Stack>
   );
 }

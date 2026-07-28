@@ -32,11 +32,9 @@ const TABS: { id: OperationsTabId; label: string }[] = [
 // three tabs — Service requests (cases with type=service_request, reusing the Support page's own
 // list/pagination/filter infra, with its own "Create service request" Fab — see
 // ServiceRequestsTab.tsx), Change requests (its own list/detail/edit, with its own "Create change
-// request" Fab — see ChangeRequestsTab.tsx), and Incidents (list + read-only detail with comments
-// — see IncidentsTab.tsx/IncidentDetailPage.tsx). "Create incident" is deliberately out of scope
-// for this pass — it's its own form with an impact×urgency priority matrix and 34 ServiceNow
-// subcategories; incidents' Edit dialog (state transitions, watch list management) is similarly
-// out of scope.
+// request" Fab — see ChangeRequestsTab.tsx), and Incidents (list + detail with comments, with its
+// own "Create incident" Fab — see IncidentsTab.tsx/NewIncidentPage.tsx/IncidentDetailPage.tsx).
+// Incidents' Edit dialog (state transitions, watch list management) is still out of scope.
 export default function OperationsPage() {
   const [activeTab, setActiveTab] = useState<OperationsTabId>("service_requests");
 

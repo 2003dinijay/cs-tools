@@ -16,7 +16,6 @@
 
 // Incidents (ServiceNow data source only). Mirrors the webapp's BeIncident/BeIncidentDetail
 // (api/backend/types.ts). Unlike change requests, every enum here is UPPER_SNAKE_CASE on the wire.
-// Read-only in this app for now (no create/edit) — see IncidentsTab.tsx/IncidentDetailPage.tsx.
 
 import type { EntityRefDto } from "./case.dto";
 
@@ -98,4 +97,90 @@ export interface IncidentSearchResponseDto {
   total: number;
   limit: number;
   offset: number;
+}
+
+// Create-only enums (the detail response's category/subcategory/contactType/impact/urgency are
+// looser free-form strings, see IncidentDetailDto above) — mirrors the webapp's
+// BeIncidentCategory/Subcategory/ContactType/Impact/Urgency.
+export type IncidentCategory = "INQUIRY" | "SERVICE_INTERRUPTION" | "SECURITY";
+
+// Only the values the create form's curated picker offers (see incidentFormOptions.ts) — the
+// backend's validIncidentSubcategories enum has ~16 more values not surfaced there.
+export type IncidentSubcategory =
+  | "CONFIG_CHANGE_REQUEST"
+  | "INFORMATION_REQUEST"
+  | "FULL_OUTAGE"
+  | "PARTIAL_OUTAGE"
+  | "SLOWNESS"
+  | "DOS_DDOS"
+  | "PRIVILEGE_ESCALATIONS"
+  | "THREAT_INTELLIGENCE"
+  | "SCANS_AND_PROBES"
+  | "APPLICATION_SECURITY"
+  | "PRIVACY"
+  | "DATA_BREACH"
+  | "SYSTEM_COMPROMISES"
+  | "MALWARE"
+  | "VULNERABILITY"
+  | "UNAUTHORIZED_ACCESS"
+  | "IDENTITY_PROTECTION"
+  | "PHISHING"
+  | "IMPROPER_CONFIGURATION";
+
+export type IncidentContactType =
+  | "SELF_SERVICE"
+  | "EMAIL"
+  | "WALK_IN"
+  | "AZURE"
+  | "EMAIL_INTERNAL"
+  | "SITE_247"
+  | "DIRECT"
+  | "PHONE"
+  | "SENTINEL"
+  | "VIRTUAL_AGENT"
+  | "CHAT"
+  | "EMAIL_EXTERNAL";
+
+export type IncidentImpact = "HIGH" | "MEDIUM" | "LOW";
+
+export type IncidentUrgency = "HIGH" | "MEDIUM" | "LOW";
+
+/**
+ * `POST /incidents` body (ServiceNow data source only). Mirrors the webapp's
+ * BeCreateIncidentPayload. The backend hard-requires callerId/category/serviceId/impact/urgency/
+ * subject (`validateCreateIncidentBody`); subcategory/contactType are optional on the wire but
+ * treated as required by this app's form, same as the webapp's own create form. There is
+ * deliberately no `priority` or `state` field — ServiceNow computes priority server-side from
+ * impact/urgency, and every new incident starts at ServiceNow's default state ("New").
+ */
+export interface IncidentCreatePayloadDto {
+  callerId: string;
+  category: IncidentCategory;
+  subcategory?: IncidentSubcategory;
+  serviceId: string;
+  serviceOfferingId?: string;
+  configurationItemId?: string;
+  contactType?: IncidentContactType;
+  impact: IncidentImpact;
+  urgency: IncidentUrgency;
+  assignmentGroupId?: string;
+  assignedEngineerId?: string;
+  subject: string;
+  watchList?: string[];
+  additionalComments?: string;
+  workNotes?: string;
+  parentId?: string;
+  changeRequestId?: string;
+  problemId?: string;
+  causedById?: string;
+}
+
+export interface IncidentCreateResponseDto {
+  message: string;
+  incident: {
+    id: string;
+    number: string;
+    createdOn: string;
+    createdBy: string;
+  };
 }
