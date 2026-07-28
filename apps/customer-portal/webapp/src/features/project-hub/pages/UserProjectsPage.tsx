@@ -35,6 +35,7 @@ import {
   TableRow,
   TextField,
   Typography,
+  colors,
 } from "@wso2/oxygen-ui";
 import { ArrowLeft, ChevronDown, Download, FolderOpen, Search, X } from "@wso2/oxygen-ui-icons-react";
 import { type ChangeEvent, type JSX, type MouseEvent, useCallback, useEffect, useRef, useState } from "react";
@@ -366,17 +367,17 @@ export default function UserProjectsPage(): JSX.Element {
                         />
                       </TableCell>
                       <TableCell align="right">
-                        <Typography variant="body2">
+                        <Typography variant="body2" color="warning.main">
                           {project.actionRequiredCount ?? 0}
                         </Typography>
                       </TableCell>
                       <TableCell align="right">
-                        <Typography variant="body2">
+                        <Typography variant="body2" color="primary">
                           {project.outstandingCount ?? 0}
                         </Typography>
                       </TableCell>
                       <TableCell align="right">
-                        <Typography variant="body2">
+                        <Typography variant="body2" color={colors.blue[500]}>
                           {project.activeChatsCount ?? 0}
                         </Typography>
                       </TableCell>
