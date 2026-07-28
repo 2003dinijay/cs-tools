@@ -44,5 +44,6 @@ export function useSearchProjects(request: SearchProjectsRequest) {
       return (await res.json()) as SearchProjectsResponse;
     },
     placeholderData: keepPreviousData,
+    staleTime: 30_000,
   });
 }
