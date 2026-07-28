@@ -241,7 +241,7 @@ export default function ProjectSelectionField({
           gap: 0.75,
         }}
       >
-        <Typography variant="body2" noWrap sx={{ fontWeight: 600, lineHeight: 1.3 }}>
+        <Typography variant="body2" noWrap sx={{ fontWeight: 600, lineHeight: 1.3, minWidth: 0 }}>
           {projectLabel}
         </Typography>
         {selectedProject.data?.key && (
