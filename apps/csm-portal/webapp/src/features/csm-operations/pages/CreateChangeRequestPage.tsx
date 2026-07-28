@@ -39,6 +39,7 @@ import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import Editor from "@components/rich-text-editor/Editor";
 import { isBlankHtml } from "@utils/sanitizeHtml";
+import { isPastDateTime } from "@utils/dateTime";
 import { usePostChangeRequest } from "@features/csm-operations/api/usePostChangeRequest";
 import { useGetUsersMe } from "@features/settings/api/useGetUsersMe";
 import { useSearchGroups } from "@api/useSearchGroups";
@@ -228,6 +229,10 @@ export default function CreateChangeRequestPage(): JSX.Element {
   }
 
   const canSubmit = subject.trim().length > 0 && !postChangeRequest.isPending;
+  // Non-blocking: a past planned start/end is unusual but not forbidden
+  // (e.g. logging a change that already happened), so this only warns.
+  const plannedStartIsPast = isPastDateTime(parseDateTimeLocal(plannedStartDate));
+  const plannedEndIsPast = isPastDateTime(parseDateTimeLocal(plannedEndDate));
 
   const handleSubmit = (): void => {
     if (!canSubmit) return;
@@ -441,7 +446,13 @@ export default function CreateChangeRequestPage(): JSX.Element {
                 disabled={postChangeRequest.isPending}
                 sx={{ flex: "1 1 240px" }}
                 slotProps={{
-                  textField: { size: "small", fullWidth: true },
+                  textField: {
+                    size: "small",
+                    fullWidth: true,
+                    helperText: plannedStartIsPast
+                      ? "This date is in the past."
+                      : undefined,
+                  },
                   field: { clearable: true },
                 }}
               />
@@ -459,7 +470,13 @@ export default function CreateChangeRequestPage(): JSX.Element {
                 disabled={postChangeRequest.isPending}
                 sx={{ flex: "1 1 240px" }}
                 slotProps={{
-                  textField: { size: "small", fullWidth: true },
+                  textField: {
+                    size: "small",
+                    fullWidth: true,
+                    helperText: plannedEndIsPast
+                      ? "This date is in the past."
+                      : undefined,
+                  },
                   field: { clearable: true },
                 }}
               />

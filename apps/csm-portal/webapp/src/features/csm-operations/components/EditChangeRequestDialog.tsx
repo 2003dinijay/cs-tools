@@ -34,7 +34,11 @@ import type {
   BePatchChangeRequestPayload,
 } from "@api/backend/types";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
-import { formatDateTimeLocal, parseDateTimeLocal } from "@utils/dateTime";
+import {
+  formatDateTimeLocal,
+  isPastDateTime,
+  parseDateTimeLocal,
+} from "@utils/dateTime";
 
 const { DateTimePicker, LocalizationProvider } = DatePickers;
 
@@ -108,6 +112,10 @@ export default function EditChangeRequestDialog({
   ]);
 
   const hasChanges = Object.keys(patch).length > 0;
+  // Non-blocking: editing a CR's planned start to a past instant is unusual
+  // but not forbidden (e.g. recording when it actually started), so this
+  // only warns.
+  const plannedStartIsPast = isPastDateTime(parseDateTimeLocal(plannedStart));
 
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
@@ -126,7 +134,13 @@ export default function EditChangeRequestDialog({
                 )
               }
               slotProps={{
-                textField: { size: "small", fullWidth: true },
+                textField: {
+                  size: "small",
+                  fullWidth: true,
+                  helperText: plannedStartIsPast
+                    ? "This date is in the past."
+                    : undefined,
+                },
                 field: { clearable: true },
               }}
             />

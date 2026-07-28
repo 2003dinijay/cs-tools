@@ -38,6 +38,7 @@ import {
   zonedInputToUtcIso,
   normalizeBackendTimestamp,
   formatBackendTimestampForDisplay,
+  isPastDateTime,
 } from "@utils/dateTime";
 
 const { DateTimePicker, LocalizationProvider } = DatePickers;
@@ -141,7 +142,7 @@ export function ScheduleCallDialog({
     if (!canSubmit || !meetingDate) return;
     // Reject a time in the past (immediate feedback; the backing data source
     // enforces a stricter lead time). Time is read in the handler, not render.
-    if (new Date(meetingDate).getTime() <= Date.now()) {
+    if (isPastDateTime(new Date(meetingDate))) {
       setPastError(true);
       return;
     }

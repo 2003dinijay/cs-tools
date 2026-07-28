@@ -398,3 +398,32 @@ export function formatDateTimeLocal(date: Date): string {
   return `${y}-${mo}-${d}T${h}:${mi}`;
 }
 
+/**
+ * True when `date` represents an instant strictly before now. Shared check
+ * behind the past-date/time warning shown on several pickers (some hard-block
+ * on it, e.g. {@link SetAutocloseHoldDialog}/`ScheduleCallDialog`'s meeting
+ * time; others only warn, e.g. a task's due date). `null`/invalid dates are
+ * never flagged — an empty field isn't "in the past".
+ *
+ * @param date - Candidate Date, or null/invalid.
+ * @returns {boolean} True when `date` is a valid instant before now.
+ */
+export function isPastDateTime(date: Date | null): boolean {
+  return !!date && !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
+}
+
+/**
+ * True when `date` (a local-midnight Date, e.g. from {@link parseDateOnly})
+ * falls on a calendar day strictly before today in the viewer's local time.
+ * Compares day boundaries rather than instants, so "today" is never flagged
+ * regardless of the current time of day. `null`/invalid dates are never
+ * flagged.
+ *
+ * @param date - Candidate local-midnight Date, or null/invalid.
+ * @returns {boolean} True when `date`'s calendar day is before today.
+ */
+export function isPastDateOnly(date: Date | null): boolean {
+  if (!date || Number.isNaN(date.getTime())) return false;
+  return date.getTime() < new Date().setHours(0, 0, 0, 0);
+}
+

@@ -26,7 +26,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { useState, type JSX } from "react";
-import { formatDateOnly, parseDateOnly } from "@utils/dateTime";
+import { formatDateOnly, isPastDateOnly, parseDateOnly } from "@utils/dateTime";
 
 const { DesktopDatePicker: DatePicker, LocalizationProvider } = DatePickers;
 
@@ -76,6 +76,10 @@ function FixEtaFieldRow({
   const [value, setValue] = useState<string>(currentValue ?? "");
   const parsed = parseDateOnly(value);
   const canSubmit = !!parsed;
+  // Non-blocking: a past estimate is unusual but not forbidden (e.g. logging
+  // an estimate that was already missed), so this only warns, unlike the
+  // hard-block some other pickers apply to a past value.
+  const isPast = isPastDateOnly(parsed);
 
   const handleSave = (): void => {
     if (!canSubmit || !value) return;
@@ -97,7 +101,11 @@ function FixEtaFieldRow({
           }
           disabled={isSaving}
           slotProps={{
-            textField: { fullWidth: true, size: "small" },
+            textField: {
+              fullWidth: true,
+              size: "small",
+              helperText: isPast ? "This date is in the past." : undefined,
+            },
             field: { clearable: true },
           }}
         />
