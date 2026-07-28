@@ -211,8 +211,6 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const [groupId, setGroupId] = useState("");
   const [assignedEngineerId, setAssignedEngineerId] = useState("");
   const [requestedById, setRequestedById] = useState("");
-  const [comment, setComment] = useState("");
-  const [workNote, setWorkNote] = useState("");
 
   // Defaults "Requested by" to the signed-in user, matching the legacy
   // ServiceNow form's own behaviour (usePostChangeRequest.ts/BE doesn't do
@@ -260,8 +258,6 @@ export default function CreateChangeRequestPage(): JSX.Element {
     if (groupId.trim()) payload.groupId = groupId.trim();
     if (assignedEngineerId.trim()) payload.assignedEngineerId = assignedEngineerId.trim();
     if (requestedById.trim()) payload.requestedById = requestedById.trim();
-    if (comment.trim()) payload.comment = comment.trim();
-    if (workNote.trim()) payload.workNote = workNote.trim();
 
     postChangeRequest.mutate(payload, {
       onSuccess: (created) =>
@@ -480,31 +476,6 @@ export default function CreateChangeRequestPage(): JSX.Element {
               </Typography>
             </AccordionSummary>
             <AccordionDetails sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {/* These map to two different ServiceNow journal fields — mixing
-                  them up would either leak an internal note to the customer or
-                  bury something they were meant to see, so the distinction is
-                  spelled out rather than left to a generic "Comment" label. */}
-              <TextField
-                label="Additional comments (customer-visible)"
-                multiline
-                minRows={2}
-                value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                disabled={postChangeRequest.isPending}
-                fullWidth
-                helperText="Visible to the customer — do not include internal-only details."
-              />
-              <TextField
-                label="Internal work note"
-                multiline
-                minRows={2}
-                value={workNote}
-                onChange={(e) => setWorkNote(e.target.value)}
-                disabled={postChangeRequest.isPending}
-                fullWidth
-                helperText="Internal only — never shown to the customer."
-              />
-
               <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
                 <Box sx={{ flex: "1 1 220px" }}>
                   <AsyncEntitySelect<BeItService>
