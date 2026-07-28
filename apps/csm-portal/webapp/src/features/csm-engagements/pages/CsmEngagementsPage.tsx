@@ -14,7 +14,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { type JSX } from "react";
+import { Button } from "@wso2/oxygen-ui";
+import { Plus } from "@wso2/oxygen-ui-icons-react";
+import { useState, type JSX } from "react";
+
+import CreateFromProjectRequiredDialog from "@components/CreateFromProjectRequiredDialog";
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
 
 /**
@@ -23,15 +27,35 @@ import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
  * can narrow by migration, consultancy, onboarding, etc.
  */
 export default function CsmEngagementsPage(): JSX.Element {
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+
   return (
-    <CsmIssuesView
-      title="Engagements"
-      entityNoun="engagements"
-      lockedFilters={{ caseTypes: ["engagement"] }}
-      hideTypeFilter
-      showEngagementTypeFilter
-      detailBasePath="/engagements"
-      hideSeverityColumn
-    />
+    <>
+      <CsmIssuesView
+        title="Engagements"
+        entityNoun="engagements"
+        lockedFilters={{ caseTypes: ["engagement"] }}
+        hideTypeFilter
+        showEngagementTypeFilter
+        detailBasePath="/engagements"
+        hideSeverityColumn
+        actions={
+          <Button
+            variant="contained"
+            color="primary"
+            size="small"
+            startIcon={<Plus size={16} />}
+            onClick={() => setShowCreateDialog(true)}
+          >
+            Create engagement
+          </Button>
+        }
+      />
+      <CreateFromProjectRequiredDialog
+        open={showCreateDialog}
+        entityNoun="engagement"
+        onClose={() => setShowCreateDialog(false)}
+      />
+    </>
   );
 }
