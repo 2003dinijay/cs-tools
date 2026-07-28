@@ -218,70 +218,74 @@ export default function ProjectSelectionField({
     <Box
       sx={{
         display: "flex",
-        alignItems: "center",
-        gap: 1,
-        height: 40,
+        flexDirection: "column",
+        gap: 0.375,
         px: 1.5,
+        py: 0.75,
         borderRadius: 1,
         border: "1px solid",
         borderColor: "success.main",
         bgcolor: "success.50",
       }}
     >
-      <Box sx={{ display: "flex", color: "success.main", flexShrink: 0 }}>
-        <CheckCircle size={16} aria-hidden />
-      </Box>
-      {/* Name+key and account each get an equal, independently-shrinkable share
-          of whatever room is left after the fixed icon/button chrome — neither
-          is allowed to claim its full natural width unconditionally, which is
-          what previously let one (e.g. a long key or account name) squeeze the
-          other to zero width instead of both truncating gracefully. */}
-      <Box
-        sx={{
-          minWidth: 40,
-          flex: 1,
-          lineHeight: 1.2,
-          display: "flex",
-          alignItems: "baseline",
-          gap: 0.75,
-        }}
-      >
-        <Typography
-          variant="body2"
-          noWrap
-          sx={{ fontWeight: 600, lineHeight: 1.3, minWidth: 0, flex: "3 1 0%" }}
+      {/* Row 1: project name (+ key) get the field's full width, sharing only
+          with the small fixed icon/button chrome. Row 2 gives the account
+          name that same full width on its own line below, indented to align
+          under the name. Splitting across two lines — rather than cramming
+          project and account onto one row, which forced both into narrow,
+          unreadably-truncated slices — is what actually fixes readability;
+          a same-row width rebalance only changes which name gets cropped. */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+        <Box sx={{ display: "flex", color: "success.main", flexShrink: 0 }}>
+          <CheckCircle size={16} aria-hidden />
+        </Box>
+        <Box
+          sx={{
+            minWidth: 0,
+            flex: 1,
+            lineHeight: 1.2,
+            display: "flex",
+            alignItems: "baseline",
+            gap: 0.75,
+          }}
         >
-          {projectLabel}
-        </Typography>
-        {selectedProject.data?.key && (
           <Typography
-            variant="caption"
-            color="text.secondary"
+            variant="body2"
             noWrap
-            sx={{ minWidth: 0, maxWidth: 90, flex: "1 1 0%" }}
+            sx={{ fontWeight: 600, lineHeight: 1.3, minWidth: 0 }}
           >
-            {selectedProject.data.key}
+            {projectLabel}
           </Typography>
-        )}
+          {selectedProject.data?.key && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              noWrap
+              sx={{ minWidth: 0, maxWidth: 120, flexShrink: 1 }}
+            >
+              {selectedProject.data.key}
+            </Typography>
+          )}
+        </Box>
+        <Button
+          size="small"
+          variant="text"
+          onClick={() => onChange("")}
+          sx={{ minWidth: 0, px: 1, flexShrink: 0 }}
+        >
+          Change
+        </Button>
       </Box>
       {accountLabel && (
         <Typography
           variant="caption"
           color="text.secondary"
           noWrap
-          sx={{ minWidth: 40, maxWidth: 140, flex: 1, flexShrink: 1 }}
+          sx={{ pl: "24px", minWidth: 0 }}
         >
-          {accountLabel}
+          Account: {accountLabel}
         </Typography>
       )}
-      <Button
-        size="small"
-        variant="text"
-        onClick={() => onChange("")}
-        sx={{ minWidth: 0, px: 1, flexShrink: 0 }}
-      >
-        Change
-      </Button>
     </Box>
   );
 }
