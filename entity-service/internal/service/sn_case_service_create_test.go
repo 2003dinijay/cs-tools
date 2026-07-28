@@ -118,3 +118,43 @@ func TestSNCaseService_CreateCase_Engagement(t *testing.T) {
 		t.Fatalf("payload type: got %v, want %q", gotBody["type"], "engagement")
 	}
 }
+
+// TestSNCaseService_CreateCase_SecurityReportAnalysis_AttachmentsOptional verifies
+// that a security_report_analysis request with zero attachments is accepted --
+// attachments are uploaded via a separate request after the case is created, not
+// bundled into this one, so they must not be required here.
+func TestSNCaseService_CreateCase_SecurityReportAnalysis_AttachmentsOptional(t *testing.T) {
+	var gotBody map[string]any
+	client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"message": "Case created successfully",
+			"case": {"id": "` + testWLCaseSysid + `", "number": "CS0000002", "createdBy": "engineer@example.com", "createdOn": "2026-01-02 10:00:00", "state": {"id": 1, "label": "Open"}}
+		}`))
+	})
+
+	svc := NewServiceNowCaseService(client, nil)
+	req := domain.CreateCaseRequest{
+		Type:              "security_report_analysis",
+		ProjectID:         testProjectUUID,
+		DeploymentID:      testDeploymentUUID,
+		DeployedProductID: testDeployedProdID,
+		Subject:           "Suspicious log entries",
+		Description:       "Found several suspicious entries in the access log",
+	}
+
+	resp, err := svc.CreateCase(contextWithUserIDToken("token"), req)
+	if err != nil {
+		t.Fatalf("unexpected error with zero attachments: %v", err)
+	}
+	if resp.Case.Number != "CS0000002" {
+		t.Fatalf("unexpected case number: %s", resp.Case.Number)
+	}
+	if _, present := gotBody["attachments"]; present {
+		t.Fatalf("expected no attachments field in payload when none provided, got %v", gotBody["attachments"])
+	}
+}

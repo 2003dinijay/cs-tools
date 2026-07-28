@@ -1328,7 +1328,8 @@ type CaseAttachment struct {
 // id, number, and internal_id are auto-generated; state defaults to open.
 // CreatedBy is not accepted from the request body and will be wired from auth context later.
 // For type "service_request": catalogId, catalogItemId, and variables are required.
-// For type "security_report_analysis": subject, description, and at least one attachment are required.
+// For type "security_report_analysis": subject and description are required; attachments are optional
+// (uploaded via a separate request after creation, not bundled into this one).
 type CreateCaseRequest struct {
 	CreatedBy         string        `json:"-"`
 	Type              string        `json:"type"`

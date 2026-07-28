@@ -35,6 +35,7 @@ import { BackendApiError } from "@api/backend/client";
 import Editor from "@components/rich-text-editor/Editor";
 import AttachmentsField from "@components/attachments/AttachmentsField";
 import {
+  POST_CREATE_ATTACHMENTS_MAX_ENCODED_BYTES,
   totalEncodedBytes,
   type EncodedAttachment,
 } from "@components/attachments/encodeAttachment";
@@ -43,12 +44,10 @@ import ProjectSelectionField from "@features/csm-cases/components/ProjectSelecti
 import { useSearchDeployments } from "@features/csm-cases/api/useSearchDeployments";
 import { useDeployedProductOptions } from "@features/csm-cases/api/useDeployedProductOptions";
 import { usePostCsmCase } from "@features/csm-cases/api/usePostCsmCase";
+import { usePostCsmCaseAttachment } from "@features/csm-cases/api/useCsmCaseAttachments";
+import { uploadAttachmentsToCase } from "@features/csm-cases/api/uploadAttachmentsToCase";
+import { useEngineerDisplayName } from "@hooks/useEngineerDisplayName";
 import { useNavTransition } from "@hooks/useNavTransition";
-
-// POST /cases caps the whole body at 10 MiB (BE maxCaseBodyBytes). Attachments
-// dominate that, but the subject + (rich-text, unbounded) description share the
-// same body, so the attachment budget is whatever those leave under the cap.
-const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
 /** The rich-text editor emits `<p></p>` when empty; check the stripped text. */
 function isEmptyHtml(html: string): boolean {
@@ -88,16 +87,12 @@ export default function CreateSecurityReportPage(): JSX.Element {
   const deployments = useSearchDeployments(projectId || undefined);
   const deployedProducts = useDeployedProductOptions(deploymentId || undefined);
   const postCase = usePostCsmCase();
+  const postAttachment = usePostCsmCaseAttachment();
+  const uploadedBy = useEngineerDisplayName();
+  // Spans the whole submit (create + post-create attachment uploads).
+  const [submitting, setSubmitting] = useState(false);
 
-  // The create body carries subject + description (HTML) + base64 attachments;
-  // give attachments only the room the text leaves so the whole body stays under
-  // the backend's maxCaseBodyBytes once serialized.
-  const nonAttachmentBytes = useMemo(
-    () => new TextEncoder().encode(subject + description).length,
-    [subject, description],
-  );
-  const attachmentsBudget = Math.max(0, MAX_BODY_BYTES - nonAttachmentBytes - 4 * 1024);
-  const overLimit = totalEncodedBytes(attachments) > attachmentsBudget;
+  const overLimit = totalEncodedBytes(attachments) > POST_CREATE_ATTACHMENTS_MAX_ENCODED_BYTES;
 
   // Auto-generate the report title as "{Deployment} - {Product} - {date}" when
   // the product is chosen (both names are loaded by then), matching the customer
@@ -132,6 +127,9 @@ export default function CreateSecurityReportPage(): JSX.Element {
     if (deployedProducts.isError) void deployedProducts.refetch();
   };
 
+  // Attachments are optional here: the case is created first, then attachments
+  // upload separately (see handleSubmit), so a failed upload never blocks or
+  // masks a successful report creation.
   const canSubmit = useMemo(
     () =>
       !!projectId &&
@@ -139,46 +137,52 @@ export default function CreateSecurityReportPage(): JSX.Element {
       !!deployedProductId &&
       subject.trim().length > 0 &&
       !isEmptyHtml(description) &&
-      attachments.length > 0 &&
       !overLimit &&
-      !postCase.isPending,
+      !submitting,
     [
       projectId,
       deploymentId,
       deployedProductId,
       subject,
       description,
-      attachments.length,
       overLimit,
-      postCase.isPending,
+      submitting,
     ],
   );
 
-  const handleSubmit = (): void => {
+  const handleSubmit = async (): Promise<void> => {
     if (!canSubmit) return;
-    postCase.mutate(
-      {
+    setSubmitting(true);
+    try {
+      const created = await postCase.mutateAsync({
         type: "security_report_analysis",
         projectId,
         deploymentId,
         deployedProductId,
         subject: subject.trim(),
         description,
-        attachments: attachments.map((a) => ({ name: a.name, file: a.file })),
-      },
-      {
-        onSuccess: (created) =>
-          navigate(`/security-center/security-reports/${created.id}`),
-        onError: (err) => {
-          // The backend surfaces real validation messages on 4xx; show them.
-          const msg =
-            err instanceof BackendApiError && err.status < 500 && err.message
-              ? err.message
-              : "Could not create the security report. Please try again.";
-          showError(msg, err);
-        },
-      },
-    );
+      });
+      const failed = await uploadAttachmentsToCase(
+        postAttachment.mutateAsync,
+        created.id,
+        attachments,
+        uploadedBy,
+      );
+      if (failed > 0) {
+        showError(
+          `The security report was created, but ${failed} attachment${failed === 1 ? "" : "s"} failed to upload. You can add ${failed === 1 ? "it" : "them"} from the report page.`,
+        );
+      }
+      navigate(`/security-center/security-reports/${created.id}`);
+    } catch (err) {
+      setSubmitting(false);
+      // The backend surfaces real validation messages on 4xx; show them.
+      const msg =
+        err instanceof BackendApiError && err.status < 500 && err.message
+          ? err.message
+          : "Could not create the security report. Please try again.";
+      showError(msg, err);
+    }
   };
 
   return (
@@ -314,26 +318,24 @@ export default function CreateSecurityReportPage(): JSX.Element {
                 minHeight={150}
                 maxHeight="300px"
                 toolbarVariant="full"
-                disabled={postCase.isPending}
+                disabled={submitting}
               />
             </Box>
           </Grid>
 
-          {/* At least one attachment is required for a security report. */}
           <Grid size={{ xs: 12 }}>
             <Typography
               variant="caption"
               color="text.secondary"
               sx={{ display: "block", mb: 0.5 }}
             >
-              Attachments *
+              Attachments
             </Typography>
             <AttachmentsField
               attachments={attachments}
               onChange={setAttachments}
               onError={showError}
-              maxEncodedBytes={attachmentsBudget}
-              required
+              maxEncodedBytes={POST_CREATE_ATTACHMENTS_MAX_ENCODED_BYTES}
             />
           </Grid>
         </Grid>
@@ -344,10 +346,10 @@ export default function CreateSecurityReportPage(): JSX.Element {
           </Button>
           <Button
             variant="contained"
-            onClick={handleSubmit}
+            onClick={() => void handleSubmit()}
             disabled={!canSubmit}
           >
-            {postCase.isPending ? "Creating…" : "Create security report"}
+            {submitting ? "Creating…" : "Create security report"}
           </Button>
         </Box>
       </Card>
