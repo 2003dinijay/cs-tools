@@ -16,6 +16,7 @@
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useState, type ComponentProps, type JSX } from "react";
 import "@testing-library/jest-dom/vitest";
 import {
   AttachmentsWidget,
@@ -28,6 +29,27 @@ import type {
   CaseTag,
   CaseWatcher,
 } from "@features/csm-cases/types/csmCases";
+
+// `previewTarget`/`onPreviewTargetChange` are lifted to the parent page (see
+// CsmCaseDetailPage) so the preview dialog resets on case-to-case navigation.
+// This harness owns that bit of state locally, standing in for the parent.
+function AttachmentsWidgetHarness(
+  props: Omit<
+    ComponentProps<typeof AttachmentsWidget>,
+    "previewTarget" | "onPreviewTargetChange"
+  >,
+): JSX.Element {
+  const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(
+    null,
+  );
+  return (
+    <AttachmentsWidget
+      {...props}
+      previewTarget={previewTarget}
+      onPreviewTargetChange={setPreviewTarget}
+    />
+  );
+}
 
 vi.mock("@features/csm-users/api/useSearchUsers", () => ({
   useSearchUsers: vi.fn(),
@@ -204,7 +226,7 @@ describe("AttachmentsWidget — preview affordance", () => {
 
   it("shows Preview for image and video attachments but not for a zip, when a fetcher is supplied", () => {
     render(
-      <AttachmentsWidget
+      <AttachmentsWidgetHarness
         attachments={[IMAGE_ATTACHMENT, VIDEO_ATTACHMENT, ZIP_ATTACHMENT]}
         onGetPreviewContent={vi.fn()}
       />,
@@ -222,7 +244,7 @@ describe("AttachmentsWidget — preview affordance", () => {
 
   it("hides every Preview affordance when no fetcher is supplied", () => {
     render(
-      <AttachmentsWidget attachments={[IMAGE_ATTACHMENT, VIDEO_ATTACHMENT]} />,
+      <AttachmentsWidgetHarness attachments={[IMAGE_ATTACHMENT, VIDEO_ATTACHMENT]} />,
     );
     expect(screen.queryByRole("button", { name: /^preview /i })).not.toBeInTheDocument();
   });
@@ -232,7 +254,7 @@ describe("AttachmentsWidget — preview affordance", () => {
       .fn()
       .mockResolvedValue(new Blob(["fake"], { type: "image/png" }));
     render(
-      <AttachmentsWidget
+      <AttachmentsWidgetHarness
         attachments={[IMAGE_ATTACHMENT]}
         onGetPreviewContent={fetchContent}
       />,
@@ -255,7 +277,7 @@ describe("AttachmentsWidget — preview affordance", () => {
   it("shows an error message when the preview fetch fails", async () => {
     const fetchContent = vi.fn().mockRejectedValue(new Error("network down"));
     render(
-      <AttachmentsWidget
+      <AttachmentsWidgetHarness
         attachments={[IMAGE_ATTACHMENT]}
         onGetPreviewContent={fetchContent}
       />,
@@ -272,7 +294,7 @@ describe("AttachmentsWidget — preview affordance", () => {
 
   it("still shows Download for every attachment regardless of preview support", () => {
     render(
-      <AttachmentsWidget
+      <AttachmentsWidgetHarness
         attachments={[IMAGE_ATTACHMENT, ZIP_ATTACHMENT]}
         onDownload={vi.fn()}
         onGetPreviewContent={vi.fn()}

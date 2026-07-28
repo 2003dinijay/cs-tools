@@ -668,6 +668,8 @@ export function AttachmentsWidget({
   onDelete,
   deletingId,
   onGetPreviewContent,
+  previewTarget,
+  onPreviewTargetChange,
 }: {
   attachments: CaseAttachment[];
   /** List query is loading. */
@@ -692,11 +694,15 @@ export function AttachmentsWidget({
    * access, such as tests/storybook).
    */
   onGetPreviewContent?: (attachment: CaseAttachment) => Promise<Blob>;
+  /**
+   * Attachment currently shown in the preview dialog, lifted to the parent
+   * page so it can be reset on case-to-case navigation (this widget stays
+   * mounted while the page's `caseId` route param changes).
+   */
+  previewTarget?: CaseAttachment | null;
+  onPreviewTargetChange?: (attachment: CaseAttachment | null) => void;
 }): JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(
-    null,
-  );
   const sorted = [...attachments].sort(
     (a, b) =>
       new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime(),
@@ -834,7 +840,7 @@ export function AttachmentsWidget({
                       size="small"
                       variant="outlined"
                       startIcon={<Eye size={14} />}
-                      onClick={() => setPreviewTarget(a)}
+                      onClick={() => onPreviewTargetChange?.(a)}
                       aria-label={`Preview ${a.filename}`}
                       sx={{ flexShrink: 0 }}
                     >
@@ -874,8 +880,8 @@ export function AttachmentsWidget({
       </WidgetCard>
       {onGetPreviewContent && (
         <AttachmentPreviewDialog
-          attachment={previewTarget}
-          onClose={() => setPreviewTarget(null)}
+          attachment={previewTarget ?? null}
+          onClose={() => onPreviewTargetChange?.(null)}
           fetchContent={onGetPreviewContent}
         />
       )}

@@ -506,6 +506,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const [pendingDelete, setPendingDelete] = useState<CaseAttachment | null>(
     null,
   );
+  // Attachment shown in the inline preview dialog.
+  const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(
+    null,
+  );
   // When starting work would leave the engineer with more than one ongoing case,
   // hold the other ongoing case(s) here to drive the confirm dialog.
   const [pauseConflict, setPauseConflict] = useState<MyOngoingCase[] | null>(
@@ -533,6 +537,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
     setGithubIssueError(null);
     setGithubIssueResult(null);
     setPendingDelete(null);
+    setPreviewTarget(null);
     setPauseConflict(null);
     setLinkCaseOpen(false);
     setLinkIncidentOpen(false);
@@ -2117,6 +2122,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
             onDelete={setPendingDelete}
             deletingId={deleteAttachment.isPending ? pendingDelete?.id : null}
             onGetPreviewContent={getAttachmentPreviewContent}
+            previewTarget={previewTarget}
+            onPreviewTargetChange={setPreviewTarget}
           />
         </Box>
       )}

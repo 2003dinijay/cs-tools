@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { isPastDateOnly, isPastDateTime } from "./dateTime";
 
 describe("isPastDateTime", () => {
@@ -36,7 +36,16 @@ describe("isPastDateTime", () => {
 });
 
 describe("isPastDateOnly", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("is false for today's local-midnight date, regardless of current time", () => {
+    // Freeze the clock so `today` (built here) and the "now" that
+    // isPastDateOnly constructs internally can't disagree across an actual
+    // local-midnight boundary crossed between this line and the call below.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 0, 15, 12, 0, 0));
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     expect(isPastDateOnly(today)).toBe(false);
