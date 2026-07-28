@@ -72,6 +72,48 @@ type entityReader interface {
 	SearchProjectContacts(ctx context.Context, projectID string, body []byte) ([]byte, error)
 }
 
+// sweepReader is everything Run needs: entityReader plus SearchProjects, the
+// one extra read method the outer pagination loop uses that processProject
+// doesn't. Satisfied directly by *entity.Client.
+type sweepReader interface {
+	entityReader
+	SearchProjects(ctx context.Context, body []byte) ([]byte, error)
+}
+
+// pagination mirrors entity-service's Pagination shape.
+type pagination struct {
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
+// searchProjectsRequest mirrors the fields of entity-service's
+// SearchProjectsRequest this component uses. closureStatus/sortBy/sortOrder
+// are top-level fields (confirmed directly against
+// entity-service/internal/domain/entity.go's SearchProjectsRequest), not
+// nested under a filters key. searchQuery is omitted entirely rather than
+// sent as "" — an explicit empty searchQuery causes a 400 (confirmed quirk).
+type searchProjectsRequest struct {
+	Pagination    pagination `json:"pagination"`
+	ClosureStatus string     `json:"closureStatus"`
+	SortBy        string     `json:"sortBy"`
+	SortOrder     string     `json:"sortOrder"`
+}
+
+// Result summarizes one full Run: how many projects were evaluated, and any
+// per-project failures encountered along the way. A non-empty Failures list
+// is a "soft" outcome — Run's own error return is reserved for a fatal
+// page-fetch failure that prevented the sweep from completing at all.
+type Result struct {
+	ProjectsEvaluated int
+	Failures          []ProjectFailure
+}
+
+// ProjectFailure records a single project's processProject failure.
+type ProjectFailure struct {
+	ProjectID string
+	Err       error
+}
+
 // projectUpdater is the minimal write surface processProject needs.
 // Satisfied by *entity.Client for real writes; a dry-run implementation
 // (logs instead of calling UpdateProject) is injected instead when

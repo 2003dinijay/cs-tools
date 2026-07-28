@@ -25,6 +25,16 @@ import (
 type mockEntityReader struct {
 	searchAccountContactsFn func(ctx context.Context, accountID string, body []byte) ([]byte, error)
 	searchProjectContactsFn func(ctx context.Context, projectID string, body []byte) ([]byte, error)
+	searchProjectsFn        func(ctx context.Context, body []byte) ([]byte, error)
+	searchProjectsCalls     [][]byte
+}
+
+func (m *mockEntityReader) SearchProjects(ctx context.Context, body []byte) ([]byte, error) {
+	m.searchProjectsCalls = append(m.searchProjectsCalls, body)
+	if m.searchProjectsFn != nil {
+		return m.searchProjectsFn(ctx, body)
+	}
+	return []byte(`{"projects":[],"total":0,"limit":100,"offset":0,"hasMore":false}`), nil
 }
 
 func (m *mockEntityReader) SearchAccountContacts(ctx context.Context, accountID string, body []byte) ([]byte, error) {
