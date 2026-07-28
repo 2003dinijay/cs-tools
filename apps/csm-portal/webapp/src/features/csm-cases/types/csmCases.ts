@@ -379,6 +379,26 @@ export interface CreateRelatedCaseNavState {
 
 /**
  * Router (`navigate(..., { state })`) payload carried from a case's "Create
+ * service request" action (Related tab, Linked service requests card) to
+ * `/operations/service-requests/new`, so the create-service-request form can
+ * prefill from the originating case and file the new SR as linked to it in
+ * one step — no separate create-then-link round trip. `projectId` seeds the
+ * form's Project field locked read-only (mirrors
+ * {@link CreateRelatedCaseNavState} / CsmCaseCreatePage.tsx); `deploymentId` /
+ * `deployedProductId` are just starting values and stay fully editable. See
+ * CsmCaseDetailPage.tsx's "Create service request" button and
+ * CreateServiceRequestPage.tsx's read of `useLocation().state`.
+ */
+export interface CreateServiceRequestFromCaseNavState {
+  projectId: string;
+  relatedCaseId: string;
+  relatedCaseNumber?: string;
+  deploymentId?: string;
+  deployedProductId?: string;
+}
+
+/**
+ * Router (`navigate(..., { state })`) payload carried from a case's "Create
  * incident from case…" action to `/operations/incidents/new`, so the
  * create-incident form can prefill from the originating case without a
  * query-string round trip or a full page load. `caseId` seeds the incident's
@@ -442,18 +462,21 @@ export interface CsmCaseDetail extends CsmCaseRow {
   /** When the auto-closure sequence next advances (ServiceNow only). Read-only. */
   autoclosureStateTime?: string;
   /**
-   * The customer-facing fix-commitment date/time for the case; `null`/absent
-   * when not set. Distinct from the backend-computed SLA clocks shown in
-   * {@link CaseSla} — this is a settable commitment, not a derived clock. Also
-   * distinct from the three internal-only estimates below, which are never
-   * shared with the customer.
+   * Internal-only best-case fix estimate, as a date-only "YYYY-MM-DD"
+   * string; `null`/absent when not set. Never shared with the customer.
+   * Distinct from the backend-computed SLA clocks shown in {@link CaseSla} —
+   * these are settable commitments, not derived clocks.
    */
-  fixEta?: string | null;
-  /** Internal-only best-case fix estimate; `null`/absent when not set. */
   bestCaseFixEta?: string | null;
-  /** Internal-only most-likely fix estimate; `null`/absent when not set. */
+  /**
+   * Internal-only most-likely fix estimate, as a date-only "YYYY-MM-DD"
+   * string; `null`/absent when not set.
+   */
   mostLikelyFixEta?: string | null;
-  /** Internal-only worst-case fix estimate; `null`/absent when not set. */
+  /**
+   * Internal-only worst-case fix estimate, as a date-only "YYYY-MM-DD"
+   * string; `null`/absent when not set.
+   */
   worstCaseFixEta?: string | null;
   /** Display name of the person who opened the case. */
   createdBy?: string;

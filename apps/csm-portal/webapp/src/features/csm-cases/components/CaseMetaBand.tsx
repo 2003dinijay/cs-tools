@@ -25,7 +25,7 @@ import DeploymentDetailsDialog from "@features/csm-projects/components/Deploymen
 import type { BeDeploymentType } from "@api/backend/types";
 import { announcementStateRole } from "@features/csm-announcements/utils/announcementState";
 import { STATE_LABEL } from "@features/csm-dashboard/utils/abtDashboard";
-import { formatAbsoluteForUser } from "@utils/dateTime";
+import { formatDateOnlyForDisplay } from "@utils/dateTime";
 
 interface CaseMetaBandProps {
   detail: CsmCaseDetail;
@@ -186,8 +186,12 @@ export default function CaseMetaBand({
   // until the backend exposes it as a first-class field.
   const projectType = c.projectName?.split(" - ")[1]?.trim() || "—";
   // One-line digest shown when the band is collapsed, so collapsing doesn't
-  // hide every triage fact — account, tier, and who owns the case stay visible.
-  const collapsedSummary = [c.customer, tierLabel(tier), c.assignee]
+  // hide every triage fact — project, deployment, product, and who owns the
+  // case stay visible.
+  const collapsedSummary = [
+    c.projectName,
+    ...(isAnnouncement ? [] : [product.deployment, product.product, c.assignee]),
+  ]
     .filter(Boolean)
     .join(" · ");
 
@@ -350,29 +354,21 @@ export default function CaseMetaBand({
                   )}
                 </Typography>
               </Cell>
-              {(c.fixEta ||
-                c.bestCaseFixEta ||
-                c.mostLikelyFixEta ||
-                c.worstCaseFixEta) && (
+              {(c.bestCaseFixEta || c.mostLikelyFixEta || c.worstCaseFixEta) && (
                 <>
-                  <Cell label="Fix ETA">
-                    <Typography variant="body2" noWrap>
-                      {formatAbsoluteForUser(c.fixEta) ?? "—"}
-                    </Typography>
-                  </Cell>
                   <Cell label="Best case fix ETA">
                     <Typography variant="body2" noWrap>
-                      {formatAbsoluteForUser(c.bestCaseFixEta) ?? "—"}
+                      {formatDateOnlyForDisplay(c.bestCaseFixEta) ?? "—"}
                     </Typography>
                   </Cell>
                   <Cell label="Most likely fix ETA">
                     <Typography variant="body2" noWrap>
-                      {formatAbsoluteForUser(c.mostLikelyFixEta) ?? "—"}
+                      {formatDateOnlyForDisplay(c.mostLikelyFixEta) ?? "—"}
                     </Typography>
                   </Cell>
                   <Cell label="Worst case fix ETA">
                     <Typography variant="body2" noWrap>
-                      {formatAbsoluteForUser(c.worstCaseFixEta) ?? "—"}
+                      {formatDateOnlyForDisplay(c.worstCaseFixEta) ?? "—"}
                     </Typography>
                   </Cell>
                 </>

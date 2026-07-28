@@ -61,7 +61,7 @@ const ROLE_LABEL: Record<CsmCommentAuthorRole, string> = {
   customer: "Customer",
   wso2_engineer: "WSO2",
   system: "System",
-  chatbot: "Chatbot",
+  chatbot: "AI Agent",
 };
 
 const ROLE_COLOR: Record<

@@ -43,6 +43,7 @@ import {
   Paperclip,
   PauseCircle,
   Phone,
+  Plus,
   Users,
   X,
 } from "@wso2/oxygen-ui-icons-react";
@@ -93,7 +94,9 @@ import LinkIncidentDialog from "@features/csm-cases/components/LinkIncidentDialo
 import LinkCaseDialog, {
   type CaseLinkType,
 } from "@features/csm-cases/components/LinkCaseDialog";
-import SetFixEtaDialog from "@features/csm-cases/components/SetFixEtaDialog";
+import SetFixEtaDialog, {
+  type FixEtaField,
+} from "@features/csm-cases/components/SetFixEtaDialog";
 import CreateTaskDialog from "@features/csm-cases/components/CreateTaskDialog";
 import AddTagDialog from "@features/csm-cases/components/AddTagDialog";
 import { useCreateCaseTask } from "@features/csm-cases/api/useCreateCaseTask";
@@ -149,6 +152,7 @@ import type {
   CaseWatcher,
   CreateIncidentFromCaseNavState,
   CreateRelatedCaseNavState,
+  CreateServiceRequestFromCaseNavState,
 } from "@features/csm-cases/types/csmCases";
 import type { CaseState } from "@features/csm-dashboard/types/abtDashboard";
 import { useNavTransition } from "@hooks/useNavTransition";
@@ -1269,21 +1273,23 @@ export default function CsmCaseDetailPage(): JSX.Element {
   );
 
   const onSetFixEta = useCallback(
-    (fixEtaIso: string) => {
-      patchCase.mutate(
-        { fixEta: fixEtaIso },
-        {
-          onSuccess: () => {
-            setFixEtaOpen(false);
-            setFeedback({
-              message: "Fix ETA updated.",
-              severity: "success",
-              sticky: false,
-            });
-          },
-          onError: (err) => showError("Could not set the fix ETA.", err),
+    (field: FixEtaField, valueDateOnly: string) => {
+      const payload: BeCaseUpdatePayload =
+        field === "bestCaseFixEta"
+          ? { bestCaseFixEta: valueDateOnly }
+          : field === "mostLikelyFixEta"
+            ? { mostLikelyFixEta: valueDateOnly }
+            : { worstCaseFixEta: valueDateOnly };
+      patchCase.mutate(payload, {
+        onSuccess: () => {
+          setFeedback({
+            message: "Fix ETA updated.",
+            severity: "success",
+            sticky: false,
+          });
         },
-      );
+        onError: (err) => showError("Could not set the fix ETA.", err),
+      });
     },
     [patchCase, showError],
   );
@@ -1975,16 +1981,35 @@ export default function CsmCaseDetailPage(): JSX.Element {
         >
           <ChildCasesWidget caseId={c.id} />
           <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
-            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, flexWrap: "wrap" }}>
               <Typography variant="subtitle2">Linked service requests</Typography>
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<LinkIcon size={14} />}
-                onClick={() => setLinkCaseOpen(true)}
-              >
-                Link to another case
-              </Button>
+              <Box sx={{ display: "flex", gap: 1 }}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<Plus size={14} />}
+                  onClick={() => {
+                    const navState: CreateServiceRequestFromCaseNavState = {
+                      projectId: c.projectId,
+                      relatedCaseId: c.id,
+                      relatedCaseNumber: c.caseNumber,
+                      deploymentId: c.productContext.deploymentId,
+                      deployedProductId: c.productContext.deployedProductId,
+                    };
+                    navigate("/operations/service-requests/new", { state: navState });
+                  }}
+                >
+                  Create service request
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<LinkIcon size={14} />}
+                  onClick={() => setLinkCaseOpen(true)}
+                >
+                  Link to another case
+                </Button>
+              </Box>
             </Box>
             {c.linkedServiceRequests && c.linkedServiceRequests.length > 0 ? (
               <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
@@ -2166,7 +2191,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
 
       {fixEtaOpen && (
         <SetFixEtaDialog
-          currentFixEta={c.fixEta}
+          currentBestCaseFixEta={c.bestCaseFixEta}
+          currentMostLikelyFixEta={c.mostLikelyFixEta}
+          currentWorstCaseFixEta={c.worstCaseFixEta}
           isSaving={patchCase.isPending}
           onClose={() => setFixEtaOpen(false)}
           onSave={onSetFixEta}

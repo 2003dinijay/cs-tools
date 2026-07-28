@@ -19,13 +19,15 @@ import {
   Button,
   Card,
   Chip,
+  Menu,
+  MenuItem,
   Skeleton,
   Tab,
   Tabs,
   Typography,
 } from "@wso2/oxygen-ui";
-import { ArrowLeft, Plus } from "@wso2/oxygen-ui-icons-react";
-import { useState, type JSX, type ReactNode } from "react";
+import { ArrowLeft, ChevronDown, Plus } from "@wso2/oxygen-ui-icons-react";
+import { useState, type JSX, type MouseEvent, type ReactNode } from "react";
 import { Link as RouterLink, useParams } from "react-router";
 import { useGetProject } from "@features/csm-projects/api/useGetProject";
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
@@ -128,6 +130,9 @@ export default function CsmProjectDetailPage(): JSX.Element {
   const navigate = useNavTransition();
   const { data, isLoading, isError } = useGetProject(id);
   const [activeTab, setActiveTab] = useState<ProjectTabId>("overview");
+  const [createMenuAnchor, setCreateMenuAnchor] = useState<HTMLElement | null>(
+    null,
+  );
 
   if (isLoading) {
     return (
@@ -189,16 +194,57 @@ export default function CsmProjectDetailPage(): JSX.Element {
             {p.key}
           </Typography>
         </Box>
-        {/* File a case already scoped to this project — the create form locks the
-            project field, so it can't be filed against the wrong one. */}
+        {/* File any issue type already scoped to this project — every create
+            form below locks the project field, so it can't be filed against
+            the wrong one.
+            FOLLOW-UP: no "Create engagement" entry here — there is no
+            create-engagement page/route in the FE, and `POST /cases`'s
+            request contract (`BeCaseCreateBody`) has no engagement variant,
+            so this needs a BE/entity-service addition before it can be
+            wired up. */}
         <Button
           variant="contained"
           startIcon={<Plus size={16} />}
-          onClick={() => navigate(`/cases/new?projectId=${encodeURIComponent(p.id)}`)}
+          endIcon={<ChevronDown size={16} />}
+          onClick={(e: MouseEvent<HTMLElement>) => setCreateMenuAnchor(e.currentTarget)}
           sx={{ flexShrink: 0 }}
         >
-          Create case
+          Create
         </Button>
+        <Menu
+          anchorEl={createMenuAnchor}
+          open={!!createMenuAnchor}
+          onClose={() => setCreateMenuAnchor(null)}
+        >
+          <MenuItem
+            onClick={() => {
+              setCreateMenuAnchor(null);
+              navigate(`/cases/new?projectId=${encodeURIComponent(p.id)}`);
+            }}
+          >
+            Create case
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              setCreateMenuAnchor(null);
+              navigate(
+                `/operations/service-requests/new?projectId=${encodeURIComponent(p.id)}`,
+              );
+            }}
+          >
+            Create service request
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              setCreateMenuAnchor(null);
+              navigate(
+                `/security-center/reports/new?projectId=${encodeURIComponent(p.id)}`,
+              );
+            }}
+          >
+            Create security report
+          </MenuItem>
+        </Menu>
       </Box>
 
       <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
