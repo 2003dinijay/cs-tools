@@ -27,7 +27,7 @@ import {
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
-import { ArrowLeft, Lock } from "@wso2/oxygen-ui-icons-react";
+import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type JSX } from "react";
 import { useLocation, useSearchParams } from "react-router";
 import { priorityFromSeverity } from "@api/backend/mappers";
@@ -39,7 +39,7 @@ import {
   type EncodedAttachment,
 } from "@components/attachments/encodeAttachment";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
-import AsyncProjectSelect from "@features/csm-cases/components/AsyncProjectSelect";
+import ProjectSelectionField from "@features/csm-cases/components/ProjectSelectionField";
 import { useGetProject } from "@features/csm-projects/api/useGetProject";
 import { isCloudSupportSubscription } from "@features/csm-projects/utils/subscriptionType";
 import { useSearchDeployments } from "@features/csm-cases/api/useSearchDeployments";
@@ -102,7 +102,6 @@ export default function CsmCaseCreatePage(): JSX.Element {
 
   const lockedProjectId =
     searchParams.get("projectId") ?? relatedCaseState?.projectId ?? "";
-  const isProjectLocked = !!lockedProjectId;
   // The backend already validated eligibility (closed + within its 60-day
   // window) before offering "Create related case", so this page just carries
   // the id through on submit.
@@ -124,15 +123,11 @@ export default function CsmCaseCreatePage(): JSX.Element {
 
   const deployments = useSearchDeployments(projectId || undefined);
 
-  // Details for the selected project (locked or picked). Gives the display name
-  // for the locked read-only field, and the subscription type that drives the
-  // cloud-project deployment behaviour below.
+  // Details for the selected project (locked or picked) — the subscription
+  // type drives the cloud-project deployment behaviour below. (The display
+  // name for the locked/confirmed field is resolved by ProjectSelectionField
+  // itself, off the same cached query.)
   const selectedProject = useGetProject(projectId || undefined);
-  const lockedProjectLabel = selectedProject.data?.name
-    ? selectedProject.data.name
-    : selectedProject.isLoading
-      ? "Loading project…"
-      : lockedProjectId;
 
   // Cloud-support projects file against the single primary-production
   // deployment, so the form hides the deployment picker and derives it
@@ -316,31 +311,12 @@ export default function CsmCaseCreatePage(): JSX.Element {
         )}
         <Grid container spacing={2.5}>
           <Grid size={{ xs: 12, md: 4 }}>
-            {isProjectLocked ? (
-              <TextField
-                fullWidth
-                size="small"
-                label="Project"
-                required
-                value={lockedProjectLabel}
-                slotProps={{
-                  input: {
-                    readOnly: true,
-                    endAdornment: (
-                      <Lock size={16} aria-hidden style={{ opacity: 0.6 }} />
-                    ),
-                  },
-                  htmlInput: { "aria-readonly": true },
-                }}
-                helperText="Locked to the project you opened this from. To file against another project, open that project first."
-              />
-            ) : (
-              <AsyncProjectSelect
-                value={projectId}
-                onChange={onProjectChange}
-                required
-              />
-            )}
+            <ProjectSelectionField
+              value={projectId}
+              onChange={onProjectChange}
+              lockedProjectId={lockedProjectId}
+              required
+            />
           </Grid>
 
           {/* Cloud-support projects file against the single primary-production

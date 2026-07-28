@@ -16,13 +16,13 @@
 
 import { Box, Button, Typography } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
-import { useState, type JSX } from "react";
-import CreateFromProjectRequiredDialog from "@components/CreateFromProjectRequiredDialog";
+import { type JSX } from "react";
 import SectionTabs from "@components/section-tabs/SectionTabs";
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
 import ChangeRequestsTab from "@features/csm-operations/components/ChangeRequestsTab";
 import IncidentsTab from "@features/csm-operations/components/IncidentsTab";
 import ProblemsTab from "@features/csm-operations/components/ProblemsTab";
+import { useNavTransition } from "@hooks/useNavTransition";
 import { useQueryTabs } from "@hooks/useSectionTabs";
 
 /**
@@ -39,7 +39,7 @@ export default function OperationsPage(): JSX.Element {
   // link back to the right tab, and the tab survives a refresh / share.
   const tabs = useQueryTabs("operations");
   const activeTab = tabs.activeKey;
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const navigate = useNavTransition();
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -64,7 +64,7 @@ export default function OperationsPage(): JSX.Element {
               color="primary"
               size="small"
               startIcon={<Plus size={16} />}
-              onClick={() => setShowCreateDialog(true)}
+              onClick={() => navigate("/operations/service-requests/new")}
             >
               Create service request
             </Button>
@@ -77,12 +77,6 @@ export default function OperationsPage(): JSX.Element {
       {activeTab === "incidents" && <IncidentsTab />}
 
       {activeTab === "problems" && <ProblemsTab />}
-
-      <CreateFromProjectRequiredDialog
-        open={showCreateDialog}
-        entityNoun="service request"
-        onClose={() => setShowCreateDialog(false)}
-      />
     </Box>
   );
 }

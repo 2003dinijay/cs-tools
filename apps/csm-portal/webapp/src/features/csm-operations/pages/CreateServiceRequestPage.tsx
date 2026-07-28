@@ -25,10 +25,9 @@ import {
   InputLabel,
   MenuItem,
   Select,
-  TextField,
   Typography,
 } from "@wso2/oxygen-ui";
-import { ArrowLeft, Lock } from "@wso2/oxygen-ui-icons-react";
+import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type JSX } from "react";
 import { useLocation, useSearchParams } from "react-router";
 
@@ -39,8 +38,7 @@ import {
   type EncodedAttachment,
 } from "@components/attachments/encodeAttachment";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
-import AsyncProjectSelect from "@features/csm-cases/components/AsyncProjectSelect";
-import { useGetProject } from "@features/csm-projects/api/useGetProject";
+import ProjectSelectionField from "@features/csm-cases/components/ProjectSelectionField";
 import { useSearchDeployments } from "@features/csm-cases/api/useSearchDeployments";
 import { useDeployedProductOptions } from "@features/csm-cases/api/useDeployedProductOptions";
 import { usePostCsmCase } from "@features/csm-cases/api/usePostCsmCase";
@@ -84,7 +82,6 @@ export default function CreateServiceRequestPage(): JSX.Element {
   const [searchParams] = useSearchParams();
   const lockedProjectId =
     searchParams.get("projectId") ?? relatedCaseState?.projectId ?? "";
-  const isProjectLocked = !!lockedProjectId;
   const relatedCaseId = relatedCaseState?.relatedCaseId;
   const relatedCaseNumber = relatedCaseState?.relatedCaseNumber;
 
@@ -98,17 +95,6 @@ export default function CreateServiceRequestPage(): JSX.Element {
   // Variable answers, keyed by variable id.
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [attachments, setAttachments] = useState<EncodedAttachment[]>([]);
-
-  // Details for the locked project — gives the display name for the
-  // read-only field (mirrors CsmCaseCreatePage.tsx).
-  const selectedProject = useGetProject(
-    isProjectLocked ? lockedProjectId : undefined,
-  );
-  const lockedProjectLabel = selectedProject.data?.name
-    ? selectedProject.data.name
-    : selectedProject.isLoading
-      ? "Loading project…"
-      : lockedProjectId;
 
   const deployments = useSearchDeployments(projectId || undefined);
   const deployedProducts = useDeployedProductOptions(deploymentId || undefined);
@@ -301,31 +287,12 @@ export default function CreateServiceRequestPage(): JSX.Element {
 
         <Grid container spacing={2.5}>
           <Grid size={{ xs: 12, md: 4 }}>
-            {isProjectLocked ? (
-              <TextField
-                fullWidth
-                size="small"
-                label="Project"
-                required
-                value={lockedProjectLabel}
-                slotProps={{
-                  input: {
-                    readOnly: true,
-                    endAdornment: (
-                      <Lock size={16} aria-hidden style={{ opacity: 0.6 }} />
-                    ),
-                  },
-                  htmlInput: { "aria-readonly": true },
-                }}
-                helperText="Locked to the project you opened this from. To file against another project, open that project first."
-              />
-            ) : (
-              <AsyncProjectSelect
-                value={projectId}
-                onChange={onProjectChange}
-                required
-              />
-            )}
+            <ProjectSelectionField
+              value={projectId}
+              onChange={onProjectChange}
+              lockedProjectId={lockedProjectId}
+              required
+            />
           </Grid>
 
           <Grid size={{ xs: 12, md: 4 }}>
