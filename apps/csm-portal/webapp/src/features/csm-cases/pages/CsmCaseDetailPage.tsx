@@ -2265,6 +2265,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
         <LogTimeCardDialog
           caseId={c.id}
           caseNumber={c.caseNumber ?? c.id}
+          caseSeverity={c.severity}
           projectId={c.projectId}
           projectName={c.projectName}
           isSubmitting={postTimeCard.isPending}
