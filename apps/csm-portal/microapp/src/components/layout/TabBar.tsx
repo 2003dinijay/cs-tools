@@ -51,7 +51,6 @@ export function TabBar() {
     <Box
       ref={ref}
       position="fixed"
-      bgcolor="background.paper"
       bottom={0}
       left={0}
       right={0}
@@ -61,6 +60,13 @@ export function TabBar() {
       // reason as TopBar.tsx's fixed pt.
       pb={4}
       sx={{
+        // Solid, not the theme's `background.paper` token — that token is deliberately
+        // semi-transparent in the shared Acrylic theme (#ffffffe1 / #000000b8, for glass-style
+        // Paper/Card surfaces), which reads as visibly translucent on a fixed bar with page
+        // content scrolling underneath it. Matches the customer-portal microapp's own TabBar,
+        // which hardcodes solid black/white for the same reason (its own ThemeModeContext there
+        // does the same job as `theme.palette.mode` does here).
+        backgroundColor: (theme) => (theme.palette.mode === "dark" ? "#000000" : "#ffffff"),
         borderTop: "1px solid",
         borderColor: "divider",
       }}

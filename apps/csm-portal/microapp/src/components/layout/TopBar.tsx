@@ -32,7 +32,6 @@ export function TopBar() {
     <Box
       position="sticky"
       top={0}
-      bgcolor="background.paper"
       display="flex"
       alignItems="center"
       px={2}
@@ -44,6 +43,9 @@ export function TopBar() {
         // correct for whatever inset it was tuned against; on a Dynamic Island phone (~59px inset)
         // it undershoots and the pill visually overflows into the page content below it.
         pt: "calc(var(--safe-top, 44px) + 40px)",
+        // Solid, not the theme's `background.paper` token — see TabBar.tsx's identical comment.
+        // Matches the customer-portal microapp's own AppBar, which hardcodes solid black/white.
+        backgroundColor: (theme) => (theme.palette.mode === "dark" ? "#000000" : "#ffffff"),
         borderBottom: "1px solid",
         borderColor: "divider",
         zIndex: (theme) => theme.zIndex.appBar,
