@@ -146,7 +146,9 @@ export default function AsyncAssigneeMultiSelect({
       // Spinner only while the first page loads; later pages append on scroll.
       loading={isFetching && users.length === 0}
       disableCloseOnSelect
-      sx={{ "& .MuiAutocomplete-inputRoot": { flexWrap: "nowrap" } }}
+      sx={{
+        "& .MuiAutocomplete-inputRoot": { flexWrap: "nowrap", minHeight: 40 },
+      }}
       // The backend already filtered by the typed term; don't re-filter locally
       // (that would also drop the manually-pinned "Me" option).
       filterOptions={(opts) => opts}

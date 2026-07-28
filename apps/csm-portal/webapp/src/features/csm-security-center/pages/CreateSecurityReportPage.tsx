@@ -180,7 +180,8 @@ export default function CreateSecurityReportPage(): JSX.Element {
         attachments: attachments.map((a) => ({ name: a.name, file: a.file })),
       },
       {
-        onSuccess: (created) => navigate(`/cases/${created.id}`),
+        onSuccess: (created) =>
+          navigate(`/security-center/security-reports/${created.id}`),
         onError: (err) => {
           // The backend surfaces real validation messages on 4xx; show them.
           const msg =

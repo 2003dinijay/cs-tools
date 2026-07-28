@@ -356,6 +356,10 @@ export default function App(): JSX.Element {
                     path="security-center/vulnerabilities/:id"
                     element={<ProductVulnerabilityDetailPage />}
                   />
+                  <Route
+                    path="security-center/security-reports/:caseId"
+                    element={<CsmCaseDetailPage />}
+                  />
                   <Route path="time-cards" element={<CsmTimeCardsPage />} />
                   <Route path="announcements" element={<CsmAnnouncementsPage />} />
                   <Route
