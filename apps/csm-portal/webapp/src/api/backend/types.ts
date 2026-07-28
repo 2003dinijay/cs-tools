@@ -1854,6 +1854,7 @@ export interface BePatchChangeRequestPayload {
   plannedStartOn?: string;
   isCustomerApproved?: boolean;
   isCustomerReviewed?: boolean;
+  assignedTeamId?: string;
   requestApproval?: true;
 }
 

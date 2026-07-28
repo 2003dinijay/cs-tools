@@ -27,10 +27,13 @@ import {
   Switch,
 } from "@wso2/oxygen-ui";
 import { useMemo, useState, type JSX } from "react";
+import { useSearchGroups } from "@api/useSearchGroups";
 import type {
   BeChangeRequestDetail,
+  BeGroup,
   BePatchChangeRequestPayload,
 } from "@api/backend/types";
+import AsyncEntitySelect from "@components/AsyncEntitySelect";
 import { formatDateTimeLocal, parseDateTimeLocal } from "@utils/dateTime";
 
 const { DateTimePicker, LocalizationProvider } = DatePickers;
@@ -61,9 +64,10 @@ function toBackendDateTime(local: string): string {
 }
 
 /**
- * Edit the change-request fields the BE allows updating: planned start, and the
- * customer approved / reviewed flags. Only changed fields are sent, and the BE
- * requires at least one, so Save is disabled until something differs.
+ * Edit the change-request fields the BE allows updating: planned start, the
+ * assignment group, and the customer approved / reviewed flags. Only changed
+ * fields are sent, and the BE requires at least one, so Save is disabled
+ * until something differs.
  */
 export default function EditChangeRequestDialog({
   cr,
@@ -75,9 +79,11 @@ export default function EditChangeRequestDialog({
     () => toDateTimeLocal(cr.plannedStartOn),
     [cr.plannedStartOn],
   );
+  const initialAssignedTeamId = cr.assignedTeam?.id ?? "";
   const [plannedStart, setPlannedStart] = useState(initialPlannedStart);
   const [approved, setApproved] = useState(!!cr.hasCustomerApproved);
   const [reviewed, setReviewed] = useState(!!cr.hasCustomerReviewed);
+  const [assignedTeamId, setAssignedTeamId] = useState(initialAssignedTeamId);
 
   const patch = useMemo<BePatchChangeRequestPayload>(() => {
     const next: BePatchChangeRequestPayload = {};
@@ -86,12 +92,17 @@ export default function EditChangeRequestDialog({
     }
     if (approved !== !!cr.hasCustomerApproved) next.isCustomerApproved = approved;
     if (reviewed !== !!cr.hasCustomerReviewed) next.isCustomerReviewed = reviewed;
+    if (assignedTeamId !== initialAssignedTeamId && assignedTeamId) {
+      next.assignedTeamId = assignedTeamId;
+    }
     return next;
   }, [
     plannedStart,
     initialPlannedStart,
     approved,
     reviewed,
+    assignedTeamId,
+    initialAssignedTeamId,
     cr.hasCustomerApproved,
     cr.hasCustomerReviewed,
   ]);
@@ -137,6 +148,19 @@ export default function EditChangeRequestDialog({
               />
             }
             label="Customer reviewed"
+          />
+          <AsyncEntitySelect<BeGroup>
+            id="cr-edit-assigned-team"
+            label="Assignment group"
+            placeholder="Search groups…"
+            value={assignedTeamId}
+            onChange={setAssignedTeamId}
+            disabled={isSaving}
+            useSearch={useSearchGroups}
+            getId={(g) => g.id}
+            getLabel={(g) => g.name}
+            knownLabel={cr.assignedTeam?.name}
+            helperText="Required before approval can be requested."
           />
         </Box>
       </DialogContent>
