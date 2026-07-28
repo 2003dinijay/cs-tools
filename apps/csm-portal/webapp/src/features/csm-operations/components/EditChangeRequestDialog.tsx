@@ -25,7 +25,6 @@ import {
   DialogTitle,
   FormControlLabel,
   Switch,
-  Typography,
 } from "@wso2/oxygen-ui";
 import { useMemo, useState, type JSX } from "react";
 import type {
@@ -139,9 +138,6 @@ export default function EditChangeRequestDialog({
             }
             label="Customer reviewed"
           />
-          <Typography variant="caption" color="text.secondary">
-            Edits apply to ServiceNow-managed change requests.
-          </Typography>
         </Box>
       </DialogContent>
       <DialogActions>
