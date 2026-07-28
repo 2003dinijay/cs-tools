@@ -35,6 +35,7 @@ import type {
 import { uiAttachmentFromBe } from "@api/backend/mappers";
 import { saveBlob } from "@utils/saveBlob";
 import type { CaseAttachment } from "@features/csm-cases/types/csmCases";
+import { isSafeAttachmentContentType } from "@features/csm-cases/utils/attachmentPreview";
 
 /**
  * Page size used by the attachments list. A single wide page is enough for the
@@ -162,24 +163,67 @@ export function usePostCsmCaseAttachment(): UseMutationResult<
 }
 
 /**
- * Returns a function that downloads an attachment's content and saves it via
- * `GET /attachments/{id}/content`. The content endpoint streams raw bytes
- * behind auth, so it is fetched as a blob (a plain `<a href>` would miss the
- * auth headers) and handed to the browser.
+ * Returns a function that fetches an attachment's raw bytes via
+ * `GET /attachments/{id}/content`. The content endpoint always responds with
+ * `Content-Disposition: attachment` and streams behind auth, so it is fetched
+ * as a `Blob` (a plain `<a href>`/`<img src>` would miss the auth headers and
+ * would force a download instead of rendering inline). Shared by the download
+ * action and the attachment preview dialog.
+ *
+ * The BE's response `Content-Type` is only forwarded as-is for an allowlist
+ * of known-safe types (`safeAttachmentTypes` in the entity-service's
+ * `case_handler.go`) — anything else, including every `video/*` type today,
+ * is coerced to `application/octet-stream` to block a stored-XSS via a
+ * crafted upstream type. That coercion is correct for the raw endpoint but
+ * would make the fetched `Blob` un-renderable by `<img>`/the PDF iframe even
+ * though the bytes are fine.
+ *
+ * The attachment's `contentType` from `/attachments/search` list metadata is
+ * whatever the uploader claimed — the BE doesn't coerce it, but it also
+ * doesn't verify it against the actual bytes, so it is uploader-controlled
+ * and NOT automatically trustworthy. Re-labeling the blob with it would
+ * re-enable exactly the coercion the backend allowlist is meant to block
+ * (e.g. a file uploaded with a spoofed benign `contentType` but different
+ * actual bytes). So the blob is only ever re-labeled when that metadata
+ * `contentType` is itself a member of the same backend allowlist, mirrored
+ * client-side as {@link isSafeAttachmentContentType} — for anything else the
+ * blob is returned as-is (`application/octet-stream`, matching what the
+ * backend already coerced it to), which is un-renderable by design.
+ */
+export function useGetCsmCaseAttachmentContent(): (
+  attachment: CaseAttachment,
+) => Promise<Blob> {
+  const api = useBackendApi();
+
+  return useCallback(
+    async (attachment: CaseAttachment): Promise<Blob> => {
+      const blob = await api.getBlob(
+        `/attachments/${encodeURIComponent(attachment.id)}/content`,
+      );
+      if (!isSafeAttachmentContentType(attachment.contentType)) return blob;
+      return blob.type === attachment.contentType
+        ? blob
+        : blob.slice(0, blob.size, attachment.contentType);
+    },
+    [api],
+  );
+}
+
+/**
+ * Returns a function that downloads an attachment's content and saves it to
+ * disk, built on {@link useGetCsmCaseAttachmentContent}.
  */
 export function useDownloadCsmCaseAttachment(): (
   attachment: CaseAttachment,
 ) => Promise<void> {
-  const api = useBackendApi();
+  const getContent = useGetCsmCaseAttachmentContent();
 
   return useCallback(
     async (attachment: CaseAttachment): Promise<void> => {
-      const blob = await api.getBlob(
-        `/attachments/${encodeURIComponent(attachment.id)}/content`,
-      );
+      const blob = await getContent(attachment);
       saveBlob(blob, attachment.filename);
     },
-    [api],
+    [getContent],
   );
 }
 

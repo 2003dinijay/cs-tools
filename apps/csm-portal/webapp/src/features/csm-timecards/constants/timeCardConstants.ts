@@ -15,6 +15,7 @@
 // under the License.
 
 import type { SemanticRole } from "@components/SemanticChip";
+import type { Severity } from "@features/csm-dashboard/types/abtDashboard";
 import type {
   ActivityKey,
   IssueComplexity,
@@ -54,6 +55,22 @@ export const DEFAULT_ISSUE_COMPLEXITY: IssueComplexity = "N/A";
  * support work is billable; the engineer can flip it per card.
  */
 export const DEFAULT_BILLABLE = true;
+
+/**
+ * Severities ServiceNow always treats as non-billable, regardless of what a
+ * time card's create/update request sends: an unconditional `after` business
+ * rule (`TimeCard Non-billable Manager`) on the `time_card` table forces
+ * `u_is_billable` back to false for cases of these severities (confirmed by
+ * reading the live rule and its target Script Include on wso2sndev DEV — see
+ * digiops-cs#2571). The FE billable switch is disabled rather than left
+ * silently overridden after submit.
+ */
+export const NON_BILLABLE_SEVERITIES: readonly Severity[] = [
+  "S0",
+  "S1",
+  "S2",
+  "S3",
+];
 
 /** Short label for a card's billable classification. */
 export function billableLabel(billable: boolean): string {

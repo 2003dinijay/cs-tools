@@ -450,6 +450,8 @@ type ProjectView struct {
 	// for this project (e.g. ServiceNow leaves it blank).
 	EndDate   *time.Time `json:"endDate"`
 	CreatedOn time.Time  `json:"createdOn"`
+	// Account is nil when the project has no linked account (ServiceNow data source only).
+	Account *EntityRef `json:"account"`
 	ProjectClosureFields
 }
 
@@ -1179,9 +1181,13 @@ type SearchCasesResponse struct {
 }
 
 // UpdateCaseRequest is the input for PATCH /cases/{id}.
-// Exactly one of State, Severity, WorkState, WatchList, AssigneeEmail, ParentID, RelatedCaseID,
+// At least one of State, Severity, WorkState, WatchList, AssigneeEmail, ParentID, RelatedCaseID,
 // AutocloseHoldUntil, Subject, Description, DeploymentID, DeployedProductID,
 // BestCaseFixEta, MostLikelyFixEta, or WorstCaseFixEta must be provided.
+// State, Severity, WorkState, WatchList, AssigneeEmail, and ParentID are mutually exclusive of
+// each other and of every other field in this request. RelatedCaseID, AutocloseHoldUntil,
+// Subject, Description, DeploymentID, DeployedProductID, BestCaseFixEta, MostLikelyFixEta, and
+// WorstCaseFixEta may be combined with each other in any subset within a single request.
 // WatchList, AssigneeEmail, ParentID, RelatedCaseID, AutocloseHoldUntil, Subject, Description,
 // DeploymentID, DeployedProductID, BestCaseFixEta, MostLikelyFixEta, and WorstCaseFixEta
 // are only supported for the ServiceNow data source.
@@ -1343,6 +1349,8 @@ type CreateCaseRequest struct {
 	WatchList      []string `json:"watchList"`
 	// For security_report_analysis type
 	Attachments []CaseAttachment `json:"attachments"`
+	// For engagement type
+	EngagementType EngagementType `json:"engagementType"`
 }
 
 // CommentType classifies the type of a case comment.

@@ -26,7 +26,12 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { useState, type JSX } from "react";
-import { formatDateOnly, parseDateOnly, zonedInputToUtcIso } from "@utils/dateTime";
+import {
+  formatDateOnly,
+  isPastDateOnly,
+  parseDateOnly,
+  zonedInputToUtcIso,
+} from "@utils/dateTime";
 
 const { DesktopDatePicker: DatePicker, LocalizationProvider } = DatePickers;
 
@@ -58,7 +63,7 @@ export default function SetAutocloseHoldDialog({
   );
 
   const parsed = parseDateOnly(dateValue);
-  const isPast = !!parsed && parsed.getTime() < new Date().setHours(0, 0, 0, 0);
+  const isPast = isPastDateOnly(parsed);
   const canSubmit = !!parsed && !isPast;
 
   const handleSubmit = (): void => {

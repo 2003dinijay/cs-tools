@@ -14,8 +14,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import { Button } from "@wso2/oxygen-ui";
+import { Plus } from "@wso2/oxygen-ui-icons-react";
 import { type JSX } from "react";
+
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
+import { useNavTransition } from "@hooks/useNavTransition";
 
 /**
  * Cross-customer engagements list — filters the shared issues view to
@@ -23,6 +27,8 @@ import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
  * can narrow by migration, consultancy, onboarding, etc.
  */
 export default function CsmEngagementsPage(): JSX.Element {
+  const navigate = useNavTransition();
+
   return (
     <CsmIssuesView
       title="Engagements"
@@ -32,6 +38,17 @@ export default function CsmEngagementsPage(): JSX.Element {
       showEngagementTypeFilter
       detailBasePath="/engagements"
       hideSeverityColumn
+      actions={
+        <Button
+          variant="contained"
+          color="primary"
+          size="small"
+          startIcon={<Plus size={16} />}
+          onClick={() => navigate("/engagements/new")}
+        >
+          Create engagement
+        </Button>
+      }
     />
   );
 }

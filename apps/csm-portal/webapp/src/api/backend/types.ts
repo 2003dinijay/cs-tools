@@ -445,13 +445,28 @@ export interface BeSecurityReportCreatePayload {
 }
 
 /**
+ * Engagement (`type: "engagement"`). ServiceNow-only; no severity/issueType —
+ * engagements aren't triaged like support cases.
+ */
+export interface BeEngagementCreatePayload {
+  type: "engagement";
+  projectId: string;
+  deploymentId: string;
+  deployedProductId: string;
+  subject: string;
+  description: string;
+  engagementType: BeEngagementType;
+}
+
+/**
  * Any body accepted by `POST /cases`: a standard support case, a catalog
- * service request, or a security report analysis.
+ * service request, a security report analysis, or an engagement.
  */
 export type BeCaseCreateBody =
   | BeCaseCreatePayload
   | BeServiceRequestCreatePayload
-  | BeSecurityReportCreatePayload;
+  | BeSecurityReportCreatePayload
+  | BeEngagementCreatePayload;
 
 /** The case summary embedded in the `POST /cases` success envelope. */
 export interface BeCreatedCase {
@@ -1854,6 +1869,7 @@ export interface BePatchChangeRequestPayload {
   plannedStartOn?: string;
   isCustomerApproved?: boolean;
   isCustomerReviewed?: boolean;
+  assignedTeamId?: string;
   requestApproval?: true;
 }
 

@@ -48,6 +48,7 @@ var validCaseType = map[string]bool{
 	"case":                     true,
 	"service_request":          true,
 	"security_report_analysis": true,
+	"engagement":               true,
 }
 
 var validEngagementType = map[domain.EngagementType]bool{
@@ -156,6 +157,16 @@ func validateCreateCaseRequest(req domain.CreateCaseRequest) error {
 			if a.File == "" {
 				return &apierror.ValidationError{Msg: fmt.Sprintf("attachments[%d].file is required", i)}
 			}
+		}
+	case "engagement":
+		if req.Subject == "" {
+			return &apierror.ValidationError{Msg: "subject is required for engagement"}
+		}
+		if req.Description == "" {
+			return &apierror.ValidationError{Msg: "description is required for engagement"}
+		}
+		if !validEngagementType[req.EngagementType] {
+			return &apierror.ValidationError{Msg: "engagementType contains invalid value: " + string(req.EngagementType)}
 		}
 	}
 

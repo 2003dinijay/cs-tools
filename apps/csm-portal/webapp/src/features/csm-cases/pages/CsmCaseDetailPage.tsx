@@ -80,6 +80,7 @@ import {
   usePostCsmCaseAttachment,
   useDownloadCsmCaseAttachment,
   useDeleteCsmCaseAttachment,
+  useGetCsmCaseAttachmentContent,
 } from "@features/csm-cases/api/useCsmCaseAttachments";
 import CsmCaseCommentInput from "@features/csm-cases/components/CsmCaseCommentInput";
 import CaseActionBar from "@features/csm-cases/components/CaseActionBar";
@@ -358,6 +359,13 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // severity, so combine the route with the loaded case's own caseType.
   const isServiceRequest =
     isServiceRequestRoute || data?.caseType === "service_request";
+  // Security report analyses have no dedicated pre-load route (they open via
+  // the generic /cases/:caseId route), so caseType is the only signal.
+  const isSecurityReport = data?.caseType === "security_report_analysis";
+  // Same reasoning as isAnnouncement above — Engagements don't carry a
+  // severity, so combine the route with the loaded case's own caseType.
+  const isEngagement = isEngagementRoute || data?.caseType === "engagement";
+
   // Engagements, Announcements, Service Requests, and Security Reports each
   // have a dedicated route; opening a case under any route other than its own
   // canonical one (e.g. a "Related case" link, which always points at
@@ -413,6 +421,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
   } = useGetCsmCaseAttachments(caseId);
   const postAttachment = usePostCsmCaseAttachment();
   const downloadAttachment = useDownloadCsmCaseAttachment();
+  const getAttachmentPreviewContent = useGetCsmCaseAttachmentContent();
   const deleteAttachment = useDeleteCsmCaseAttachment();
   // Fetched unconditionally (not just while their tab is active) purely for
   // the tab-label counts below; each widget still runs its own scoped query
@@ -497,6 +506,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const [pendingDelete, setPendingDelete] = useState<CaseAttachment | null>(
     null,
   );
+  // Attachment shown in the inline preview dialog.
+  const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(
+    null,
+  );
   // When starting work would leave the engineer with more than one ongoing case,
   // hold the other ongoing case(s) here to drive the confirm dialog.
   const [pauseConflict, setPauseConflict] = useState<MyOngoingCase[] | null>(
@@ -524,6 +537,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
     setGithubIssueError(null);
     setGithubIssueResult(null);
     setPendingDelete(null);
+    setPreviewTarget(null);
     setPauseConflict(null);
     setLinkCaseOpen(false);
     setLinkIncidentOpen(false);
@@ -1584,9 +1598,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 sx={{ fontWeight: 600 }}
               />
             )}
-            {!isAnnouncement && !isServiceRequest && (
-              <SeverityChip severity={c.severity} withLabel />
-            )}
+            {!isAnnouncement &&
+              !isServiceRequest &&
+              !isSecurityReport &&
+              !isEngagement && (
+                <SeverityChip severity={c.severity} withLabel />
+              )}
             {!isAnnouncement && <StateChip state={c.state} />}
             {!isAnnouncement && relatedCase && (
               <Chip
@@ -2104,6 +2121,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
             onDownload={onDownloadAttachment}
             onDelete={setPendingDelete}
             deletingId={deleteAttachment.isPending ? pendingDelete?.id : null}
+            preview={{
+              onGetPreviewContent: getAttachmentPreviewContent,
+              previewTarget,
+              onPreviewTargetChange: setPreviewTarget,
+            }}
           />
         </Box>
       )}
@@ -2245,6 +2267,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
         <LogTimeCardDialog
           caseId={c.id}
           caseNumber={c.caseNumber ?? c.id}
+          caseSeverity={c.severity}
           projectId={c.projectId}
           projectName={c.projectName}
           isSubmitting={postTimeCard.isPending}

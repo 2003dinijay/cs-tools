@@ -14,15 +14,48 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useState, type ComponentProps, type JSX } from "react";
 import "@testing-library/jest-dom/vitest";
 import {
+  AttachmentsWidget,
   TagsWidget,
   WatchersWidget,
 } from "@features/csm-cases/components/CaseDetailWidgets";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
-import type { CaseTag, CaseWatcher } from "@features/csm-cases/types/csmCases";
+import type {
+  CaseAttachment,
+  CaseTag,
+  CaseWatcher,
+} from "@features/csm-cases/types/csmCases";
+
+// `previewTarget`/`onPreviewTargetChange` (part of the widget's `preview`
+// prop) are lifted to the parent page (see CsmCaseDetailPage) so the preview
+// dialog resets on case-to-case navigation. This harness owns that bit of
+// state locally, standing in for the parent, and keeps the flat
+// `onGetPreviewContent` shape for individual tests below so only this
+// harness needs to know about the grouped `preview` prop.
+function AttachmentsWidgetHarness({
+  onGetPreviewContent,
+  ...props
+}: Omit<ComponentProps<typeof AttachmentsWidget>, "preview"> & {
+  onGetPreviewContent?: (attachment: CaseAttachment) => Promise<Blob>;
+}): JSX.Element {
+  const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(
+    null,
+  );
+  return (
+    <AttachmentsWidget
+      {...props}
+      preview={
+        onGetPreviewContent
+          ? { onGetPreviewContent, previewTarget, onPreviewTargetChange: setPreviewTarget }
+          : undefined
+      }
+    />
+  );
+}
 
 vi.mock("@features/csm-users/api/useSearchUsers", () => ({
   useSearchUsers: vi.fn(),
@@ -161,5 +194,129 @@ describe("WatchersWidget", () => {
     expect(
       screen.queryByPlaceholderText(/search people to add/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("AttachmentsWidget — preview affordance", () => {
+  const IMAGE_ATTACHMENT: CaseAttachment = {
+    id: "att-1",
+    filename: "screenshot.png",
+    size: 2048,
+    contentType: "image/png",
+    uploadedBy: "Jane Doe",
+    uploadedAt: "2026-01-01T00:00:00Z",
+  };
+  const VIDEO_ATTACHMENT: CaseAttachment = {
+    id: "att-2",
+    filename: "repro.mp4",
+    size: 4096,
+    contentType: "video/mp4",
+    uploadedBy: "Jane Doe",
+    uploadedAt: "2026-01-02T00:00:00Z",
+  };
+  const ZIP_ATTACHMENT: CaseAttachment = {
+    id: "att-3",
+    filename: "logs.zip",
+    size: 8192,
+    contentType: "application/zip",
+    uploadedBy: "Jane Doe",
+    uploadedAt: "2026-01-03T00:00:00Z",
+  };
+
+  beforeEach(() => {
+    // jsdom has no object-URL implementation; stub both so the preview
+    // dialog's blob -> object URL -> revoke lifecycle can run in tests.
+    globalThis.URL.createObjectURL = vi.fn(() => "blob:mock-url");
+    globalThis.URL.revokeObjectURL = vi.fn();
+  });
+
+  it("shows Preview for an image but not for a video or a zip, when a fetcher is supplied", () => {
+    render(
+      <AttachmentsWidgetHarness
+        attachments={[IMAGE_ATTACHMENT, VIDEO_ATTACHMENT, ZIP_ATTACHMENT]}
+        onGetPreviewContent={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: `Preview ${IMAGE_ATTACHMENT.filename}` }),
+    ).toBeInTheDocument();
+    // Video is not previewable: the backend's safe-content-type allowlist
+    // (`safeAttachmentTypes` in case_handler.go) has no video/* entry, so
+    // GET /attachments/{id}/content always coerces a video response to
+    // application/octet-stream. Offering a preview button here would rely
+    // on the uploader-controlled metadata `contentType` instead of the
+    // backend-verified one, defeating that allowlist.
+    expect(
+      screen.queryByRole("button", { name: `Preview ${VIDEO_ATTACHMENT.filename}` }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: `Preview ${ZIP_ATTACHMENT.filename}` }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides every Preview affordance when no fetcher is supplied", () => {
+    render(
+      <AttachmentsWidgetHarness attachments={[IMAGE_ATTACHMENT, VIDEO_ATTACHMENT]} />,
+    );
+    expect(screen.queryByRole("button", { name: /^preview /i })).not.toBeInTheDocument();
+  });
+
+  it("opens the preview dialog, fetches content, and renders it as an image", async () => {
+    const fetchContent = vi
+      .fn()
+      .mockResolvedValue(new Blob(["fake"], { type: "image/png" }));
+    render(
+      <AttachmentsWidgetHarness
+        attachments={[IMAGE_ATTACHMENT]}
+        onGetPreviewContent={fetchContent}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `Preview ${IMAGE_ATTACHMENT.filename}` }),
+    );
+
+    expect(fetchContent).toHaveBeenCalledWith(IMAGE_ATTACHMENT);
+    await waitFor(() =>
+      expect(screen.getByAltText(IMAGE_ATTACHMENT.filename)).toBeInTheDocument(),
+    );
+    expect(screen.getByAltText(IMAGE_ATTACHMENT.filename)).toHaveAttribute(
+      "src",
+      "blob:mock-url",
+    );
+  });
+
+  it("shows an error message when the preview fetch fails", async () => {
+    const fetchContent = vi.fn().mockRejectedValue(new Error("network down"));
+    render(
+      <AttachmentsWidgetHarness
+        attachments={[IMAGE_ATTACHMENT]}
+        onGetPreviewContent={fetchContent}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `Preview ${IMAGE_ATTACHMENT.filename}` }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("network down")).toBeInTheDocument(),
+    );
+  });
+
+  it("still shows Download for every attachment regardless of preview support", () => {
+    render(
+      <AttachmentsWidgetHarness
+        attachments={[IMAGE_ATTACHMENT, ZIP_ATTACHMENT]}
+        onDownload={vi.fn()}
+        onGetPreviewContent={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: `Download ${IMAGE_ATTACHMENT.filename}` }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: `Download ${ZIP_ATTACHMENT.filename}` }),
+    ).toBeInTheDocument();
   });
 });

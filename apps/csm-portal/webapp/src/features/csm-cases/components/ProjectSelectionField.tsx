@@ -212,7 +212,6 @@ export default function ProjectSelectionField({
     : selectedProject.isLoading
       ? "Loading project…"
       : value;
-  const accountLabel = selectedProject.data?.account.name;
 
   return (
     <Box
@@ -231,35 +230,13 @@ export default function ProjectSelectionField({
       <Box sx={{ display: "flex", color: "success.main", flexShrink: 0 }}>
         <CheckCircle size={16} aria-hidden />
       </Box>
-      <Box
-        sx={{
-          minWidth: 0,
-          flex: 1,
-          lineHeight: 1.2,
-          display: "flex",
-          alignItems: "baseline",
-          gap: 0.75,
-        }}
+      <Typography
+        variant="body2"
+        noWrap
+        sx={{ fontWeight: 600, lineHeight: 1.3, minWidth: 0, flex: 1 }}
       >
-        <Typography variant="body2" noWrap sx={{ fontWeight: 600, lineHeight: 1.3 }}>
-          {projectLabel}
-        </Typography>
-        {selectedProject.data?.key && (
-          <Typography variant="caption" color="text.secondary" noWrap sx={{ flexShrink: 0 }}>
-            {selectedProject.data.key}
-          </Typography>
-        )}
-      </Box>
-      {accountLabel && (
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          noWrap
-          sx={{ maxWidth: 140, flexShrink: 0 }}
-        >
-          {accountLabel}
-        </Typography>
-      )}
+        {projectLabel}
+      </Typography>
       <Button
         size="small"
         variant="text"
