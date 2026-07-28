@@ -23,7 +23,7 @@ import type { Project, SearchProjectsResponse } from "@features/csm-projects/typ
 // useAccountProjects.ts reads window.config at module load (via
 // @config/apiConfig) and calls the real Asgardeo-backed useAuthApiClient;
 // neither is present under vitest, so mock both. authFetchMock stands in for
-// the fetch wrapper and is what the hook actually calls per page.
+// the fetch wrapper and is what the hook actually calls.
 const authFetchMock = vi.fn();
 vi.mock("@config/apiConfig", () => ({
   apiConfig: { backendUrl: "https://example.test" },
@@ -34,20 +34,15 @@ vi.mock("@hooks/useAuthApiClient", () => ({
 
 import { useAccountProjects } from "@features/csm-accounts/api/useAccountProjects";
 
-function project(id: string, accountId: string | undefined): Project {
+function project(id: string, accountId: string): Project {
   return {
     id,
     name: `Project ${id}`,
     key: id.toUpperCase(),
-    accountId,
+    account: { id: accountId, name: `Account ${accountId}` },
     subscriptionType: undefined,
     endDate: undefined,
   } as unknown as Project;
-}
-
-function okResponse(body: Pick<SearchProjectsResponse, "projects" | "hasMore">): Response {
-  const full: SearchProjectsResponse = { ...body, total: body.projects.length, limit: 100, offset: 0 };
-  return jsonResponse(full);
 }
 
 function jsonResponse(body: SearchProjectsResponse): Response {
@@ -74,10 +69,13 @@ describe("useAccountProjects", () => {
     authFetchMock.mockReset();
   });
 
-  it("filters to the given account and reports the filter as supported when accountId is populated", async () => {
+  it("sends the accountId filter and returns the server-filtered projects", async () => {
     authFetchMock.mockResolvedValueOnce(
-      okResponse({
-        projects: [project("p1", "acc-1"), project("p2", "acc-2")],
+      jsonResponse({
+        projects: [project("p1", "acc-1")],
+        total: 1,
+        limit: 100,
+        offset: 0,
         hasMore: false,
       }),
     );
@@ -87,19 +85,15 @@ describe("useAccountProjects", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(result.current.data?.projects.map((p) => p.id)).toEqual(["p1"]);
-    expect(result.current.data?.isFilterSupported).toBe(true);
+    const [, requestInit] = authFetchMock.mock.calls[0];
+    expect(JSON.parse(requestInit.body as string)).toMatchObject({
+      accountId: "acc-1",
+    });
   });
 
-  // The ServiceNow data source's project-search API never sets `accountId`
-  // on any result row. In that case an empty `projects` array must NOT be
-  // presented as a confirmed "no projects" result -- `isFilterSupported` is
-  // what lets the page distinguish the two.
-  it("reports the filter as unsupported when every scanned project omits accountId", async () => {
+  it("returns an empty list when the account has no projects", async () => {
     authFetchMock.mockResolvedValueOnce(
-      okResponse({
-        projects: [project("p1", undefined), project("p2", undefined)],
-        hasMore: false,
-      }),
+      jsonResponse({ projects: [], total: 0, limit: 100, offset: 0, hasMore: false }),
     );
 
     const { result } = renderHook(() => useAccountProjects("acc-1"), { wrapper });
@@ -107,37 +101,10 @@ describe("useAccountProjects", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(result.current.data?.projects).toEqual([]);
-    expect(result.current.data?.isFilterSupported).toBe(false);
   });
 
-  it("treats an empty catalogue as vacuously supported", async () => {
-    authFetchMock.mockResolvedValueOnce(
-      okResponse({ projects: [], hasMore: false }),
-    );
-
-    const { result } = renderHook(() => useAccountProjects("acc-1"), { wrapper });
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    expect(result.current.data?.projects).toEqual([]);
-    expect(result.current.data?.isFilterSupported).toBe(true);
-  });
-
-  it("still reports the filter as supported when only some pages/rows carry accountId", async () => {
-    // Postgres data source: a genuine miss on this account, but accountId IS
-    // populated elsewhere in the scan, so the empty result is trustworthy.
-    authFetchMock.mockResolvedValueOnce(
-      okResponse({
-        projects: [project("p1", "acc-2"), project("p2", "acc-3")],
-        hasMore: false,
-      }),
-    );
-
-    const { result } = renderHook(() => useAccountProjects("acc-1"), { wrapper });
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    expect(result.current.data?.projects).toEqual([]);
-    expect(result.current.data?.isFilterSupported).toBe(true);
+  it("does not fetch when accountId is undefined", () => {
+    renderHook(() => useAccountProjects(undefined), { wrapper });
+    expect(authFetchMock).not.toHaveBeenCalled();
   });
 });

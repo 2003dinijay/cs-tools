@@ -209,7 +209,7 @@ export function uiAttachmentFromBe(att: BeAttachment): CaseAttachment {
     filename: att.name,
     size: att.sizeBytes,
     contentType: att.type,
-    uploadedBy: att.createdBy || "Unknown",
+    uploadedBy: att.createdByFullName?.trim() || att.createdBy || "Unknown",
     uploadedAt: att.createdOn,
   };
 }

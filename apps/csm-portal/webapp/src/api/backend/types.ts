@@ -906,6 +906,8 @@ export interface BeAttachment {
   sizeBytes: number;
   description?: string | null;
   createdBy: string;
+  /** Uploader's display name; empty when unresolved — fall back to createdBy (email). */
+  createdByFullName?: string;
   createdOn: string;
   downloadUrl?: string | null;
   previewUrl?: string | null;
@@ -1045,7 +1047,8 @@ export type BeSubscriptionType =
 
 export interface BeProject {
   id: string;
-  accountId?: string;
+  /** Nested on the wire (ServiceNow data source); absent when the project has no linked account. */
+  account?: { id: string; name: string };
   sfId?: string;
   name?: string;
   projectKey?: string;
@@ -1059,6 +1062,8 @@ export interface BeProject {
 export interface BeProjectSearchPayload {
   pagination?: BePagination;
   searchQuery?: string;
+  /** Filter to projects belonging to this account (ServiceNow data source only). */
+  accountId?: string;
 }
 
 export interface BeProjectSearchResponse extends BeSearchResponseBase {

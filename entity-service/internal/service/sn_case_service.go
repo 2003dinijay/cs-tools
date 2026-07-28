@@ -49,6 +49,7 @@ type snCase struct {
 	CreatedOn             string                      `json:"createdOn"`
 	UpdatedOn             *string                     `json:"updatedOn"`
 	CreatedBy             string                      `json:"createdBy"`
+	CreatedByFullName     string                      `json:"createdByFullName"`
 	Project               snCaseEntityRef             `json:"project"`
 	Deployment            snCaseEntityRef             `json:"deployment"`
 	DeployedProduct       snCaseDeployedProduct       `json:"deployedProduct"`
@@ -616,6 +617,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		CreatedOn:      createdOn,
 		UpdatedOn:      updatedOn,
 		CreatedByDetails: domain.UserRef{
+			Name:  c.CreatedByFullName,
 			Email: c.CreatedBy,
 		},
 		ProjectDetails: domain.EntityRef{ID: sysidToUUID(c.Project.ID), Name: c.Project.Name},
@@ -970,6 +972,13 @@ type snUpdateCasePayload struct {
 	// (u_worst_case_fix_eta) as a date-only "YYYY-MM-DD" string. Same pathway
 	// as BestCaseFixEta above.
 	WorstCaseFixEta *string `json:"worstCaseFixEta,omitempty"`
+	// AddPublicComment/Product/PublicTicket mirror ServiceNow's "Share Fix ETA"
+	// CWF action: when AddPublicComment is true, ServiceNow posts a customer-visible
+	// comment built from Product/PublicTicket/the 3 ETA dates, in addition to writing
+	// the ETA fields themselves.
+	AddPublicComment *bool   `json:"addPublicComment,omitempty"`
+	Product          *string `json:"product,omitempty"`
+	PublicTicket     *string `json:"publicTicket,omitempty"`
 }
 
 // snResolutionStates are the state keys that allow resolution fields.
@@ -1294,6 +1303,23 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		}
 		payload.WorstCaseFixEta = req.WorstCaseFixEta
 	}
+	if req.AddPublicComment != nil {
+		hasAnyFixEta := req.BestCaseFixEta != nil || req.MostLikelyFixEta != nil || req.WorstCaseFixEta != nil
+		if !hasAnyFixEta {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "addPublicComment requires at least one of bestCaseFixEta, mostLikelyFixEta, or worstCaseFixEta"}
+		}
+		if *req.AddPublicComment {
+			if req.Product == nil || *req.Product == "" {
+				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "product is required when addPublicComment is true"}
+			}
+			if req.PublicTicket == nil || *req.PublicTicket == "" {
+				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "publicTicket is required when addPublicComment is true"}
+			}
+		}
+		payload.AddPublicComment = req.AddPublicComment
+		payload.Product = req.Product
+		payload.PublicTicket = req.PublicTicket
+	}
 
 	// Close-gate: reject closing a case that still has an open, customer-visible task.
 	// This is the authoritative server-side check (item 1's close-gating requirement) --
@@ -1525,11 +1551,12 @@ type snAttachment struct {
 	Name        string  `json:"name"`
 	Type        string  `json:"type"`
 	SizeBytes   int     `json:"sizeBytes"`
-	Description *string `json:"description"`
-	CreatedBy   string  `json:"createdBy"`
-	CreatedOn   string  `json:"createdOn"`
-	DownloadURL *string `json:"downloadUrl"`
-	PreviewURL  *string `json:"previewUrl"`
+	Description       *string `json:"description"`
+	CreatedBy         string  `json:"createdBy"`
+	CreatedByFullName string  `json:"createdByFullName"`
+	CreatedOn         string  `json:"createdOn"`
+	DownloadURL       *string `json:"downloadUrl"`
+	PreviewURL        *string `json:"previewUrl"`
 }
 
 type snSearchAttachmentsResponse struct {
@@ -1576,17 +1603,18 @@ func (s *snCaseService) SearchCaseAttachments(ctx context.Context, req domain.Se
 			return domain.SearchAttachmentsResponse{}, fmt.Errorf("sn search attachments: parse createdOn %q: %w", a.CreatedOn, err)
 		}
 		attachments = append(attachments, domain.Attachment{
-			ID:            sysidToUUID(a.ID),
-			ReferenceID:   sysidToUUID(a.ReferenceID),
-			ReferenceType: req.ReferenceType,
-			Name:          a.Name,
-			Type:          a.Type,
-			SizeBytes:     a.SizeBytes,
-			Description:   a.Description,
-			CreatedBy:     a.CreatedBy,
-			CreatedOn:     createdOn,
-			DownloadURL:   a.DownloadURL,
-			PreviewURL:    a.PreviewURL,
+			ID:                sysidToUUID(a.ID),
+			ReferenceID:       sysidToUUID(a.ReferenceID),
+			ReferenceType:     req.ReferenceType,
+			Name:              a.Name,
+			Type:              a.Type,
+			SizeBytes:         a.SizeBytes,
+			Description:       a.Description,
+			CreatedBy:         a.CreatedBy,
+			CreatedByFullName: a.CreatedByFullName,
+			CreatedOn:         createdOn,
+			DownloadURL:       a.DownloadURL,
+			PreviewURL:        a.PreviewURL,
 		})
 	}
 
