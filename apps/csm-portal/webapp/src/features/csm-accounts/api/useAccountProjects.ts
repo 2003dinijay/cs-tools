@@ -41,9 +41,35 @@ import type {
 // field — it is only included in the single-project detail response. Until
 // that gap is closed (an additive ServiceNow scripted-API change plus a
 // matching `sn_project_service.go` mapping change — both outside this
-// frontend's scope), this hook will return an empty list for every account
-// on the ServiceNow data source, even when the account does have projects.
+// frontend's scope), this hook would return an empty list for every account
+// on the ServiceNow data source, indistinguishable from a real "no projects"
+// result. `isFilterSupported` below exists so callers can tell the two apart
+// and avoid rendering a misleadingly authoritative empty state.
+//
+// NOTE: MAX_PAGES caps the scan at ~2,000 projects (40 pages * BE_MAX_PAGE_LIMIT).
+// On an account whose true project belongs to a catalogue larger than that,
+// the scan can still miss a real match — this is a pre-existing limitation
+// (shared with `useProjectOptions`) and out of scope for this fix; a full
+// pagination UI would be needed to close it. `isFilterSupported` is unaffected
+// by this cap: it only reflects whether `accountId` was populated on the pages
+// we *did* see, not whether the scan was exhaustive, so a cap-truncated scan
+// must never be treated as proof the filter is (or isn't) supported.
 const MAX_PAGES = 40;
+
+export interface AccountProjectsResult {
+  /** Projects matched to this account across the scanned pages. */
+  projects: Project[];
+  /**
+   * Whether the underlying data source actually populates `accountId` on
+   * project-search results. `false` means every project seen across the scan
+   * omitted `accountId` (the current ServiceNow behavior) — in that case
+   * `projects` being empty tells us nothing about whether the account has
+   * projects, and callers must not render it as a confirmed "no projects"
+   * result. `true` (including the vacuous case where the whole catalogue is
+   * empty) means the filter is trustworthy.
+   */
+  isFilterSupported: boolean;
+}
 
 /**
  * All projects belonging to a given account, for the Account detail page's
@@ -52,13 +78,15 @@ const MAX_PAGES = 40;
  */
 export function useAccountProjects(
   accountId: string | undefined,
-): UseQueryResult<Project[], Error> {
+): UseQueryResult<AccountProjectsResult, Error> {
   const authFetch = useAuthApiClient();
 
-  return useQuery<Project[], Error>({
+  return useQuery<AccountProjectsResult, Error>({
     queryKey: [ApiQueryKeys.CSM_ACCOUNT_PROJECTS, accountId ?? ""],
-    queryFn: async (): Promise<Project[]> => {
+    queryFn: async (): Promise<AccountProjectsResult> => {
       const matches: Project[] = [];
+      let sawAnyProject = false;
+      let sawAnyAccountId = false;
       let offset = 0;
 
       for (let page = 0; page < MAX_PAGES; page += 1) {
@@ -79,13 +107,21 @@ export function useAccountProjects(
         }
         const data = (await res.json()) as SearchProjectsResponse;
         const projects = data.projects ?? [];
+        if (projects.length > 0) {
+          sawAnyProject = true;
+          if (projects.some((p) => p.accountId !== undefined)) sawAnyAccountId = true;
+        }
         matches.push(...projects.filter((p) => p.accountId === accountId));
 
         if (!data.hasMore || projects.length === 0) break;
         offset += projects.length;
       }
 
-      return matches;
+      // Vacuously "supported" when the catalogue itself is empty — there is
+      // nothing to contradict trustworthiness in that case.
+      const isFilterSupported = !sawAnyProject || sawAnyAccountId;
+
+      return { projects: matches, isFilterSupported };
     },
     enabled: !!accountId,
     staleTime: 30_000,

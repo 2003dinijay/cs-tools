@@ -100,10 +100,15 @@ function BackButton({ onClick }: { onClick: () => void }): JSX.Element {
  * Projects belonging to this account. Filtered client-side (see
  * `useAccountProjects`) since `POST /projects/search` has no account filter —
  * confirmed against the ServiceNow scripted API this endpoint proxies today.
+ * On the ServiceNow data source `accountId` is never populated on results, so
+ * `useAccountProjects` flags that via `isFilterSupported: false` and this
+ * section renders a distinct "not available" message instead of implying a
+ * confirmed empty result.
  */
 function ProjectsSection({ accountId }: { accountId: string }): JSX.Element {
   const { data, isLoading, isError, error } = useAccountProjects(accountId);
-  const projects = data ?? [];
+  const projects = data?.projects ?? [];
+  const isFilterSupported = data?.isFilterSupported ?? true;
 
   return (
     <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
@@ -135,6 +140,15 @@ function ProjectsSection({ accountId }: { accountId: string }): JSX.Element {
                     message={`Failed to load projects: ${error instanceof Error ? error.message : "unknown error"}`}
                     error={error}
                   />
+                </TableCell>
+              </TableRow>
+            ) : !isFilterSupported ? (
+              <TableRow>
+                <TableCell colSpan={4} align="center" sx={{ py: 4 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    Project list isn&apos;t available for the ServiceNow data
+                    source yet.
+                  </Typography>
                 </TableCell>
               </TableRow>
             ) : projects.length === 0 ? (
