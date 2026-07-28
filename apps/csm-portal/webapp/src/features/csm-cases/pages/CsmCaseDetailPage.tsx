@@ -80,6 +80,7 @@ import {
   usePostCsmCaseAttachment,
   useDownloadCsmCaseAttachment,
   useDeleteCsmCaseAttachment,
+  useGetCsmCaseAttachmentContent,
 } from "@features/csm-cases/api/useCsmCaseAttachments";
 import CsmCaseCommentInput from "@features/csm-cases/components/CsmCaseCommentInput";
 import CaseActionBar from "@features/csm-cases/components/CaseActionBar";
@@ -384,6 +385,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
   } = useGetCsmCaseAttachments(caseId);
   const postAttachment = usePostCsmCaseAttachment();
   const downloadAttachment = useDownloadCsmCaseAttachment();
+  const getAttachmentPreviewContent = useGetCsmCaseAttachmentContent();
   const deleteAttachment = useDeleteCsmCaseAttachment();
   // Fetched unconditionally (not just while their tab is active) purely for
   // the tab-label counts below; each widget still runs its own scoped query
@@ -2075,6 +2077,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             onDownload={onDownloadAttachment}
             onDelete={setPendingDelete}
             deletingId={deleteAttachment.isPending ? pendingDelete?.id : null}
+            onGetPreviewContent={getAttachmentPreviewContent}
           />
         </Box>
       )}

@@ -35,6 +35,7 @@ import {
   CheckCircle,
   Clock,
   Download,
+  Eye,
   History,
   Link as LinkIcon,
   MapPin,
@@ -55,6 +56,8 @@ import { formatBytes } from "@utils/formatBytes";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
 import type { NormalizedUser } from "@features/csm-users/types/csmUsers";
+import AttachmentPreviewDialog from "@features/csm-cases/components/AttachmentPreviewDialog";
+import { getAttachmentPreviewKind } from "@features/csm-cases/utils/attachmentPreview";
 import type {
   CaseAttachment,
   CaseAuditEntry,
@@ -664,6 +667,7 @@ export function AttachmentsWidget({
   onDownload,
   onDelete,
   deletingId,
+  onGetPreviewContent,
 }: {
   attachments: CaseAttachment[];
   /** List query is loading. */
@@ -682,8 +686,17 @@ export function AttachmentsWidget({
   onDelete?: (attachment: CaseAttachment) => void;
   /** Id of the attachment whose delete is in flight; disables its row actions. */
   deletingId?: string | null;
+  /**
+   * Fetch an attachment's raw bytes for inline preview. Omit to hide the
+   * per-row Preview affordance entirely (e.g. in contexts without network
+   * access, such as tests/storybook).
+   */
+  onGetPreviewContent?: (attachment: CaseAttachment) => Promise<Blob>;
 }): JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(
+    null,
+  );
   const sorted = [...attachments].sort(
     (a, b) =>
       new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime(),
@@ -698,153 +711,175 @@ export function AttachmentsWidget({
   };
 
   return (
-    <WidgetCard
-      title={`Attachments (${sorted.length})`}
-      icon={<Paperclip size={16} />}
-      action={
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-          {onUpload && (
+    <>
+      <WidgetCard
+        title={`Attachments (${sorted.length})`}
+        icon={<Paperclip size={16} />}
+        action={
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            {onUpload && (
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<Upload size={14} />}
+                onClick={pickFile}
+                disabled={uploading}
+              >
+                {uploading ? "Uploading…" : "Upload"}
+              </Button>
+            )}
             <Button
               size="small"
               variant="text"
-              startIcon={<Upload size={14} />}
-              onClick={pickFile}
-              disabled={uploading}
+              startIcon={<Download size={14} />}
+              onClick={onDownloadAll}
+              disabled={sorted.length === 0}
             >
-              {uploading ? "Uploading…" : "Upload"}
+              Download all
             </Button>
-          )}
-          <Button
-            size="small"
-            variant="text"
-            startIcon={<Download size={14} />}
-            onClick={onDownloadAll}
-            disabled={sorted.length === 0}
-          >
-            Download all
-          </Button>
-        </Box>
-      }
-    >
-      {onUpload && (
-        <input
-          ref={fileInputRef}
-          type="file"
-          hidden
-          onChange={onFileChange}
-          aria-hidden
-        />
-      )}
-      {uploading && <LinearProgress sx={{ mb: 1 }} />}
-      {uploadError && (
-        <Typography variant="body2" color="error" sx={{ mb: 1 }}>
-          {uploadError}
-        </Typography>
-      )}
-      {loading ? (
-        <Typography variant="body2" color="text.secondary">
-          Loading attachments…
-        </Typography>
-      ) : error ? (
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
-          <Typography variant="body2" color="error">
-            Could not load attachments.
+          </Box>
+        }
+      >
+        {onUpload && (
+          <input
+            ref={fileInputRef}
+            type="file"
+            hidden
+            onChange={onFileChange}
+            aria-hidden
+          />
+        )}
+        {uploading && <LinearProgress sx={{ mb: 1 }} />}
+        {uploadError && (
+          <Typography variant="body2" color="error" sx={{ mb: 1 }}>
+            {uploadError}
           </Typography>
-          {onRetry && (
-            <Button size="small" variant="outlined" onClick={onRetry}>
-              Retry
-            </Button>
-          )}
-        </Box>
-      ) : sorted.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">
-          No attachments on this case.
-        </Typography>
-      ) : (
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-          {sorted.map((a) => (
-            <Box
-              key={a.id}
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 1,
-                p: 1,
-                borderRadius: 1,
-                border: 1,
-                borderColor: "divider",
-                transition: "background-color 120ms, border-color 120ms",
-                "&:hover": {
-                  borderColor: "primary.main",
-                  backgroundColor: "action.hover",
-                },
-              }}
-            >
-              <Paperclip size={16} />
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                {onDownload ? (
-                  <Typography
-                    component="button"
-                    variant="body2"
-                    noWrap
-                    onClick={() => onDownload(a)}
-                    title={`Download ${a.filename}`}
-                    sx={{
-                      display: "block",
-                      width: "100%",
-                      textAlign: "left",
-                      p: 0,
-                      border: 0,
-                      bgcolor: "transparent",
-                      cursor: "pointer",
-                      fontWeight: 600,
-                      color: "primary.main",
-                      "&:hover": { textDecoration: "underline" },
-                    }}
-                  >
-                    {a.filename}
-                  </Typography>
-                ) : (
-                  <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
-                    {a.filename}
-                  </Typography>
-                )}
-                <Typography variant="caption" color="text.secondary" noWrap>
-                  {formatBytes(a.size)} · {a.contentType} · uploaded by{" "}
-                  {a.uploadedBy} · <RelativeTime iso={a.uploadedAt} />
-                </Typography>
-              </Box>
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<Download size={14} />}
-                onClick={() => onDownload?.(a)}
-                aria-label={`Download ${a.filename}`}
-                sx={{ flexShrink: 0 }}
-              >
-                Download
+        )}
+        {loading ? (
+          <Typography variant="body2" color="text.secondary">
+            Loading attachments…
+          </Typography>
+        ) : error ? (
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
+            <Typography variant="body2" color="error">
+              Could not load attachments.
+            </Typography>
+            {onRetry && (
+              <Button size="small" variant="outlined" onClick={onRetry}>
+                Retry
               </Button>
-              {onDelete && (
-                <IconButton
+            )}
+          </Box>
+        ) : sorted.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            No attachments on this case.
+          </Typography>
+        ) : (
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+            {sorted.map((a) => (
+              <Box
+                key={a.id}
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 1,
+                  p: 1,
+                  borderRadius: 1,
+                  border: 1,
+                  borderColor: "divider",
+                  transition: "background-color 120ms, border-color 120ms",
+                  "&:hover": {
+                    borderColor: "primary.main",
+                    backgroundColor: "action.hover",
+                  },
+                }}
+              >
+                <Paperclip size={16} />
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  {onDownload ? (
+                    <Typography
+                      component="button"
+                      variant="body2"
+                      noWrap
+                      onClick={() => onDownload(a)}
+                      title={`Download ${a.filename}`}
+                      sx={{
+                        display: "block",
+                        width: "100%",
+                        textAlign: "left",
+                        p: 0,
+                        border: 0,
+                        bgcolor: "transparent",
+                        cursor: "pointer",
+                        fontWeight: 600,
+                        color: "primary.main",
+                        "&:hover": { textDecoration: "underline" },
+                      }}
+                    >
+                      {a.filename}
+                    </Typography>
+                  ) : (
+                    <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
+                      {a.filename}
+                    </Typography>
+                  )}
+                  <Typography variant="caption" color="text.secondary" noWrap>
+                    {formatBytes(a.size)} · {a.contentType} · uploaded by{" "}
+                    {a.uploadedBy} · <RelativeTime iso={a.uploadedAt} />
+                  </Typography>
+                </Box>
+                {onGetPreviewContent &&
+                  getAttachmentPreviewKind(a.contentType) && (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<Eye size={14} />}
+                      onClick={() => setPreviewTarget(a)}
+                      aria-label={`Preview ${a.filename}`}
+                      sx={{ flexShrink: 0 }}
+                    >
+                      Preview
+                    </Button>
+                  )}
+                <Button
                   size="small"
-                  color="error"
-                  onClick={() => onDelete(a)}
-                  disabled={deletingId === a.id}
-                  aria-label={`Delete ${a.filename}`}
+                  variant="outlined"
+                  startIcon={<Download size={14} />}
+                  onClick={() => onDownload?.(a)}
+                  aria-label={`Download ${a.filename}`}
                   sx={{ flexShrink: 0 }}
                 >
-                  {deletingId === a.id ? (
-                    <CircularProgress size={16} color="inherit" />
-                  ) : (
-                    <Trash2 size={16} />
-                  )}
-                </IconButton>
-              )}
-            </Box>
-          ))}
-        </Box>
+                  Download
+                </Button>
+                {onDelete && (
+                  <IconButton
+                    size="small"
+                    color="error"
+                    onClick={() => onDelete(a)}
+                    disabled={deletingId === a.id}
+                    aria-label={`Delete ${a.filename}`}
+                    sx={{ flexShrink: 0 }}
+                  >
+                    {deletingId === a.id ? (
+                      <CircularProgress size={16} color="inherit" />
+                    ) : (
+                      <Trash2 size={16} />
+                    )}
+                  </IconButton>
+                )}
+              </Box>
+            ))}
+          </Box>
+        )}
+      </WidgetCard>
+      {onGetPreviewContent && (
+        <AttachmentPreviewDialog
+          attachment={previewTarget}
+          onClose={() => setPreviewTarget(null)}
+          fetchContent={onGetPreviewContent}
+        />
       )}
-    </WidgetCard>
+    </>
   );
 }
 
