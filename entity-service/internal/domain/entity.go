@@ -1349,6 +1349,8 @@ type CreateCaseRequest struct {
 	WatchList      []string `json:"watchList"`
 	// For security_report_analysis type
 	Attachments []CaseAttachment `json:"attachments"`
+	// For engagement type
+	EngagementType EngagementType `json:"engagementType"`
 }
 
 // CommentType classifies the type of a case comment.

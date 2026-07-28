@@ -420,6 +420,7 @@ type snCreateCasePayload struct {
 	Description       string             `json:"description,omitempty"`
 	SeverityKey       int                `json:"severityKey,omitempty"`
 	IssueTypeKey      int                `json:"issueTypeKey,omitempty"`
+	EngagementType    int                `json:"engagementType,omitempty"`
 	CatalogID         string             `json:"catalogId,omitempty"`
 	CatalogItemID     string             `json:"catalogItemId,omitempty"`
 	Variables         []snCaseVariable   `json:"variables,omitempty"`
@@ -515,6 +516,10 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 			}
 			payload.Attachments = atts
 		}
+	case "engagement":
+		payload.Title = req.Subject
+		payload.Description = req.Description
+		payload.EngagementType = snEngagementTypeIDMap[req.EngagementType]
 	}
 
 	if len(req.WatchList) > 0 {

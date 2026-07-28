@@ -14,22 +14,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import { Button } from "@wso2/oxygen-ui";
+import { Plus } from "@wso2/oxygen-ui-icons-react";
 import { type JSX } from "react";
 
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
+import { useNavTransition } from "@hooks/useNavTransition";
 
 /**
  * Cross-customer engagements list — filters the shared issues view to
  * `type: engagement` and surfaces the engagement-type sub-filter so engineers
  * can narrow by migration, consultancy, onboarding, etc.
- *
- * No "Create engagement" entry point exists here: creating an engagement has
- * no working path anywhere in the stack yet (ServiceNow's case-creation
- * dispatcher has no branch for `type: engagement` at all, so a request would
- * 500) — see the CSM Portal PROGRESS notes for the tracked follow-up. Do not
- * add a create button that points at a flow which can't actually succeed.
  */
 export default function CsmEngagementsPage(): JSX.Element {
+  const navigate = useNavTransition();
+
   return (
     <CsmIssuesView
       title="Engagements"
@@ -39,6 +38,17 @@ export default function CsmEngagementsPage(): JSX.Element {
       showEngagementTypeFilter
       detailBasePath="/engagements"
       hideSeverityColumn
+      actions={
+        <Button
+          variant="contained"
+          color="primary"
+          size="small"
+          startIcon={<Plus size={16} />}
+          onClick={() => navigate("/engagements/new")}
+        >
+          Create engagement
+        </Button>
+      }
     />
   );
 }

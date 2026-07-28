@@ -116,6 +116,9 @@ const ProductVulnerabilityDetailPage = lazy(
 const CsmEngagementsPage = lazy(
   () => import("@features/csm-engagements/pages/CsmEngagementsPage"),
 );
+const CsmEngagementCreatePage = lazy(
+  () => import("@features/csm-engagements/pages/CsmEngagementCreatePage"),
+);
 const CsmTimeCardsPage = lazy(
   () => import("@features/csm-timecards/pages/CsmTimeCardsPage"),
 );
@@ -345,6 +348,7 @@ export default function App(): JSX.Element {
                   />
 
                   <Route path="engagements" element={<CsmEngagementsPage />} />
+                  <Route path="engagements/new" element={<CsmEngagementCreatePage />} />
                   <Route path="engagements/:caseId" element={<CsmCaseDetailPage />} />
                   <Route path="updates" element={<CsmUpdatesPage />} />
                   <Route path="security-center" element={<CsmSecurityCenterPage />} />
