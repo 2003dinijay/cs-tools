@@ -359,45 +359,27 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const isServiceRequest =
     isServiceRequestRoute || data?.caseType === "service_request";
   // Engagements, Announcements, Service Requests, and Security Reports each
-  // have a dedicated route; opening one of them under a mismatched route
-  // (e.g. a "Related case" link, which always points at /cases/:id) should
-  // redirect to its real destination rather than silently rendering under
-  // the wrong section.
-  const isMisroutedEngagement =
-    data?.caseType === "engagement" && !isEngagementRoute;
-  const isMisroutedAnnouncement =
-    data?.caseType === "announcement" && !isAnnouncementRoute;
-  const isMisroutedServiceRequest =
-    data?.caseType === "service_request" && !isServiceRequestRoute;
-  const isMisroutedSecurityReport =
-    data?.caseType === "security_report_analysis" && !isSecurityReportRoute;
-  const isMisrouted =
-    isMisroutedEngagement ||
-    isMisroutedAnnouncement ||
-    isMisroutedServiceRequest ||
-    isMisroutedSecurityReport;
+  // have a dedicated route; opening a case under any route other than its own
+  // canonical one (e.g. a "Related case" link, which always points at
+  // /cases/:id, or a dedicated route reached with a case of a different
+  // type) should redirect to its real destination rather than silently
+  // rendering under the wrong section.
+  const canonicalDetailPath =
+    data?.caseType === "engagement"
+      ? `/engagements/${caseId}`
+      : data?.caseType === "announcement"
+        ? `/announcements/${caseId}`
+        : data?.caseType === "service_request"
+          ? `/operations/service-requests/${caseId}`
+          : data?.caseType === "security_report_analysis"
+            ? `/security-center/security-reports/${caseId}`
+            : `/cases/${caseId}`;
+  const isMisrouted = !!data && detailPath !== canonicalDetailPath;
 
   useEffect(() => {
-    if (!caseId) return;
-    if (isMisroutedEngagement) {
-      navigate(`/engagements/${caseId}`, { replace: true });
-    } else if (isMisroutedAnnouncement) {
-      navigate(`/announcements/${caseId}`, { replace: true });
-    } else if (isMisroutedServiceRequest) {
-      navigate(`/operations/service-requests/${caseId}`, { replace: true });
-    } else if (isMisroutedSecurityReport) {
-      navigate(`/security-center/security-reports/${caseId}`, {
-        replace: true,
-      });
-    }
-  }, [
-    isMisroutedEngagement,
-    isMisroutedAnnouncement,
-    isMisroutedServiceRequest,
-    isMisroutedSecurityReport,
-    caseId,
-    navigate,
-  ]);
+    if (!caseId || !isMisrouted) return;
+    navigate(canonicalDetailPath, { replace: true });
+  }, [isMisrouted, canonicalDetailPath, caseId, navigate]);
 
   const {
     data: comments,
