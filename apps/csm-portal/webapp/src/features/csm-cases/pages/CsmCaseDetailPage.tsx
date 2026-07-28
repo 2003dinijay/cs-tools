@@ -349,6 +349,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // severity, so combine the route with the loaded case's own caseType.
   const isServiceRequest =
     isServiceRequestRoute || data?.caseType === "service_request";
+  // Security report analyses have no dedicated pre-load route (they open via
+  // the generic /cases/:caseId route), so caseType is the only signal.
+  const isSecurityReport = data?.caseType === "security_report_analysis";
   const {
     data: comments,
     isLoading: isCommentsLoading,
@@ -1552,7 +1555,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 sx={{ fontWeight: 600 }}
               />
             )}
-            {!isAnnouncement && !isServiceRequest && (
+            {!isAnnouncement && !isServiceRequest && !isSecurityReport && (
               <SeverityChip severity={c.severity} withLabel />
             )}
             {!isAnnouncement && <StateChip state={c.state} />}
