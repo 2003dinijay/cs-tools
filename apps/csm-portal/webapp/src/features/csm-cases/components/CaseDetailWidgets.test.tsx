@@ -224,7 +224,7 @@ describe("AttachmentsWidget — preview affordance", () => {
     globalThis.URL.revokeObjectURL = vi.fn();
   });
 
-  it("shows Preview for image and video attachments but not for a zip, when a fetcher is supplied", () => {
+  it("shows Preview for an image but not for a video or a zip, when a fetcher is supplied", () => {
     render(
       <AttachmentsWidgetHarness
         attachments={[IMAGE_ATTACHMENT, VIDEO_ATTACHMENT, ZIP_ATTACHMENT]}
@@ -234,9 +234,15 @@ describe("AttachmentsWidget — preview affordance", () => {
     expect(
       screen.getByRole("button", { name: `Preview ${IMAGE_ATTACHMENT.filename}` }),
     ).toBeInTheDocument();
+    // Video is not previewable: the backend's safe-content-type allowlist
+    // (`safeAttachmentTypes` in case_handler.go) has no video/* entry, so
+    // GET /attachments/{id}/content always coerces a video response to
+    // application/octet-stream. Offering a preview button here would rely
+    // on the uploader-controlled metadata `contentType` instead of the
+    // backend-verified one, defeating that allowlist.
     expect(
-      screen.getByRole("button", { name: `Preview ${VIDEO_ATTACHMENT.filename}` }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: `Preview ${VIDEO_ATTACHMENT.filename}` }),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: `Preview ${ZIP_ATTACHMENT.filename}` }),
     ).not.toBeInTheDocument();

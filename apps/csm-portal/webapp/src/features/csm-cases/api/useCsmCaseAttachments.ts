@@ -35,6 +35,7 @@ import type {
 import { uiAttachmentFromBe } from "@api/backend/mappers";
 import { saveBlob } from "@utils/saveBlob";
 import type { CaseAttachment } from "@features/csm-cases/types/csmCases";
+import { isSafeAttachmentContentType } from "@features/csm-cases/utils/attachmentPreview";
 
 /**
  * Page size used by the attachments list. A single wide page is enough for the
@@ -174,10 +175,20 @@ export function usePostCsmCaseAttachment(): UseMutationResult<
  * `case_handler.go`) — anything else, including every `video/*` type today,
  * is coerced to `application/octet-stream` to block a stored-XSS via a
  * crafted upstream type. That coercion is correct for the raw endpoint but
- * would make the fetched `Blob` un-renderable by `<video>`/`<img>` even
- * though the bytes are fine. The attachment's `contentType` from the (BE
- * doesn't coerce this) `/attachments/search` list metadata is the trustworthy
- * MIME, so the blob is re-labeled with it before being handed back.
+ * would make the fetched `Blob` un-renderable by `<img>`/the PDF iframe even
+ * though the bytes are fine.
+ *
+ * The attachment's `contentType` from `/attachments/search` list metadata is
+ * whatever the uploader claimed — the BE doesn't coerce it, but it also
+ * doesn't verify it against the actual bytes, so it is uploader-controlled
+ * and NOT automatically trustworthy. Re-labeling the blob with it would
+ * re-enable exactly the coercion the backend allowlist is meant to block
+ * (e.g. a file uploaded with a spoofed benign `contentType` but different
+ * actual bytes). So the blob is only ever re-labeled when that metadata
+ * `contentType` is itself a member of the same backend allowlist, mirrored
+ * client-side as {@link isSafeAttachmentContentType} — for anything else the
+ * blob is returned as-is (`application/octet-stream`, matching what the
+ * backend already coerced it to), which is un-renderable by design.
  */
 export function useGetCsmCaseAttachmentContent(): (
   attachment: CaseAttachment,
@@ -189,6 +200,7 @@ export function useGetCsmCaseAttachmentContent(): (
       const blob = await api.getBlob(
         `/attachments/${encodeURIComponent(attachment.id)}/content`,
       );
+      if (!isSafeAttachmentContentType(attachment.contentType)) return blob;
       return blob.type === attachment.contentType
         ? blob
         : blob.slice(0, blob.size, attachment.contentType);

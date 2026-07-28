@@ -35,15 +35,17 @@ interface AttachmentPreviewDialogProps {
   /**
    * Fetch the attachment's raw bytes. The BE content endpoint always sets
    * `Content-Disposition: attachment` and requires auth headers, so a plain
-   * `<img src>`/`<video src>` pointed at it would force a download instead of
-   * rendering — the bytes are fetched here as a `Blob` and turned into an
-   * object URL for the preview element instead.
+   * `<img src>` pointed at it would force a download instead of rendering —
+   * the bytes are fetched here as a `Blob` and turned into an object URL for
+   * the preview element instead.
    */
   fetchContent: (attachment: CaseAttachment) => Promise<Blob>;
 }
 
 /**
- * Inline preview for image/video/PDF attachments. Fetches the attachment's
+ * Inline preview for image/PDF attachments (the two families in the
+ * backend's safe-content-type allowlist that make sense to render inline —
+ * see {@link getAttachmentPreviewKind}). Fetches the attachment's
  * bytes via `fetchContent` (the same authenticated content endpoint the
  * download action uses) and renders them from a `blob:` object URL, which is
  * revoked on close/unmount to avoid leaking memory.
@@ -155,18 +157,23 @@ export default function AttachmentPreviewDialog({
               objectFit: "contain",
             }}
           />
-        ) : objectUrl && kind === "video" ? (
-          <Box
-            component="video"
-            src={objectUrl}
-            controls
-            sx={{ maxWidth: "100%", maxHeight: "70vh" }}
-          />
         ) : objectUrl && kind === "pdf" ? (
           <Box
             component="iframe"
             src={objectUrl}
             title={attachment?.filename}
+            // The PDF bytes come from an uploaded attachment, so treat this
+            // as untrusted content even though it is served from a
+            // same-origin `blob:` URL. `allow-same-origin` is required for
+            // Chrome/Firefox's built-in PDF viewer to render at all inside a
+            // sandboxed iframe (verified: without it the viewer shows a
+            // broken-plugin placeholder instead of the PDF); `allow-scripts`
+            // and `allow-forms` are kept per CodeRabbit's suggested value
+            // because a live-browser attempt to narrow further (e.g.
+            // `allow-same-origin` alone) crashed the local test harness
+            // before it could confirm the native viewer still renders, so
+            // that narrower value was not independently verified.
+            sandbox="allow-same-origin allow-forms allow-scripts"
             sx={{ width: "100%", height: "70vh", border: 0 }}
           />
         ) : null}
