@@ -53,5 +53,6 @@ export function useSearchUsers(request: SearchUsersRequest) {
     },
     select: normalizeUserSearchResponse,
     placeholderData: keepPreviousData,
+    staleTime: 30_000,
   });
 }

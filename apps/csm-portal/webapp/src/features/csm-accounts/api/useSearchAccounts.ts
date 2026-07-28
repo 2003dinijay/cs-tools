@@ -44,5 +44,6 @@ export function useSearchAccounts(request: SearchAccountsRequest) {
       return (await res.json()) as SearchAccountsResponse;
     },
     placeholderData: keepPreviousData,
+    staleTime: 30_000,
   });
 }
