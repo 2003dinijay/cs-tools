@@ -239,16 +239,29 @@ export class CasesListPage {
    * so callers that `test.skip()` on a 0 count never mistake "still loading"
    * for "genuinely empty" and mask a regression as a skip. */
   async rowCountSettled(timeoutMs = 10_000): Promise<number> {
+    const rowAppeared = this.rows()
+      .first()
+      .waitFor({ state: "visible", timeout: timeoutMs })
+      .then(() => "row" as const);
+    const emptyAppeared = this.emptyState()
+      .waitFor({ state: "visible", timeout: timeoutMs })
+      .then(() => "empty" as const);
+
+    // Race so a fast row (the common case) returns immediately instead of
+    // blocking for the full timeoutMs waiting on the empty-state wait too.
+    const winner = await Promise.race([rowAppeared, emptyAppeared]).catch(
+      () => null,
+    );
+
+    if (winner === "row") return this.rowCount();
+    if (winner === "empty") return 0;
+
+    // The race's first settlement was a rejection (one signal timed out
+    // before the other resolved) -- fall back to whichever, if either,
+    // still resolves within its own timeoutMs.
     const [gotRow, gotEmpty] = await Promise.all([
-      this.rows()
-        .first()
-        .waitFor({ state: "visible", timeout: timeoutMs })
-        .then(() => true)
-        .catch(() => false),
-      this.emptyState()
-        .waitFor({ state: "visible", timeout: timeoutMs })
-        .then(() => true)
-        .catch(() => false),
+      rowAppeared.then(() => true).catch(() => false),
+      emptyAppeared.then(() => true).catch(() => false),
     ]);
 
     if (gotRow) return this.rowCount();
