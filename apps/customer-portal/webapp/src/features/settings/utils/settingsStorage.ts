@@ -144,6 +144,20 @@ export function clearLastSelectedProject(): void {
   }
 }
 
+// Clear it again on sign-out. Registered once at module load, not tied to
+// any component, so it fires reliably regardless of where in the tree
+// sign-out is triggered (mirrors csm-portal's useRecentViews.ts). Without
+// this, the id survives both an explicit "Log out" and an idle-timeout auto
+// sign-out, so the next sign-in — even a different user on the same browser
+// — gets redirected straight back into the stale project instead of landing
+// on the Project Hub. "app:signing-out" is dispatched ONLY by the manual
+// "Log out" action (UserProfile.tsx) and the idle-timeout auto sign-out
+// (IdleTimeoutProvider.tsx) — never by a silent re-auth/token-refresh — so
+// this never clears data out from under a user who is still signed in.
+if (typeof window !== "undefined") {
+  window.addEventListener("app:signing-out", clearLastSelectedProject);
+}
+
 /**
  * Reads whether Novera chat is enabled from localStorage.
  *
