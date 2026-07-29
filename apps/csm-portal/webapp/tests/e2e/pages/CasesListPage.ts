@@ -221,6 +221,23 @@ export class CasesListPage {
     return this.rows().count();
   }
 
+  /** Row count once the initial fetch has settled. Immediately after
+   * {@link goto} the list can report 0 rows for a beat while the first page is
+   * still loading (goto only waits for the search box, not the data), so a
+   * naive {@link rowCount} there makes a populated list look empty and
+   * spuriously skips the data-dependent tests. Waits for the first row to
+   * appear, then counts; a still-empty result after the grace period is a
+   * genuinely empty list. */
+  async rowCountSettled(timeoutMs = 10_000): Promise<number> {
+    await this.rows()
+      .first()
+      .waitFor({ state: "visible", timeout: timeoutMs })
+      .catch(() => {
+        // No row within the grace period — treat as a genuinely empty list.
+      });
+    return this.rowCount();
+  }
+
   firstRow(): Locator {
     return this.rows().first();
   }
