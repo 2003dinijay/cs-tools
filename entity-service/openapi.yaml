@@ -4287,6 +4287,14 @@ components:
           type: string
         number:
           type: string
+        type:
+          type: string
+          enum: [case, incident, change_request, problem]
+          nullable: true
+          description: >
+            What kind of record this reference points at. Nil when the
+            backing data source doesn't resolve a type (ServiceNow data
+            source only).
 
     AccountRef:
       type: object
@@ -4837,7 +4845,7 @@ components:
           type: string
           nullable: true
         createdBy:
-          type: string
+          $ref: '#/components/schemas/UserRef'
         createdOn:
           type: string
           format: date-time

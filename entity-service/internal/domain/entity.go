@@ -1616,17 +1616,16 @@ type CreateCaseGithubIssueResponse struct {
 
 // Attachment represents a file attachment linked to a reference entity.
 type Attachment struct {
-	ID                string        `json:"id"`
-	ReferenceID       string        `json:"referenceId"`
-	ReferenceType     ReferenceType `json:"referenceType"`
-	Name              string        `json:"name"`
-	Type              string        `json:"type"`
-	SizeBytes         int           `json:"sizeBytes"`
-	Description       *string       `json:"description"`
-	CreatedBy         string        `json:"createdBy"`
-	CreatedByFullName string        `json:"createdByFullName"`
-	CreatedOn         time.Time     `json:"createdOn"`
-	DownloadURL       *string       `json:"downloadUrl"`
+	ID            string        `json:"id"`
+	ReferenceID   string        `json:"referenceId"`
+	ReferenceType ReferenceType `json:"referenceType"`
+	Name          string        `json:"name"`
+	Type          string        `json:"type"`
+	SizeBytes     int           `json:"sizeBytes"`
+	Description   *string       `json:"description"`
+	CreatedBy     UserRef       `json:"createdBy"`
+	CreatedOn     time.Time     `json:"createdOn"`
+	DownloadURL   *string       `json:"downloadUrl"`
 	PreviewURL        *string       `json:"previewUrl"`
 }
 

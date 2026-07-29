@@ -911,9 +911,8 @@ export interface BeAttachment {
   type: string;
   sizeBytes: number;
   description?: string | null;
-  createdBy: string;
-  /** Uploader's display name; empty when unresolved — fall back to createdBy (email). */
-  createdByFullName?: string;
+  /** Uploader, in the same `{ id, name, email }` shape used elsewhere (e.g. case `createdBy`). */
+  createdBy: BeUserRef;
   createdOn: string;
   downloadUrl?: string | null;
   previewUrl?: string | null;

@@ -223,6 +223,29 @@ func snCaseTypeToDomain(ct *snCaseEntityRef) *string {
 	return &domainType
 }
 
+// snParentCaseTypeMap maps the raw ServiceNow task-type value carried on a
+// parent/related case reference to the API's public CaseNumberRef.type enum
+// ("case" | "incident" | "change_request" | "problem").
+var snParentCaseTypeMap = map[string]string{
+	"default_case":   "case",
+	"incident":       "incident",
+	"change_request": "change_request",
+	"problem":        "problem",
+}
+
+// snParentCaseTypeToDomain maps a parent/related case reference's raw SN type
+// value to the domain enum, returning nil for nil or unrecognised values so an
+// unsupported ServiceNow task type never leaks onto the API surface.
+func snParentCaseTypeToDomain(raw *string) *string {
+	if raw == nil {
+		return nil
+	}
+	if mapped, ok := snParentCaseTypeMap[*raw]; ok {
+		return &mapped
+	}
+	return nil
+}
+
 func domainTypeKeysToSN(typeKeys []string) []string {
 	result := make([]string, 0, len(typeKeys))
 	for _, t := range typeKeys {
@@ -662,7 +685,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
 	}
 	if c.ParentCase != nil {
-		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number, Type: c.ParentCase.Type}
+		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number, Type: snParentCaseTypeToDomain(c.ParentCase.Type)}
 	}
 	if c.RelatedCase != nil {
 		cv.RelatedCase = &domain.CaseNumberRef{ID: sysidToUUID(c.RelatedCase.ID), Number: c.RelatedCase.Number}
@@ -1400,7 +1423,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	}
 	resp.Case.CloseNotes = snResp.Case.CloseNotes
 	if snResp.Case.ParentCase != nil {
-		resp.Case.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(snResp.Case.ParentCase.ID), Number: snResp.Case.ParentCase.Number}
+		resp.Case.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(snResp.Case.ParentCase.ID), Number: snResp.Case.ParentCase.Number, Type: snParentCaseTypeToDomain(snResp.Case.ParentCase.Type)}
 	}
 	if snResp.Case.ResolvedOn != nil {
 		resolvedOn, err := time.Parse(snCreatedOnLayout, *snResp.Case.ResolvedOn)
@@ -1604,18 +1627,20 @@ func (s *snCaseService) SearchCaseAttachments(ctx context.Context, req domain.Se
 			return domain.SearchAttachmentsResponse{}, fmt.Errorf("sn search attachments: parse createdOn %q: %w", a.CreatedOn, err)
 		}
 		attachments = append(attachments, domain.Attachment{
-			ID:                sysidToUUID(a.ID),
-			ReferenceID:       sysidToUUID(a.ReferenceID),
-			ReferenceType:     req.ReferenceType,
-			Name:              a.Name,
-			Type:              a.Type,
-			SizeBytes:         a.SizeBytes,
-			Description:       a.Description,
-			CreatedBy:         a.CreatedBy,
-			CreatedByFullName: a.CreatedByFullName,
-			CreatedOn:         createdOn,
-			DownloadURL:       a.DownloadURL,
-			PreviewURL:        a.PreviewURL,
+			ID:            sysidToUUID(a.ID),
+			ReferenceID:   sysidToUUID(a.ReferenceID),
+			ReferenceType: req.ReferenceType,
+			Name:          a.Name,
+			Type:          a.Type,
+			SizeBytes:     a.SizeBytes,
+			Description:   a.Description,
+			CreatedBy: domain.UserRef{
+				Name:  a.CreatedByFullName,
+				Email: a.CreatedBy,
+			},
+			CreatedOn:   createdOn,
+			DownloadURL: a.DownloadURL,
+			PreviewURL:  a.PreviewURL,
 		})
 	}
 

@@ -336,6 +336,7 @@ export default function CreateSecurityReportPage(): JSX.Element {
               onChange={setAttachments}
               onError={showError}
               maxEncodedBytes={POST_CREATE_ATTACHMENTS_MAX_ENCODED_BYTES}
+              disabled={submitting}
             />
           </Grid>
         </Grid>
