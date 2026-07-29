@@ -407,7 +407,7 @@ export default function ProjectHub(): JSX.Element {
               sx={{ width: "60%", maxWidth: 400, height: 2 }}
             />
             <Typography variant="body2" color="text.secondary">
-              Loading projects...
+              Loading...
             </Typography>
           </Box>
         );

@@ -20,6 +20,7 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Divider,
   IconButton,
   InputAdornment,
   Menu,
@@ -63,6 +64,7 @@ type ExportFormat = "csv" | "pdf";
 
 const SUMMARY_PAGE_SIZE = 5;
 const SKELETON_ROW_COUNT = 5;
+const DROPDOWN_RESULT_LIMIT = 5;
 
 function SkeletonRows({ cols }: { cols: number }): JSX.Element {
   return (
@@ -80,6 +82,22 @@ function SkeletonRows({ cols }: { cols: number }): JSX.Element {
   );
 }
 
+/** Bolds the matched substring — mirrors PartnerGlobalSearch's dropdown. */
+function highlightMatch(text: string, query: string): JSX.Element {
+  if (!query.trim()) return <>{text}</>;
+  const lowerText = text.toLowerCase();
+  const lowerQuery = query.toLowerCase().trim();
+  const idx = lowerText.indexOf(lowerQuery);
+  if (idx === -1) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <strong>{text.slice(idx, idx + lowerQuery.length)}</strong>
+      {text.slice(idx + lowerQuery.length)}
+    </>
+  );
+}
+
 /**
  * Home overview for users with more than one project.
  * Same layout as the partner global search page — Projects and Cases table
@@ -92,6 +110,8 @@ export default function UserGlobalSearch(): JSX.Element {
   const { showError } = useErrorBanner();
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedSearchQuery = useDebouncedValue(searchQuery, PROJECT_HUB_SEARCH_DEBOUNCE_MS);
+
+  const [dropdownOpen, setDropdownOpen] = useState(false);
 
   const [exportingFormat, setExportingFormat] = useState<ExportFormat | null>(null);
   const isExportingRef = useRef(false);
@@ -195,6 +215,25 @@ export default function UserGlobalSearch(): JSX.Element {
   const projectsMoreCount = Math.max(0, projectsTotal - projects.length);
   const casesMoreCount = Math.max(0, casesTotal - cases.length);
 
+  // Dropdown query — filtered by the live search query, same pattern as
+  // PartnerGlobalSearch's dropdown (only enabled once there's a query).
+  const { data: dropdownData, isLoading: isLoadingDropdown } = useGetGlobalSearch(
+    {
+      filters: debouncedSearchQuery ? { searchQuery: debouncedSearchQuery } : undefined,
+      projectsPagination: { offset: 0, limit: DROPDOWN_RESULT_LIMIT },
+      casesPagination: { offset: 0, limit: DROPDOWN_RESULT_LIMIT },
+    },
+    { enabled: Boolean(debouncedSearchQuery) },
+  );
+
+  const isDebouncing = searchQuery.trim() !== debouncedSearchQuery.trim();
+  const dropdownProjects: GlobalSearchProject[] = isDebouncing || isLoadingDropdown
+    ? []
+    : (dropdownData?.projects ?? []).slice(0, DROPDOWN_RESULT_LIMIT);
+  const dropdownCases: GlobalSearchCase[] = isDebouncing || isLoadingDropdown
+    ? []
+    : (dropdownData?.cases ?? []).slice(0, DROPDOWN_RESULT_LIMIT);
+
   return (
     <Box
       sx={{
@@ -219,7 +258,7 @@ export default function UserGlobalSearch(): JSX.Element {
           textAlign: "center",
         }}
       >
-        <Box sx={{ maxWidth: 560, width: "100%" }}>
+        <Box sx={{ maxWidth: 560, position: "relative", width: "100%" }}>
           <TextField
             fullWidth
             inputProps={{ autoComplete: "off" }}
@@ -229,7 +268,10 @@ export default function UserGlobalSearch(): JSX.Element {
                   <IconButton
                     aria-label="Clear search"
                     edge="end"
-                    onClick={() => setSearchQuery("")}
+                    onClick={() => {
+                      setSearchQuery("");
+                      setDropdownOpen(false);
+                    }}
                     size="small"
                   >
                     <X size={16} />
@@ -238,7 +280,17 @@ export default function UserGlobalSearch(): JSX.Element {
               ) : undefined,
               startAdornment: <Search size={20} style={{ marginRight: 8 }} />,
             }}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onBlur={() => setDropdownOpen(false)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setDropdownOpen(Boolean(e.target.value.trim()));
+            }}
+            onFocus={() => {
+              if (searchQuery.trim()) setDropdownOpen(true);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setDropdownOpen(false);
+            }}
             placeholder="Search projects and cases..."
             size="small"
             sx={{
@@ -251,7 +303,7 @@ export default function UserGlobalSearch(): JSX.Element {
             }}
             value={searchQuery}
           />
-          {debouncedSearchQuery.trim() && !isLoadingProjects && !isLoadingCases && (
+          {!dropdownOpen && debouncedSearchQuery.trim() && !isLoadingProjects && !isLoadingCases && (
             <Typography
               color="text.secondary"
               sx={{ display: "block", mt: 1, textAlign: "left" }}
@@ -259,6 +311,209 @@ export default function UserGlobalSearch(): JSX.Element {
             >
               Showing results for &ldquo;{debouncedSearchQuery.trim()}&rdquo;
             </Typography>
+          )}
+          {dropdownOpen && (
+            <Paper
+              elevation={4}
+              onMouseDown={(e) => e.preventDefault()}
+              sx={{
+                border: 1,
+                borderColor: "divider",
+                borderRadius: 1,
+                left: 0,
+                maxHeight: 400,
+                mt: 0.5,
+                overflowY: "auto",
+                position: "absolute",
+                right: 0,
+                textAlign: "left",
+                top: "100%",
+                zIndex: 1300,
+              }}
+            >
+              {/* Projects section */}
+              {(isDebouncing || isLoadingDropdown || dropdownProjects.length > 0) && (
+                <>
+                  {isDebouncing || isLoadingDropdown ? (
+                    [1, 2, 3].map((i) => (
+                      <Box
+                        key={i}
+                        sx={{
+                          alignItems: "center",
+                          display: "flex",
+                          gap: 1.5,
+                          px: 2,
+                          py: 1,
+                        }}
+                      >
+                        <Skeleton height={36} variant="circular" width={36} />
+                        <Box sx={{ flex: 1 }}>
+                          <Skeleton variant="text" width="70%" />
+                          <Skeleton variant="text" width="30%" />
+                        </Box>
+                      </Box>
+                    ))
+                  ) : (
+                    dropdownProjects.map((project) => (
+                      <Box
+                        key={project.id}
+                        onClick={() => {
+                          setDropdownOpen(false);
+                          navigate(`/projects/${project.id}/dashboard`);
+                        }}
+                        sx={{
+                          alignItems: "center",
+                          cursor: "pointer",
+                          display: "flex",
+                          gap: 1.5,
+                          px: 2,
+                          py: 1.25,
+                          "&:hover": { bgcolor: "action.hover" },
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            alignItems: "center",
+                            bgcolor: "primary.main",
+                            borderRadius: "50%",
+                            color: "primary.contrastText",
+                            display: "flex",
+                            flexShrink: 0,
+                            height: 36,
+                            justifyContent: "center",
+                            width: 36,
+                          }}
+                        >
+                          <FolderOpen size={16} />
+                        </Box>
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                          <Typography noWrap variant="body2">
+                            {highlightMatch(
+                              project.key
+                                ? `${project.key} · ${project.name}`
+                                : project.name,
+                              debouncedSearchQuery,
+                            )}
+                          </Typography>
+                          <Typography color="text.secondary" variant="caption">
+                            Project
+                          </Typography>
+                        </Box>
+                      </Box>
+                    ))
+                  )}
+                </>
+              )}
+
+              {/* Divider between sections — only when both have results */}
+              {!isDebouncing &&
+                !isLoadingDropdown &&
+                dropdownProjects.length > 0 &&
+                dropdownCases.length > 0 && <Divider />}
+
+              {/* Cases section */}
+              {(isDebouncing || isLoadingDropdown || dropdownCases.length > 0) && (
+                <>
+                  {isDebouncing || isLoadingDropdown ? (
+                    [1, 2, 3].map((i) => (
+                      <Box
+                        key={i}
+                        sx={{
+                          alignItems: "center",
+                          display: "flex",
+                          gap: 1.5,
+                          px: 2,
+                          py: 1,
+                        }}
+                      >
+                        <Skeleton height={36} variant="circular" width={36} />
+                        <Box sx={{ flex: 1 }}>
+                          <Skeleton variant="text" width="70%" />
+                          <Skeleton variant="text" width="30%" />
+                        </Box>
+                      </Box>
+                    ))
+                  ) : (
+                    dropdownCases.map((c) => {
+                      const casePath = getCaseNavigationPath(c);
+                      const { color: caseTypeColor, displayLabel: caseTypeLabel } = getCaseTypeChipProps(c.caseType?.label);
+                      return (
+                      <Box
+                        key={c.id}
+                        onClick={casePath ? () => {
+                          setDropdownOpen(false);
+                          navigate(casePath, { state: { returnTo: "/" } });
+                        } : undefined}
+                        sx={{
+                          alignItems: "center",
+                          cursor: casePath ? "pointer" : "default",
+                          display: "flex",
+                          gap: 1.5,
+                          px: 2,
+                          py: 1.25,
+                          "&:hover": { bgcolor: "action.hover" },
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            alignItems: "center",
+                            bgcolor: alpha(caseTypeColor, 0.15),
+                            borderRadius: "50%",
+                            color: caseTypeColor,
+                            display: "flex",
+                            flexShrink: 0,
+                            height: 36,
+                            justifyContent: "center",
+                            width: 36,
+                          }}
+                        >
+                          <FileText size={16} />
+                        </Box>
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                          <Typography noWrap variant="body2">
+                            {highlightMatch(c.title ?? "--", debouncedSearchQuery)}
+                          </Typography>
+                          <Box sx={{ alignItems: "center", display: "flex", gap: 0.75, mt: 0.25 }}>
+                            <Typography color="text.secondary" noWrap variant="caption">
+                              {formatCasesTableCaseIdentifier(c.number, c.internalId)}
+                            </Typography>
+                            <Chip
+                              label={caseTypeLabel}
+                              size="small"
+                              variant="outlined"
+                              sx={(theme) => ({
+                                bgcolor: alpha(caseTypeColor, theme.palette.mode === "dark" ? 0.05 : 0.1),
+                                borderColor: alpha(caseTypeColor, theme.palette.mode === "dark" ? 0.18 : 0.3),
+                                color: caseTypeColor,
+                                flexShrink: 0,
+                                fontSize: "0.65rem",
+                                fontWeight: 500,
+                                height: 16,
+                                px: 0,
+                                "& .MuiChip-label": { pl: "5px", pr: "5px" },
+                              })}
+                            />
+                          </Box>
+                        </Box>
+                      </Box>
+                      );
+                    })
+                  )}
+                </>
+              )}
+
+              {/* No results */}
+              {!isDebouncing &&
+                !isLoadingDropdown &&
+                dropdownProjects.length === 0 &&
+                dropdownCases.length === 0 && (
+                  <Box sx={{ px: 2, py: 2, textAlign: "center" }}>
+                    <Typography color="text.secondary" variant="body2">
+                      No results found.
+                    </Typography>
+                  </Box>
+                )}
+            </Paper>
           )}
         </Box>
       </Box>
