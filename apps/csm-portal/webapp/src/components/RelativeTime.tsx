@@ -46,21 +46,29 @@ function CopyPermalinkButton({ href }: { href: string }): JSX.Element {
 
   const handleCopy = (): void => {
     const url = `${window.location.origin}${window.location.pathname}${href}`;
-    void navigator.clipboard.writeText(url).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(url).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      },
+      () => {
+        // swallow — no toast surface available from this small button
+      },
+    );
   };
 
+  const label = copied ? "Copied" : "Copy link to this entry";
+
   return (
-    <Tooltip title={copied ? "Copied!" : "Copy link to this comment"} placement="top">
+    <Tooltip title={label} placement="top">
       <Button
         size="small"
         variant="text"
         color="inherit"
         onClick={handleCopy}
         sx={{ minWidth: 0, p: 0.5, color: "text.disabled" }}
-        aria-label="Copy link to this comment"
+        aria-label={label}
       >
         {copied ? <Check size={13} /> : <Link2 size={13} />}
       </Button>

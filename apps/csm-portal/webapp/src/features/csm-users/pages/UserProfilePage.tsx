@@ -118,10 +118,16 @@ function NotAvailableYetSection({
 export default function UserProfilePage(): JSX.Element {
   const { email: emailParam } = useParams<{ email: string }>();
   const navigate = useNavTransition();
-  const email = useMemo(
-    () => (emailParam ? decodeURIComponent(emailParam) : undefined),
-    [emailParam],
-  );
+  const email = useMemo(() => {
+    if (!emailParam) return undefined;
+    try {
+      return decodeURIComponent(emailParam);
+    } catch {
+      // Malformed percent-encoding (e.g. a lone "%") — fall through to the
+      // existing not-found state instead of throwing during render.
+      return undefined;
+    }
+  }, [emailParam]);
 
   const { data, isLoading, isError, error } = useSearchUsers({
     filters: email ? { emails: [email] } : undefined,

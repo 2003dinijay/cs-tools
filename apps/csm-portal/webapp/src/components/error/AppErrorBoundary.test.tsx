@@ -91,10 +91,9 @@ describe("AppErrorBoundary", () => {
     expect(copied).toContain("URL: https://csm.example.com/cases/1");
     expect(copied).toContain("Error: Error: boom");
     expect(copied).toContain("Component stack:");
+    expect(copied).toContain("Bomb");
     expect(copied).not.toContain("Correlation ID:");
 
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /copy error details/i })).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("Copied")).toBeInTheDocument());
   });
 });

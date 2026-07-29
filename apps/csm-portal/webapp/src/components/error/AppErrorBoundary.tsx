@@ -89,13 +89,19 @@ export default class AppErrorBoundary extends Component<
       componentStack ?? "(unavailable)",
     ];
 
-    void navigator.clipboard.writeText(lines.join("\n")).then(() => {
-      this.setState({ copied: true });
-      if (this.copyResetTimer) clearTimeout(this.copyResetTimer);
-      this.copyResetTimer = setTimeout(() => {
-        this.setState({ copied: false });
-      }, COPY_CONFIRMATION_MS);
-    });
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(lines.join("\n")).then(
+      () => {
+        this.setState({ copied: true });
+        if (this.copyResetTimer) clearTimeout(this.copyResetTimer);
+        this.copyResetTimer = setTimeout(() => {
+          this.setState({ copied: false });
+        }, COPY_CONFIRMATION_MS);
+      },
+      () => {
+        // swallow — clipboard denied/unavailable; leave copied state untouched
+      },
+    );
   };
 
   /** Render the children, or the recovery screen once an error is caught. */

@@ -43,7 +43,7 @@ describe("RelativeTime", () => {
     render(<RelativeTime iso={iso} href="#cmt-1001-2" />);
     expect(screen.getByRole("link")).toHaveAttribute("href", "#cmt-1001-2");
     expect(
-      screen.getByRole("button", { name: /copy link to this comment/i }),
+      screen.getByRole("button", { name: /copy link to this entry/i }),
     ).toBeInTheDocument();
   });
 
@@ -51,7 +51,7 @@ describe("RelativeTime", () => {
     render(<RelativeTime iso={iso} href="#cmt-1001-2" />);
 
     const button = screen.getByRole("button", {
-      name: /copy link to this comment/i,
+      name: /copy link to this entry/i,
     });
     fireEvent.click(button);
 
@@ -61,10 +61,41 @@ describe("RelativeTime", () => {
       );
     });
 
-    // Transient "Copied!" confirmation shows via the tooltip title immediately
-    // after copying (button stays in the document; label itself is static).
     await waitFor(() => {
-      expect(button).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /copied/i })).toBeInTheDocument();
     });
+  });
+
+  it("does not mark the link copied when the clipboard write is rejected", async () => {
+    Object.assign(navigator, {
+      clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    render(<RelativeTime iso={iso} href="#cmt-1001-2" />);
+
+    const button = screen.getByRole("button", {
+      name: /copy link to this entry/i,
+    });
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
+    });
+
+    // Give the rejected promise a tick to settle, then confirm no "Copied"
+    // state was set — the button keeps its original label/icon.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(
+      screen.getByRole("button", { name: /copy link to this entry/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("does nothing when the Clipboard API is unavailable", () => {
+    Object.assign(navigator, { clipboard: undefined });
+    render(<RelativeTime iso={iso} href="#cmt-1001-2" />);
+
+    const button = screen.getByRole("button", {
+      name: /copy link to this entry/i,
+    });
+    expect(() => fireEvent.click(button)).not.toThrow();
   });
 });
