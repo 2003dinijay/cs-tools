@@ -451,7 +451,7 @@ export default function UserGlobalSearch(): JSX.Element {
                           gap: 1.5,
                           px: 2,
                           py: 1.25,
-                          "&:hover": { bgcolor: "action.hover" },
+                          ...(casePath ? { "&:hover": { bgcolor: "action.hover" } } : {}),
                         }}
                       >
                         <Box
