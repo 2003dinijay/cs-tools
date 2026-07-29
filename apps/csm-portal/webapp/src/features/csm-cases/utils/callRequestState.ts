@@ -15,6 +15,8 @@
 // under the License.
 
 import type { BeCallRequestStateKey } from "@api/backend/types";
+import type { CaseState } from "@features/csm-dashboard/types/abtDashboard";
+import { stateLabel } from "@features/csm-dashboard/utils/abtDashboard";
 
 /** Human-readable label for each call request state key. */
 export const CALL_REQUEST_STATE_LABEL: Record<BeCallRequestStateKey, string> = {
@@ -156,3 +158,48 @@ export const CALL_REQUEST_AGENT_ACTIONS: Record<
   notes_pending: ["sendNotes"],
   concluded: [],
 };
+
+// ---------------------------------------------------------------------------
+// Case-state gate for creating a call request
+// ---------------------------------------------------------------------------
+
+/**
+ * Case states in which a call request may be created (or rescheduled). This
+ * mirrors the data source's own gate (`CallRequestUtils.scheduleCall`), which
+ * rejects the schedule/reschedule attempt with a generic error unless the
+ * case is in one of these 5 states. The FE check exists purely to surface a
+ * clear reason before submit -- the backend remains the source of truth and
+ * is still enforced there; if the two ever drift, the backend wins.
+ */
+export const CALL_REQUEST_ALLOWED_CASE_STATES: readonly CaseState[] = [
+  "work_in_progress",
+  "awaiting_info",
+  "waiting_on_wso2",
+  "solution_proposed",
+  "reopened",
+];
+
+/**
+ * Whether a call request may be created for a case in `state`. An `undefined`
+ * state (case not loaded / not passed by the caller) is treated as
+ * permissive -- we only block once we positively know the state is
+ * disallowed, and the backend still enforces the rule either way.
+ */
+export function caseAcceptsCallRequests(state: CaseState | undefined): boolean {
+  if (!state) return true;
+  return CALL_REQUEST_ALLOWED_CASE_STATES.includes(state);
+}
+
+/**
+ * Human-readable reason a call request can't be created for the case's
+ * current state, or `null` when it can (including when `state` is unknown).
+ */
+export function callRequestCaseStateBlockReason(
+  state: CaseState | undefined,
+): string | null {
+  if (caseAcceptsCallRequests(state)) return null;
+  const labels = CALL_REQUEST_ALLOWED_CASE_STATES.map(stateLabel);
+  const last = labels[labels.length - 1];
+  const rest = labels.slice(0, -1).join(", ");
+  return `Calls can only be requested while the case is ${rest}, or ${last}.`;
+}

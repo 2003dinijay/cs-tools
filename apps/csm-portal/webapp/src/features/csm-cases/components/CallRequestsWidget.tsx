@@ -31,7 +31,7 @@ import {
 import { Phone, Plus, RefreshCw } from "@wso2/oxygen-ui-icons-react";
 import { useEffect, useState, type JSX } from "react";
 import type { BeCallRequestView, BeCallRequestStateKey } from "@api/backend/types";
-import type { Severity } from "@features/csm-dashboard/types/abtDashboard";
+import type { CaseState, Severity } from "@features/csm-dashboard/types/abtDashboard";
 import {
   useGetCsmCaseCallRequests,
   usePostCsmCaseCallRequest,
@@ -40,6 +40,7 @@ import {
 import {
   ALL_CALL_REQUEST_STATES,
   CALL_REQUEST_STATE_LABEL,
+  callRequestCaseStateBlockReason,
   type CallRequestAgentAction,
   resolveCallRequestStateKey,
 } from "@features/csm-cases/utils/callRequestState";
@@ -58,6 +59,13 @@ interface CallRequestsWidgetProps {
   caseId: string;
   /** Case severity (S0-S4) — passed to the create dialog to enforce the lead-time rule. */
   severity?: Severity;
+  /**
+   * Case's current state — the data source only accepts a call request while
+   * the case is in one of a fixed set of states. Gates both the "Create call
+   * request" trigger and the dialog's submit action; passed straight from the
+   * live case-detail data so it stays in sync if the case's state changes.
+   */
+  caseState?: CaseState;
   /** True to pop the "Create call request" dialog from outside the widget
    * (e.g. the case action bar's "Request a call" item). One-shot: the
    * widget calls `onAutoOpenCreateHandled` once it has acted on it, so the
@@ -77,6 +85,7 @@ interface CallRequestsWidgetProps {
 export function CallRequestsWidget({
   caseId,
   severity,
+  caseState,
   autoOpenCreate,
   onAutoOpenCreateHandled,
   isClosed,
@@ -96,15 +105,17 @@ export function CallRequestsWidget({
   const [createOpen, setCreateOpen] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
+  const stateBlockReason = callRequestCaseStateBlockReason(caseState);
+
   useEffect(() => {
     if (autoOpenCreate) {
-      if (!isClosed) {
+      if (!isClosed && !stateBlockReason) {
         // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs the dialog open to an external one-shot trigger from the case action bar
         setCreateOpen(true);
       }
       onAutoOpenCreateHandled?.();
     }
-  }, [autoOpenCreate, isClosed, onAutoOpenCreateHandled]);
+  }, [autoOpenCreate, isClosed, stateBlockReason, onAutoOpenCreateHandled]);
 
   // Dialog targets — only one dialog is ever open at a time, driven by which
   // action was clicked on a row.
@@ -287,14 +298,20 @@ export function CallRequestsWidget({
                 ))}
               </Select>
             </FormControl>
-            <Tooltip title={isClosed ? "This case is closed — it's read-only." : ""}>
+            <Tooltip
+              title={
+                isClosed
+                  ? "This case is closed — it's read-only."
+                  : (stateBlockReason ?? "")
+              }
+            >
               <span>
                 <Button
                   size="small"
                   variant="contained"
                   startIcon={<Plus size={14} />}
                   onClick={() => setCreateOpen(true)}
-                  disabled={isClosed}
+                  disabled={isClosed || !!stateBlockReason}
                   sx={{ textTransform: "none" }}
                 >
                   Create call request
@@ -362,6 +379,7 @@ export function CallRequestsWidget({
         submitting={postCallRequest.isPending}
         error={createError}
         severity={severity}
+        caseState={caseState}
         onClose={() => {
           setCreateOpen(false);
           setCreateError(null);

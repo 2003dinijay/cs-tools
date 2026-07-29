@@ -17,6 +17,8 @@
 import { describe, expect, it } from "vitest";
 import {
   CALL_REQUEST_AGENT_ACTIONS,
+  caseAcceptsCallRequests,
+  callRequestCaseStateBlockReason,
   callRequestStateColor,
   callRequestStateLabel,
   resolveCallRequestStateKey,
@@ -92,5 +94,37 @@ describe("callRequestStateLabel / callRequestStateColor", () => {
     expect(callRequestStateLabel(undefined)).toBe("Unknown");
     expect(callRequestStateColor({ id: 99 })).toBe("default");
     expect(callRequestStateLabel({ id: 99 })).toBe("99");
+  });
+});
+
+describe("caseAcceptsCallRequests / callRequestCaseStateBlockReason", () => {
+  it("allows the 5 states the data source permits a call request in", () => {
+    for (const state of [
+      "work_in_progress",
+      "awaiting_info",
+      "waiting_on_wso2",
+      "solution_proposed",
+      "reopened",
+    ] as const) {
+      expect(caseAcceptsCallRequests(state)).toBe(true);
+      expect(callRequestCaseStateBlockReason(state)).toBeNull();
+    }
+  });
+
+  it("blocks other case states with a reason listing the allowed states", () => {
+    for (const state of ["open", "closed"] as const) {
+      expect(caseAcceptsCallRequests(state)).toBe(false);
+      const reason = callRequestCaseStateBlockReason(state);
+      expect(reason).toContain("Work in progress");
+      expect(reason).toContain("Awaiting info");
+      expect(reason).toContain("Waiting on WSO2");
+      expect(reason).toContain("Solution proposed");
+      expect(reason).toContain("Reopened");
+    }
+  });
+
+  it("is permissive when the state is unknown (undefined) -- the backend still enforces the rule", () => {
+    expect(caseAcceptsCallRequests(undefined)).toBe(true);
+    expect(callRequestCaseStateBlockReason(undefined)).toBeNull();
   });
 });

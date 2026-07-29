@@ -2161,6 +2161,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           <CallRequestsWidget
             caseId={caseId}
             severity={c.severity}
+            caseState={c.state}
             isClosed={isClosed}
           />
         </Box>
