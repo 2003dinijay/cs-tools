@@ -18,7 +18,24 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import IncidentActionBar from "@features/csm-operations/components/IncidentActionBar";
+import { getLegalNextIncidentStates } from "@features/csm-operations/utils/incidents";
 import type { BeIncidentDetail, BeIncidentState } from "@api/backend/types";
+
+// Only `getLegalNextIncidentStates` is overridden (per-test, via
+// `mockReturnValueOnce` below) so the "single-target" branch — which none of
+// today's real states happen to exercise — can still be tested directly.
+// Everything else (icons, labels) uses the real module. Statically mocking
+// like this, instead of `vi.resetModules()` + a dynamic `import()` of the
+// component under test, avoids the risk of that reset also evicting React
+// itself from the module cache and re-evaluating a second copy.
+vi.mock("@features/csm-operations/utils/incidents", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@features/csm-operations/utils/incidents")>();
+  return {
+    ...actual,
+    getLegalNextIncidentStates: vi.fn(actual.getLegalNextIncidentStates),
+  };
+});
 
 function incidentInState(state: BeIncidentState): BeIncidentDetail {
   return {
@@ -131,32 +148,17 @@ describe("IncidentActionBar — dispatch", () => {
 describe("IncidentActionBar — single-target rendering (no menu needed)", () => {
   // None of today's real states happen to have exactly one legal next state
   // (see incidents.test.ts), but the bar still supports it — exercise that
-  // branch directly by overriding the transition table for this test only.
-  it("renders one contained button (no 'Change state' menu) and dispatches on click", async () => {
-    vi.resetModules();
-    vi.doMock("@features/csm-operations/utils/incidents", async (importOriginal) => {
-      const actual = await importOriginal<typeof import("@features/csm-operations/utils/incidents")>();
-      return {
-        ...actual,
-        getLegalNextIncidentStates: () => ["NEW", "IN_PROGRESS"],
-      };
-    });
-    const { default: IsolatedIncidentActionBar } = await import(
-      "@features/csm-operations/components/IncidentActionBar"
-    );
+  // branch directly by overriding the transition table for this test only,
+  // via the hoisted mock above.
+  it("renders one contained button (no 'Change state' menu) and dispatches on click", () => {
+    vi.mocked(getLegalNextIncidentStates).mockReturnValueOnce(["NEW", "IN_PROGRESS"]);
     const onAction = vi.fn();
     render(
-      <IsolatedIncidentActionBar
-        incident={incidentInState("NEW")}
-        isPending={false}
-        onAction={onAction}
-      />,
+      <IncidentActionBar incident={incidentInState("NEW")} isPending={false} onAction={onAction} />,
     );
     expect(screen.queryByRole("button", { name: /change state/i })).not.toBeInTheDocument();
     const button = screen.getByRole("button", { name: /in progress/i });
     fireEvent.click(button);
     expect(onAction).toHaveBeenCalledWith("IN_PROGRESS");
-    vi.doUnmock("@features/csm-operations/utils/incidents");
-    vi.resetModules();
   });
 });

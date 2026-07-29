@@ -63,7 +63,9 @@ import {
   useGetCsmCaseAttachments,
   usePostCsmCaseAttachment,
   useDownloadCsmCaseAttachment,
+  useGetCsmCaseAttachmentContent,
 } from "@features/csm-cases/api/useCsmCaseAttachments";
+import type { CaseAttachment } from "@features/csm-cases/types/csmCases";
 import type {
   BeEntityRef,
   BeIncidentDetail,
@@ -172,7 +174,12 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   const { data: attachments } = useGetCsmCaseAttachments(id, "incident");
   const postAttachment = usePostCsmCaseAttachment();
   const downloadAttachment = useDownloadCsmCaseAttachment();
+  const getAttachmentPreviewContent = useGetCsmCaseAttachmentContent();
   const [composerOpen, setComposerOpen] = useState(false);
+  // Shared between the Activities feed and the Attachments tab, same as
+  // CsmCaseDetailPage — one attachment previewed at a time regardless of
+  // which surface opened it.
+  const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(null);
 
   const attachmentList = useMemo(() => attachments ?? [], [attachments]);
   const watchList = useMemo(() => data?.watchList ?? [], [data?.watchList]);
@@ -474,7 +481,13 @@ export default function CsmIncidentDetailPage(): JSX.Element {
           <CaseActivitiesFeed
             comments={comments ?? []}
             audit={[]}
-            attachments={[]}
+            attachments={attachmentList}
+            onDownloadAttachment={onDownloadAttachment}
+            preview={{
+              onGetPreviewContent: getAttachmentPreviewContent,
+              previewTarget,
+              onPreviewTargetChange: setPreviewTarget,
+            }}
           />
         </Card>
       )}
@@ -657,6 +670,11 @@ export default function CsmIncidentDetailPage(): JSX.Element {
             }
             onUpload={onUploadAttachment}
             onDownload={onDownloadAttachment}
+            preview={{
+              onGetPreviewContent: getAttachmentPreviewContent,
+              previewTarget,
+              onPreviewTargetChange: setPreviewTarget,
+            }}
           />
         </Card>
       )}
