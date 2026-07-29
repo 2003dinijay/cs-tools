@@ -55,13 +55,25 @@ func NewUsersHandler(scim scimClient, entity entityUserClient) *UsersHandler {
 
 // userMeResponse is the GET /users/me response shape.
 type userMeResponse struct {
-	ID          *string  `json:"id,omitempty"`
-	Email       string   `json:"email"`
-	FirstName   *string  `json:"firstName,omitempty"`
-	LastName    *string  `json:"lastName,omitempty"`
-	TimeZone    *string  `json:"timeZone,omitempty"`
-	Roles       []string `json:"roles,omitempty"`
-	PhoneNumber *string  `json:"phoneNumber,omitempty"`
+	ID          *string           `json:"id,omitempty"`
+	Email       string            `json:"email"`
+	FirstName   *string           `json:"firstName,omitempty"`
+	LastName    *string           `json:"lastName,omitempty"`
+	TimeZone    *string           `json:"timeZone,omitempty"`
+	Roles       []string          `json:"roles,omitempty"`
+	PhoneNumber *string           `json:"phoneNumber,omitempty"`
+	Team        *userTeamResponse `json:"team,omitempty"`
+}
+
+// userTeamResponse is the caller's resolved ABT (Account-Based Team), passed
+// through from the entity service's GET /users/me as-is. Nil when the caller
+// has no resolvable ABT team membership, or when team resolution failed
+// upstream (best-effort, never fails the identity response).
+type userTeamResponse struct {
+	TeamKey  string `json:"teamKey"`
+	TeamName string `json:"teamName"`
+	// Family may be empty: not every ABT team is classified into a family.
+	Family string `json:"family"`
 }
 
 // entityUserMeResponse is the subset of the entity GET /users/me response we care about.
@@ -72,6 +84,9 @@ type entityUserMeResponse struct {
 	LastName  string   `json:"lastName"`
 	TimeZone  *string  `json:"timeZone"`
 	Roles     []string `json:"roles"`
+	// Team is absent (or null) from the entity response when the caller has
+	// no resolvable ABT team membership, or when resolution failed upstream.
+	Team *userTeamResponse `json:"team"`
 }
 
 // userUpdateRequest is the PATCH /users/me request shape.
@@ -113,6 +128,7 @@ func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 			if entityResp.Roles != nil {
 				resp.Roles = entityResp.Roles
 			}
+			resp.Team = entityResp.Team
 		}
 	}
 

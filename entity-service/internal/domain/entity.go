@@ -142,14 +142,26 @@ type SearchSNUsersResponse struct {
 	Offset int      `json:"offset"`
 }
 
+// UserTeam identifies the caller's resolved ABT (Account-Based Team),
+// derived live from ServiceNow group membership on every GET /users/me call.
+type UserTeam struct {
+	TeamKey  string `json:"teamKey"`
+	TeamName string `json:"teamName"`
+	Family   string `json:"family"` // "cre" | "sre"
+}
+
 // GetUserMeResponse is the response for GET /users/me from the ServiceNow data source.
 type GetUserMeResponse struct {
-	ID        string   `json:"id"`
-	Email     string   `json:"email"`
-	FirstName *string  `json:"firstName,omitempty"`
-	LastName  string   `json:"lastName"`
-	TimeZone  *string  `json:"timeZone,omitempty"`
-	Roles     []string `json:"roles"`
+	ID        string    `json:"id"`
+	Email     string    `json:"email"`
+	FirstName *string   `json:"firstName,omitempty"`
+	LastName  string    `json:"lastName"`
+	TimeZone  *string   `json:"timeZone,omitempty"`
+	Roles     []string  `json:"roles"`
+	// Team is nil when the caller has no resolvable ABT team membership, or
+	// when team resolution failed — team resolution is best-effort and never
+	// fails the identity response.
+	Team *UserTeam `json:"team,omitempty"`
 }
 
 // PatchUserMeRequest is the request body for PATCH /users/me.

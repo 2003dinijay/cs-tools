@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -35,6 +36,28 @@ type snUserMeResponse struct {
 	LastName  string   `json:"lastName"`
 	TimeZone  *string  `json:"timeZone"`
 	Roles     []string `json:"roles"`
+}
+
+// snGroupMembersSearchPayload is the Choreo POST group-members/search request body.
+type snGroupMembersSearchPayload struct {
+	Filters snGroupMembersFilters `json:"filters"`
+}
+
+type snGroupMembersFilters struct {
+	GroupNames []string `json:"groupNames"`
+	UserID     string   `json:"userId"`
+}
+
+// snGroupMembersSearchResponse mirrors the Choreo POST group-members/search response.
+type snGroupMembersSearchResponse struct {
+	Memberships  []snGroupMembership `json:"memberships"`
+	TotalRecords int                 `json:"totalRecords"`
+}
+
+type snGroupMembership struct {
+	UserID    string `json:"userId"`
+	GroupID   string `json:"groupId"`
+	GroupName string `json:"groupName"`
 }
 
 // snPatchUserMePayload is the Choreo PATCH /users/me request body.
@@ -124,6 +147,11 @@ type snUserService struct {
 
 // NewServiceNowUserService constructs an SNUserService backed by the Choreo API.
 func NewServiceNowUserService(client *integrationservice.Client) SNUserService {
+	// The ABT team registry (GET abt-teams) is static reference data served
+	// by the same Choreo-fronted Ballerina service — no user token needed.
+	domain.SetAbtTeamsFetcher(func(ctx context.Context) (json.RawMessage, error) {
+		return client.Get(ctx, "/abt-teams", "")
+	})
 	return &snUserService{client: client}
 }
 
@@ -248,7 +276,55 @@ func (s *snUserService) GetMe(ctx context.Context) (domain.GetUserMeResponse, er
 		LastName:  snResp.LastName,
 		TimeZone:  snResp.TimeZone,
 		Roles:     roles,
+		Team:      s.resolveAbtTeam(ctx, token, snResp.ID),
 	}, nil
+}
+
+// resolveAbtTeam resolves the caller's ABT team via a live ServiceNow
+// group-membership lookup, using the same forwarded user id token as the
+// /users/me call. Team resolution is best-effort: a registry-fetch failure,
+// a group-membership-call failure, or no matching membership all degrade to
+// a nil result rather than failing the caller's /users/me response.
+func (s *snUserService) resolveAbtTeam(ctx context.Context, token string, userSysID string) *domain.UserTeam {
+	groupNames := domain.AbtGroupNames()
+	if len(groupNames) == 0 {
+		return nil
+	}
+
+	payload := snGroupMembersSearchPayload{
+		Filters: snGroupMembersFilters{
+			GroupNames: groupNames,
+			UserID:     userSysID,
+		},
+	}
+
+	raw, err := s.client.Post(ctx, "/group-members/search", token, payload)
+	if err != nil {
+		log.Printf("sn users: abt team group-membership lookup failed: %v", err)
+		return nil
+	}
+
+	var snResp snGroupMembersSearchResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		log.Printf("sn users: abt team group-membership lookup: parse response failed: %v", err)
+		return nil
+	}
+	if len(snResp.Memberships) == 0 {
+		return nil
+	}
+
+	// Confirmed: a user belongs to at most one ABT team, so the first
+	// membership returned is authoritative.
+	team, ok := domain.FindAbtTeamByGroupName(snResp.Memberships[0].GroupName)
+	if !ok {
+		return nil
+	}
+
+	return &domain.UserTeam{
+		TeamKey:  team.TeamKey,
+		TeamName: team.DisplayName,
+		Family:   string(team.Family),
+	}
 }
 
 func (s *snUserService) PatchMe(ctx context.Context, req domain.PatchUserMeRequest) (domain.PatchUserMeResponse, error) {
