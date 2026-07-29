@@ -1931,6 +1931,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   audit={activityAudit ?? []}
                   attachments={attachmentList}
                   onDownloadAttachment={onDownloadAttachment}
+                  preview={{
+                    onGetPreviewContent: getAttachmentPreviewContent,
+                    previewTarget,
+                    onPreviewTargetChange: setPreviewTarget,
+                  }}
                 />
               </>
             )}
