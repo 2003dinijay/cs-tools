@@ -22,7 +22,6 @@ import {
   CircularProgress,
   IconButton,
   InputAdornment,
-  LinearProgress,
   Menu,
   MenuItem,
   Paper,
@@ -57,7 +56,6 @@ import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 
 const ROWS_PER_PAGE_OPTIONS = [10, 25, 50];
 const DEFAULT_ROWS_PER_PAGE = 10;
-const SKELETON_ROW_COUNT = 5;
 const COL_SPAN = 6;
 
 
@@ -275,14 +273,6 @@ export default function PartnerCasesPage(): JSX.Element {
         />
       </Box>
 
-      {/* Loading indicator */}
-      {isLoading && (
-        <LinearProgress
-          color="inherit"
-          sx={{ flexShrink: 0, height: 2, mx: 2 }}
-        />
-      )}
-
       {/* Scrollable table */}
       <Box
         sx={{
@@ -307,7 +297,7 @@ export default function PartnerCasesPage(): JSX.Element {
             </TableHead>
             <TableBody>
               {isLoading ? (
-                Array.from({ length: SKELETON_ROW_COUNT }).map((_, i) => (
+                Array.from({ length: rowsPerPage }).map((_, i) => (
                   <TableRow key={`sk-${i}`}>
                     {Array.from({ length: COL_SPAN }).map((_, j) => (
                       <TableCell key={j}>
