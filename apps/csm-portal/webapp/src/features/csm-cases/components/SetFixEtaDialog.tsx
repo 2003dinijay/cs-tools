@@ -99,7 +99,6 @@ function FixEtaDatePicker({
             size: "small",
             helperText: isPast ? "This date is in the past." : undefined,
           },
-          field: { clearable: true },
         }}
       />
     </LocalizationProvider>

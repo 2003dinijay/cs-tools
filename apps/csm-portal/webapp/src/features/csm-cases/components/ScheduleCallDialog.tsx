@@ -64,6 +64,13 @@ export interface ScheduleCallDialogProps {
   isReschedule: boolean;
   submitting: boolean;
   error: string | null;
+  /**
+   * Non-null when the parent case's current state doesn't allow scheduling a
+   * call (same rule as call-request creation — see
+   * `callRequestCaseStateBlockReason`). Displays the reason and disables
+   * submit; the caller should also reject the mutation defensively.
+   */
+  stateBlockReason?: string | null;
   onClose: () => void;
   onSubmit: (input: {
     meetingDate: string;
@@ -81,6 +88,7 @@ export function ScheduleCallDialog({
   isReschedule,
   submitting,
   error,
+  stateBlockReason,
   onClose,
   onSubmit,
 }: ScheduleCallDialogProps): JSX.Element {
@@ -139,7 +147,7 @@ export function ScheduleCallDialog({
   const canSubmit = durationValid && customTimeValid && !!meetingDate;
 
   const handleSubmit = () => {
-    if (!canSubmit || !meetingDate) return;
+    if (!canSubmit || !meetingDate || stateBlockReason) return;
     // Reject a time in the past (immediate feedback; the backing data source
     // enforces a stricter lead time). Time is read in the handler, not render.
     if (isPastDateTime(new Date(meetingDate))) {
@@ -159,6 +167,11 @@ export function ScheduleCallDialog({
       <DialogTitle>{isReschedule ? "Reschedule call" : "Schedule call"}</DialogTitle>
       <DialogContent>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 0.5 }}>
+          {stateBlockReason && (
+            <Typography variant="body2" color="error">
+              {stateBlockReason}
+            </Typography>
+          )}
           {(error || pastError) && (
             <Typography variant="body2" color="error">
               {error ?? "Meeting time must be in the future."}
@@ -272,7 +285,7 @@ export function ScheduleCallDialog({
         <Button
           variant="contained"
           onClick={handleSubmit}
-          disabled={!canSubmit || submitting}
+          disabled={!canSubmit || submitting || !!stateBlockReason}
           loading={submitting}
         >
           {isReschedule ? "Reschedule" : "Schedule"}

@@ -171,6 +171,10 @@ export function CallRequestsWidget({
     assignee?: string;
   }) => {
     if (!scheduleTarget) return;
+    if (stateBlockReason) {
+      setActionError(stateBlockReason);
+      return;
+    }
     setActionError(null);
     try {
       await patchCallRequest.mutateAsync({
@@ -394,6 +398,7 @@ export function CallRequestsWidget({
         isReschedule={!!isReschedule}
         submitting={patchCallRequest.isPending}
         error={actionError}
+        stateBlockReason={stateBlockReason}
         onClose={() => {
           setScheduleTarget(null);
           setActionError(null);

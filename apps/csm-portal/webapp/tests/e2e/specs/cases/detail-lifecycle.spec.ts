@@ -33,7 +33,7 @@
 //
 
 import { test, expect, withRole, approverSearchQuery } from "../../fixtures/test";
-import type { Page } from "@playwright/test";
+import { errors, type Page } from "@playwright/test";
 import { CaseCreatePage } from "../../pages/CaseCreatePage";
 import { CaseDetailPage } from "../../pages/CaseDetailPage";
 import { e2eCaseSubject } from "../../utils/selectors";
@@ -353,7 +353,13 @@ test.describe("case detail — manage watchers", () => {
       .watcherChip(name)
       .waitFor({ state: "visible", timeout: 10_000 })
       .then(() => true)
-      .catch(() => false);
+      .catch((err: unknown) => {
+        // Only the expected wait timeout downgrades to a self-skip below —
+        // anything else (closed page/context, broken locator, etc.) is a
+        // real regression and must fail loudly, not be silently skipped.
+        if (err instanceof errors.TimeoutError) return false;
+        throw err;
+      });
     test.skip(
       !added,
       `Picked watcher candidate "${name}" but no watcher chip appeared — ` +
