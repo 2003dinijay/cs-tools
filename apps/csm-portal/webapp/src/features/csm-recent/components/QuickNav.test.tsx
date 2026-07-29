@@ -64,9 +64,9 @@ const { default: QuickNav } = await import("./QuickNav");
 
 const idleResult = { data: undefined, isFetching: false };
 
-function renderQuickNav() {
+function renderQuickNav(initialEntries?: string[]) {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={initialEntries}>
       <QuickNav />
     </MemoryRouter>,
   );
@@ -146,5 +146,47 @@ describe("QuickNav", () => {
     expect(screen.queryByText("Change Requests")).not.toBeInTheDocument();
     expect(screen.queryByText("Problems")).not.toBeInTheDocument();
     expect(screen.getByText("No matches.")).toBeInTheDocument();
+  });
+
+  it("opens pre-filled and searching from a `?q=` link", async () => {
+    renderQuickNav(["/?q=CS0440883"]);
+
+    const input = await screen.findByLabelText("Quick nav search");
+    expect(input).toHaveValue("CS0440883");
+    await waitFor(() =>
+      expect(quickCaseSearchMock).toHaveBeenLastCalledWith("CS0440883"),
+    );
+  });
+
+  it("auto-navigates to the single record a `?goto=` link resolves to", async () => {
+    quickIncidentSearchMock.mockReturnValue({
+      data: [
+        {
+          id: "inc-1",
+          number: "INC0001234",
+          subject: "Prod cluster down",
+          state: "IN_PROGRESS",
+        },
+      ],
+      isFetching: false,
+    });
+
+    renderQuickNav(["/?goto=INC0001234"]);
+
+    await waitFor(() =>
+      expect(navigateMock).toHaveBeenCalledWith("/operations/incidents/inc-1"),
+    );
+  });
+
+  it("leaves the palette open when `?goto=` matches nothing", async () => {
+    renderQuickNav(["/?goto=NOPE0000"]);
+
+    const input = await screen.findByLabelText("Quick nav search");
+    await waitFor(() =>
+      expect(quickCaseSearchMock).toHaveBeenLastCalledWith("NOPE0000"),
+    );
+    await waitFor(() => expect(screen.getByText("No matches.")).toBeInTheDocument());
+    expect(input).toBeInTheDocument();
+    expect(navigateMock).not.toHaveBeenCalled();
   });
 });

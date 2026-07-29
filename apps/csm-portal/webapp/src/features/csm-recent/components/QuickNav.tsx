@@ -25,6 +25,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { Search } from "@wso2/oxygen-ui-icons-react";
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { useSearchParams } from "react-router";
 import { useAsgardeo } from "@asgardeo/react";
 
 import { navigableNavNodes } from "@config/featureFlags";
@@ -106,6 +107,14 @@ export default function QuickNav(): JSX.Element | null {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
 
+  // Shareable-link support: `?q=` opens the palette pre-filled with a search
+  // (e.g. a link like `/?q=CS0440883` someone pastes to a colleague), and
+  // `?goto=` additionally auto-jumps into the single matching record once
+  // its search settles, instead of leaving the user to click it themselves.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [gotoTarget, setGotoTarget] = useState<string | null>(null);
+  const consumedInitialParams = useRef(false);
+
   // Debounce the text fed to the case-search API so each keystroke doesn't fire
   // a request; the in-memory pinned/recent/page matching still reacts instantly
   // to `query`.
@@ -146,6 +155,24 @@ export default function QuickNav(): JSX.Element | null {
   const problemSearch = useQuickProblemSearch(open ? debouncedQuery : "");
 
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Consume `?q=`/`?goto=` once per page load, not on every render — a
+  // `setSearchParams` below removes them from the URL, and re-reading them
+  // after that (e.g. from a stale closure) would just no-op harmlessly, but
+  // this guard also stops a re-mount from re-opening the palette if the user
+  // has already closed it once this session.
+  useEffect(() => {
+    if (!isSignedIn || consumedInitialParams.current) return;
+    const q = searchParams.get("q");
+    const goto = searchParams.get("goto");
+    if (!q && !goto) return;
+    consumedInitialParams.current = true;
+    /* eslint-disable react-hooks/set-state-in-effect -- syncs palette state to an external one-shot source (the URL's initial q/goto params) */
+    setOpen(true);
+    setQuery(goto || q || "");
+    if (goto) setGotoTarget(goto.trim());
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [isSignedIn, searchParams]);
 
   // ⌘K / Ctrl+K toggles the palette — only while signed in, so we don't hijack
   // the browser shortcut on the sign-in screen (where the palette can't render).
@@ -341,6 +368,83 @@ export default function QuickNav(): JSX.Element | null {
     close();
     navigate(r.href);
   };
+
+  // `?goto=` resolution: once every search this query feeds has settled (not
+  // just the case search — an incident/CR/problem number should auto-jump
+  // too), look for an exact (case-insensitive) match on whichever identifier
+  // a person would actually paste into a link — a display number
+  // (`CS0440883`/`INC0012345`/...), the internal WSO2 case id, or a raw
+  // record id — across all four result sets combined. Exactly one match
+  // navigates straight there; zero or multiple matches leave the palette
+  // open on its normal search results so the user can pick, since a forced
+  // jump would be wrong (or arbitrary) either way.
+  useEffect(() => {
+    if (!gotoTarget) return;
+    const allSettled =
+      caseHitsSettled &&
+      !caseSearch.isFetching &&
+      !incidentSearch.isFetching &&
+      !changeRequestSearch.isFetching &&
+      !problemSearch.isFetching;
+    if (!allSettled) return;
+
+    const target = gotoTarget.toLowerCase();
+    const matchesTarget = (...ids: (string | null | undefined)[]) =>
+      ids.some((id) => id?.toLowerCase() === target);
+
+    const caseHref = (caseSearch.data ?? []).find((c) =>
+      matchesTarget(c.id, c.caseNumber, c.wso2CaseId),
+    );
+    const incidentHref = (incidentSearch.data ?? []).find((i) =>
+      matchesTarget(i.id, i.number),
+    );
+    const crHref = (changeRequestSearch.data ?? []).find((cr) =>
+      matchesTarget(cr.id, cr.number),
+    );
+    const problemHref = (problemSearch.data ?? []).find((p) =>
+      matchesTarget(p.id, p.number),
+    );
+
+    const matches = [
+      caseHref && `/cases/${caseHref.id}`,
+      incidentHref && `/operations/incidents/${incidentHref.id}`,
+      crHref && `/operations/change-requests/${crHref.id}`,
+      problemHref && `/operations/problems/${problemHref.id}`,
+    ].filter((href): href is string => !!href);
+
+    /* eslint-disable react-hooks/set-state-in-effect -- syncs palette state to the external goto/search resolution outcome, a one-shot action once the search settles */
+    setGotoTarget(null);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("q");
+        next.delete("goto");
+        return next;
+      },
+      { replace: true },
+    );
+
+    if (matches.length === 1) {
+      close();
+      navigate(matches[0]);
+    }
+    /* eslint-enable react-hooks/set-state-in-effect */
+    // matches.length === 0 or > 1: leave the palette open on its normal
+    // search results rather than guessing which one was meant.
+  }, [
+    gotoTarget,
+    caseHitsSettled,
+    caseSearch.isFetching,
+    caseSearch.data,
+    incidentSearch.isFetching,
+    incidentSearch.data,
+    changeRequestSearch.isFetching,
+    changeRequestSearch.data,
+    problemSearch.isFetching,
+    problemSearch.data,
+    navigate,
+    setSearchParams,
+  ]);
 
   const onListKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown") {
