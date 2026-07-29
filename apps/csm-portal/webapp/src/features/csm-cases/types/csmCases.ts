@@ -445,9 +445,15 @@ export interface CsmCaseDetail extends CsmCaseRow {
   /**
    * The case, incident, change request, or problem this case is linked to as
    * its parent (the hierarchical major-case/child-case relationship). Absent
-   * when not linked.
+   * when not linked. `type` may still be undefined/null for older data the
+   * backend can't resolve a type for — treat that as "case" (the only type
+   * this link supported before cross-table parents existed).
    */
-  parentCase?: { id: string; caseNumber?: string };
+  parentCase?: {
+    id: string;
+    caseNumber?: string;
+    type?: "case" | "incident" | "change_request" | "problem" | null;
+  };
   /**
    * Service-request cases whose parent points to this case. Populated on
    * every case detail response, not just high-severity cases.

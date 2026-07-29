@@ -188,9 +188,15 @@ export interface BeEntityRef {
 }
 
 /** A referenced case carrying only its display number, e.g. the related case. */
+export type BeParentCaseType = "case" | "incident" | "change_request" | "problem";
+
 export interface BeCaseNumberRef {
   id: string;
   number?: string;
+  /** Only populated on `parentCase`, since a case's parent can be any of these
+   * task-derived record types; absent/undefined elsewhere (e.g. `relatedCase`,
+   * always another case). */
+  type?: BeParentCaseType | null;
 }
 
 /**
@@ -905,7 +911,8 @@ export interface BeAttachment {
   type: string;
   sizeBytes: number;
   description?: string | null;
-  createdBy: string;
+  /** Uploader, in the same `{ id, name, email }` shape used elsewhere (e.g. case `createdBy`). */
+  createdBy: BeUserRef;
   createdOn: string;
   downloadUrl?: string | null;
   previewUrl?: string | null;
@@ -1045,7 +1052,8 @@ export type BeSubscriptionType =
 
 export interface BeProject {
   id: string;
-  accountId?: string;
+  /** Nested on the wire (ServiceNow data source); absent when the project has no linked account. */
+  account?: { id: string; name: string };
   sfId?: string;
   name?: string;
   projectKey?: string;
@@ -1059,6 +1067,8 @@ export interface BeProject {
 export interface BeProjectSearchPayload {
   pagination?: BePagination;
   searchQuery?: string;
+  /** Filter to projects belonging to this account (ServiceNow data source only). */
+  accountId?: string;
 }
 
 export interface BeProjectSearchResponse extends BeSearchResponseBase {

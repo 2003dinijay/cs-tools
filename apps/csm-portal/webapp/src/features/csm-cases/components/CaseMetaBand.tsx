@@ -25,7 +25,6 @@ import DeploymentDetailsDialog from "@features/csm-projects/components/Deploymen
 import type { BeDeploymentType } from "@api/backend/types";
 import { announcementStateRole } from "@features/csm-announcements/utils/announcementState";
 import { STATE_LABEL } from "@features/csm-dashboard/utils/abtDashboard";
-import { formatDateOnlyForDisplay } from "@utils/dateTime";
 
 interface CaseMetaBandProps {
   detail: CsmCaseDetail;
@@ -354,25 +353,6 @@ export default function CaseMetaBand({
                   )}
                 </Typography>
               </Cell>
-              {(c.bestCaseFixEta || c.mostLikelyFixEta || c.worstCaseFixEta) && (
-                <>
-                  <Cell label="Best case fix ETA">
-                    <Typography variant="body2" noWrap>
-                      {formatDateOnlyForDisplay(c.bestCaseFixEta) ?? "—"}
-                    </Typography>
-                  </Cell>
-                  <Cell label="Most likely fix ETA">
-                    <Typography variant="body2" noWrap>
-                      {formatDateOnlyForDisplay(c.mostLikelyFixEta) ?? "—"}
-                    </Typography>
-                  </Cell>
-                  <Cell label="Worst case fix ETA">
-                    <Typography variant="body2" noWrap>
-                      {formatDateOnlyForDisplay(c.worstCaseFixEta) ?? "—"}
-                    </Typography>
-                  </Cell>
-                </>
-              )}
             </>
           )}
         </Box>

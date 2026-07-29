@@ -436,6 +436,10 @@ type SearchProjectsRequest struct {
 	SortBy string `json:"sortBy"`
 	// SortOrder is the sort direction ("asc" or "desc", ServiceNow data source only).
 	SortOrder string `json:"sortOrder"`
+	// AccountID filters to projects belonging to this account. Platform UUID,
+	// converted to the backing data source's internal id before dispatch
+	// (ServiceNow data source only).
+	AccountID string `json:"accountId"`
 }
 
 // ProjectView is the unified search result shape returned for all data sources.
@@ -971,6 +975,11 @@ type AssignedEngineerRef struct {
 type CaseNumberRef struct {
 	ID     string `json:"id"`
 	Number string `json:"number"`
+	// Type discriminates what kind of record this reference points at
+	// ("case", "incident", "change_request", "problem") -- a task-derived reference
+	// like ParentCase can point at any of these, not just another case. Nil when the
+	// backing data source doesn't resolve a type (ServiceNow data source only).
+	Type *string `json:"type"`
 }
 
 // LinkedServiceRequestRef is a compact reference to a service-request case linked to
@@ -1242,6 +1251,19 @@ type UpdateCaseRequest struct {
 	// (ServiceNow u_worst_case_fix_eta), as a date-only "YYYY-MM-DD" string —
 	// see snUpdateCasePayload.WorstCaseFixEta in sn_case_service.go.
 	WorstCaseFixEta *string `json:"worstCaseFixEta"`
+	// AddPublicComment, when true and at least one of the 3 fix-ETA fields above is
+	// set in the same request, posts a customer-visible comment summarizing the fix
+	// ETA (built from Product + PublicTicket + the 3 ETA dates), mirroring ServiceNow's
+	// "Share Fix ETA" CWF action. Ignored (no comment posted) when false or omitted,
+	// but the 3 ETA fields still update either way (ServiceNow data source only).
+	AddPublicComment *bool `json:"addPublicComment"`
+	// Product names the product the fix ETA applies to, echoed into the public comment.
+	// Required by ServiceNow when AddPublicComment is true (ServiceNow data source only).
+	Product *string `json:"product"`
+	// PublicTicket is the public-facing ticket/issue reference (e.g. a public GitHub
+	// issue) echoed into the public comment. Required by ServiceNow when
+	// AddPublicComment is true (ServiceNow data source only).
+	PublicTicket *string `json:"publicTicket"`
 }
 
 // UpdateCaseResponse is the response for PATCH /cases/{id}.
@@ -1328,7 +1350,8 @@ type CaseAttachment struct {
 // id, number, and internal_id are auto-generated; state defaults to open.
 // CreatedBy is not accepted from the request body and will be wired from auth context later.
 // For type "service_request": catalogId, catalogItemId, and variables are required.
-// For type "security_report_analysis": subject, description, and at least one attachment are required.
+// For type "security_report_analysis": subject and description are required; attachments are optional
+// (uploaded via a separate request after creation, not bundled into this one).
 type CreateCaseRequest struct {
 	CreatedBy         string        `json:"-"`
 	Type              string        `json:"type"`
@@ -1600,10 +1623,10 @@ type Attachment struct {
 	Type          string        `json:"type"`
 	SizeBytes     int           `json:"sizeBytes"`
 	Description   *string       `json:"description"`
-	CreatedBy     string        `json:"createdBy"`
+	CreatedBy     UserRef       `json:"createdBy"`
 	CreatedOn     time.Time     `json:"createdOn"`
 	DownloadURL   *string       `json:"downloadUrl"`
-	PreviewURL    *string       `json:"previewUrl"`
+	PreviewURL        *string       `json:"previewUrl"`
 }
 
 // CreateAttachmentRequest is the input for POST /attachments.

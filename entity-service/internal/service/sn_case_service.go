@@ -49,6 +49,7 @@ type snCase struct {
 	CreatedOn             string                      `json:"createdOn"`
 	UpdatedOn             *string                     `json:"updatedOn"`
 	CreatedBy             string                      `json:"createdBy"`
+	CreatedByFullName     string                      `json:"createdByFullName"`
 	Project               snCaseEntityRef             `json:"project"`
 	Deployment            snCaseEntityRef             `json:"deployment"`
 	DeployedProduct       snCaseDeployedProduct       `json:"deployedProduct"`
@@ -135,8 +136,9 @@ type snCaseDeployedProduct struct {
 }
 
 type snCaseRef struct {
-	ID     string `json:"id"`
-	Number string `json:"number"`
+	ID     string  `json:"id"`
+	Number string  `json:"number"`
+	Type   *string `json:"type"`
 }
 
 type snLinkedServiceRequestRef struct {
@@ -219,6 +221,29 @@ func snCaseTypeToDomain(ct *snCaseEntityRef) *string {
 		}
 	}
 	return &domainType
+}
+
+// snParentCaseTypeMap maps the raw ServiceNow task-type value carried on a
+// parent/related case reference to the API's public CaseNumberRef.type enum
+// ("case" | "incident" | "change_request" | "problem").
+var snParentCaseTypeMap = map[string]string{
+	"default_case":   "case",
+	"incident":       "incident",
+	"change_request": "change_request",
+	"problem":        "problem",
+}
+
+// snParentCaseTypeToDomain maps a parent/related case reference's raw SN type
+// value to the domain enum, returning nil for nil or unrecognised values so an
+// unsupported ServiceNow task type never leaks onto the API surface.
+func snParentCaseTypeToDomain(raw *string) *string {
+	if raw == nil {
+		return nil
+	}
+	if mapped, ok := snParentCaseTypeMap[*raw]; ok {
+		return &mapped
+	}
+	return nil
 }
 
 func domainTypeKeysToSN(typeKeys []string) []string {
@@ -616,6 +641,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		CreatedOn:      createdOn,
 		UpdatedOn:      updatedOn,
 		CreatedByDetails: domain.UserRef{
+			Name:  c.CreatedByFullName,
 			Email: c.CreatedBy,
 		},
 		ProjectDetails: domain.EntityRef{ID: sysidToUUID(c.Project.ID), Name: c.Project.Name},
@@ -659,7 +685,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
 	}
 	if c.ParentCase != nil {
-		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number}
+		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number, Type: snParentCaseTypeToDomain(c.ParentCase.Type)}
 	}
 	if c.RelatedCase != nil {
 		cv.RelatedCase = &domain.CaseNumberRef{ID: sysidToUUID(c.RelatedCase.ID), Number: c.RelatedCase.Number}
@@ -970,6 +996,13 @@ type snUpdateCasePayload struct {
 	// (u_worst_case_fix_eta) as a date-only "YYYY-MM-DD" string. Same pathway
 	// as BestCaseFixEta above.
 	WorstCaseFixEta *string `json:"worstCaseFixEta,omitempty"`
+	// AddPublicComment/Product/PublicTicket mirror ServiceNow's "Share Fix ETA"
+	// CWF action: when AddPublicComment is true, ServiceNow posts a customer-visible
+	// comment built from Product/PublicTicket/the 3 ETA dates, in addition to writing
+	// the ETA fields themselves.
+	AddPublicComment *bool   `json:"addPublicComment,omitempty"`
+	Product          *string `json:"product,omitempty"`
+	PublicTicket     *string `json:"publicTicket,omitempty"`
 }
 
 // snResolutionStates are the state keys that allow resolution fields.
@@ -1294,6 +1327,23 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		}
 		payload.WorstCaseFixEta = req.WorstCaseFixEta
 	}
+	if req.AddPublicComment != nil {
+		hasAnyFixEta := req.BestCaseFixEta != nil || req.MostLikelyFixEta != nil || req.WorstCaseFixEta != nil
+		if !hasAnyFixEta {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "addPublicComment requires at least one of bestCaseFixEta, mostLikelyFixEta, or worstCaseFixEta"}
+		}
+		if *req.AddPublicComment {
+			if req.Product == nil || *req.Product == "" {
+				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "product is required when addPublicComment is true"}
+			}
+			if req.PublicTicket == nil || *req.PublicTicket == "" {
+				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "publicTicket is required when addPublicComment is true"}
+			}
+		}
+		payload.AddPublicComment = req.AddPublicComment
+		payload.Product = req.Product
+		payload.PublicTicket = req.PublicTicket
+	}
 
 	// Close-gate: reject closing a case that still has an open, customer-visible task.
 	// This is the authoritative server-side check (item 1's close-gating requirement) --
@@ -1373,7 +1423,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	}
 	resp.Case.CloseNotes = snResp.Case.CloseNotes
 	if snResp.Case.ParentCase != nil {
-		resp.Case.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(snResp.Case.ParentCase.ID), Number: snResp.Case.ParentCase.Number}
+		resp.Case.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(snResp.Case.ParentCase.ID), Number: snResp.Case.ParentCase.Number, Type: snParentCaseTypeToDomain(snResp.Case.ParentCase.Type)}
 	}
 	if snResp.Case.ResolvedOn != nil {
 		resolvedOn, err := time.Parse(snCreatedOnLayout, *snResp.Case.ResolvedOn)
@@ -1525,11 +1575,12 @@ type snAttachment struct {
 	Name        string  `json:"name"`
 	Type        string  `json:"type"`
 	SizeBytes   int     `json:"sizeBytes"`
-	Description *string `json:"description"`
-	CreatedBy   string  `json:"createdBy"`
-	CreatedOn   string  `json:"createdOn"`
-	DownloadURL *string `json:"downloadUrl"`
-	PreviewURL  *string `json:"previewUrl"`
+	Description       *string `json:"description"`
+	CreatedBy         string  `json:"createdBy"`
+	CreatedByFullName string  `json:"createdByFullName"`
+	CreatedOn         string  `json:"createdOn"`
+	DownloadURL       *string `json:"downloadUrl"`
+	PreviewURL        *string `json:"previewUrl"`
 }
 
 type snSearchAttachmentsResponse struct {
@@ -1583,10 +1634,13 @@ func (s *snCaseService) SearchCaseAttachments(ctx context.Context, req domain.Se
 			Type:          a.Type,
 			SizeBytes:     a.SizeBytes,
 			Description:   a.Description,
-			CreatedBy:     a.CreatedBy,
-			CreatedOn:     createdOn,
-			DownloadURL:   a.DownloadURL,
-			PreviewURL:    a.PreviewURL,
+			CreatedBy: domain.UserRef{
+				Name:  a.CreatedByFullName,
+				Email: a.CreatedBy,
+			},
+			CreatedOn:   createdOn,
+			DownloadURL: a.DownloadURL,
+			PreviewURL:  a.PreviewURL,
 		})
 	}
 

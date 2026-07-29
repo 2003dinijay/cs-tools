@@ -85,6 +85,7 @@ type snProjectFilters struct {
 	EndDateTo     string `json:"endDateTo,omitempty"`
 	SortBy        string `json:"sortBy,omitempty"`
 	SortOrder     string `json:"sortOrder,omitempty"`
+	AccountID     string `json:"accountId,omitempty"`
 }
 
 type snProjectPagination struct {
@@ -122,6 +123,13 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 	if err := validateProjectSearchFilters(req); err != nil {
 		return domain.SearchProjectsResponse{}, err
 	}
+	var accountSysid string
+	if req.AccountID != "" {
+		if err := validateUUIDs("accountId", []string{req.AccountID}); err != nil {
+			return domain.SearchProjectsResponse{}, err
+		}
+		accountSysid = uuidToSysid(req.AccountID)
+	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
 
@@ -133,6 +141,7 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 			EndDateTo:     req.EndDateTo,
 			SortBy:        req.SortBy,
 			SortOrder:     req.SortOrder,
+			AccountID:     accountSysid,
 		},
 		Pagination: snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
 	}

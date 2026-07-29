@@ -147,9 +147,10 @@ func validateCreateCaseRequest(req domain.CreateCaseRequest) error {
 		if req.Description == "" {
 			return &apierror.ValidationError{Msg: "description is required for security_report_analysis"}
 		}
-		if len(req.Attachments) == 0 {
-			return &apierror.ValidationError{Msg: "at least one attachment is required for security_report_analysis"}
-		}
+		// Attachments are optional here (not backend-enforced by ServiceNow either):
+		// the FE creates the case first, then uploads attachments in a separate
+		// request per file, so a failed attachment upload never masks a
+		// successful case creation.
 		for i, a := range req.Attachments {
 			if a.Name == "" {
 				return &apierror.ValidationError{Msg: fmt.Sprintf("attachments[%d].name is required", i)}
