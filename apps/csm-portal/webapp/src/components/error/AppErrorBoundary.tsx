@@ -15,7 +15,9 @@
 // under the License.
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
-import { Box, Button, Stack, Typography } from "@wso2/oxygen-ui";
+import { Box, Button, Stack, Tooltip, Typography } from "@wso2/oxygen-ui";
+import { Check, Copy } from "@wso2/oxygen-ui-icons-react";
+import { getErrorReferenceId } from "@utils/correlationId";
 
 interface AppErrorBoundaryProps {
   children: ReactNode;
@@ -23,7 +25,13 @@ interface AppErrorBoundaryProps {
 
 interface AppErrorBoundaryState {
   hasError: boolean;
+  error: Error | null;
+  componentStack: string | null;
+  copied: boolean;
 }
+
+/** How long the "Copied!" confirmation stays visible after a successful copy. */
+const COPY_CONFIRMATION_MS = 2000;
 
 /**
  * Top-level error boundary so an uncaught render error degrades to a
@@ -36,17 +44,59 @@ export default class AppErrorBoundary extends Component<
   AppErrorBoundaryProps,
   AppErrorBoundaryState
 > {
-  state: AppErrorBoundaryState = { hasError: false };
+  state: AppErrorBoundaryState = {
+    hasError: false,
+    error: null,
+    componentStack: null,
+    copied: false,
+  };
+
+  private copyResetTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Flip to the fallback UI when a descendant throws during render. */
-  static getDerivedStateFromError(): AppErrorBoundaryState {
-    return { hasError: true };
+  static getDerivedStateFromError(error: Error): Partial<AppErrorBoundaryState> {
+    return { hasError: true, error };
   }
 
   /** Log the captured error and component stack to the console sink. */
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
     console.error("Unhandled render error:", error, errorInfo.componentStack);
+    this.setState({ componentStack: errorInfo.componentStack ?? null });
   }
+
+  componentWillUnmount(): void {
+    if (this.copyResetTimer) clearTimeout(this.copyResetTimer);
+  }
+
+  /** Navigate away from the dead error screen back to the app root. */
+  private handleGoHome = (): void => {
+    window.location.href = "/";
+  };
+
+  /** Build the plain-text error report and copy it to the clipboard. */
+  private handleCopyDetails = (): void => {
+    const { error, componentStack } = this.state;
+    if (!error) return;
+
+    const referenceId = getErrorReferenceId(error);
+    const lines = [
+      "CSM Portal error report",
+      `Time: ${new Date().toISOString()}`,
+      `URL: ${window.location.href}`,
+      `Error: ${error.name}: ${error.message}`,
+      ...(referenceId ? [`Correlation ID: ${referenceId}`] : []),
+      "Component stack:",
+      componentStack ?? "(unavailable)",
+    ];
+
+    void navigator.clipboard.writeText(lines.join("\n")).then(() => {
+      this.setState({ copied: true });
+      if (this.copyResetTimer) clearTimeout(this.copyResetTimer);
+      this.copyResetTimer = setTimeout(() => {
+        this.setState({ copied: false });
+      }, COPY_CONFIRMATION_MS);
+    });
+  };
 
   /** Render the children, or the recovery screen once an error is caught. */
   render(): ReactNode {
@@ -69,9 +119,27 @@ export default class AppErrorBoundary extends Component<
             Something went wrong loading this page. Try reloading — your session
             will be kept.
           </Typography>
-          <Button variant="contained" onClick={() => window.location.reload()}>
-            Reload page
-          </Button>
+          <Stack direction="row" spacing={1.5}>
+            <Button variant="contained" onClick={() => window.location.reload()}>
+              Reload page
+            </Button>
+            <Button variant="outlined" onClick={this.handleGoHome}>
+              Go to home
+            </Button>
+          </Stack>
+          <Tooltip title={this.state.copied ? "Copied!" : "Copy error details"} placement="top">
+            <Button
+              size="small"
+              variant="text"
+              color="inherit"
+              onClick={this.handleCopyDetails}
+              startIcon={this.state.copied ? <Check size={14} /> : <Copy size={14} />}
+              sx={{ color: "text.disabled" }}
+              aria-label="Copy error details"
+            >
+              {this.state.copied ? "Copied" : "Copy error details"}
+            </Button>
+          </Tooltip>
         </Stack>
       </Box>
     );
