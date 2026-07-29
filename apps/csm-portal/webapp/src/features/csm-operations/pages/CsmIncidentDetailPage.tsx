@@ -14,8 +14,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Button, Card, Chip, Skeleton, Typography } from "@wso2/oxygen-ui";
-import { ArrowLeft, MessageSquarePlus, Pencil } from "@wso2/oxygen-ui-icons-react";
+import { Box, Button, Card, Chip, Skeleton, Tab, Tabs, Typography } from "@wso2/oxygen-ui";
+import {
+  Activity,
+  ArrowLeft,
+  Eye,
+  FileText,
+  Link as LinkIcon,
+  MessageSquarePlus,
+  Paperclip,
+  Pencil,
+} from "@wso2/oxygen-ui-icons-react";
 import {
   type JSX,
   type ReactNode,
@@ -38,6 +47,8 @@ import {
 } from "@features/csm-operations/api/useCsmIncidentComments";
 import EditIncidentDialog from "@features/csm-operations/components/EditIncidentDialog";
 import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
+import IncidentActionBar from "@features/csm-operations/components/IncidentActionBar";
+import IncidentResolutionDialog from "@features/csm-operations/components/IncidentResolutionDialog";
 import {
   incidentCommentGateReason,
   incidentPriorityColor,
@@ -53,7 +64,12 @@ import {
   usePostCsmCaseAttachment,
   useDownloadCsmCaseAttachment,
 } from "@features/csm-cases/api/useCsmCaseAttachments";
-import type { BeEntityRef, BeIncidentDetail, BeUpdateIncidentPayload } from "@api/backend/types";
+import type {
+  BeEntityRef,
+  BeIncidentDetail,
+  BeIncidentState,
+  BeUpdateIncidentPayload,
+} from "@api/backend/types";
 import { useNavTransition } from "@hooks/useNavTransition";
 
 const OPERATIONS_INCIDENTS_PATH = "/operations?tab=incidents";
@@ -62,9 +78,9 @@ const OPERATIONS_INCIDENTS_PATH = "/operations?tab=incidents";
  * Two confirmed-live upstream limitations of `PATCH /incidents/{id}`
  * (entity-service/ServiceNow, not this BFF or the FE) — a third,
  * `state: RESOLVED`/`CLOSED` 500ing without a resolution, was fixed by
- * having `EditIncidentDialog` collect `resolutionCode`/`resolutionNotes`
- * (write-only fields, no read-side model — see `BeUpdateIncidentPayload`)
- * once the target state is one of those two:
+ * having `EditIncidentDialog`/`IncidentResolutionDialog` collect
+ * `resolutionCode`/`resolutionNotes` (write-only fields, no read-side model
+ * — see `BeUpdateIncidentPayload`) once the target state is one of those two:
  *  - `watchList` 404s ("The requested resource was not found!") for *any*
  *    id — confirmed with both an anonymous service account and a real, named
  *    person, so it isn't a bad-id problem on our side.
@@ -117,10 +133,26 @@ function RefText({ value }: { value?: BeEntityRef | null }): JSX.Element {
   return <Typography variant="body2">{value?.name || "—"}</Typography>;
 }
 
+type IncidentTabId = "activities" | "details" | "related" | "watchers" | "attachments";
+
+const TAB_DEFS: Array<{ id: IncidentTabId; label: string; icon: JSX.Element }> = [
+  { id: "activities", label: "Activities", icon: <Activity size={16} /> },
+  { id: "details", label: "Details", icon: <FileText size={16} /> },
+  { id: "related", label: "Related", icon: <LinkIcon size={16} /> },
+  { id: "watchers", label: "Watchers", icon: <Eye size={16} /> },
+  { id: "attachments", label: "Attachments", icon: <Paperclip size={16} /> },
+];
+
 /**
- * Detail for a single incident (`GET /incidents/{id}`), with an Edit dialog
- * (`PATCH /incidents/{id}`) mirroring the change-request detail page's
- * pattern.
+ * Detail for a single incident (`GET /incidents/{id}`), tabbed to match
+ * `CsmCaseDetailPage`'s structural pattern — Activities / Details / Related /
+ * Watchers / Attachments. Incidents have no call-requests, time-tracking, or
+ * tasks concept in this platform, so those case tabs are intentionally not
+ * carried over. State transitions (`PATCH /incidents/{id} { state }`) via
+ * `IncidentActionBar`; `RESOLVED`/`CLOSED` route through
+ * `IncidentResolutionDialog` first, since ServiceNow requires a resolution
+ * code/notes for those two (see `checkSilentlyDroppedNotes`'s doc comment
+ * for the related, already-handled `additionalComments`/`workNotes` quirk).
  */
 export default function CsmIncidentDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
@@ -129,6 +161,10 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   const { showError } = useErrorBanner();
   const patchIncident = usePatchIncident();
   const [editOpen, setEditOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<IncidentTabId>("activities");
+  const [resolutionTarget, setResolutionTarget] = useState<
+    Extract<BeIncidentState, "RESOLVED" | "CLOSED"> | null
+  >(null);
   const engineerName = useEngineerDisplayName();
 
   const { data: comments } = useGetCsmIncidentComments(id);
@@ -139,6 +175,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   const [composerOpen, setComposerOpen] = useState(false);
 
   const attachmentList = useMemo(() => attachments ?? [], [attachments]);
+  const watchList = useMemo(() => data?.watchList ?? [], [data?.watchList]);
 
   const recordView = useRecordRecentView();
   useEffect(() => {
@@ -174,6 +211,55 @@ export default function CsmIncidentDetailPage(): JSX.Element {
       );
     },
     [downloadAttachment, showError],
+  );
+
+  /**
+   * Dispatch a state transition from `IncidentActionBar`. `RESOLVED`/`CLOSED`
+   * need the resolution dialog first (ServiceNow requires those fields — see
+   * the file-level doc comment); every other target PATCHes directly, same
+   * split of responsibility as `CaseActionBar` + `CsmCaseDetailPage.onAction`.
+   */
+  const onIncidentAction = useCallback(
+    (target: BeIncidentState) => {
+      if (!id) return;
+      if (target === "RESOLVED" || target === "CLOSED") {
+        setResolutionTarget(target);
+        return;
+      }
+      patchIncident.mutate(
+        { id, patch: { state: target } },
+        {
+          onError: (err) => {
+            const msg =
+              err instanceof BackendApiError && err.status < 500 && err.message
+                ? err.message
+                : "Could not update the incident's state. Please try again.";
+            showError(msg, err);
+          },
+        },
+      );
+    },
+    [id, patchIncident, showError],
+  );
+
+  const onResolutionSubmit = useCallback(
+    (fields: { resolutionCode: string; resolutionNotes: string }) => {
+      if (!id || !resolutionTarget) return;
+      patchIncident.mutate(
+        { id, patch: { state: resolutionTarget, ...fields } },
+        {
+          onSuccess: () => setResolutionTarget(null),
+          onError: (err) => {
+            const msg =
+              err instanceof BackendApiError && err.status < 500 && err.message
+                ? err.message
+                : "Could not update the incident's state. Please try again.";
+            showError(msg, err);
+          },
+        },
+      );
+    },
+    [id, patchIncident, resolutionTarget, showError],
   );
 
   const back = (): void => {
@@ -225,8 +311,9 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   }
 
   const incident = data;
-  const hasNotes = !!(incident.additionalComments || incident.workNotes);
   const hasLinks = !!(incident.parent || incident.changeRequest || incident.problem || incident.causedBy);
+  const hasLinkedServiceRequests =
+    !!incident.linkedServiceRequests && incident.linkedServiceRequests.length > 0;
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
@@ -250,15 +337,21 @@ export default function CsmIncidentDetailPage(): JSX.Element {
               label={incidentPriorityLabel(incident.priority)}
             />
           )}
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<Pencil size={14} />}
-            onClick={() => setEditOpen(true)}
-            sx={{ ml: "auto", flexShrink: 0 }}
-          >
-            Edit
-          </Button>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto", flexShrink: 0 }}>
+            <IncidentActionBar
+              incident={incident}
+              isPending={patchIncident.isPending}
+              onAction={onIncidentAction}
+            />
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<Pencil size={14} />}
+              onClick={() => setEditOpen(true)}
+            >
+              Edit
+            </Button>
+          </Box>
         </Box>
         <Typography variant="body2" color="text.secondary" sx={{ fontFamily: "monospace" }}>
           {incident.number || incident.id}
@@ -281,18 +374,9 @@ export default function CsmIncidentDetailPage(): JSX.Element {
           {(
             [
               { label: "Caller", render: () => <RefText value={incident.caller} /> },
-              { label: "Category", render: () => <Typography variant="body2">{incident.category || "—"}</Typography> },
-              { label: "Subcategory", render: () => <Typography variant="body2">{incident.subcategory || "—"}</Typography> },
-              { label: "Contact type", render: () => <Typography variant="body2">{incident.contactType || "—"}</Typography> },
-              { label: "Impact", render: () => <Typography variant="body2">{incident.impact || "—"}</Typography> },
-              { label: "Urgency", render: () => <Typography variant="body2">{incident.urgency || "—"}</Typography> },
-              { label: "Service", render: () => <RefText value={incident.service} /> },
-              { label: "Service offering", render: () => <RefText value={incident.serviceOffering} /> },
-              { label: "Configuration item", render: () => <RefText value={incident.configurationItem} /> },
               { label: "Assignment group", render: () => <RefText value={incident.assignmentGroup} /> },
               { label: "Assigned to", render: () => <RefText value={incident.assignedTo} /> },
               { label: "Opened", render: () => <Typography variant="body2">{formatDateTime(incident.openedOn)}</Typography> },
-              { label: "Created", render: () => <Typography variant="body2">{formatDateTime(incident.createdOn)}</Typography> },
               { label: "Created by", render: () => <Typography variant="body2">{incident.createdBy || "—"}</Typography> },
               { label: "Last updated", render: () => <Typography variant="body2">{formatDateTime(incident.updatedOn)}</Typography> },
             ] satisfies Array<{ label: string; render: () => JSX.Element }>
@@ -304,170 +388,278 @@ export default function CsmIncidentDetailPage(): JSX.Element {
         </Box>
       </Card>
 
-      {hasLinks && (
+      <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+        <Tabs
+          value={activeTab}
+          onChange={(_, v) => setActiveTab(v as IncidentTabId)}
+          variant="scrollable"
+          scrollButtons="auto"
+        >
+          {TAB_DEFS.map((t) => {
+            const count =
+              t.id === "watchers"
+                ? watchList.length
+                : t.id === "attachments"
+                  ? attachmentList.length
+                  : undefined;
+            return (
+              <Tab
+                key={t.id}
+                value={t.id}
+                icon={t.icon}
+                iconPosition="start"
+                label={count ? `${t.label} (${count})` : t.label}
+                sx={{ minHeight: 44, textTransform: "none" }}
+              />
+            );
+          })}
+        </Tabs>
+      </Box>
+
+      {activeTab === "activities" && (
         <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-          <Typography variant="subtitle2">Linked records</Typography>
-          <Box
-            sx={{
-              display: "grid",
-              gap: 2,
-              gridTemplateColumns: {
-                xs: "1fr",
-                sm: "repeat(2, minmax(0, 1fr))",
-                md: "repeat(4, minmax(0, 1fr))",
-              },
-            }}
-          >
-            <MetaCell label="Parent incident">
-              <EntityRefLink value={incident.parent} routeBase="/operations/incidents" />
-            </MetaCell>
-            <MetaCell label="Change request">
-              <EntityRefLink value={incident.changeRequest} routeBase="/operations/change-requests" />
-            </MetaCell>
-            <MetaCell label="Problem">
-              <EntityRefLink value={incident.problem} routeBase="/operations/problems" />
-            </MetaCell>
-            {/* "Caused by" has no confirmed target record type (could be a
-                change request, a problem, or something else) — same caveat
-                as Problem.originCase — so it's left as plain text rather
-                than guessing a route. */}
-            <MetaCell label="Caused by"><RefText value={incident.causedBy} /></MetaCell>
-          </Box>
+          {composerOpen ? (
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+              <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <Typography variant="subtitle2">Reply</Typography>
+                <Button
+                  size="small"
+                  variant="text"
+                  color="inherit"
+                  onClick={() => setComposerOpen(false)}
+                >
+                  Cancel
+                </Button>
+              </Box>
+              <CsmCaseCommentInput
+                disabled={!id}
+                publicCommentDisabledReason={incidentCommentGateReason(incident.state)}
+                autoFocus
+                onSubmit={async (bodyHtml, internal, commentAttachments) => {
+                  if (!id) return;
+                  const hasText =
+                    bodyHtml.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").trim().length > 0;
+                  if (hasText) {
+                    await postComment.mutateAsync({
+                      incidentId: id,
+                      bodyHtml,
+                      internal,
+                    });
+                  }
+                  for (const { file, name } of commentAttachments) {
+                    await postAttachment.mutateAsync({
+                      caseId: id,
+                      file,
+                      name,
+                      uploadedBy: engineerName,
+                      referenceType: "incident",
+                    });
+                  }
+                  setComposerOpen(false);
+                }}
+              />
+            </Box>
+          ) : (
+            <Button
+              fullWidth
+              variant="outlined"
+              color="inherit"
+              startIcon={<MessageSquarePlus size={18} />}
+              onClick={() => setComposerOpen(true)}
+              sx={{ justifyContent: "flex-start", textTransform: "none", py: 1.5, px: 2 }}
+            >
+              Add a comment…
+            </Button>
+          )}
+          <CaseActivitiesFeed
+            comments={comments ?? []}
+            audit={[]}
+            attachments={[]}
+          />
         </Card>
       )}
 
-      {hasNotes && (
-        <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2.5 }}>
-          <Typography variant="subtitle2">Comments &amp; notes</Typography>
-          {incident.additionalComments && (
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
-              <Typography variant="body2" color="text.secondary">
-                Additional comments (customer-visible)
-              </Typography>
-              <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-                {incident.additionalComments}
-              </Typography>
+      {activeTab === "details" && (
+        <Box
+          sx={{
+            display: "grid",
+            gap: 2,
+            gridTemplateColumns: {
+              xs: "1fr",
+              md: "repeat(2, minmax(0, 1fr))",
+            },
+            alignItems: "start",
+          }}
+        >
+          <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
+            <Typography variant="subtitle2">Classification</Typography>
+            <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2 }}>
+              <MetaCell label="Category">
+                <Typography variant="body2">{incident.category || "—"}</Typography>
+              </MetaCell>
+              <MetaCell label="Subcategory">
+                <Typography variant="body2">{incident.subcategory || "—"}</Typography>
+              </MetaCell>
+              <MetaCell label="Contact type">
+                <Typography variant="body2">{incident.contactType || "—"}</Typography>
+              </MetaCell>
+              <MetaCell label="Impact">
+                <Typography variant="body2">{incident.impact || "—"}</Typography>
+              </MetaCell>
+              <MetaCell label="Urgency">
+                <Typography variant="body2">{incident.urgency || "—"}</Typography>
+              </MetaCell>
+              <MetaCell label="Created">
+                <Typography variant="body2">{formatDateTime(incident.createdOn)}</Typography>
+              </MetaCell>
             </Box>
-          )}
-          {incident.workNotes && (
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
-              <Typography variant="body2" color="text.secondary">
-                Internal work notes
-              </Typography>
-              <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-                {incident.workNotes}
-              </Typography>
+          </Card>
+
+          <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
+            <Typography variant="subtitle2">Service &amp; configuration</Typography>
+            <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2 }}>
+              <MetaCell label="Service"><RefText value={incident.service} /></MetaCell>
+              <MetaCell label="Service offering"><RefText value={incident.serviceOffering} /></MetaCell>
+              <MetaCell label="Configuration item"><RefText value={incident.configurationItem} /></MetaCell>
             </Box>
+          </Card>
+
+          {(incident.additionalComments || incident.workNotes) && (
+            <Card
+              sx={{
+                p: 2.5,
+                display: "flex",
+                flexDirection: "column",
+                gap: 2.5,
+                gridColumn: { xs: "auto", md: "1 / -1" },
+              }}
+            >
+              <Typography variant="subtitle2">Comments &amp; notes</Typography>
+              {incident.additionalComments && (
+                <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    Additional comments (customer-visible)
+                  </Typography>
+                  <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                    {incident.additionalComments}
+                  </Typography>
+                </Box>
+              )}
+              {incident.workNotes && (
+                <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    Internal work notes
+                  </Typography>
+                  <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                    {incident.workNotes}
+                  </Typography>
+                </Box>
+              )}
+            </Card>
           )}
-        </Card>
+        </Box>
       )}
 
-      {incident.watchList && incident.watchList.length > 0 && (
+      {activeTab === "related" && (
+        <Box
+          sx={{
+            display: "grid",
+            gap: 2,
+            gridTemplateColumns: {
+              xs: "1fr",
+              md: "repeat(2, minmax(0, 1fr))",
+            },
+            alignItems: "start",
+          }}
+        >
+          {hasLinks ? (
+            <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+              <Typography variant="subtitle2">Linked records</Typography>
+              <Box
+                sx={{
+                  display: "grid",
+                  gap: 2,
+                  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                }}
+              >
+                <MetaCell label="Parent incident">
+                  <EntityRefLink value={incident.parent} routeBase="/operations/incidents" />
+                </MetaCell>
+                <MetaCell label="Change request">
+                  <EntityRefLink value={incident.changeRequest} routeBase="/operations/change-requests" />
+                </MetaCell>
+                <MetaCell label="Problem">
+                  <EntityRefLink value={incident.problem} routeBase="/operations/problems" />
+                </MetaCell>
+                {/* "Caused by" has no confirmed target record type (could be a
+                    change request, a problem, or something else) — same caveat
+                    as Problem.originCase — so it's left as plain text rather
+                    than guessing a route. */}
+                <MetaCell label="Caused by"><RefText value={incident.causedBy} /></MetaCell>
+              </Box>
+            </Card>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              No linked records for this incident.
+            </Typography>
+          )}
+
+          {hasLinkedServiceRequests && (
+            <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
+              <Typography variant="subtitle2">Linked service requests</Typography>
+              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+                {incident.linkedServiceRequests?.map((sr) => (
+                  <Chip
+                    key={sr.id}
+                    size="small"
+                    variant="outlined"
+                    clickable
+                    label={`${sr.number} — ${sr.name}`}
+                    onClick={() => navigate(`/cases/${encodeURIComponent(sr.id)}`)}
+                    sx={{ fontWeight: 600 }}
+                  />
+                ))}
+              </Box>
+            </Card>
+          )}
+        </Box>
+      )}
+
+      {activeTab === "watchers" && (
         <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
           <Typography variant="subtitle2">Watch list</Typography>
-          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-            {incident.watchList.map((w) => (
-              <Chip key={w.id} size="small" variant="outlined" label={w.name || w.email} />
-            ))}
-          </Box>
-        </Card>
-      )}
-
-      {incident.linkedServiceRequests && incident.linkedServiceRequests.length > 0 && (
-        <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
-          <Typography variant="subtitle2">Linked service requests</Typography>
-          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-            {incident.linkedServiceRequests.map((sr) => (
-              <Chip
-                key={sr.id}
-                size="small"
-                variant="outlined"
-                clickable
-                label={`${sr.number} — ${sr.name}`}
-                onClick={() => navigate(`/cases/${encodeURIComponent(sr.id)}`)}
-                sx={{ fontWeight: 600 }}
-              />
-            ))}
-          </Box>
-        </Card>
-      )}
-
-      <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-        <Typography variant="subtitle2">Comments</Typography>
-        {composerOpen ? (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <Typography variant="subtitle2">Reply</Typography>
-              <Button
-                size="small"
-                variant="text"
-                color="inherit"
-                onClick={() => setComposerOpen(false)}
-              >
-                Cancel
-              </Button>
+          {watchList.length > 0 ? (
+            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+              {watchList.map((w) => (
+                <Chip key={w.id} size="small" variant="outlined" label={w.name || w.email} />
+              ))}
             </Box>
-            <CsmCaseCommentInput
-              disabled={!id}
-              publicCommentDisabledReason={incidentCommentGateReason(incident.state)}
-              autoFocus
-              onSubmit={async (bodyHtml, internal, commentAttachments) => {
-                if (!id) return;
-                const hasText =
-                  bodyHtml.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").trim().length > 0;
-                if (hasText) {
-                  await postComment.mutateAsync({
-                    incidentId: id,
-                    bodyHtml,
-                    internal,
-                  });
-                }
-                for (const { file, name } of commentAttachments) {
-                  await postAttachment.mutateAsync({
-                    caseId: id,
-                    file,
-                    name,
-                    uploadedBy: engineerName,
-                    referenceType: "incident",
-                  });
-                }
-                setComposerOpen(false);
-              }}
-            />
-          </Box>
-        ) : (
-          <Button
-            fullWidth
-            variant="outlined"
-            color="inherit"
-            startIcon={<MessageSquarePlus size={18} />}
-            onClick={() => setComposerOpen(true)}
-            sx={{ justifyContent: "flex-start", textTransform: "none", py: 1.5, px: 2 }}
-          >
-            Add a comment…
-          </Button>
-        )}
-        <CaseActivitiesFeed
-          comments={comments ?? []}
-          audit={[]}
-          attachments={[]}
-        />
-      </Card>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              No one is watching this incident.
+            </Typography>
+          )}
+          <Typography variant="caption" color="text.secondary">
+            Edit the watch list from the Edit dialog above.
+          </Typography>
+        </Card>
+      )}
 
-      <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-        <Typography variant="subtitle2">Attachments</Typography>
-        <AttachmentsWidget
-          attachments={attachmentList}
-          uploading={postAttachment.isPending}
-          uploadError={
-            postAttachment.isError
-              ? (postAttachment.error?.message ?? "Could not upload the attachment.")
-              : null
-          }
-          onUpload={onUploadAttachment}
-          onDownload={onDownloadAttachment}
-        />
-      </Card>
+      {activeTab === "attachments" && (
+        <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+          <AttachmentsWidget
+            attachments={attachmentList}
+            uploading={postAttachment.isPending}
+            uploadError={
+              postAttachment.isError
+                ? (postAttachment.error?.message ?? "Could not upload the attachment.")
+                : null
+            }
+            onUpload={onUploadAttachment}
+            onDownload={onDownloadAttachment}
+          />
+        </Card>
+      )}
 
       {editOpen && (
         <EditIncidentDialog
@@ -503,6 +695,17 @@ export default function CsmIncidentDetailPage(): JSX.Element {
               },
             )
           }
+        />
+      )}
+
+      {resolutionTarget && (
+        <IncidentResolutionDialog
+          target={resolutionTarget}
+          isSubmitting={patchIncident.isPending}
+          onClose={() => {
+            if (!patchIncident.isPending) setResolutionTarget(null);
+          }}
+          onSubmit={onResolutionSubmit}
         />
       )}
     </Box>
