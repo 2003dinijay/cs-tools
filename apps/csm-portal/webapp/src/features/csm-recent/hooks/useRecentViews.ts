@@ -24,7 +24,10 @@ export type RecentViewKind =
   | "project"
   | "account"
   | "search"
-  | "page";
+  | "page"
+  | "incident"
+  | "change_request"
+  | "problem";
 
 const RECENT_VIEW_KINDS: readonly RecentViewKind[] = [
   "case",
@@ -32,6 +35,9 @@ const RECENT_VIEW_KINDS: readonly RecentViewKind[] = [
   "account",
   "search",
   "page",
+  "incident",
+  "change_request",
+  "problem",
 ];
 
 function isRecentViewKind(v: unknown): v is RecentViewKind {

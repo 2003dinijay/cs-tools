@@ -35,6 +35,7 @@ import {
 } from "@features/csm-recent/hooks/useRecentViews";
 import { kindIcon } from "@features/csm-recent/kindMeta";
 import QuickNavCaseCard from "@features/csm-recent/components/QuickNavCaseCard";
+import QuickNavEntityCard from "@features/csm-recent/components/QuickNavEntityCard";
 import QuickNavResultSkeleton from "@features/csm-recent/components/QuickNavResultSkeleton";
 import SearchNoResultsIcon from "@components/empty-state/SearchNoResultsIcon";
 import {
@@ -44,8 +45,36 @@ import {
 } from "@features/csm-cases/api/useQuickCaseSearch";
 import { caseIdLabel } from "@features/csm-cases/utils/caseIdentity";
 import { useNavTransition } from "@hooks/useNavTransition";
+import {
+  QUICK_INCIDENT_MIN_QUERY_LEN,
+  useQuickIncidentSearch,
+} from "@features/csm-operations/api/useQuickIncidentSearch";
+import {
+  QUICK_CHANGE_REQUEST_MIN_QUERY_LEN,
+  useQuickChangeRequestSearch,
+} from "@features/csm-operations/api/useQuickChangeRequestSearch";
+import {
+  QUICK_PROBLEM_MIN_QUERY_LEN,
+  useQuickProblemSearch,
+} from "@features/csm-operations/api/useQuickProblemSearch";
 
-type Section = "Cases" | "Pinned" | "Recents" | "Pages";
+type Section =
+  | "Cases"
+  | "Incidents"
+  | "Change Requests"
+  | "Problems"
+  | "Pinned"
+  | "Recents"
+  | "Pages";
+
+/** Minimal shape `QuickNavEntityCard` needs, shared by incident/CR/problem hits. */
+interface EntityCardHit {
+  icon: JSX.Element;
+  idLabel?: string | null;
+  subject: string;
+  state?: string | null;
+  assigneeName?: string;
+}
 
 interface Result {
   key: string;
@@ -56,6 +85,8 @@ interface Result {
   section: Section;
   /** Present only for "Cases" results — renders as a rich card instead of a plain row. */
   caseHit?: QuickCaseHit;
+  /** Present only for Incident/Change-request/Problem results — see {@link EntityCardHit}. */
+  entityHit?: EntityCardHit;
 }
 
 const RECENT_LIMIT = 8;
@@ -101,6 +132,18 @@ export default function QuickNav(): JSX.Element | null {
   // `caseSearch.data` still holds the previous results. Without this,
   // the skeleton block and the real "Cases" section would render together.
   const showCasesSkeleton = casesLoading && !caseSearch.data;
+
+  // Same debounced query string fans out to the other searchable entity
+  // kinds — one shared debounce (above) rather than each hook debouncing its
+  // own copy, so a keystroke costs at most one query-string change, not four.
+  // Incidents/CRs/problems are ServiceNow-only and comparatively rare hits,
+  // so — unlike Cases — these don't get a dedicated skeleton: their sections
+  // simply appear once data lands, same as Pinned/Recent/Pages.
+  const incidentSearch = useQuickIncidentSearch(open ? debouncedQuery : "");
+  const changeRequestSearch = useQuickChangeRequestSearch(
+    open ? debouncedQuery : "",
+  );
+  const problemSearch = useQuickProblemSearch(open ? debouncedQuery : "");
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -150,6 +193,66 @@ export default function QuickNav(): JSX.Element | null {
               caseHit: c,
             };
           })
+        : [];
+
+    // Same "only once the debounce settled" gating as Cases above, so a
+    // stale incident/CR/problem hit never stays clickable mid-typing either.
+    const incidents: Result[] =
+      caseHitsSettled && trimmedQuery.length >= QUICK_INCIDENT_MIN_QUERY_LEN
+        ? (incidentSearch.data ?? []).map((i) => ({
+            key: `incident-${i.id}`,
+            icon: kindIcon("incident", 16),
+            label: i.number || i.subject,
+            sublabel: i.number ? i.subject : undefined,
+            href: `/operations/incidents/${i.id}`,
+            section: "Incidents" as const,
+            entityHit: {
+              icon: kindIcon("incident", 16),
+              idLabel: i.number,
+              subject: i.subject,
+              state: i.state,
+              assigneeName: i.assigneeName,
+            },
+          }))
+        : [];
+
+    const changeRequests: Result[] =
+      caseHitsSettled &&
+      trimmedQuery.length >= QUICK_CHANGE_REQUEST_MIN_QUERY_LEN
+        ? (changeRequestSearch.data ?? []).map((cr) => ({
+            key: `cr-${cr.id}`,
+            icon: kindIcon("change_request", 16),
+            label: cr.number || cr.subject,
+            sublabel: cr.number ? cr.subject : undefined,
+            href: `/operations/change-requests/${cr.id}`,
+            section: "Change Requests" as const,
+            entityHit: {
+              icon: kindIcon("change_request", 16),
+              idLabel: cr.number,
+              subject: cr.subject,
+              state: cr.state,
+              assigneeName: cr.assigneeName,
+            },
+          }))
+        : [];
+
+    const problems: Result[] =
+      caseHitsSettled && trimmedQuery.length >= QUICK_PROBLEM_MIN_QUERY_LEN
+        ? (problemSearch.data ?? []).map((p) => ({
+            key: `problem-${p.id}`,
+            icon: kindIcon("problem", 16),
+            label: p.number || p.subject,
+            sublabel: p.number ? p.subject : undefined,
+            href: `/operations/problems/${p.id}`,
+            section: "Problems" as const,
+            entityHit: {
+              icon: kindIcon("problem", 16),
+              idLabel: p.number,
+              subject: p.subject,
+              state: p.state,
+              assigneeName: p.assigneeName,
+            },
+          }))
         : [];
 
     // A pinned/recent entry for a case carries a severity/status snapshot
@@ -204,8 +307,24 @@ export default function QuickNav(): JSX.Element | null {
           }))
       : [];
 
-    return [...cases, ...pinned, ...recent, ...pages];
-  }, [recents, trimmedQuery, caseHitsSettled, caseSearch.data]);
+    return [
+      ...cases,
+      ...incidents,
+      ...changeRequests,
+      ...problems,
+      ...pinned,
+      ...recent,
+      ...pages,
+    ];
+  }, [
+    recents,
+    trimmedQuery,
+    caseHitsSettled,
+    caseSearch.data,
+    incidentSearch.data,
+    changeRequestSearch.data,
+    problemSearch.data,
+  ]);
 
   // Clamp at render so a stale index from shrinking results never points past
   // the end (avoids a setState-in-effect cascade).
@@ -340,7 +459,7 @@ export default function QuickNav(): JSX.Element | null {
                 autoFocus
                 inputRef={inputRef}
                 fullWidth
-                placeholder="Search cases by id, or jump to pinned, recent, pages…"
+                placeholder="Search cases, incidents, change requests, problems, or jump to pinned, recent, pages…"
                 value={query}
                 onChange={(e) => {
                   setQuery(e.target.value);
@@ -378,7 +497,7 @@ export default function QuickNav(): JSX.Element | null {
                     />
                     <Typography variant="body2" color="text.secondary">
                       {trimmedQuery.length === 0
-                        ? "Nothing pinned or recent yet. Start typing to search cases."
+                        ? "Nothing pinned or recent yet. Start typing to search."
                         : "No matches."}
                     </Typography>
                   </Box>
@@ -405,6 +524,19 @@ export default function QuickNav(): JSX.Element | null {
                         <Box sx={{ pb: 1 }}>
                           <QuickNavCaseCard
                             hit={r.caseHit}
+                            active={i === safeActive}
+                            onMouseEnter={() => setActive(i)}
+                            onClick={() => choose(r)}
+                          />
+                        </Box>
+                      ) : r.entityHit ? (
+                        <Box sx={{ pb: 1 }}>
+                          <QuickNavEntityCard
+                            icon={r.entityHit.icon}
+                            idLabel={r.entityHit.idLabel}
+                            subject={r.entityHit.subject}
+                            state={r.entityHit.state}
+                            assigneeName={r.entityHit.assigneeName}
                             active={i === safeActive}
                             onMouseEnter={() => setActive(i)}
                             onClick={() => choose(r)}
