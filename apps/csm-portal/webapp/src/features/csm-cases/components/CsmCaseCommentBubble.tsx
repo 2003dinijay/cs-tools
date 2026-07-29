@@ -19,6 +19,7 @@ import { Bot } from "@wso2/oxygen-ui-icons-react";
 import { useCallback, useEffect, useMemo, useRef, type JSX } from "react";
 import RelativeTime from "@components/RelativeTime";
 import SemanticChip from "@components/SemanticChip";
+import UserRefLink from "@components/UserRefLink";
 import { pickAccessibleText } from "@utils/contrastText";
 import { sanitizeRichTextHtml, stripLightModeInlineStyles } from "@utils/sanitizeHtml";
 import { useDarkMode } from "@utils/useDarkMode";
@@ -276,7 +277,9 @@ export default function CsmCaseCommentBubble({
         }}
       >
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-          <Typography variant="subtitle2">{comment.authorName}</Typography>
+          <Typography variant="subtitle2">
+            <UserRefLink name={comment.authorName} email={comment.authorEmail} />
+          </Typography>
           {comment.authorRole !== "wso2_engineer" && (
             <Chip
               size="small"

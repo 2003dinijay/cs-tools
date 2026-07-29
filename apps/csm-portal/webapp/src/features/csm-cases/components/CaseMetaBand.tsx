@@ -21,6 +21,7 @@ import { Link as RouterLink } from "react-router";
 import { tierLabel, tierColor } from "@features/csm-cases/utils/caseTier";
 import type { CsmCaseDetail } from "@features/csm-cases/types/csmCases";
 import SemanticChip from "@components/SemanticChip";
+import UserRefLink from "@components/UserRefLink";
 import DeploymentDetailsDialog from "@features/csm-projects/components/DeploymentDetailsDialog";
 import type { BeDeploymentType } from "@api/backend/types";
 import { announcementStateRole } from "@features/csm-announcements/utils/announcementState";
@@ -341,15 +342,20 @@ export default function CaseMetaBand({
               </Cell>
               <Cell label="Created by">
                 <Typography variant="body2" noWrap>
-                  {c.createdBy ?? c.customerContext.primaryContact ?? "—"}
+                  <UserRefLink
+                    name={c.createdBy ?? c.customerContext.primaryContact ?? "—"}
+                    email={c.createdByEmail}
+                  />
                 </Typography>
               </Cell>
               <Cell label="Assignee">
                 <Typography variant="body2" noWrap>
                   {c.assigneeIsMe ? (
-                    <strong>{c.assignee}</strong>
+                    <strong>
+                      <UserRefLink name={c.assignee} email={c.assigneeEmail} />
+                    </strong>
                   ) : (
-                    c.assignee
+                    <UserRefLink name={c.assignee} email={c.assigneeEmail} />
                   )}
                 </Typography>
               </Cell>

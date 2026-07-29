@@ -75,6 +75,7 @@ import {
 import type { ProjectDetails } from "@features/csm-projects/types/csmProjects";
 import type { BeDeployment } from "@api/backend/types";
 import RelativeTime from "@components/RelativeTime";
+import UserRefLink from "@components/UserRefLink";
 
 // ---------------------------------------------------------------------------
 // Shared widget shell
@@ -546,7 +547,12 @@ export function WatchersWidget({
               size="small"
               variant="outlined"
               icon={<User size={14} />}
-              label={w.isMe ? `${w.name} (you)` : w.name}
+              label={
+                <UserRefLink
+                  name={w.isMe ? `${w.name} (you)` : w.name}
+                  email={w.email}
+                />
+              }
               disabled={isSaving}
               onDelete={
                 onRemove && w.email ? () => onRemove(w) : undefined
@@ -835,7 +841,8 @@ export function AttachmentsWidget({
                   )}
                   <Typography variant="caption" color="text.secondary" noWrap>
                     {formatBytes(a.size)} · {a.contentType} · uploaded by{" "}
-                    {a.uploadedBy} · <RelativeTime iso={a.uploadedAt} />
+                    <UserRefLink name={a.uploadedBy} email={a.uploadedByEmail} /> ·{" "}
+                    <RelativeTime iso={a.uploadedAt} />
                   </Typography>
                 </Box>
                 {preview &&

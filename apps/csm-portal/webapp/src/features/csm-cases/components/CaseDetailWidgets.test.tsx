@@ -16,7 +16,8 @@
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useState, type ComponentProps, type JSX } from "react";
+import { useState, type ComponentProps, type JSX, type ReactElement } from "react";
+import { MemoryRouter } from "react-router";
 import "@testing-library/jest-dom/vitest";
 import {
   AttachmentsWidget,
@@ -97,6 +98,13 @@ const WATCHERS: CaseWatcher[] = [
   { id: "w-2", name: "John Smith", isMe: true },
 ];
 
+// `WatchersWidget` links each watcher's name to their profile page via
+// `UserRefLink`, which renders a `react-router` `Link` — needs a Router
+// context even outside a full app render.
+function renderWithRouter(ui: ReactElement): ReturnType<typeof render> {
+  return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
+
 describe("TagsWidget", () => {
   it("renders an empty state when there are no tags", () => {
     render(<TagsWidget tags={[]} />);
@@ -135,34 +143,34 @@ describe("TagsWidget", () => {
 
 describe("WatchersWidget", () => {
   it("renders an empty state when there are no watchers", () => {
-    render(<WatchersWidget watchers={[]} />);
+    renderWithRouter(<WatchersWidget watchers={[]} />);
     expect(
       screen.getByText("No one is watching this case."),
     ).toBeInTheDocument();
   });
 
   it("renders every watcher as a chip, marking the current user", () => {
-    render(<WatchersWidget watchers={WATCHERS} />);
+    renderWithRouter(<WatchersWidget watchers={WATCHERS} />);
     expect(screen.getByText("Jane Doe")).toBeInTheDocument();
     expect(screen.getByText("John Smith (you)")).toBeInTheDocument();
   });
 
   it("hides the Add watcher action when onAdd is omitted", () => {
-    render(<WatchersWidget watchers={WATCHERS} />);
+    renderWithRouter(<WatchersWidget watchers={WATCHERS} />);
     expect(
       screen.queryByRole("button", { name: /add watcher/i }),
     ).not.toBeInTheDocument();
   });
 
   it("omits the per-chip remove affordance when onRemove is omitted", () => {
-    render(<WatchersWidget watchers={WATCHERS} />);
+    renderWithRouter(<WatchersWidget watchers={WATCHERS} />);
     const chip = screen.getByText("Jane Doe").closest(".MuiChip-root");
     expect(chip?.querySelector(".MuiChip-deleteIcon")).toBeFalsy();
   });
 
   it("calls onRemove with the watcher when its chip delete icon is clicked", () => {
     const onRemove = vi.fn();
-    render(<WatchersWidget watchers={WATCHERS} onRemove={onRemove} />);
+    renderWithRouter(<WatchersWidget watchers={WATCHERS} onRemove={onRemove} />);
     const chip = screen.getByText("Jane Doe").closest(".MuiChip-root");
     const deleteIcon = chip?.querySelector(".MuiChip-deleteIcon");
     expect(deleteIcon).toBeTruthy();
@@ -173,7 +181,7 @@ describe("WatchersWidget", () => {
   it("opens an inline search panel on Add watcher and calls onAdd for a picked candidate — no dialog involved", () => {
     mockCandidates();
     const onAdd = vi.fn();
-    render(<WatchersWidget watchers={WATCHERS} onAdd={onAdd} />);
+    renderWithRouter(<WatchersWidget watchers={WATCHERS} onAdd={onAdd} />);
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /add watcher/i }));
@@ -185,7 +193,7 @@ describe("WatchersWidget", () => {
 
   it("closes the inline search panel when its cancel button is clicked", () => {
     mockCandidates();
-    render(<WatchersWidget watchers={WATCHERS} onAdd={() => {}} />);
+    renderWithRouter(<WatchersWidget watchers={WATCHERS} onAdd={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /add watcher/i }));
     expect(
       screen.getByPlaceholderText(/search people to add/i),

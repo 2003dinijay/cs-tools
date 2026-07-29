@@ -45,6 +45,7 @@ import { useMemo, useState, type JSX } from "react";
 import CsmCaseCommentBubble from "@features/csm-cases/components/CsmCaseCommentBubble";
 import ImageFullscreenModal from "@features/csm-cases/components/ImageFullscreenModal";
 import RelativeTime from "@components/RelativeTime";
+import UserRefLink from "@components/UserRefLink";
 import { formatBytes } from "@utils/formatBytes";
 import { formatAbsoluteForUser } from "@utils/dateTime";
 import {
@@ -404,7 +405,10 @@ export default function CaseActivitiesFeed({
                     }}
                   >
                     <Typography variant="subtitle2">
-                      {e.attachment.uploadedBy}
+                      <UserRefLink
+                        name={e.attachment.uploadedBy}
+                        email={e.attachment.uploadedByEmail}
+                      />
                     </Typography>
                     <Chip size="small" variant="outlined" label="Attachment" />
                     <Typography variant="caption" color="text.secondary">
@@ -499,7 +503,8 @@ export function AttachmentsList({
             </Typography>
             <Typography variant="caption" color="text.secondary">
               {formatBytes(a.size)} · {a.contentType} · uploaded by{" "}
-              {a.uploadedBy} · <RelativeTime iso={a.uploadedAt} />
+              <UserRefLink name={a.uploadedBy} email={a.uploadedByEmail} /> ·{" "}
+              <RelativeTime iso={a.uploadedAt} />
             </Typography>
           </Box>
         </Paper>
