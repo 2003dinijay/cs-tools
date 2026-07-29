@@ -204,9 +204,9 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
     recordView({
       kind: "change_request",
       id: data.id,
-      title: data.number
-        ? `${data.number} · ${data.subject ?? ""}`.trim()
-        : (data.subject ?? "(no subject)"),
+      title:
+        [data.number, data.subject].filter((s): s is string => !!s?.trim()).join(" · ") ||
+        "(no subject)",
       subtitle: data.project?.name,
       href: `/operations/change-requests/${data.id}`,
     });

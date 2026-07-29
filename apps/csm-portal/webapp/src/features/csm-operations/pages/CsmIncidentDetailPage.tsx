@@ -146,9 +146,9 @@ export default function CsmIncidentDetailPage(): JSX.Element {
     recordView({
       kind: "incident",
       id: data.id,
-      title: data.number
-        ? `${data.number} · ${data.subject ?? ""}`.trim()
-        : (data.subject ?? "(no subject)"),
+      title:
+        [data.number, data.subject].filter((s): s is string => !!s?.trim()).join(" · ") ||
+        "(no subject)",
       subtitle: data.assignedTo?.name,
       href: `/operations/incidents/${data.id}`,
     });

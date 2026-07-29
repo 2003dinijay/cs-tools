@@ -105,9 +105,9 @@ export default function ProblemDetailPage(): JSX.Element {
     recordView({
       kind: "problem",
       id: data.id,
-      title: data.number
-        ? `${data.number} · ${data.subject ?? ""}`.trim()
-        : (data.subject ?? "(no subject)"),
+      title:
+        [data.number, data.subject].filter((s): s is string => !!s?.trim()).join(" · ") ||
+        "(no subject)",
       subtitle: data.assignedTo?.name,
       href: `/operations/problems/${data.id}`,
     });
