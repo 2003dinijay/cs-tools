@@ -28,7 +28,8 @@ import {
 } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
 import { useState, type JSX } from "react";
-import type { Severity } from "@features/csm-dashboard/types/abtDashboard";
+import type { CaseState, Severity } from "@features/csm-dashboard/types/abtDashboard";
+import { callRequestCaseStateBlockReason } from "@features/csm-cases/utils/callRequestState";
 import {
   formatDateTimeLocal,
   parseDateTimeLocal,
@@ -168,6 +169,13 @@ export interface CreateDialogProps {
   error: string | null;
   /** Case severity (S0-S4) — drives the minimum lead time for each proposed slot. */
   severity?: Severity;
+  /**
+   * Case's current state — the data source only accepts a call request while
+   * the case is in one of a fixed set of states (see
+   * `callRequestCaseStateBlockReason`). Undefined skips this FE-side check
+   * (the backend still enforces it either way).
+   */
+  caseState?: CaseState;
   onClose: () => void;
   onSubmit: (reason: string, utcTimes: string[], durationInMinutes: number) => void;
 }
@@ -181,6 +189,7 @@ export function CreateCallRequestDialog({
   submitting,
   error,
   severity,
+  caseState,
   onClose,
   onSubmit,
 }: CreateDialogProps): JSX.Element {
@@ -223,7 +232,13 @@ export function CreateCallRequestDialog({
     durationNum >= MIN_DURATION_MINUTES &&
     durationNum <= MAX_DURATION_MINUTES;
 
+  // Re-derived on every render (not memoized on mount) so this stays in sync
+  // if the case's state changes while the dialog is open -- `caseState` comes
+  // from the live case-detail data, not a snapshot taken when the dialog opened.
+  const stateBlockReason = callRequestCaseStateBlockReason(caseState);
+
   const canSubmit =
+    !stateBlockReason &&
     reason.trim().length > 0 &&
     utcTimes.length > 0 &&
     utcTimes.length <= MAX_TIME_SLOTS &&
@@ -240,6 +255,11 @@ export function CreateCallRequestDialog({
       <DialogTitle>Create a call request</DialogTitle>
       <DialogContent>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 0.5 }}>
+          {stateBlockReason && (
+            <Typography variant="body2" color="error">
+              {stateBlockReason}
+            </Typography>
+          )}
           {error && (
             <Typography variant="body2" color="error">
               {error}

@@ -561,22 +561,23 @@ interface BeCaseUpdateNever {
   bestCaseFixEta?: never;
   mostLikelyFixEta?: never;
   worstCaseFixEta?: never;
+  addPublicComment?: never;
+  product?: never;
+  publicTicket?: never;
 }
 
 /**
  * Request body for `PATCH /cases/{id}` (mirrors the entity `UpdateCaseRequest`).
  * **Exactly one** of `state` / `severity` / `workState` / `assigneeEmail` /
  * `watchList` / `parentId` / `subject` / `description` / `deploymentId` /
- * `deployedProductId` / `relatedCaseId` / `autocloseHoldUntil` /
- * `bestCaseFixEta` / `mostLikelyFixEta` / `worstCaseFixEta` is sent per call —
- * the backend rejects zero or more than one. Encoded as a discriminated union
- * (each variant carries every other field as `never`, via
- * {@link BeCaseUpdateNever}) so the exactly-one-field contract is enforced at
- * compile time, not just in docs. `assigneeEmail`, `watchList`, `parentId`,
- * and `autocloseHoldUntil` are supported **only** for the ServiceNow data
- * source. `workState` is only accepted while the case is `work_in_progress`.
- * `bestCaseFixEta` / `mostLikelyFixEta` / `worstCaseFixEta` are internal-only
- * estimates, never shared with the customer.
+ * `deployedProductId` / `relatedCaseId` / `autocloseHoldUntil` / the combined
+ * fix-ETA variant (below) is sent per call — the backend rejects zero or more
+ * than one. Encoded as a discriminated union (each variant carries every
+ * other field as `never`, via {@link BeCaseUpdateNever}) so the
+ * exactly-one-field contract is enforced at compile time, not just in docs.
+ * `assigneeEmail`, `watchList`, `parentId`, and `autocloseHoldUntil` are
+ * supported **only** for the ServiceNow data source. `workState` is only
+ * accepted while the case is `work_in_progress`.
  */
 export type BeCaseUpdatePayload =
   | (Omit<BeCaseUpdateNever, "state"> & {
@@ -615,12 +616,32 @@ export type BeCaseUpdatePayload =
    * `autoclosureStep` is not directly settable.
    */
   | (Omit<BeCaseUpdateNever, "autocloseHoldUntil"> & { autocloseHoldUntil: string })
-  /** Sets the internal-only best-case fix estimate (date-only, "YYYY-MM-DD"). */
-  | (Omit<BeCaseUpdateNever, "bestCaseFixEta"> & { bestCaseFixEta: string })
-  /** Sets the internal-only most-likely fix estimate (date-only, "YYYY-MM-DD"). */
-  | (Omit<BeCaseUpdateNever, "mostLikelyFixEta"> & { mostLikelyFixEta: string })
-  /** Sets the internal-only worst-case fix estimate (date-only, "YYYY-MM-DD"). */
-  | (Omit<BeCaseUpdateNever, "worstCaseFixEta"> & { worstCaseFixEta: string });
+  /**
+   * Sets any combination of the three internal-only fix-ETA estimates
+   * (date-only "YYYY-MM-DD") in one call — unlike the other variants, this is
+   * a **combined** field, so at least one of the three must be present, but
+   * all three are independently optional. When `addPublicComment` is true,
+   * the backend also posts a customer-visible comment built from `product` /
+   * `publicTicket` / the estimate(s) above to the case's comment thread; that
+   * mode requires at least one estimate plus non-empty `product` and
+   * `publicTicket`.
+   */
+  | (Omit<
+      BeCaseUpdateNever,
+      | "bestCaseFixEta"
+      | "mostLikelyFixEta"
+      | "worstCaseFixEta"
+      | "addPublicComment"
+      | "product"
+      | "publicTicket"
+    > & {
+      bestCaseFixEta?: string;
+      mostLikelyFixEta?: string;
+      worstCaseFixEta?: string;
+      addPublicComment?: boolean;
+      product?: string;
+      publicTicket?: string;
+    });
 
 /** A user in the case watch list, as echoed by `PATCH /cases/{id}`. */
 export interface BeWatchListUser {

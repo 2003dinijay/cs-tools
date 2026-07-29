@@ -96,7 +96,7 @@ import LinkCaseDialog, {
   type CaseLinkType,
 } from "@features/csm-cases/components/LinkCaseDialog";
 import SetFixEtaDialog, {
-  type FixEtaField,
+  type FixEtaSavePayload,
 } from "@features/csm-cases/components/SetFixEtaDialog";
 import CreateTaskDialog from "@features/csm-cases/components/CreateTaskDialog";
 import AddTagDialog from "@features/csm-cases/components/AddTagDialog";
@@ -1342,14 +1342,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
   );
 
   const onSetFixEta = useCallback(
-    (field: FixEtaField, valueDateOnly: string) => {
-      const payload: BeCaseUpdatePayload =
-        field === "bestCaseFixEta"
-          ? { bestCaseFixEta: valueDateOnly }
-          : field === "mostLikelyFixEta"
-            ? { mostLikelyFixEta: valueDateOnly }
-            : { worstCaseFixEta: valueDateOnly };
-      patchCase.mutate(payload, {
+    (patch: FixEtaSavePayload) => {
+      patchCase.mutate(patch as BeCaseUpdatePayload, {
         onSuccess: () => {
           setFeedback({
             message: "Fix ETA updated.",
@@ -2167,6 +2161,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           <CallRequestsWidget
             caseId={caseId}
             severity={c.severity}
+            caseState={c.state}
             isClosed={isClosed}
           />
         </Box>

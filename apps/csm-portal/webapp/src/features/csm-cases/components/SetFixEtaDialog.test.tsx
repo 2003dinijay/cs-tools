@@ -19,17 +19,16 @@ import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import SetFixEtaDialog from "@features/csm-cases/components/SetFixEtaDialog";
 
-describe("SetFixEtaDialog — three independent internal-only fields", () => {
-  it("renders one Save button per field, each disabled until a date is picked", () => {
+describe("SetFixEtaDialog — single combined save", () => {
+  it("renders one Save button, disabled until at least one field is set", () => {
     render(
       <SetFixEtaDialog isSaving={false} onClose={() => {}} onSave={() => {}} />,
     );
-    const saveButtons = screen.getAllByRole("button", { name: /^save$/i });
-    expect(saveButtons).toHaveLength(3);
-    saveButtons.forEach((btn) => expect(btn).toBeDisabled());
+    expect(screen.getAllByRole("button", { name: /^save$/i })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
   });
 
-  it("seeds each field from its current value and enables that field's Save immediately", () => {
+  it("enables Save once seeded with existing estimates", () => {
     render(
       <SetFixEtaDialog
         currentBestCaseFixEta="2099-06-16"
@@ -40,12 +39,31 @@ describe("SetFixEtaDialog — three independent internal-only fields", () => {
         onSave={() => {}}
       />,
     );
-    const saveButtons = screen.getAllByRole("button", { name: /^save$/i });
-    expect(saveButtons).toHaveLength(3);
-    saveButtons.forEach((btn) => expect(btn).toBeEnabled());
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
   });
 
-  it("saves only the bestCaseFixEta field as a date-only string, independent of the other two", () => {
+  it("saves all three seeded estimates together in one combined payload", () => {
+    const onSave = vi.fn();
+    render(
+      <SetFixEtaDialog
+        currentBestCaseFixEta="2099-06-16"
+        currentMostLikelyFixEta="2099-06-17"
+        currentWorstCaseFixEta="2099-06-18"
+        isSaving={false}
+        onClose={() => {}}
+        onSave={onSave}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenCalledWith({
+      bestCaseFixEta: "2099-06-16",
+      mostLikelyFixEta: "2099-06-17",
+      worstCaseFixEta: "2099-06-18",
+    });
+  });
+
+  it("saves just one seeded estimate, independent of the other two being empty", () => {
     const onSave = vi.fn();
     render(
       <SetFixEtaDialog
@@ -55,15 +73,81 @@ describe("SetFixEtaDialog — three independent internal-only fields", () => {
         onSave={onSave}
       />,
     );
-    const saveButtons = screen.getAllByRole("button", { name: /^save$/i });
-    // The bestCaseFixEta row is the only one seeded, so it's the only enabled Save.
-    const enabled = saveButtons.filter((btn) => !btn.hasAttribute("disabled"));
-    expect(enabled).toHaveLength(1);
-    fireEvent.click(enabled[0]);
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     expect(onSave).toHaveBeenCalledTimes(1);
-    const [field, arg] = onSave.mock.calls[0] as [string, string];
-    expect(field).toBe("bestCaseFixEta");
-    expect(arg).toBe("2099-06-16");
+    expect(onSave).toHaveBeenCalledWith({ bestCaseFixEta: "2099-06-16" });
+  });
+
+  it("reveals product/public ticket fields and blocks Save until they're filled, when sharing with customer", () => {
+    render(
+      <SetFixEtaDialog
+        currentBestCaseFixEta="2099-06-16"
+        isSaving={false}
+        onClose={() => {}}
+        onSave={() => {}}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("switch", { name: /share fix eta with customer/i }),
+    );
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/^product/i), {
+      target: { value: "API Manager" },
+    });
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/public ticket/i), {
+      target: { value: "https://github.com/wso2/product-apim/issues/1" },
+    });
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
+  });
+
+  it("blocks sharing with customer when no fix ETA is set, even with product/ticket filled in", () => {
+    render(
+      <SetFixEtaDialog isSaving={false} onClose={() => {}} onSave={() => {}} />,
+    );
+    fireEvent.click(
+      screen.getByRole("switch", { name: /share fix eta with customer/i }),
+    );
+    fireEvent.change(screen.getByLabelText(/^product/i), {
+      target: { value: "API Manager" },
+    });
+    fireEvent.change(screen.getByLabelText(/public ticket/i), {
+      target: { value: "https://github.com/wso2/product-apim/issues/1" },
+    });
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+    expect(
+      screen.getByText(/pick at least one fix eta to share with the customer/i),
+    ).toBeInTheDocument();
+  });
+
+  it("includes addPublicComment/product/publicTicket in the combined payload when sharing", () => {
+    const onSave = vi.fn();
+    render(
+      <SetFixEtaDialog
+        currentBestCaseFixEta="2099-06-16"
+        isSaving={false}
+        onClose={() => {}}
+        onSave={onSave}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("switch", { name: /share fix eta with customer/i }),
+    );
+    fireEvent.change(screen.getByLabelText(/^product/i), {
+      target: { value: "API Manager" },
+    });
+    fireEvent.change(screen.getByLabelText(/public ticket/i), {
+      target: { value: "https://github.com/wso2/product-apim/issues/1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(onSave).toHaveBeenCalledWith({
+      bestCaseFixEta: "2099-06-16",
+      addPublicComment: true,
+      product: "API Manager",
+      publicTicket: "https://github.com/wso2/product-apim/issues/1",
+    });
   });
 
   it("calls onClose on Close without calling onSave", () => {
