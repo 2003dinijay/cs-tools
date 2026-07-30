@@ -34,6 +34,10 @@ const CASE_SEARCH_LIMIT = 20;
  * as soon as the dropdown opens, even with an empty query, so the picker
  * shows a default page instead of looking broken until the caller types
  * something.
+ *
+ * A problem's origin case must be a plain case, not a service request,
+ * engagement, or other case type, so the search is pinned to `types:
+ * ["case"]` rather than relying on the backend's (now cross-type) default.
  */
 export function useSearchCasesForSelect(
   query: string,
@@ -47,7 +51,10 @@ export function useSearchCasesForSelect(
     queryFn: async (): Promise<BeCaseSearchView[]> => {
       const res = await api.post<BeCaseSearchPayload, BeCaseSearchResponse>(
         "/cases/search",
-        { filters: { searchQuery: q }, pagination: { offset: 0, limit: CASE_SEARCH_LIMIT } },
+        {
+          filters: { searchQuery: q, types: ["case"] },
+          pagination: { offset: 0, limit: CASE_SEARCH_LIMIT },
+        },
       );
       return res.cases ?? [];
     },
