@@ -25,15 +25,39 @@ import (
 )
 
 // project is the subset of csm-integration-service's Project shape this
-// component reads. closureState and endDate are undocumented in
+// component reads. closureState, endDate, and account are undocumented in
 // csm-integration-service's openapi.yaml but confirmed present in the real
-// response via direct Postman testing against staging.
+// response via direct Postman testing against staging — this holds for both
+// GetProject and SearchProjects's response items: entity-service added a
+// nested account {id, name} reference to both (SearchProjects's item shape
+// gained it via ProjectView.Account, confirmed against entity-service's own
+// domain type and re-verified live via Postman). Account is nil only when a
+// project genuinely has no linked account. Always go through accountID(),
+// never read Account directly, so callers don't need to duplicate the nil
+// check.
 type project struct {
-	ID                     string          `json:"id"`
-	AccountID              string          `json:"accountId"`
-	EndDate                *time.Time      `json:"endDate"`
-	ClosureState           *string         `json:"closureState"`
-	SuspensionProcessState json.RawMessage `json:"suspensionProcessState"`
+	ID                     string             `json:"id"`
+	Account                *projectAccountRef `json:"account"`
+	EndDate                *time.Time         `json:"endDate"`
+	ClosureState           *string            `json:"closureState"`
+	SuspensionProcessState json.RawMessage    `json:"suspensionProcessState"`
+}
+
+// projectAccountRef is the nested account reference on both GetProject's and
+// SearchProjects's response shapes. Only id is used; the upstream shape
+// carries more (name, activationDate, tier, region, ...) that this
+// component doesn't need.
+type projectAccountRef struct {
+	ID string `json:"id"`
+}
+
+// accountID returns the project's account ID, or "" if the project
+// genuinely has no linked account.
+func (p project) accountID() string {
+	if p.Account == nil {
+		return ""
+	}
+	return p.Account.ID
 }
 
 // searchProjectsResponse mirrors csm-integration-service's ProjectSearchResponse.
@@ -65,19 +89,38 @@ type accountContactSearchResponse struct {
 	Contacts []accountContactDTO `json:"contacts"`
 }
 
+// personRefDTO mirrors entity-service's PersonRef shape as it appears
+// embedded on an Account (technicalOwner/accountManager/
+// renewalAccountManager). Email is nullable — confirmed present but
+// genuinely absent for some real accounts.
+type personRefDTO struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Email *string `json:"email"`
+}
+
+// accountDTO is the subset of GetAccount's response this component reads.
+type accountDTO struct {
+	AccountManager *personRefDTO `json:"accountManager"`
+}
+
 // entityReader is the minimal read surface processProject needs. Satisfied
 // directly by *entity.Client — reads are never dry-run-gated.
 type entityReader interface {
 	SearchAccountContacts(ctx context.Context, accountID string, body []byte) ([]byte, error)
 	SearchProjectContacts(ctx context.Context, projectID string, body []byte) ([]byte, error)
+	GetAccount(ctx context.Context, id string) ([]byte, error)
 }
 
-// sweepReader is everything Run needs: entityReader plus SearchProjects, the
-// one extra read method the outer pagination loop uses that processProject
-// doesn't. Satisfied directly by *entity.Client.
+// sweepReader is everything Run needs: entityReader plus SearchProjects and
+// GetProject, the two extra read methods the outer loop uses that
+// processProject doesn't. GetProject backs the TEST_PROJECT_ID scoped-run
+// path — fetching one project directly instead of paginating the broad
+// search. Satisfied directly by *entity.Client.
 type sweepReader interface {
 	entityReader
 	SearchProjects(ctx context.Context, body []byte) ([]byte, error)
+	GetProject(ctx context.Context, id string) ([]byte, error)
 }
 
 // pagination mirrors entity-service's Pagination shape.
