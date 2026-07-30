@@ -38,14 +38,19 @@ export function TopBar() {
       pb={2}
       sx={{
         // Ties directly to the device's actual safe-area inset (--safe-top, set from the native
-        // bridge) plus enough clearance for the ExitButton pill's own height, rather than a fixed
-        // value — a fixed pt (the customer-portal microapp's own AppBar.tsx uses one too) is only
-        // correct for whatever inset it was tuned against; on a Dynamic Island phone (~59px inset)
-        // it undershoots and the pill visually overflows into the page content below it.
-        pt: "calc(var(--safe-top, 44px) + 40px)",
-        // Solid, not the theme's `background.paper` token — see TabBar.tsx's identical comment.
-        // Matches the customer-portal microapp's own AppBar, which hardcodes solid black/white.
-        backgroundColor: (theme) => (theme.palette.mode === "dark" ? "#000000" : "#ffffff"),
+        // bridge) plus just enough clearance for the ExitButton pill's own height (~28px: a 20px
+        // icon plus a body2 label, p:0), rather than a fixed value — a fixed pt (the
+        // customer-portal microapp's own AppBar.tsx uses one, pt:7/56px) is only correct for
+        // whatever inset it was tuned against; on a Dynamic Island phone (~59px inset) a flat 56px
+        // undershoots the inset itself and the pill overflows into the page content below it. On
+        // root pages, this Box's flowed content row is otherwise empty (ExitButton is absolutely
+        // positioned, not part of the flow), so this pt is effectively this bar's entire visible
+        // height — keep the buffer tight rather than a larger round number, or the bar reads as a
+        // lot of empty space above the pill.
+        pt: "calc(var(--safe-top, 44px) + 28px)",
+        // Solid, not the theme's `background.paper` token — see TabBar.tsx's identical comment,
+        // including why this reads `theme.vars.palette.*` rather than `theme.palette.mode`.
+        backgroundColor: (theme) => theme.vars?.palette.background.default ?? theme.palette.background.default,
         borderBottom: "1px solid",
         borderColor: "divider",
         zIndex: (theme) => theme.zIndex.appBar,

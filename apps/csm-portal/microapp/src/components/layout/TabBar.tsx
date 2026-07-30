@@ -64,11 +64,15 @@ export function TabBar() {
         // semi-transparent in the shared Acrylic theme (#ffffffe1 / #000000b8, for glass-style
         // Paper/Card surfaces), which reads as visibly translucent on a fixed bar with page
         // content scrolling underneath it. Matches the customer-portal microapp's own TabBar,
-        // which hardcodes solid black/white for the same reason (its own ThemeModeContext there
-        // does the same job as `theme.palette.mode` does here).
-        backgroundColor: (theme) => (theme.palette.mode === "dark" ? "#000000" : "#ffffff"),
-        borderTop: "1px solid",
-        borderColor: "divider",
+        // which hardcodes solid black/white for the same reason. Reads `theme.vars.palette.*`
+        // (a CSS var, e.g. var(--oxygen-palette-background-default)), NOT `theme.palette.mode` —
+        // this theme switches light/dark purely via CSS variables reacting to the OS color scheme,
+        // so `theme.palette.mode` is a static JS value that never actually flips at runtime; using
+        // it here left this bar always white regardless of dark mode.
+        // No border — matches the customer-portal microapp's own TabBar exactly, which has no
+        // sx at all. A divider line here reads as a visible seam separating the bar from the
+        // page content above it, rather than the two reading as one continuous surface.
+        backgroundColor: (theme) => theme.vars?.palette.background.default ?? theme.palette.background.default,
       }}
     >
       <BottomNavigation value={activeTab} showLabels>
