@@ -19,6 +19,7 @@ import {
   AccordionDetails,
   AccordionSummary,
   AdapterDateFns,
+  Alert,
   Box,
   Button,
   Card,
@@ -34,7 +35,7 @@ import {
 const { DateTimePicker, LocalizationProvider } = DatePickers;
 import { ArrowLeft, ChevronDown } from "@wso2/oxygen-ui-icons-react";
 import { useRef, useState, type JSX } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import Editor from "@components/rich-text-editor/Editor";
@@ -48,7 +49,11 @@ import { useSearchServiceOfferings } from "@api/useSearchServiceOfferings";
 import { useSearchConfigurationItems } from "@api/useSearchConfigurationItems";
 import { useSearchUsersByName } from "@api/useSearchUsersByName";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
-import { changeRequestStateLabel } from "@features/csm-operations/utils/changeRequests";
+import {
+  changeRequestStateLabel,
+  CLONE_SOURCE_GAP_MESSAGE,
+  type CloneChangeRequestNavState,
+} from "@features/csm-operations/utils/changeRequests";
 import type {
   BeChangeRequestCategory,
   BeChangeRequestImpact,
@@ -187,30 +192,48 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const { showError } = useErrorBanner();
   const postChangeRequest = usePostChangeRequest();
 
-  const [subject, setSubject] = useState("");
+  // Set when opened from a change request's "Clone" action, which navigates
+  // here with router state (not query params) — see
+  // CsmChangeRequestDetailPage.tsx's cloneChangeRequest and
+  // buildCloneChangeRequestNavState's doc comment for exactly which fields
+  // this can and can't carry over. Read once: this form's state is what the
+  // user edits from here on, so a later change to the *source* record must
+  // not reach back in and overwrite what they've typed.
+  const cloneState = useLocation().state as CloneChangeRequestNavState | undefined;
+
+  const [subject, setSubject] = useState(cloneState?.subject ?? "");
   // Pre-selected to match the legacy ServiceNow form's own defaults, rather
   // than leaving every dropdown blank — most change requests are Normal
   // type, Other category, Low impact, Moderate risk. Priority has no default
-  // there either ("-- None --"), so it stays unset here too.
-  const [type, setType] = useState<string>("normal");
+  // there either ("-- None --"), so it stays unset here too. A clone
+  // carries over `type`/`impact` from the source record when present;
+  // category/priority/risk have no source value to carry (see
+  // buildCloneChangeRequestNavState), so they keep the same defaults a
+  // from-scratch change request gets.
+  const [type, setType] = useState<string>(cloneState?.type ?? "normal");
   const [category, setCategory] = useState<string>("other");
-  const [impact, setImpact] = useState<string>("low");
+  const [impact, setImpact] = useState<string>(cloneState?.impact ?? "low");
   const [priority, setPriority] = useState<string>(UNSET);
   const [risk, setRisk] = useState<string>("moderate");
+  // Always "new" regardless of the source record's own state/schedule/
+  // approval — cloning must never carry an approval or a stale window
+  // across into the new change request.
   const [state, setState] = useState<string>("new");
   const [plannedStartDate, setPlannedStartDate] = useState("");
   const [plannedEndDate, setPlannedEndDate] = useState("");
-  const [description, setDescription] = useState("");
-  const [justification, setJustification] = useState("");
+  const [description, setDescription] = useState(cloneState?.description ?? "");
+  const [justification, setJustification] = useState(cloneState?.justification ?? "");
   const [implementationPlan, setImplementationPlan] = useState("");
   const [riskImpactAnalysis, setRiskImpactAnalysis] = useState("");
   const [backoutPlan, setBackoutPlan] = useState("");
-  const [testPlan, setTestPlan] = useState("");
+  const [testPlan, setTestPlan] = useState(cloneState?.testPlan ?? "");
   const [serviceId, setServiceId] = useState("");
   const [serviceOfferingId, setServiceOfferingId] = useState("");
   const [configurationItemId, setConfigurationItemId] = useState("");
   const [groupId, setGroupId] = useState("");
-  const [assignedEngineerId, setAssignedEngineerId] = useState("");
+  const [assignedEngineerId, setAssignedEngineerId] = useState(
+    cloneState?.assignedEngineerId ?? "",
+  );
   const [requestedById, setRequestedById] = useState("");
 
   // Defaults "Requested by" to the signed-in user, matching the legacy
@@ -363,6 +386,15 @@ export default function CreateChangeRequestPage(): JSX.Element {
         New change request
       </Typography>
 
+      {cloneState && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {cloneState.sourceNumber
+            ? `Cloned from ${cloneState.sourceNumber}. `
+            : "Cloned from an existing change request. "}
+          {CLONE_SOURCE_GAP_MESSAGE}
+        </Alert>
+      )}
+
       <Card variant="outlined" sx={{ p: 3 }}>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <Typography variant="subtitle2">Change request</Typography>
@@ -486,7 +518,13 @@ export default function CreateChangeRequestPage(): JSX.Element {
           {/* Everything below is optional and used less often at creation
               time — collapsed by default so the form isn't dominated by
               fields most requests won't need up front. */}
-          <Accordion disableGutters sx={{ "&:before": { display: "none" }, mt: 1 }}>
+          <Accordion
+            disableGutters
+            // Auto-expanded when cloning and an engineer carried over, so
+            // the prefilled value isn't hidden behind a collapsed section.
+            defaultExpanded={!!cloneState?.assignedEngineerId}
+            sx={{ "&:before": { display: "none" }, mt: 1 }}
+          >
             <AccordionSummary expandIcon={<ChevronDown size={16} />}>
               <Typography variant="body2" color="text.secondary">
                 More options (optional)
@@ -566,6 +604,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
                     // so every option here is guaranteed to have one.
                     getId={(u) => u.id!}
                     getLabel={userLabel}
+                    knownLabel={cloneState?.assignedEngineerLabel}
                   />
                 </Box>
                 <Box sx={{ flex: "1 1 220px" }}>
