@@ -50,7 +50,7 @@ Environment switches (see `playwright.config.ts`):
 | Path | Purpose |
 |---|---|
 | `auth/README.md` | How to capture a session bundle (localStorage + sessionStorage) |
-| `fixtures/test.ts` | `withRole(test, role)` replays a session and skips the file if absent; `openContextAs(browser, role)` opens a second authenticated context |
+| `fixtures/test.ts` | `withRole(test, role)` replays a session, skipping each test that uses it when the bundle is absent (it skips from `beforeEach`, so tests are reported individually as skipped rather than the file being skipped as a unit); `openContextAs(browser, role)` opens a second authenticated context |
 | `pages/` | Page objects — one per screen, no assertions inside |
 | `specs/` | The specs, grouped in subfolders by feature area |
 | `utils/` | Shared selectors / data-tagging helpers |
@@ -62,9 +62,10 @@ Environment switches (see `playwright.config.ts`):
 matching the portal's user types. Capabilities are split across two sources, so
 a test account needs both set correctly:
 
-- **admin** — the ServiceNow user role `sn_customerservice.customer_admin`
+- **admin** — both the ServiceNow user role `sn_customerservice.customer_admin`
   (read from `GET /users/me`), which gates Settings user management and
-  registry service tokens.
+  registry service tokens, **and** an Admin membership on the project under
+  test.
 - **lead / portal / security** — project **membership** flags (`isLead`,
   `isPortalUser`, `isSecurityContact`) on the project under test, read from the
   project contacts list.

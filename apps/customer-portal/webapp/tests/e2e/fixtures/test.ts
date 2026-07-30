@@ -41,6 +41,9 @@ export type PortalRole = "admin" | "lead" | "portal" | "security";
  * token refresh can succeed mid-run when the short-lived access token expires;
  * bundles without it still replay fine for the access token's TTL. */
 interface SessionBundle {
+  /** Origin the bundle was captured from. Required in practice — it scopes the
+   * storage replay so tokens are never restored into a cross-origin frame.
+   * Optional here only because the on-disk JSON is untrusted input. */
   origin?: string;
   localStorage?: Record<string, string>;
   sessionStorage?: Record<string, string>;
@@ -65,6 +68,16 @@ async function applySession(
   role: PortalRole,
 ): Promise<void> {
   const bundle = readBundle(role);
+  if (!bundle.origin) {
+    // Without an origin we cannot tell the portal's documents apart from the
+    // IdP's, and the init script below would have to either skip everything or
+    // write tokens into whatever frame loads first. Fail loudly here instead of
+    // silently booting signed-out. The capture snippet in auth/README.md always
+    // records `origin`; a bundle missing it predates that and must be recaptured.
+    throw new Error(
+      `Session bundle for '${role}' has no "origin". Recapture it — see tests/e2e/auth/README.md.`,
+    );
+  }
   if (bundle.cookies?.length) {
     // Best-effort: lets the SDK's hidden-iframe silent refresh reach the IdP
     // with an existing session when the access token expires during a long run.
@@ -78,6 +91,14 @@ async function applySession(
     }
   }
   await context.addInitScript((b: SessionBundle) => {
+    // This runs in *every* document in the context, including cross-origin
+    // frames — notably the SDK's hidden IdP iframe used for silent token
+    // refresh. Restore only into the origin the bundle was captured from, so
+    // the portal's tokens are never written into another origin's storage.
+    // (A stale bundle captured against a different origin than the one under
+    // test therefore restores nothing and the app boots signed-out; recapture
+    // against the target environment — see auth/README.md.)
+    if (!b.origin || window.location.origin !== b.origin) return;
     try {
       for (const [k, v] of Object.entries(b.localStorage ?? {})) {
         window.localStorage.setItem(k, v);
