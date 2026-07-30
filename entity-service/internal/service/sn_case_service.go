@@ -1865,10 +1865,14 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "types contains invalid value: " + t}
 		}
 	}
+	// An empty/omitted Types filter means "no type restriction" -- SN's own case
+	// search (CaseUtils._resolveCaseTypeIds + applyFilters) already treats an
+	// empty caseTypes list this way, skipping the type query entirely. Defaulting
+	// it to ["default_case"] here silently excluded every non-"case" type (most
+	// importantly service_request) from callers that search across all types,
+	// e.g. the "does this engineer already have another ongoing work item"
+	// pre-check before starting a new case.
 	snCaseTypes := domainTypeKeysToSN(req.Filters.Types)
-	if len(snCaseTypes) == 0 {
-		snCaseTypes = []string{"default_case"}
-	}
 
 	payload := snCaseSearchPayload{
 		Filters: snCaseFilters{

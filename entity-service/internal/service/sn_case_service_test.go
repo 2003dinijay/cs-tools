@@ -933,6 +933,37 @@ func TestSNCaseService_UpdateCase_EchoesInternalFixEtaFieldsBack(t *testing.T) {
 
 // --- SearchTags ---
 
+func TestSNCaseService_SearchCases_EmptyTypesFilterSendsNoTypeRestriction(t *testing.T) {
+	// An empty/omitted Types filter must mean "search every case type" -- SN's
+	// own case search already treats an empty caseTypes list this way. Guards
+	// against reintroducing a default like ["default_case"], which silently
+	// excluded service_request (and every other non-"case" type) from any
+	// caller searching across all types, e.g. the "does this engineer already
+	// have another ongoing work item" pre-check.
+	var gotBody struct {
+		Filters struct {
+			CaseTypes []string `json:"caseTypes"`
+		} `json:"filters"`
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cases/search", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"cases": []map[string]any{}, "total": 0, "offset": 0, "limit": 20})
+	})
+
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowCaseService(client, nil)
+
+	if _, err := svc.SearchCases(contextWithUserIDToken("token"), domain.SearchCasesRequest{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gotBody.Filters.CaseTypes) != 0 {
+		t.Fatalf("expected no caseTypes restriction sent when Types filter is empty, got %v", gotBody.Filters.CaseTypes)
+	}
+}
+
 func TestSNCaseService_SearchTags_Success(t *testing.T) {
 	var gotQuery string
 	mux := http.NewServeMux()
