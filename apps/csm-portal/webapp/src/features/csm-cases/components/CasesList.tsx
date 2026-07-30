@@ -22,7 +22,7 @@ import {
   useTheme,
 } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
-import { Link as RouterLink } from "react-router";
+import { Link as RouterLink, useLocation } from "react-router";
 import { preloadRoute } from "@utils/routePreloaders";
 import RelativeTime from "@components/RelativeTime";
 import SeverityChip from "@components/SeverityChip";
@@ -84,6 +84,7 @@ export default function CasesList({
   onSortOrderChange,
 }: CasesListProps): JSX.Element {
   const theme = useTheme();
+  const location = useLocation();
   const headerCells = hideSeverityColumn
     ? HEADER_CELLS_WITHOUT_SEVERITY
     : HEADER_CELLS_WITH_SEVERITY;
@@ -198,6 +199,10 @@ export default function CasesList({
               key={c.id}
               component={RouterLink}
               to={`${detailBasePath}/${c.id}`}
+              // Carries the current (filtered) list URL forward so the detail
+              // page's back button can return to it instead of a bare,
+              // filter-less list path.
+              state={{ from: `${location.pathname}${location.search}` }}
               onMouseEnter={() => preloadRoute(detailBasePath)}
               sx={{
                 gridColumn: "1 / -1",
