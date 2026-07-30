@@ -770,6 +770,150 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /cases/{id}/tags:
+    post:
+      summary: Attach a free-text tag to a support case.
+      operationId: addCaseTag
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Case UUID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddCaseTagRequest'
+      responses:
+        "201":
+          description: The attached tag.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tag'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Case not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /cases/{id}/tags/{tagId}:
+    delete:
+      summary: Detach a tag from a support case.
+      operationId: removeCaseTag
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Case UUID.
+        - name: tagId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Tag UUID.
+      responses:
+        "204":
+          description: Tag detached.
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Case or tag not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /comments:
+    post:
+      summary: Create a comment on any supported reference entity.
+      description: >-
+        The reference-generic comment-create path, used for reference types that have
+        no dedicated create-comment route of their own (change request, incident,
+        conversation, deployment). Cases have their own route at
+        POST /cases/{id}/comments.
+      operationId: createComment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCommentRequest'
+      responses:
+        "200":
+          description: The created comment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateCommentResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Referenced entity not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /cases/{id}/activities/search:
     post:
       summary: Search the activity feed of a support case (comments, attachments, and optional field changes).
@@ -1467,6 +1611,59 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Change request not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /change-requests/{id}/approvals/decision:
+    post:
+      summary: Decide the caller's own pending approval on a change request.
+      description: >-
+        Records the caller's decision on their own pending approval stage. Only the
+        caller's own pending approval can be acted on; the change request's own state
+        cascades automatically in the backing data source.
+      operationId: decideChangeRequestApproval
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeRequestApprovalDecisionRequest'
+      responses:
+        "200":
+          description: The decided approval record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeRequestApprovalDecisionResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Change request or pending approval not found.
           content:
             application/json:
               schema:
@@ -2601,7 +2798,7 @@ components:
       properties:
         limit:
           type: integer
-          description: Number of results per page. Defaults to 20, capped at 100.
+          description: Number of results per page. Defaults to 20, capped at 50.
         offset:
           type: integer
           description: Zero-based offset into the result set.
@@ -4612,6 +4809,52 @@ components:
         limit:
           type: integer
 
+    AddCaseTagRequest:
+      type: object
+      required: [label]
+      properties:
+        label:
+          type: string
+          description: Free-text label to attach to the case.
+
+    CreateCommentRequest:
+      type: object
+      required: [referenceId, referenceType, type, content]
+      properties:
+        referenceId:
+          type: string
+          format: uuid
+          description: UUID of the entity the comment belongs to.
+        referenceType:
+          $ref: '#/components/schemas/ReferenceType'
+        type:
+          type: string
+          enum: [work_note, comment, activity]
+          description: work_note is restricted to internal users; activity to internal and system users.
+        content:
+          type: string
+
+    CreateCommentResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        comment:
+          $ref: '#/components/schemas/CommentDetail'
+
+    CommentDetail:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        createdOn:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          description: Email of the user who created the comment.
+
     CreateCaseCommentRequest:
       type: object
       required: [type, content]
@@ -4863,6 +5106,7 @@ components:
         - conversation
         - change_request
         - deployment
+        - incident
 
     SearchAttachmentsRequest:
       type: object
@@ -4950,7 +5194,7 @@ components:
             limit:
               type: integer
               minimum: 1
-              maximum: 100
+              maximum: 50
               default: 20
 
     SearchChangeRequestView:
@@ -5107,6 +5351,26 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ChangeRequestApproval'
+
+    ChangeRequestApprovalDecisionRequest:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approved, rejected]
+          description: Caller's decision on their own pending approval.
+
+    ChangeRequestApprovalDecisionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUID of the approval record that was decided.
+        state:
+          type: string
+          description: Resulting state of the approval ("approved" or "rejected").
 
     Variable:
       type: object
@@ -5499,7 +5763,7 @@ components:
             limit:
               type: integer
               minimum: 1
-              maximum: 100
+              maximum: 50
               default: 20
 
     TimeCardRef:
@@ -6365,7 +6629,7 @@ components:
             limit:
               type: integer
               minimum: 1
-              maximum: 100
+              maximum: 50
               default: 20
 
     TaskSlaDefinition:
@@ -6610,7 +6874,7 @@ components:
             limit:
               type: integer
               minimum: 1
-              maximum: 100
+              maximum: 50
               default: 20
 
     SearchCaseTasksResponse:

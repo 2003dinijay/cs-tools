@@ -85,6 +85,21 @@ type ConflictError struct {
 // Error implements the error interface.
 func (e *ConflictError) Error() string { return e.Msg }
 
+// DownstreamError signals that a downstream dependency rejected the request
+// with a status this service does not map to a more specific code, but that it
+// supplied a reason worth returning. It is reported as HTTP 500 — the status is
+// unchanged from the generic case — with Msg as the message instead of the
+// opaque "internal server error" literal.
+//
+// Msg must already be a caller-safe reason extracted from the downstream error
+// envelope, never a raw response body: it is returned to the API caller.
+type DownstreamError struct {
+	Msg string
+}
+
+// Error implements the error interface.
+func (e *DownstreamError) Error() string { return e.Msg }
+
 // WriteJSON writes an ErrorResponse JSON body with the given HTTP status code.
 func WriteJSON(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")

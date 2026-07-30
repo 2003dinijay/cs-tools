@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -460,6 +461,28 @@ var snCRCategoryIDMap = map[domain.ChangeRequestCategory]string{
 
 func strPtr(s string) *string { return &s }
 
+// snUTCDateTimeLayout is the layout the downstream create endpoint requires for
+// planned start/end timestamps. The platform's own API accepts a single datetime
+// format everywhere (snCreatedOnLayout, "YYYY-MM-DD HH:mm:ss"); the downstream
+// create endpoint diverges from its own update endpoint and demands this one, so
+// the adapter converts here rather than leaking the inconsistency upwards.
+const snUTCDateTimeLayout = "2006-01-02T15:04:05Z"
+
+// toDownstreamUTCDateTime parses a platform-format datetime ("YYYY-MM-DD HH:mm:ss",
+// interpreted as UTC) and re-emits it in the layout the downstream create endpoint
+// requires. It returns a ValidationError naming the field when the input does not
+// parse, so bad input is rejected with a specific message instead of an opaque
+// downstream pattern-validation failure.
+func toDownstreamUTCDateTime(field, value string) (string, error) {
+	t, err := time.Parse(snCreatedOnLayout, value)
+	if err != nil {
+		return "", &apierror.ValidationError{
+			Msg: fmt.Sprintf("%s must follow the format: YYYY-MM-DD HH:mm:ss", field),
+		}
+	}
+	return t.Format(snUTCDateTimeLayout), nil
+}
+
 // CreateChangeRequest implements ChangeRequestService for the ServiceNow data source.
 func (s *snChangeRequestService) CreateChangeRequest(ctx context.Context, req domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
 	if req.Subject == "" {
@@ -522,10 +545,22 @@ func (s *snChangeRequestService) CreateChangeRequest(ctx context.Context, req do
 		RiskImpactAnalysis: req.RiskImpactAnalysis,
 		BackoutPlan:        req.BackoutPlan,
 		TestPlan:           req.TestPlan,
-		PlannedStartDate:   req.PlannedStartDate,
-		PlannedEndDate:     req.PlannedEndDate,
 		Comment:            req.Comment,
 		WorkNote:           req.WorkNote,
+	}
+	if req.PlannedStartDate != nil {
+		v, err := toDownstreamUTCDateTime("plannedStartDate", *req.PlannedStartDate)
+		if err != nil {
+			return domain.CreateChangeRequestResponse{}, err
+		}
+		payload.PlannedStartDate = &v
+	}
+	if req.PlannedEndDate != nil {
+		v, err := toDownstreamUTCDateTime("plannedEndDate", *req.PlannedEndDate)
+		if err != nil {
+			return domain.CreateChangeRequestResponse{}, err
+		}
+		payload.PlannedEndDate = &v
 	}
 	if req.Category != nil {
 		v := snCRCategoryIDMap[*req.Category]
@@ -577,7 +612,13 @@ func (s *snChangeRequestService) CreateChangeRequest(ctx context.Context, req do
 
 	var snResp snCreateChangeRequestResponse
 	if err := json.Unmarshal(raw, &snResp); err != nil {
-		return domain.CreateChangeRequestResponse{}, fmt.Errorf("sn create change request: parse response: %w", err)
+		// The change request has already been created downstream. Unlike the update
+		// path there is no identifier to hand back, so this stays an error — but it
+		// must say the write succeeded, or the caller will retry and create a
+		// duplicate change request.
+		slog.WarnContext(ctx, "sn create change request: write applied but response could not be parsed", "error", err)
+		return domain.CreateChangeRequestResponse{}, fmt.Errorf(
+			"change request was created but the response could not be parsed; do not retry: %w", err)
 	}
 
 	resp := domain.CreateChangeRequestResponse{Message: snResp.Message}
@@ -764,7 +805,16 @@ func (s *snChangeRequestService) PatchChangeRequest(ctx context.Context, id stri
 
 	var snResp snPatchChangeRequestResponse
 	if err := json.Unmarshal(raw, &snResp); err != nil {
-		return domain.PatchChangeRequestResponse{}, fmt.Errorf("sn patch change request: parse response: %w", err)
+		// The write has already been applied downstream at this point. Reporting a
+		// response-shape drift as a failed update is wrong and actively misleading:
+		// the caller retries or tells the user nothing changed, while the change
+		// request has in fact moved. Degrade the body instead of failing the call.
+		slog.WarnContext(ctx, "sn patch change request: write applied but response could not be parsed",
+			"changeRequestID", id, "error", err)
+		return domain.PatchChangeRequestResponse{
+			Message:       "Change request updated. The updated change request could not be read back; reload to see current values.",
+			ChangeRequest: domain.ChangeRequest{SearchChangeRequestView: domain.SearchChangeRequestView{ID: id}},
+		}, nil
 	}
 
 	return domain.PatchChangeRequestResponse{

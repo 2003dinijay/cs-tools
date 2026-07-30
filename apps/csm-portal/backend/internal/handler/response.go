@@ -90,7 +90,20 @@ func mapUpstreamError(w http.ResponseWriter, err error, fallbackMsg string) {
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			writeError(w, http.StatusServiceUnavailable, fallbackMsg)
 		default:
-			writeError(w, http.StatusInternalServerError, fallbackMsg)
+			// Surface the upstream reason instead of discarding it. This branch
+			// catches 500 and every unenumerated status, and upstream 500s are
+			// not all opaque: the entity service returns a real reason (a rejected
+			// state transition, for example) that the caller needs. Discarding it
+			// turned precise rejections into "Failed to update ..." for every one
+			// of this function's call sites.
+			//
+			// The strict extractor is used rather than the permissive one because
+			// this branch is not fed only the entity service: the identity-provider
+			// client's errors reach it too, and their bodies are not the
+			// {"code","message"} envelope. Strict returns fallbackMsg for any body
+			// that is not a JSON object with a non-empty message, so a foreign or
+			// malformed body is never echoed to the caller.
+			writeError(w, http.StatusInternalServerError, upstreamErrorMessageStrict(apiErr.Body, fallbackMsg))
 		}
 		return
 	}

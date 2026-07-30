@@ -356,9 +356,6 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
-	if req.Pagination.Limit > 50 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "limit cannot exceed 50"}
-	}
 	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}

@@ -117,6 +117,7 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		ue  *apierror.UnauthorizedError
 		fe  *apierror.ForbiddenError
 		ce  *apierror.ConflictError
+		de  *apierror.DownstreamError
 	)
 	switch {
 	case errors.As(err, &ve):
@@ -143,6 +144,15 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		// 409 – request conflicts with the current state of the resource; message is safe to return.
 		log.Printf("Conflict: %s %s: %s", r.Method, sanitizeLog(r.URL.Path), sanitizeLog(ce.Msg)) // #nosec G706 -- path and message sanitized
 		apierror.WriteJSON(w, http.StatusConflict, ce.Msg)
+
+	case errors.As(err, &de):
+		// 500 – a downstream dependency rejected the request with a status we do
+		// not map more specifically, but supplied a reason. Keep the 500 and return
+		// the reason: "internal server error" tells the caller nothing actionable
+		// when the real cause is, say, an illegal state transition. Msg is already
+		// a caller-safe extracted reason, not a raw body.
+		log.Printf("Downstream error: %s %s", r.Method, sanitizeLog(r.URL.Path)) // #nosec G706 -- path sanitized
+		apierror.WriteJSON(w, http.StatusInternalServerError, de.Msg)
 
 	case errors.As(err, &sue):
 		// 503 – downstream dependency unavailable; log details, return generic message.
