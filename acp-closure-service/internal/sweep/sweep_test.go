@@ -31,7 +31,7 @@ func TestProcessProject_NoEndDateIsNoOp(t *testing.T) {
 	updater := &mockProjectUpdater{}
 	ntf := &mockNotifier{}
 
-	proj := project{ID: "p1", AccountID: "a1", EndDate: nil}
+	proj := project{ID: "p1", Account: &projectAccountRef{ID: "a1"}, EndDate: nil}
 
 	err := processProject(context.Background(), reader, updater, ntf, time.Now(), proj)
 	if err != nil {
@@ -65,7 +65,7 @@ func TestProcessProject_InternalOnlyWindowSkipsCustomerContactLookup(t *testing.
 
 	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
 	endDate := now.AddDate(0, 0, 89) // fires the 90-day window
-	proj := project{ID: "p1", AccountID: "a1", EndDate: &endDate}
+	proj := project{ID: "p1", Account: &projectAccountRef{ID: "a1"}, EndDate: &endDate}
 
 	err := processProject(context.Background(), reader, updater, ntf, now, proj)
 	if err != nil {
@@ -112,7 +112,7 @@ func TestProcessProject_CustomerAudienceWindowNotifiesBusinessContact(t *testing
 
 	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
 	endDate := now.AddDate(0, 0, 6) // fires the 7-day window
-	proj := project{ID: "p1", AccountID: "a1", EndDate: &endDate}
+	proj := project{ID: "p1", Account: &projectAccountRef{ID: "a1"}, EndDate: &endDate}
 
 	err := processProject(context.Background(), reader, updater, ntf, now, proj)
 	if err != nil {
@@ -157,7 +157,7 @@ func TestProcessProject_CustomerAudienceWindowNudgesAMWhenNoContactFound(t *test
 
 	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
 	endDate := now.AddDate(0, 0, 6) // fires the 7-day window
-	proj := project{ID: "p1", AccountID: "a1", EndDate: &endDate}
+	proj := project{ID: "p1", Account: &projectAccountRef{ID: "a1"}, EndDate: &endDate}
 
 	err := processProject(context.Background(), reader, updater, ntf, now, proj)
 	if err != nil {
@@ -204,7 +204,7 @@ func TestProcessProject_NotifyFailureBlocksStateWrite(t *testing.T) {
 
 	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
 	endDate := now.AddDate(0, 0, 89) // fires the 90-day window (internal-only)
-	proj := project{ID: "p1", AccountID: "a1", EndDate: &endDate}
+	proj := project{ID: "p1", Account: &projectAccountRef{ID: "a1"}, EndDate: &endDate}
 
 	err := processProject(context.Background(), reader, updater, ntf, now, proj)
 	if err == nil {
@@ -230,7 +230,7 @@ func TestProcessProject_Day0SuccessfulNotifyThenSuspend(t *testing.T) {
 	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
 	endDate := now.AddDate(0, 0, -3) // 3 days past due
 	open := "Open"
-	proj := project{ID: "p1", AccountID: "a1", EndDate: &endDate, ClosureState: &open}
+	proj := project{ID: "p1", Account: &projectAccountRef{ID: "a1"}, EndDate: &endDate, ClosureState: &open}
 
 	err := processProject(context.Background(), reader, updater, ntf, now, proj)
 	if err != nil {
@@ -289,7 +289,7 @@ func TestProcessProject_Day0RetrySkipsNotifyWhenAlreadyRecorded(t *testing.T) {
 	open := "Open"
 	proj := project{
 		ID:                     "p1",
-		AccountID:              "a1",
+		Account:                &projectAccountRef{ID: "a1"},
 		EndDate:                &endDate,
 		ClosureState:           &open,
 		SuspensionProcessState: []byte(`{"based_on_subscription_end_date":{"event_type":"suspend"}}`),
@@ -330,7 +330,7 @@ func TestProcessProject_SuspendGuardSkipsAlreadySuspendedProject(t *testing.T) {
 	suspended := "Suspended"
 	proj := project{
 		ID:                     "p1",
-		AccountID:              "a1",
+		Account:                &projectAccountRef{ID: "a1"},
 		EndDate:                &endDate,
 		ClosureState:           &suspended,
 		SuspensionProcessState: []byte(`{"based_on_subscription_end_date":{"event_type":"suspend"}}`),
@@ -352,7 +352,7 @@ func TestProcessProject_NothingDueIsNoOp(t *testing.T) {
 
 	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
 	endDate := now.AddDate(0, 0, 200) // far beyond the 90-day window
-	proj := project{ID: "p1", AccountID: "a1", EndDate: &endDate}
+	proj := project{ID: "p1", Account: &projectAccountRef{ID: "a1"}, EndDate: &endDate}
 
 	err := processProject(context.Background(), reader, updater, ntf, now, proj)
 	if err != nil {
@@ -363,5 +363,96 @@ func TestProcessProject_NothingDueIsNoOp(t *testing.T) {
 	}
 	if len(ntf.sent) != 0 {
 		t.Errorf("ntf.sent = %d, want 0", len(ntf.sent))
+	}
+}
+
+// TestProcessProject_InternalNoticeUsesRealAccountManagerEmail is a
+// regression test using the real GetAccount response shape confirmed via
+// direct Postman testing against the dedicated test account (trimmed to the
+// field this component reads): a populated accountManager with a real email.
+// The internal notice's Recipient must be that email, and GetAccount must be
+// called with the project's account ID.
+func TestProcessProject_InternalNoticeUsesRealAccountManagerEmail(t *testing.T) {
+	const realGetAccountResponse = `{
+		"id": "f213fdd1-1b4b-a650-a002-c9d3604bcbac",
+		"name": "ACP Test Partner Account",
+		"technicalOwner": {
+			"id": "tech-1",
+			"name": "Dinithi Nanayakkara (Intern)",
+			"email": "dinithi@wso2.example"
+		},
+		"accountManager": {
+			"id": "am-1",
+			"name": "Rukshan Kuruppu (Intern)",
+			"email": "rukshan@wso2.example"
+		},
+		"renewalAccountManager": {
+			"id": "ram-1",
+			"name": "Ishan Hansaka Silva",
+			"email": "ishan@wso2.example"
+		}
+	}`
+
+	var gotAccountID string
+	reader := &mockEntityReader{
+		getAccountFn: func(ctx context.Context, id string) ([]byte, error) {
+			gotAccountID = id
+			return []byte(realGetAccountResponse), nil
+		},
+	}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{}
+
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	endDate := now.AddDate(0, 0, 89) // fires the 90-day (internal-only) window
+	proj := project{
+		ID:      "p1",
+		Account: &projectAccountRef{ID: "f213fdd1-1b4b-a650-a002-c9d3604bcbac"},
+		EndDate: &endDate,
+	}
+
+	err := processProject(context.Background(), reader, updater, ntf, now, proj)
+	if err != nil {
+		t.Fatalf("processProject() error = %v, want nil", err)
+	}
+
+	if gotAccountID != "f213fdd1-1b4b-a650-a002-c9d3604bcbac" {
+		t.Errorf("GetAccount called with id = %q, want the project's account ID", gotAccountID)
+	}
+	if len(ntf.sent) != 1 {
+		t.Fatalf("ntf.sent = %d, want 1", len(ntf.sent))
+	}
+	if got := ntf.sent[0].Recipient; got != "rukshan@wso2.example" {
+		t.Errorf("internal notice Recipient = %q, want %q", got, "rukshan@wso2.example")
+	}
+}
+
+// TestProcessProject_InternalNoticeHasEmptyRecipientWhenNoAccountManager
+// covers the legitimate-absence case: an account with no accountManager
+// assigned at all (nested key entirely missing, not just empty). The
+// internal notice must still be sent, with an empty Recipient — this is not
+// an error, per recipients.AccountManagerEmail's contract.
+func TestProcessProject_InternalNoticeHasEmptyRecipientWhenNoAccountManager(t *testing.T) {
+	reader := &mockEntityReader{
+		getAccountFn: func(ctx context.Context, id string) ([]byte, error) {
+			return []byte(`{"id": "a1", "name": "Some Account"}`), nil
+		},
+	}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{}
+
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	endDate := now.AddDate(0, 0, 89)
+	proj := project{ID: "p1", Account: &projectAccountRef{ID: "a1"}, EndDate: &endDate}
+
+	err := processProject(context.Background(), reader, updater, ntf, now, proj)
+	if err != nil {
+		t.Fatalf("processProject() error = %v, want nil", err)
+	}
+	if len(ntf.sent) != 1 {
+		t.Fatalf("ntf.sent = %d, want 1", len(ntf.sent))
+	}
+	if got := ntf.sent[0].Recipient; got != "" {
+		t.Errorf("internal notice Recipient = %q, want \"\" (no account manager assigned)", got)
 	}
 }

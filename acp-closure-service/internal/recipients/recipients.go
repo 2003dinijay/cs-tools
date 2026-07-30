@@ -93,14 +93,27 @@ func ResolveCustomerContact(projectContacts []ProjectContact, accountContacts []
 	return Resolution{NeedsAMNudge: true, ResolvedVia: ResolvedViaNone}
 }
 
-// StubOwnerEmail is the seam for resolving an account's Account Manager
-// email from ownerId. No path exists yet today, but one is confirmed in
-// progress (Sajith): a new endpoint returning users with id, name, and email
-// directly, covering both Owner and the in-progress Renewal Account
-// Manager. Swap this function's body once that ships; no other code needs
-// to change.
-func StubOwnerEmail(accountID string) (string, error) {
-	return "", nil
+// PersonRef mirrors entity-service's person-reference shape (technicalOwner/
+// accountManager/renewalAccountManager on an Account, per entity-service's
+// domain.PersonRef). Email is nullable — an assigned person doesn't always
+// have a recorded email. Supported by the ServiceNow data source only.
+type PersonRef struct {
+	ID    string
+	Name  string
+	Email *string
+}
+
+// AccountManagerEmail returns an account's Account Manager email, given its
+// already-fetched accountManager reference (nil if the account has none
+// assigned). Returns "" both when there's no Account Manager and when one is
+// assigned but has no recorded email — both are legitimate, unremarkable
+// states for a real account (confirmed: many accounts have incomplete role
+// assignments), not error conditions the caller needs to distinguish.
+func AccountManagerEmail(accountManager *PersonRef) string {
+	if accountManager == nil || accountManager.Email == nil {
+		return ""
+	}
+	return *accountManager.Email
 }
 
 func hasBusinessContactRole(c ProjectContact) bool {

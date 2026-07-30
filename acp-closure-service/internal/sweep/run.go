@@ -33,8 +33,36 @@ const pageSize = 100
 // fetching a page itself is fatal for the whole run (there is no way to
 // know what projects exist beyond it) and is returned as a non-nil error;
 // Result still reflects whatever was evaluated before that point.
-func Run(ctx context.Context, reader sweepReader, updater projectUpdater, ntf notifier, now time.Time) (Result, error) {
+//
+// If projectID is non-empty, Run is scoped to exactly that one project — it
+// fetches it directly via GetProject and never calls SearchProjects at all.
+// This is what backs TEST_PROJECT_ID: a scoped run cannot accidentally touch
+// every open project in an environment. A GetProject failure in this mode is
+// fatal, the same as a page-fetch failure in the broad-sweep mode — there is
+// nothing else to fall back to when the one requested project can't be
+// fetched.
+func Run(ctx context.Context, reader sweepReader, updater projectUpdater, ntf notifier, now time.Time, projectID string) (Result, error) {
 	var result Result
+
+	if projectID != "" {
+		raw, err := reader.GetProject(ctx, projectID)
+		if err != nil {
+			return result, fmt.Errorf("sweep: get project %s: %w", projectID, err)
+		}
+
+		var proj project
+		if err := json.Unmarshal(raw, &proj); err != nil {
+			return result, fmt.Errorf("sweep: parse project %s: %w", projectID, err)
+		}
+
+		result.ProjectsEvaluated++
+		if err := processProject(ctx, reader, updater, ntf, now, proj); err != nil {
+			slog.ErrorContext(ctx, "processProject failed", "projectID", proj.ID, "err", err)
+			result.Failures = append(result.Failures, ProjectFailure{ProjectID: proj.ID, Err: err})
+		}
+
+		return result, nil
+	}
 
 	offset := 0
 	for {

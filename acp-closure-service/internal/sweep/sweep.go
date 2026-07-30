@@ -88,7 +88,7 @@ func needsCustomerAudience(window closure.NoticeWindow) bool {
 // the customer-facing notice (or the distinct AM-nudge email when no
 // customer contact resolves).
 func notifyForWindow(ctx context.Context, reader entityReader, ntf notifier, proj project, window closure.NoticeWindow) error {
-	amEmail, err := recipients.StubOwnerEmail(proj.AccountID)
+	amEmail, err := resolveAccountManagerEmail(ctx, reader, proj.accountID())
 	if err != nil {
 		return fmt.Errorf("resolve AM email: %w", err)
 	}
@@ -129,6 +129,33 @@ func notifyForWindow(ctx context.Context, reader entityReader, ntf notifier, pro
 	})
 }
 
+// resolveAccountManagerEmail fetches the account and extracts its Account
+// Manager's email. Returns "" (not an error) if the project has no linked
+// account, the account has no Account Manager assigned, or the assigned
+// Account Manager has no recorded email — all legitimate, unremarkable
+// states. Only a genuine fetch/parse failure is returned as an error.
+func resolveAccountManagerEmail(ctx context.Context, reader entityReader, accountID string) (string, error) {
+	if accountID == "" {
+		return "", nil
+	}
+
+	raw, err := reader.GetAccount(ctx, accountID)
+	if err != nil {
+		return "", fmt.Errorf("get account: %w", err)
+	}
+
+	var acc accountDTO
+	if err := json.Unmarshal(raw, &acc); err != nil {
+		return "", fmt.Errorf("parse account: %w", err)
+	}
+
+	var am *recipients.PersonRef
+	if acc.AccountManager != nil {
+		am = &recipients.PersonRef{ID: acc.AccountManager.ID, Name: acc.AccountManager.Name, Email: acc.AccountManager.Email}
+	}
+	return recipients.AccountManagerEmail(am), nil
+}
+
 func fetchContacts(ctx context.Context, reader entityReader, proj project) ([]recipients.ProjectContact, []recipients.AccountContact, error) {
 	pcRaw, err := reader.SearchProjectContacts(ctx, proj.ID, []byte(`{}`))
 	if err != nil {
@@ -139,7 +166,7 @@ func fetchContacts(ctx context.Context, reader entityReader, proj project) ([]re
 		return nil, nil, fmt.Errorf("parse project contacts: %w", err)
 	}
 
-	acRaw, err := reader.SearchAccountContacts(ctx, proj.AccountID, []byte(`{}`))
+	acRaw, err := reader.SearchAccountContacts(ctx, proj.accountID(), []byte(`{}`))
 	if err != nil {
 		return nil, nil, fmt.Errorf("search account contacts: %w", err)
 	}

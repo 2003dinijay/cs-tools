@@ -18,6 +18,29 @@ package recipients
 
 import "testing"
 
+func TestAccountManagerEmail_ReturnsEmailWhenPopulated(t *testing.T) {
+	email := "am@wso2.example"
+	am := &PersonRef{ID: "am-1", Name: "Rukshan Kuruppu", Email: &email}
+
+	if got := AccountManagerEmail(am); got != email {
+		t.Errorf("AccountManagerEmail() = %q, want %q", got, email)
+	}
+}
+
+func TestAccountManagerEmail_ReturnsEmptyWhenNoAccountManager(t *testing.T) {
+	if got := AccountManagerEmail(nil); got != "" {
+		t.Errorf("AccountManagerEmail(nil) = %q, want \"\"", got)
+	}
+}
+
+func TestAccountManagerEmail_ReturnsEmptyWhenAccountManagerHasNoEmail(t *testing.T) {
+	am := &PersonRef{ID: "am-1", Name: "Rukshan Kuruppu", Email: nil}
+
+	if got := AccountManagerEmail(am); got != "" {
+		t.Errorf("AccountManagerEmail() = %q, want \"\"", got)
+	}
+}
+
 func TestResolveCustomerContact_PrefersBusinessContact(t *testing.T) {
 	projectContacts := []ProjectContact{
 		{Name: "Alice", Email: "alice@customer.example", Roles: []string{"developer"}},

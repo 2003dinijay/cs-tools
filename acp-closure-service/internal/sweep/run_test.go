@@ -29,8 +29,8 @@ func TestRun_SinglePageEvaluatesAllProjects(t *testing.T) {
 		searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
 			return []byte(`{
 				"projects": [
-					{"id": "p1", "accountId": "a1", "endDate": null},
-					{"id": "p2", "accountId": "a2", "endDate": null}
+					{"id": "p1", "endDate": null},
+					{"id": "p2", "endDate": null}
 				],
 				"total": 2, "limit": 100, "offset": 0, "hasMore": false
 			}`), nil
@@ -39,7 +39,7 @@ func TestRun_SinglePageEvaluatesAllProjects(t *testing.T) {
 	updater := &mockProjectUpdater{}
 	ntf := &mockNotifier{}
 
-	result, err := Run(context.Background(), reader, updater, ntf, time.Now())
+	result, err := Run(context.Background(), reader, updater, ntf, time.Now(), "")
 	if err != nil {
 		t.Fatalf("Run() error = %v, want nil", err)
 	}
@@ -68,12 +68,12 @@ func TestRun_MultiPagePaginatesUntilHasMoreFalse(t *testing.T) {
 
 			if req.Pagination.Offset == 0 {
 				return []byte(`{
-					"projects": [{"id": "p1", "accountId": "a1", "endDate": null}],
+					"projects": [{"id": "p1", "endDate": null}],
 					"total": 2, "limit": 100, "offset": 0, "hasMore": true
 				}`), nil
 			}
 			return []byte(`{
-				"projects": [{"id": "p2", "accountId": "a2", "endDate": null}],
+				"projects": [{"id": "p2", "endDate": null}],
 				"total": 2, "limit": 100, "offset": 100, "hasMore": false
 			}`), nil
 		},
@@ -81,7 +81,7 @@ func TestRun_MultiPagePaginatesUntilHasMoreFalse(t *testing.T) {
 	updater := &mockProjectUpdater{}
 	ntf := &mockNotifier{}
 
-	result, err := Run(context.Background(), reader, updater, ntf, time.Now())
+	result, err := Run(context.Background(), reader, updater, ntf, time.Now(), "")
 	if err != nil {
 		t.Fatalf("Run() error = %v, want nil", err)
 	}
@@ -106,9 +106,9 @@ func TestRun_OneProjectFailureDoesNotBlockTheRest(t *testing.T) {
 		searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
 			return []byte(`{
 				"projects": [
-					{"id": "p1", "accountId": "a1", "endDate": null},
-					{"id": "p2", "accountId": "a2", "endDate": "` + firingEndDate + `", "suspensionProcessState": "not-an-object"},
-					{"id": "p3", "accountId": "a3", "endDate": null}
+					{"id": "p1", "endDate": null},
+					{"id": "p2", "endDate": "` + firingEndDate + `", "suspensionProcessState": "not-an-object"},
+					{"id": "p3", "endDate": null}
 				],
 				"total": 3, "limit": 100, "offset": 0, "hasMore": false
 			}`), nil
@@ -117,7 +117,7 @@ func TestRun_OneProjectFailureDoesNotBlockTheRest(t *testing.T) {
 	updater := &mockProjectUpdater{}
 	ntf := &mockNotifier{}
 
-	result, err := Run(context.Background(), reader, updater, ntf, now)
+	result, err := Run(context.Background(), reader, updater, ntf, now, "")
 	if err != nil {
 		t.Fatalf("Run() error = %v, want nil", err)
 	}
@@ -144,7 +144,64 @@ func TestRun_PageFetchFailureIsFatal(t *testing.T) {
 	updater := &mockProjectUpdater{}
 	ntf := &mockNotifier{}
 
-	_, err := Run(context.Background(), reader, updater, ntf, time.Now())
+	_, err := Run(context.Background(), reader, updater, ntf, time.Now(), "")
+	if err == nil {
+		t.Fatal("Run() error = nil, want non-nil")
+	}
+}
+
+// TestRun_ScopedToProjectIDFetchesOnlyThatProject verifies the
+// TEST_PROJECT_ID scoping: when a non-empty projectID is passed, Run fetches
+// that one project directly via GetProject and never calls the broad
+// SearchProjects sweep at all — proving a scoped run can't accidentally
+// touch every open project in the environment.
+func TestRun_ScopedToProjectIDFetchesOnlyThatProject(t *testing.T) {
+	const testProjectID = "e3e87599-1bc7-6650-182c-0dc5604bcb68"
+
+	var gotID string
+	reader := &mockEntityReader{
+		getProjectFn: func(ctx context.Context, id string) ([]byte, error) {
+			gotID = id
+			return []byte(`{"id": "` + testProjectID + `", "account": {"id": "f213fdd1-1b4b-a650-a002-c9d3604bcbac"}, "endDate": null}`), nil
+		},
+		searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			t.Fatal("SearchProjects should not be called when scoped to a single project")
+			return nil, nil
+		},
+	}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{}
+
+	result, err := Run(context.Background(), reader, updater, ntf, time.Now(), testProjectID)
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if gotID != testProjectID {
+		t.Errorf("GetProject called with id = %q, want %q", gotID, testProjectID)
+	}
+	if result.ProjectsEvaluated != 1 {
+		t.Errorf("ProjectsEvaluated = %d, want 1", result.ProjectsEvaluated)
+	}
+	if len(reader.searchProjectsCalls) != 0 {
+		t.Errorf("SearchProjects calls = %d, want 0", len(reader.searchProjectsCalls))
+	}
+}
+
+// TestRun_ScopedProjectFetchFailureIsFatal mirrors
+// TestRun_PageFetchFailureIsFatal for the scoped path: if GetProject itself
+// fails, that's fatal for the run, not a per-project soft failure — there's
+// nothing else to fall back to when the one requested project can't be
+// fetched at all.
+func TestRun_ScopedProjectFetchFailureIsFatal(t *testing.T) {
+	reader := &mockEntityReader{
+		getProjectFn: func(ctx context.Context, id string) ([]byte, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{}
+
+	_, err := Run(context.Background(), reader, updater, ntf, time.Now(), "e3e87599-1bc7-6650-182c-0dc5604bcb68")
 	if err == nil {
 		t.Fatal("Run() error = nil, want non-nil")
 	}
