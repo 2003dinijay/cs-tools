@@ -29,10 +29,12 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useCallback, useMemo, useState, type ChangeEvent, type JSX } from "react";
 import { useNavTransition } from "@hooks/useNavTransition";
 import QueryErrorState from "@components/QueryErrorState";
+import FilteredCsvExportButton from "@components/FilteredCsvExportButton";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
+import { useBackendApi } from "@api/backend/client";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { useSearchChangeRequests } from "@features/csm-operations/api/useSearchChangeRequests";
 import {
@@ -44,6 +46,11 @@ import {
   type ChangeRequestFilters,
 } from "@features/csm-operations/utils/changeRequests";
 import ChangeRequestsFilterBar from "@features/csm-operations/components/ChangeRequestsFilterBar";
+import type {
+  BeChangeRequestSearchPayload,
+  BeChangeRequestSearchResponse,
+  BeChangeRequestSearchView,
+} from "@api/backend/types";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
@@ -75,6 +82,7 @@ function toISOEnd(date: string): string {
  */
 export default function ChangeRequestsTab(): JSX.Element {
   const navigate = useNavTransition();
+  const api = useBackendApi();
   const [filters, setFilters] = useState<ChangeRequestFilters>(DEFAULT_CR_FILTERS);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [page, setPage] = useState(0);
@@ -120,9 +128,48 @@ export default function ChangeRequestsTab(): JSX.Element {
     setPage(0);
   };
 
+  // Pages `/change-requests/search` with the currently applied filters
+  // (same `filters` as `payload` above) until the full filtered result set
+  // has been fetched — see `useFilteredCsvExport`/`fetchAllPages`. The CR
+  // search response carries no `hasMore` (unlike incidents/cases), but
+  // `fetchAllPages` only ever needs `total`, so that's not a problem here.
+  const fetchChangeRequestsPage = useCallback(
+    async (offset: number, limit: number) => {
+      const res = await api.post<BeChangeRequestSearchPayload, BeChangeRequestSearchResponse>(
+        "/change-requests/search",
+        {
+          filters: payload.filters,
+          pagination: { offset, limit },
+        },
+      );
+      return { items: res.changeRequests, total: res.total };
+    },
+    [api, payload.filters],
+  );
+
+  const changeRequestToCsvRow = useCallback(
+    (cr: BeChangeRequestSearchView): string[] => [
+      cr.number ?? "",
+      cr.subject ?? "",
+      cr.project?.name ?? "",
+      changeRequestStateLabel(cr.state),
+      changeRequestImpactLabel(cr.impact),
+      formatDate(cr.plannedStartOn),
+      formatDate(cr.updatedOn),
+    ],
+    [],
+  );
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+      <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1 }}>
+        <FilteredCsvExportButton<BeChangeRequestSearchView>
+          entityName="change-requests"
+          header={["Number", "Subject", "Project", "State", "Impact", "Planned start", "Updated"]}
+          toRow={changeRequestToCsvRow}
+          fetchPage={fetchChangeRequestsPage}
+          disabled={isError}
+        />
         <Button
           variant="contained"
           color="primary"

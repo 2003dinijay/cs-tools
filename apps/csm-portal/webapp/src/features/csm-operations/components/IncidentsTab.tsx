@@ -29,10 +29,12 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useCallback, useMemo, useState, type ChangeEvent, type JSX } from "react";
 import { useNavTransition } from "@hooks/useNavTransition";
 import QueryErrorState from "@components/QueryErrorState";
+import FilteredCsvExportButton from "@components/FilteredCsvExportButton";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
+import { useBackendApi } from "@api/backend/client";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { useSearchIncidents } from "@features/csm-operations/api/useSearchIncidents";
 import {
@@ -44,6 +46,7 @@ import {
   type IncidentFilters,
 } from "@features/csm-operations/utils/incidents";
 import IncidentsFilterBar from "@features/csm-operations/components/IncidentsFilterBar";
+import type { BeIncident, BeIncidentSearchPayload, BeIncidentSearchResponse } from "@api/backend/types";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
@@ -66,6 +69,7 @@ function formatDate(value?: string | null): string {
  */
 export default function IncidentsTab(): JSX.Element {
   const navigate = useNavTransition();
+  const api = useBackendApi();
   const [filters, setFilters] = useState<IncidentFilters>(DEFAULT_INCIDENT_FILTERS);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [page, setPage] = useState(0);
@@ -104,9 +108,51 @@ export default function IncidentsTab(): JSX.Element {
     setPage(0);
   };
 
+  // Pages `/incidents/search` with the *currently applied* filters/sort
+  // (same `filters`/`sortBy` as `payload` above, just re-built per page with
+  // its own offset/limit instead of the table's) until the full filtered
+  // result set has been fetched — see `useFilteredCsvExport`/`fetchAllPages`.
+  // Bound fresh on every render via the hook's ref pattern, so a filter
+  // change is picked up even mid-typing without this identity needing to be
+  // stable.
+  const fetchIncidentsPage = useCallback(
+    async (offset: number, limit: number) => {
+      const res = await api.post<BeIncidentSearchPayload, BeIncidentSearchResponse>(
+        "/incidents/search",
+        {
+          filters: payload.filters,
+          sortBy: payload.sortBy,
+          pagination: { offset, limit },
+        },
+      );
+      return { items: res.incidents, total: res.total };
+    },
+    [api, payload.filters, payload.sortBy],
+  );
+
+  const incidentToCsvRow = useCallback(
+    (incident: BeIncident): string[] => [
+      incident.number ?? "",
+      incident.subject ?? "",
+      incident.caller?.name ?? "",
+      incidentStateLabel(incident.state),
+      incidentPriorityLabel(incident.priority),
+      formatDate(incident.openedOn),
+      formatDate(incident.updatedOn),
+    ],
+    [],
+  );
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+      <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1 }}>
+        <FilteredCsvExportButton<BeIncident>
+          entityName="incidents"
+          header={["Number", "Subject", "Caller", "State", "Priority", "Opened", "Updated"]}
+          toRow={incidentToCsvRow}
+          fetchPage={fetchIncidentsPage}
+          disabled={isError}
+        />
         <Button
           variant="contained"
           color="primary"

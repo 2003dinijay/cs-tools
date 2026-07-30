@@ -17,21 +17,16 @@
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useLogger } from "@hooks/useLogger";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
-import { ApiQueryKeys, BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
+import { ApiQueryKeys } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
 import {
-  beStateFromUi,
-  priorityFromSeverity,
-  severityFromPriority,
-  uiStateFromBe,
-} from "@api/backend/mappers";
-import { ASSIGNEE_ME_TOKEN } from "@features/csm-cases/utils/assignee";
+  ASSIGNEE_FILTER_RESOLVED_EMPTY,
+  buildCaseSearchFilters,
+  mapCaseSearchViewToRow,
+  resolveAssignedUserIds,
+} from "@features/csm-cases/utils/caseSearchPayload";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
-import type {
-  BeCaseSearchPayload,
-  BeCaseSearchResponse,
-  BeUserSearchResponse,
-} from "@api/backend/types";
+import type { BeCaseSearchPayload, BeCaseSearchResponse } from "@api/backend/types";
 import type { CasesFilters } from "@features/csm-cases/components/CasesFilterBar";
 import type {
   CsmCaseRow,
@@ -60,7 +55,7 @@ import {
  * `limit` / `offset` / `hasMore`).
  *
  * `page` is zero-based (matching MUI `TablePagination`); `pageSize` is the row
- * limit (≤ {@link BE_MAX_PAGE_LIMIT}). Cases are always sorted by `updatedOn`;
+ * limit (≤ the backend's page-size cap, `BE_MAX_PAGE_LIMIT`). Cases are always sorted by `updatedOn`;
  * `sortOrder` (default `"desc"`) controls direction, so the cases page loads
  * the most recently updated cases on arrival by default but can be flipped
  * to oldest-updated-first. `enabled` is an optional escape hatch to suspend
@@ -111,52 +106,28 @@ export function useGetCsmCases(
     ],
     queryFn: async (): Promise<CsmCasesListResponse> => {
       // Resolve the assignee filter (engineer emails + the `@me` sentinel) to
-      // the UUIDs `/cases/search` expects. Named engineers → ids from a
-      // targeted `/users/search` by email (selectable emails always come from
-      // the directory, so this resolves them all); `@me` → the caller's id,
-      // taken from the app-wide CurrentUserProvider (no per-query `/users/me`).
-      // Runs only when the assignee filter is active. A user whose id can't be
-      // resolved (e.g. `@me` when `/users/me` omits `id` — entity service down
-      // — or an email with no match) is dropped. If an active assignee filter
-      // resolves to NO ids, the result is definitionally empty (cases assigned
-      // to engineers we couldn't identify), so we return an empty list rather
-      // than omitting the filter — omitting it would broaden the search to ALL
-      // cases, the opposite of what the user asked for. A transport failure of
-      // the lookup is NOT swallowed — it throws so the query errors (the list
-      // shows an error) instead of silently broadening to all cases.
+      // the UUIDs `/cases/search` expects — shared with the export action via
+      // `resolveAssignedUserIds` so both apply the identical assignee filter.
+      // A transport failure of the lookup is NOT swallowed — it throws so the
+      // query errors (the list shows an error) instead of silently
+      // broadening to all cases.
       let assignedUserIds: string[] | undefined;
       if (filters.assignees.length > 0) {
-        const wantsMe = filters.assignees.includes(ASSIGNEE_ME_TOKEN);
-        const emails = filters.assignees.filter((a) => a !== ASSIGNEE_ME_TOKEN);
-        let byEmail: BeUserSearchResponse | null = null;
-        if (emails.length > 0) {
-          try {
-            byEmail = await api.post<
-              { filters: { emails: string[] }; pagination: { limit: number } },
-              BeUserSearchResponse
-            >("/users/search", {
-              filters: { emails },
-              pagination: { limit: BE_MAX_PAGE_LIMIT },
-            });
-          } catch (err) {
-            logger.warn(
-              `[useGetCsmCases] assignee lookup failed: ${(err as Error).message}`,
-            );
-            throw new Error("Failed to resolve the assignee filter");
-          }
+        let resolved: Awaited<ReturnType<typeof resolveAssignedUserIds>>;
+        try {
+          resolved = await resolveAssignedUserIds(api, filters.assignees, currentUserId);
+        } catch (err) {
+          logger.warn(
+            `[useGetCsmCases] assignee lookup failed: ${(err as Error).message}`,
+          );
+          throw new Error("Failed to resolve the assignee filter");
         }
-        const ids = new Set<string>();
-        (byEmail?.users ?? []).forEach((u) => {
-          if (u.id) ids.add(u.id);
-        });
-        if (wantsMe && currentUserId) ids.add(currentUserId);
-        if (ids.size > 0) assignedUserIds = [...ids];
-      }
-
-      // Active assignee filter that resolved to nothing → empty result, not a
-      // broadened (filter-less) search. See the resolution note above.
-      if (filters.assignees.length > 0 && !assignedUserIds) {
-        return { cases: [], total: 0, limit: pageSize, offset, hasMore: false };
+        // Active assignee filter that resolved to nothing → empty result, not
+        // a broadened (filter-less) search. See `resolveAssignedUserIds`.
+        if (resolved === ASSIGNEE_FILTER_RESOLVED_EMPTY) {
+          return { cases: [], total: 0, limit: pageSize, offset, hasMore: false };
+        }
+        assignedUserIds = resolved;
       }
 
       // One cross-project case search. No account/project directory scan: the
@@ -168,82 +139,12 @@ export function useGetCsmCases(
       >("/cases/search", {
           pagination: { offset, limit: pageSize },
           sortBy: { field: "updatedOn", order: sortOrder },
-          // Filter fields are nested under `filters` (BE payload restructure).
-          filters: {
-            ...(search.length > 0 && { searchQuery: search }),
-            ...(filters.severities.length > 0 && {
-              severities: filters.severities.map(priorityFromSeverity),
-            }),
-            ...(filters.states.length > 0 && {
-              states: filters.states.map(beStateFromUi),
-            }),
-            ...(filters.caseTypes.length > 0 && {
-              types: filters.caseTypes,
-            }),
-            // Work sub-state filter (ongoing/paused); only meaningful when
-            // `states` includes `work_in_progress`, but the BE accepts it
-            // independently so we forward it as-is.
-            ...(filters.workStates.length > 0 && {
-              workStates: filters.workStates,
-            }),
-            ...(filters.engagementTypes.length > 0 && {
-              engagementTypes: filters.engagementTypes,
-            }),
-            // `filters.projects` holds project IDs (the filter is id-based).
-            ...(filters.projects.length > 0 && {
-              projectIds: filters.projects,
-            }),
-            // Assignee filter, resolved to engineer UUIDs above.
-            ...(assignedUserIds && assignedUserIds.length > 0 && {
-              assignedUserIds,
-            }),
-            // Product family names; SN matches `product.name` (all versions).
-            ...(filters.productNames.length > 0 && {
-              productNames: filters.productNames,
-            }),
-            // Tag filter deliberately not wired in here for now — see the
-            // removal note on `CasesFilters` in casesFiltersUrl.ts.
-          },
+          filters: buildCaseSearchFilters(filters, search, assignedUserIds),
       });
 
-      const myEmail = currentUserEmail?.toLowerCase();
-      const cases: CsmCaseRow[] = (casesResponse.cases ?? []).map((c) => {
-        const projectId = c.project?.id ?? "";
-        const assigneeEmail = c.assignedEngineer?.email;
-        const assignee =
-          c.assignedEngineer?.name?.trim() || assigneeEmail || "Unassigned";
-        const assigneeIsMe =
-          !!assigneeEmail && !!myEmail && assigneeEmail.toLowerCase() === myEmail;
-        return {
-          id: c.id,
-          caseNumber: c.number,
-          wso2CaseId: c.internalId,
-          subject: c.subject ?? "(no subject)",
-          // Not shown in the list; kept on the row shape but no longer resolved
-          // (see the account-scan removal note above).
-          customer: "",
-          accountId: "",
-          projectId,
-          projectName: c.project?.name ?? "-",
-          // Search embeds deployedProduct as { id, name } (name includes the
-          // version); the GET view uses a displayName-shaped ref instead.
-          product: c.deployedProduct?.name ?? c.product?.name ?? "-",
-          severity: severityFromPriority(c.severity),
-          state: uiStateFromBe(c.state),
-          caseType: c.type,
-          workState: c.workState ?? null,
-          assignee,
-          assigneeIsMe,
-          slaClockType: "ack",
-          minutesToBreach: 0,
-          // No SLA data from the backend yet — keep the SLA column neutral
-          // rather than painting every open row orange with a bogus "0m left".
-          hasSla: false,
-          createdAt: c.createdOn ?? "",
-          updatedAt: c.updatedOn ?? c.createdOn ?? "",
-          updatedAtIsCreatedFallback: !c.updatedOn && !!c.createdOn,
-        };
-      });
+      const cases: CsmCaseRow[] = (casesResponse.cases ?? []).map((c) =>
+        mapCaseSearchViewToRow(c, currentUserEmail),
+      );
 
       return {
         cases,
