@@ -911,7 +911,7 @@ func TestSNCaseService_SearchCases_EmptyTypesFilterSendsNoTypeRestriction(t *tes
 	// have another ongoing work item" pre-check.
 	var gotBody struct {
 		Filters struct {
-			CaseTypes []string `json:"caseTypes"`
+			CaseTypes *[]string `json:"caseTypes"`
 		} `json:"filters"`
 	}
 	mux := http.NewServeMux()
@@ -928,8 +928,14 @@ func TestSNCaseService_SearchCases_EmptyTypesFilterSendsNoTypeRestriction(t *tes
 	if _, err := svc.SearchCases(contextWithUserIDToken("token"), domain.SearchCasesRequest{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(gotBody.Filters.CaseTypes) != 0 {
-		t.Fatalf("expected no caseTypes restriction sent when Types filter is empty, got %v", gotBody.Filters.CaseTypes)
+	// Decode caseTypes as *[]string (not []string) so this distinguishes the
+	// actual wire contract -- Go always sends an explicit empty array, never
+	// omits the field or sends null -- from a regression that would omit it.
+	if gotBody.Filters.CaseTypes == nil {
+		t.Fatalf("expected caseTypes to be sent as an explicit empty array, got the field omitted/null")
+	}
+	if len(*gotBody.Filters.CaseTypes) != 0 {
+		t.Fatalf("expected no caseTypes restriction sent when Types filter is empty, got %v", *gotBody.Filters.CaseTypes)
 	}
 }
 
