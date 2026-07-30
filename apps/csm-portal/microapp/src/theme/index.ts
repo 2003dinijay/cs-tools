@@ -26,9 +26,9 @@ const theme = extendTheme(AcrylicOrangeTheme, {
     // background.paper token, that's a double-transparency effect that makes the whole
     // surface, including its text, read as hazy/unreadable. All of this app's filter sheets
     // (FiltersSheet.tsx and friends) are built on MUI Dialog, so fix it once here rather than
-    // overriding sx per sheet. Solid, not background.paper/acrylic — same reasoning as
-    // TabBar.tsx/TopBar.tsx's own fix for the same underlying tokens, including reading
-    // `theme.vars.palette.*` (a CSS var) rather than the static `theme.palette.mode`.
+    // overriding sx per sheet. Solid, not background.paper/acrylic, and reads
+    // `theme.vars.palette.*` (a CSS var) rather than the static `theme.palette.mode`, since this
+    // theme switches light/dark purely via CSS variables reacting to the OS color scheme.
     MuiDialog: {
       styleOverrides: {
         paper: ({ theme }) => ({
