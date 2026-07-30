@@ -57,6 +57,9 @@ function groupByKind(
     account: [],
     search: [],
     page: [],
+    incident: [],
+    change_request: [],
+    problem: [],
   };
   for (const e of entries) out[e.kind].push(e);
   return out;

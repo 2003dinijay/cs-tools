@@ -14,8 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Tooltip } from "@wso2/oxygen-ui";
-import type { JSX } from "react";
+import { Box, Button, Tooltip } from "@wso2/oxygen-ui";
+import { Check, Link2 } from "@wso2/oxygen-ui-icons-react";
+import { useState, type JSX } from "react";
 import { formatRelativeTime } from "@features/csm-dashboard/utils/abtDashboard";
 import { formatAbsoluteForUser } from "@utils/dateTime";
 
@@ -33,9 +34,54 @@ interface RelativeTimeProps {
 }
 
 /**
+ * Small icon-button that copies the full absolute permalink URL for `href`
+ * to the clipboard, so the permalink affordance is discoverable even for
+ * someone who doesn't notice the timestamp itself is clickable. Follows the
+ * same Copy/Check + 2-second-reset pattern as {@link QueryErrorState}'s
+ * tracking-ID copy button, but rests on a chain-link icon to signal
+ * "permalink" rather than a generic copy action.
+ */
+function CopyPermalinkButton({ href }: { href: string }): JSX.Element {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (): void => {
+    const url = `${window.location.origin}${window.location.pathname}${href}`;
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(url).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      },
+      () => {
+        // swallow — no toast surface available from this small button
+      },
+    );
+  };
+
+  const label = copied ? "Copied" : "Copy link to this entry";
+
+  return (
+    <Tooltip title={label} placement="top">
+      <Button
+        size="small"
+        variant="text"
+        color="inherit"
+        onClick={handleCopy}
+        sx={{ minWidth: 0, p: 0.5, color: "text.disabled" }}
+        aria-label={label}
+      >
+        {copied ? <Check size={13} /> : <Link2 size={13} />}
+      </Button>
+    </Tooltip>
+  );
+}
+
+/**
  * Renders a relative timestamp ("7h ago") with the full absolute datetime
  * (in the user's preferred zone) shown on hover. If `href` is provided, the
- * text becomes a permalink to that entry.
+ * text becomes a permalink to that entry, and a copy-link icon-button follows
+ * it so the permalink affordance doesn't rely on someone noticing the
+ * timestamp itself is clickable.
  */
 export default function RelativeTime({
   iso,
@@ -71,9 +117,20 @@ export default function RelativeTime({
     </span>
   );
 
+  if (!href) {
+    return (
+      <Tooltip title={absolute} placement="top" arrow>
+        {inner}
+      </Tooltip>
+    );
+  }
+
   return (
-    <Tooltip title={absolute} placement="top" arrow>
-      {inner}
-    </Tooltip>
+    <Box component="span" sx={{ display: "inline-flex", alignItems: "center", gap: 0.25 }}>
+      <Tooltip title={absolute} placement="top" arrow>
+        {inner}
+      </Tooltip>
+      <CopyPermalinkButton href={href} />
+    </Box>
   );
 }

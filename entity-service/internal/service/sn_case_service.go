@@ -223,11 +223,15 @@ func snCaseTypeToDomain(ct *snCaseEntityRef) *string {
 	return &domainType
 }
 
-// snParentCaseTypeMap maps the raw ServiceNow task-type value carried on a
-// parent/related case reference to the API's public CaseNumberRef.type enum
-// ("case" | "incident" | "change_request" | "problem").
+// snParentCaseTypeMap maps the raw ServiceNow parent/related-case type value --
+// derived by CaseUtils.js's _mapCaseDetails from the parent record's sys_class_name
+// (sn_customerservice_case -> "case", incident -> "incident", change_request ->
+// "change_request", problem -> "problem") -- to the API's public CaseNumberRef.type
+// enum. SN already emits these exact literal strings, so this is effectively an
+// allow-list guarding against an unrecognised or future upstream value, kept as a
+// map (rather than a set) to match this file's other snXTypeMap conventions.
 var snParentCaseTypeMap = map[string]string{
-	"default_case":   "case",
+	"case":           "case",
 	"incident":       "incident",
 	"change_request": "change_request",
 	"problem":        "problem",

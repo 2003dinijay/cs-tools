@@ -28,6 +28,7 @@ import type {
   CaseWorkState,
   Severity,
 } from "@features/csm-dashboard/types/abtDashboard";
+import { ALL_CASE_TYPES } from "@features/csm-cases/utils/caseType";
 
 /** Don't fire a search until the user has typed something searchable. */
 export const QUICK_CASE_MIN_QUERY_LEN = 2;
@@ -61,6 +62,11 @@ export interface QuickCaseHit {
  * cases list uses), so a CS/WSO2 case id — or any subject text — resolves to
  * matching cases the user can jump straight into.
  *
+ * Explicitly requests every known case sub-type ({@link ALL_CASE_TYPES}) —
+ * `entity-service`'s `/cases/search` defaults `filters.types` to `["case"]`
+ * only when the caller omits it, which silently hid Service Requests,
+ * Security Report Analyses, announcements, and engagements from this search.
+ *
  * The query is disabled until the trimmed text reaches
  * {@link QUICK_CASE_MIN_QUERY_LEN}, so opening the palette costs no network.
  */
@@ -77,7 +83,7 @@ export function useQuickCaseSearch(
         "/cases/search",
         {
           pagination: { offset: 0, limit: QUICK_CASE_LIMIT },
-          filters: { searchQuery: q },
+          filters: { searchQuery: q, types: ALL_CASE_TYPES },
         },
       );
       return (res.cases ?? []).map((c) => ({

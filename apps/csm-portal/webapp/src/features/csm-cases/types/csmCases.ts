@@ -110,6 +110,9 @@ export interface CsmCaseComment {
   id: string;
   caseId: string;
   authorName: string;
+  /** Author's email, when the backend returns one — used to link the author
+   * name to their profile page. */
+  authorEmail?: string;
   authorRole: CsmCommentAuthorRole;
   bodyHtml: string;
   createdAt: string;
@@ -128,6 +131,9 @@ export interface CaseAttachment {
   size: number;
   contentType: string;
   uploadedBy: string;
+  /** Uploader's email, when the backend returns one — used to link the
+   * uploader name to their profile page. */
+  uploadedByEmail?: string;
   uploadedAt: string;
 }
 
@@ -495,6 +501,9 @@ export interface CsmCaseDetail extends CsmCaseRow {
    * against that fallback.
    */
   assigneeName?: string;
+  /** Email of the assigned engineer, when the data source returns one — used
+   * to link the assignee name to their profile page. */
+  assigneeEmail?: string;
   customerContext: CaseCustomerContext;
   productContext: CaseProductContext;
   watchers: CaseWatcher[];

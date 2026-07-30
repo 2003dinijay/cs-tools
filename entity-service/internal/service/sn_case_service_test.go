@@ -166,6 +166,99 @@ func TestSNCaseService_GetCaseByID_MapsWatchListAutoclosureAndTeams(t *testing.T
 	}
 }
 
+// TestSnParentCaseTypeToDomain covers digiops-cs#2568's follow-up: a parent/related
+// case reference's raw ServiceNow type maps to the public enum for every known
+// sys_class_name-derived value, and an unmapped or absent raw value stays nil rather
+// than leaking an unrecognised string onto the API surface.
+func TestSnParentCaseTypeToDomain(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  *string
+		want *string
+	}{
+		{name: "case", raw: strPtr("case"), want: strPtr("case")},
+		{name: "incident", raw: strPtr("incident"), want: strPtr("incident")},
+		{name: "change_request", raw: strPtr("change_request"), want: strPtr("change_request")},
+		{name: "problem", raw: strPtr("problem"), want: strPtr("problem")},
+		{name: "unrecognised value stays nil", raw: strPtr("some_future_sn_class"), want: nil},
+		{name: "nil raw stays nil", raw: nil, want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := snParentCaseTypeToDomain(tt.raw)
+			if (got == nil) != (tt.want == nil) {
+				t.Fatalf("snParentCaseTypeToDomain(%v) = %v, want %v", tt.raw, got, tt.want)
+			}
+			if got != nil && *got != *tt.want {
+				t.Fatalf("snParentCaseTypeToDomain(%v) = %q, want %q", tt.raw, *got, *tt.want)
+			}
+		})
+	}
+}
+
+// TestSNCaseService_GetCaseByID_MapsParentCaseType verifies digiops-cs#2568's follow-up
+// end to end: a GetCaseByID response carrying parentCase.type resolves to the matching
+// domain.CaseNumberRef.Type for a known value, and stays nil for an unrecognised one --
+// never passing the raw ServiceNow string through unmapped.
+func TestSNCaseService_GetCaseByID_MapsParentCaseType(t *testing.T) {
+	newBody := func(parentType string) string {
+		return `{
+			"id": "` + testWLCaseSysid + `",
+			"internalId": "WSO2-001",
+			"number": "CS0001001",
+			"title": "Case subject",
+			"description": "Case description",
+			"createdOn": "2026-01-01 10:00:00",
+			"updatedOn": "2026-01-02 10:00:00",
+			"createdBy": "reporter@example.com",
+			"project": {"id": "` + testProjectSysid + `", "name": "Project A"},
+			"deployment": {"id": "", "name": ""},
+			"deployedProduct": {"id": "", "name": "", "version": ""},
+			"state": {"id": 1, "label": "Open"},
+			"parentCase": {"id": "` + testParentCaseUUID + `", "number": "INC0012345", "type": "` + parentType + `"}
+		}`
+	}
+
+	t.Run("known type maps through", func(t *testing.T) {
+		client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(newBody("incident")))
+		})
+		svc := NewServiceNowCaseService(client, nil)
+
+		cv, err := svc.GetCaseByID(contextWithUserIDToken("token"), sysidToUUID(testWLCaseSysid))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cv.ParentCase == nil {
+			t.Fatalf("expected parentCase to be populated")
+		}
+		if cv.ParentCase.Type == nil || *cv.ParentCase.Type != "incident" {
+			t.Fatalf("expected parentCase.type=incident, got %+v", cv.ParentCase.Type)
+		}
+	})
+
+	t.Run("unrecognised type stays nil", func(t *testing.T) {
+		client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(newBody("some_future_sn_class")))
+		})
+		svc := NewServiceNowCaseService(client, nil)
+
+		cv, err := svc.GetCaseByID(contextWithUserIDToken("token"), sysidToUUID(testWLCaseSysid))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cv.ParentCase == nil {
+			t.Fatalf("expected parentCase to be populated (id/number still present)")
+		}
+		if cv.ParentCase.Type != nil {
+			t.Fatalf("expected parentCase.type=nil for unrecognised SN value, got %q", *cv.ParentCase.Type)
+		}
+	})
+}
+
 // TestSNCaseService_GetCaseByID_BallerinaBlockedFieldsAbsent documents current reality:
 // against a real (unmodified) digiops-cs response with none of the blocked fields present,
 // AutoclosureStep/AutoclosureStateTime/CreTeam/SreTeam all stay nil rather than zero-valuing.

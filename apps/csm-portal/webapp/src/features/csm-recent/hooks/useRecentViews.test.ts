@@ -204,6 +204,78 @@ describe("useRecentViews + useRecordRecentView", () => {
     });
   });
 
+  describe("the incident/change_request/problem kinds", () => {
+    it("records and reads back a visit for each new entity kind, keyed independently of case entries", () => {
+      const reader = renderHook(() => useRecentViews());
+      const recorder = renderHook(() => useRecordRecentView());
+
+      act(() =>
+        recorder.result.current({
+          kind: "incident",
+          id: "inc-1",
+          title: "INC0001234 · Prod outage",
+          href: "/operations/incidents/inc-1",
+        }),
+      );
+      act(() =>
+        recorder.result.current({
+          kind: "change_request",
+          id: "cr-1",
+          title: "CHG0005 · Upgrade cluster",
+          href: "/operations/change-requests/cr-1",
+        }),
+      );
+      act(() =>
+        recorder.result.current({
+          kind: "problem",
+          id: "prb-1",
+          title: "PRB0009 · Recurring timeout",
+          href: "/operations/problems/prb-1",
+        }),
+      );
+
+      const kinds = reader.result.current.map((v) => v.kind);
+      expect(kinds).toEqual(["problem", "change_request", "incident"]);
+    });
+
+    it("de-dupes by kind+id even when a case and an incident happen to share the same id", () => {
+      const reader = renderHook(() => useRecentViews());
+      const recorder = renderHook(() => useRecordRecentView());
+
+      act(() => recorder.result.current(entry("shared-id")));
+      act(() =>
+        recorder.result.current({
+          kind: "incident",
+          id: "shared-id",
+          title: "Incident with the same id",
+          href: "/operations/incidents/shared-id",
+        }),
+      );
+
+      expect(reader.result.current).toHaveLength(2);
+      expect(reader.result.current.map((v) => v.kind).sort()).toEqual([
+        "case",
+        "incident",
+      ]);
+    });
+
+    it("can be pinned like any other kind", () => {
+      const reader = renderHook(() => useRecentViews());
+      const recorder = renderHook(() => useRecordRecentView());
+      act(() =>
+        recorder.result.current({
+          kind: "change_request",
+          id: "cr-1",
+          title: "CHG0005",
+          href: "/operations/change-requests/cr-1",
+        }),
+      );
+
+      act(() => toggleRecentViewPin("change_request", "cr-1"));
+      expect(reader.result.current[0].pinned).toBe(true);
+    });
+  });
+
   describe("record-then-read within a single session (identity-resolution timing)", () => {
     it("a same-session record survives navigating away and shows up to an already-mounted reader as soon as identity settles — no reload, no extra write needed", () => {
       // Mirrors `RecentViewsButton`: mounted once (e.g. in the persistent

@@ -86,6 +86,9 @@ const CsmAdminLayout = lazy(
 const CsmUsersPage = lazy(
   () => import("@features/csm-users/pages/CsmUsersPage"),
 );
+const UserProfilePage = lazy(
+  () => import("@features/csm-users/pages/UserProfilePage"),
+);
 const CsmCustomersLayout = lazy(
   () => import("@features/csm-customers/pages/CsmCustomersLayout"),
 );
@@ -307,6 +310,15 @@ export default function App(): JSX.Element {
                       }
                     />
                   </Route>
+
+                  {/* Person profile — reachable by clicking any user reference
+                      (case creator, assignee, watchers, comment authors,
+                      attachment uploaders). Not admin-gated: any signed-in CS
+                      engineer can look up any user. */}
+                  <Route
+                    path="people/:email"
+                    element={<UserProfilePage />}
+                  />
 
                   <Route path="dashboard" element={<CsmDashboardPage />} />
                   <Route path="cases" element={<CsmCasesPage />} />

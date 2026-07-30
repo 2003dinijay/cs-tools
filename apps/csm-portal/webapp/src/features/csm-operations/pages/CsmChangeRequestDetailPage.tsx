@@ -37,13 +37,21 @@ import {
   Send,
   X,
 } from "@wso2/oxygen-ui-icons-react";
-import { type JSX, type ReactNode, useCallback, useMemo, useState } from "react";
+import {
+  type JSX,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {  useParams } from "react-router";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { isBlankHtml, sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useEngineerDisplayName } from "@hooks/useEngineerDisplayName";
+import { useRecordRecentView } from "@features/csm-recent/hooks/useRecentViews";
 import { useGetChangeRequest } from "@features/csm-operations/api/useGetChangeRequest";
 import { usePatchChangeRequest } from "@features/csm-operations/api/usePatchChangeRequest";
 import {
@@ -189,6 +197,20 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   const [composerOpen, setComposerOpen] = useState(false);
 
   const attachmentList = useMemo(() => attachments ?? [], [attachments]);
+
+  const recordView = useRecordRecentView();
+  useEffect(() => {
+    if (!data?.id) return;
+    recordView({
+      kind: "change_request",
+      id: data.id,
+      title:
+        [data.number, data.subject].filter((s): s is string => !!s?.trim()).join(" · ") ||
+        "(no subject)",
+      subtitle: data.project?.name,
+      href: `/operations/change-requests/${data.id}`,
+    });
+  }, [data, recordView]);
 
   const onUploadAttachment = useCallback(
     (file: File) => {

@@ -66,6 +66,7 @@ type snProductRef struct {
 type snTaskParentCase struct {
 	ID     *string `json:"id"`
 	Number *string `json:"number"`
+	Type   *string `json:"type"`
 }
 
 // snTaskDetail mirrors the Choreo GET /tasks/{id} response.
@@ -219,6 +220,7 @@ func snTaskDetailToDomain(t snTaskDetail) domain.TaskDetail {
 		if t.ParentCase.Number != nil {
 			ref.Number = *t.ParentCase.Number
 		}
+		ref.Type = snParentCaseTypeToDomain(t.ParentCase.Type)
 		detail.ParentCase = ref
 	}
 

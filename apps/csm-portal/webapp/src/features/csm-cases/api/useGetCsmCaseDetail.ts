@@ -88,6 +88,7 @@ function detailFromBeCase(
     autoclosureStateTime: c.autoclosureStateTime ?? undefined,
     assignee,
     assigneeName,
+    assigneeEmail,
     assigneeIsMe,
     slaClockType: "ack",
     minutesToBreach: 0,

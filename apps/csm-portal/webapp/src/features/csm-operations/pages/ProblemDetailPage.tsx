@@ -16,13 +16,14 @@
 
 import { Box, Button, Card, Chip, Skeleton, Typography } from "@wso2/oxygen-ui";
 import { ArrowLeft, Link as LinkIcon } from "@wso2/oxygen-ui-icons-react";
-import { type JSX, type ReactNode } from "react";
+import { type JSX, type ReactNode, useEffect } from "react";
 import { useParams } from "react-router";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { useGetProblem } from "@features/csm-operations/api/useGetProblem";
 import { problemStateColor, problemStateLabel } from "@features/csm-operations/utils/problems";
 import type { BeEntityRef, BeProblemRef } from "@api/backend/types";
 import { useNavTransition } from "@hooks/useNavTransition";
+import { useRecordRecentView } from "@features/csm-recent/hooks/useRecentViews";
 
 const OPERATIONS_PROBLEMS_PATH = "/operations?tab=problems";
 
@@ -97,6 +98,20 @@ export default function ProblemDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavTransition();
   const { data, isLoading, isError } = useGetProblem(id);
+
+  const recordView = useRecordRecentView();
+  useEffect(() => {
+    if (!data?.id) return;
+    recordView({
+      kind: "problem",
+      id: data.id,
+      title:
+        [data.number, data.subject].filter((s): s is string => !!s?.trim()).join(" · ") ||
+        "(no subject)",
+      subtitle: data.assignedTo?.name,
+      href: `/operations/problems/${data.id}`,
+    });
+  }, [data, recordView]);
 
   const back = (): void => {
     navigate(OPERATIONS_PROBLEMS_PATH);
