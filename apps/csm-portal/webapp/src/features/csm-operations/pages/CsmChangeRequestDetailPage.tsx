@@ -45,7 +45,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import {  useParams } from "react-router";
+import { useLocation, useParams } from "react-router";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { isBlankHtml, sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 import { BackendApiError } from "@api/backend/client";
@@ -182,6 +182,11 @@ const TAB_DEFS: Array<{
 export default function CsmChangeRequestDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavTransition();
+  // Prefer the list URL the row link captured (if any) so "back" returns to
+  // the exact view the engineer came from, falling back to the bare tab path
+  // for a bookmarked or directly-linked change request.
+  const backState = useLocation().state as { from?: string } | undefined;
+  const backTarget = backState?.from ?? OPERATIONS_CR_PATH;
   const { data, isLoading, isError } = useGetChangeRequest(id);
   const { showError } = useErrorBanner();
   const patchCr = usePatchChangeRequest();
@@ -235,7 +240,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   );
 
   const back = (): void => {
-    navigate(OPERATIONS_CR_PATH);
+    navigate(backTarget);
   };
 
   const BackButton = (
