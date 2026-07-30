@@ -47,9 +47,10 @@ func main() {
 	loadDotEnv(".env")
 
 	dryRun := envBool("DRY_RUN", true)
+	testProjectID := os.Getenv("TEST_PROJECT_ID")
 	runID := newRunID()
 
-	slog.Info("acp-closure-service starting", "runID", runID, "dryRun", dryRun)
+	slog.Info("acp-closure-service starting", "runID", runID, "dryRun", dryRun, "testProjectID", testProjectID)
 
 	entityClient := entity.NewClient(entity.Config{
 		BaseURL:      mustEnv("CSM_INTEGRATION_BASE_URL"),
@@ -68,7 +69,7 @@ func main() {
 
 	ctx := entity.WithCorrelationID(context.Background(), runID)
 
-	result, err := sweep.Run(ctx, entityClient, updater, notifier, time.Now())
+	result, err := sweep.Run(ctx, entityClient, updater, notifier, time.Now(), testProjectID)
 	if err != nil {
 		slog.Error("acp-closure-service sweep failed", "runID", runID, "err", err)
 		os.Exit(1)

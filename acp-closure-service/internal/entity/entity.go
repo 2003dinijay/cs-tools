@@ -29,6 +29,16 @@ func (c *Client) GetAccount(ctx context.Context, id string) ([]byte, error) {
 	return c.do(ctx, http.MethodGet, fmt.Sprintf("/accounts/%s", url.PathEscape(id)), nil)
 }
 
+// GetProject calls GET /projects/{id}. Used to scope a run to a single
+// project (e.g. TEST_PROJECT_ID) instead of the broad /projects/search
+// sweep. Returns the same Project shape as each item in SearchProjects's
+// response — csm-integration-service's openapi.yaml references the same
+// Project schema for both. Response is returned as raw JSON; typed response
+// structs are deferred to the caller.
+func (c *Client) GetProject(ctx context.Context, id string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, fmt.Sprintf("/projects/%s", url.PathEscape(id)), nil)
+}
+
 // SearchProjects calls POST /projects/search. Response is returned as raw
 // JSON; typed response structs are deferred to the caller.
 //
