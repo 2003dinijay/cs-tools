@@ -61,12 +61,11 @@ import {
   useMyTimeCards,
   type TimeCardPagination,
 } from "@features/csm-timecards/api/useTimeSheets";
-import { useProjectOptions } from "@features/csm-cases/api/useProjectOptions";
+import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
 import { BackendApiError } from "@api/backend/client";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
-import type { BeProject } from "@api/backend/types";
 import { TIME_CARD_STATE_META } from "@features/csm-timecards/constants/timeCardConstants";
 import { useTimecardRole } from "@features/csm-timecards/hooks/useTimecardRole";
 import TimeCardsTable from "@features/csm-timecards/components/TimeCardsTable";
@@ -100,6 +99,17 @@ function engineerOptionsFrom(cards: CsmTimeCard[] | undefined): {
  * only" caveat as {@link engineerOptionsFrom}. */
 function workItemOptionsFrom(cards: CsmTimeCard[] | undefined): string[] {
   return Array.from(new Set((cards ?? []).map((c) => c.caseNumber)));
+}
+
+/** `projectId -> projectName` lookup from whatever cards are currently loaded
+ * for one tab — seeds the Project filter's already-selected chip labels
+ * before its own async search has resolved the same ids (mirrors
+ * `CasesFilterBar.tsx`'s `projectNameSeed`). Each `CsmTimeCard` already
+ * carries both fields, so this is a free derivation, not a new fetch. */
+function projectNameSeedFrom(cards: CsmTimeCard[] | undefined): Map<string, string> {
+  const nameById = new Map<string, string>();
+  (cards ?? []).forEach((c) => nameById.set(c.projectId, c.projectName));
+  return nameById;
 }
 
 const DEFAULT_ROWS_PER_PAGE = 20;
@@ -183,7 +193,6 @@ export default function CsmTimeCardsPage(): JSX.Element {
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
 
-  const projects = useProjectOptions();
   // Search is unscoped by default: with no project filter picked we send no
   // `projectIds`, and the backend returns every time card the caller is
   // entitled to (internal agents get a global list). Picking the project
@@ -318,6 +327,18 @@ export default function CsmTimeCardsPage(): JSX.Element {
     () => workItemOptionsFrom(queue.data?.cards),
     [queue.data],
   );
+  const mineProjectNameSeed = useMemo(
+    () => projectNameSeedFrom(myCards.data?.cards),
+    [myCards.data],
+  );
+  const allProjectNameSeed = useMemo(
+    () => projectNameSeedFrom(allCards.data?.cards),
+    [allCards.data],
+  );
+  const approvalsProjectNameSeed = useMemo(
+    () => projectNameSeedFrom(queue.data?.cards),
+    [queue.data],
+  );
   const allEngineerOptions = useMemo(
     () => engineerOptionsFrom(allCards.data?.cards),
     [allCards.data],
@@ -373,7 +394,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
       {activeTab === "mine" && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <FilterBar
-            projects={projects.data ?? []}
+            projectNameSeed={mineProjectNameSeed}
             filterProject={filterProject}
             setFilterProject={handleFilterProjectChange}
             filterWorkItem={filterWorkItem}
@@ -388,11 +409,6 @@ export default function CsmTimeCardsPage(): JSX.Element {
             onClear={clearFilters}
           />
 
-          {/* projects.isLoading is folded into the table's isLoading (not
-           just myCards.isLoading) so the empty state doesn't flash while
-           the Project filter dropdown's own data is still loading. The
-           filter bar itself renders regardless, same as Approvals below,
-           so it's never hidden behind this spinner. */}
           {myCards.isError ? (
             <Typography color="error">Could not load your time cards.</Typography>
           ) : (
@@ -405,7 +421,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
               </Box>
               <TimeCardsTable
                 cards={mineFilteredCards}
-                isLoading={myCards.isLoading || projects.isLoading}
+                isLoading={myCards.isLoading}
                 groupBy="case"
                 roleFor={mineRole}
                 onCardAction={handleCardAction}
@@ -442,7 +458,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
       {activeTab === "all" && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <FilterBar
-            projects={projects.data ?? []}
+            projectNameSeed={allProjectNameSeed}
             filterProject={filterProject}
             setFilterProject={handleFilterProjectChange}
             filterWorkItem={filterWorkItem}
@@ -483,7 +499,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
               </Box>
               <TimeCardsTable
                 cards={allFilteredCards}
-                isLoading={allCards.isLoading || projects.isLoading}
+                isLoading={allCards.isLoading}
                 groupBy={groupBy}
                 showCaseEngineerColumns
                 roleFor={allRoleFor}
@@ -510,7 +526,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
       {activeTab === "approvals" && role.isApprover && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <FilterBar
-            projects={projects.data ?? []}
+            projectNameSeed={approvalsProjectNameSeed}
             filterProject={filterProject}
             setFilterProject={handleFilterProjectChange}
             filterWorkItem={filterWorkItem}
@@ -552,7 +568,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
               </Box>
               <TimeCardsTable
                 cards={approvalsFilteredCards}
-                isLoading={queue.isLoading || projects.isLoading}
+                isLoading={queue.isLoading}
                 groupBy={groupBy}
                 showCaseEngineerColumns
                 showActionsColumn
@@ -625,7 +641,7 @@ const FILTER_STATES: TimeCardState[] = ["submitted", "approved", "rejected"];
  * doesn't look and behave differently from every other list page's filters.
  */
 function FilterBar({
-  projects,
+  projectNameSeed,
   filterProject,
   setFilterProject,
   filterWorkItem,
@@ -642,7 +658,10 @@ function FilterBar({
   engineerActive,
   hideStateFilter,
 }: {
-  projects: BeProject[];
+  /** `projectId -> projectName` lookup for already-selected chips, seeded
+   * from whatever cards are currently loaded (see `projectNameSeedFrom`) —
+   * AsyncProjectMultiSelect's own async search resolves the rest. */
+  projectNameSeed: Map<string, string>;
   filterProject: string[];
   setFilterProject: (v: string[]) => void;
   filterWorkItem: string[];
@@ -714,14 +733,12 @@ function FilterBar({
               regardless of how many of these fields this tab shows. */}
           <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
             <Box sx={{ flex: "1 1 0", minWidth: 160 }}>
-              <SearchableMultiSelect
+              <AsyncProjectMultiSelect
                 id="timecards-filter-project"
                 label="Project"
-                placeholder="Search projects…"
                 values={filterProject}
-                options={projects.map((p) => p.id)}
-                formatOption={(id) => projects.find((p) => p.id === id)?.name ?? id}
                 onChange={setFilterProject}
+                nameSeed={projectNameSeed}
               />
             </Box>
             <Box sx={{ flex: "1 1 0", minWidth: 160 }}>
