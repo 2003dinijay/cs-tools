@@ -43,7 +43,7 @@ type snDeployedProduct struct {
 	Version    *snDeployedProductVersion `json:"version"`
 	Cores      *int                      `json:"cores"`
 	TPS        *float64                  `json:"tps"` // Ballerina decimal? serialises as 100.0
-	Category   *string                   `json:"category"`
+	Category   *snDeployedProductRef     `json:"category"`
 	CreatedOn  string                    `json:"createdOn"`
 	UpdatedOn  string                    `json:"updatedOn"`
 }
@@ -332,6 +332,11 @@ func (s *snDeployedProductService) SearchDeployedProducts(ctx context.Context, r
 			tps = &s
 		}
 
+		var category *string
+		if dp.Category != nil {
+			category = &dp.Category.Name
+		}
+
 		views = append(views, domain.DeployedProductView{
 			ID:         sysidToUUID(dp.ID),
 			Deployment: domain.EntityRef{ID: sysidToUUID(dp.Deployment.ID), Name: dp.Deployment.Name},
@@ -339,7 +344,7 @@ func (s *snDeployedProductService) SearchDeployedProducts(ctx context.Context, r
 			Version:    versionRef,
 			Cores:      cores,
 			TPS:        tps,
-			Category:   dp.Category,
+			Category:   category,
 			CreatedOn:  createdOn,
 			UpdatedOn:  updatedOn,
 		})
