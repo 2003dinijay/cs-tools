@@ -369,12 +369,10 @@ describe("CaseActionBar — Raise internal Git issue is blocked on a closed case
   });
 });
 
-describe("CaseActionBar — Manage watchers / Hold auto-closure / Edit case details / Link to another case", () => {
+describe("CaseActionBar — Hold auto-closure / Edit case details", () => {
   const SECONDARY_ITEMS: Array<[RegExp, string]> = [
-    [/manage watchers/i, "manage_watchers"],
     [/hold auto-closure/i, "hold_auto_close"],
     [/edit case details/i, "edit_case_details"],
-    [/link to another case/i, "link_case"],
   ];
 
   it.each(SECONDARY_ITEMS)(

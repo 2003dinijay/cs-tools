@@ -341,6 +341,26 @@ export function parseDateOnly(value: string): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/**
+ * "YYYY-MM-DD" to a human-readable date string (e.g. "Aug 1, 2026"), for
+ * read-only display of a date-only field. Uses {@link parseDateOnly}'s
+ * local-midnight parse rather than {@link formatAbsoluteForUser}'s UTC parse,
+ * so the displayed day never shifts depending on the viewer's timezone.
+ * Returns `null` when the input is empty or unparseable.
+ */
+export function formatDateOnlyForDisplay(
+  value: string | null | undefined,
+): string | null {
+  if (!value) return null;
+  const date = parseDateOnly(value);
+  if (!date) return null;
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(date);
+}
+
 /** Local-midnight Date back to "YYYY-MM-DD", the inverse of {@link parseDateOnly}. */
 export function formatDateOnly(date: Date): string {
   const y = date.getFullYear();
@@ -376,5 +396,34 @@ export function formatDateTimeLocal(date: Date): string {
   const h = String(date.getHours()).padStart(2, "0");
   const mi = String(date.getMinutes()).padStart(2, "0");
   return `${y}-${mo}-${d}T${h}:${mi}`;
+}
+
+/**
+ * True when `date` represents an instant strictly before now. Shared check
+ * behind the past-date/time warning shown on several pickers (some hard-block
+ * on it, e.g. {@link SetAutocloseHoldDialog}/`ScheduleCallDialog`'s meeting
+ * time; others only warn, e.g. a task's due date). `null`/invalid dates are
+ * never flagged — an empty field isn't "in the past".
+ *
+ * @param date - Candidate Date, or null/invalid.
+ * @returns {boolean} True when `date` is a valid instant before now.
+ */
+export function isPastDateTime(date: Date | null): boolean {
+  return !!date && !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
+}
+
+/**
+ * True when `date` (a local-midnight Date, e.g. from {@link parseDateOnly})
+ * falls on a calendar day strictly before today in the viewer's local time.
+ * Compares day boundaries rather than instants, so "today" is never flagged
+ * regardless of the current time of day. `null`/invalid dates are never
+ * flagged.
+ *
+ * @param date - Candidate local-midnight Date, or null/invalid.
+ * @returns {boolean} True when `date`'s calendar day is before today.
+ */
+export function isPastDateOnly(date: Date | null): boolean {
+  if (!date || Number.isNaN(date.getTime())) return false;
+  return date.getTime() < new Date().setHours(0, 0, 0, 0);
 }
 

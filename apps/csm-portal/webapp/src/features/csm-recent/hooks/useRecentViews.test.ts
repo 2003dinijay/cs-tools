@@ -15,7 +15,16 @@
 // under the License.
 
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Controllable stand-in for the real (async) ID-token decode, so tests can
+// drive exactly when the `userid` claim "resolves" relative to a record/read,
+// instead of depending on real Asgardeo timing.
+let mockUserid: string | undefined;
+vi.mock("@hooks/useIdTokenClaims", () => ({
+  useIdTokenClaims: () => (mockUserid ? { userid: mockUserid } : undefined),
+}));
+
 import {
   clearRecentViews,
   toggleRecentViewPin,
@@ -33,6 +42,7 @@ const entry = (id: string): Omit<RecentView, "visitedAt" | "pinned"> => ({
 
 beforeEach(() => {
   localStorage.clear();
+  mockUserid = undefined;
 });
 
 describe("useRecentViews + useRecordRecentView", () => {
@@ -191,6 +201,143 @@ describe("useRecentViews + useRecordRecentView", () => {
 
       act(() => clearRecentViews());
       expect(reader.result.current.map((v) => v.id)).toEqual(["pinned"]);
+    });
+  });
+
+  describe("the incident/change_request/problem kinds", () => {
+    it("records and reads back a visit for each new entity kind, keyed independently of case entries", () => {
+      const reader = renderHook(() => useRecentViews());
+      const recorder = renderHook(() => useRecordRecentView());
+
+      act(() =>
+        recorder.result.current({
+          kind: "incident",
+          id: "inc-1",
+          title: "INC0001234 · Prod outage",
+          href: "/operations/incidents/inc-1",
+        }),
+      );
+      act(() =>
+        recorder.result.current({
+          kind: "change_request",
+          id: "cr-1",
+          title: "CHG0005 · Upgrade cluster",
+          href: "/operations/change-requests/cr-1",
+        }),
+      );
+      act(() =>
+        recorder.result.current({
+          kind: "problem",
+          id: "prb-1",
+          title: "PRB0009 · Recurring timeout",
+          href: "/operations/problems/prb-1",
+        }),
+      );
+
+      const kinds = reader.result.current.map((v) => v.kind);
+      expect(kinds).toEqual(["problem", "change_request", "incident"]);
+    });
+
+    it("de-dupes by kind+id even when a case and an incident happen to share the same id", () => {
+      const reader = renderHook(() => useRecentViews());
+      const recorder = renderHook(() => useRecordRecentView());
+
+      act(() => recorder.result.current(entry("shared-id")));
+      act(() =>
+        recorder.result.current({
+          kind: "incident",
+          id: "shared-id",
+          title: "Incident with the same id",
+          href: "/operations/incidents/shared-id",
+        }),
+      );
+
+      expect(reader.result.current).toHaveLength(2);
+      expect(reader.result.current.map((v) => v.kind).sort()).toEqual([
+        "case",
+        "incident",
+      ]);
+    });
+
+    it("can be pinned like any other kind", () => {
+      const reader = renderHook(() => useRecentViews());
+      const recorder = renderHook(() => useRecordRecentView());
+      act(() =>
+        recorder.result.current({
+          kind: "change_request",
+          id: "cr-1",
+          title: "CHG0005",
+          href: "/operations/change-requests/cr-1",
+        }),
+      );
+
+      act(() => toggleRecentViewPin("change_request", "cr-1"));
+      expect(reader.result.current[0].pinned).toBe(true);
+    });
+  });
+
+  describe("record-then-read within a single session (identity-resolution timing)", () => {
+    it("a same-session record survives navigating away and shows up to an already-mounted reader as soon as identity settles — no reload, no extra write needed", () => {
+      // Mirrors `RecentViewsButton`: mounted once (e.g. in the persistent
+      // header) for the whole session, well before this test's "case page"
+      // ever mounts.
+      const reader = renderHook(() => useRecentViews());
+      expect(reader.result.current).toEqual([]);
+
+      // The case detail page mounts and records the visit while the ID-token
+      // decode is still in flight for both instances (fresh tab / fresh
+      // sign-in) — the write lands in the "pending" bucket.
+      const recorder = renderHook(() => useRecordRecentView());
+      act(() => recorder.result.current(entry("1")));
+
+      // The user navigates away before identity ever resolved during this
+      // visit — the case page (and its recorder hook) unmounts.
+      recorder.unmount();
+
+      // Identity resolves shortly after (e.g. the decode completes just
+      // after navigation). The reader is the one whose own effect settles
+      // it here — it must reflect the recorded visit immediately in the same
+      // pass that resolves identity, not merely on the next unrelated event.
+      mockUserid = "u1";
+      act(() => reader.rerender());
+
+      expect(reader.result.current.map((v) => v.id)).toEqual(["1"]);
+    });
+
+    it("opening the recent-views panel after navigating away (a fresh mount of the reader) sees a visit recorded and settled earlier in the same session", () => {
+      // Identity already resolved earlier in the session (e.g. at app boot).
+      mockUserid = "u1";
+      const recorder = renderHook(() => useRecordRecentView());
+      act(() => recorder.result.current(entry("1")));
+
+      // Navigate away: the case page (recorder) unmounts.
+      recorder.unmount();
+
+      // The engineer opens the "Recently viewed" panel afterwards — a fresh
+      // mount of the reader hook, not one that was live during the write.
+      const reader = renderHook(() => useRecentViews());
+      expect(reader.result.current.map((v) => v.id)).toEqual(["1"]);
+    });
+
+    it("a visit recorded by an instance whose own identity hasn't resolved yet still lands in the bucket an already-resolved reader is watching", () => {
+      // Some other, already-mounted component (e.g. the header) resolved
+      // identity earlier in the session.
+      mockUserid = "u1";
+      const reader = renderHook(() => useRecentViews());
+      expect(reader.result.current).toEqual([]);
+
+      // A brand-new recorder instance mounts whose own ID-token decode
+      // hasn't completed yet (simulated by resetting the mock claim for its
+      // render only) — the record call must still resolve to the same
+      // already-known bucket the reader is watching, not a stale "pending"
+      // one, because the write forces its own instance to a definitive key
+      // once known, and otherwise fall back to whatever is already resolved.
+      mockUserid = undefined;
+      const recorder = renderHook(() => useRecordRecentView());
+      mockUserid = "u1";
+      act(() => recorder.result.current(entry("2")));
+
+      expect(reader.result.current.map((v) => v.id)).toEqual(["2"]);
     });
   });
 });

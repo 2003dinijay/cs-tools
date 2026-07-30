@@ -51,16 +51,24 @@ type snProjectClosureFields struct {
 }
 
 type snProject struct {
-	ID        string        `json:"id"`
-	Name      string        `json:"name"`
-	Key       string        `json:"key"`
-	Type      snProjectType `json:"type"`
-	EndDate   string        `json:"endDate"`
-	CreatedOn string        `json:"createdOn"`
+	ID        string                  `json:"id"`
+	Name      string                  `json:"name"`
+	Key       string                  `json:"key"`
+	Type      snProjectType           `json:"type"`
+	EndDate   string                  `json:"endDate"`
+	CreatedOn string                  `json:"createdOn"`
+	Account   snProjectSummaryAccount `json:"account"`
 	snProjectClosureFields
 }
 
 type snProjectType struct {
+	Name string `json:"name"`
+}
+
+// snProjectSummaryAccount is the compact account reference embedded in each
+// search result. ID/Name are empty when the project has no linked account.
+type snProjectSummaryAccount struct {
+	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
@@ -77,6 +85,7 @@ type snProjectFilters struct {
 	EndDateTo     string `json:"endDateTo,omitempty"`
 	SortBy        string `json:"sortBy,omitempty"`
 	SortOrder     string `json:"sortOrder,omitempty"`
+	AccountID     string `json:"accountId,omitempty"`
 }
 
 type snProjectPagination struct {
@@ -114,6 +123,13 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 	if err := validateProjectSearchFilters(req); err != nil {
 		return domain.SearchProjectsResponse{}, err
 	}
+	var accountSysid string
+	if req.AccountID != "" {
+		if err := validateUUIDs("accountId", []string{req.AccountID}); err != nil {
+			return domain.SearchProjectsResponse{}, err
+		}
+		accountSysid = uuidToSysid(req.AccountID)
+	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
 
@@ -125,6 +141,7 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 			EndDateTo:     req.EndDateTo,
 			SortBy:        req.SortBy,
 			SortOrder:     req.SortOrder,
+			AccountID:     accountSysid,
 		},
 		Pagination: snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
 	}
@@ -156,6 +173,10 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 			}
 			endDate = &parsed
 		}
+		var account *domain.EntityRef
+		if p.Account.ID != "" {
+			account = &domain.EntityRef{ID: sysidToUUID(p.Account.ID), Name: p.Account.Name}
+		}
 		views = append(views, domain.ProjectView{
 			ID:               sysidToUUID(p.ID),
 			Name:             p.Name,
@@ -163,6 +184,7 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 			SubscriptionType: subType,
 			EndDate:          endDate,
 			CreatedOn:        createdOn,
+			Account:          account,
 			ProjectClosureFields: domain.ProjectClosureFields{
 				ClosureState:                    p.ClosureState,
 				EndDateClosureState:             p.EndDateClosureState,

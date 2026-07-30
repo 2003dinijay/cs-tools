@@ -188,9 +188,15 @@ export interface BeEntityRef {
 }
 
 /** A referenced case carrying only its display number, e.g. the related case. */
+export type BeParentCaseType = "case" | "incident" | "change_request" | "problem";
+
 export interface BeCaseNumberRef {
   id: string;
   number?: string;
+  /** Only populated on `parentCase`, since a case's parent can be any of these
+   * task-derived record types; absent/undefined elsewhere (e.g. `relatedCase`,
+   * always another case). */
+  type?: BeParentCaseType | null;
 }
 
 /**
@@ -326,25 +332,21 @@ export interface BeCaseView {
    */
   autoclosureStateTime?: string | null;
   /**
-   * The customer-facing fix-commitment date/time for the case — the shared
-   * commitment shown to the customer. Settable via `PATCH /cases/{id}`
-   * (`fixEta`). Distinct from the three internal-only estimates below, which
-   * are never shared with the customer.
-   */
-  fixEta?: string | null;
-  /**
-   * Internal-only best-case fix estimate. Settable via `PATCH /cases/{id}`
-   * (`bestCaseFixEta`). Never surfaced to the customer.
+   * Internal-only best-case fix estimate, as a date-only "YYYY-MM-DD"
+   * string. Settable via `PATCH /cases/{id}` (`bestCaseFixEta`). Never
+   * surfaced to the customer.
    */
   bestCaseFixEta?: string | null;
   /**
-   * Internal-only most-likely fix estimate. Settable via `PATCH /cases/{id}`
-   * (`mostLikelyFixEta`). Never surfaced to the customer.
+   * Internal-only most-likely fix estimate, as a date-only "YYYY-MM-DD"
+   * string. Settable via `PATCH /cases/{id}` (`mostLikelyFixEta`). Never
+   * surfaced to the customer.
    */
   mostLikelyFixEta?: string | null;
   /**
-   * Internal-only worst-case fix estimate. Settable via `PATCH /cases/{id}`
-   * (`worstCaseFixEta`). Never surfaced to the customer.
+   * Internal-only worst-case fix estimate, as a date-only "YYYY-MM-DD"
+   * string. Settable via `PATCH /cases/{id}` (`worstCaseFixEta`). Never
+   * surfaced to the customer.
    */
   worstCaseFixEta?: string | null;
   /** Free-text labels attached to the case. Null/absent when none are set. */
@@ -411,6 +413,14 @@ export interface BeServiceRequestCreatePayload {
   catalogId: string;
   catalogItemId: string;
   variables: BeCaseVariable[];
+  /**
+   * UUID of the case this service request is linked to as its parent, when
+   * created from a case's "Create service request" action. Mirrors
+   * {@link BeCaseCreatePayload.relatedCaseId}, but for a service request the
+   * link is to the (typically still-open) originating case rather than a
+   * closed case within a reopen window.
+   */
+  relatedCaseId?: string;
 }
 
 /**
@@ -428,7 +438,10 @@ export interface BeCaseAttachmentPayload {
 
 /**
  * Security report analysis (`type: "security_report_analysis"`). ServiceNow-only;
- * requires a subject, description, and at least one attachment.
+ * requires a subject and description. Attachments are optional here — the case
+ * is created first, then attachments upload separately via the post-case
+ * attachment endpoint (see `CreateSecurityReportPage.tsx`), so a failed upload
+ * never blocks or masks a successful report creation.
  */
 export interface BeSecurityReportCreatePayload {
   type: "security_report_analysis";
@@ -437,17 +450,32 @@ export interface BeSecurityReportCreatePayload {
   deployedProductId: string;
   subject: string;
   description: string;
-  attachments: BeCaseAttachmentPayload[];
+  attachments?: BeCaseAttachmentPayload[];
+}
+
+/**
+ * Engagement (`type: "engagement"`). ServiceNow-only; no severity/issueType —
+ * engagements aren't triaged like support cases.
+ */
+export interface BeEngagementCreatePayload {
+  type: "engagement";
+  projectId: string;
+  deploymentId: string;
+  deployedProductId: string;
+  subject: string;
+  description: string;
+  engagementType: BeEngagementType;
 }
 
 /**
  * Any body accepted by `POST /cases`: a standard support case, a catalog
- * service request, or a security report analysis.
+ * service request, a security report analysis, or an engagement.
  */
 export type BeCaseCreateBody =
   | BeCaseCreatePayload
   | BeServiceRequestCreatePayload
-  | BeSecurityReportCreatePayload;
+  | BeSecurityReportCreatePayload
+  | BeEngagementCreatePayload;
 
 /** The case summary embedded in the `POST /cases` success envelope. */
 export interface BeCreatedCase {
@@ -533,26 +561,26 @@ interface BeCaseUpdateNever {
   deployedProductId?: never;
   relatedCaseId?: never;
   autocloseHoldUntil?: never;
-  fixEta?: never;
   bestCaseFixEta?: never;
   mostLikelyFixEta?: never;
   worstCaseFixEta?: never;
+  addPublicComment?: never;
+  product?: never;
+  publicTicket?: never;
 }
 
 /**
  * Request body for `PATCH /cases/{id}` (mirrors the entity `UpdateCaseRequest`).
  * **Exactly one** of `state` / `severity` / `workState` / `assigneeEmail` /
  * `watchList` / `parentId` / `subject` / `description` / `deploymentId` /
- * `deployedProductId` / `relatedCaseId` / `autocloseHoldUntil` / `fixEta` /
- * `bestCaseFixEta` / `mostLikelyFixEta` / `worstCaseFixEta` is sent per call —
- * the backend rejects zero or more than one. Encoded as a discriminated union
- * (each variant carries every other field as `never`, via
- * {@link BeCaseUpdateNever}) so the exactly-one-field contract is enforced at
- * compile time, not just in docs. `assigneeEmail`, `watchList`, `parentId`,
- * and `autocloseHoldUntil` are supported **only** for the ServiceNow data
- * source. `workState` is only accepted while the case is `work_in_progress`.
- * `bestCaseFixEta` / `mostLikelyFixEta` / `worstCaseFixEta` are internal-only
- * estimates, independent of the customer-facing `fixEta`.
+ * `deployedProductId` / `relatedCaseId` / `autocloseHoldUntil` / the combined
+ * fix-ETA variant (below) is sent per call — the backend rejects zero or more
+ * than one. Encoded as a discriminated union (each variant carries every
+ * other field as `never`, via {@link BeCaseUpdateNever}) so the
+ * exactly-one-field contract is enforced at compile time, not just in docs.
+ * `assigneeEmail`, `watchList`, `parentId`, and `autocloseHoldUntil` are
+ * supported **only** for the ServiceNow data source. `workState` is only
+ * accepted while the case is `work_in_progress`.
  */
 export type BeCaseUpdatePayload =
   | (Omit<BeCaseUpdateNever, "state"> & {
@@ -592,16 +620,31 @@ export type BeCaseUpdatePayload =
    */
   | (Omit<BeCaseUpdateNever, "autocloseHoldUntil"> & { autocloseHoldUntil: string })
   /**
-   * Sets the customer-facing fix-commitment date/time for the case (ISO
-   * date-time).
+   * Sets any combination of the three internal-only fix-ETA estimates
+   * (date-only "YYYY-MM-DD") in one call — unlike the other variants, this is
+   * a **combined** field, so at least one of the three must be present, but
+   * all three are independently optional. When `addPublicComment` is true,
+   * the backend also posts a customer-visible comment built from `product` /
+   * `publicTicket` / the estimate(s) above to the case's comment thread; that
+   * mode requires at least one estimate plus non-empty `product` and
+   * `publicTicket`.
    */
-  | (Omit<BeCaseUpdateNever, "fixEta"> & { fixEta: string })
-  /** Sets the internal-only best-case fix estimate (ISO date-time). */
-  | (Omit<BeCaseUpdateNever, "bestCaseFixEta"> & { bestCaseFixEta: string })
-  /** Sets the internal-only most-likely fix estimate (ISO date-time). */
-  | (Omit<BeCaseUpdateNever, "mostLikelyFixEta"> & { mostLikelyFixEta: string })
-  /** Sets the internal-only worst-case fix estimate (ISO date-time). */
-  | (Omit<BeCaseUpdateNever, "worstCaseFixEta"> & { worstCaseFixEta: string });
+  | (Omit<
+      BeCaseUpdateNever,
+      | "bestCaseFixEta"
+      | "mostLikelyFixEta"
+      | "worstCaseFixEta"
+      | "addPublicComment"
+      | "product"
+      | "publicTicket"
+    > & {
+      bestCaseFixEta?: string;
+      mostLikelyFixEta?: string;
+      worstCaseFixEta?: string;
+      addPublicComment?: boolean;
+      product?: string;
+      publicTicket?: string;
+    });
 
 /** A user in the case watch list, as echoed by `PATCH /cases/{id}`. */
 export interface BeWatchListUser {
@@ -623,8 +666,6 @@ export interface BeUpdatedCase {
   assignedTo?: BeEntityRef | null;
   /** Present when the update set `parentId` — the record this case is now linked to as its parent. */
   parentCase?: BeCaseNumberRef | null;
-  /** Echoes the updated customer-facing fix-commitment date/time. Present when the update set `fixEta`. */
-  fixEta?: string | null;
   /** Echoes the updated internal-only best-case fix estimate. Present when the update set `bestCaseFixEta`. */
   bestCaseFixEta?: string | null;
   /** Echoes the updated internal-only most-likely fix estimate. Present when the update set `mostLikelyFixEta`. */
@@ -894,7 +935,8 @@ export interface BeAttachment {
   type: string;
   sizeBytes: number;
   description?: string | null;
-  createdBy: string;
+  /** Uploader, in the same `{ id, name, email }` shape used elsewhere (e.g. case `createdBy`). */
+  createdBy: BeUserRef;
   createdOn: string;
   downloadUrl?: string | null;
   previewUrl?: string | null;
@@ -1034,7 +1076,8 @@ export type BeSubscriptionType =
 
 export interface BeProject {
   id: string;
-  accountId?: string;
+  /** Nested on the wire (ServiceNow data source); absent when the project has no linked account. */
+  account?: { id: string; name: string };
   sfId?: string;
   name?: string;
   projectKey?: string;
@@ -1048,6 +1091,8 @@ export interface BeProject {
 export interface BeProjectSearchPayload {
   pagination?: BePagination;
   searchQuery?: string;
+  /** Filter to projects belonging to this account (ServiceNow data source only). */
+  accountId?: string;
 }
 
 export interface BeProjectSearchResponse extends BeSearchResponseBase {
@@ -1858,6 +1903,7 @@ export interface BePatchChangeRequestPayload {
   plannedStartOn?: string;
   isCustomerApproved?: boolean;
   isCustomerReviewed?: boolean;
+  assignedTeamId?: string;
   requestApproval?: true;
 }
 

@@ -266,6 +266,60 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+    patch:
+      summary: Update a project's closure-state fields or hasAgent/hasKbReferences toggles.
+      description: >
+        ServiceNow data source only; there is no Postgres equivalent. At least one
+        field must be provided. closureState itself is not settable — it is derived
+        automatically from the three closure sub-state fields by an SN business
+        rule, so setting one of those and re-fetching the project is how a caller
+        observes the resulting overall status.
+      operationId: updateProject
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectUpdateRequest'
+      responses:
+        "200":
+          description: The project was updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectUpdateResponse'
+        "400":
+          description: Bad request — no field provided, or an invalid value.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header (ServiceNow data source only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /projects/search:
     post:
       summary: Search projects by name, key, or subscription type.
@@ -575,8 +629,8 @@ paths:
       summary: Update a support case.
       description: |
         Updates exactly one field of the case. Provide exactly one of: `state`, `severity`,
-        `workState`, `watchList`, `assigneeEmail`, `fixEta`, `bestCaseFixEta`, `mostLikelyFixEta`,
-        or `worstCaseFixEta`. `watchList`, `assigneeEmail`, `fixEta`, `bestCaseFixEta`,
+        `workState`, `watchList`, `assigneeEmail`, `bestCaseFixEta`, `mostLikelyFixEta`,
+        or `worstCaseFixEta`. `watchList`, `assigneeEmail`, `bestCaseFixEta`,
         `mostLikelyFixEta`, and `worstCaseFixEta` are supported only when the ServiceNow data
         source is active.
       operationId: patchCase
@@ -2383,6 +2437,48 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /problems:
+    post:
+      summary: Create a new problem (available on data sources that support problem management).
+      operationId: createProblem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProblemRequest'
+      responses:
+        "201":
+          description: Problem created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: A referenced record was not found (origin case or primary incident).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /problems/search:
     post:
       summary: Search problems (ServiceNow data source only).
@@ -2756,6 +2852,10 @@ components:
         pod:
           type: string
           nullable: true
+        sfId:
+          type: string
+          nullable: true
+          description: Salesforce account ID linked to this account, if any.
         region:
           type: string
           nullable: true
@@ -2769,11 +2869,15 @@ components:
         technicalOwner:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
-        owner:
+            - $ref: '#/components/schemas/PersonRef'
+        accountManager:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
+            - $ref: '#/components/schemas/PersonRef'
+        renewalAccountManager:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
         activationDate:
           type: string
         deactivationDate:
@@ -2813,6 +2917,10 @@ components:
         pod:
           type: string
           nullable: true
+        sfId:
+          type: string
+          nullable: true
+          description: Salesforce account ID linked to this account, if any.
         region:
           type: string
           nullable: true
@@ -2826,11 +2934,15 @@ components:
         technicalOwner:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
-        owner:
+            - $ref: '#/components/schemas/PersonRef'
+        accountManager:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
+            - $ref: '#/components/schemas/PersonRef'
+        renewalAccountManager:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
         activationDate:
           type: string
         deactivationDate:
@@ -3060,6 +3172,73 @@ components:
           type: integer
         hasMore:
           type: boolean
+
+    ProjectUpdateRequest:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      description: >
+        At least one field must be provided. hasAgent and hasKbReferences are
+        simple toggles; the closure-state fields track sub-states of an
+        Account Closure Process and are only applicable to projects sourced
+        from ServiceNow.
+      properties:
+        hasAgent:
+          type: boolean
+        hasKbReferences:
+          type: boolean
+        endDateClosureState:
+          type: string
+        invoiceDueDateClosureState:
+          type: string
+        complianceViolationClosureState:
+          type: string
+        suspensionProcessState:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: >
+            Free-form, per-dimension Account Closure Process (ACP) suspension-process
+            state (event type + action results) written by an existing ServiceNow
+            suspension flow. This is opaque JSON passed through as-is — its shape is
+            not defined or validated by this layer.
+
+    ProjectUpdateResponse:
+      type: object
+      required: [message, project]
+      properties:
+        message:
+          type: string
+        project:
+          $ref: '#/components/schemas/ProjectUpdateResult'
+
+    ProjectUpdateResult:
+      type: object
+      required: [id, updatedBy, updatedOn]
+      properties:
+        id:
+          type: string
+        updatedBy:
+          type: string
+        updatedOn:
+          type: string
+          format: date-time
+        closureState:
+          type: string
+          nullable: true
+        endDateClosureState:
+          type: string
+          nullable: true
+        invoiceDueDateClosureState:
+          type: string
+          nullable: true
+        complianceViolationClosureState:
+          type: string
+          nullable: true
+        suspensionProcessState:
+          type: object
+          additionalProperties: true
+          nullable: true
 
     SearchProjectContactsRequest:
       type: object
@@ -3573,9 +3752,9 @@ components:
     UpdateCaseRequest:
       type: object
       description: |
-        Exactly one of `state`, `severity`, `workState`, `watchList`, `assigneeEmail`, `fixEta`,
+        Exactly one of `state`, `severity`, `workState`, `watchList`, `assigneeEmail`,
         `bestCaseFixEta`, `mostLikelyFixEta`, or `worstCaseFixEta` must be provided.
-        `watchList`, `assigneeEmail`, `fixEta`, `bestCaseFixEta`, `mostLikelyFixEta`, and
+        `watchList`, `assigneeEmail`, `bestCaseFixEta`, `mostLikelyFixEta`, and
         `worstCaseFixEta` are supported only for the ServiceNow data source.
         `resolutionCode`, `cause`, and `closeNotes` are optional and may only be provided alongside
         `state` when the state is `closed` or `solution_proposed`.
@@ -3585,7 +3764,6 @@ components:
         - required: [workState]
         - required: [watchList]
         - required: [assigneeEmail]
-        - required: [fixEta]
         - required: [bestCaseFixEta]
         - required: [mostLikelyFixEta]
         - required: [worstCaseFixEta]
@@ -3666,28 +3844,24 @@ components:
         closeNotes:
           type: string
           description: Close notes. Only allowed when state is closed or solution_proposed.
-        fixEta:
-          type: string
-          format: date-time
-          description: The single customer-facing fix-commitment date/time (ServiceNow only).
         bestCaseFixEta:
           type: string
-          format: date-time
+          format: date
           description: >-
-            Internal-only best-case fix-commitment date, visible to CSM engineers only
-            (ServiceNow only).
+            Internal-only best-case fix-commitment date (date-only, YYYY-MM-DD), visible
+            to CSM engineers only (ServiceNow only).
         mostLikelyFixEta:
           type: string
-          format: date-time
+          format: date
           description: >-
-            Internal-only most-likely fix-commitment date, visible to CSM engineers only
-            (ServiceNow only).
+            Internal-only most-likely fix-commitment date (date-only, YYYY-MM-DD), visible
+            to CSM engineers only (ServiceNow only).
         worstCaseFixEta:
           type: string
-          format: date-time
+          format: date
           description: >-
-            Internal-only worst-case fix-commitment date, visible to CSM engineers only
-            (ServiceNow only).
+            Internal-only worst-case fix-commitment date (date-only, YYYY-MM-DD), visible
+            to CSM engineers only (ServiceNow only).
 
     UpdateCaseResponse:
       type: object
@@ -3791,34 +3965,27 @@ components:
           format: date-time
           nullable: true
           description: Timestamp when the case was resolved, present when state is closed or solution_proposed.
-        fixEta:
-          type: string
-          format: date-time
-          nullable: true
-          description: >-
-            Echoes the updated customer-facing fix-commitment date/time back, present when
-            fixEta was the field updated.
         bestCaseFixEta:
           type: string
-          format: date-time
+          format: date
           nullable: true
           description: >-
-            Echoes the updated internal-only best-case fix-commitment date back, present when
-            bestCaseFixEta was the field updated.
+            Echoes the updated internal-only best-case fix-commitment date back (date-only,
+            YYYY-MM-DD), present when bestCaseFixEta was the field updated.
         mostLikelyFixEta:
           type: string
-          format: date-time
+          format: date
           nullable: true
           description: >-
-            Echoes the updated internal-only most-likely fix-commitment date back, present when
-            mostLikelyFixEta was the field updated.
+            Echoes the updated internal-only most-likely fix-commitment date back (date-only,
+            YYYY-MM-DD), present when mostLikelyFixEta was the field updated.
         worstCaseFixEta:
           type: string
-          format: date-time
+          format: date
           nullable: true
           description: >-
-            Echoes the updated internal-only worst-case fix-commitment date back, present when
-            worstCaseFixEta was the field updated.
+            Echoes the updated internal-only worst-case fix-commitment date back (date-only,
+            YYYY-MM-DD), present when worstCaseFixEta was the field updated.
 
     CaseLabelRef:
       type: object
@@ -4120,6 +4287,14 @@ components:
           type: string
         number:
           type: string
+        type:
+          type: string
+          enum: [case, incident, change_request, problem]
+          nullable: true
+          description: >
+            What kind of record this reference points at. Nil when the
+            backing data source doesn't resolve a type (ServiceNow data
+            source only).
 
     AccountRef:
       type: object
@@ -4150,6 +4325,21 @@ components:
           format: uuid
         name:
           type: string
+
+    PersonRef:
+      type: object
+      description: >-
+        A compact reference to a person (e.g. an account's manager or
+        technical owner), carrying an optional email alongside id/name.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          nullable: true
 
     DeployedProductRef:
       type: object
@@ -4308,34 +4498,27 @@ components:
           type: string
           nullable: true
           description: Free-text resolution/close notes. Populated for resolved/closed ServiceNow cases; null otherwise.
-        fixEta:
-          type: string
-          format: date-time
-          nullable: true
-          description: >-
-            The single customer-facing fix-commitment date/time. Populated for ServiceNow
-            cases; null otherwise.
         bestCaseFixEta:
           type: string
-          format: date-time
+          format: date
           nullable: true
           description: >-
-            Internal-only best-case fix-commitment date, visible to CSM engineers only.
-            Populated for ServiceNow cases; null otherwise.
+            Internal-only best-case fix-commitment date (date-only, YYYY-MM-DD), visible to
+            CSM engineers only. Populated for ServiceNow cases; null otherwise.
         mostLikelyFixEta:
           type: string
-          format: date-time
+          format: date
           nullable: true
           description: >-
-            Internal-only most-likely fix-commitment date, visible to CSM engineers only.
-            Populated for ServiceNow cases; null otherwise.
+            Internal-only most-likely fix-commitment date (date-only, YYYY-MM-DD), visible
+            to CSM engineers only. Populated for ServiceNow cases; null otherwise.
         worstCaseFixEta:
           type: string
-          format: date-time
+          format: date
           nullable: true
           description: >-
-            Internal-only worst-case fix-commitment date, visible to CSM engineers only.
-            Populated for ServiceNow cases; null otherwise.
+            Internal-only worst-case fix-commitment date (date-only, YYYY-MM-DD), visible to
+            CSM engineers only. Populated for ServiceNow cases; null otherwise.
 
     CaseSearchView:
       type: object
@@ -4662,7 +4845,7 @@ components:
           type: string
           nullable: true
         createdBy:
-          type: string
+          $ref: '#/components/schemas/UserRef'
         createdOn:
           type: string
           format: date-time
@@ -6951,6 +7134,27 @@ components:
           type: string
         incident:
           $ref: '#/components/schemas/IncidentView'
+
+    CreateProblemRequest:
+      type: object
+      required: [subject]
+      properties:
+        subject:
+          type: string
+        category:
+          type: string
+          nullable: true
+        subcategory:
+          type: string
+          nullable: true
+        originCaseId:
+          type: string
+          format: uuid
+          nullable: true
+        primaryIncidentId:
+          type: string
+          format: uuid
+          nullable: true
 
     SearchProblemsRequest:
       type: object

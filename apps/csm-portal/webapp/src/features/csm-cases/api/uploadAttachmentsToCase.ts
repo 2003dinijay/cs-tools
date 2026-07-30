@@ -19,9 +19,10 @@ import type { PostCsmCaseAttachmentInput } from "@features/csm-cases/api/useCsmC
 
 /**
  * Upload create-form attachments to an already-created case via
- * `POST /attachments` (`referenceType: "case"`). The case-create endpoint only
- * honors create-payload attachments for security reports, so standard cases and
- * service requests attach their files this way after the case exists.
+ * `POST /attachments` (`referenceType: "case"`). Every case-creation flow
+ * (standard case, service request, security report) attaches files this way
+ * after the case exists, rather than bundling them into the create request,
+ * so a failed attachment upload never blocks or masks a successful create.
  *
  * Uploads run concurrently and independently; returns the number that failed
  * so the caller can warn without blocking navigation to the created case.

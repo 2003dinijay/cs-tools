@@ -39,6 +39,7 @@ import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import ProjectCard from "@features/project-hub/components/ProjectCard";
 import ProjectCardSkeleton from "@features/project-hub/components/project-card/ProjectCardSkeleton";
 import PartnerGlobalSearch from "@features/project-hub/components/PartnerGlobalSearch";
+import UserGlobalSearch from "@features/project-hub/components/UserGlobalSearch";
 import useGetUserDetails from "@features/settings/api/useGetUserDetails";
 import { hasPartnerAccess } from "@features/settings/constants/settingsConstants";
 import { clearLastSelectedProject } from "@features/settings/utils/settingsStorage";
@@ -265,6 +266,22 @@ export default function ProjectHub(): JSX.Element {
     return <PartnerGlobalSearch />;
   }
 
+  // Non-partner users with more than one project see the same table-based
+  // overview as partners, with per-project stat counts instead of dates.
+  const showUserGlobalSearch =
+    !isPartner &&
+    !isLoading &&
+    !isAuthLoading &&
+    !isLoadingUserDetails &&
+    !isError &&
+    !allProjectsSuspended &&
+    !isCheckingAllSuspended &&
+    projects.length > 1;
+
+  if (showUserGlobalSearch) {
+    return <UserGlobalSearch />;
+  }
+
   const showSearchBar = shouldShowProjectHubSearchBar(
     titleTotalRecords,
     searchQuery,
@@ -390,7 +407,7 @@ export default function ProjectHub(): JSX.Element {
               sx={{ width: "60%", maxWidth: 400, height: 2 }}
             />
             <Typography variant="body2" color="text.secondary">
-              Loading projects...
+              Loading...
             </Typography>
           </Box>
         );

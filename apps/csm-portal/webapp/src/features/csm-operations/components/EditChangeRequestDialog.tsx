@@ -25,14 +25,20 @@ import {
   DialogTitle,
   FormControlLabel,
   Switch,
-  Typography,
 } from "@wso2/oxygen-ui";
 import { useMemo, useState, type JSX } from "react";
+import { useSearchGroups } from "@api/useSearchGroups";
 import type {
   BeChangeRequestDetail,
+  BeGroup,
   BePatchChangeRequestPayload,
 } from "@api/backend/types";
-import { formatDateTimeLocal, parseDateTimeLocal } from "@utils/dateTime";
+import AsyncEntitySelect from "@components/AsyncEntitySelect";
+import {
+  formatDateTimeLocal,
+  isPastDateTime,
+  parseDateTimeLocal,
+} from "@utils/dateTime";
 
 const { DateTimePicker, LocalizationProvider } = DatePickers;
 
@@ -62,9 +68,10 @@ function toBackendDateTime(local: string): string {
 }
 
 /**
- * Edit the change-request fields the BE allows updating: planned start, and the
- * customer approved / reviewed flags. Only changed fields are sent, and the BE
- * requires at least one, so Save is disabled until something differs.
+ * Edit the change-request fields the BE allows updating: planned start, the
+ * assignment group, and the customer approved / reviewed flags. Only changed
+ * fields are sent, and the BE requires at least one, so Save is disabled
+ * until something differs.
  */
 export default function EditChangeRequestDialog({
   cr,
@@ -76,9 +83,11 @@ export default function EditChangeRequestDialog({
     () => toDateTimeLocal(cr.plannedStartOn),
     [cr.plannedStartOn],
   );
+  const initialAssignedTeamId = cr.assignedTeam?.id ?? "";
   const [plannedStart, setPlannedStart] = useState(initialPlannedStart);
   const [approved, setApproved] = useState(!!cr.hasCustomerApproved);
   const [reviewed, setReviewed] = useState(!!cr.hasCustomerReviewed);
+  const [assignedTeamId, setAssignedTeamId] = useState(initialAssignedTeamId);
 
   const patch = useMemo<BePatchChangeRequestPayload>(() => {
     const next: BePatchChangeRequestPayload = {};
@@ -87,17 +96,26 @@ export default function EditChangeRequestDialog({
     }
     if (approved !== !!cr.hasCustomerApproved) next.isCustomerApproved = approved;
     if (reviewed !== !!cr.hasCustomerReviewed) next.isCustomerReviewed = reviewed;
+    if (assignedTeamId !== initialAssignedTeamId && assignedTeamId) {
+      next.assignedTeamId = assignedTeamId;
+    }
     return next;
   }, [
     plannedStart,
     initialPlannedStart,
     approved,
     reviewed,
+    assignedTeamId,
+    initialAssignedTeamId,
     cr.hasCustomerApproved,
     cr.hasCustomerReviewed,
   ]);
 
   const hasChanges = Object.keys(patch).length > 0;
+  // Non-blocking: editing a CR's planned start to a past instant is unusual
+  // but not forbidden (e.g. recording when it actually started), so this
+  // only warns.
+  const plannedStartIsPast = isPastDateTime(parseDateTimeLocal(plannedStart));
 
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
@@ -116,7 +134,13 @@ export default function EditChangeRequestDialog({
                 )
               }
               slotProps={{
-                textField: { size: "small", fullWidth: true },
+                textField: {
+                  size: "small",
+                  fullWidth: true,
+                  helperText: plannedStartIsPast
+                    ? "This date is in the past."
+                    : undefined,
+                },
                 field: { clearable: true },
               }}
             />
@@ -139,9 +163,19 @@ export default function EditChangeRequestDialog({
             }
             label="Customer reviewed"
           />
-          <Typography variant="caption" color="text.secondary">
-            Edits apply to ServiceNow-managed change requests.
-          </Typography>
+          <AsyncEntitySelect<BeGroup>
+            id="cr-edit-assigned-team"
+            label="Assignment group"
+            placeholder="Search groups…"
+            value={assignedTeamId}
+            onChange={setAssignedTeamId}
+            disabled={isSaving}
+            useSearch={useSearchGroups}
+            getId={(g) => g.id}
+            getLabel={(g) => g.name}
+            knownLabel={cr.assignedTeam?.name}
+            helperText="Required before approval can be requested."
+          />
         </Box>
       </DialogContent>
       <DialogActions>

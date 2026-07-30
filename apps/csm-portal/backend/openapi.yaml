@@ -130,7 +130,7 @@ paths:
       description: |
         Updates exactly one field of the case. Provide exactly one of: `state`, `severity`,
         `workState`, `watchList`, `assigneeEmail`, `parentId`, `subject`, `description`,
-        `deploymentId`, `deployedProductId`, `relatedCaseId`, `autocloseHoldUntil`, `fixEta`,
+        `deploymentId`, `deployedProductId`, `relatedCaseId`, `autocloseHoldUntil`,
         `bestCaseFixEta`, `mostLikelyFixEta`, or `worstCaseFixEta`.
         `watchList`, `assigneeEmail`, `parentId`, and `autocloseHoldUntil` are supported only when
         the ServiceNow data source is active.
@@ -976,7 +976,8 @@ paths:
       description: >
         Returns full account detail. The response takes one of two shapes:
         Account, or AccountDetail (supportTier as an {id, label} object,
-        owner/technicalOwner as {id, name} references).
+        accountManager/technicalOwner/renewalAccountManager as {id, name, email}
+        references).
       operationId: getAccountsId
       parameters:
         - name: id
@@ -1031,8 +1032,8 @@ paths:
       description: >
         Returns a paginated list of accounts. The response takes one of two
         shapes: AccountSearchResponse, or AccountViewSearchResponse
-        (supportTier as a plain label string, owner/technicalOwner as
-        {id, name} references).
+        (supportTier as a plain label string, accountManager/technicalOwner/
+        renewalAccountManager as {id, name, email} references).
       operationId: postAccountsSearch
       requestBody:
         description: Account search payload
@@ -4042,6 +4043,60 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /notifications/google-chat/alerts:
+    post:
+      summary: >-
+        Send an incident alert card message to the Google Chat space
+        configured for the given product. Triggered manually today, pending
+        integration into real case/incident creation.
+      operationId: postNotificationsGoogleChatAlerts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GoogleChatAlertPayload'
+        required: true
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -4364,7 +4419,7 @@ components:
       description: |
         Exactly one of `state`, `severity`, `workState`, `watchList`, `assigneeEmail`, `parentId`,
         `subject`, `description`, `deploymentId`, `deployedProductId`, `relatedCaseId`,
-        `autocloseHoldUntil`, `fixEta`, `bestCaseFixEta`, `mostLikelyFixEta`, or `worstCaseFixEta`
+        `autocloseHoldUntil`, `bestCaseFixEta`, `mostLikelyFixEta`, or `worstCaseFixEta`
         must be provided. `watchList`, `assigneeEmail`, `parentId`, and `autocloseHoldUntil` are
         supported only for the ServiceNow data source.
         `resolutionCode`, `cause`, and `closeNotes` are optional resolution fields that may only be
@@ -4382,7 +4437,6 @@ components:
         - required: [deployedProductId]
         - required: [relatedCaseId]
         - required: [autocloseHoldUntil]
-        - required: [fixEta]
         - required: [bestCaseFixEta]
         - required: [mostLikelyFixEta]
         - required: [worstCaseFixEta]
@@ -4460,27 +4514,24 @@ components:
             until this date, mirroring the real ServiceNow UX (an engineer picks a hold-until
             date). This is the only supported write against that sequence — the raw
             `autoclosureStep` state is not directly settable (ServiceNow only).
-        fixEta:
-          type: string
-          format: date-time
-          description: >
-            Sets the customer-facing fix-commitment date/time for the case. This is the only
-            fix-ETA field exposed by this API; internal-only estimates are not surfaced.
         bestCaseFixEta:
           type: string
-          format: date-time
-          nullable: true
-          description: Sets the best-case fix-commitment date/time estimate for the case.
+          format: date
+          description: >
+            Sets the internal-only best-case fix-commitment date estimate for the case
+            (date-only, YYYY-MM-DD). Never surfaced to the customer.
         mostLikelyFixEta:
           type: string
-          format: date-time
-          nullable: true
-          description: Sets the most-likely fix-commitment date/time estimate for the case.
+          format: date
+          description: >
+            Sets the internal-only most-likely fix-commitment date estimate for the case
+            (date-only, YYYY-MM-DD). Never surfaced to the customer.
         worstCaseFixEta:
           type: string
-          format: date-time
-          nullable: true
-          description: Sets the worst-case fix-commitment date/time estimate for the case.
+          format: date
+          description: >
+            Sets the internal-only worst-case fix-commitment date estimate for the case
+            (date-only, YYYY-MM-DD). Never surfaced to the customer.
 
     UpdateCaseResponse:
       type: object
@@ -4548,11 +4599,27 @@ components:
         parentCase:
           $ref: '#/components/schemas/CaseNumberRef'
           description: Present when the update set parentId, identifying the case, incident, change request, or problem this case is now linked to as its parent.
-        fixEta:
+        bestCaseFixEta:
           type: string
-          format: date-time
+          format: date
           nullable: true
-          description: Echoes the updated customer-facing fix-commitment date/time. Present when the update set fixEta.
+          description: >-
+            Echoes the updated internal-only best-case fix-commitment date back (date-only,
+            YYYY-MM-DD). Present when the update set bestCaseFixEta.
+        mostLikelyFixEta:
+          type: string
+          format: date
+          nullable: true
+          description: >-
+            Echoes the updated internal-only most-likely fix-commitment date back (date-only,
+            YYYY-MM-DD). Present when the update set mostLikelyFixEta.
+        worstCaseFixEta:
+          type: string
+          format: date
+          nullable: true
+          description: >-
+            Echoes the updated internal-only worst-case fix-commitment date back (date-only,
+            YYYY-MM-DD). Present when the update set worstCaseFixEta.
 
     CaseResolutionCode:
       type: string
@@ -5002,6 +5069,19 @@ components:
         name:
           type: string
 
+    PersonRef:
+      description: A reference to a person, including their email (unlike EntityRef, which is used for non-person references).
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          nullable: true
+
     DeployedProductRef:
       type: object
       properties:
@@ -5193,28 +5273,27 @@ components:
           description: >-
             Service-request cases whose parent points to this case. Populated on every
             case detail response, not just high-severity cases.
-        fixEta:
-          type: string
-          format: date-time
-          nullable: true
-          description: >-
-            The single customer-facing fix-commitment date/time for the case. This is the
-            only fix-ETA field exposed by this API; internal-only estimates are not surfaced.
         bestCaseFixEta:
           type: string
-          format: date-time
+          format: date
           nullable: true
-          description: Best-case fix-commitment date/time estimate for the case.
+          description: >-
+            Internal-only best-case fix-commitment date estimate for the case (date-only,
+            YYYY-MM-DD). Never surfaced to the customer.
         mostLikelyFixEta:
           type: string
-          format: date-time
+          format: date
           nullable: true
-          description: Most-likely fix-commitment date/time estimate for the case.
+          description: >-
+            Internal-only most-likely fix-commitment date estimate for the case (date-only,
+            YYYY-MM-DD). Never surfaced to the customer.
         worstCaseFixEta:
           type: string
-          format: date-time
+          format: date
           nullable: true
-          description: Worst-case fix-commitment date/time estimate for the case.
+          description: >-
+            Internal-only worst-case fix-commitment date estimate for the case (date-only,
+            YYYY-MM-DD). Never surfaced to the customer.
         tags:
           type: array
           nullable: true
@@ -5685,14 +5764,18 @@ components:
         arrToday:
           type: string
           nullable: true
-        owner:
+        accountManager:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
+            - $ref: '#/components/schemas/PersonRef'
         technicalOwner:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
+            - $ref: '#/components/schemas/PersonRef'
+        renewalAccountManager:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
         activationDate:
           type: string
         deactivationDate:
@@ -5743,14 +5826,18 @@ components:
         arrToday:
           type: string
           nullable: true
-        owner:
+        accountManager:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
+            - $ref: '#/components/schemas/PersonRef'
         technicalOwner:
           nullable: true
           allOf:
-            - $ref: '#/components/schemas/EntityRef'
+            - $ref: '#/components/schemas/PersonRef'
+        renewalAccountManager:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
         activationDate:
           type: string
         deactivationDate:
@@ -6536,6 +6623,14 @@ components:
           format: uuid
         number:
           type: string
+        type:
+          type: string
+          enum: [case, incident, change_request, problem]
+          nullable: true
+          description: >
+            What kind of record this reference points at. Nil when the
+            backing data source doesn't resolve a type (ServiceNow data
+            source only).
 
     LinkedServiceRequestRef:
       type: object
@@ -8065,6 +8160,29 @@ components:
           type: integer
         offset:
           type: integer
+
+    GoogleChatAlertPayload:
+      type: object
+      required: [product, title, shortDescription, caseId]
+      additionalProperties: false
+      properties:
+        product:
+          type: string
+          description: >-
+            Selects which configured Google Chat space receives the alert
+            (e.g. "api-manager", "identity-server"); matched case- and
+            whitespace-insensitively against NOTIFICATIONS_GOOGLE_CHAT_SPACES.
+        title:
+          type: string
+          description: Card header title (e.g. "P1 Incident - CASE-001").
+        shortDescription:
+          type: string
+          description: Card body text shown under "Short Description".
+        caseId:
+          type: string
+          description: >-
+            Case ID used to build the "Open in CSM Portal" link
+            (/operations/incidents/{caseId}).
 
     Incident:
       type: object

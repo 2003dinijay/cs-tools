@@ -18,8 +18,11 @@ import {
   Building,
   File,
   FolderOpen,
+  GitPullRequest,
   Headset,
   Search,
+  Siren,
+  Wrench,
 } from "@wso2/oxygen-ui-icons-react";
 import type { JSX } from "react";
 import type { RecentViewKind } from "@features/csm-recent/hooks/useRecentViews";
@@ -31,6 +34,9 @@ export const KIND_LABEL: Record<RecentViewKind, string> = {
   account: "Accounts",
   search: "Searches",
   page: "Pages",
+  incident: "Incidents",
+  change_request: "Change requests",
+  problem: "Problems",
 };
 
 /** Stable display order for kind groups. */
@@ -39,6 +45,9 @@ export const KIND_ORDER: RecentViewKind[] = [
   "search",
   "project",
   "account",
+  "incident",
+  "change_request",
+  "problem",
   "page",
 ];
 
@@ -54,5 +63,11 @@ export function kindIcon(kind: RecentViewKind, size = 16): JSX.Element {
       return <Search size={size} />;
     case "page":
       return <File size={size} />;
+    case "incident":
+      return <Siren size={size} />;
+    case "change_request":
+      return <GitPullRequest size={size} />;
+    case "problem":
+      return <Wrench size={size} />;
   }
 }

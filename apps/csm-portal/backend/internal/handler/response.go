@@ -84,9 +84,9 @@ func mapUpstreamError(w http.ResponseWriter, err error, fallbackMsg string) {
 		case http.StatusNotFound:
 			writeError(w, http.StatusNotFound, ErrMsgNotFound)
 		case http.StatusBadRequest:
-			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+			writeError(w, http.StatusBadRequest, upstreamErrorMessageStrict(apiErr.Body, ErrMsgBadRequest))
 		case http.StatusConflict, http.StatusUnprocessableEntity:
-			writeError(w, apiErr.StatusCode, apiErr.Body)
+			writeError(w, apiErr.StatusCode, upstreamErrorMessage(apiErr.Body, fallbackMsg))
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			writeError(w, http.StatusServiceUnavailable, fallbackMsg)
 		default:
@@ -95,6 +95,46 @@ func mapUpstreamError(w http.ResponseWriter, err error, fallbackMsg string) {
 		return
 	}
 	writeError(w, http.StatusInternalServerError, fallbackMsg)
+}
+
+// upstreamErrorMessage extracts the human-readable message from an upstream
+// JSON error body shaped like {"message": "..."} (the entity service's error
+// envelope). Passing the raw JSON body straight through as the outer
+// {"message": ...} value would double-encode it into an escaped JSON string
+// instead of the plain text callers expect, so it is parsed here first. Falls
+// back to the raw body when it isn't a JSON object with a message field, and
+// to fallbackMsg when the body is empty.
+func upstreamErrorMessage(body string, fallbackMsg string) string {
+	if body == "" {
+		return fallbackMsg
+	}
+	var parsed struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err == nil && parsed.Message != "" {
+		return parsed.Message
+	}
+	return body
+}
+
+// upstreamErrorMessageStrict is like upstreamErrorMessage but never falls back
+// to the raw body: it only ever surfaces a value from body when it parses as
+// a JSON object with a non-empty message field, and returns fallbackMsg for
+// every other shape (empty, malformed JSON, or JSON without a message field).
+// Used for status codes where the upstream body is not guaranteed to be a
+// well-formed error envelope, so echoing it verbatim risks leaking upstream
+// diagnostic text (or worse) straight to the API caller.
+func upstreamErrorMessageStrict(body string, fallbackMsg string) string {
+	if body == "" {
+		return fallbackMsg
+	}
+	var parsed struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err == nil && parsed.Message != "" {
+		return parsed.Message
+	}
+	return fallbackMsg
 }
 
 // summarizeErr returns a short, log-safe description of err: the upstream status

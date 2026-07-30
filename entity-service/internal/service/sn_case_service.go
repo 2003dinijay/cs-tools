@@ -49,6 +49,7 @@ type snCase struct {
 	CreatedOn             string                      `json:"createdOn"`
 	UpdatedOn             *string                     `json:"updatedOn"`
 	CreatedBy             string                      `json:"createdBy"`
+	CreatedByFullName     string                      `json:"createdByFullName"`
 	Project               snCaseEntityRef             `json:"project"`
 	Deployment            snCaseEntityRef             `json:"deployment"`
 	DeployedProduct       snCaseDeployedProduct       `json:"deployedProduct"`
@@ -93,12 +94,6 @@ type snCase struct {
 	// AutoclosureStateTime is when the auto-closure sequence next advances (e.g. the
 	// "eligible again after" date for a held case).
 	AutoclosureStateTime *string `json:"autoclosureStateTime"`
-	// FixEta is the single customer-facing fix-commitment date/time
-	// (u_fix_eta_shared). Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina field currently
-	// surfaces this — the Choreo GET /cases/{id} response does not include a
-	// "fixEta" key today, so this always unmarshals to nil. Ask: add a
-	// "fixEta" (glide_date_time) field to servicenow:CaseResponse.
-	FixEta *string `json:"fixEta"`
 	// BestCaseFixEta is the internal-only best-case fix-commitment date
 	// (u_best_case_fix_eta). Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina field currently
 	// surfaces this — the Choreo GET /cases/{id} response does not include a
@@ -141,8 +136,9 @@ type snCaseDeployedProduct struct {
 }
 
 type snCaseRef struct {
-	ID     string `json:"id"`
-	Number string `json:"number"`
+	ID     string  `json:"id"`
+	Number string  `json:"number"`
+	Type   *string `json:"type"`
 }
 
 type snLinkedServiceRequestRef struct {
@@ -225,6 +221,33 @@ func snCaseTypeToDomain(ct *snCaseEntityRef) *string {
 		}
 	}
 	return &domainType
+}
+
+// snParentCaseTypeMap maps the raw ServiceNow parent/related-case type value --
+// derived by CaseUtils.js's _mapCaseDetails from the parent record's sys_class_name
+// (sn_customerservice_case -> "case", incident -> "incident", change_request ->
+// "change_request", problem -> "problem") -- to the API's public CaseNumberRef.type
+// enum. SN already emits these exact literal strings, so this is effectively an
+// allow-list guarding against an unrecognised or future upstream value, kept as a
+// map (rather than a set) to match this file's other snXTypeMap conventions.
+var snParentCaseTypeMap = map[string]string{
+	"case":           "case",
+	"incident":       "incident",
+	"change_request": "change_request",
+	"problem":        "problem",
+}
+
+// snParentCaseTypeToDomain maps a parent/related case reference's raw SN type
+// value to the domain enum, returning nil for nil or unrecognised values so an
+// unsupported ServiceNow task type never leaks onto the API surface.
+func snParentCaseTypeToDomain(raw *string) *string {
+	if raw == nil {
+		return nil
+	}
+	if mapped, ok := snParentCaseTypeMap[*raw]; ok {
+		return &mapped
+	}
+	return nil
 }
 
 func domainTypeKeysToSN(typeKeys []string) []string {
@@ -370,6 +393,32 @@ func formatSNDate(t *time.Time) string {
 	return t.UTC().Format(snCreatedOnLayout)
 }
 
+// snDateOnlyLayout is the date-only wire format the integration service expects for
+// fields whose contract carries a date with no time component.
+const snDateOnlyLayout = "2006-01-02"
+
+// formatSNDateOnly renders a date-only value. The auto-closure hold is a date, not a
+// datetime: the integration service constrains it to YYYY-MM-DD, and sending a
+// datetime fails payload binding before the request ever reaches the data source.
+func formatSNDateOnly(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(snDateOnlyLayout)
+}
+
+// validateDateOnly rejects a wire value that is not a strict "YYYY-MM-DD" date. Used
+// for fields (bestCaseFixEta, mostLikelyFixEta, worstCaseFixEta) whose contract with
+// the integration service is a plain date string, not an RFC3339 datetime — unlike
+// AutocloseHoldUntil, these arrive as *string already, so there is no JSON-time-based
+// parse to lean on; the format must be checked explicitly before it is forwarded.
+func validateDateOnly(field, value string) error {
+	if _, err := time.Parse(snDateOnlyLayout, value); err != nil {
+		return &apierror.ValidationError{Msg: field + " must be a date in YYYY-MM-DD format"}
+	}
+	return nil
+}
+
 type snCaseService struct {
 	client     *integrationservice.Client
 	pgFallback CaseService
@@ -400,6 +449,7 @@ type snCreateCasePayload struct {
 	Description       string             `json:"description,omitempty"`
 	SeverityKey       int                `json:"severityKey,omitempty"`
 	IssueTypeKey      int                `json:"issueTypeKey,omitempty"`
+	EngagementType    int                `json:"engagementType,omitempty"`
 	CatalogID         string             `json:"catalogId,omitempty"`
 	CatalogItemID     string             `json:"catalogItemId,omitempty"`
 	Variables         []snCaseVariable   `json:"variables,omitempty"`
@@ -495,6 +545,10 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 			}
 			payload.Attachments = atts
 		}
+	case "engagement":
+		payload.Title = req.Subject
+		payload.Description = req.Description
+		payload.EngagementType = snEngagementTypeIDMap[req.EngagementType]
 	}
 
 	if len(req.WatchList) > 0 {
@@ -591,6 +645,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		CreatedOn:      createdOn,
 		UpdatedOn:      updatedOn,
 		CreatedByDetails: domain.UserRef{
+			Name:  c.CreatedByFullName,
 			Email: c.CreatedBy,
 		},
 		ProjectDetails: domain.EntityRef{ID: sysidToUUID(c.Project.ID), Name: c.Project.Name},
@@ -634,7 +689,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
 	}
 	if c.ParentCase != nil {
-		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number}
+		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number, Type: snParentCaseTypeToDomain(c.ParentCase.Type)}
 	}
 	if c.RelatedCase != nil {
 		cv.RelatedCase = &domain.CaseNumberRef{ID: sysidToUUID(c.RelatedCase.ID), Number: c.RelatedCase.Number}
@@ -703,41 +758,18 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		}
 		cv.AutoclosureStateTime = &autoclosureStateTime
 	}
-	// FixEta passes through once Ballerina's matching field (see snCase.FixEta doc
-	// comment) lands; until then this is always nil.
-	if c.FixEta != nil && *c.FixEta != "" {
-		fixEta, err := time.Parse(snCreatedOnLayout, *c.FixEta)
-		if err != nil {
-			return domain.CaseView{}, fmt.Errorf("sn get case: parse fixEta %q: %w", *c.FixEta, err)
-		}
-		cv.FixEta = &fixEta
-	}
-	// BestCaseFixEta passes through once Ballerina's matching field (see
-	// snCase.BestCaseFixEta doc comment) lands; until then this is always nil.
+	// BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta are already date-only
+	// "YYYY-MM-DD" strings on both sides, so no parsing/reformatting is
+	// needed — pass through once Ballerina's matching read fields (see
+	// snCase doc comments) land; until then these are always nil.
 	if c.BestCaseFixEta != nil && *c.BestCaseFixEta != "" {
-		bestCaseFixEta, err := time.Parse(snCreatedOnLayout, *c.BestCaseFixEta)
-		if err != nil {
-			return domain.CaseView{}, fmt.Errorf("sn get case: parse bestCaseFixEta %q: %w", *c.BestCaseFixEta, err)
-		}
-		cv.BestCaseFixEta = &bestCaseFixEta
+		cv.BestCaseFixEta = c.BestCaseFixEta
 	}
-	// MostLikelyFixEta passes through once Ballerina's matching field (see
-	// snCase.MostLikelyFixEta doc comment) lands; until then this is always nil.
 	if c.MostLikelyFixEta != nil && *c.MostLikelyFixEta != "" {
-		mostLikelyFixEta, err := time.Parse(snCreatedOnLayout, *c.MostLikelyFixEta)
-		if err != nil {
-			return domain.CaseView{}, fmt.Errorf("sn get case: parse mostLikelyFixEta %q: %w", *c.MostLikelyFixEta, err)
-		}
-		cv.MostLikelyFixEta = &mostLikelyFixEta
+		cv.MostLikelyFixEta = c.MostLikelyFixEta
 	}
-	// WorstCaseFixEta passes through once Ballerina's matching field (see
-	// snCase.WorstCaseFixEta doc comment) lands; until then this is always nil.
 	if c.WorstCaseFixEta != nil && *c.WorstCaseFixEta != "" {
-		worstCaseFixEta, err := time.Parse(snCreatedOnLayout, *c.WorstCaseFixEta)
-		if err != nil {
-			return domain.CaseView{}, fmt.Errorf("sn get case: parse worstCaseFixEta %q: %w", *c.WorstCaseFixEta, err)
-		}
-		cv.WorstCaseFixEta = &worstCaseFixEta
+		cv.WorstCaseFixEta = c.WorstCaseFixEta
 	}
 	// Tags are not populated: Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main), see CaseView.Tags doc comment.
 	// cv.Tags is left nil.
@@ -955,25 +987,26 @@ type snUpdateCasePayload struct {
 	Description       *string `json:"description,omitempty"`
 	DeploymentID      *string `json:"deploymentId,omitempty"`
 	DeployedProductID *string `json:"deployedProductId,omitempty"`
-	// FixEta writes the customer-facing fix-commitment date/time (u_fix_eta_shared).
-	// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina write field exists yet for this — ask:
-	// add a "fixEta" field to servicenow:CaseUpdatePayload backed by u_fix_eta_shared.
-	FixEta *string `json:"fixEta,omitempty"`
 	// BestCaseFixEta writes the internal-only best-case fix-commitment date
-	// (u_best_case_fix_eta). Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina write field exists
-	// yet for this — ask: add a "bestCaseFixEta" field to servicenow:CaseUpdatePayload
-	// backed by u_best_case_fix_eta.
+	// (u_best_case_fix_eta) as a date-only "YYYY-MM-DD" string. Confirmed live
+	// against the existing case-update resource — same single-field PATCH
+	// pathway as AutocloseHoldUntil/Title/Description above.
 	BestCaseFixEta *string `json:"bestCaseFixEta,omitempty"`
-	// MostLikelyFixEta writes the internal-only most-likely fix-commitment date
-	// (u_most_likely_fix_eta). Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina write field
-	// exists yet for this — ask: add a "mostLikelyFixEta" field to
-	// servicenow:CaseUpdatePayload backed by u_most_likely_fix_eta.
+	// MostLikelyFixEta writes the internal-only most-likely fix-commitment
+	// date (u_most_likely_fix_eta) as a date-only "YYYY-MM-DD" string. Same
+	// pathway as BestCaseFixEta above.
 	MostLikelyFixEta *string `json:"mostLikelyFixEta,omitempty"`
 	// WorstCaseFixEta writes the internal-only worst-case fix-commitment date
-	// (u_worst_case_fix_eta). Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina write field
-	// exists yet for this — ask: add a "worstCaseFixEta" field to
-	// servicenow:CaseUpdatePayload backed by u_worst_case_fix_eta.
+	// (u_worst_case_fix_eta) as a date-only "YYYY-MM-DD" string. Same pathway
+	// as BestCaseFixEta above.
 	WorstCaseFixEta *string `json:"worstCaseFixEta,omitempty"`
+	// AddPublicComment/Product/PublicTicket mirror ServiceNow's "Share Fix ETA"
+	// CWF action: when AddPublicComment is true, ServiceNow posts a customer-visible
+	// comment built from Product/PublicTicket/the 3 ETA dates, in addition to writing
+	// the ETA fields themselves.
+	AddPublicComment *bool   `json:"addPublicComment,omitempty"`
+	Product          *string `json:"product,omitempty"`
+	PublicTicket     *string `json:"publicTicket,omitempty"`
 }
 
 // snResolutionStates are the state keys that allow resolution fields.
@@ -1097,17 +1130,12 @@ type snUpdateCaseResponse struct {
 		CloseNotes *string    `json:"closeNotes"`
 		ResolvedOn *string    `json:"resolvedOn"`
 		ParentCase *snCaseRef `json:"parentCase"`
-		// FixEta: Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main), see snUpdateCasePayload.FixEta doc comment.
-		FixEta *string `json:"fixEta"`
-		// BestCaseFixEta: Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main), see
-		// snUpdateCasePayload.BestCaseFixEta doc comment.
-		BestCaseFixEta *string `json:"bestCaseFixEta"`
-		// MostLikelyFixEta: Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main), see
-		// snUpdateCasePayload.MostLikelyFixEta doc comment.
+		// BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta echo back the
+		// updated date-only estimate when that field was the one PATCHed —
+		// see snUpdateCasePayload doc comments.
+		BestCaseFixEta   *string `json:"bestCaseFixEta"`
 		MostLikelyFixEta *string `json:"mostLikelyFixEta"`
-		// WorstCaseFixEta: Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main), see
-		// snUpdateCasePayload.WorstCaseFixEta doc comment.
-		WorstCaseFixEta *string `json:"worstCaseFixEta"`
+		WorstCaseFixEta  *string `json:"worstCaseFixEta"`
 	} `json:"case"`
 }
 
@@ -1118,63 +1146,66 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 
 	hasResolutionFields := req.ResolutionCode != nil || req.Cause != nil || req.CloseNotes != nil
 
-	fieldCount := 0
+	// exclusiveCount covers the role-gated fields with complex side effects
+	// (state transitions, assignment, watch list, parent linkage) -- SN keeps
+	// these mutually exclusive of each other and of every other field.
+	exclusiveCount := 0
 	if req.State != nil {
-		fieldCount++
+		exclusiveCount++
 	}
 	if req.Severity != nil {
-		fieldCount++
+		exclusiveCount++
 	}
 	if req.WorkState != nil {
-		fieldCount++
+		exclusiveCount++
 	}
 	if len(req.WatchList) > 0 {
-		fieldCount++
+		exclusiveCount++
 	}
 	if req.AssigneeEmail != nil {
-		fieldCount++
+		exclusiveCount++
 	}
 	if req.ParentID != nil {
-		fieldCount++
+		exclusiveCount++
 	}
+	// combinableCount covers plain field writes with no cross-field side
+	// effects -- SN now accepts any subset of these together in one PATCH.
+	combinableCount := 0
 	if req.RelatedCaseID != nil {
-		fieldCount++
+		combinableCount++
 	}
 	if req.AutocloseHoldUntil != nil {
-		fieldCount++
+		combinableCount++
 	}
 	if req.Subject != nil {
-		fieldCount++
+		combinableCount++
 	}
 	if req.Description != nil {
-		fieldCount++
+		combinableCount++
 	}
 	if req.DeploymentID != nil {
-		fieldCount++
+		combinableCount++
 	}
 	if req.DeployedProductID != nil {
-		fieldCount++
-	}
-	if req.FixEta != nil {
-		fieldCount++
+		combinableCount++
 	}
 	if req.BestCaseFixEta != nil {
-		fieldCount++
+		combinableCount++
 	}
 	if req.MostLikelyFixEta != nil {
-		fieldCount++
+		combinableCount++
 	}
 	if req.WorstCaseFixEta != nil {
-		fieldCount++
+		combinableCount++
 	}
 	const fieldList = "state, severity, workState, watchList, assigneeEmail, parentId, relatedCaseId, " +
-		"autocloseHoldUntil, subject, description, deploymentId, deployedProductId, fixEta, " +
+		"autocloseHoldUntil, subject, description, deploymentId, deployedProductId, " +
 		"bestCaseFixEta, mostLikelyFixEta, or worstCaseFixEta"
-	if fieldCount == 0 {
+	if exclusiveCount == 0 && combinableCount == 0 {
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "at least one of " + fieldList + " must be provided"}
 	}
-	if fieldCount > 1 {
-		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "only one of " + fieldList + " may be provided per request"}
+	if exclusiveCount > 1 || (exclusiveCount == 1 && combinableCount > 0) {
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "state, severity, workState, watchList, assigneeEmail, and parentId cannot be combined with each other or with any other field in the same request"}
 	}
 	if hasResolutionFields && req.State == nil {
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are only allowed when state is also provided"}
@@ -1253,7 +1284,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		payload.RelatedCaseID = &sysid
 	}
 	if req.AutocloseHoldUntil != nil {
-		holdUntil := req.AutocloseHoldUntil.Format(snCreatedOnLayout)
+		holdUntil := formatSNDateOnly(req.AutocloseHoldUntil)
 		payload.AutocloseHoldUntil = &holdUntil
 	}
 	if req.Subject != nil {
@@ -1282,21 +1313,40 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		sysid := uuidToSysid(*req.DeployedProductID)
 		payload.DeployedProductID = &sysid
 	}
-	if req.FixEta != nil {
-		fixEta := formatSNDate(req.FixEta)
-		payload.FixEta = &fixEta
-	}
 	if req.BestCaseFixEta != nil {
-		bestCaseFixEta := formatSNDate(req.BestCaseFixEta)
-		payload.BestCaseFixEta = &bestCaseFixEta
+		if err := validateDateOnly("bestCaseFixEta", *req.BestCaseFixEta); err != nil {
+			return domain.UpdateCaseResponse{}, err
+		}
+		payload.BestCaseFixEta = req.BestCaseFixEta
 	}
 	if req.MostLikelyFixEta != nil {
-		mostLikelyFixEta := formatSNDate(req.MostLikelyFixEta)
-		payload.MostLikelyFixEta = &mostLikelyFixEta
+		if err := validateDateOnly("mostLikelyFixEta", *req.MostLikelyFixEta); err != nil {
+			return domain.UpdateCaseResponse{}, err
+		}
+		payload.MostLikelyFixEta = req.MostLikelyFixEta
 	}
 	if req.WorstCaseFixEta != nil {
-		worstCaseFixEta := formatSNDate(req.WorstCaseFixEta)
-		payload.WorstCaseFixEta = &worstCaseFixEta
+		if err := validateDateOnly("worstCaseFixEta", *req.WorstCaseFixEta); err != nil {
+			return domain.UpdateCaseResponse{}, err
+		}
+		payload.WorstCaseFixEta = req.WorstCaseFixEta
+	}
+	if req.AddPublicComment != nil {
+		hasAnyFixEta := req.BestCaseFixEta != nil || req.MostLikelyFixEta != nil || req.WorstCaseFixEta != nil
+		if !hasAnyFixEta {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "addPublicComment requires at least one of bestCaseFixEta, mostLikelyFixEta, or worstCaseFixEta"}
+		}
+		if *req.AddPublicComment {
+			if req.Product == nil || *req.Product == "" {
+				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "product is required when addPublicComment is true"}
+			}
+			if req.PublicTicket == nil || *req.PublicTicket == "" {
+				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "publicTicket is required when addPublicComment is true"}
+			}
+		}
+		payload.AddPublicComment = req.AddPublicComment
+		payload.Product = req.Product
+		payload.PublicTicket = req.PublicTicket
 	}
 
 	// Close-gate: reject closing a case that still has an open, customer-visible task.
@@ -1377,7 +1427,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	}
 	resp.Case.CloseNotes = snResp.Case.CloseNotes
 	if snResp.Case.ParentCase != nil {
-		resp.Case.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(snResp.Case.ParentCase.ID), Number: snResp.Case.ParentCase.Number}
+		resp.Case.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(snResp.Case.ParentCase.ID), Number: snResp.Case.ParentCase.Number, Type: snParentCaseTypeToDomain(snResp.Case.ParentCase.Type)}
 	}
 	if snResp.Case.ResolvedOn != nil {
 		resolvedOn, err := time.Parse(snCreatedOnLayout, *snResp.Case.ResolvedOn)
@@ -1386,44 +1436,17 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		}
 		resp.Case.ResolvedOn = &resolvedOn
 	}
-	// FixEta: Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main), see snUpdateCasePayload.FixEta doc comment;
-	// snResp.Case.FixEta is always nil until Ballerina echoes it back.
-	if snResp.Case.FixEta != nil && *snResp.Case.FixEta != "" {
-		fixEta, err := time.Parse(snCreatedOnLayout, *snResp.Case.FixEta)
-		if err != nil {
-			return domain.UpdateCaseResponse{}, fmt.Errorf("sn update case: parse fixEta %q: %w", *snResp.Case.FixEta, err)
-		}
-		resp.Case.FixEta = &fixEta
-	}
-	// BestCaseFixEta: Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main), see
-	// snUpdateCasePayload.BestCaseFixEta doc comment; snResp.Case.BestCaseFixEta is always
-	// nil until Ballerina echoes it back.
+	// BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta echo back verbatim — the
+	// wire and domain types are both date-only "YYYY-MM-DD" strings, so no
+	// parsing/reformatting is needed here.
 	if snResp.Case.BestCaseFixEta != nil && *snResp.Case.BestCaseFixEta != "" {
-		bestCaseFixEta, err := time.Parse(snCreatedOnLayout, *snResp.Case.BestCaseFixEta)
-		if err != nil {
-			return domain.UpdateCaseResponse{}, fmt.Errorf("sn update case: parse bestCaseFixEta %q: %w", *snResp.Case.BestCaseFixEta, err)
-		}
-		resp.Case.BestCaseFixEta = &bestCaseFixEta
+		resp.Case.BestCaseFixEta = snResp.Case.BestCaseFixEta
 	}
-	// MostLikelyFixEta: Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main), see
-	// snUpdateCasePayload.MostLikelyFixEta doc comment; snResp.Case.MostLikelyFixEta is
-	// always nil until Ballerina echoes it back.
 	if snResp.Case.MostLikelyFixEta != nil && *snResp.Case.MostLikelyFixEta != "" {
-		mostLikelyFixEta, err := time.Parse(snCreatedOnLayout, *snResp.Case.MostLikelyFixEta)
-		if err != nil {
-			return domain.UpdateCaseResponse{}, fmt.Errorf("sn update case: parse mostLikelyFixEta %q: %w", *snResp.Case.MostLikelyFixEta, err)
-		}
-		resp.Case.MostLikelyFixEta = &mostLikelyFixEta
+		resp.Case.MostLikelyFixEta = snResp.Case.MostLikelyFixEta
 	}
-	// WorstCaseFixEta: Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main), see
-	// snUpdateCasePayload.WorstCaseFixEta doc comment; snResp.Case.WorstCaseFixEta is always
-	// nil until Ballerina echoes it back.
 	if snResp.Case.WorstCaseFixEta != nil && *snResp.Case.WorstCaseFixEta != "" {
-		worstCaseFixEta, err := time.Parse(snCreatedOnLayout, *snResp.Case.WorstCaseFixEta)
-		if err != nil {
-			return domain.UpdateCaseResponse{}, fmt.Errorf("sn update case: parse worstCaseFixEta %q: %w", *snResp.Case.WorstCaseFixEta, err)
-		}
-		resp.Case.WorstCaseFixEta = &worstCaseFixEta
+		resp.Case.WorstCaseFixEta = snResp.Case.WorstCaseFixEta
 	}
 
 	return resp, nil
@@ -1556,11 +1579,12 @@ type snAttachment struct {
 	Name        string  `json:"name"`
 	Type        string  `json:"type"`
 	SizeBytes   int     `json:"sizeBytes"`
-	Description *string `json:"description"`
-	CreatedBy   string  `json:"createdBy"`
-	CreatedOn   string  `json:"createdOn"`
-	DownloadURL *string `json:"downloadUrl"`
-	PreviewURL  *string `json:"previewUrl"`
+	Description       *string `json:"description"`
+	CreatedBy         string  `json:"createdBy"`
+	CreatedByFullName string  `json:"createdByFullName"`
+	CreatedOn         string  `json:"createdOn"`
+	DownloadURL       *string `json:"downloadUrl"`
+	PreviewURL        *string `json:"previewUrl"`
 }
 
 type snSearchAttachmentsResponse struct {
@@ -1614,10 +1638,13 @@ func (s *snCaseService) SearchCaseAttachments(ctx context.Context, req domain.Se
 			Type:          a.Type,
 			SizeBytes:     a.SizeBytes,
 			Description:   a.Description,
-			CreatedBy:     a.CreatedBy,
-			CreatedOn:     createdOn,
-			DownloadURL:   a.DownloadURL,
-			PreviewURL:    a.PreviewURL,
+			CreatedBy: domain.UserRef{
+				Name:  a.CreatedByFullName,
+				Email: a.CreatedBy,
+			},
+			CreatedOn:   createdOn,
+			DownloadURL: a.DownloadURL,
+			PreviewURL:  a.PreviewURL,
 		})
 	}
 

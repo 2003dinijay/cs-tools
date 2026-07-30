@@ -31,6 +31,7 @@ import { buildRecommendationRequestFromCase } from "@features/support/utils/reco
 import { usePostCaseEscalationsSearch } from "@features/support/api/usePostCaseEscalationsSearch";
 import useGetProjectContacts from "@features/settings/api/useGetProjectContacts";
 import useGetUserDetails from "@features/settings/api/useGetUserDetails";
+import { SETTINGS_CUSTOMER_ADMIN_ROLE } from "@features/settings/constants/settingsConstants";
 import {
   getStatusColor,
   resolveColorFromTheme,
@@ -41,6 +42,7 @@ import {
 } from "@features/support/utils/support";
 import {
   CALL_SCHEDULABLE_CASE_STATUSES,
+  ESCALATION_DEESCALATE_CREATOR_ELIGIBLE_LEVELS,
   type CaseStatus,
 } from "@features/support/constants/supportConstants";
 import ErrorIndicator from "@components/error-indicator/ErrorIndicator";
@@ -211,6 +213,23 @@ export default function CaseDetailsContent({
         )?.isLead
       : undefined;
 
+  // De-escalation is allowed at any level (EL1-EL5). At EL4/EL5, only customer
+  // admins and project leads are eligible. At EL1-EL3, users who created an
+  // escalation on this case are also eligible, in addition to admins/leads.
+  const isCurrentUserCsAdmin: boolean | undefined = isUserDetailsLoading
+    ? undefined
+    : (userDetails?.roles ?? []).includes(SETTINGS_CUSTOMER_ADMIN_ROLE);
+  const hasCreatedEscalation =
+    !!userDetails?.email &&
+    !!escalationData?.escalations?.some(
+      (e) => e.createdBy.toLowerCase() === userDetails.email!.toLowerCase(),
+    );
+  const canDeescalate =
+    isCurrentUserCsAdmin === true ||
+    isCurrentUserLead === true ||
+    (ESCALATION_DEESCALATE_CREATOR_ELIGIBLE_LEVELS.has(escalationLevelId) &&
+      hasCreatedEscalation);
+
   const visibleTabs = useMemo(
     () => [
       0,
@@ -380,6 +399,9 @@ export default function CaseDetailsContent({
                     escalationLevelId={hideEscalationTab ? null : escalationLevelId}
                     onEscalateSuccess={() => void refetchEscalations()}
                     isCurrentUserLead={isCurrentUserLead}
+                    isEscalated={!hideEscalationTab && isEscalated}
+                    canDeescalate={!hideEscalationTab && canDeescalate}
+                    onDeescalateSuccess={() => void refetchEscalations()}
                   />
                 )}
               </Box>

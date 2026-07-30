@@ -137,6 +137,18 @@ function commentAuthorName(comment: BeComment): string {
 }
 
 /**
+ * Best-effort email for a {@link BeComment}'s author, so the FE can link the
+ * author name to their profile page. The nested author block's `id` field IS
+ * the user's email (confirmed live: `{"createdBy":{"id":"rashmika@wso2.com",…}}`).
+ * The create-ack's bare-string `createdBy` carries no email, so this is
+ * `undefined` in that case.
+ */
+function commentAuthorEmail(comment: BeComment): string | undefined {
+  const cb = comment.createdBy;
+  return cb && typeof cb === "object" ? cb.id || undefined : undefined;
+}
+
+/**
  * Novera/bot sender detection — mirrors the customer portal's
  * `isNoveraOrBotSender`. Chat messages carry no role field, and the backend
  * normalizes `type` to `comment`/`work_note`/`activity` (a `bot` type never
@@ -189,6 +201,7 @@ export function uiCommentFromBe(
     id: comment.id,
     caseId: comment.referenceId ?? "",
     authorName: commentAuthorName(comment),
+    authorEmail: commentAuthorEmail(comment),
     // For a chatbot the body is Markdown; the bubble renders it as Markdown.
     // Otherwise it is rich-text HTML, sanitised on render.
     bodyHtml: comment.content ?? "",
@@ -209,7 +222,8 @@ export function uiAttachmentFromBe(att: BeAttachment): CaseAttachment {
     filename: att.name,
     size: att.sizeBytes,
     contentType: att.type,
-    uploadedBy: att.createdBy || "Unknown",
+    uploadedBy: att.createdBy.name?.trim() || att.createdBy.email?.trim() || "Unknown",
+    uploadedByEmail: att.createdBy.email || undefined,
     uploadedAt: att.createdOn,
   };
 }

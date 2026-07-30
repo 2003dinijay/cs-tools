@@ -24,7 +24,10 @@ export type RecentViewKind =
   | "project"
   | "account"
   | "search"
-  | "page";
+  | "page"
+  | "incident"
+  | "change_request"
+  | "problem";
 
 const RECENT_VIEW_KINDS: readonly RecentViewKind[] = [
   "case",
@@ -32,6 +35,9 @@ const RECENT_VIEW_KINDS: readonly RecentViewKind[] = [
   "account",
   "search",
   "page",
+  "incident",
+  "change_request",
+  "problem",
 ];
 
 function isRecentViewKind(v: unknown): v is RecentViewKind {
@@ -236,6 +242,40 @@ function writeStorage(entries: RecentView[]): void {
 }
 
 /**
+ * Folds a just-resolved `userid` into the shared `activeUserKey`, migrating
+ * the "pending" bucket the first time a real identity is known. Idempotent —
+ * safe to call from multiple hook instances / render passes for the same
+ * `userid` — and returns whether anything actually changed, so callers can
+ * decide whether a cross-tab-instance notification (`STORAGE_EVENT`) is
+ * warranted.
+ *
+ * Extracted out of {@link useSyncActiveUserKey}'s effect so BOTH the record
+ * (write) path and the read path can force this resolution synchronously,
+ * at the moment they actually need the bucket key, instead of only ever
+ * reacting to whichever component's own effect happens to run first. That
+ * closes the race where a write fires (e.g. `useRecordRecentView`'s
+ * `data`-driven effect) using a still-"pending" `activeUserKey` even though
+ * *this same component instance* already knows the real `userid` — because
+ * the correction previously lived only in a separate, independently-timed
+ * effect elsewhere.
+ */
+function resolveActiveUserKey(userid: string): boolean {
+  if (activeUserKey === userid) return false;
+  // Fold in anything recorded during this session's own pre-resolution
+  // window before switching the active bucket over.
+  if (activeUserKey === null) {
+    migratePendingBucket(userid);
+  }
+  activeUserKey = userid;
+  try {
+    localStorage.setItem(LAST_USER_KEY_STORAGE_KEY, userid);
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
+
+/**
  * Resolves THIS component instance's view of the signed-in user's stable id
  * (ID token `userid` claim) and syncs it into the shared `activeUserKey`, so
  * `currentStorageKey()` resolves to that user's bucket. `activeUserKey` is a
@@ -246,8 +286,13 @@ function writeStorage(entries: RecentView[]): void {
  * sync (or the very first component in a freshly opened tab) could read the
  * still-`null`/"pending" bucket indefinitely, with the real data sitting
  * untouched under the correct per-user key.
+ *
+ * Returns the resolved `userid` (or `undefined` while still resolving/signed
+ * out) so callers that need to act on it *right now* — not just on the next
+ * render after the effect below has had a chance to run — can call
+ * {@link resolveActiveUserKey} themselves with the exact same value.
  */
-function useSyncActiveUserKey(): void {
+function useSyncActiveUserKey(): string | undefined {
   const userid = useIdTokenClaims()?.userid;
 
   useEffect(() => {
@@ -260,25 +305,16 @@ function useSyncActiveUserKey(): void {
     // if this browser has never resolved one) rather than resetting to
     // `null`/"pending" on every render before `userid` is known.
     if (!userid) return;
-    // The cached guess already matched — nothing to correct, no re-render.
-    if (activeUserKey === userid) return;
-    // Fold in anything recorded during this session's own pre-resolution
-    // window before switching the active bucket over.
-    if (activeUserKey === null) {
-      migratePendingBucket(userid);
-    }
-    activeUserKey = userid;
-    try {
-      localStorage.setItem(LAST_USER_KEY_STORAGE_KEY, userid);
-    } catch {
-      /* ignore */
-    }
+    const changed = resolveActiveUserKey(userid);
+    if (!changed) return;
     // Let every `useRecentViews()` instance in this tab — including ones
     // that resolved their own `userid` earlier and are just listening — pick
     // up the now-current bucket immediately, rather than waiting for the
     // next unrelated write to trigger a re-read.
     window.dispatchEvent(new CustomEvent(STORAGE_EVENT));
   }, [userid]);
+
+  return userid;
 }
 
 /**
@@ -293,10 +329,20 @@ export function useSyncRecentViewsIdentity(): void {
 
 /** Read-only access to the recent-views list. */
 export function useRecentViews(): RecentView[] {
-  useSyncActiveUserKey();
+  const userid = useSyncActiveUserKey();
   const [entries, setEntries] = useState<RecentView[]>(() => readStorage());
 
   useEffect(() => {
+    // This instance's own identity just settled (or changed) — force a
+    // synchronous, immediate re-read against the now-correct bucket rather
+    // than waiting on a `STORAGE_EVENT` dispatch from whichever *other*
+    // component's sync effect happens to run first. Covers the case where a
+    // visit was recorded (and the writer's bucket already migrated/resolved)
+    // before this reader's own effect had a chance to fire.
+    if (userid) resolveActiveUserKey(userid);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs to external localStorage state that may have changed underneath this instance while its own identity was still resolving
+    setEntries(readStorage());
+
     const sync = () => setEntries(readStorage());
     window.addEventListener(STORAGE_EVENT, sync);
     window.addEventListener("storage", sync);
@@ -304,7 +350,7 @@ export function useRecentViews(): RecentView[] {
       window.removeEventListener(STORAGE_EVENT, sync);
       window.removeEventListener("storage", sync);
     };
-  }, []);
+  }, [userid]);
 
   return entries;
 }
@@ -316,8 +362,14 @@ export function useRecentViews(): RecentView[] {
 export function useRecordRecentView(): (
   entry: Omit<RecentView, "visitedAt" | "pinned">,
 ) => void {
-  useSyncActiveUserKey();
+  const userid = useSyncActiveUserKey();
   return useCallback((entry: Omit<RecentView, "visitedAt" | "pinned">) => {
+    // Force this write onto the bucket THIS instance already knows is
+    // correct, synchronously, rather than trusting a shared `activeUserKey`
+    // that some other, independently-timed effect may not have committed
+    // yet — see {@link resolveActiveUserKey}'s doc comment for the race this
+    // closes.
+    if (userid) resolveActiveUserKey(userid);
     const now = new Date().toISOString();
     // Title/subtitle/case-hit text ultimately come from backend/customer
     // free text (case subject, account/project name, assignee name) — not
@@ -352,7 +404,11 @@ export function useRecordRecentView(): (
       ...filtered,
     ]);
     writeStorage(next);
-  }, []);
+    // Notified listeners already re-read fresh state on this same event, so
+    // no separate "did the bucket change" signal is needed here — `userid`
+    // is only a dependency so the closure always uses the latest resolved
+    // value (see the call at the top of this callback).
+  }, [userid]);
 }
 
 /**

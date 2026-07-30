@@ -34,6 +34,8 @@ interface AttachmentsFieldProps {
   maxEncodedBytes: number;
   /** Adjusts the hint text only ("At least one required" vs "Optional"). */
   required?: boolean;
+  /** Disables adding/removing files, e.g. while the parent form is submitting. */
+  disabled?: boolean;
 }
 
 /**
@@ -47,6 +49,7 @@ export default function AttachmentsField({
   onError,
   maxEncodedBytes,
   required = false,
+  disabled = false,
 }: AttachmentsFieldProps): JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -98,6 +101,7 @@ export default function AttachmentsField({
           variant="outlined"
           size="small"
           startIcon={<Upload size={16} />}
+          disabled={disabled}
         >
           Add attachments
           <input
@@ -105,6 +109,7 @@ export default function AttachmentsField({
             type="file"
             multiple
             hidden
+            disabled={disabled}
             onChange={(e) => void onAddFiles(e)}
           />
         </Button>
@@ -135,7 +140,12 @@ export default function AttachmentsField({
           <Typography variant="caption" color="text.secondary">
             {formatBytes(a.size)}
           </Typography>
-          <IconButton size="small" aria-label={`Remove ${a.name}`} onClick={() => removeAt(i)}>
+          <IconButton
+            size="small"
+            aria-label={`Remove ${a.name}`}
+            onClick={() => removeAt(i)}
+            disabled={disabled}
+          >
             <X size={16} />
           </IconButton>
         </Box>

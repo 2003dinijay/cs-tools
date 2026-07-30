@@ -48,6 +48,7 @@ var validCaseType = map[string]bool{
 	"case":                     true,
 	"service_request":          true,
 	"security_report_analysis": true,
+	"engagement":               true,
 }
 
 var validEngagementType = map[domain.EngagementType]bool{
@@ -146,9 +147,10 @@ func validateCreateCaseRequest(req domain.CreateCaseRequest) error {
 		if req.Description == "" {
 			return &apierror.ValidationError{Msg: "description is required for security_report_analysis"}
 		}
-		if len(req.Attachments) == 0 {
-			return &apierror.ValidationError{Msg: "at least one attachment is required for security_report_analysis"}
-		}
+		// Attachments are optional here (not backend-enforced by ServiceNow either):
+		// the FE creates the case first, then uploads attachments in a separate
+		// request per file, so a failed attachment upload never masks a
+		// successful case creation.
 		for i, a := range req.Attachments {
 			if a.Name == "" {
 				return &apierror.ValidationError{Msg: fmt.Sprintf("attachments[%d].name is required", i)}
@@ -156,6 +158,16 @@ func validateCreateCaseRequest(req domain.CreateCaseRequest) error {
 			if a.File == "" {
 				return &apierror.ValidationError{Msg: fmt.Sprintf("attachments[%d].file is required", i)}
 			}
+		}
+	case "engagement":
+		if req.Subject == "" {
+			return &apierror.ValidationError{Msg: "subject is required for engagement"}
+		}
+		if req.Description == "" {
+			return &apierror.ValidationError{Msg: "description is required for engagement"}
+		}
+		if !validEngagementType[req.EngagementType] {
+			return &apierror.ValidationError{Msg: "engagementType contains invalid value: " + string(req.EngagementType)}
 		}
 	}
 
@@ -292,10 +304,11 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
-	if len(req.WatchList) > 0 || req.AssigneeEmail != nil || req.FixEta != nil ||
+	if len(req.WatchList) > 0 || req.AssigneeEmail != nil ||
 		req.RelatedCaseID != nil || req.ParentID != nil || req.AutocloseHoldUntil != nil ||
-		req.Subject != nil || req.Description != nil || req.DeploymentID != nil || req.DeployedProductID != nil {
-		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "watchList, assigneeEmail, fixEta, relatedCaseId, parentId, autocloseHoldUntil, subject, description, deploymentId, and deployedProductId are only supported for the ServiceNow data source"}
+		req.Subject != nil || req.Description != nil || req.DeploymentID != nil || req.DeployedProductID != nil ||
+		req.BestCaseFixEta != nil || req.MostLikelyFixEta != nil || req.WorstCaseFixEta != nil {
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "watchList, assigneeEmail, relatedCaseId, parentId, autocloseHoldUntil, subject, description, deploymentId, deployedProductId, bestCaseFixEta, mostLikelyFixEta, and worstCaseFixEta are only supported for the ServiceNow data source"}
 	}
 	fieldCount := 0
 	if req.State != nil {

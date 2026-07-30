@@ -39,6 +39,7 @@ import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import Editor from "@components/rich-text-editor/Editor";
 import { isBlankHtml } from "@utils/sanitizeHtml";
+import { isPastDateTime } from "@utils/dateTime";
 import { usePostChangeRequest } from "@features/csm-operations/api/usePostChangeRequest";
 import { useGetUsersMe } from "@features/settings/api/useGetUsersMe";
 import { useSearchGroups } from "@api/useSearchGroups";
@@ -211,8 +212,6 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const [groupId, setGroupId] = useState("");
   const [assignedEngineerId, setAssignedEngineerId] = useState("");
   const [requestedById, setRequestedById] = useState("");
-  const [comment, setComment] = useState("");
-  const [workNote, setWorkNote] = useState("");
 
   // Defaults "Requested by" to the signed-in user, matching the legacy
   // ServiceNow form's own behaviour (usePostChangeRequest.ts/BE doesn't do
@@ -230,6 +229,10 @@ export default function CreateChangeRequestPage(): JSX.Element {
   }
 
   const canSubmit = subject.trim().length > 0 && !postChangeRequest.isPending;
+  // Non-blocking: a past planned start/end is unusual but not forbidden
+  // (e.g. logging a change that already happened), so this only warns.
+  const plannedStartIsPast = isPastDateTime(parseDateTimeLocal(plannedStartDate));
+  const plannedEndIsPast = isPastDateTime(parseDateTimeLocal(plannedEndDate));
 
   const handleSubmit = (): void => {
     if (!canSubmit) return;
@@ -260,8 +263,6 @@ export default function CreateChangeRequestPage(): JSX.Element {
     if (groupId.trim()) payload.groupId = groupId.trim();
     if (assignedEngineerId.trim()) payload.assignedEngineerId = assignedEngineerId.trim();
     if (requestedById.trim()) payload.requestedById = requestedById.trim();
-    if (comment.trim()) payload.comment = comment.trim();
-    if (workNote.trim()) payload.workNote = workNote.trim();
 
     postChangeRequest.mutate(payload, {
       onSuccess: (created) =>
@@ -445,7 +446,13 @@ export default function CreateChangeRequestPage(): JSX.Element {
                 disabled={postChangeRequest.isPending}
                 sx={{ flex: "1 1 240px" }}
                 slotProps={{
-                  textField: { size: "small", fullWidth: true },
+                  textField: {
+                    size: "small",
+                    fullWidth: true,
+                    helperText: plannedStartIsPast
+                      ? "This date is in the past."
+                      : undefined,
+                  },
                   field: { clearable: true },
                 }}
               />
@@ -463,7 +470,13 @@ export default function CreateChangeRequestPage(): JSX.Element {
                 disabled={postChangeRequest.isPending}
                 sx={{ flex: "1 1 240px" }}
                 slotProps={{
-                  textField: { size: "small", fullWidth: true },
+                  textField: {
+                    size: "small",
+                    fullWidth: true,
+                    helperText: plannedEndIsPast
+                      ? "This date is in the past."
+                      : undefined,
+                  },
                   field: { clearable: true },
                 }}
               />
@@ -480,31 +493,6 @@ export default function CreateChangeRequestPage(): JSX.Element {
               </Typography>
             </AccordionSummary>
             <AccordionDetails sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {/* These map to two different ServiceNow journal fields — mixing
-                  them up would either leak an internal note to the customer or
-                  bury something they were meant to see, so the distinction is
-                  spelled out rather than left to a generic "Comment" label. */}
-              <TextField
-                label="Additional comments (customer-visible)"
-                multiline
-                minRows={2}
-                value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                disabled={postChangeRequest.isPending}
-                fullWidth
-                helperText="Visible to the customer — do not include internal-only details."
-              />
-              <TextField
-                label="Internal work note"
-                multiline
-                minRows={2}
-                value={workNote}
-                onChange={(e) => setWorkNote(e.target.value)}
-                disabled={postChangeRequest.isPending}
-                fullWidth
-                helperText="Internal only — never shown to the customer."
-              />
-
               <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
                 <Box sx={{ flex: "1 1 220px" }}>
                   <AsyncEntitySelect<BeItService>

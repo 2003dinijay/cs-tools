@@ -81,13 +81,14 @@ function detailFromBeCase(
       ? { id: c.relatedCase.id, caseNumber: c.relatedCase.number }
       : undefined,
     parentCase: c.parentCase
-      ? { id: c.parentCase.id, caseNumber: c.parentCase.number }
+      ? { id: c.parentCase.id, caseNumber: c.parentCase.number, type: c.parentCase.type }
       : undefined,
     linkedServiceRequests: c.linkedServiceRequests ?? undefined,
     autoclosureStep: c.autoclosureStep ?? undefined,
     autoclosureStateTime: c.autoclosureStateTime ?? undefined,
     assignee,
     assigneeName,
+    assigneeEmail,
     assigneeIsMe,
     slaClockType: "ack",
     minutesToBreach: 0,
@@ -134,7 +135,6 @@ function detailFromBeCase(
     audit: [],
     attachments: [],
     isWatching: watchers.some((w) => w.isMe),
-    fixEta: c.fixEta ?? null,
     bestCaseFixEta: c.bestCaseFixEta ?? null,
     mostLikelyFixEta: c.mostLikelyFixEta ?? null,
     worstCaseFixEta: c.worstCaseFixEta ?? null,

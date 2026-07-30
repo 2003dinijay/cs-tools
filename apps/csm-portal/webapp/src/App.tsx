@@ -17,7 +17,12 @@
 import { type JSX, lazy } from "react";
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "react-router";
 import AuthGuard from "@layouts/AuthGuard";
-import { isDisabledWipPath, navItemForPath } from "@config/csmNavItems";
+import { SectionIndexRedirect } from "@components/section-tabs/SectionTabs";
+import { navNodeForPath } from "@config/csmNavItems";
+import {
+  featureStateForPath,
+  firstEnabledDestination,
+} from "@config/featureFlags";
 import {
   POST_LOGIN_REDIRECT_KEY,
   PostLoginRedirectConsumer,
@@ -81,6 +86,9 @@ const CsmAdminLayout = lazy(
 const CsmUsersPage = lazy(
   () => import("@features/csm-users/pages/CsmUsersPage"),
 );
+const UserProfilePage = lazy(
+  () => import("@features/csm-users/pages/UserProfilePage"),
+);
 const CsmCustomersLayout = lazy(
   () => import("@features/csm-customers/pages/CsmCustomersLayout"),
 );
@@ -111,6 +119,9 @@ const ProductVulnerabilityDetailPage = lazy(
 const CsmEngagementsPage = lazy(
   () => import("@features/csm-engagements/pages/CsmEngagementsPage"),
 );
+const CsmEngagementCreatePage = lazy(
+  () => import("@features/csm-engagements/pages/CsmEngagementCreatePage"),
+);
 const CsmTimeCardsPage = lazy(
   () => import("@features/csm-timecards/pages/CsmTimeCardsPage"),
 );
@@ -130,17 +141,37 @@ function RootLanding(): JSX.Element | null {
 }
 
 /**
- * Layout guard for WIP sections. When `CSM_PORTAL_DISABLE_WIP_FEATURES` is on, a
- * direct or pinned link to a disabled WIP path (e.g. `/operations`,
- * `/customers`) renders the shared "coming soon" page instead of the unfinished
- * feature — the URL survives and the message matches the nav's "work in
- * progress" tooltip. The same flag disables these items in the nav. Renders the
- * matched route otherwise.
+ * Layout guard honouring the `CSM_PORTAL_FEATURE_OVERRIDES` runtime config, so
+ * a direct, pinned or shared link can't reach a page the deployment restricts.
+ *
+ * A `wip` page renders the shared "coming soon" message in place — the URL
+ * survives and the wording matches the nav's "work in progress" tooltip. The
+ * exception is a page that already renders a more specific unavailable message
+ * of its own (`rendersOwnWipPage`), which is let through rather than downgraded
+ * to the generic one.
+ *
+ * A `hidden` page has no nav entry at all, so there is nothing to stay
+ * consistent with and the link is bounced to the first destination this
+ * deployment does offer. That target is never assumed to exist: a config that
+ * hides everything, or that hides the target itself, falls through to `/404`,
+ * which sits outside this guard and so cannot bounce back here.
+ *
+ * The path resolves to the most specific nav node, so restricting a section
+ * does not restrict a finished tab inside it (and vice versa).
  */
-function WipRouteGuard(): JSX.Element {
+function FeatureRouteGuard(): JSX.Element {
   const { pathname } = useLocation();
-  if (isDisabledWipPath(pathname)) {
-    const label = navItemForPath(pathname)?.label ?? "This section";
+  const node = navNodeForPath(pathname);
+  const state = featureStateForPath(pathname);
+
+  if (state === "hidden") {
+    const fallback = firstEnabledDestination();
+    const samePath = fallback !== undefined && fallback.split(/[?#]/)[0] === pathname;
+    return <Navigate to={!fallback || samePath ? "/404" : fallback} replace />;
+  }
+
+  if (state === "wip" && !node?.rendersOwnWipPage) {
+    const label = node?.label ?? "This section";
     return (
       <CsmComingSoonPage
         title={label}
@@ -148,6 +179,7 @@ function WipRouteGuard(): JSX.Element {
       />
     );
   }
+
   return <Outlet />;
 }
 
@@ -199,7 +231,7 @@ export default function App(): JSX.Element {
               />
 
               <Route element={<AuthGuard />}>
-                <Route element={<WipRouteGuard />}>
+                <Route element={<FeatureRouteGuard />}>
                   <Route path="/" element={<RootLanding />} />
 
                   {/* Customers — Accounts + Projects under one tabbed section.
@@ -208,7 +240,7 @@ export default function App(): JSX.Element {
                   <Route path="customers" element={<CsmCustomersLayout />}>
                     <Route
                       index
-                      element={<Navigate to="/customers/accounts" replace />}
+                      element={<SectionIndexRedirect sectionId="customers" />}
                     />
                     <Route path="accounts" element={<CsmAccountsPage />} />
                     <Route path="projects" element={<CsmProjectsPage />} />
@@ -242,7 +274,10 @@ export default function App(): JSX.Element {
 
                   {/* Administration — Users tab is real, others are WIP */}
                   <Route path="admin" element={<CsmAdminLayout />}>
-                    <Route index element={<Navigate to="/admin/users" replace />} />
+                    <Route
+                      index
+                      element={<SectionIndexRedirect sectionId="admin" />}
+                    />
                     <Route path="users" element={<CsmUsersPage />} />
                     <Route
                       path="roles"
@@ -275,6 +310,15 @@ export default function App(): JSX.Element {
                       }
                     />
                   </Route>
+
+                  {/* Person profile — reachable by clicking any user reference
+                      (case creator, assignee, watchers, comment authors,
+                      attachment uploaders). Not admin-gated: any signed-in CS
+                      engineer can look up any user. */}
+                  <Route
+                    path="people/:email"
+                    element={<UserProfilePage />}
+                  />
 
                   <Route path="dashboard" element={<CsmDashboardPage />} />
                   <Route path="cases" element={<CsmCasesPage />} />
@@ -316,6 +360,7 @@ export default function App(): JSX.Element {
                   />
 
                   <Route path="engagements" element={<CsmEngagementsPage />} />
+                  <Route path="engagements/new" element={<CsmEngagementCreatePage />} />
                   <Route path="engagements/:caseId" element={<CsmCaseDetailPage />} />
                   <Route path="updates" element={<CsmUpdatesPage />} />
                   <Route path="security-center" element={<CsmSecurityCenterPage />} />
@@ -326,6 +371,10 @@ export default function App(): JSX.Element {
                   <Route
                     path="security-center/vulnerabilities/:id"
                     element={<ProductVulnerabilityDetailPage />}
+                  />
+                  <Route
+                    path="security-center/security-reports/:caseId"
+                    element={<CsmCaseDetailPage />}
                   />
                   <Route path="time-cards" element={<CsmTimeCardsPage />} />
                   <Route path="announcements" element={<CsmAnnouncementsPage />} />

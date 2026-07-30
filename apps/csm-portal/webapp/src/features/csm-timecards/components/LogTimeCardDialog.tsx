@@ -51,11 +51,13 @@ import {
   type NormalizedUser,
 } from "@features/csm-users/types/csmUsers";
 import TimeCardStatusChip from "@features/csm-timecards/components/TimeCardStatusChip";
+import type { Severity } from "@features/csm-dashboard/types/abtDashboard";
 import {
   ACTIVITY_BUCKETS,
   DEFAULT_BILLABLE,
   DEFAULT_ISSUE_COMPLEXITY,
   ISSUE_COMPLEXITY_OPTIONS,
+  NON_BILLABLE_SEVERITIES,
   WORK_LOG_MAX,
 } from "@features/csm-timecards/constants/timeCardConstants";
 import type {
@@ -79,6 +81,9 @@ interface LogTimeCardDialogProps {
    * which only a case context can provide). */
   caseId: string;
   caseNumber: string;
+  /** Determines whether the billable switch is editable — see
+   * NON_BILLABLE_SEVERITIES. */
+  caseSeverity: Severity;
   projectId: string;
   projectName: string;
   /** True while the create mutation is in flight. */
@@ -160,6 +165,7 @@ function ActivityRow({
 export default function LogTimeCardDialog({
   caseId,
   caseNumber,
+  caseSeverity,
   projectId,
   projectName,
   isSubmitting,
@@ -168,11 +174,15 @@ export default function LogTimeCardDialog({
 }: LogTimeCardDialogProps): JSX.Element {
   const me = resolveUserInfo(useIdTokenClaims());
 
+  const isAlwaysNonBillable = NON_BILLABLE_SEVERITIES.includes(caseSeverity);
+
   const [date, setDate] = useState(localTodayIso());
   const [issueComplexity, setIssueComplexity] = useState<IssueComplexity>(
     DEFAULT_ISSUE_COMPLEXITY,
   );
-  const [billable, setBillable] = useState<boolean>(DEFAULT_BILLABLE);
+  const [billable, setBillable] = useState<boolean>(
+    isAlwaysNonBillable ? false : DEFAULT_BILLABLE,
+  );
   const [breakdown, setBreakdown] = useState<ActivityBreakdown>(emptyBreakdown());
   const [workLogComment, setWorkLogComment] = useState("");
   const [approver, setApprover] = useState<TimeCardApprover | null>(null);
@@ -381,17 +391,25 @@ export default function LogTimeCardDialog({
                 </MenuItem>
               ))}
             </TextField>
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={billable}
-                  onChange={(e) => setBillable(e.target.checked)}
-                />
-              }
-              label={billable ? "Billable" : "Non-billable"}
-              labelPlacement="start"
-              sx={{ ml: 0 }}
-            />
+            <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={billable}
+                    disabled={isAlwaysNonBillable}
+                    onChange={(e) => setBillable(e.target.checked)}
+                  />
+                }
+                label={billable ? "Billable" : "Non-billable"}
+                labelPlacement="start"
+                sx={{ ml: 0 }}
+              />
+              {isAlwaysNonBillable && (
+                <Typography variant="caption" color="text.secondary">
+                  Always non-billable for {caseSeverity} cases.
+                </Typography>
+              )}
+            </Box>
           </Box>
 
           {/* Work log — rich text, matching ServiceNow's own work-notes

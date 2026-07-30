@@ -169,6 +169,12 @@ export default function AppLayout({ children }: AppLayoutProps): JSX.Element {
   // Path Logic Constants
   const isProjectHub = location.pathname === "/" || location.pathname === "";
   const isPartnerPage = location.pathname.startsWith("/partner/");
+  // Home overview drill-down pages for non-partner users with multiple
+  // projects (see UserGlobalSearch's "View More" links) — same "no sidebar"
+  // treatment as the equivalent partner drill-down pages (/partner/projects,
+  // /partner/cases) above, which isPartnerPage already covers.
+  const isNonPartnerDrilldownPage =
+    location.pathname === "/projects" || location.pathname === "/cases";
 
   const isCaseDetailsPage =
     /\/(?:projects\/[^/]+|[^/]+)\/support\/cases\/[^/]+$/.test(
@@ -238,7 +244,11 @@ export default function AppLayout({ children }: AppLayoutProps): JSX.Element {
             />
           }
           sidebar={
-            !isProjectHub && !isPartnerPage && !hasPortalAccessError && !isErrorPageDisplayed ? (
+            !isProjectHub &&
+            !isPartnerPage &&
+            !isNonPartnerDrilldownPage &&
+            !hasPortalAccessError &&
+            !isErrorPageDisplayed ? (
               <SideBar
                 collapsed={
                   isSidebarOverlay ? false : shellState.sidebarCollapsed

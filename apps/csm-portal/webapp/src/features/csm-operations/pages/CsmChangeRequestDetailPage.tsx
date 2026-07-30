@@ -20,15 +20,38 @@ import {
   Card,
   Chip,
   Skeleton,
+  Tab,
+  Tabs,
+  Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
-import { ArrowLeft, Check, MessageSquarePlus, Pencil, Send, X } from "@wso2/oxygen-ui-icons-react";
-import { type JSX, type ReactNode, useCallback, useMemo, useState } from "react";
+import {
+  ArrowLeft,
+  Check,
+  ClipboardCheck,
+  FileText,
+  MessageSquare,
+  MessageSquarePlus,
+  Paperclip,
+  Pencil,
+  Send,
+  X,
+} from "@wso2/oxygen-ui-icons-react";
+import {
+  type JSX,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {  useParams } from "react-router";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { isBlankHtml, sanitizeRichTextHtml } from "@utils/sanitizeHtml";
+import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useEngineerDisplayName } from "@hooks/useEngineerDisplayName";
+import { useRecordRecentView } from "@features/csm-recent/hooks/useRecentViews";
 import { useGetChangeRequest } from "@features/csm-operations/api/useGetChangeRequest";
 import { usePatchChangeRequest } from "@features/csm-operations/api/usePatchChangeRequest";
 import {
@@ -57,6 +80,17 @@ import type { BeEntityRef } from "@api/backend/types";
 import { useNavTransition } from "@hooks/useNavTransition";
 
 const OPERATIONS_CR_PATH = "/operations?tab=change_requests";
+
+/**
+ * The backend surfaces real rejection reasons on 4xx (e.g. a state
+ * transition rejected by the backing data source); prefer that message over
+ * a generic fallback whenever one is available.
+ */
+function backendErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof BackendApiError && err.status < 500 && err.message
+    ? err.message
+    : fallback;
+}
 
 function formatDateTime(value?: string | null): string {
   return (
@@ -127,6 +161,19 @@ function PlanSection({ title, html }: { title: string; html?: string | null }): 
   );
 }
 
+type ChangeRequestTabId = "approval" | "details" | "comments" | "attachments";
+
+const TAB_DEFS: Array<{
+  id: ChangeRequestTabId;
+  label: string;
+  icon: JSX.Element;
+}> = [
+  { id: "approval", label: "Approval", icon: <ClipboardCheck size={16} /> },
+  { id: "details", label: "Details", icon: <FileText size={16} /> },
+  { id: "comments", label: "Comments", icon: <MessageSquare size={16} /> },
+  { id: "attachments", label: "Attachments", icon: <Paperclip size={16} /> },
+];
+
 /**
  * Read-only detail for a single change request (`GET /change-requests/{id}`):
  * its references, the change window, approval state, and the implementation /
@@ -139,6 +186,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   const { showError } = useErrorBanner();
   const patchCr = usePatchChangeRequest();
   const [editOpen, setEditOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<ChangeRequestTabId>("approval");
   const engineerName = useEngineerDisplayName();
 
   const { data: comments } = useGetCsmChangeRequestComments(id);
@@ -149,6 +197,20 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   const [composerOpen, setComposerOpen] = useState(false);
 
   const attachmentList = useMemo(() => attachments ?? [], [attachments]);
+
+  const recordView = useRecordRecentView();
+  useEffect(() => {
+    if (!data?.id) return;
+    recordView({
+      kind: "change_request",
+      id: data.id,
+      title:
+        [data.number, data.subject].filter((s): s is string => !!s?.trim()).join(" · ") ||
+        "(no subject)",
+      subtitle: data.project?.name,
+      href: `/operations/change-requests/${data.id}`,
+    });
+  }, [data, recordView]);
 
   const onUploadAttachment = useCallback(
     (file: File) => {
@@ -225,14 +287,26 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   // ever modeled today (New -> Assess), but this checks membership rather
   // than hardcoding `cr.state === "new"` so a backend-added transition needs
   // no FE change to show up.
-  const canRequestApproval = !!cr.legalNextStates?.includes("assess");
+  // The state machine alone isn't sufficient: the backing data source also
+  // enforces that an assigned team is set before this transition is allowed,
+  // so require `assignedTeam` too or the request round-trips and fails there.
+  const stateAllowsRequestApproval = !!cr.legalNextStates?.includes("assess");
+  const requestApprovalBlockedReason = stateAllowsRequestApproval && !cr.assignedTeam
+    ? "Set an assigned team before requesting approval"
+    : null;
 
   const requestApproval = (): void => {
     patchCr.mutate(
       { id: cr.id, patch: { requestApproval: true } },
       {
         onError: (err) =>
-          showError("Could not request approval for this change request.", err),
+          showError(
+            backendErrorMessage(
+              err,
+              "Could not request approval for this change request.",
+            ),
+            err,
+          ),
       },
     );
   };
@@ -259,25 +333,47 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
               label={`${changeRequestImpactLabel(cr.impact)} impact`}
             />
           )}
-          {canRequestApproval && (
-            <Button
-              variant="contained"
-              color="primary"
-              size="small"
-              startIcon={<Send size={14} />}
-              onClick={requestApproval}
-              loading={patchCr.isPending}
-              sx={{ ml: "auto", flexShrink: 0 }}
-            >
-              Request approval
-            </Button>
+          {stateAllowsRequestApproval && (
+            requestApprovalBlockedReason ? (
+              <Tooltip title={requestApprovalBlockedReason}>
+                <Box
+                  component="span"
+                  tabIndex={0}
+                  aria-label={`Request approval: ${requestApprovalBlockedReason}`}
+                  sx={{ ml: "auto", flexShrink: 0 }}
+                >
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    size="small"
+                    startIcon={<Send size={14} />}
+                    disabled
+                    sx={{ flexShrink: 0 }}
+                  >
+                    Request approval
+                  </Button>
+                </Box>
+              </Tooltip>
+            ) : (
+              <Button
+                variant="contained"
+                color="primary"
+                size="small"
+                startIcon={<Send size={14} />}
+                onClick={requestApproval}
+                loading={patchCr.isPending}
+                sx={{ ml: "auto", flexShrink: 0 }}
+              >
+                Request approval
+              </Button>
+            )
           )}
           <Button
             variant="outlined"
             size="small"
             startIcon={<Pencil size={14} />}
             onClick={() => setEditOpen(true)}
-            sx={{ ml: canRequestApproval ? 0 : "auto", flexShrink: 0 }}
+            sx={{ ml: stateAllowsRequestApproval ? 0 : "auto", flexShrink: 0 }}
           >
             Edit
           </Button>
@@ -331,127 +427,169 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         </Box>
       </Card>
 
-      <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-        <Typography variant="subtitle2">Approval</Typography>
-        <Box
-          sx={{
-            display: "grid",
-            gap: 2,
-            gridTemplateColumns: {
-              xs: "1fr",
-              sm: "repeat(2, minmax(0, 1fr))",
-              md: "repeat(3, minmax(0, 1fr))",
-            },
-          }}
+      <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+        <Tabs
+          value={activeTab}
+          onChange={(_, v) => setActiveTab(v as ChangeRequestTabId)}
+          variant="scrollable"
+          scrollButtons="auto"
         >
-          <MetaCell label="Customer approved"><YesNo value={cr.hasCustomerApproved} /></MetaCell>
-          <MetaCell label="Customer reviewed"><YesNo value={cr.hasCustomerReviewed} /></MetaCell>
-          <MetaCell label="Approved by"><RefText value={cr.approvedBy} /></MetaCell>
-          <MetaCell label="Approved on">
-            <Typography variant="body2">{formatDateTime(cr.approvedOn)}</Typography>
-          </MetaCell>
+          {TAB_DEFS.map((t) => {
+            // Counts shown only where the tab IS the list (unambiguous) —
+            // mirrors CsmCaseDetailPage's tab-count pattern.
+            const count =
+              t.id === "comments"
+                ? comments?.length
+                : t.id === "attachments"
+                  ? attachmentList.length
+                  : undefined;
+            return (
+              <Tab
+                key={t.id}
+                value={t.id}
+                icon={t.icon}
+                iconPosition="start"
+                label={count ? `${t.label} (${count})` : t.label}
+                sx={{ minHeight: 44, textTransform: "none" }}
+              />
+            );
+          })}
+        </Tabs>
+      </Box>
+
+      {activeTab === "approval" && (
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+            <Typography variant="subtitle2">Approval</Typography>
+            <Box
+              sx={{
+                display: "grid",
+                gap: 2,
+                gridTemplateColumns: {
+                  xs: "1fr",
+                  sm: "repeat(2, minmax(0, 1fr))",
+                  md: "repeat(3, minmax(0, 1fr))",
+                },
+              }}
+            >
+              <MetaCell label="Customer approved"><YesNo value={cr.hasCustomerApproved} /></MetaCell>
+              <MetaCell label="Customer reviewed"><YesNo value={cr.hasCustomerReviewed} /></MetaCell>
+              <MetaCell label="Approved by"><RefText value={cr.approvedBy} /></MetaCell>
+              <MetaCell label="Approved on">
+                <Typography variant="body2">{formatDateTime(cr.approvedOn)}</Typography>
+              </MetaCell>
+            </Box>
+          </Card>
+
+          <ChangeRequestApprovals id={cr.id} />
         </Box>
-      </Card>
+      )}
 
-      <ChangeRequestApprovals id={cr.id} />
+      {activeTab === "details" && (
+        [
+          cr.description,
+          cr.justification,
+          cr.impactDescription,
+          cr.serviceOutage,
+          cr.communicationPlan,
+          cr.rollbackPlan,
+          cr.testPlan,
+        ].some((v) => v && !isBlankHtml(v)) ? (
+          <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2.5 }}>
+            <Typography variant="subtitle2">Details &amp; plans</Typography>
+            <PlanSection title="Description" html={cr.description} />
+            <PlanSection title="Justification" html={cr.justification} />
+            <PlanSection title="Impact description" html={cr.impactDescription} />
+            <PlanSection title="Service outage" html={cr.serviceOutage} />
+            <PlanSection title="Communication plan" html={cr.communicationPlan} />
+            <PlanSection title="Rollback plan" html={cr.rollbackPlan} />
+            <PlanSection title="Test plan" html={cr.testPlan} />
+          </Card>
+        ) : (
+          <Typography variant="body2" color="text.secondary">
+            No details or plans have been recorded for this change request.
+          </Typography>
+        )
+      )}
 
-      {[
-        cr.description,
-        cr.justification,
-        cr.impactDescription,
-        cr.serviceOutage,
-        cr.communicationPlan,
-        cr.rollbackPlan,
-        cr.testPlan,
-      ].some((v) => v && !isBlankHtml(v)) && (
-        <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2.5 }}>
-          <Typography variant="subtitle2">Details &amp; plans</Typography>
-          <PlanSection title="Description" html={cr.description} />
-          <PlanSection title="Justification" html={cr.justification} />
-          <PlanSection title="Impact description" html={cr.impactDescription} />
-          <PlanSection title="Service outage" html={cr.serviceOutage} />
-          <PlanSection title="Communication plan" html={cr.communicationPlan} />
-          <PlanSection title="Rollback plan" html={cr.rollbackPlan} />
-          <PlanSection title="Test plan" html={cr.testPlan} />
+      {activeTab === "comments" && (
+        <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+          {composerOpen ? (
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+              <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <Typography variant="subtitle2">Reply</Typography>
+                <Button
+                  size="small"
+                  variant="text"
+                  color="inherit"
+                  onClick={() => setComposerOpen(false)}
+                >
+                  Cancel
+                </Button>
+              </Box>
+              <CsmCaseCommentInput
+                disabled={!id}
+                publicCommentDisabledReason={changeRequestCommentGateReason(cr.state)}
+                autoFocus
+                onSubmit={async (bodyHtml, internal, commentAttachments) => {
+                  if (!id) return;
+                  const hasText =
+                    bodyHtml.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").trim().length > 0;
+                  if (hasText) {
+                    await postComment.mutateAsync({
+                      changeRequestId: id,
+                      bodyHtml,
+                      internal,
+                    });
+                  }
+                  for (const { file, name } of commentAttachments) {
+                    await postAttachment.mutateAsync({
+                      caseId: id,
+                      file,
+                      name,
+                      uploadedBy: engineerName,
+                      referenceType: "change_request",
+                    });
+                  }
+                  setComposerOpen(false);
+                }}
+              />
+            </Box>
+          ) : (
+            <Button
+              fullWidth
+              variant="outlined"
+              color="inherit"
+              startIcon={<MessageSquarePlus size={18} />}
+              onClick={() => setComposerOpen(true)}
+              sx={{ justifyContent: "flex-start", textTransform: "none", py: 1.5, px: 2 }}
+            >
+              Add a comment…
+            </Button>
+          )}
+          <CaseActivitiesFeed
+            comments={comments ?? []}
+            audit={[]}
+            attachments={[]}
+          />
         </Card>
       )}
 
-      <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-        <Typography variant="subtitle2">Comments</Typography>
-        {composerOpen ? (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <Typography variant="subtitle2">Reply</Typography>
-              <Button
-                size="small"
-                variant="text"
-                color="inherit"
-                onClick={() => setComposerOpen(false)}
-              >
-                Cancel
-              </Button>
-            </Box>
-            <CsmCaseCommentInput
-              disabled={!id}
-              publicCommentDisabledReason={changeRequestCommentGateReason(cr.state)}
-              autoFocus
-              onSubmit={async (bodyHtml, internal, commentAttachments) => {
-                if (!id) return;
-                const hasText =
-                  bodyHtml.replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").trim().length > 0;
-                if (hasText) {
-                  await postComment.mutateAsync({
-                    changeRequestId: id,
-                    bodyHtml,
-                    internal,
-                  });
-                }
-                for (const { file, name } of commentAttachments) {
-                  await postAttachment.mutateAsync({
-                    caseId: id,
-                    file,
-                    name,
-                    uploadedBy: engineerName,
-                    referenceType: "change_request",
-                  });
-                }
-                setComposerOpen(false);
-              }}
-            />
-          </Box>
-        ) : (
-          <Button
-            fullWidth
-            variant="outlined"
-            color="inherit"
-            startIcon={<MessageSquarePlus size={18} />}
-            onClick={() => setComposerOpen(true)}
-            sx={{ justifyContent: "flex-start", textTransform: "none", py: 1.5, px: 2 }}
-          >
-            Add a comment…
-          </Button>
-        )}
-        <CaseActivitiesFeed
-          comments={comments ?? []}
-          audit={[]}
-          attachments={[]}
-        />
-      </Card>
-
-      <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-        <Typography variant="subtitle2">Attachments</Typography>
-        <AttachmentsWidget
-          attachments={attachmentList}
-          uploading={postAttachment.isPending}
-          uploadError={
-            postAttachment.isError
-              ? (postAttachment.error?.message ?? "Could not upload the attachment.")
-              : null
-          }
-          onUpload={onUploadAttachment}
-          onDownload={onDownloadAttachment}
-        />
-      </Card>
+      {activeTab === "attachments" && (
+        <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+          <AttachmentsWidget
+            attachments={attachmentList}
+            uploading={postAttachment.isPending}
+            uploadError={
+              postAttachment.isError
+                ? (postAttachment.error?.message ?? "Could not upload the attachment.")
+                : null
+            }
+            onUpload={onUploadAttachment}
+            onDownload={onDownloadAttachment}
+          />
+        </Card>
+      )}
 
       {editOpen && (
         <EditChangeRequestDialog
@@ -466,7 +604,13 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
               {
                 onSuccess: () => setEditOpen(false),
                 onError: (err) =>
-                  showError("Could not update the change request.", err),
+                  showError(
+                    backendErrorMessage(
+                      err,
+                      "Could not update the change request.",
+                    ),
+                    err,
+                  ),
               },
             )
           }

@@ -27,7 +27,8 @@ export type SubscriptionType =
 
 export interface Project {
   id: string;
-  accountId: string;
+  /** Absent when the project has no linked account. */
+  account?: { id: string; name: string };
   sfId: string;
   name: string;
   // The search endpoint returns this as `key` (not `projectKey`).
@@ -80,6 +81,8 @@ export interface SearchProjectsRequest {
     offset?: number;
   };
   searchQuery?: string;
+  /** Filter to projects belonging to this account (ServiceNow data source only). */
+  accountId?: string;
 }
 
 export interface SearchProjectsResponse {

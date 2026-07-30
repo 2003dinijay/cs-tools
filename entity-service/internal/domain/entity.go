@@ -226,22 +226,24 @@ type SearchAccountsResponse struct {
 // Timestamp fields are kept as strings to accommodate empty values from ServiceNow.
 // SupportTier is returned as a plain label string (no ID).
 type SNAccountView struct {
-	ID               string     `json:"id"`
-	Name             string     `json:"name"`
-	Classification   string     `json:"classification"`
-	Pod              *string    `json:"pod"`
-	Region           *string    `json:"region"`
-	SupportTier      *string    `json:"supportTier"`
-	ArrToday         *string    `json:"arrToday"`
-	TechnicalOwner   *EntityRef `json:"technicalOwner"`
-	Owner            *EntityRef `json:"owner"`
-	ActivationDate   string     `json:"activationDate"`
-	DeactivationDate *string    `json:"deactivationDate"`
-	HasAgent         bool       `json:"hasAgent"`
-	HasKbReferences  bool       `json:"hasKbReferences"`
-	CreatedOn        string     `json:"createdOn"`
-	CreatedBy        *string    `json:"createdBy"`
-	UpdatedOn        string     `json:"updatedOn"`
+	ID                    string     `json:"id"`
+	Name                  string     `json:"name"`
+	Classification        string     `json:"classification"`
+	Pod                   *string    `json:"pod"`
+	SfID                  *string    `json:"sfId"`
+	Region                *string    `json:"region"`
+	SupportTier           *string    `json:"supportTier"`
+	ArrToday              *string    `json:"arrToday"`
+	TechnicalOwner        *PersonRef `json:"technicalOwner"`
+	AccountManager        *PersonRef `json:"accountManager"`
+	RenewalAccountManager *PersonRef `json:"renewalAccountManager"`
+	ActivationDate        string     `json:"activationDate"`
+	DeactivationDate      *string    `json:"deactivationDate"`
+	HasAgent              bool       `json:"hasAgent"`
+	HasKbReferences       bool       `json:"hasKbReferences"`
+	CreatedOn             string     `json:"createdOn"`
+	CreatedBy             *string    `json:"createdBy"`
+	UpdatedOn             string     `json:"updatedOn"`
 }
 
 // SearchSNAccountsResponse is the paginated result of a ServiceNow account search.
@@ -262,22 +264,24 @@ type SNSupportTierRef struct {
 // SNAccountDetail is the full account detail returned by the ServiceNow data source
 // for GET /accounts/{id}. SupportTier is returned as an {id, label} object.
 type SNAccountDetail struct {
-	ID               string            `json:"id"`
-	Name             string            `json:"name"`
-	Classification   string            `json:"classification"`
-	Pod              *string           `json:"pod"`
-	Region           *string           `json:"region"`
-	SupportTier      *SNSupportTierRef `json:"supportTier"`
-	ArrToday         *string           `json:"arrToday"`
-	TechnicalOwner   *EntityRef        `json:"technicalOwner"`
-	Owner            *EntityRef        `json:"owner"`
-	ActivationDate   string            `json:"activationDate"`
-	DeactivationDate *string           `json:"deactivationDate"`
-	HasAgent         bool              `json:"hasAgent"`
-	HasKbReferences  bool              `json:"hasKbReferences"`
-	CreatedOn        string            `json:"createdOn"`
-	CreatedBy        *string           `json:"createdBy"`
-	UpdatedOn        string            `json:"updatedOn"`
+	ID                    string            `json:"id"`
+	Name                  string            `json:"name"`
+	Classification        string            `json:"classification"`
+	Pod                   *string           `json:"pod"`
+	SfID                  *string           `json:"sfId"`
+	Region                *string           `json:"region"`
+	SupportTier           *SNSupportTierRef `json:"supportTier"`
+	ArrToday              *string           `json:"arrToday"`
+	TechnicalOwner        *PersonRef        `json:"technicalOwner"`
+	AccountManager        *PersonRef        `json:"accountManager"`
+	RenewalAccountManager *PersonRef        `json:"renewalAccountManager"`
+	ActivationDate        string            `json:"activationDate"`
+	DeactivationDate      *string           `json:"deactivationDate"`
+	HasAgent              bool              `json:"hasAgent"`
+	HasKbReferences       bool              `json:"hasKbReferences"`
+	CreatedOn             string            `json:"createdOn"`
+	CreatedBy             *string           `json:"createdBy"`
+	UpdatedOn             string            `json:"updatedOn"`
 }
 
 // SubscriptionType classifies the subscription type of a project.
@@ -432,6 +436,10 @@ type SearchProjectsRequest struct {
 	SortBy string `json:"sortBy"`
 	// SortOrder is the sort direction ("asc" or "desc", ServiceNow data source only).
 	SortOrder string `json:"sortOrder"`
+	// AccountID filters to projects belonging to this account. Platform UUID,
+	// converted to the backing data source's internal id before dispatch
+	// (ServiceNow data source only).
+	AccountID string `json:"accountId"`
 }
 
 // ProjectView is the unified search result shape returned for all data sources.
@@ -446,6 +454,8 @@ type ProjectView struct {
 	// for this project (e.g. ServiceNow leaves it blank).
 	EndDate   *time.Time `json:"endDate"`
 	CreatedOn time.Time  `json:"createdOn"`
+	// Account is nil when the project has no linked account (ServiceNow data source only).
+	Account *EntityRef `json:"account"`
 	ProjectClosureFields
 }
 
@@ -965,6 +975,11 @@ type AssignedEngineerRef struct {
 type CaseNumberRef struct {
 	ID     string `json:"id"`
 	Number string `json:"number"`
+	// Type discriminates what kind of record this reference points at
+	// ("case", "incident", "change_request", "problem") -- a task-derived reference
+	// like ParentCase can point at any of these, not just another case. Nil when the
+	// backing data source doesn't resolve a type (ServiceNow data source only).
+	Type *string `json:"type"`
 }
 
 // LinkedServiceRequestRef is a compact reference to a service-request case linked to
@@ -999,6 +1014,17 @@ type UserIDEmailRef struct {
 type EntityRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+// PersonRef is a compact reference to a person (e.g. an account's manager or
+// technical owner), carrying an optional email alongside id/name. Kept
+// separate from EntityRef because EntityRef is also used for many
+// non-person references (projects, deployments, products, catalogs, ...)
+// where an email field would be semantically meaningless.
+type PersonRef struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Email *string `json:"email"`
 }
 
 // DeployedProductRef is a compact reference to a deployed product with a
@@ -1055,18 +1081,18 @@ type CaseView struct {
 	// AutoclosureStateTime is when the auto-closure sequence next advances (e.g. the
 	// "eligible again after" date for a held case). Read-only (ServiceNow data source only).
 	AutoclosureStateTime *time.Time `json:"autoclosureStateTime,omitempty"`
-	// FixEta is the single customer-facing fix-commitment date/time
-	// (ServiceNow u_fix_eta_shared).
-	FixEta *time.Time `json:"fixEta"`
-	// BestCaseFixEta is the internal-only best-case fix-commitment date
-	// (ServiceNow u_best_case_fix_eta). CSM-engineer-facing only.
-	BestCaseFixEta *time.Time `json:"bestCaseFixEta"`
-	// MostLikelyFixEta is the internal-only most-likely fix-commitment date
-	// (ServiceNow u_most_likely_fix_eta). CSM-engineer-facing only.
-	MostLikelyFixEta *time.Time `json:"mostLikelyFixEta"`
-	// WorstCaseFixEta is the internal-only worst-case fix-commitment date
-	// (ServiceNow u_worst_case_fix_eta). CSM-engineer-facing only.
-	WorstCaseFixEta *time.Time `json:"worstCaseFixEta"`
+	// BestCaseFixEta is the internal-only best-case fix-commitment date, as a
+	// date-only "YYYY-MM-DD" string (ServiceNow u_best_case_fix_eta).
+	// CSM-engineer-facing only, never shared with the customer.
+	BestCaseFixEta *string `json:"bestCaseFixEta"`
+	// MostLikelyFixEta is the internal-only most-likely fix-commitment date, as
+	// a date-only "YYYY-MM-DD" string (ServiceNow u_most_likely_fix_eta).
+	// CSM-engineer-facing only, never shared with the customer.
+	MostLikelyFixEta *string `json:"mostLikelyFixEta"`
+	// WorstCaseFixEta is the internal-only worst-case fix-commitment date, as a
+	// date-only "YYYY-MM-DD" string (ServiceNow u_worst_case_fix_eta).
+	// CSM-engineer-facing only, never shared with the customer.
+	WorstCaseFixEta *string `json:"worstCaseFixEta"`
 	// Tags are the free-text labels attached to the case via ServiceNow's generic
 	// platform label/label_entry mechanism (not a case-specific column).
 	//
@@ -1164,11 +1190,15 @@ type SearchCasesResponse struct {
 }
 
 // UpdateCaseRequest is the input for PATCH /cases/{id}.
-// Exactly one of State, Severity, WorkState, WatchList, AssigneeEmail, ParentID, RelatedCaseID,
-// AutocloseHoldUntil, Subject, Description, DeploymentID, DeployedProductID, FixEta,
+// At least one of State, Severity, WorkState, WatchList, AssigneeEmail, ParentID, RelatedCaseID,
+// AutocloseHoldUntil, Subject, Description, DeploymentID, DeployedProductID,
 // BestCaseFixEta, MostLikelyFixEta, or WorstCaseFixEta must be provided.
+// State, Severity, WorkState, WatchList, AssigneeEmail, and ParentID are mutually exclusive of
+// each other and of every other field in this request. RelatedCaseID, AutocloseHoldUntil,
+// Subject, Description, DeploymentID, DeployedProductID, BestCaseFixEta, MostLikelyFixEta, and
+// WorstCaseFixEta may be combined with each other in any subset within a single request.
 // WatchList, AssigneeEmail, ParentID, RelatedCaseID, AutocloseHoldUntil, Subject, Description,
-// DeploymentID, DeployedProductID, FixEta, BestCaseFixEta, MostLikelyFixEta, and WorstCaseFixEta
+// DeploymentID, DeployedProductID, BestCaseFixEta, MostLikelyFixEta, and WorstCaseFixEta
 // are only supported for the ServiceNow data source.
 // ResolutionCode, Cause, and CloseNotes are optional resolution fields only allowed when
 // State is closed or solution_proposed.
@@ -1209,22 +1239,31 @@ type UpdateCaseRequest struct {
 	// converted to the backing data source's internal id before dispatch (ServiceNow data
 	// source only).
 	DeployedProductID *string `json:"deployedProductId"`
-	// FixEta sets the customer-facing fix-commitment date/time (ServiceNow
-	// u_fix_eta_shared). Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina write support exists yet
-	// for this field — see snUpdateCasePayload.FixEta in sn_case_service.go.
-	FixEta *time.Time `json:"fixEta"`
-	// BestCaseFixEta sets the internal-only best-case fix-commitment date (ServiceNow
-	// u_best_case_fix_eta). Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina write support exists
-	// yet for this field — see snUpdateCasePayload.BestCaseFixEta in sn_case_service.go.
-	BestCaseFixEta *time.Time `json:"bestCaseFixEta"`
-	// MostLikelyFixEta sets the internal-only most-likely fix-commitment date (ServiceNow
-	// u_most_likely_fix_eta). Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina write support
-	// exists yet for this field — see snUpdateCasePayload.MostLikelyFixEta in sn_case_service.go.
-	MostLikelyFixEta *time.Time `json:"mostLikelyFixEta"`
-	// WorstCaseFixEta sets the internal-only worst-case fix-commitment date (ServiceNow
-	// u_worst_case_fix_eta). Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina write support exists
-	// yet for this field — see snUpdateCasePayload.WorstCaseFixEta in sn_case_service.go.
-	WorstCaseFixEta *time.Time `json:"worstCaseFixEta"`
+	// BestCaseFixEta sets the internal-only best-case fix-commitment date
+	// (ServiceNow u_best_case_fix_eta), as a date-only "YYYY-MM-DD" string —
+	// see snUpdateCasePayload.BestCaseFixEta in sn_case_service.go.
+	BestCaseFixEta *string `json:"bestCaseFixEta"`
+	// MostLikelyFixEta sets the internal-only most-likely fix-commitment date
+	// (ServiceNow u_most_likely_fix_eta), as a date-only "YYYY-MM-DD" string —
+	// see snUpdateCasePayload.MostLikelyFixEta in sn_case_service.go.
+	MostLikelyFixEta *string `json:"mostLikelyFixEta"`
+	// WorstCaseFixEta sets the internal-only worst-case fix-commitment date
+	// (ServiceNow u_worst_case_fix_eta), as a date-only "YYYY-MM-DD" string —
+	// see snUpdateCasePayload.WorstCaseFixEta in sn_case_service.go.
+	WorstCaseFixEta *string `json:"worstCaseFixEta"`
+	// AddPublicComment, when true and at least one of the 3 fix-ETA fields above is
+	// set in the same request, posts a customer-visible comment summarizing the fix
+	// ETA (built from Product + PublicTicket + the 3 ETA dates), mirroring ServiceNow's
+	// "Share Fix ETA" CWF action. Ignored (no comment posted) when false or omitted,
+	// but the 3 ETA fields still update either way (ServiceNow data source only).
+	AddPublicComment *bool `json:"addPublicComment"`
+	// Product names the product the fix ETA applies to, echoed into the public comment.
+	// Required by ServiceNow when AddPublicComment is true (ServiceNow data source only).
+	Product *string `json:"product"`
+	// PublicTicket is the public-facing ticket/issue reference (e.g. a public GitHub
+	// issue) echoed into the public comment. Required by ServiceNow when
+	// AddPublicComment is true (ServiceNow data source only).
+	PublicTicket *string `json:"publicTicket"`
 }
 
 // UpdateCaseResponse is the response for PATCH /cases/{id}.
@@ -1254,25 +1293,20 @@ type UpdatedCase struct {
 	CloseNotes     *string              `json:"closeNotes,omitempty"`
 	ResolvedOn     *time.Time           `json:"resolvedOn,omitempty"`
 	ParentCase     *CaseNumberRef       `json:"parentCase,omitempty"`
-	// FixEta echoes the updated customer-facing fix-commitment date/time
-	// (u_fix_eta_shared) back on a successful PATCH. Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main) — see
-	// UpdateCaseRequest.FixEta doc comment; always nil until Ballerina supports the write.
-	FixEta *time.Time `json:"fixEta,omitempty"`
-	// BestCaseFixEta echoes the updated internal-only best-case fix-commitment date
-	// (u_best_case_fix_eta) back on a successful PATCH. Ballerina support added on
-	// ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main) — see
-	// UpdateCaseRequest.BestCaseFixEta doc comment; always nil until Ballerina supports the write.
-	BestCaseFixEta *time.Time `json:"bestCaseFixEta,omitempty"`
-	// MostLikelyFixEta echoes the updated internal-only most-likely fix-commitment date
-	// (u_most_likely_fix_eta) back on a successful PATCH. Ballerina support added on
-	// ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main) — see
-	// UpdateCaseRequest.MostLikelyFixEta doc comment; always nil until Ballerina supports the write.
-	MostLikelyFixEta *time.Time `json:"mostLikelyFixEta,omitempty"`
-	// WorstCaseFixEta echoes the updated internal-only worst-case fix-commitment date
-	// (u_worst_case_fix_eta) back on a successful PATCH. Ballerina support added on
-	// ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main) — see
-	// UpdateCaseRequest.WorstCaseFixEta doc comment; always nil until Ballerina supports the write.
-	WorstCaseFixEta *time.Time `json:"worstCaseFixEta,omitempty"`
+	// BestCaseFixEta echoes the updated internal-only best-case fix-commitment
+	// date (u_best_case_fix_eta) back on a successful PATCH, as a date-only
+	// "YYYY-MM-DD" string. Present only when the update set bestCaseFixEta.
+	BestCaseFixEta *string `json:"bestCaseFixEta,omitempty"`
+	// MostLikelyFixEta echoes the updated internal-only most-likely
+	// fix-commitment date (u_most_likely_fix_eta) back on a successful PATCH,
+	// as a date-only "YYYY-MM-DD" string. Present only when the update set
+	// mostLikelyFixEta.
+	MostLikelyFixEta *string `json:"mostLikelyFixEta,omitempty"`
+	// WorstCaseFixEta echoes the updated internal-only worst-case
+	// fix-commitment date (u_worst_case_fix_eta) back on a successful PATCH,
+	// as a date-only "YYYY-MM-DD" string. Present only when the update set
+	// worstCaseFixEta.
+	WorstCaseFixEta *string `json:"worstCaseFixEta,omitempty"`
 }
 
 // WatchListUser is a compact user reference within the watch list.
@@ -1316,7 +1350,8 @@ type CaseAttachment struct {
 // id, number, and internal_id are auto-generated; state defaults to open.
 // CreatedBy is not accepted from the request body and will be wired from auth context later.
 // For type "service_request": catalogId, catalogItemId, and variables are required.
-// For type "security_report_analysis": subject, description, and at least one attachment are required.
+// For type "security_report_analysis": subject and description are required; attachments are optional
+// (uploaded via a separate request after creation, not bundled into this one).
 type CreateCaseRequest struct {
 	CreatedBy         string        `json:"-"`
 	Type              string        `json:"type"`
@@ -1337,6 +1372,8 @@ type CreateCaseRequest struct {
 	WatchList      []string `json:"watchList"`
 	// For security_report_analysis type
 	Attachments []CaseAttachment `json:"attachments"`
+	// For engagement type
+	EngagementType EngagementType `json:"engagementType"`
 }
 
 // CommentType classifies the type of a case comment.
@@ -1586,10 +1623,10 @@ type Attachment struct {
 	Type          string        `json:"type"`
 	SizeBytes     int           `json:"sizeBytes"`
 	Description   *string       `json:"description"`
-	CreatedBy     string        `json:"createdBy"`
+	CreatedBy     UserRef       `json:"createdBy"`
 	CreatedOn     time.Time     `json:"createdOn"`
 	DownloadURL   *string       `json:"downloadUrl"`
-	PreviewURL    *string       `json:"previewUrl"`
+	PreviewURL        *string       `json:"previewUrl"`
 }
 
 // CreateAttachmentRequest is the input for POST /attachments.

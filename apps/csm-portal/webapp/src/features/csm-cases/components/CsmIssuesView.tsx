@@ -35,6 +35,7 @@ import CasesList from "@features/csm-cases/components/CasesList";
 import { useGetCsmCases } from "@features/csm-cases/api/useGetCsmCases";
 import { useDirectoryUsers } from "@api/useDirectoryUsers";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
+import { ALL_CASE_TYPES } from "@features/csm-cases/utils/caseType";
 import {
   DEFAULT_CASES_FILTERS,
   readCasesFiltersFromUrl,
@@ -79,6 +80,10 @@ interface CsmIssuesViewProps {
   showEngagementTypeFilter?: boolean;
   /** Base path for row detail links. Defaults to "/cases". */
   detailBasePath?: string;
+  /** Hide the Severity column in the list (severity is a support-case
+   * concept — SRA and Engagements don't surface it, but the main case list
+   * keeps it). */
+  hideSeverityColumn?: boolean;
 }
 
 /**
@@ -97,6 +102,7 @@ export default function CsmIssuesView({
   hideProjectFilter,
   showEngagementTypeFilter,
   detailBasePath,
+  hideSeverityColumn,
 }: CsmIssuesViewProps): JSX.Element {
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = useMemo<CasesFilters>(
@@ -139,14 +145,31 @@ export default function CsmIssuesView({
   // User filters (debounced search) with the locked overrides applied last so
   // the fixed type/project can't be widened by a stale URL value.
   const queryFilters = useMemo<CasesFilters>(
-    () => ({
-      ...filters,
-      search: debouncedSearch,
-      // The severity control is hidden for non-case lists, so don't let a stale
-      // `severities` value from a shared URL silently filter those results.
-      ...(showSeverityFilter ? {} : { severities: [] }),
-      ...lockedFilters,
-    }),
+    () => {
+      const merged: CasesFilters = {
+        ...filters,
+        search: debouncedSearch,
+        // The severity control is hidden for non-case lists, so don't let a
+        // stale `severities` value from a shared URL silently filter those
+        // results.
+        ...(showSeverityFilter ? {} : { severities: [] }),
+        ...lockedFilters,
+      };
+      // An unlocked, empty type selection means "no type filter applied" from
+      // the FE's perspective (every issue type shown — this is the only
+      // unlocked, multi-type view; every other CsmIssuesView caller locks
+      // `caseTypes` to a single value and hides the control). But
+      // `useGetCsmCases` omits an empty `caseTypes` from the search payload
+      // entirely, and the entity-service defaults an absent/empty `types`
+      // filter to support cases only (`default_case`) rather than "no
+      // restriction" — so an omitted filter silently narrows the result to
+      // one type instead of returning all of them. Send every known type
+      // explicitly in that case so the BE default can't kick in.
+      if (merged.caseTypes.length === 0) {
+        merged.caseTypes = ALL_CASE_TYPES;
+      }
+      return merged;
+    },
     [filters, debouncedSearch, showSeverityFilter, lockedFilters],
   );
 
@@ -269,7 +292,7 @@ export default function CsmIssuesView({
         isLoading={isLoading || isFetching}
         skeletonCount={rowsPerPage}
         detailBasePath={detailBasePath}
-        hideSeverityColumn={isServiceRequestOnly}
+        hideSeverityColumn={isServiceRequestOnly || hideSeverityColumn}
         sortOrder={sortOrder}
         onSortOrderChange={handleSortOrderChange}
       />

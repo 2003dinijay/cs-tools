@@ -16,11 +16,25 @@
 
 export type AccountTier = "basic" | "enterprise";
 
+// A support-tier reference as returned on the account detail view for the
+// backing-data-source-backed shape ({id, label}), vs. a plain label string on
+// the list view. See `tier`/`supportTier` below.
+export interface SupportTierRef {
+  id: string;
+  label: string;
+}
+
 export interface Account {
   id: string;
   sfId: string;
   name: string;
-  tier: AccountTier;
+  // Postgres-backed accounts carry `tier`. Accounts sourced from the
+  // alternate (ServiceNow-shaped) response instead carry `supportTier`,
+  // either as a plain label string (list view) or an `{id, label}` ref
+  // (detail view) — there is only one FE `Account` type today, so both are
+  // modeled here as optional and resolved at the read site.
+  tier?: AccountTier;
+  supportTier?: string | SupportTierRef | null;
   region?: string | null;
   activationDate: string;
   deactivationDate?: string | null;
@@ -28,8 +42,21 @@ export interface Account {
   technicalOwnerId?: string | null;
   agentEnabled: boolean;
   kbReferencesEnabled: boolean;
-  createdAt: string;
-  updatedAt: string;
+  createdOn: string;
+  updatedOn: string;
+}
+
+/**
+ * Resolves the Tier value regardless of which response shape the account
+ * came from: Postgres-backed `tier`, or the alternate-shape `supportTier`
+ * (plain string on the list view, `{id, label}` ref on the detail view).
+ */
+export function resolveAccountTier(
+  account: Pick<Account, "tier" | "supportTier">,
+): string | undefined {
+  if (account.tier) return account.tier;
+  if (typeof account.supportTier === "string") return account.supportTier;
+  return account.supportTier?.label ?? undefined;
 }
 
 export interface SearchAccountsRequest {
@@ -37,7 +64,9 @@ export interface SearchAccountsRequest {
     limit?: number;
     offset?: number;
   };
-  searchQuery?: string;
+  filters?: {
+    searchQuery?: string;
+  };
 }
 
 export interface SearchAccountsResponse {

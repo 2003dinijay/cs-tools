@@ -29,14 +29,12 @@ import {
   ChevronDown,
   Clock,
   Copy,
-  Eye,
   Gauge,
   GitBranch,
   Inbox,
   Link as LinkIcon,
   ListChecks,
   PauseCircle,
-  Phone,
   Pencil,
   Play,
   Send,
@@ -201,21 +199,38 @@ interface SecondaryItem {
  * The "More" overflow lists state-independent actions on a case. Items here
  * map to documented use cases — see `UseCases.md`:
  *   - Reassign engineer              → ISSU-002 (self-assign generalised)
- *   - Manage watchers                → ISSU-018 (PATCH /cases/{id} { watchList }, see WatchersDialog.tsx)
  *   - Hold auto-closure              → ISSU-027 (PATCH /cases/{id} { autocloseHoldUntil }, see SetAutocloseHoldDialog.tsx)
  *   - Edit case details              → subject/description/deployment/deployed product (see EditCaseDetailsDialog.tsx)
- *   - Link to another case           → parent or related case (see LinkCaseDialog.tsx)
- *   - Create incident / link incident → ISSU-021
+ *   - Create incident from case      → ISSU-021 (POST /incidents { parentId }, see
+ *                                       CreateIncidentPage.tsx's read of the nav state)
+ *   - Link to incident               → ISSU-021 (PATCH /cases/{id} { parentId }, see
+ *                                       LinkIncidentDialog.tsx)
  *   - Raise Git issue                → ISSU-020
- *   - Create task                    → ISSU-025 (POST /cases/{caseId}/tasks, see CreateTaskDialog.tsx)
- *   - Set fix ETA                    → PATCH /cases/{id} { fixEta }, see SetFixEtaDialog.tsx
- *   - Request a call                 → ISSU-008 (opens the Call requests tab's create dialog)
+ *   - Create task                    → ISSU-025 (POST /cases/{caseId}/tasks, see CreateTaskDialog.tsx).
+ *                                       Kept here even though a Tasks tab exists: that tab is
+ *                                       still `hidden` in CsmCaseDetailPage's TAB_DEFS, so this
+ *                                       menu item is the only reachable entry point today.
+ *   - Set fix ETA                    → PATCH /cases/{id} { bestCaseFixEta?, mostLikelyFixEta?,
+ *                                       worstCaseFixEta?, addPublicComment?, product?,
+ *                                       publicTicket? } combined in one call, see SetFixEtaDialog.tsx
  *   - Log time                       → ISSU-017
  *   - Change severity                → PATCH /cases/{id} { severity }, already fully
  *                                       backend-supported (see ChangeSeverityDialog.tsx)
  *   - Copy case link                 → ISSU-010 (per-comment + per-case permalinks)
  *
- * Intentionally NOT here:
+ * Intentionally NOT here (removed as duplicate entry points once their target
+ * tab already exposes the same action directly, so there's one way to do each
+ * thing rather than two):
+ *   - Manage watchers   → the Watchers tab does inline add/remove already; the
+ *                          menu item only ever jumped there with no dialog of
+ *                          its own (ISSU-018).
+ *   - Link to another case → the Related tab's "Linked service requests" card
+ *                          has its own "Link to another case…" button wired to
+ *                          the same LinkCaseDialog.
+ *   - Request a call    → the Call requests tab has its own "Create call
+ *                          request" button (CallRequestsWidget.tsx); the menu
+ *                          item only jumped there and auto-opened that same
+ *                          dialog (ISSU-008).
  *   - Open in ServiceNow → this platform replaces ServiceNow; no back-link
  *   - Escalate to lead → withdrawn, no backend flow planned yet
  */
@@ -267,16 +282,6 @@ function buildSecondaryItems(caseDetail: CsmCaseDetail): SecondaryItem[] {
     caseDetail.state,
   );
 
-  // Roadmap items with no backend flow yet: kept visible (so the menu still
-  // advertises what's coming) but disabled with a tooltip explaining why,
-  // rather than clickable and silently no-op'ing or toasting a mock message.
-  // "Hold auto-closure…" belongs here too — it isn't state-gated, it's simply
-  // not built yet, regardless of the case's current state.
-  const NOT_BUILT_YET = "Not available yet — this action is planned but not built.";
-
-  // Only "Create incident from case…" and "Link to incident…" remain
-  // disabled/not-built — every other item below (including "Create task…"
-  // and "Set fix ETA…") is wired up.
   items.push(
     {
       key: "raise_git_issue",
@@ -313,13 +318,6 @@ function buildSecondaryItems(caseDetail: CsmCaseDetail): SecondaryItem[] {
       key: "edit_case_details",
       label: "Edit case details…",
       icon: <Pencil size={16} />,
-      disabled: caseClosed,
-      tooltip: caseClosed ? "This case is closed — it's read-only." : undefined,
-    },
-    {
-      key: "manage_watchers",
-      label: "Manage watchers…",
-      icon: <Eye size={16} />,
       divider: true,
       disabled: caseClosed,
       tooltip: caseClosed ? "This case is closed — it's read-only." : undefined,
@@ -328,19 +326,25 @@ function buildSecondaryItems(caseDetail: CsmCaseDetail): SecondaryItem[] {
       key: "hold_auto_close",
       label: "Hold auto-closure…",
       icon: <PauseCircle size={16} />,
+      divider: true,
       disabled: caseClosed,
       tooltip: caseClosed ? "This case is closed — it's read-only." : undefined,
     },
     {
-      key: "link_case",
-      label: "Link to another case…",
+      key: "create_incident",
+      label: "Create incident from case…",
+      icon: <AlertTriangle size={16} />,
+      disabled: caseClosed,
+      tooltip: caseClosed ? "This case is closed — it's read-only." : undefined,
+    },
+    {
+      key: "link_incident",
+      label: "Link to incident…",
       icon: <LinkIcon size={16} />,
       divider: true,
       disabled: caseClosed,
       tooltip: caseClosed ? "This case is closed — it's read-only." : undefined,
     },
-    { key: "create_incident", label: "Create incident from case…", icon: <AlertTriangle size={16} />, disabled: true, tooltip: NOT_BUILT_YET },
-    { key: "link_incident", label: "Link to incident…", icon: <LinkIcon size={16} />, divider: true, disabled: true, tooltip: NOT_BUILT_YET },
     {
       key: "create_task",
       label: "Create task…",
@@ -353,13 +357,6 @@ function buildSecondaryItems(caseDetail: CsmCaseDetail): SecondaryItem[] {
       label: "Set fix ETA…",
       icon: <CalendarClock size={16} />,
       divider: true,
-      disabled: caseClosed,
-      tooltip: caseClosed ? "This case is closed — it's read-only." : undefined,
-    },
-    {
-      key: "request_call",
-      label: "Request a call…",
-      icon: <Phone size={16} />,
       disabled: caseClosed,
       tooltip: caseClosed ? "This case is closed — it's read-only." : undefined,
     },

@@ -29,6 +29,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type JSX } from "react";
+import { useLocation, useSearchParams } from "react-router";
 
 import { BackendApiError } from "@api/backend/client";
 import AttachmentsField from "@components/attachments/AttachmentsField";
@@ -37,7 +38,7 @@ import {
   type EncodedAttachment,
 } from "@components/attachments/encodeAttachment";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
-import AsyncProjectSelect from "@features/csm-cases/components/AsyncProjectSelect";
+import ProjectSelectionField from "@features/csm-cases/components/ProjectSelectionField";
 import { useSearchDeployments } from "@features/csm-cases/api/useSearchDeployments";
 import { useDeployedProductOptions } from "@features/csm-cases/api/useDeployedProductOptions";
 import { usePostCsmCase } from "@features/csm-cases/api/usePostCsmCase";
@@ -55,14 +56,40 @@ import {
   getUserEditableVariables,
   isAttachmentField,
 } from "@features/csm-operations/utils/catalogVariables";
+import type { CreateServiceRequestFromCaseNavState } from "@features/csm-cases/types/csmCases";
 
 export default function CreateServiceRequestPage(): JSX.Element {
   const navigate = useNavTransition();
   const { showError } = useErrorBanner();
 
-  const [projectId, setProjectId] = useState("");
-  const [deploymentId, setDeploymentId] = useState("");
-  const [deployedProductId, setDeployedProductId] = useState("");
+  // Set when opened from a case's "Create service request" action (Related
+  // tab, Linked service requests card), which navigates here with router
+  // state (not query params) so the case's project/deployment/product carry
+  // over and the new SR is filed linked to that case in one step. See
+  // CsmCaseDetailPage.tsx's "Create service request" button and
+  // CreateRelatedCaseNavState's read in CsmCaseCreatePage.tsx for the
+  // analogous case-create pattern.
+  const relatedCaseState = useLocation().state as
+    | CreateServiceRequestFromCaseNavState
+    | undefined;
+
+  // When opened from a project's page
+  // (`/operations/service-requests/new?projectId=…`), the project is fixed
+  // and shown read-only, mirroring CsmCaseCreatePage's `?projectId=` lock —
+  // the engineer can't accidentally file against the wrong project. Opened
+  // without either source (the operations-list entry), the searchable picker
+  // is shown.
+  const [searchParams] = useSearchParams();
+  const lockedProjectId =
+    searchParams.get("projectId") ?? relatedCaseState?.projectId ?? "";
+  const relatedCaseId = relatedCaseState?.relatedCaseId;
+  const relatedCaseNumber = relatedCaseState?.relatedCaseNumber;
+
+  const [projectId, setProjectId] = useState(lockedProjectId);
+  const [deploymentId, setDeploymentId] = useState(relatedCaseState?.deploymentId ?? "");
+  const [deployedProductId, setDeployedProductId] = useState(
+    relatedCaseState?.deployedProductId ?? "",
+  );
   const [catalogId, setCatalogId] = useState("");
   const [catalogItemId, setCatalogItemId] = useState("");
   // Variable answers, keyed by variable id.
@@ -192,6 +219,7 @@ export default function CreateServiceRequestPage(): JSX.Element {
         catalogId,
         catalogItemId,
         variables: variablePayload,
+        relatedCaseId,
       });
       // The create endpoint doesn't attach files for service requests, so upload
       // them to the new case afterwards. A partial failure still lands the case.
@@ -228,9 +256,14 @@ export default function CreateServiceRequestPage(): JSX.Element {
       >
         Back to operations
       </Button>
-      <Typography variant="h5" sx={{ mb: 2 }}>
+      <Typography variant="h5" sx={{ mb: relatedCaseId ? 0.5 : 2 }}>
         New service request
       </Typography>
+      {relatedCaseId && (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Creating a service request linked to case {relatedCaseNumber ?? "the case"} — its id is carried through automatically.
+        </Typography>
+      )}
 
       <Card variant="outlined" sx={{ p: 3 }}>
         {hasOptionsError && (
@@ -254,9 +287,10 @@ export default function CreateServiceRequestPage(): JSX.Element {
 
         <Grid container spacing={2.5}>
           <Grid size={{ xs: 12, md: 4 }}>
-            <AsyncProjectSelect
+            <ProjectSelectionField
               value={projectId}
               onChange={onProjectChange}
+              lockedProjectId={lockedProjectId}
               required
             />
           </Grid>

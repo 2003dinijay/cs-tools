@@ -14,12 +14,51 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useState, type ComponentProps, type JSX, type ReactElement } from "react";
+import { MemoryRouter } from "react-router";
 import "@testing-library/jest-dom/vitest";
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
 import { formatAbsoluteForUser } from "@utils/dateTime";
-import type { CaseAuditEntry } from "@features/csm-cases/types/csmCases";
+import type {
+  CaseAttachment,
+  CaseAuditEntry,
+} from "@features/csm-cases/types/csmCases";
+
+// `UserRefLink` (used for the attachment uploader and the comment/lifecycle
+// actor) renders a `react-router` `Link`, so every render needs a Router
+// context even outside a full app render.
+function renderWithRouter(ui: ReactElement): ReturnType<typeof render> {
+  return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
+
+// `previewTarget`/`onPreviewTargetChange` (part of the feed's `preview`
+// prop) are lifted to the parent page (see CsmCaseDetailPage) so the
+// preview dialog is shared with the Attachments tab's widget. This harness
+// owns that bit of state locally, standing in for the parent, and keeps the
+// flat `onGetPreviewContent` shape for individual tests below so only this
+// harness needs to know about the grouped `preview` prop.
+function CaseActivitiesFeedHarness({
+  onGetPreviewContent,
+  ...props
+}: Omit<ComponentProps<typeof CaseActivitiesFeed>, "preview"> & {
+  onGetPreviewContent?: (attachment: CaseAttachment) => Promise<Blob>;
+}): JSX.Element {
+  const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(
+    null,
+  );
+  return (
+    <CaseActivitiesFeed
+      {...props}
+      preview={
+        onGetPreviewContent
+          ? { onGetPreviewContent, previewTarget, onPreviewTargetChange: setPreviewTarget }
+          : undefined
+      }
+    />
+  );
+}
 
 describe("CaseActivitiesFeed", () => {
   it("renders a field_change entry with old/new values", () => {
@@ -210,5 +249,111 @@ describe("CaseActivitiesFeed", () => {
     );
 
     expect(screen.getByText("Case moved to In Progress")).toBeInTheDocument();
+  });
+});
+
+describe("CaseActivitiesFeed — attachment preview affordance", () => {
+  const IMAGE_ATTACHMENT: CaseAttachment = {
+    id: "att-1",
+    filename: "screenshot.png",
+    size: 2048,
+    contentType: "image/png",
+    uploadedBy: "Jane Doe",
+    uploadedAt: "2026-01-01T00:00:00Z",
+  };
+  const ZIP_ATTACHMENT: CaseAttachment = {
+    id: "att-2",
+    filename: "logs.zip",
+    size: 8192,
+    contentType: "application/zip",
+    uploadedBy: "Jane Doe",
+    uploadedAt: "2026-01-02T00:00:00Z",
+  };
+
+  beforeEach(() => {
+    // jsdom has no object-URL implementation; stub both so the preview
+    // dialog's blob -> object URL -> revoke lifecycle can run in tests.
+    globalThis.URL.createObjectURL = vi.fn(() => "blob:mock-url");
+    globalThis.URL.revokeObjectURL = vi.fn();
+  });
+
+  it("shows Preview only for an image attachment, when a fetcher is supplied", () => {
+    renderWithRouter(
+      <CaseActivitiesFeedHarness
+        comments={[]}
+        audit={[]}
+        attachments={[IMAGE_ATTACHMENT, ZIP_ATTACHMENT]}
+        onGetPreviewContent={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: `Preview ${IMAGE_ATTACHMENT.filename}` }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: `Preview ${ZIP_ATTACHMENT.filename}` }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides every Preview affordance when no fetcher is supplied", () => {
+    renderWithRouter(
+      <CaseActivitiesFeedHarness
+        comments={[]}
+        audit={[]}
+        attachments={[IMAGE_ATTACHMENT]}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: /^preview /i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("opens the fullscreen preview dialog with the fetched object URL and revokes it on close", async () => {
+    const fetchContent = vi
+      .fn()
+      .mockResolvedValue(new Blob(["fake"], { type: "image/png" }));
+    renderWithRouter(
+      <CaseActivitiesFeedHarness
+        comments={[]}
+        audit={[]}
+        attachments={[IMAGE_ATTACHMENT]}
+        onGetPreviewContent={fetchContent}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `Preview ${IMAGE_ATTACHMENT.filename}` }),
+    );
+
+    expect(fetchContent).toHaveBeenCalledWith(IMAGE_ATTACHMENT);
+    await waitFor(() =>
+      expect(screen.getByAltText(IMAGE_ATTACHMENT.filename)).toBeInTheDocument(),
+    );
+    expect(screen.getByAltText(IMAGE_ATTACHMENT.filename)).toHaveAttribute(
+      "src",
+      "blob:mock-url",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /close preview/i }));
+    await waitFor(() =>
+      expect(globalThis.URL.revokeObjectURL).toHaveBeenCalledWith(
+        "blob:mock-url",
+      ),
+    );
+  });
+
+  it("still shows Download for a non-previewable attachment", () => {
+    const onDownloadAttachment = vi.fn();
+    renderWithRouter(
+      <CaseActivitiesFeedHarness
+        comments={[]}
+        audit={[]}
+        attachments={[ZIP_ATTACHMENT]}
+        onDownloadAttachment={onDownloadAttachment}
+        onGetPreviewContent={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: `Download ${ZIP_ATTACHMENT.filename}` }),
+    ).toBeInTheDocument();
   });
 });

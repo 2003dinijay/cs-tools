@@ -110,6 +110,9 @@ export interface CsmCaseComment {
   id: string;
   caseId: string;
   authorName: string;
+  /** Author's email, when the backend returns one — used to link the author
+   * name to their profile page. */
+  authorEmail?: string;
   authorRole: CsmCommentAuthorRole;
   bodyHtml: string;
   createdAt: string;
@@ -128,6 +131,9 @@ export interface CaseAttachment {
   size: number;
   contentType: string;
   uploadedBy: string;
+  /** Uploader's email, when the backend returns one — used to link the
+   * uploader name to their profile page. */
+  uploadedByEmail?: string;
   uploadedAt: string;
 }
 
@@ -378,6 +384,46 @@ export interface CreateRelatedCaseNavState {
 }
 
 /**
+ * Router (`navigate(..., { state })`) payload carried from a case's "Create
+ * service request" action (Related tab, Linked service requests card) to
+ * `/operations/service-requests/new`, so the create-service-request form can
+ * prefill from the originating case and file the new SR as linked to it in
+ * one step — no separate create-then-link round trip. `projectId` seeds the
+ * form's Project field locked read-only (mirrors
+ * {@link CreateRelatedCaseNavState} / CsmCaseCreatePage.tsx); `deploymentId` /
+ * `deployedProductId` are just starting values and stay fully editable. See
+ * CsmCaseDetailPage.tsx's "Create service request" button and
+ * CreateServiceRequestPage.tsx's read of `useLocation().state`.
+ */
+export interface CreateServiceRequestFromCaseNavState {
+  projectId: string;
+  relatedCaseId: string;
+  relatedCaseNumber?: string;
+  deploymentId?: string;
+  deployedProductId?: string;
+}
+
+/**
+ * Router (`navigate(..., { state })`) payload carried from a case's "Create
+ * incident from case…" action to `/operations/incidents/new`, so the
+ * create-incident form can prefill from the originating case without a
+ * query-string round trip or a full page load. `caseId` seeds the incident's
+ * `parentId` (ServiceNow's generic task-parent reference — the same field
+ * used for the case-to-case/case-to-incident hierarchical link, not the
+ * incident-specific `parentIncidentId`); every field is just a starting
+ * value the form leaves editable. See CsmCaseDetailPage.tsx's
+ * `create_incident` handler and CreateIncidentPage.tsx's read of
+ * `useLocation().state`.
+ */
+export interface CreateIncidentFromCaseNavState {
+  caseId: string;
+  caseNumber?: string;
+  subject?: string;
+  /** Plain text — the case's rich-text description with tags stripped. */
+  description?: string;
+}
+
+/**
  * Full case detail used by the case detail page. Extends the lightweight
  * row type used in lists with all the side-widget data plus a curated set
  * of state-driven primary actions.
@@ -405,9 +451,15 @@ export interface CsmCaseDetail extends CsmCaseRow {
   /**
    * The case, incident, change request, or problem this case is linked to as
    * its parent (the hierarchical major-case/child-case relationship). Absent
-   * when not linked.
+   * when not linked. `type` may still be undefined/null for older data the
+   * backend can't resolve a type for — treat that as "case" (the only type
+   * this link supported before cross-table parents existed).
    */
-  parentCase?: { id: string; caseNumber?: string };
+  parentCase?: {
+    id: string;
+    caseNumber?: string;
+    type?: "case" | "incident" | "change_request" | "problem" | null;
+  };
   /**
    * Service-request cases whose parent points to this case. Populated on
    * every case detail response, not just high-severity cases.
@@ -422,18 +474,21 @@ export interface CsmCaseDetail extends CsmCaseRow {
   /** When the auto-closure sequence next advances (ServiceNow only). Read-only. */
   autoclosureStateTime?: string;
   /**
-   * The customer-facing fix-commitment date/time for the case; `null`/absent
-   * when not set. Distinct from the backend-computed SLA clocks shown in
-   * {@link CaseSla} — this is a settable commitment, not a derived clock. Also
-   * distinct from the three internal-only estimates below, which are never
-   * shared with the customer.
+   * Internal-only best-case fix estimate, as a date-only "YYYY-MM-DD"
+   * string; `null`/absent when not set. Never shared with the customer.
+   * Distinct from the backend-computed SLA clocks shown in {@link CaseSla} —
+   * these are settable commitments, not derived clocks.
    */
-  fixEta?: string | null;
-  /** Internal-only best-case fix estimate; `null`/absent when not set. */
   bestCaseFixEta?: string | null;
-  /** Internal-only most-likely fix estimate; `null`/absent when not set. */
+  /**
+   * Internal-only most-likely fix estimate, as a date-only "YYYY-MM-DD"
+   * string; `null`/absent when not set.
+   */
   mostLikelyFixEta?: string | null;
-  /** Internal-only worst-case fix estimate; `null`/absent when not set. */
+  /**
+   * Internal-only worst-case fix estimate, as a date-only "YYYY-MM-DD"
+   * string; `null`/absent when not set.
+   */
   worstCaseFixEta?: string | null;
   /** Display name of the person who opened the case. */
   createdBy?: string;
@@ -446,6 +501,9 @@ export interface CsmCaseDetail extends CsmCaseRow {
    * against that fallback.
    */
   assigneeName?: string;
+  /** Email of the assigned engineer, when the data source returns one — used
+   * to link the assignee name to their profile page. */
+  assigneeEmail?: string;
   customerContext: CaseCustomerContext;
   productContext: CaseProductContext;
   watchers: CaseWatcher[];
