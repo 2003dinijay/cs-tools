@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { useCallback, useMemo, useRef, useState, type ChangeEvent, type JSX } from "react";
+import { useCallback, useMemo, useState, type ChangeEvent, type JSX } from "react";
 import {
   AdapterDateFns,
   Box,
@@ -341,17 +341,17 @@ export default function CsmTimeCardsPage(): JSX.Element {
   const [projectNameCache, setProjectNameCache] = useState<Map<string, string>>(
     () => new Map(),
   );
-  const lastSeenCardsRef = useRef<{
+  const [lastSeenCards, setLastSeenCards] = useState<{
     mine?: typeof myCards.data;
     all?: typeof allCards.data;
     queue?: typeof queue.data;
-  }>({});
+  }>(() => ({}));
   if (
-    lastSeenCardsRef.current.mine !== myCards.data ||
-    lastSeenCardsRef.current.all !== allCards.data ||
-    lastSeenCardsRef.current.queue !== queue.data
+    lastSeenCards.mine !== myCards.data ||
+    lastSeenCards.all !== allCards.data ||
+    lastSeenCards.queue !== queue.data
   ) {
-    lastSeenCardsRef.current = { mine: myCards.data, all: allCards.data, queue: queue.data };
+    setLastSeenCards({ mine: myCards.data, all: allCards.data, queue: queue.data });
     const learned = [
       ...projectNamesIn(myCards.data?.cards),
       ...projectNamesIn(allCards.data?.cards),
