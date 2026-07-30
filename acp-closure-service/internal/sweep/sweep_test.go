@@ -466,3 +466,80 @@ func TestProcessProject_InternalNoticeHasEmptyRecipientWhenNoAccountManager(t *t
 		t.Errorf("internal notice Recipient = %q, want \"\" (no account manager assigned)", got)
 	}
 }
+
+// TestShouldSuppressInternalNotice covers the pure suppression predicate
+// directly. The "recipients differ" case isn't reachable through the wired
+// system today (the AM-nudge recipient is always sourced from the same
+// amEmail as the internal notice — there is no independent source for it),
+// but the predicate must still handle it correctly should that ever change.
+func TestShouldSuppressInternalNotice(t *testing.T) {
+	tests := []struct {
+		name              string
+		internalRecipient string
+		nudgeRecipient    string
+		want              bool
+	}{
+		{
+			name:              "same non-empty recipient: suppress",
+			internalRecipient: "am@wso2.example",
+			nudgeRecipient:    "am@wso2.example",
+			want:              true,
+		},
+		{
+			name:              "different recipients: do not suppress",
+			internalRecipient: "am@wso2.example",
+			nudgeRecipient:    "other@wso2.example",
+			want:              false,
+		},
+		{
+			name:              "both empty: do not suppress (not a real duplicate, and suppressing would hide debug visibility)",
+			internalRecipient: "",
+			nudgeRecipient:    "",
+			want:              false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldSuppressInternalNotice(tt.internalRecipient, tt.nudgeRecipient); got != tt.want {
+				t.Errorf("shouldSuppressInternalNotice(%q, %q) = %v, want %v",
+					tt.internalRecipient, tt.nudgeRecipient, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestProcessProject_SuppressesInternalNoticeWhenNudgeGoesToSameRealRecipient
+// covers the real, reachable scenario: a customer-audience window, a
+// resolved (non-empty) real Account Manager email, and no business/primary
+// contact found. The Account Manager must receive exactly one notice
+// (am_nudge) — not both that and a separate internal notice about the same
+// window in the same run.
+func TestProcessProject_SuppressesInternalNoticeWhenNudgeGoesToSameRealRecipient(t *testing.T) {
+	reader := &mockEntityReader{
+		getAccountFn: func(ctx context.Context, id string) ([]byte, error) {
+			return []byte(`{"accountManager": {"id": "am-1", "name": "Rukshan Kuruppu", "email": "rukshan@wso2.example"}}`), nil
+		},
+	}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{}
+
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	endDate := now.AddDate(0, 0, 6) // fires the 7-day (customer-audience) window
+	proj := project{ID: "p1", Account: &projectAccountRef{ID: "a1"}, EndDate: &endDate}
+
+	err := processProject(context.Background(), reader, updater, ntf, now, proj)
+	if err != nil {
+		t.Fatalf("processProject() error = %v, want nil", err)
+	}
+
+	if len(ntf.sent) != 1 {
+		t.Fatalf("ntf.sent = %d, want 1 (only am_nudge; internal suppressed)", len(ntf.sent))
+	}
+	if ntf.sent[0].Kind != notify.KindAMNudge {
+		t.Errorf("Kind = %v, want %v", ntf.sent[0].Kind, notify.KindAMNudge)
+	}
+	if ntf.sent[0].Recipient != "rukshan@wso2.example" {
+		t.Errorf("Recipient = %q, want %q", ntf.sent[0].Recipient, "rukshan@wso2.example")
+	}
+}

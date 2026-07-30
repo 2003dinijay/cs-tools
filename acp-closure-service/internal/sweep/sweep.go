@@ -86,24 +86,25 @@ func needsCustomerAudience(window closure.NoticeWindow) bool {
 // notifyForWindow sends the internal (Account Manager) notice — due for
 // every firing window — and, only when the audience matrix calls for it,
 // the customer-facing notice (or the distinct AM-nudge email when no
-// customer contact resolves).
+// customer contact resolves). If the AM-nudge would reach the exact same
+// recipient as the internal notice, the internal notice is suppressed
+// entirely — the Account Manager gets only the nudge, not both, for the
+// same window in the same run (see shouldSuppressInternalNotice).
 func notifyForWindow(ctx context.Context, reader entityReader, ntf notifier, proj project, window closure.NoticeWindow) error {
 	amEmail, err := resolveAccountManagerEmail(ctx, reader, proj.accountID())
 	if err != nil {
 		return fmt.Errorf("resolve AM email: %w", err)
 	}
 
-	if err := ntf.Send(ctx, notify.Notice{
+	internalNotice := notify.Notice{
 		Kind:      notify.KindInternal,
 		Window:    window,
 		ProjectID: proj.ID,
 		Recipient: amEmail,
-	}); err != nil {
-		return fmt.Errorf("send internal notice: %w", err)
 	}
 
 	if !needsCustomerAudience(window) {
-		return nil
+		return ntf.Send(ctx, internalNotice)
 	}
 
 	projectContacts, accountContacts, err := fetchContacts(ctx, reader, proj)
@@ -113,13 +114,23 @@ func notifyForWindow(ctx context.Context, reader entityReader, ntf notifier, pro
 	resolution := recipients.ResolveCustomerContact(projectContacts, accountContacts)
 
 	if resolution.NeedsAMNudge {
-		return ntf.Send(ctx, notify.Notice{
+		nudgeNotice := notify.Notice{
 			Kind:        notify.KindAMNudge,
 			Window:      window,
 			ProjectID:   proj.ID,
 			Recipient:   amEmail,
 			ResolvedVia: resolution.ResolvedVia,
-		})
+		}
+		if !shouldSuppressInternalNotice(internalNotice.Recipient, nudgeNotice.Recipient) {
+			if err := ntf.Send(ctx, internalNotice); err != nil {
+				return fmt.Errorf("send internal notice: %w", err)
+			}
+		}
+		return ntf.Send(ctx, nudgeNotice)
+	}
+
+	if err := ntf.Send(ctx, internalNotice); err != nil {
+		return fmt.Errorf("send internal notice: %w", err)
 	}
 
 	return ntf.Send(ctx, notify.Notice{
@@ -129,6 +140,17 @@ func notifyForWindow(ctx context.Context, reader entityReader, ntf notifier, pro
 		Recipient:   resolution.CustomerContact.Email,
 		ResolvedVia: resolution.ResolvedVia,
 	})
+}
+
+// shouldSuppressInternalNotice reports whether the internal (Account
+// Manager) notice should be skipped in favor of sending only the AM-nudge
+// notice — true exactly when both would reach the identical, non-empty
+// recipient. Two empty recipients are deliberately NOT treated as a match:
+// there is no real person being double-emailed in that case, only two log
+// lines about an unresolved account, and suppressing would just hide useful
+// debug visibility for no benefit.
+func shouldSuppressInternalNotice(internalRecipient, nudgeRecipient string) bool {
+	return internalRecipient != "" && internalRecipient == nudgeRecipient
 }
 
 // resolveAccountManagerEmail fetches the account and extracts its Account
