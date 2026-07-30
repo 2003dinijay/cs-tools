@@ -29,6 +29,7 @@ import {
   ArrowLeft,
   Check,
   ClipboardCheck,
+  CopyPlus,
   FileText,
   MessageSquare,
   MessageSquarePlus,
@@ -62,6 +63,7 @@ import ChangeRequestApprovals from "@features/csm-operations/components/ChangeRe
 import EditChangeRequestDialog from "@features/csm-operations/components/EditChangeRequestDialog";
 import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
 import {
+  buildCloneChangeRequestNavState,
   changeRequestCommentGateReason,
   changeRequestImpactColor,
   changeRequestImpactLabel,
@@ -316,6 +318,19 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
     );
   };
 
+  // Opens the create form pre-filled from this record, so promoting the same
+  // change to another environment doesn't mean re-typing every field. Router
+  // state (not a query string) carries the values across — same pattern as
+  // "Create incident from case" — and the result is a new, independent change
+  // request: nothing here links it back to `cr`. See
+  // buildCloneChangeRequestNavState's doc comment for exactly which fields
+  // can and can't be carried over today.
+  const cloneChangeRequest = (): void => {
+    navigate("/operations/change-requests/new", {
+      state: buildCloneChangeRequestNavState(cr),
+    });
+  };
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
       {BackButton}
@@ -376,9 +391,18 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
           <Button
             variant="outlined"
             size="small"
+            startIcon={<CopyPlus size={14} />}
+            onClick={cloneChangeRequest}
+            sx={{ ml: stateAllowsRequestApproval ? 0 : "auto", flexShrink: 0 }}
+          >
+            Clone
+          </Button>
+          <Button
+            variant="outlined"
+            size="small"
             startIcon={<Pencil size={14} />}
             onClick={() => setEditOpen(true)}
-            sx={{ ml: stateAllowsRequestApproval ? 0 : "auto", flexShrink: 0 }}
+            sx={{ flexShrink: 0 }}
           >
             Edit
           </Button>
