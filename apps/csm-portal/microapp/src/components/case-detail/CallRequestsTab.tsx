@@ -337,7 +337,7 @@ function CreateCallRequestDialog({
       open
       onClose={onClose}
       slots={{ paper: DialogPaper }}
-      slotProps={{ paper: { sx: { bgcolor: "background.paper", p: 1.5, gap: 2, m: 2 } } }}
+      slotProps={{ paper: { sx: { bgcolor: "background.default", p: 1.5, gap: 2, m: 2 } } }}
     >
       <Typography variant="h6" fontWeight={650}>
         Request a call
@@ -449,7 +449,7 @@ function ScheduleCallDialog({
       open={!!callRequest}
       onClose={onClose}
       slots={{ paper: DialogPaper }}
-      slotProps={{ paper: { sx: { bgcolor: "background.paper", p: 1.5, gap: 2, m: 2 } } }}
+      slotProps={{ paper: { sx: { bgcolor: "background.default", p: 1.5, gap: 2, m: 2 } } }}
     >
       <Typography variant="h6" fontWeight={650}>
         {isReschedule ? "Reschedule call" : "Schedule call"}
@@ -537,7 +537,7 @@ function RejectCallDialog({
       open={!!callRequest}
       onClose={onClose}
       slots={{ paper: DialogPaper }}
-      slotProps={{ paper: { sx: { bgcolor: "background.paper", p: 1.5, gap: 2, m: 2 } } }}
+      slotProps={{ paper: { sx: { bgcolor: "background.default", p: 1.5, gap: 2, m: 2 } } }}
     >
       <Typography variant="h6" fontWeight={650}>
         Reject call request
@@ -607,7 +607,7 @@ function CancelCallDialog({
       open={!!callRequest}
       onClose={onClose}
       slots={{ paper: DialogPaper }}
-      slotProps={{ paper: { sx: { bgcolor: "background.paper", p: 1.5, gap: 2, m: 2 } } }}
+      slotProps={{ paper: { sx: { bgcolor: "background.default", p: 1.5, gap: 2, m: 2 } } }}
     >
       <Typography variant="h6" fontWeight={650}>
         Cancel call request
@@ -698,7 +698,7 @@ function SendCallNotesDialog({
       open={!!callRequest}
       onClose={onClose}
       slots={{ paper: DialogPaper }}
-      slotProps={{ paper: { sx: { bgcolor: "background.paper", p: 1.5, gap: 2, m: 2 } } }}
+      slotProps={{ paper: { sx: { bgcolor: "background.default", p: 1.5, gap: 2, m: 2 } } }}
     >
       <Typography variant="h6" fontWeight={650}>
         Send call notes
