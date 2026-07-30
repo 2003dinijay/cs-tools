@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useCallback, useMemo, useRef, useState, type ChangeEvent, type JSX } from "react";
 import {
   AdapterDateFns,
   Box,
@@ -333,32 +333,39 @@ export default function CsmTimeCardsPage(): JSX.Element {
   // otherwise drop a selected project's name the moment the newly active
   // tab's own cards don't happen to include it — or are empty — leaving the
   // chip showing a raw id until the dropdown is reopened and re-searched.
+  //
+  // Reconciled during render (React's "adjusting state when data changes"
+  // pattern: https://react.dev/reference/react/useState#storing-information-from-previous-renders)
+  // rather than in an effect, so a fresh name is available in the same
+  // render the data arrived in instead of one render later.
   const [projectNameCache, setProjectNameCache] = useState<Map<string, string>>(
     () => new Map(),
   );
-  useEffect(() => {
+  const lastSeenCardsRef = useRef<{
+    mine?: typeof myCards.data;
+    all?: typeof allCards.data;
+    queue?: typeof queue.data;
+  }>({});
+  if (
+    lastSeenCardsRef.current.mine !== myCards.data ||
+    lastSeenCardsRef.current.all !== allCards.data ||
+    lastSeenCardsRef.current.queue !== queue.data
+  ) {
+    lastSeenCardsRef.current = { mine: myCards.data, all: allCards.data, queue: queue.data };
     const learned = [
       ...projectNamesIn(myCards.data?.cards),
       ...projectNamesIn(allCards.data?.cards),
       ...projectNamesIn(queue.data?.cards),
     ];
-    if (learned.length === 0) return;
-    // This accumulates names across tab switches and can't be expressed as a
-    // pure derivation, since a tab's own current data is exactly what would
-    // otherwise be lost.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setProjectNameCache((prev) => {
-      let changed = false;
-      const next = new Map(prev);
-      for (const [id, name] of learned) {
-        if (next.get(id) !== name) {
-          next.set(id, name);
-          changed = true;
-        }
+    let next: Map<string, string> | undefined;
+    for (const [id, name] of learned) {
+      if (projectNameCache.get(id) !== name) {
+        next ??= new Map(projectNameCache);
+        next.set(id, name);
       }
-      return changed ? next : prev;
-    });
-  }, [myCards.data, allCards.data, queue.data]);
+    }
+    if (next) setProjectNameCache(next);
+  }
   const allEngineerOptions = useMemo(
     () => engineerOptionsFrom(allCards.data?.cards),
     [allCards.data],
