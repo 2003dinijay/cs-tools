@@ -29,7 +29,8 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useCallback, useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useSearchParams } from "react-router";
 import { useNavTransition } from "@hooks/useNavTransition";
 import QueryErrorState from "@components/QueryErrorState";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
@@ -43,6 +44,11 @@ import {
   DEFAULT_CR_FILTERS,
   type ChangeRequestFilters,
 } from "@features/csm-operations/utils/changeRequests";
+import {
+  CR_FILTER_PARAM_KEYS,
+  readChangeRequestFiltersFromUrl,
+  writeChangeRequestFiltersToUrl,
+} from "@features/csm-operations/utils/changeRequestsFiltersUrl";
 import ChangeRequestsFilterBar from "@features/csm-operations/components/ChangeRequestsFilterBar";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
@@ -75,7 +81,11 @@ function toISOEnd(date: string): string {
  */
 export default function ChangeRequestsTab(): JSX.Element {
   const navigate = useNavTransition();
-  const [filters, setFilters] = useState<ChangeRequestFilters>(DEFAULT_CR_FILTERS);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filters = useMemo<ChangeRequestFilters>(
+    () => readChangeRequestFiltersFromUrl(searchParams),
+    [searchParams],
+  );
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
@@ -105,14 +115,28 @@ export default function ChangeRequestsTab(): JSX.Element {
   const changeRequests = data?.changeRequests ?? [];
   const total = data?.total ?? 0;
 
+  const setFilters = useCallback(
+    (next: ChangeRequestFilters) => {
+      setPage(0);
+      // Preserve any non-filter params (e.g. the active operations tab) and
+      // any other tab's own filter params (e.g. the incidents tab's), rather
+      // than resetting the whole query string.
+      const merged = new URLSearchParams(searchParams);
+      CR_FILTER_PARAM_KEYS.forEach((k) => merged.delete(k));
+      writeChangeRequestFiltersToUrl(next).forEach((v, k) => merged.set(k, v));
+      // `replace: true` so switching tabs / paging doesn't spam browser
+      // history — same rationale as the shared cases list view.
+      setSearchParams(merged, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
   const handleFiltersChange = (next: ChangeRequestFilters): void => {
     setFilters(next);
-    setPage(0);
   };
 
   const handleReset = (): void => {
     setFilters(DEFAULT_CR_FILTERS);
-    setPage(0);
   };
 
   const handleChangeRowsPerPage = (e: ChangeEvent<HTMLInputElement>): void => {

@@ -29,7 +29,8 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useCallback, useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useSearchParams } from "react-router";
 import { useNavTransition } from "@hooks/useNavTransition";
 import QueryErrorState from "@components/QueryErrorState";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
@@ -43,6 +44,11 @@ import {
   incidentStateLabel,
   type IncidentFilters,
 } from "@features/csm-operations/utils/incidents";
+import {
+  INCIDENT_FILTER_PARAM_KEYS,
+  readIncidentFiltersFromUrl,
+  writeIncidentFiltersToUrl,
+} from "@features/csm-operations/utils/incidentsFiltersUrl";
 import IncidentsFilterBar from "@features/csm-operations/components/IncidentsFilterBar";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
@@ -66,7 +72,11 @@ function formatDate(value?: string | null): string {
  */
 export default function IncidentsTab(): JSX.Element {
   const navigate = useNavTransition();
-  const [filters, setFilters] = useState<IncidentFilters>(DEFAULT_INCIDENT_FILTERS);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filters = useMemo<IncidentFilters>(
+    () => readIncidentFiltersFromUrl(searchParams),
+    [searchParams],
+  );
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
@@ -89,14 +99,28 @@ export default function IncidentsTab(): JSX.Element {
   const incidents = data?.incidents ?? [];
   const total = data?.total ?? 0;
 
+  const setFilters = useCallback(
+    (next: IncidentFilters) => {
+      setPage(0);
+      // Preserve any non-filter params (e.g. the active operations tab) and
+      // any other tab's own filter params (e.g. the change-requests tab's),
+      // rather than resetting the whole query string.
+      const merged = new URLSearchParams(searchParams);
+      INCIDENT_FILTER_PARAM_KEYS.forEach((k) => merged.delete(k));
+      writeIncidentFiltersToUrl(next).forEach((v, k) => merged.set(k, v));
+      // `replace: true` so switching tabs / paging doesn't spam browser
+      // history — same rationale as the shared cases list view.
+      setSearchParams(merged, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
   const handleFiltersChange = (next: IncidentFilters): void => {
     setFilters(next);
-    setPage(0);
   };
 
   const handleReset = (): void => {
     setFilters(DEFAULT_INCIDENT_FILTERS);
-    setPage(0);
   };
 
   const handleChangeRowsPerPage = (e: ChangeEvent<HTMLInputElement>): void => {
