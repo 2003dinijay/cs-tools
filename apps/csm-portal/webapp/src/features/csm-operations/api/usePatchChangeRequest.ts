@@ -33,8 +33,17 @@ export interface PatchChangeRequestInput {
 
 /**
  * Update a change request via `PATCH /change-requests/{id}` (ServiceNow data
- * source only). The BE requires at least one field in `patch`. On success the
- * detail and any cached list/search are invalidated so the new values show.
+ * source only). The BE requires at least one field in `patch`.
+ *
+ * The detail and any cached list/search are invalidated on both success
+ * *and* error (`onSettled`, not just `onSuccess`): a state-changing patch
+ * (e.g. `requestApproval`) can commit upstream and still be reported back as
+ * an error — a response-parsing failure on a slim success receipt has done
+ * exactly this. Trusting a cached "unchanged" record after such an error is
+ * what lets a state-gated action (like Request approval) look re-enabled
+ * when the record has actually already moved on; refetching after every
+ * attempt keeps the next pre-flight check honest regardless of which side
+ * of that ambiguity a given failure falls on.
  */
 export function usePatchChangeRequest(): UseMutationResult<
   BePatchChangeRequestResponse,
@@ -54,7 +63,7 @@ export function usePatchChangeRequest(): UseMutationResult<
         `/change-requests/${encodeURIComponent(input.id)}`,
         input.patch,
       ),
-    onSuccess: (_data, variables) => {
+    onSettled: (_data, _error, variables) => {
       void queryClient.invalidateQueries({
         queryKey: [ApiQueryKeys.CHANGE_REQUEST_DETAILS, variables.id],
       });
