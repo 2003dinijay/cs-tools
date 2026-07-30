@@ -33,9 +33,11 @@ const INCIDENT_SEARCH_LIMIT = 20;
  * result shape used by `IncidentsTab`; this wraps the same endpoint in the
  * `(query, enabled) => {data, isFetching, isError}` shape `AsyncEntitySelect`
  * expects instead — same template as `useSearchGroups`/`useSearchUsersByName`.
- * Disabled until the caller has typed something. Filters out any result
- * without an id (the `BeIncident.id` field is nullable) so every option
- * `AsyncEntitySelect` renders is guaranteed to have one.
+ * Fires as soon as the dropdown opens, even with an empty query, so the
+ * picker shows a default page instead of looking broken until the caller
+ * types something. Filters out any result without an id (the `BeIncident.id`
+ * field is nullable) so every option `AsyncEntitySelect` renders is
+ * guaranteed to have one.
  */
 export function useSearchIncidentsForSelect(
   query: string,
@@ -53,7 +55,7 @@ export function useSearchIncidentsForSelect(
       );
       return (res.incidents ?? []).filter((i) => !!i.id);
     },
-    enabled: enabled && q.length > 0,
+    enabled,
     placeholderData: keepPreviousData,
     staleTime: 60_000,
   });

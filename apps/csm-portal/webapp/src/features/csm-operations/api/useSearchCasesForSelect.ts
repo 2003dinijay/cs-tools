@@ -30,8 +30,10 @@ const CASE_SEARCH_LIMIT = 20;
  * Type-ahead case search (`POST /cases/search`, `filters.searchQuery`) for
  * the problem create form's "Origin case" picker. Matches the
  * `(query, enabled) => {data, isFetching, isError}` shape `AsyncEntitySelect`
- * expects — same template as `useSearchGroups`/`useSearchUsersByName`.
- * Disabled until the caller has typed something.
+ * expects — same template as `useSearchGroups`/`useSearchUsersByName`. Fires
+ * as soon as the dropdown opens, even with an empty query, so the picker
+ * shows a default page instead of looking broken until the caller types
+ * something.
  */
 export function useSearchCasesForSelect(
   query: string,
@@ -49,7 +51,7 @@ export function useSearchCasesForSelect(
       );
       return res.cases ?? [];
     },
-    enabled: enabled && q.length > 0,
+    enabled,
     placeholderData: keepPreviousData,
     staleTime: 60_000,
   });

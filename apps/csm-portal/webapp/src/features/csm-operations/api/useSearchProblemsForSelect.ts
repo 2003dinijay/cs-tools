@@ -18,39 +18,38 @@ import { keepPreviousData, useQuery, type UseQueryResult } from "@tanstack/react
 import { ApiQueryKeys } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
 import type {
-  BeConfigurationItem,
-  BeConfigurationItemSearchPayload,
-  BeConfigurationItemSearchResponse,
+  BeProblemSearchPayload,
+  BeProblemSearchResponse,
+  BeProblemSearchView,
 } from "@api/backend/types";
 
 /** A single page of matches is plenty for a type-ahead picker. */
-const CONFIGURATION_ITEM_SEARCH_LIMIT = 20;
+const PROBLEM_SEARCH_LIMIT = 20;
 
 /**
- * Type-ahead configuration-item search (`POST /configuration-items/search`)
- * for the "Configuration item" picker on the change-request create form.
- * Fires as soon as the dropdown opens, even with an empty query, so the
- * picker shows a default page instead of looking broken until the caller
- * types something.
+ * Type-ahead problem search (`POST /problems/search`, `filters.searchQuery`)
+ * for the incident edit dialog's "Problem" linking picker. Matches the
+ * `(query, enabled) => {data, isFetching, isError}` shape `AsyncEntitySelect`
+ * expects — same template as `useSearchGroups`/`useSearchUsersByName`. Fires
+ * as soon as the dropdown opens, even with an empty query, so the picker
+ * shows a default page instead of looking broken until the caller types
+ * something.
  */
-export function useSearchConfigurationItems(
+export function useSearchProblemsForSelect(
   query: string,
   enabled: boolean,
-): UseQueryResult<BeConfigurationItem[], Error> {
+): UseQueryResult<BeProblemSearchView[], Error> {
   const api = useBackendApi();
   const q = query.trim();
 
-  return useQuery<BeConfigurationItem[], Error>({
-    queryKey: [ApiQueryKeys.CONFIGURATION_ITEMS_SEARCH, q],
-    queryFn: async (): Promise<BeConfigurationItem[]> => {
-      const res = await api.post<
-        BeConfigurationItemSearchPayload,
-        BeConfigurationItemSearchResponse
-      >("/configuration-items/search", {
-        filters: { searchQuery: q },
-        pagination: { offset: 0, limit: CONFIGURATION_ITEM_SEARCH_LIMIT },
-      });
-      return res.configurationItems ?? [];
+  return useQuery<BeProblemSearchView[], Error>({
+    queryKey: [ApiQueryKeys.PROBLEMS_SEARCH_FOR_SELECT, q],
+    queryFn: async (): Promise<BeProblemSearchView[]> => {
+      const res = await api.post<BeProblemSearchPayload, BeProblemSearchResponse>(
+        "/problems/search",
+        { filters: { searchQuery: q }, pagination: { offset: 0, limit: PROBLEM_SEARCH_LIMIT } },
+      );
+      return res.problems ?? [];
     },
     enabled,
     placeholderData: keepPreviousData,

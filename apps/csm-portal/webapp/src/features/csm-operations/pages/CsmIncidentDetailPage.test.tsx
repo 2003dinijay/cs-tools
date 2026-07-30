@@ -72,6 +72,9 @@ vi.mock("@features/csm-cases/components/CaseActivitiesFeed", () => ({
 vi.mock("@features/csm-cases/components/CaseDetailWidgets", () => ({
   AttachmentsWidget: () => null,
 }));
+vi.mock("@api/useSearchUsersByName", () => ({
+  useSearchUsersByName: () => ({ data: [], isFetching: false, isError: false }),
+}));
 
 // Imported after the mocks above so the module picks them up.
 import CsmIncidentDetailPage from "@features/csm-operations/pages/CsmIncidentDetailPage";
@@ -179,6 +182,59 @@ describe("CsmIncidentDetailPage — tabs", () => {
     render(<CsmIncidentDetailPage />);
     goToTab(/watchers/i);
     expect(screen.getByText("Jane Doe")).toBeInTheDocument();
+  });
+
+  it("does not render a Comments & notes card on the Details tab (duplicates the Activities tab)", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_INCIDENT,
+        additionalComments: "Customer says the issue recurred.",
+        workNotes: "Checked the gateway logs.",
+      },
+    });
+    render(<CsmIncidentDetailPage />);
+    goToTab(/details/i);
+    expect(screen.queryByText("Comments & notes")).not.toBeInTheDocument();
+    expect(screen.queryByText("Customer says the issue recurred.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Checked the gateway logs.")).not.toBeInTheDocument();
+  });
+});
+
+describe("CsmIncidentDetailPage — Watchers tab direct-PATCH editing", () => {
+  it("removing a watcher chip PATCHes the incident with that watcher dropped from watchList", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_INCIDENT,
+        watchList: [
+          { id: "u1", name: "Jane Doe", email: "jane.doe@example.com" },
+          { id: "u2", name: "John Smith", email: "john.smith@example.com" },
+        ],
+      },
+    });
+    render(<CsmIncidentDetailPage />);
+    goToTab(/watchers/i);
+
+    const chip = screen.getByText("Jane Doe").closest(".MuiChip-root");
+    const deleteIcon = chip?.querySelector(".MuiChip-deleteIcon");
+    expect(deleteIcon).toBeTruthy();
+    fireEvent.click(deleteIcon as Element);
+
+    expect(patchMutateMock).toHaveBeenCalledWith(
+      { id: "inc-1", patch: { watchList: ["u2"] } },
+      expect.objectContaining({ onError: expect.any(Function) }),
+    );
+  });
+
+  it("opens an 'Add watcher' picker independent of the Edit dialog", () => {
+    mockQueryResult({ data: { ...BASE_INCIDENT, watchList: [] } });
+    render(<CsmIncidentDetailPage />);
+    goToTab(/watchers/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /add watcher/i }));
+    expect(screen.getByRole("combobox", { name: /add watcher/i })).toBeInTheDocument();
+    // No page-level save required — this is a standalone control, not part
+    // of EditIncidentDialog.
+    expect(screen.queryByRole("dialog", { name: /edit incident/i })).not.toBeInTheDocument();
   });
 });
 
