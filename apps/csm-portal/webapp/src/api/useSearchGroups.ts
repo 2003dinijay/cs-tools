@@ -24,8 +24,9 @@ const GROUP_SEARCH_LIMIT = 20;
 
 /**
  * Type-ahead group search (`POST /groups/search`) for the "Assignment group"
- * picker on the change-request create form. Disabled until the caller has
- * typed something — the group catalogue isn't loaded up front.
+ * picker on the change-request create form. Fires as soon as the dropdown
+ * opens, even with an empty query, so the picker shows a default page of
+ * groups instead of looking broken until the caller types something.
  */
 export function useSearchGroups(
   query: string,
@@ -43,7 +44,7 @@ export function useSearchGroups(
       );
       return res.groups ?? [];
     },
-    enabled: enabled && q.length > 0,
+    enabled,
     placeholderData: keepPreviousData,
     staleTime: 60_000,
   });

@@ -28,8 +28,9 @@ const IT_SERVICE_SEARCH_LIMIT = 20;
 
 /**
  * Type-ahead IT service search (`POST /services/search`) for the "Service"
- * picker on the change-request create form. Disabled until the caller has
- * typed something — the CMDB service catalogue isn't loaded up front.
+ * picker on the change-request create form. Fires as soon as the dropdown
+ * opens, even with an empty query, so the picker shows a default page of
+ * services instead of looking broken until the caller types something.
  */
 export function useSearchItServices(
   query: string,
@@ -47,7 +48,7 @@ export function useSearchItServices(
       );
       return res.services ?? [];
     },
-    enabled: enabled && q.length > 0,
+    enabled,
     placeholderData: keepPreviousData,
     staleTime: 60_000,
   });

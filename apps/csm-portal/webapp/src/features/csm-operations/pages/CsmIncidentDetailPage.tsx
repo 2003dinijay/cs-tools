@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Button, Card, Chip, Skeleton, Tab, Tabs, Typography } from "@wso2/oxygen-ui";
+import { Box, Button, Card, Chip, Skeleton, Tab, Tabs, Tooltip, Typography } from "@wso2/oxygen-ui";
 import {
   Activity,
   ArrowLeft,
@@ -24,6 +24,7 @@ import {
   MessageSquarePlus,
   Paperclip,
   Pencil,
+  Plus,
 } from "@wso2/oxygen-ui-icons-react";
 import {
   type JSX,
@@ -77,24 +78,35 @@ import { useNavTransition } from "@hooks/useNavTransition";
 const OPERATIONS_INCIDENTS_PATH = "/operations?tab=incidents";
 
 /**
- * Two confirmed-live upstream limitations of `PATCH /incidents/{id}`
- * (entity-service/ServiceNow, not this BFF or the FE) — a third,
- * `state: RESOLVED`/`CLOSED` 500ing without a resolution, was fixed by
- * having `EditIncidentDialog`/`IncidentResolutionDialog` collect
+ * `watchList` 404s ("The requested resource was not found!") on
+ * `PATCH /incidents/{id}` for *any* id, in the correct UUID-array shape —
+ * confirmed live (an anonymous service account, a real named user, and a
+ * fresh retest during PR review all reproduce it identically), so it isn't a
+ * bad-id or bad-payload-shape problem on our side. Until the upstream
+ * (entity-service/ServiceNow) endpoint actually works, the Watchers tab shows
+ * the current list read-only rather than exposing an add/remove action that
+ * would always fail.
+ */
+const WATCH_LIST_UNAVAILABLE_REASON =
+  "Editing the watch list isn't available yet — the upstream API for this is broken (always returns 404), independent of this portal.";
+
+/**
+ * A single confirmed-live upstream limitation of `PATCH /incidents/{id}`
+ * (entity-service/ServiceNow, not this BFF or the FE): `state: RESOLVED`/
+ * `CLOSED` 500s without a resolution, fixed by having
+ * `EditIncidentDialog`/`IncidentResolutionDialog` collect
  * `resolutionCode`/`resolutionNotes` (write-only fields, no read-side model
- * — see `BeUpdateIncidentPayload`) once the target state is one of those two:
- *  - `watchList` 404s ("The requested resource was not found!") for *any*
- *    id — confirmed with both an anonymous service account and a real, named
- *    person, so it isn't a bad-id problem on our side.
- *  - `additionalComments` (and, defensively, `workNotes` — same ServiceNow
- *    journal-field shape, not independently confirmed) is the dangerous one:
- *    the PATCH returns 200, but the response's own echoed value comes back
- *    `null` even though we just set it — a silent no-op dressed as success.
- * `watchList` already surfaces as a real error (see `onError` below) — this
- * is correct, if unfortunate, behavior. `checkSilentlyDroppedNotes` exists so
- * the notes case doesn't: it catches a 200 that didn't actually persist what
- * it claims to and treats it like the failure it is, rather than closing the
- * dialog on a false positive.
+ * — see `BeUpdateIncidentPayload`) once the target state is one of those two.
+ * `additionalComments` (and, defensively, `workNotes` — same ServiceNow
+ * journal-field shape, not independently confirmed) is the dangerous one:
+ * the PATCH returns 200, but the response's own echoed value comes back
+ * `null` even though we just set it — a silent no-op dressed as success.
+ * `checkSilentlyDroppedNotes` exists so this doesn't slip through: it
+ * catches a 200 that didn't actually persist what it claims to and treats
+ * it like the failure it is, rather than closing the dialog on a false
+ * positive. The Edit dialog no longer has UI to set either field (that's
+ * the Activities tab's job now), so this only matters if a future patch
+ * path resends them.
  */
 function checkSilentlyDroppedNotes(patch: BeUpdateIncidentPayload, saved: BeIncidentDetail): string[] {
   const dropped: string[] = [];
@@ -536,40 +548,6 @@ export default function CsmIncidentDetailPage(): JSX.Element {
               <MetaCell label="Configuration item"><RefText value={incident.configurationItem} /></MetaCell>
             </Box>
           </Card>
-
-          {(incident.additionalComments || incident.workNotes) && (
-            <Card
-              sx={{
-                p: 2.5,
-                display: "flex",
-                flexDirection: "column",
-                gap: 2.5,
-                gridColumn: { xs: "auto", md: "1 / -1" },
-              }}
-            >
-              <Typography variant="subtitle2">Comments &amp; notes</Typography>
-              {incident.additionalComments && (
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
-                  <Typography variant="body2" color="text.secondary">
-                    Additional comments (customer-visible)
-                  </Typography>
-                  <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-                    {incident.additionalComments}
-                  </Typography>
-                </Box>
-              )}
-              {incident.workNotes && (
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
-                  <Typography variant="body2" color="text.secondary">
-                    Internal work notes
-                  </Typography>
-                  <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-                    {incident.workNotes}
-                  </Typography>
-                </Box>
-              )}
-            </Card>
-          )}
         </Box>
       )}
 
@@ -640,7 +618,22 @@ export default function CsmIncidentDetailPage(): JSX.Element {
 
       {activeTab === "watchers" && (
         <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
-          <Typography variant="subtitle2">Watch list</Typography>
+          <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <Typography variant="subtitle2">Watch list</Typography>
+            <Tooltip title={WATCH_LIST_UNAVAILABLE_REASON}>
+              {/* span wrapper: Tooltip needs a non-disabled child to attach its listeners to */}
+              <span>
+                <Button
+                  size="small"
+                  variant="text"
+                  startIcon={<Plus size={14} />}
+                  disabled
+                >
+                  Add watcher
+                </Button>
+              </span>
+            </Tooltip>
+          </Box>
           {watchList.length > 0 ? (
             <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
               {watchList.map((w) => (
@@ -653,7 +646,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
             </Typography>
           )}
           <Typography variant="caption" color="text.secondary">
-            Edit the watch list from the Edit dialog above.
+            {WATCH_LIST_UNAVAILABLE_REASON}
           </Typography>
         </Card>
       )}

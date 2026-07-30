@@ -31,8 +31,9 @@ const USER_SEARCH_LIMIT = 20;
  * returns each match's portal `id` — unlike {@link useDirectoryUsers} (which
  * loads the whole directory keyed by email for the cases assignee filter),
  * this is for pickers that need a user's UUID directly (change-request
- * "Requested by" / "Assigned to"). Disabled until the caller has typed
- * something.
+ * "Requested by" / "Assigned to"). Fires as soon as the dropdown opens, even
+ * with an empty query, so the picker shows a default page of people instead
+ * of looking broken until the caller types something.
  */
 export function useSearchUsersByName(
   query: string,
@@ -50,7 +51,7 @@ export function useSearchUsersByName(
       );
       return (res.users ?? []).filter((u) => !!u.id);
     },
-    enabled: enabled && q.length > 0,
+    enabled,
     placeholderData: keepPreviousData,
     staleTime: 60_000,
   });

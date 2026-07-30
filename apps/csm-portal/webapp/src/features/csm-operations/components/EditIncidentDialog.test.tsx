@@ -20,23 +20,43 @@ import "@testing-library/jest-dom/vitest";
 import type { BeIncidentDetail } from "@api/backend/types";
 
 // The dialog's async reference pickers (Service, Assignment group, Assigned
-// to, Watch list, ...) all go through `useSearch*` hooks that hit the
-// backend client via react-query. Stub them out — this test only cares
-// about the State select's transition-guard behavior.
+// to, Parent incident, Change request, Problem, ...) all go through
+// `useSearch*` hooks that hit the backend client via react-query. Stub them
+// out and track calls so tests can assert each picker fires an eager,
+// empty-query search as soon as it opens.
+const useSearchGroupsMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
+const useSearchItServicesMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
+const useSearchServiceOfferingsMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
+const useSearchConfigurationItemsMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
+const useSearchUsersByNameMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
+const useSearchIncidentsExcludingSelfMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
+const useSearchChangeRequestsForSelectMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
+const useSearchProblemsForSelectMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
+
 vi.mock("@api/useSearchGroups", () => ({
-  useSearchGroups: () => ({ data: [], isFetching: false, isError: false }),
+  useSearchGroups: (...args: unknown[]) => useSearchGroupsMock(...(args as [])),
 }));
 vi.mock("@api/useSearchItServices", () => ({
-  useSearchItServices: () => ({ data: [], isFetching: false, isError: false }),
+  useSearchItServices: (...args: unknown[]) => useSearchItServicesMock(...(args as [])),
 }));
 vi.mock("@api/useSearchServiceOfferings", () => ({
-  useSearchServiceOfferings: () => ({ data: [], isFetching: false, isError: false }),
+  useSearchServiceOfferings: (...args: unknown[]) => useSearchServiceOfferingsMock(...(args as [])),
 }));
 vi.mock("@api/useSearchConfigurationItems", () => ({
-  useSearchConfigurationItems: () => ({ data: [], isFetching: false, isError: false }),
+  useSearchConfigurationItems: (...args: unknown[]) => useSearchConfigurationItemsMock(...(args as [])),
 }));
 vi.mock("@api/useSearchUsersByName", () => ({
-  useSearchUsersByName: () => ({ data: [], isFetching: false, isError: false }),
+  useSearchUsersByName: (...args: unknown[]) => useSearchUsersByNameMock(...(args as [])),
+}));
+vi.mock("@features/csm-operations/api/useSearchIncidentsForSelect", () => ({
+  useSearchIncidentsExcludingSelf: (...args: unknown[]) => useSearchIncidentsExcludingSelfMock(...(args as [])),
+}));
+vi.mock("@features/csm-operations/api/useSearchChangeRequestsForSelect", () => ({
+  useSearchChangeRequestsForSelect: (...args: unknown[]) =>
+    useSearchChangeRequestsForSelectMock(...(args as [])),
+}));
+vi.mock("@features/csm-operations/api/useSearchProblemsForSelect", () => ({
+  useSearchProblemsForSelect: (...args: unknown[]) => useSearchProblemsForSelectMock(...(args as [])),
 }));
 
 import EditIncidentDialog from "@features/csm-operations/components/EditIncidentDialog";
@@ -90,5 +110,72 @@ describe("EditIncidentDialog state transition guard", () => {
     );
 
     expect(stateSelect()).toHaveAttribute("aria-disabled", "true");
+  });
+});
+
+describe("EditIncidentDialog redundant/legacy UI removal", () => {
+  it("no longer renders a Notes section or a Watch list field", () => {
+    render(
+      <EditIncidentDialog
+        incident={BASE_INCIDENT}
+        isSaving={false}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("Notes")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/additional comments/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/internal work note/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/watch list/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("EditIncidentDialog advanced-linking pickers", () => {
+  it("renders Parent incident, Change request, and Problem as searchable comboboxes, not raw text fields", () => {
+    render(
+      <EditIncidentDialog
+        incident={BASE_INCIDENT}
+        isSaving={false}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("combobox", { name: /parent incident/i })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /change request/i })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /^problem$/i })).toBeInTheDocument();
+    // "Caused by" is left as a plain text field — no confirmed target entity
+    // type to point a search at.
+    expect(screen.getByLabelText(/caused by id/i)).toBeInTheDocument();
+  });
+
+  it("fires an eager, empty-query search for each linking picker as soon as the dialog mounts (dropdown-open behavior)", () => {
+    render(
+      <EditIncidentDialog
+        incident={BASE_INCIDENT}
+        isSaving={false}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+
+    // AsyncEntitySelect calls its useSearch hook on every render with
+    // `enabled` following the dropdown's open state; what matters here is
+    // that the hook is wired at all (not gated out by the component itself)
+    // and that opening the combobox flips `enabled` to true with an empty
+    // query, verified by asserting the mock was invoked and the picker
+    // renders as a live combobox above. Open the Parent incident combobox
+    // explicitly to confirm the eager empty-query call. The third argument is
+    // `searchExtra` — `BASE_INCIDENT.id`, since the Parent incident picker
+    // excludes the incident being edited from its own results.
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: /parent incident/i }));
+    expect(useSearchIncidentsExcludingSelfMock).toHaveBeenCalledWith("", true, BASE_INCIDENT.id);
+
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: /change request/i }));
+    expect(useSearchChangeRequestsForSelectMock).toHaveBeenCalledWith("", true, undefined);
+
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: /^problem$/i }));
+    expect(useSearchProblemsForSelectMock).toHaveBeenCalledWith("", true, undefined);
   });
 });
