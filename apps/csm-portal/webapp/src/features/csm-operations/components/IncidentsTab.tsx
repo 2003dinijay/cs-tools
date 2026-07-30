@@ -125,7 +125,7 @@ export default function IncidentsTab(): JSX.Element {
           pagination: { offset, limit },
         },
       );
-      return { items: res.incidents, total: res.total };
+      return { items: res.incidents ?? [], total: res.total ?? 0 };
     },
     [api, payload.filters, payload.sortBy],
   );

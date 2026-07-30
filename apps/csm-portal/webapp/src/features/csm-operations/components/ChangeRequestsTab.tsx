@@ -142,7 +142,7 @@ export default function ChangeRequestsTab(): JSX.Element {
           pagination: { offset, limit },
         },
       );
-      return { items: res.changeRequests, total: res.total };
+      return { items: res.changeRequests ?? [], total: res.total ?? 0 };
     },
     [api, payload.filters],
   );
