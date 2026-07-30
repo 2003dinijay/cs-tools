@@ -47,7 +47,7 @@ export function ConfirmDialog({
       slotProps={{
         paper: {
           sx: {
-            bgcolor: "background.paper",
+            bgcolor: "background.default",
             p: 1.5,
             gap: 3,
             m: 2,

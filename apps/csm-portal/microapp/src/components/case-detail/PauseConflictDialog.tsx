@@ -48,7 +48,7 @@ export function PauseConflictDialog({ otherCases, isSubmitting, onConfirm, onDec
         if (!isSubmitting) onDecline();
       }}
       slots={{ paper: DialogPaper }}
-      slotProps={{ paper: { sx: { bgcolor: "background.paper", p: 1.5, gap: 1.5, m: 2 } } }}
+      slotProps={{ paper: { sx: { bgcolor: "background.default", p: 1.5, gap: 1.5, m: 2 } } }}
     >
       <Typography variant="h6" fontWeight={650}>
         Pause {plural ? "other ongoing cases" : "the other ongoing case"}?
