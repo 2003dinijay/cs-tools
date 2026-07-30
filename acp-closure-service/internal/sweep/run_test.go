@@ -32,7 +32,7 @@ func TestRun_SinglePageEvaluatesAllProjects(t *testing.T) {
 					{"id": "p1", "endDate": null},
 					{"id": "p2", "endDate": null}
 				],
-				"total": 2, "limit": 100, "offset": 0, "hasMore": false
+				"total": 2, "limit": 50, "offset": 0, "hasMore": false
 			}`), nil
 		},
 	}
@@ -69,12 +69,12 @@ func TestRun_MultiPagePaginatesUntilHasMoreFalse(t *testing.T) {
 			if req.Pagination.Offset == 0 {
 				return []byte(`{
 					"projects": [{"id": "p1", "endDate": null}],
-					"total": 2, "limit": 100, "offset": 0, "hasMore": true
+					"total": 2, "limit": 50, "offset": 0, "hasMore": true
 				}`), nil
 			}
 			return []byte(`{
 				"projects": [{"id": "p2", "endDate": null}],
-				"total": 2, "limit": 100, "offset": 100, "hasMore": false
+				"total": 2, "limit": 50, "offset": 50, "hasMore": false
 			}`), nil
 		},
 	}
@@ -88,8 +88,8 @@ func TestRun_MultiPagePaginatesUntilHasMoreFalse(t *testing.T) {
 	if result.ProjectsEvaluated != 2 {
 		t.Errorf("ProjectsEvaluated = %d, want 2", result.ProjectsEvaluated)
 	}
-	if len(gotOffsets) != 2 || gotOffsets[0] != 0 || gotOffsets[1] != 100 {
-		t.Errorf("offsets = %v, want [0 100]", gotOffsets)
+	if len(gotOffsets) != 2 || gotOffsets[0] != 0 || gotOffsets[1] != 50 {
+		t.Errorf("offsets = %v, want [0 50]", gotOffsets)
 	}
 }
 
@@ -110,7 +110,7 @@ func TestRun_OneProjectFailureDoesNotBlockTheRest(t *testing.T) {
 					{"id": "p2", "endDate": "` + firingEndDate + `", "suspensionProcessState": "not-an-object"},
 					{"id": "p3", "endDate": null}
 				],
-				"total": 3, "limit": 100, "offset": 0, "hasMore": false
+				"total": 3, "limit": 50, "offset": 0, "hasMore": false
 			}`), nil
 		},
 	}

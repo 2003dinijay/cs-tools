@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/notify"
+	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/recipients"
 )
 
 func TestProcessProject_NoEndDateIsNoOp(t *testing.T) {
@@ -132,6 +133,9 @@ func TestProcessProject_CustomerAudienceWindowNotifiesBusinessContact(t *testing
 			if n.Recipient != "bob@customer.example" {
 				t.Errorf("customer notice recipient = %q, want %q", n.Recipient, "bob@customer.example")
 			}
+			if n.ResolvedVia != recipients.ResolvedViaBusinessContact {
+				t.Errorf("customer notice ResolvedVia = %q, want %q", n.ResolvedVia, recipients.ResolvedViaBusinessContact)
+			}
 		}
 	}
 	if !sawInternal {
@@ -172,8 +176,14 @@ func TestProcessProject_CustomerAudienceWindowNudgesAMWhenNoContactFound(t *test
 		switch n.Kind {
 		case notify.KindInternal:
 			sawInternal = true
+			if n.ResolvedVia != "" {
+				t.Errorf("internal notice ResolvedVia = %q, want \"\" (internal never goes through the fallback chain)", n.ResolvedVia)
+			}
 		case notify.KindAMNudge:
 			sawNudge = true
+			if n.ResolvedVia != recipients.ResolvedViaNone {
+				t.Errorf("AM-nudge notice ResolvedVia = %q, want %q", n.ResolvedVia, recipients.ResolvedViaNone)
+			}
 		case notify.KindCustomer:
 			sawCustomer = true
 		}

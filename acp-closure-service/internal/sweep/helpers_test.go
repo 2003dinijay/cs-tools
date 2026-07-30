@@ -52,7 +52,7 @@ func (m *mockEntityReader) SearchProjects(ctx context.Context, body []byte) ([]b
 	if m.searchProjectsFn != nil {
 		return m.searchProjectsFn(ctx, body)
 	}
-	return []byte(`{"projects":[],"total":0,"limit":100,"offset":0,"hasMore":false}`), nil
+	return []byte(`{"projects":[],"total":0,"limit":50,"offset":0,"hasMore":false}`), nil
 }
 
 func (m *mockEntityReader) SearchAccountContacts(ctx context.Context, accountID string, body []byte) ([]byte, error) {

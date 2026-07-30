@@ -24,7 +24,12 @@ import (
 	"time"
 )
 
-const pageSize = 100
+// pageSize is the page size used for /projects/search. entity-service's own
+// code states maxLimit = 100 (entity-service/internal/service/user_service.go),
+// but that does not match live behavior: confirmed via direct Postman
+// testing against staging, limit: 50 returns 200 OK while limit: 51 returns
+// 400 "Invalid request payload." — the real, live maximum is 50, not 100.
+const pageSize = 50
 
 // Run performs one full ACP evaluation pass over every open project,
 // paginating through /projects/search. A single project's processProject

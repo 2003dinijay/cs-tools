@@ -114,18 +114,20 @@ func notifyForWindow(ctx context.Context, reader entityReader, ntf notifier, pro
 
 	if resolution.NeedsAMNudge {
 		return ntf.Send(ctx, notify.Notice{
-			Kind:      notify.KindAMNudge,
-			Window:    window,
-			ProjectID: proj.ID,
-			Recipient: amEmail,
+			Kind:        notify.KindAMNudge,
+			Window:      window,
+			ProjectID:   proj.ID,
+			Recipient:   amEmail,
+			ResolvedVia: resolution.ResolvedVia,
 		})
 	}
 
 	return ntf.Send(ctx, notify.Notice{
-		Kind:      notify.KindCustomer,
-		Window:    window,
-		ProjectID: proj.ID,
-		Recipient: resolution.CustomerContact.Email,
+		Kind:        notify.KindCustomer,
+		Window:      window,
+		ProjectID:   proj.ID,
+		Recipient:   resolution.CustomerContact.Email,
+		ResolvedVia: resolution.ResolvedVia,
 	})
 }
 
