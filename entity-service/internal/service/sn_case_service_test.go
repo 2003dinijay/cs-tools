@@ -557,7 +557,9 @@ func TestSNCaseService_UpdateCase_Close_NoLongerCallsTaskSearch(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": []map[string]any{}, "total": 0, "offset": 0, "limit": 100})
 	})
 	mux.HandleFunc("/cases/"+testCaseSysid, func(w http.ResponseWriter, r *http.Request) {
-		patchCalled = true
+		if r.Method == http.MethodPatch {
+			patchCalled = true
+		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]any{"message": "ok", "case": map[string]any{"id": testCaseSysid, "updatedOn": "2026-01-01 00:00:00"}})
 	})
