@@ -26,6 +26,7 @@ import (
 	"log/slog"
 
 	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/closure"
+	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/recipients"
 )
 
 // Kind distinguishes the purpose of a Notice, since the same window can
@@ -50,6 +51,14 @@ type Notice struct {
 	Window    closure.NoticeWindow
 	ProjectID string
 	Recipient string
+	// ResolvedVia records which tier of the three-tier customer-contact
+	// fallback produced Recipient (see recipients.ResolveCustomerContact).
+	// Only meaningful for KindCustomer/KindAMNudge — left at its zero value
+	// ("") for KindInternal, which never goes through that fallback chain at
+	// all. Deliberately distinct from recipients.ResolvedViaNone ("none"),
+	// which means "every tier was tried and none resolved" — a different,
+	// more specific fact than "this notice doesn't use tiers."
+	ResolvedVia recipients.ResolvedVia
 }
 
 // LoggingNotifier logs what would have been sent instead of sending it.
@@ -64,6 +73,7 @@ func (n *LoggingNotifier) Send(ctx context.Context, notice Notice) error {
 		"window", notice.Window,
 		"projectID", notice.ProjectID,
 		"recipient", notice.Recipient,
+		"resolvedVia", notice.ResolvedVia,
 	)
 	return nil
 }
