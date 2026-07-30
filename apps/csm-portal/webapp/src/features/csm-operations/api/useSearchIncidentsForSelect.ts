@@ -60,3 +60,23 @@ export function useSearchIncidentsForSelect(
     staleTime: 60_000,
   });
 }
+
+/**
+ * Same as {@link useSearchIncidentsForSelect}, but drops whichever incident id
+ * is passed as `excludeId` (`AsyncEntitySelect`'s `searchExtra`) from the
+ * results — for the "Parent incident" picker on `EditIncidentDialog`, so an
+ * incident can't be set as its own parent. `select` runs after the shared
+ * query's own cache entry resolves, so this doesn't fork the cache per
+ * `excludeId`.
+ */
+export function useSearchIncidentsExcludingSelf(
+  query: string,
+  enabled: boolean,
+  excludeId?: string,
+): UseQueryResult<BeIncident[], Error> {
+  const result = useSearchIncidentsForSelect(query, enabled);
+  return {
+    ...result,
+    data: excludeId ? result.data?.filter((i) => i.id !== excludeId) : result.data,
+  } as UseQueryResult<BeIncident[], Error>;
+}

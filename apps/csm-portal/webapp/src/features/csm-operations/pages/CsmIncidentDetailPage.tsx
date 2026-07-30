@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Button, Card, Chip, Skeleton, Tab, Tabs, Typography } from "@wso2/oxygen-ui";
+import { Box, Button, Card, Chip, Skeleton, Tab, Tabs, Tooltip, Typography } from "@wso2/oxygen-ui";
 import {
   Activity,
   ArrowLeft,
@@ -57,9 +57,6 @@ import {
   incidentStateColor,
   incidentStateLabel,
 } from "@features/csm-operations/utils/incidents";
-import { userLabel } from "@features/csm-operations/utils/incidentFormOptions";
-import { useSearchUsersByName } from "@api/useSearchUsersByName";
-import AsyncEntitySelect from "@components/AsyncEntitySelect";
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
 import CsmCaseCommentInput from "@features/csm-cases/components/CsmCaseCommentInput";
 import { AttachmentsWidget } from "@features/csm-cases/components/CaseDetailWidgets";
@@ -75,36 +72,41 @@ import type {
   BeIncidentDetail,
   BeIncidentState,
   BeUpdateIncidentPayload,
-  BeUser,
 } from "@api/backend/types";
 import { useNavTransition } from "@hooks/useNavTransition";
 
 const OPERATIONS_INCIDENTS_PATH = "/operations?tab=incidents";
 
 /**
- * Two confirmed-live upstream limitations of `PATCH /incidents/{id}`
- * (entity-service/ServiceNow, not this BFF or the FE) — a third,
- * `state: RESOLVED`/`CLOSED` 500ing without a resolution, was fixed by
- * having `EditIncidentDialog`/`IncidentResolutionDialog` collect
+ * `watchList` 404s ("The requested resource was not found!") on
+ * `PATCH /incidents/{id}` for *any* id, in the correct UUID-array shape —
+ * confirmed live (an anonymous service account, a real named user, and a
+ * fresh retest during PR review all reproduce it identically), so it isn't a
+ * bad-id or bad-payload-shape problem on our side. Until the upstream
+ * (entity-service/ServiceNow) endpoint actually works, the Watchers tab shows
+ * the current list read-only rather than exposing an add/remove action that
+ * would always fail.
+ */
+const WATCH_LIST_UNAVAILABLE_REASON =
+  "Editing the watch list isn't available yet — the upstream API for this is broken (always returns 404), independent of this portal.";
+
+/**
+ * A single confirmed-live upstream limitation of `PATCH /incidents/{id}`
+ * (entity-service/ServiceNow, not this BFF or the FE): `state: RESOLVED`/
+ * `CLOSED` 500s without a resolution, fixed by having
+ * `EditIncidentDialog`/`IncidentResolutionDialog` collect
  * `resolutionCode`/`resolutionNotes` (write-only fields, no read-side model
- * — see `BeUpdateIncidentPayload`) once the target state is one of those two:
- *  - `watchList` 404s ("The requested resource was not found!") for *any*
- *    id — confirmed with both an anonymous service account and a real, named
- *    person, so it isn't a bad-id problem on our side. Watch-list edits now
- *    come from the Watchers tab's own add/remove PATCHes (`onAddWatcher`/
- *    `onRemoveWatcher` below), not the Edit dialog, but the 404 is still live
- *    there and still surfaces as a real error via `onError` — correct, if
- *    unfortunate, behavior.
- *  - `additionalComments` (and, defensively, `workNotes` — same ServiceNow
- *    journal-field shape, not independently confirmed) is the dangerous one:
- *    the PATCH returns 200, but the response's own echoed value comes back
- *    `null` even though we just set it — a silent no-op dressed as success.
- *    `checkSilentlyDroppedNotes` exists so this doesn't slip through: it
- *    catches a 200 that didn't actually persist what it claims to and treats
- *    it like the failure it is, rather than closing the dialog on a false
- *    positive. The Edit dialog no longer has UI to set either field (that's
- *    the Activities tab's job now), so this only matters if a future patch
- *    path resends them.
+ * — see `BeUpdateIncidentPayload`) once the target state is one of those two.
+ * `additionalComments` (and, defensively, `workNotes` — same ServiceNow
+ * journal-field shape, not independently confirmed) is the dangerous one:
+ * the PATCH returns 200, but the response's own echoed value comes back
+ * `null` even though we just set it — a silent no-op dressed as success.
+ * `checkSilentlyDroppedNotes` exists so this doesn't slip through: it
+ * catches a 200 that didn't actually persist what it claims to and treats
+ * it like the failure it is, rather than closing the dialog on a false
+ * positive. The Edit dialog no longer has UI to set either field (that's
+ * the Activities tab's job now), so this only matters if a future patch
+ * path resends them.
  */
 function checkSilentlyDroppedNotes(patch: BeUpdateIncidentPayload, saved: BeIncidentDetail): string[] {
   const dropped: string[] = [];
@@ -190,9 +192,6 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   // CsmCaseDetailPage — one attachment previewed at a time regardless of
   // which surface opened it.
   const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(null);
-  // The Watchers tab's "Add watcher" picker — mounted only while open, same
-  // pattern as the Activities tab's reply composer.
-  const [watcherPickerOpen, setWatcherPickerOpen] = useState(false);
 
   const attachmentList = useMemo(() => attachments ?? [], [attachments]);
   const watchList = useMemo(() => data?.watchList ?? [], [data?.watchList]);
@@ -231,61 +230,6 @@ export default function CsmIncidentDetailPage(): JSX.Element {
       );
     },
     [downloadAttachment, showError],
-  );
-
-  /**
-   * Add a watcher from the Watchers tab's picker. Unlike a case's watch list
-   * (email-addressed, see `CsmCaseDetailPage`), an incident's `watchList` is
-   * id-addressed — see `BeUpdateIncidentPayload`/`BeIncidentWatchListItem` —
-   * so this just PATCHes the full id list plus the newly picked one. Fires
-   * immediately, independent of the Edit dialog's Save, same as
-   * `onIncidentAction`. `watchList` is a confirmed-live 404 on this endpoint
-   * for any id (see the file-level doc comment) — that surfaces here as a
-   * real error via `onError`, same as everywhere else this quirk shows up.
-   */
-  const onAddWatcher = useCallback(
-    (userId: string) => {
-      if (!id) return;
-      const currentIds = watchList.map((w) => w.id);
-      if (currentIds.includes(userId)) {
-        setWatcherPickerOpen(false);
-        return;
-      }
-      patchIncident.mutate(
-        { id, patch: { watchList: [...currentIds, userId] } },
-        {
-          onSuccess: () => setWatcherPickerOpen(false),
-          onError: (err) => {
-            const msg =
-              err instanceof BackendApiError && err.status < 500 && err.message
-                ? err.message
-                : "Could not add the watcher. Please try again.";
-            showError(msg, err);
-          },
-        },
-      );
-    },
-    [id, watchList, patchIncident, showError],
-  );
-
-  const onRemoveWatcher = useCallback(
-    (userId: string) => {
-      if (!id) return;
-      const nextIds = watchList.filter((w) => w.id !== userId).map((w) => w.id);
-      patchIncident.mutate(
-        { id, patch: { watchList: nextIds } },
-        {
-          onError: (err) => {
-            const msg =
-              err instanceof BackendApiError && err.status < 500 && err.message
-                ? err.message
-                : "Could not remove the watcher. Please try again.";
-            showError(msg, err);
-          },
-        },
-      );
-    },
-    [id, watchList, patchIncident, showError],
   );
 
   /**
@@ -676,27 +620,24 @@ export default function CsmIncidentDetailPage(): JSX.Element {
         <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
           <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <Typography variant="subtitle2">Watch list</Typography>
-            <Button
-              size="small"
-              variant="text"
-              startIcon={<Plus size={14} />}
-              disabled={patchIncident.isPending}
-              onClick={() => setWatcherPickerOpen((v) => !v)}
-            >
-              Add watcher
-            </Button>
+            <Tooltip title={WATCH_LIST_UNAVAILABLE_REASON}>
+              {/* span wrapper: Tooltip needs a non-disabled child to attach its listeners to */}
+              <span>
+                <Button
+                  size="small"
+                  variant="text"
+                  startIcon={<Plus size={14} />}
+                  disabled
+                >
+                  Add watcher
+                </Button>
+              </span>
+            </Tooltip>
           </Box>
           {watchList.length > 0 ? (
             <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
               {watchList.map((w) => (
-                <Chip
-                  key={w.id}
-                  size="small"
-                  variant="outlined"
-                  label={w.name || w.email}
-                  disabled={patchIncident.isPending}
-                  onDelete={() => onRemoveWatcher(w.id)}
-                />
+                <Chip key={w.id} size="small" variant="outlined" label={w.name || w.email} />
               ))}
             </Box>
           ) : (
@@ -704,23 +645,9 @@ export default function CsmIncidentDetailPage(): JSX.Element {
               No one is watching this incident.
             </Typography>
           )}
-          {watcherPickerOpen && (
-            <Box sx={{ maxWidth: 360 }}>
-              <AsyncEntitySelect<BeUser>
-                id="incident-watcher-add"
-                label="Add watcher"
-                placeholder="Search people…"
-                value=""
-                onChange={(v) => {
-                  if (v) onAddWatcher(v);
-                }}
-                disabled={patchIncident.isPending}
-                useSearch={useSearchUsersByName}
-                getId={(u) => u.id!}
-                getLabel={userLabel}
-              />
-            </Box>
-          )}
+          <Typography variant="caption" color="text.secondary">
+            {WATCH_LIST_UNAVAILABLE_REASON}
+          </Typography>
         </Card>
       )}
 

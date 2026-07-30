@@ -29,7 +29,7 @@ const useSearchItServicesMock = vi.fn(() => ({ data: [], isFetching: false, isEr
 const useSearchServiceOfferingsMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
 const useSearchConfigurationItemsMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
 const useSearchUsersByNameMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
-const useSearchIncidentsForSelectMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
+const useSearchIncidentsExcludingSelfMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
 const useSearchChangeRequestsForSelectMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
 const useSearchProblemsForSelectMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
 
@@ -49,7 +49,7 @@ vi.mock("@api/useSearchUsersByName", () => ({
   useSearchUsersByName: (...args: unknown[]) => useSearchUsersByNameMock(...(args as [])),
 }));
 vi.mock("@features/csm-operations/api/useSearchIncidentsForSelect", () => ({
-  useSearchIncidentsForSelect: (...args: unknown[]) => useSearchIncidentsForSelectMock(...(args as [])),
+  useSearchIncidentsExcludingSelf: (...args: unknown[]) => useSearchIncidentsExcludingSelfMock(...(args as [])),
 }));
 vi.mock("@features/csm-operations/api/useSearchChangeRequestsForSelect", () => ({
   useSearchChangeRequestsForSelect: (...args: unknown[]) =>
@@ -166,9 +166,11 @@ describe("EditIncidentDialog advanced-linking pickers", () => {
     // and that opening the combobox flips `enabled` to true with an empty
     // query, verified by asserting the mock was invoked and the picker
     // renders as a live combobox above. Open the Parent incident combobox
-    // explicitly to confirm the eager empty-query call.
+    // explicitly to confirm the eager empty-query call. The third argument is
+    // `searchExtra` — `BASE_INCIDENT.id`, since the Parent incident picker
+    // excludes the incident being edited from its own results.
     fireEvent.mouseDown(screen.getByRole("combobox", { name: /parent incident/i }));
-    expect(useSearchIncidentsForSelectMock).toHaveBeenCalledWith("", true, undefined);
+    expect(useSearchIncidentsExcludingSelfMock).toHaveBeenCalledWith("", true, BASE_INCIDENT.id);
 
     fireEvent.mouseDown(screen.getByRole("combobox", { name: /change request/i }));
     expect(useSearchChangeRequestsForSelectMock).toHaveBeenCalledWith("", true, undefined);
