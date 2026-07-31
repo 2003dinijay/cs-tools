@@ -31,6 +31,12 @@ vi.mock("@api/backend/client", () => ({
 
 import { usePatchChangeRequest } from "@features/csm-operations/api/usePatchChangeRequest";
 
+/**
+ * Query-client wrapper for `renderHook`, with `invalidateQueries` swapped for a
+ * spy — these tests assert that the mutation invalidates cached detail and list
+ * data on settle (success *and* error), so the call itself is the thing under
+ * test. Retries are off so an error case settles on the first rejection.
+ */
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },

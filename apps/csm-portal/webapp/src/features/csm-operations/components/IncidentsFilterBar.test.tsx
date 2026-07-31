@@ -32,6 +32,12 @@ vi.mock("@features/csm-operations/api/useIncidentProductNameOptions", () => ({
   useIncidentProductNameOptions: () => useIncidentProductNameOptionsMock(),
 }));
 
+/**
+ * Render the filter bar over `DEFAULT_INCIDENT_FILTERS` with the given prop
+ * overrides, returning the `onChange`/`onReset`/`onFiltersToggle` spies. The bar
+ * is controlled, so a test asserts on the filter object handed to `onChange`
+ * rather than on the input's own value.
+ */
 function renderFilterBar(
   overrides: Partial<React.ComponentProps<typeof IncidentsFilterBar>> = {},
 ) {

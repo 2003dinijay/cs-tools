@@ -34,6 +34,12 @@ export const CR_FILTER_PARAM_KEYS = [
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
+/**
+ * Parse a comma-separated URL param into a list restricted to `allowed`. An
+ * unrecognised entry is dropped rather than passed through, so a hand-edited or
+ * stale query string can never send the backend a value outside the enum. The
+ * type predicate is what narrows the result to `T[]` for the caller.
+ */
 function parseCsv<T extends string>(raw: string | null, allowed: T[]): T[] {
   if (!raw) return [];
   return raw

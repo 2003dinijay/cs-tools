@@ -81,6 +81,9 @@ vi.mocked(useSearchIncidents).mockReturnValue(
 function OperationsTabsHarness(): JSX.Element {
   const [params, setParams] = useSearchParams();
   const tab = params.get("tab") ?? "change_requests";
+  /** Switch tabs by writing `?tab=`, preserving the other params already in the
+   * URL — the whole point of these tests is that one tab's filters survive a
+   * switch to the other and back. */
   const selectTab = (next: string): void =>
     setParams((prev) => {
       prev.set("tab", next);
@@ -99,6 +102,11 @@ function OperationsTabsHarness(): JSX.Element {
   );
 }
 
+/**
+ * Mount the harness at a given URL, so a test can start from a pre-filtered
+ * query string and assert the tabs read it back — the bookmark/share case, not
+ * just filters applied by clicking.
+ */
 function renderHarness(initialEntry: string) {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>

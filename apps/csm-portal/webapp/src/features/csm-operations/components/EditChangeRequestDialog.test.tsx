@@ -41,6 +41,12 @@ const BASE_CR: BeChangeRequestDetail = {
   hasCustomerReviewed: false,
 };
 
+/**
+ * Render the dialog over `BASE_CR` with the given field overrides, returning the
+ * `onSave`/`onClose` spies so a test can assert exactly which fields were
+ * submitted — these tests are mostly about the dialog sending *only* changed
+ * fields, so the payload passed to `onSave` is the assertion target.
+ */
 function renderDialog(
   overrides: Partial<BeChangeRequestDetail> = {},
   onSave = vi.fn<(patch: BePatchChangeRequestPayload) => void>(),
@@ -57,8 +63,14 @@ function renderDialog(
   return { onSave, onClose };
 }
 
+// Queried lazily on each call rather than captured once, because these tests
+// toggle the switches and re-read their state after a re-render.
+
+/** The "Customer approved" switch. */
 const approvedSwitch = (): HTMLElement => screen.getByLabelText(/customer approved/i);
+/** The "Customer reviewed" switch — mutually exclusive with the one above. */
 const reviewedSwitch = (): HTMLElement => screen.getByLabelText(/customer reviewed/i);
+/** The dialog's Save button. */
 const saveButton = (): HTMLElement => screen.getByRole("button", { name: /save/i });
 
 describe("EditChangeRequestDialog — Customer approved / reviewed mutual exclusion", () => {

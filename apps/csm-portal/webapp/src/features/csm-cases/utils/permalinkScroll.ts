@@ -91,6 +91,14 @@ export function scrollToFragmentWithRetry(
   const timers: ReturnType<typeof setTimeout>[] = [];
   let attempt = 0;
 
+  /**
+   * One attempt to locate the target and bring it into view. Re-schedules itself
+   * up to `maxAttempts` times while the element is absent — the activity feed
+   * renders from three independently-resolving sources, so "not found yet" is
+   * the normal case on a cold load rather than an error. Calls `onNotFound` only
+   * once the attempts are exhausted, which is the genuine "this entry does not
+   * exist or you cannot see it" signal.
+   */
   const tryScrollAndHighlight = (): void => {
     const target = getElementById(hash);
     if (!target) {

@@ -138,18 +138,30 @@ const CREATE_STATE_VALUES: BeChangeRequestState[] = ["new", "assess", "authorize
 const STATE_OPTIONS: Array<{ value: BeChangeRequestState; label: string }> =
   CREATE_STATE_VALUES.map((s) => ({ value: s, label: changeRequestStateLabel(s) }));
 
+// Option labels for this form's pickers. Each falls back down to the record id
+// rather than rendering blank, so an option is always selectable even when the
+// backing record carries none of the friendlier fields.
+
+/** Display label for a user option: full name, else email, else id. */
 function userLabel(u: BeUser): string {
   return [u.firstName, u.lastName].filter(Boolean).join(" ").trim() || u.email || u.id || "";
 }
 
+/** Display label for an IT service option: name, else id. */
 function itServiceLabel(s: BeItService): string {
   return s.name ?? s.id;
 }
 
+/** Display label for a configuration item option: name, else id. */
 function configurationItemLabel(ci: BeConfigurationItem): string {
   return ci.name ?? ci.id;
 }
 
+/**
+ * Display label for an originating-service-request option, as
+ * "CS0001234 — subject". Number and subject are both optional on the search
+ * view, so it degrades to whichever exists and finally to the id.
+ */
 function caseSearchLabel(c: BeCaseSearchView): string {
   return [c.number, c.subject].filter(Boolean).join(" — ") || c.id;
 }

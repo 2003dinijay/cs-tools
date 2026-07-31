@@ -31,6 +31,12 @@ vi.mock("@api/backend/client", () => ({
 
 import { LinkedChangeRequestsWidget } from "@features/csm-cases/components/LinkedChangeRequestsWidget";
 
+/**
+ * Render inside the providers this widget needs: a query client (it fetches each
+ * change request's detail per row) and a router (each row links to the change
+ * request's own page). Retries are disabled so an error-state assertion resolves
+ * on the first failure instead of waiting out the default backoff.
+ */
 function renderWithProviders(ui: ReactElement) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },

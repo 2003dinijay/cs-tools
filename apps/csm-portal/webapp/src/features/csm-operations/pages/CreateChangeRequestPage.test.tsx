@@ -97,6 +97,10 @@ vi.mock("@components/rich-text-editor/Editor", () => ({
 // Imported after the mocks above so the module picks them up.
 import CreateChangeRequestPage from "@features/csm-operations/pages/CreateChangeRequestPage";
 
+/**
+ * Fill the one field the form requires, so a test can reach the submit path
+ * without restating unrelated input for every case.
+ */
 function fillSubject(): void {
   fireEvent.change(screen.getByLabelText(/subject/i), {
     target: { value: "Roll out fix to production" },
