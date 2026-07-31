@@ -108,6 +108,7 @@ import { CreateGithubIssueDialog } from "@features/csm-cases/components/CreateGi
 import { isCloudSupportSubscription } from "@features/csm-projects/utils/subscriptionType";
 import { usePostCaseGithubIssue } from "@features/csm-cases/api/useCsmCaseGithubIssue";
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
+import { scrollToFragmentWithRetry } from "@features/csm-cases/utils/permalinkScroll";
 import CaseMetaBand from "@features/csm-cases/components/CaseMetaBand";
 import {
   AttachmentsWidget,
@@ -269,25 +270,6 @@ type CaseTabId =
   | "call-requests"
   | "tasks";
 
-/**
- * Walk the parent chain to find the nearest vertically-scrollable element.
- * Falls back to the document scrolling element if none is found.
- */
-function findVerticalScrollAncestor(el: HTMLElement): HTMLElement {
-  let cur: HTMLElement | null = el.parentElement;
-  while (cur && cur !== document.body) {
-    const style = window.getComputedStyle(cur);
-    const overflowY = style.overflowY;
-    if (
-      (overflowY === "auto" || overflowY === "scroll") &&
-      cur.scrollHeight > cur.clientHeight
-    ) {
-      return cur;
-    }
-    cur = cur.parentElement;
-  }
-  return (document.scrollingElement as HTMLElement | null) ?? document.documentElement;
-}
 
 /**
  * Route for a case's parentCase chip. A case's parent can be any task-derived
@@ -602,12 +584,22 @@ export default function CsmCaseDetailPage(): JSX.Element {
   }
 
   // Twitter-style permalinks: when the URL has a fragment matching an entry id,
-  // jump to the Activities tab, scroll the entry into view vertically, and
-  // flash it. The browser's default hash-anchor `scrollIntoView` also drags
-  // ancestors horizontally if any of them is wider than the viewport (e.g.
-  // when a comment contains a wide `<pre>` block). We zero `scrollLeft` on
-  // every ancestor to undo that horizontal shift while keeping vertical
-  // scroll in place.
+  // jump to the Activities tab and hand off to `scrollToFragmentWithRetry`,
+  // which scrolls the entry into view and flashes it once it actually exists
+  // in the DOM.
+  //
+  // The target only exists once every activity-feed source has loaded:
+  // comments, the linked chat transcript, and the audit trail (see the
+  // `isCommentsLoading || isChatLoading || isActivityLoading` skeleton gate
+  // below). A brand-new tab starts all three of those requests cold and they
+  // don't resolve in a fixed order, so gate the whole permalink attempt on
+  // every one of them finishing rather than retrying only when `comments`
+  // itself changes — otherwise a case where chat/audit resolve after comments
+  // retries once, too early, and never gets another chance. On an
+  // already-open tab this race has usually already settled by the time a
+  // fragment link is followed, which is why the bug reads as "new tab only."
+  const activitiesFeedReady =
+    !isCommentsLoading && !isChatLoading && !isActivityLoading;
   useEffect(() => {
     const hash = location.hash?.replace(/^#/, "");
     if (!hash) return;
@@ -615,54 +607,22 @@ export default function CsmCaseDetailPage(): JSX.Element {
     // also fires when the hash changes while already on the page.
     // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs active tab to URL hash
     setActiveTab("activities");
-    // Track every timer (outer + both nested resets) so the cleanup can cancel
-    // all of them on unmount / hash change — the inner resets were previously
-    // leaked.
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    const timer = setTimeout(() => {
-      const target = document.getElementById(hash);
-      if (!target) return;
+    // Wait for the feed to actually be able to render the target before
+    // attempting to find it — see the comment above.
+    if (!activitiesFeedReady) return;
 
-      // Undo any horizontal scroll the browser introduced on ancestors.
-      let cur: HTMLElement | null = target.parentElement;
-      while (cur && cur !== document.body) {
-        if (cur.scrollLeft !== 0) cur.scrollLeft = 0;
-        cur = cur.parentElement;
-      }
-      if (document.documentElement.scrollLeft !== 0) {
-        document.documentElement.scrollLeft = 0;
-      }
-      if (document.body.scrollLeft !== 0) document.body.scrollLeft = 0;
-
-      const container = findVerticalScrollAncestor(target);
-      const containerTop = container === document.documentElement
-        ? 0
-        : container.getBoundingClientRect().top;
-      const targetTop = target.getBoundingClientRect().top;
-      const offset = 96;
-      const delta = targetTop - containerTop - offset;
-      container.scrollTo({
-        top: container.scrollTop + delta,
-        behavior: "smooth",
-      });
-
-      const prevTransition = target.style.transition;
-      const prevBg = target.style.backgroundColor;
-      target.style.transition = "background-color 200ms ease-out";
-      target.style.backgroundColor = "rgba(255, 213, 79, 0.35)";
-      const reset = setTimeout(() => {
-        target.style.backgroundColor = prevBg;
-        timers.push(
-          setTimeout(() => {
-            target.style.transition = prevTransition;
-          }, 350),
+    return scrollToFragmentWithRetry(hash, {
+      onNotFound: () => {
+        // Every source has loaded and the id still isn't in the DOM — it's
+        // not a timing problem. Say so rather than leaving the page silently
+        // scrolled to the top as if the link were malformed (e.g. a deleted
+        // comment, or one the viewer isn't permitted to see).
+        showError(
+          "Could not find the linked entry — it may have been removed, or you may not have permission to view it.",
         );
-      }, 1500);
-      timers.push(reset);
-    }, 250);
-    timers.push(timer);
-    return () => timers.forEach(clearTimeout);
-  }, [location.hash, data, comments]);
+      },
+    });
+  }, [location.hash, activitiesFeedReady, showError]);
 
   useEffect(() => {
     // State-transition feedback is sticky (persists until dismissed) so it
