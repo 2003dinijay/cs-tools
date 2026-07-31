@@ -388,18 +388,18 @@ func TestProcessProject_InternalNoticeUsesRealAccountManagerEmail(t *testing.T) 
 		"name": "ACP Test Partner Account",
 		"technicalOwner": {
 			"id": "tech-1",
-			"name": "Dinithi Nanayakkara (Intern)",
-			"email": "dinithi@wso2.example"
+			"name": "Alex Fernando",
+			"email": "alex.fernando@wso2.example"
 		},
 		"accountManager": {
 			"id": "am-1",
-			"name": "Rukshan Kuruppu (Intern)",
-			"email": "rukshan@wso2.example"
+			"name": "Jordan Perera",
+			"email": "jordan.perera@wso2.example"
 		},
 		"renewalAccountManager": {
 			"id": "ram-1",
-			"name": "Ishan Hansaka Silva",
-			"email": "ishan@wso2.example"
+			"name": "Sam Jayasuriya",
+			"email": "sam.jayasuriya@wso2.example"
 		}
 	}`
 
@@ -432,8 +432,8 @@ func TestProcessProject_InternalNoticeUsesRealAccountManagerEmail(t *testing.T) 
 	if len(ntf.sent) != 1 {
 		t.Fatalf("ntf.sent = %d, want 1", len(ntf.sent))
 	}
-	if got := ntf.sent[0].Recipient; got != "rukshan@wso2.example" {
-		t.Errorf("internal notice Recipient = %q, want %q", got, "rukshan@wso2.example")
+	if got := ntf.sent[0].Recipient; got != "jordan.perera@wso2.example" {
+		t.Errorf("internal notice Recipient = %q, want %q", got, "jordan.perera@wso2.example")
 	}
 }
 
@@ -518,7 +518,7 @@ func TestShouldSuppressInternalNotice(t *testing.T) {
 func TestProcessProject_SuppressesInternalNoticeWhenNudgeGoesToSameRealRecipient(t *testing.T) {
 	reader := &mockEntityReader{
 		getAccountFn: func(ctx context.Context, id string) ([]byte, error) {
-			return []byte(`{"accountManager": {"id": "am-1", "name": "Rukshan Kuruppu", "email": "rukshan@wso2.example"}}`), nil
+			return []byte(`{"accountManager": {"id": "am-1", "name": "Jordan Perera", "email": "jordan.perera@wso2.example"}}`), nil
 		},
 	}
 	updater := &mockProjectUpdater{}
@@ -539,7 +539,7 @@ func TestProcessProject_SuppressesInternalNoticeWhenNudgeGoesToSameRealRecipient
 	if ntf.sent[0].Kind != notify.KindAMNudge {
 		t.Errorf("Kind = %v, want %v", ntf.sent[0].Kind, notify.KindAMNudge)
 	}
-	if ntf.sent[0].Recipient != "rukshan@wso2.example" {
-		t.Errorf("Recipient = %q, want %q", ntf.sent[0].Recipient, "rukshan@wso2.example")
+	if ntf.sent[0].Recipient != "jordan.perera@wso2.example" {
+		t.Errorf("Recipient = %q, want %q", ntf.sent[0].Recipient, "jordan.perera@wso2.example")
 	}
 }

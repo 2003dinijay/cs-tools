@@ -20,7 +20,7 @@ import "testing"
 
 func TestAccountManagerEmail_ReturnsEmailWhenPopulated(t *testing.T) {
 	email := "am@wso2.example"
-	am := &PersonRef{ID: "am-1", Name: "Rukshan Kuruppu", Email: &email}
+	am := &PersonRef{ID: "am-1", Name: "Jordan Perera", Email: &email}
 
 	if got := AccountManagerEmail(am); got != email {
 		t.Errorf("AccountManagerEmail() = %q, want %q", got, email)
@@ -34,7 +34,7 @@ func TestAccountManagerEmail_ReturnsEmptyWhenNoAccountManager(t *testing.T) {
 }
 
 func TestAccountManagerEmail_ReturnsEmptyWhenAccountManagerHasNoEmail(t *testing.T) {
-	am := &PersonRef{ID: "am-1", Name: "Rukshan Kuruppu", Email: nil}
+	am := &PersonRef{ID: "am-1", Name: "Jordan Perera", Email: nil}
 
 	if got := AccountManagerEmail(am); got != "" {
 		t.Errorf("AccountManagerEmail() = %q, want \"\"", got)
