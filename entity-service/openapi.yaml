@@ -872,9 +872,10 @@ paths:
       summary: Create a comment on any supported reference entity.
       description: >-
         The reference-generic comment-create path, used for reference types that have
-        no dedicated create-comment route of their own (change request, incident,
-        conversation, deployment). Cases have their own route at
-        POST /cases/{id}/comments.
+        no dedicated create-comment route of their own: change_request, incident,
+        conversation and deployment. referenceType `case` is rejected with 400: case
+        comments are owned by POST /cases/{id}/comments, which applies the
+        case-specific rules.
       operationId: createComment
       requestBody:
         required: true
@@ -4826,7 +4827,11 @@ components:
           format: uuid
           description: UUID of the entity the comment belongs to.
         referenceType:
-          $ref: '#/components/schemas/ReferenceType'
+          allOf:
+            - $ref: '#/components/schemas/ReferenceType'
+          description: >-
+            One of conversation, change_request, deployment or incident. `case` is
+            not accepted here; use POST /cases/{id}/comments instead.
         type:
           type: string
           enum: [work_note, comment, activity]
@@ -5562,10 +5567,12 @@ components:
           type: string
         plannedStartDate:
           type: string
-          format: date-time
+          description: Planned start date and time (format YYYY-MM-DD HH:MM:SS).
+          pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
         plannedEndDate:
           type: string
-          format: date-time
+          description: Planned end date and time (format YYYY-MM-DD HH:MM:SS).
+          pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
         comment:
           type: string
         workNote:

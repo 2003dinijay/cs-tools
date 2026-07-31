@@ -56,20 +56,18 @@ func upstreamErrors(fallback string) []upstreamErrorCase {
 		{"apierror 503", &apierror.Error{StatusCode: http.StatusServiceUnavailable}, http.StatusServiceUnavailable, fallback},
 		{"apierror 504", &apierror.Error{StatusCode: http.StatusGatewayTimeout}, http.StatusServiceUnavailable, fallback},
 		{"apierror unmapped (418)", &apierror.Error{StatusCode: http.StatusTeapot}, http.StatusInternalServerError, fallback},
-		// A 500 is not always opaque: the entity service forwards a real reason from
-		// the layer below (a rejected state transition, a payload validation
-		// failure). Discarding it is what turned precise rejections into
-		// "Failed to update ..." for every call site of mapUpstreamError.
-		{"apierror 500 JSON envelope body surfaces upstream message", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: `{"code":500,"message":"Invalid state transition: the change request is not in a state that allows this action."}`}, http.StatusInternalServerError, "Invalid state transition: the change request is not in a state that allows this action."},
-		{"apierror 500 generic upstream envelope is surfaced verbatim", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: `{"code":500,"message":"internal server error"}`}, http.StatusInternalServerError, "internal server error"},
+		// The default branch never surfaces the upstream body, whatever its shape: a
+		// 5xx or unmapped upstream failure is not caller-actionable, and this branch
+		// is the error path for several clients (the identity provider's among them),
+		// so a well-formed envelope proves shape, not that the content is safe to
+		// show a portal client. Caller-actionable reasons come through the 4xx
+		// branches above.
+		{"apierror 500 JSON envelope body is not echoed", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: `{"code":500,"message":"Invalid state transition: the change request is not in a state that allows this action."}`}, http.StatusInternalServerError, fallback},
 		{"apierror 500 empty body falls back", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: ""}, http.StatusInternalServerError, fallback},
-		// The strict extractor is deliberate: this branch is also fed the identity
-		// provider's errors, whose bodies are not the {"code","message"} envelope.
-		// A foreign or malformed body must never be echoed to the caller.
 		{"apierror 500 foreign body is not echoed", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: `{"schemas":["urn:ietf:params:scim:api:messages:2.0:Error"],"detail":"internal identity provider detail","status":"500"}`}, http.StatusInternalServerError, fallback},
 		{"apierror 500 malformed JSON body is not echoed", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: `{not valid json`}, http.StatusInternalServerError, fallback},
 		{"apierror 500 plain text body is not echoed", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: `goroutine 1 [running]: internal stack detail`}, http.StatusInternalServerError, fallback},
-		{"apierror unmapped (418) with envelope body surfaces message", &apierror.Error{StatusCode: http.StatusTeapot, Body: `{"code":418,"message":"upstream reason"}`}, http.StatusInternalServerError, "upstream reason"},
+		{"apierror unmapped (418) with envelope body is not echoed", &apierror.Error{StatusCode: http.StatusTeapot, Body: `{"code":418,"message":"upstream reason"}`}, http.StatusInternalServerError, fallback},
 		{"non-apierror error", errors.New("upstream connection refused"), http.StatusInternalServerError, fallback},
 	}
 }
