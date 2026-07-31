@@ -58,6 +58,7 @@ import type {
   Comment,
 } from "@src/types";
 import { ErrorBoundary } from "@components/common/ErrorBoundary";
+import { CopyIconButton } from "@components/common/CopyIconButton";
 import { SeverityChip, StatusChip } from "@components/support/Chips";
 import { ErrorState } from "@components/support/ErrorState";
 import { ALL_SEVERITIES, SEVERITY_LABELS, TYPE_CONFIG } from "@components/support/config";
@@ -477,12 +478,13 @@ function CaseSummarySection({
   return (
     <Stack gap={1.5}>
       <Stack gap={0.5}>
-        <Stack direction="row" alignItems="center" gap={1}>
+        <Stack direction="row" alignItems="center" gap={0.5}>
           <Icon size={pxToRem(18)} color={color} />
           <Typography variant="subtitle2" color="text.secondary">
             {caseDetail.number}
             {caseDetail.wso2Id ? ` · ${caseDetail.wso2Id}` : ""}
           </Typography>
+          <CopyIconButton value={caseDetail.wso2Id || caseDetail.number} aria-label="Copy case ID" />
         </Stack>
 
         <Typography variant="h6">{caseDetail.subject}</Typography>
