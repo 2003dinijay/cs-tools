@@ -34,7 +34,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { useParams } from "react-router";
+import { useLocation, useParams } from "react-router";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
@@ -171,6 +171,11 @@ const TAB_DEFS: Array<{ id: IncidentTabId; label: string; icon: JSX.Element }> =
 export default function CsmIncidentDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavTransition();
+  // Prefer the list URL the row link captured (if any) so "back" returns to
+  // the exact view the engineer came from, falling back to the bare tab path
+  // for a bookmarked or directly-linked incident.
+  const backState = useLocation().state as { from?: string } | undefined;
+  const backTarget = backState?.from ?? OPERATIONS_INCIDENTS_PATH;
   const { data, isLoading, isError } = useGetIncident(id);
   const { showError } = useErrorBanner();
   const patchIncident = usePatchIncident();
@@ -282,7 +287,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   );
 
   const back = (): void => {
-    navigate(OPERATIONS_INCIDENTS_PATH);
+    navigate(backTarget);
   };
 
   const BackButton = (

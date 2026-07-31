@@ -15,7 +15,7 @@
 // under the License.
 
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { BeChangeRequestDetail } from "@api/backend/types";
@@ -42,6 +42,7 @@ vi.mock("@api/backend/client", () => ({
 
 vi.mock("react-router", () => ({
   useParams: () => ({ id: "chg-1" }),
+  useLocation: () => ({ pathname: "/operations/change-requests/chg-1", search: "", state: undefined }),
 }));
 vi.mock("@hooks/useNavTransition", () => ({
   useNavTransition: () => navigateMock,
@@ -103,6 +104,12 @@ function mockQueryResult(
   });
 }
 
+beforeEach(() => {
+  navigateMock.mockClear();
+  patchMutateMock.mockClear();
+  showErrorMock.mockClear();
+});
+
 describe("CsmChangeRequestDetailPage", () => {
   it("renders the linked case as a clickable reference to the case route", () => {
     mockQueryResult({ data: BASE_CR });
@@ -121,6 +128,52 @@ describe("CsmChangeRequestDetailPage", () => {
     render(<CsmChangeRequestDetailPage />);
     const linkedCaseCell = screen.getByText("Linked case").parentElement!;
     expect(within(linkedCaseCell).getByText("—")).toBeInTheDocument();
+  });
+});
+
+describe("CsmChangeRequestDetailPage — Clone", () => {
+  it("navigates to the create form with router state built from this record", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_CR,
+        description: "<p>Upgrade the gateway.</p>",
+        impact: "high",
+        assignedEngineer: { id: "user-1", name: "Jane Doe" },
+      },
+    });
+    render(<CsmChangeRequestDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: /clone/i }));
+    expect(navigateMock).toHaveBeenCalledWith(
+      "/operations/change-requests/new",
+      expect.objectContaining({
+        state: expect.objectContaining({
+          sourceNumber: "CHG0009988",
+          subject: "Upgrade the gateway cluster",
+          type: "normal",
+          impact: "high",
+          assignedEngineerId: "user-1",
+          assignedEngineerLabel: "Jane Doe",
+        }),
+      }),
+    );
+  });
+
+  it("never puts the deployment, state, or approval fields into the clone's router state", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_CR,
+        deployment: { id: "dep-1", name: "prod" },
+        state: "closed",
+        hasCustomerApproved: true,
+      },
+    });
+    render(<CsmChangeRequestDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: /clone/i }));
+    const [, options] = navigateMock.mock.calls[0];
+    const keys = Object.keys(options.state);
+    expect(keys).not.toContain("deployment");
+    expect(keys).not.toContain("state");
+    expect(keys).not.toContain("hasCustomerApproved");
   });
 });
 

@@ -43,6 +43,7 @@ vi.mock("@api/backend/client", () => ({
 
 vi.mock("react-router", () => ({
   useParams: () => ({ id: "inc-1" }),
+  useLocation: () => ({ pathname: "/operations/incidents/inc-1", search: "", state: undefined }),
 }));
 vi.mock("@hooks/useNavTransition", () => ({
   useNavTransition: () => navigateMock,
