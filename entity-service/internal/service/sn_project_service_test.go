@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
@@ -74,5 +75,75 @@ func TestSNProjectService_SearchProjects_MapsAccountRef(t *testing.T) {
 	noAccount := resp.Projects[1]
 	if noAccount.Account != nil {
 		t.Fatalf("expected nil Account for project with no linked account, got %+v", noAccount.Account)
+	}
+}
+
+// TestSNProjectService_SearchProjects_MapsStartDate verifies that the date-only
+// startDate from ServiceNow's project search response is parsed into
+// domain.ProjectView.StartDate, and that a null or absent startDate maps to a
+// nil pointer rather than a zero time (which would serialize as year 0001).
+func TestSNProjectService_SearchProjects_MapsStartDate(t *testing.T) {
+	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"projects": []map[string]any{
+				{
+					"id": "11111111111111111111111111111111", "name": "With start date", "key": "WSD",
+					"type":      map[string]any{"name": "Subscription"},
+					"startDate": "2026-03-15", "endDate": "2027-03-14",
+					"createdOn": "2024-01-01 00:00:00",
+					"account":   map[string]any{"id": "", "name": ""},
+				},
+				{
+					"id": "22222222222222222222222222222222", "name": "Null start date", "key": "NSD",
+					"type":      map[string]any{"name": "Subscription"},
+					"startDate": nil, "endDate": "",
+					"createdOn": "2024-01-01 00:00:00",
+					"account":   map[string]any{"id": "", "name": ""},
+				},
+				{
+					// startDate key omitted entirely.
+					"id": "33333333333333333333333333333333", "name": "Absent start date", "key": "ASD",
+					"type":    map[string]any{"name": "Subscription"},
+					"endDate": "", "createdOn": "2024-01-01 00:00:00",
+					"account": map[string]any{"id": "", "name": ""},
+				},
+			},
+			"totalRecords": 3, "offset": 0, "limit": 10,
+		})
+	}))
+
+	svc := NewServiceNowProjectService(client, nil)
+	resp, err := svc.SearchProjects(contextWithUserIDToken("token"), domain.SearchProjectsRequest{
+		Pagination: domain.Pagination{Limit: 10},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Projects) != 3 {
+		t.Fatalf("expected 3 projects, got %d", len(resp.Projects))
+	}
+
+	withStart := resp.Projects[0]
+	if withStart.StartDate == nil {
+		t.Fatalf("expected non-nil StartDate for project with a start date")
+	}
+	want := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	if !withStart.StartDate.Equal(want) {
+		t.Fatalf("unexpected StartDate: got %v, want %v", *withStart.StartDate, want)
+	}
+	// StartDate must stay distinct from EndDate and CreatedOn.
+	if withStart.EndDate == nil || !withStart.EndDate.Equal(time.Date(2027, 3, 14, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("unexpected EndDate: %v", withStart.EndDate)
+	}
+	if !withStart.CreatedOn.Equal(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("unexpected CreatedOn: %v", withStart.CreatedOn)
+	}
+
+	if got := resp.Projects[1].StartDate; got != nil {
+		t.Fatalf("expected nil StartDate for null startDate, got %v", *got)
+	}
+	if got := resp.Projects[2].StartDate; got != nil {
+		t.Fatalf("expected nil StartDate for absent startDate, got %v", *got)
 	}
 }

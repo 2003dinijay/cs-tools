@@ -462,6 +462,10 @@ type ProjectView struct {
 	Name             string           `json:"name"`
 	Key              string           `json:"key"`
 	SubscriptionType SubscriptionType `json:"subscriptionType"`
+	// StartDate is the start of the project's current renewed period, and is nil
+	// when the backing data source has no start date recorded for this project
+	// (e.g. ServiceNow leaves it blank).
+	StartDate *time.Time `json:"startDate"`
 	// EndDate is nil when the backing data source has no end date recorded
 	// for this project (e.g. ServiceNow leaves it blank).
 	EndDate   *time.Time `json:"endDate"`

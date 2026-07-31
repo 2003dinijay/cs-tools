@@ -3323,13 +3323,24 @@ components:
             - platformer_subscription
             - cloud_support
             - professional_services
+        startDate:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Start of the project's current renewed period. Null when the backing
+            data source has no start date recorded.
         endDate:
           type: string
           format: date-time
           nullable: true
+          description: End of the project's current renewed period.
         createdOn:
           type: string
           format: date-time
+          description: >
+            When the project record was created. Distinct from startDate, which
+            moves forward on each renewal.
         closureState:
           type: string
           nullable: true

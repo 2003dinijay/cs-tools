@@ -55,6 +55,7 @@ type snProject struct {
 	Name      string                  `json:"name"`
 	Key       string                  `json:"key"`
 	Type      snProjectType           `json:"type"`
+	StartDate *string                 `json:"startDate"`
 	EndDate   string                  `json:"endDate"`
 	CreatedOn string                  `json:"createdOn"`
 	Account   snProjectSummaryAccount `json:"account"`
@@ -165,6 +166,14 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 		if err != nil {
 			return domain.SearchProjectsResponse{}, fmt.Errorf("sn projects: project %q: %w", p.ID, err)
 		}
+		var startDate *time.Time
+		if p.StartDate != nil && *p.StartDate != "" {
+			parsed, err := time.Parse(snDateLayout, *p.StartDate)
+			if err != nil {
+				return domain.SearchProjectsResponse{}, fmt.Errorf("sn projects: parse startDate %q: %w", *p.StartDate, err)
+			}
+			startDate = &parsed
+		}
 		var endDate *time.Time
 		if p.EndDate != "" {
 			parsed, err := time.Parse(snDateLayout, p.EndDate)
@@ -182,6 +191,7 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 			Name:             p.Name,
 			Key:              p.Key,
 			SubscriptionType: subType,
+			StartDate:        startDate,
 			EndDate:          endDate,
 			CreatedOn:        createdOn,
 			Account:          account,
