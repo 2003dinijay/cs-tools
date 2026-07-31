@@ -24,7 +24,7 @@ const updateTypeSecurity = "security"
 const updateTypeRegular = "regular"
 
 // ---- upstream (snake-case) types ----
-// These mirror the record types defined in modules/updates/types.bal.
+// These mirror the record types defined by the upstream updates service.
 
 type upstreamProductUpdateLevel struct {
 	ProductName         string               `json:"product-name"`
@@ -82,7 +82,7 @@ type upstreamSecurityAdvisory struct {
 }
 
 // ---- portal (camelCase) types ----
-// These mirror the types defined in modules/types/types.bal and are what the
+// These mirror the upstream service's shared types and are what the
 // CSM portal returns to its callers.
 
 // ProductUpdateLevel is the portal response shape for a product's update levels.

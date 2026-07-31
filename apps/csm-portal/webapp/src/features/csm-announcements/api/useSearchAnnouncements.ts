@@ -46,7 +46,7 @@ import type {
  * (No severity filter — announcements don't carry a severity of their own.)
  *
  * Creating / targeting / unpublishing announcements is not covered here — it
- * needs the dedicated announcement backend (digiops-cs#2053), which isn't
+ * needs the dedicated announcement backend, tracked separately, which isn't
  * built yet. `page` is zero-based (MUI `TablePagination`); `pageSize` is the
  * row limit.
  */

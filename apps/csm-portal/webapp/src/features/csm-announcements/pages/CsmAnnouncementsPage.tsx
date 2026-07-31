@@ -132,8 +132,8 @@ function MultiSelect<T extends string>({
  * Read-only announcements list. Announcements are cases of
  * `type: "announcement"` surfaced via `POST /cases/search`. Filterable by
  * state and project (all default to "show all"). Creating /
- * targeting / unpublishing needs the dedicated announcement backend
- * (digiops-cs#2053), which isn't built yet, so this page is view-only for now.
+ * targeting / unpublishing needs the dedicated announcement backend,
+ * tracked separately, which isn't built yet, so this page is view-only for now.
  */
 export default function CsmAnnouncementsPage(): JSX.Element {
   const [filters, setFilters] = useState<AnnouncementFilters>(DEFAULT_ANNOUNCEMENT_FILTERS);

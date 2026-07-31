@@ -17,7 +17,7 @@
 package scim
 
 // ---- upstream (SCIM wire) types ----
-// These mirror the record types in modules/scim/types.bal.
+// These mirror the upstream service's SCIM record types.
 
 type scimSearchRequest struct {
 	Domain     string   `json:"domain"`

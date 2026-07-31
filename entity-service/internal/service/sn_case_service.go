@@ -81,36 +81,36 @@ type snCase struct {
 	ResolvedOn      *string `json:"resolvedOn"`
 	// WatchList carries the watchers on the case (four SN glide_lists collapsed into one
 	// list by Ballerina). Confirmed present on the Choreo GET /cases/{id} response
-	// (CaseResponse.watchList in digiops-cs modules/servicenow/types.bal).
+	// (the corresponding field in the backing service's case response).
 	WatchList []snWatchListUser `json:"watchList"`
 	// AutoclosureStep/AutoclosureStateTime surface ServiceNow's real staged auto-closure
 	// sequence (u_autoclosure_step / u_autoclosure_state_time), confirmed live against a
-	// held case on wso2sndev (see EntityLayerSpec-2026-07-23.md item 6). Ballerina's
-	// Case/CaseResponse carry matching autoclosureStep/autoclosureStateTime fields (added
-	// on the ballerina-case-field-additions branch, not yet merged to digiops-cs main --
-	// the closest field on main today, hasAutoClosed, means something different: case has
-	// already been auto-closed, not "where the case sits in the auto-closure sequence").
+	// held case on the dev tenant. Ballerina's
+	// Case/CaseResponse carry matching autoclosureStep/autoclosureStateTime fields (not
+	// yet available in the backing service -- the closest field it exposes today,
+	// hasAutoClosed, means something different: case has already been auto-closed, not
+	// "where the case sits in the auto-closure sequence").
 	AutoclosureStep *string `json:"autoclosureStep"`
 	// AutoclosureStateTime is when the auto-closure sequence next advances (e.g. the
 	// "eligible again after" date for a held case).
 	AutoclosureStateTime *string `json:"autoclosureStateTime"`
 	// BestCaseFixEta is the internal-only best-case fix-commitment date
-	// (u_best_case_fix_eta). Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina field currently
-	// surfaces this — the Choreo GET /cases/{id} response does not include a
-	// "bestCaseFixEta" key today, so this always unmarshals to nil. Ask: add a
-	// "bestCaseFixEta" (glide_date) field to servicenow:CaseResponse.
+	// (u_best_case_fix_eta). Not yet available in the backing service: no Ballerina
+	// field currently surfaces this — the Choreo GET /cases/{id} response does not
+	// include a "bestCaseFixEta" key today, so this always unmarshals to nil. Ask:
+	// add a "bestCaseFixEta" (glide_date) field to the case response.
 	BestCaseFixEta *string `json:"bestCaseFixEta"`
 	// MostLikelyFixEta is the internal-only most-likely fix-commitment date
-	// (u_most_likely_fix_eta). Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina field currently
-	// surfaces this — the Choreo GET /cases/{id} response does not include a
-	// "mostLikelyFixEta" key today, so this always unmarshals to nil. Ask: add a
-	// "mostLikelyFixEta" (glide_date) field to servicenow:CaseResponse.
+	// (u_most_likely_fix_eta). Not yet available in the backing service: no Ballerina
+	// field currently surfaces this — the Choreo GET /cases/{id} response does not
+	// include a "mostLikelyFixEta" key today, so this always unmarshals to nil. Ask:
+	// add a "mostLikelyFixEta" (glide_date) field to the case response.
 	MostLikelyFixEta *string `json:"mostLikelyFixEta"`
 	// WorstCaseFixEta is the internal-only worst-case fix-commitment date
-	// (u_worst_case_fix_eta). Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina field currently
-	// surfaces this — the Choreo GET /cases/{id} response does not include a
-	// "worstCaseFixEta" key today, so this always unmarshals to nil. Ask: add a
-	// "worstCaseFixEta" (glide_date) field to servicenow:CaseResponse.
+	// (u_worst_case_fix_eta). Not yet available in the backing service: no Ballerina
+	// field currently surfaces this — the Choreo GET /cases/{id} response does not
+	// include a "worstCaseFixEta" key today, so this always unmarshals to nil. Ask:
+	// add a "worstCaseFixEta" (glide_date) field to the case response.
 	WorstCaseFixEta *string `json:"worstCaseFixEta"`
 }
 
@@ -160,8 +160,7 @@ type snCaseAccount struct {
 	// CreTeam and SreTeam resolve the account's CRE/SRE group refs. Per the project
 	// owner's resolution, SN's u_integration_cs_team maps to CreTeam and u_sre_team maps
 	// to SreTeam -- both refs to sys_user_group. Ballerina's Case/CaseResponse.account
-	// gained matching fields on ballerina-case-field-additions, not yet merged to
-	// digiops-cs main.
+	// gained matching fields, but they are not yet available in the backing service.
 	CreTeam *snCaseEntityRef `json:"creTeam"`
 	SreTeam *snCaseEntityRef `json:"sreTeam"`
 }
@@ -289,7 +288,8 @@ type snCaseFilters struct {
 	WorkStateKeys      []int    `json:"workStateKeys,omitempty"`
 	AssignedUserIDs    []string `json:"assignedUserIds,omitempty"`
 	ProductNames       []string `json:"productNames,omitempty"`
-	// Tags: Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main), see domain.SearchCasesFilters.Tags doc comment.
+	// Tags: not yet available in the backing service, see the
+	// domain.SearchCasesFilters.Tags doc comment.
 	// Forwarded to Choreo so filtering starts working the moment Ballerina adds
 	// support, but the current POST /cases/search contract ignores this field.
 	Tags []string `json:"tags,omitempty"`
@@ -697,7 +697,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	if c.Account != nil {
 		cv.AccountDetails = &domain.AccountRef{ID: sysidToUUID(c.Account.ID), Name: c.Account.Name, Type: c.Account.Type}
 		// CRE/SRE team (see snCaseAccount.CreTeam/SreTeam doc comment) pass through once
-		// Ballerina's matching fields land on digiops-cs main; until then these are nil.
+		// the backing service exposes the matching fields; until then these are nil.
 		if c.Account.CreTeam != nil {
 			if id := sysidToUUID(c.Account.CreTeam.ID); id != "" {
 				cv.AccountDetails.CreTeam = &domain.EntityRef{ID: id, Name: c.Account.CreTeam.Name}
@@ -748,8 +748,8 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		}
 		cv.WatchList = wl
 	}
-	// AutoclosureStep/AutoclosureStateTime pass through once Ballerina's matching fields
-	// (see snCase field doc comments) land on digiops-cs main; until then these are nil.
+	// AutoclosureStep/AutoclosureStateTime pass through once the backing service exposes
+	// the matching fields (see snCase field doc comments); until then these are nil.
 	cv.AutoclosureStep = c.AutoclosureStep
 	if c.AutoclosureStateTime != nil && *c.AutoclosureStateTime != "" {
 		autoclosureStateTime, err := time.Parse(snCreatedOnLayout, *c.AutoclosureStateTime)
@@ -771,8 +771,8 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	if c.WorstCaseFixEta != nil && *c.WorstCaseFixEta != "" {
 		cv.WorstCaseFixEta = c.WorstCaseFixEta
 	}
-	// Tags are not populated: Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main), see CaseView.Tags doc comment.
-	// cv.Tags is left nil.
+	// Tags are not populated: not yet available in the backing service, see the
+	// CaseView.Tags doc comment. cv.Tags is left nil.
 
 	return cv, nil
 }
@@ -965,24 +965,23 @@ type snUpdateCasePayload struct {
 	ResolutionCode *int     `json:"resolutionCode,omitempty"`
 	Cause          *string  `json:"cause,omitempty"`
 	CloseNotes     *string  `json:"closeNotes,omitempty"`
-	// ParentID writes the native task.parent field. Confirmed already supported by
-	// digiops-cs (servicenow:CaseUpdatePayload.parentId + validateCaseUpdatePayload in
-	// utils.bal already validate it as an exactly-one-field option) -- fully wired.
+	// ParentID writes the native task.parent field. Confirmed already supported by the
+	// backing service's case-update payload and its validation, which already accept it
+	// as an exactly-one-field option -- fully wired.
 	ParentID *string `json:"parentId,omitempty"`
 	// RelatedCaseID writes the looser, non-hierarchical u_related_case cross-link.
-	// servicenow:CaseUpdatePayload's relatedCaseId field + validateCaseUpdatePayload
-	// support (ballerina-case-field-additions branch, not yet merged to digiops-cs main).
+	// A matching field on the backing service's case-update payload and its validation
+	// exists, but is not yet available in the backing service.
 	RelatedCaseID *string `json:"relatedCaseId,omitempty"`
 	// AutocloseHoldUntil places the case on hold in ServiceNow's staged auto-closure
 	// sequence, internally setting u_autoclosure_step = ON_HOLD and
-	// u_autoclosure_state_time = this date together. Matching field on
-	// servicenow:CaseUpdatePayload added on ballerina-case-field-additions, not yet
-	// merged to digiops-cs main.
+	// u_autoclosure_state_time = this date together. A matching field on the backing
+	// service's case-update payload exists, but is not yet available in the backing
+	// service.
 	AutocloseHoldUntil *string `json:"autocloseHoldUntil,omitempty"`
 	// Title/Description/DeploymentID/DeployedProductID as PATCH-time fields (previously
-	// servicenow:CaseUpdatePayload only supported these at create time, via
-	// CaseCreatePayload) -- added on ballerina-case-field-additions, not yet merged to
-	// digiops-cs main.
+	// the backing service's case-update payload only supported these at create time, via
+	// the case-create payload) -- not yet available in the backing service.
 	Title             *string `json:"title,omitempty"`
 	Description       *string `json:"description,omitempty"`
 	DeploymentID      *string `json:"deploymentId,omitempty"`
@@ -2092,12 +2091,13 @@ func snWorkStateLabelToEnum(ws *snCaseLabel) *domain.CaseWorkState {
 
 // snAddTagPayload is the Choreo POST /cases/{id}/tags request body.
 //
-// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina/Choreo endpoint exists yet for this. SN's
-// tagging is the generic platform label/label_entry mechanism (table-agnostic,
-// not a case column), so a new adapter is needed -- ask: add
+// Not yet available in the backing service: no Ballerina/Choreo endpoint exists yet
+// for this. SN's tagging is the generic platform label/label_entry mechanism
+// (table-agnostic, not a case column), so a new adapter is needed -- ask: add
 // POST /cases/{id}/tags (body: {"label": string}) and
-// DELETE /cases/{id}/tags/{tagId} to servicenow.bal, backed by the sys_label /
-// label_entry tables scoped to reference_table="sn_customerservice_case".
+// DELETE /cases/{id}/tags/{tagId} to the backing service's case API, backed by the
+// sys_label / label_entry tables scoped to
+// reference_table="sn_customerservice_case".
 type snAddTagPayload struct {
 	Label string `json:"label"`
 }
@@ -2116,8 +2116,8 @@ type snAddTagResponse struct {
 
 // AddCaseTag attaches a free-text label to the case identified by caseID.
 //
-// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): see snAddTagPayload doc comment. This is implemented so
-// the entity-service side is ready the moment Ballerina adds the endpoint;
+// Not yet available in the backing service: see snAddTagPayload doc comment. This
+// is implemented so the entity-service side is ready the moment Ballerina adds it;
 // until then, calling it returns a downstream error (no such Choreo route today).
 func (s *snCaseService) AddCaseTag(ctx context.Context, caseID, label string) (domain.Tag, error) {
 	if err := validateUUIDs("id", []string{caseID}); err != nil {
@@ -2149,7 +2149,8 @@ func (s *snCaseService) AddCaseTag(ctx context.Context, caseID, label string) (d
 
 // RemoveCaseTag removes the tag identified by tagID from the case identified by caseID.
 //
-// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): see snAddTagPayload doc comment (no such Choreo route today).
+// Not yet available in the backing service: see snAddTagPayload doc comment (no
+// such Choreo route today).
 func (s *snCaseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) error {
 	if err := validateUUIDs("id", []string{caseID}); err != nil {
 		return err
@@ -2172,12 +2173,12 @@ type snSearchTagsResponse struct {
 // SearchTags returns the tags (not scoped to any single case) whose label matches query, for
 // FE autocomplete when attaching a tag to a case.
 //
-// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina/Choreo endpoint exists yet for this.
+// Not yet available in the backing service: no Ballerina/Choreo endpoint exists yet for this.
 // SN's tagging is the generic platform label mechanism (table-agnostic, not a case column), so
 // listing/searching existing labels needs a new adapter -- ask: add
 // GET /tags/search?q={query}&limit={limit} (response: {"tags": [{"id", "label", "color"}]}) to
-// servicenow.bal, backed by the sys_label table (optionally scoped to labels used against
-// reference_table="sn_customerservice_case" label_entry rows). This is implemented so the
+// the backing service's case API, backed by the sys_label table (optionally scoped to labels
+// used against reference_table="sn_customerservice_case" label_entry rows). This is so the
 // entity-service side is ready the moment Ballerina adds the endpoint; until then, calling it
 // returns a downstream error (no such Choreo route today).
 func (s *snCaseService) SearchTags(ctx context.Context, query string, limit int) ([]domain.Tag, error) {
