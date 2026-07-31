@@ -2176,6 +2176,25 @@ export interface BeIncidentSearchPayload {
     searchQuery?: string;
     priorities?: BeIncidentPriority[];
     parentIds?: string[];
+    /**
+     * At least one breached SLA record (optional). `false` and omitted are
+     * identical to the backend — it applies no SLA restriction either way,
+     * `false` does NOT mean "SLA met" — so callers should omit this key
+     * entirely rather than send `false`.
+     */
+    slaViolated?: boolean;
+    /** Inclusive UTC bound on the creation timestamp: `YYYY-MM-DDTHH:MM:SSZ`. */
+    startCreatedDate?: string;
+    /** Inclusive UTC bound on the creation timestamp: `YYYY-MM-DDTHH:MM:SSZ`. */
+    endCreatedDate?: string;
+    /**
+     * Union match on the name of the service the incident relates to
+     * (optional). Incidents carry no product dimension of their own, so this
+     * resolves against the related service's name, which is only ~43%
+     * populated and mixes real products with customer names and service
+     * categories — filtering by this misses roughly half of all incidents.
+     */
+    productNames?: string[];
   };
   sortBy?: {
     field?: "createdOn" | "updatedOn" | "openedOn";

@@ -15,7 +15,13 @@
 // under the License.
 
 import { describe, expect, it } from "vitest";
-import { getLegalNextIncidentStates } from "@features/csm-operations/utils/incidents";
+import {
+  buildIncidentSearchFilters,
+  countActiveIncidentFilters,
+  DEFAULT_INCIDENT_FILTERS,
+  getLegalNextIncidentStates,
+  type IncidentFilters,
+} from "@features/csm-operations/utils/incidents";
 import type { BeIncidentState } from "@api/backend/types";
 
 describe("getLegalNextIncidentStates", () => {
@@ -38,5 +44,110 @@ describe("getLegalNextIncidentStates", () => {
   it("treats CLOSED and CANCELLED as terminal (no outgoing transitions)", () => {
     expect(getLegalNextIncidentStates("CLOSED")).toHaveLength(1);
     expect(getLegalNextIncidentStates("CANCELLED")).toHaveLength(1);
+  });
+});
+
+describe("buildIncidentSearchFilters", () => {
+  it("returns an empty object for the default filters and no search", () => {
+    expect(buildIncidentSearchFilters(DEFAULT_INCIDENT_FILTERS, "")).toEqual({});
+  });
+
+  it("omits slaViolated entirely when the toggle is off", () => {
+    const filters: IncidentFilters = { ...DEFAULT_INCIDENT_FILTERS, slaViolated: false };
+    const built = buildIncidentSearchFilters(filters, "");
+    expect(built).not.toHaveProperty("slaViolated");
+    expect(Object.keys(built)).toEqual([]);
+  });
+
+  it("sends slaViolated: true, never false, when the toggle is on", () => {
+    const filters: IncidentFilters = { ...DEFAULT_INCIDENT_FILTERS, slaViolated: true };
+    expect(buildIncidentSearchFilters(filters, "")).toEqual({ slaViolated: true });
+  });
+
+  it("produces exact inclusive UTC bounds for a whole-day range", () => {
+    // Verified against the real data source (see the API description on
+    // BeIncidentSearchPayload): an inclusive May 2026 range is
+    // 2026-05-01T00:00:00Z .. 2026-05-31T23:59:59Z, not the next midnight —
+    // the upstream date API silently truncates a bound to date-only, so
+    // T00:00:00Z of 2026-06-01 would drop all of May 31st without erroring.
+    const filters: IncidentFilters = {
+      ...DEFAULT_INCIDENT_FILTERS,
+      createdStartDate: "2026-05-01",
+      createdEndDate: "2026-05-31",
+    };
+    expect(buildIncidentSearchFilters(filters, "")).toEqual({
+      startCreatedDate: "2026-05-01T00:00:00Z",
+      endCreatedDate: "2026-05-31T23:59:59Z",
+    });
+  });
+
+  it("includes only the start bound when only createdStartDate is set", () => {
+    const filters: IncidentFilters = { ...DEFAULT_INCIDENT_FILTERS, createdStartDate: "2026-05-01" };
+    const built = buildIncidentSearchFilters(filters, "");
+    expect(built).toEqual({ startCreatedDate: "2026-05-01T00:00:00Z" });
+    expect(built).not.toHaveProperty("endCreatedDate");
+  });
+
+  it("includes productNames only when at least one product is selected", () => {
+    expect(buildIncidentSearchFilters(DEFAULT_INCIDENT_FILTERS, "")).not.toHaveProperty(
+      "productNames",
+    );
+    const filters: IncidentFilters = {
+      ...DEFAULT_INCIDENT_FILTERS,
+      products: ["Choreo", "Asgardeo"],
+    };
+    expect(buildIncidentSearchFilters(filters, "")).toEqual({
+      productNames: ["Choreo", "Asgardeo"],
+    });
+  });
+
+  it("includes priorities and searchQuery alongside the new filters", () => {
+    const filters: IncidentFilters = {
+      search: "",
+      priorities: ["CRITICAL", "HIGH"],
+      slaViolated: true,
+      createdStartDate: "2026-05-01",
+      createdEndDate: "2026-05-31",
+      products: ["Choreo"],
+    };
+    expect(buildIncidentSearchFilters(filters, "timeout")).toEqual({
+      searchQuery: "timeout",
+      priorities: ["CRITICAL", "HIGH"],
+      slaViolated: true,
+      startCreatedDate: "2026-05-01T00:00:00Z",
+      endCreatedDate: "2026-05-31T23:59:59Z",
+      productNames: ["Choreo"],
+    });
+  });
+});
+
+describe("countActiveIncidentFilters", () => {
+  it("counts 0 for the defaults", () => {
+    expect(countActiveIncidentFilters(DEFAULT_INCIDENT_FILTERS)).toBe(0);
+  });
+
+  it("counts each of the new filters independently", () => {
+    expect(
+      countActiveIncidentFilters({ ...DEFAULT_INCIDENT_FILTERS, slaViolated: true }),
+    ).toBe(1);
+    expect(
+      countActiveIncidentFilters({ ...DEFAULT_INCIDENT_FILTERS, createdStartDate: "2026-05-01" }),
+    ).toBe(1);
+    expect(
+      countActiveIncidentFilters({ ...DEFAULT_INCIDENT_FILTERS, createdEndDate: "2026-05-31" }),
+    ).toBe(1);
+    expect(
+      countActiveIncidentFilters({ ...DEFAULT_INCIDENT_FILTERS, products: ["Choreo"] }),
+    ).toBe(1);
+    expect(
+      countActiveIncidentFilters({
+        ...DEFAULT_INCIDENT_FILTERS,
+        slaViolated: true,
+        createdStartDate: "2026-05-01",
+        createdEndDate: "2026-05-31",
+        products: ["Choreo"],
+        priorities: ["HIGH"],
+      }),
+    ).toBe(5);
   });
 });

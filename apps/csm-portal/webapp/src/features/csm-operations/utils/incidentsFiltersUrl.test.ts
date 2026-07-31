@@ -29,16 +29,48 @@ describe("readIncidentFiltersFromUrl", () => {
   });
 
   it("parses a fully-populated query string", () => {
-    const params = new URLSearchParams("incQ=timeout&incPriorities=HIGH,LOW");
+    const params = new URLSearchParams(
+      "incQ=timeout&incPriorities=HIGH,LOW&incSlaViolated=1" +
+        "&incCreatedFrom=2026-05-01&incCreatedTo=2026-05-31&incProducts=Choreo,Asgardeo",
+    );
     expect(readIncidentFiltersFromUrl(params)).toEqual({
       search: "timeout",
       priorities: ["HIGH", "LOW"],
+      slaViolated: true,
+      createdStartDate: "2026-05-01",
+      createdEndDate: "2026-05-31",
+      products: ["Choreo", "Asgardeo"],
     });
   });
 
   it("drops values outside the allowed priority enum", () => {
     const params = new URLSearchParams("incPriorities=HIGH,BOGUS");
     expect(readIncidentFiltersFromUrl(params).priorities).toEqual(["HIGH"]);
+  });
+
+  it("treats any value other than '1' as slaViolated=false", () => {
+    expect(
+      readIncidentFiltersFromUrl(new URLSearchParams("incSlaViolated=true"))
+        .slaViolated,
+    ).toBe(false);
+    expect(
+      readIncidentFiltersFromUrl(new URLSearchParams("incSlaViolated=0"))
+        .slaViolated,
+    ).toBe(false);
+  });
+
+  it("drops a malformed created-date bound", () => {
+    const params = new URLSearchParams("incCreatedFrom=not-a-date&incCreatedTo=2026-13-40");
+    expect(readIncidentFiltersFromUrl(params).createdStartDate).toBe("");
+    expect(readIncidentFiltersFromUrl(params).createdEndDate).toBe("");
+  });
+
+  it("drops blank/whitespace product entries", () => {
+    const params = new URLSearchParams("incProducts=Choreo,%20%20,,Asgardeo");
+    expect(readIncidentFiltersFromUrl(params).products).toEqual([
+      "Choreo",
+      "Asgardeo",
+    ]);
   });
 
   it("does not read the change-requests tab's own `cr...` params", () => {
@@ -56,8 +88,23 @@ describe("writeIncidentFiltersToUrl", () => {
     ).toBe("");
   });
 
-  it("round-trips a non-default filter set", () => {
-    const filters = { search: "timeout", priorities: ["HIGH" as const] };
+  it("omits incSlaViolated when the toggle is off", () => {
+    const params = writeIncidentFiltersToUrl({
+      ...DEFAULT_INCIDENT_FILTERS,
+      slaViolated: false,
+    });
+    expect(params.has("incSlaViolated")).toBe(false);
+  });
+
+  it("round-trips a fully-populated filter set", () => {
+    const filters: typeof DEFAULT_INCIDENT_FILTERS = {
+      search: "timeout",
+      priorities: ["HIGH"],
+      slaViolated: true,
+      createdStartDate: "2026-05-01",
+      createdEndDate: "2026-05-31",
+      products: ["Choreo", "Asgardeo"],
+    };
     const round = readIncidentFiltersFromUrl(writeIncidentFiltersToUrl(filters));
     expect(round).toEqual(filters);
   });

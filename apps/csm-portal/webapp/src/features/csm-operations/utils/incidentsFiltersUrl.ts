@@ -22,7 +22,16 @@ import {
 // URL params owned by the incident filter state. Prefixed (`inc...`) so they
 // can't collide with the same-named params the shared cases view and the
 // change-requests tab keep in the same `?tab=`-switched URL.
-export const INCIDENT_FILTER_PARAM_KEYS = ["incQ", "incPriorities"] as const;
+export const INCIDENT_FILTER_PARAM_KEYS = [
+  "incQ",
+  "incPriorities",
+  "incSlaViolated",
+  "incCreatedFrom",
+  "incCreatedTo",
+  "incProducts",
+] as const;
+
+const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 function parseCsv<T extends string>(raw: string | null, allowed: T[]): T[] {
   if (!raw) return [];
@@ -30,6 +39,42 @@ function parseCsv<T extends string>(raw: string | null, allowed: T[]): T[] {
     .split(",")
     .map((s) => s.trim())
     .filter((s): s is T => (allowed as string[]).includes(s));
+}
+
+/**
+ * Validate a `YYYY-MM-DD` value; anything else — wrong shape, or a shape that
+ * parses to an out-of-range calendar date like `2026-13-99` — is dropped
+ * rather than passed through to the backend. Matches the change-requests
+ * tab's own `parseDateOnly` (`changeRequestsFiltersUrl.ts`); this filter
+ * treats the value as a UTC calendar date (see `IncidentsFilterBar`) rather
+ * than a local one, but the shape validation is the same.
+ */
+function parseDateOnly(raw: string | null): string {
+  const match = raw ? DATE_ONLY_RE.exec(raw) : null;
+  if (!match) return "";
+  const [, year, month, day] = match;
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  const isRealDate =
+    !Number.isNaN(date.getTime()) &&
+    date.getUTCFullYear() === Number(year) &&
+    date.getUTCMonth() === Number(month) - 1 &&
+    date.getUTCDate() === Number(day);
+  return isRealDate ? raw! : "";
+}
+
+/**
+ * Comma-separated product names. Unlike `incPriorities`, this isn't a fixed
+ * enum — arbitrary (non-empty, trimmed) values are accepted, since the
+ * backend's own list is a ~43%-populated, uncontrolled catalogue (see
+ * `IncidentProductMultiSelect`). Blank entries are dropped: the backend
+ * rejects a blank/whitespace product name with a 400.
+ */
+function parseProductsCsv(raw: string | null): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 /**
@@ -44,6 +89,10 @@ export function readIncidentFiltersFromUrl(
   return {
     search: params.get("incQ") ?? "",
     priorities: parseCsv(params.get("incPriorities"), INCIDENT_PRIORITIES),
+    slaViolated: params.get("incSlaViolated") === "1",
+    createdStartDate: parseDateOnly(params.get("incCreatedFrom")),
+    createdEndDate: parseDateOnly(params.get("incCreatedTo")),
+    products: parseProductsCsv(params.get("incProducts")),
   };
 }
 
@@ -55,5 +104,9 @@ export function writeIncidentFiltersToUrl(f: IncidentFilters): URLSearchParams {
   const out = new URLSearchParams();
   if (f.search) out.set("incQ", f.search);
   if (f.priorities.length) out.set("incPriorities", f.priorities.join(","));
+  if (f.slaViolated) out.set("incSlaViolated", "1");
+  if (f.createdStartDate) out.set("incCreatedFrom", f.createdStartDate);
+  if (f.createdEndDate) out.set("incCreatedTo", f.createdEndDate);
+  if (f.products.length) out.set("incProducts", f.products.join(","));
   return out;
 }

@@ -39,6 +39,7 @@ import { useBackendApi } from "@api/backend/client";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { useSearchIncidents } from "@features/csm-operations/api/useSearchIncidents";
 import {
+  buildIncidentSearchFilters,
   DEFAULT_INCIDENT_FILTERS,
   incidentPriorityColor,
   incidentPriorityLabel,
@@ -70,8 +71,10 @@ function formatDate(value?: string | null): string {
 /**
  * Incidents listing for the Operations → Incidents tab. Searches
  * `POST /incidents/search` with server-side pagination, free-text search,
- * and a priority filter (the only filter field the backend supports beyond
- * search — see `IncidentsFilterBar`).
+ * and priority / SLA-violated / created-date-range / product filters (see
+ * `IncidentsFilterBar`). Filter state lives in the URL (tab-prefixed `inc...`
+ * params) rather than local state, so a plain tab switch doesn't reset it and
+ * a filtered list can be bookmarked or shared.
  */
 export default function IncidentsTab(): JSX.Element {
   const navigate = useNavTransition();
@@ -88,14 +91,11 @@ export default function IncidentsTab(): JSX.Element {
 
   const payload = useMemo(
     () => ({
-      filters: {
-        ...(debouncedSearch.length > 0 && { searchQuery: debouncedSearch }),
-        ...(filters.priorities.length > 0 && { priorities: filters.priorities }),
-      },
+      filters: buildIncidentSearchFilters(filters, debouncedSearch),
       sortBy: { field: "createdOn" as const, order: "desc" as const },
       pagination: { offset: page * rowsPerPage, limit: rowsPerPage },
     }),
-    [debouncedSearch, filters.priorities, page, rowsPerPage],
+    [filters, debouncedSearch, page, rowsPerPage],
   );
 
   const { data, isLoading, isError, error, isFetching } = useSearchIncidents(payload);
