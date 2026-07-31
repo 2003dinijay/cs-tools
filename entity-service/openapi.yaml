@@ -458,6 +458,55 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /projects/{id}/contacts/{contactId}:
+    get:
+      summary: Get one contact's attributes for a single project.
+      description: >
+        Returns the contact's roles on this project, their registration state and their
+        notification preference. ServiceNow data source only. Returns 404 when the contact is
+        not a contact on this project — including when their row has no linked contact record
+        and therefore no id to match.
+      operationId: getProjectContact
+      tags: [Projects]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: contactId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The contact's attributes for this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectContact'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Contact not found on this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /projects/{id}/contacts/search:
     post:
       summary: Search contacts for a project.
@@ -3781,6 +3830,13 @@ components:
     ProjectContact:
       type: object
       properties:
+        id:
+          type: string
+          format: uuid
+          description: >
+            The contact's user id, for linking the row to that user's profile. Absent when the
+            row has no contact record linked, or when the backing instance predates the field —
+            render the row unlinked rather than treating it as an error.
         name:
           type: string
         email:

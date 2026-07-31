@@ -97,6 +97,10 @@ type ProjectContactService interface {
 	// SearchProjectContacts returns a paginated list of contacts associated with
 	// the project identified by projectID.
 	SearchProjectContacts(ctx context.Context, projectID string, req domain.SearchProjectContactsRequest) (domain.SearchProjectContactsResponse, error)
+	// GetProjectContact returns one contact's attributes for a single project: their
+	// roles on it, their registration state and their notification preference. A
+	// NotFoundError is returned when that contact is not a contact on that project.
+	GetProjectContact(ctx context.Context, projectID, contactID string) (domain.ProjectContact, error)
 }
 
 // AccountContactService defines the operations available on account contacts.

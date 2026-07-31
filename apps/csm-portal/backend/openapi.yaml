@@ -1448,6 +1448,66 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /projects/{id}/contacts/{contactId}:
+    get:
+      summary: Get one contact's attributes for a single project.
+      description: >
+        Returns the contact's roles on this project, their registration state and their
+        notification preference. Returns 404 when the contact is not a contact on this
+        project — including when their row has no linked contact record and therefore no id
+        to match.
+      operationId: getProjectContact
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: contactId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The contact's attributes for this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectContact'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Contact not found on this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /projects/{id}/contacts/search:
     post:
       summary: Search contacts on a project.
@@ -6273,6 +6333,30 @@ components:
                   default: 20
                   maximum: 100
 
+    ProjectContact:
+      type: object
+      description: A contact's attributes for one project.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: >
+            The contact's user id, for linking the row to that user's profile. Absent when the
+            row has no contact record linked, or when the backing instance predates the field —
+            render the row unlinked rather than treating it as an error.
+        name:
+          type: string
+        email:
+          type: string
+        registrationState:
+          type: string
+        notificationsEnabled:
+          type: boolean
+        roles:
+          type: array
+          items:
+            type: string
+
     ProjectContactSearchResponse:
       type: object
       properties:
@@ -6281,6 +6365,13 @@ components:
           items:
             type: object
             properties:
+              id:
+                type: string
+                format: uuid
+                description: >
+                  The contact's user id, for linking the row to that user's profile. Absent when the
+                  row has no contact record linked, or when the backing instance predates the field —
+                  render the row unlinked rather than treating it as an error.
               name:
                 type: string
               email:

@@ -155,3 +155,41 @@ func TestUsersHandler_GetUser(t *testing.T) {
 		}
 	})
 }
+
+func TestProjectHandler_GetProjectContact(t *testing.T) {
+	t.Run("rejects an unauthenticated caller", func(t *testing.T) {
+		h := NewProjectHandler(&mockEntityProjectClient{})
+		w := httptest.NewRecorder()
+		h.GetProjectContact(w, httptest.NewRequest(http.MethodGet, "/projects/p/contacts/c", nil))
+		assertStatus(t, w, http.StatusUnauthorized)
+	})
+
+	t.Run("passes both path ids through", func(t *testing.T) {
+		var gotProject, gotContact string
+		h := NewProjectHandler(&mockEntityProjectClient{
+			getProjectContactFn: func(_ context.Context, projectID, contactID string) ([]byte, error) {
+				gotProject, gotContact = projectID, contactID
+				return []byte(`{"id":"` + contactID + `","registrationState":"REGISTERED"}`), nil
+			},
+		})
+		r := withUser(httptest.NewRequest(http.MethodGet, "/projects/pid/contacts/cid", nil))
+		r.SetPathValue("id", "pid")
+		r.SetPathValue("contactId", "cid")
+		w := httptest.NewRecorder()
+		h.GetProjectContact(w, r)
+
+		assertStatus(t, w, http.StatusOK)
+		if gotProject != "pid" || gotContact != "cid" {
+			t.Fatalf("ids = %q/%q, want pid/cid", gotProject, gotContact)
+		}
+	})
+
+	t.Run("rejects a missing contact id", func(t *testing.T) {
+		h := NewProjectHandler(&mockEntityProjectClient{})
+		r := withUser(httptest.NewRequest(http.MethodGet, "/projects/pid/contacts/", nil))
+		r.SetPathValue("id", "pid")
+		w := httptest.NewRecorder()
+		h.GetProjectContact(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+	})
+}

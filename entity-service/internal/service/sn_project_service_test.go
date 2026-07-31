@@ -38,13 +38,13 @@ func TestSNProjectService_SearchProjects_MapsAccountRef(t *testing.T) {
 			"projects": []map[string]any{
 				{
 					"id": "11111111111111111111111111111111", "name": "With account", "key": "WA",
-					"type": map[string]any{"name": "Subscription"},
+					"type":    map[string]any{"name": "Subscription"},
 					"endDate": "", "createdOn": "2026-01-01 00:00:00",
 					"account": map[string]any{"id": accountSysid, "name": "Automation Test Customer Account"},
 				},
 				{
 					"id": "22222222222222222222222222222222", "name": "No account", "key": "NA",
-					"type": map[string]any{"name": "Subscription"},
+					"type":    map[string]any{"name": "Subscription"},
 					"endDate": "", "createdOn": "2026-01-01 00:00:00",
 					"account": map[string]any{"id": "", "name": ""},
 				},
@@ -145,5 +145,45 @@ func TestSNProjectService_SearchProjects_MapsStartDate(t *testing.T) {
 	}
 	if got := resp.Projects[2].StartDate; got != nil {
 		t.Fatalf("expected nil StartDate for absent startDate, got %v", *got)
+	}
+}
+
+// The contact id is optional upstream: absent on an instance that predates the field, and
+// null for a row with no linked contact record. Neither case may produce a bogus id — the
+// caller uses emptiness to decide whether the row is clickable.
+func TestSNProjectContactService_SearchProjectContacts_OptionalContactID(t *testing.T) {
+	projectUUID := sysidToUUID(sysid32('7'))
+	contactSysid := sysid32('8')
+
+	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"contacts":[
+			{"id":"` + contactSysid + `","name":"Linked","email":"linked@example.com",
+			 "registrationState":"REGISTERED","notificationsEnabled":true,"roles":["r"]},
+			{"id":null,"name":"Orphaned","email":"orphan@example.com",
+			 "registrationState":"INVITED","notificationsEnabled":false,"roles":[]},
+			{"name":"OldInstance","email":"old@example.com",
+			 "registrationState":"INVITED","notificationsEnabled":false,"roles":[]}
+		],"totalRecords":3,"offset":0,"limit":10}`))
+	}))
+
+	svc := NewServiceNowProjectContactService(client)
+
+	got, err := svc.SearchProjectContacts(contextWithUserIDToken("token"), projectUUID,
+		domain.SearchProjectContactsRequest{Pagination: domain.Pagination{Limit: 10}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Contacts) != 3 {
+		t.Fatalf("got %d contacts, want 3", len(got.Contacts))
+	}
+
+	if want := sysidToUUID(contactSysid); got.Contacts[0].ID != want {
+		t.Errorf("linked contact ID = %q, want %q", got.Contacts[0].ID, want)
+	}
+	if got.Contacts[1].ID != "" {
+		t.Errorf("null upstream id produced %q, want empty", got.Contacts[1].ID)
+	}
+	if got.Contacts[2].ID != "" {
+		t.Errorf("absent upstream id produced %q, want empty", got.Contacts[2].ID)
 	}
 }

@@ -365,7 +365,15 @@ type mockEntityProjectClient struct {
 	getProjectFn            func(ctx context.Context, id string) ([]byte, error)
 	searchProjectsFn        func(ctx context.Context, body []byte) ([]byte, error)
 	searchProjectContactsFn func(ctx context.Context, projectID string, body []byte) ([]byte, error)
+	getProjectContactFn     func(ctx context.Context, projectID, contactID string) ([]byte, error)
 	updateProjectFn         func(ctx context.Context, id string, body []byte) ([]byte, error)
+}
+
+func (m *mockEntityProjectClient) GetProjectContact(ctx context.Context, projectID, contactID string) ([]byte, error) {
+	if m.getProjectContactFn != nil {
+		return m.getProjectContactFn(ctx, projectID, contactID)
+	}
+	return []byte(`{"id":"` + contactID + `","name":"","email":"","registrationState":"","notificationsEnabled":false,"roles":[]}`), nil
 }
 
 func (m *mockEntityProjectClient) GetProject(ctx context.Context, id string) ([]byte, error) {

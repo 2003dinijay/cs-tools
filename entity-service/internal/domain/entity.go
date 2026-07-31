@@ -282,12 +282,12 @@ type UserTeam struct {
 
 // GetUserMeResponse is the response for GET /users/me from the ServiceNow data source.
 type GetUserMeResponse struct {
-	ID        string    `json:"id"`
-	Email     string    `json:"email"`
-	FirstName *string   `json:"firstName,omitempty"`
-	LastName  string    `json:"lastName"`
-	TimeZone  *string   `json:"timeZone,omitempty"`
-	Roles     []string  `json:"roles"`
+	ID        string   `json:"id"`
+	Email     string   `json:"email"`
+	FirstName *string  `json:"firstName,omitempty"`
+	LastName  string   `json:"lastName"`
+	TimeZone  *string  `json:"timeZone,omitempty"`
+	Roles     []string `json:"roles"`
 	// Team is nil when the caller has no resolvable ABT team membership, or
 	// when team resolution failed — team resolution is best-effort and never
 	// fails the identity response.
@@ -1794,7 +1794,7 @@ type Attachment struct {
 	CreatedBy     UserRef       `json:"createdBy"`
 	CreatedOn     time.Time     `json:"createdOn"`
 	DownloadURL   *string       `json:"downloadUrl"`
-	PreviewURL        *string       `json:"previewUrl"`
+	PreviewURL    *string       `json:"previewUrl"`
 }
 
 // CreateAttachmentRequest is the input for POST /attachments.
@@ -2095,6 +2095,11 @@ type SearchContactsFilters struct {
 // ProjectContact is a contact associated with a project. Supported by the
 // ServiceNow data source only; there is no Postgres equivalent.
 type ProjectContact struct {
+	// ID is the contact's user id, for linking a row to that user's profile. Empty when
+	// the row has no contact record linked, or when the backing instance predates the
+	// field -- both are normal, so callers must render the row without a link rather
+	// than treating it as an error.
+	ID                   string   `json:"id,omitempty"`
 	Name                 string   `json:"name"`
 	Email                string   `json:"email"`
 	RegistrationState    string   `json:"registrationState"`
