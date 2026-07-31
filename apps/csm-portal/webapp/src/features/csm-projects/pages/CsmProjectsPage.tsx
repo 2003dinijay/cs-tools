@@ -34,6 +34,7 @@ import QueryErrorState from "@components/QueryErrorState";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useSearchProjects } from "@features/csm-projects/api/useSearchProjects";
 import type { SearchProjectsRequest } from "@features/csm-projects/types/csmProjects";
+import { closureStatePresentation } from "@features/csm-projects/utils/projectLifecycle";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
@@ -52,8 +53,17 @@ function formatDate(value?: string | null): string {
       });
 }
 
-function formatSubscriptionType(value: string): string {
-  return value.replace(/_/g, " ");
+function ClosureStateChip({ closureState }: { closureState?: string | null }): JSX.Element {
+  const closure = closureStatePresentation(closureState);
+  if (!closure) return <>—</>;
+  return (
+    <Chip
+      size="small"
+      label={closure.label}
+      color={closure.severity === "default" ? undefined : closure.severity}
+      variant="outlined"
+    />
+  );
 }
 
 export default function CsmProjectsPage(): JSX.Element {
@@ -109,7 +119,7 @@ export default function CsmProjectsPage(): JSX.Element {
               <TableRow sx={{ bgcolor: "action.hover" }}>
                 <TableCell>Name</TableCell>
                 <TableCell>Project key</TableCell>
-                <TableCell>Subscription</TableCell>
+                <TableCell>State</TableCell>
                 <TableCell>Start</TableCell>
                 <TableCell>End</TableCell>
               </TableRow>
@@ -162,11 +172,7 @@ export default function CsmProjectsPage(): JSX.Element {
                     </TableCell>
                     <TableCell>{p.key}</TableCell>
                     <TableCell>
-                      <Chip
-                        size="small"
-                        label={formatSubscriptionType(p.subscriptionType)}
-                        variant="outlined"
-                      />
+                      <ClosureStateChip closureState={p.closureState} />
                     </TableCell>
                     <TableCell>{formatDate(p.startDate)}</TableCell>
                     <TableCell>{formatDate(p.endDate)}</TableCell>

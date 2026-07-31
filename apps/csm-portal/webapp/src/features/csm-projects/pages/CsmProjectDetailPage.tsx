@@ -32,9 +32,14 @@ import { Link as RouterLink, useParams } from "react-router";
 import { useGetProject } from "@features/csm-projects/api/useGetProject";
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
 import DeploymentsTab from "@features/csm-projects/components/DeploymentsTab";
+import {
+  closureStatePresentation,
+  endDateLabel,
+  startDateLabel,
+} from "@features/csm-projects/utils/projectLifecycle";
 import { useNavTransition } from "@hooks/useNavTransition";
 
-type ProjectTabId = "overview" | "issues" | "deployments";
+type ProjectTabId = "overview" | "deployments" | "contacts" | "workItems";
 
 function formatDate(value?: string | null): string {
   if (!value) return "—";
@@ -111,6 +116,19 @@ function Mono({ children }: { children: ReactNode }): JSX.Element {
   );
 }
 
+function ClosureStateChip({ closureState }: { closureState?: string | null }): JSX.Element {
+  const closure = closureStatePresentation(closureState);
+  if (!closure) return <Typography variant="body2">—</Typography>;
+  return (
+    <Chip
+      size="small"
+      label={closure.label}
+      color={closure.severity === "default" ? undefined : closure.severity}
+      variant="outlined"
+    />
+  );
+}
+
 function BackButton({ onClick }: { onClick: () => void }): JSX.Element {
   return (
     <Button
@@ -181,27 +199,17 @@ export default function CsmProjectDetailPage(): JSX.Element {
           flexWrap: "wrap",
         }}
       >
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
-            <Typography variant="h5">{p.name}</Typography>
-            <Chip
-              size="small"
-              label={formatSubscriptionType(p.subscriptionType)}
-              variant="outlined"
-            />
-          </Box>
-          <Typography variant="body2" color="text.secondary" sx={{ fontFamily: "monospace" }}>
-            {p.key}
-          </Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap", minWidth: 0 }}>
+          <Typography variant="h5">{p.name}</Typography>
+          <Chip
+            size="small"
+            label={formatSubscriptionType(p.subscriptionType)}
+            variant="outlined"
+          />
         </Box>
         {/* File any issue type already scoped to this project — every create
             form below locks the project field, so it can't be filed against
-            the wrong one.
-            FOLLOW-UP: no "Create engagement" entry here — there is no
-            create-engagement page/route in the FE, and `POST /cases`'s
-            request contract (`BeCaseCreateBody`) has no engagement variant,
-            so this needs a BE/entity-service addition before it can be
-            wired up. */}
+            the wrong one. */}
         <Button
           variant="contained"
           startIcon={<Plus size={16} />}
@@ -224,15 +232,25 @@ export default function CsmProjectDetailPage(): JSX.Element {
           >
             Create case
           </MenuItem>
+          {p.subscriptionType === "managed_cloud_subscription" && (
+            <MenuItem
+              onClick={() => {
+                setCreateMenuAnchor(null);
+                navigate(
+                  `/operations/service-requests/new?projectId=${encodeURIComponent(p.id)}`,
+                );
+              }}
+            >
+              Create service request
+            </MenuItem>
+          )}
           <MenuItem
             onClick={() => {
               setCreateMenuAnchor(null);
-              navigate(
-                `/operations/service-requests/new?projectId=${encodeURIComponent(p.id)}`,
-              );
+              navigate(`/engagements/new?projectId=${encodeURIComponent(p.id)}`);
             }}
           >
-            Create service request
+            Create engagement
           </MenuItem>
           <MenuItem
             onClick={() => {
@@ -250,8 +268,9 @@ export default function CsmProjectDetailPage(): JSX.Element {
       <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
         <Tabs value={activeTab} onChange={(_, v) => setActiveTab(v as ProjectTabId)}>
           <Tab value="overview" label="Overview" />
-          <Tab value="issues" label="Issues" />
           <Tab value="deployments" label="Deployments" />
+          <Tab value="contacts" label="Project contacts" />
+          <Tab value="workItems" label="Work items" />
         </Tabs>
       </Box>
 
@@ -272,6 +291,9 @@ export default function CsmProjectDetailPage(): JSX.Element {
             <MetaCell label="Project key">
               <Mono>{p.key}</Mono>
             </MetaCell>
+            <MetaCell label="State">
+              <ClosureStateChip closureState={p.closureState} />
+            </MetaCell>
             <MetaCell label="Subscription">
               <Typography variant="body2">{formatSubscriptionType(p.subscriptionType)}</Typography>
             </MetaCell>
@@ -284,40 +306,45 @@ export default function CsmProjectDetailPage(): JSX.Element {
                 <Typography variant="body2">—</Typography>
               )}
             </MetaCell>
-            <MetaCell label="Account tier">
-              <Typography variant="body2">{p.account?.tier || "—"}</Typography>
-            </MetaCell>
-            <MetaCell label="Start date">
-              <Typography variant="body2">{formatDate(p.startDate)}</Typography>
-            </MetaCell>
-            <MetaCell label="End date">
-              <Typography variant="body2">{formatDate(p.endDate)}</Typography>
-            </MetaCell>
             <MetaCell label="Salesforce ID">
               <Mono>{p.sfId || "—"}</Mono>
             </MetaCell>
-            <MetaCell label="Created">
-              <Typography variant="body2">{formatDate(p.createdOn)}</Typography>
-            </MetaCell>
-            <MetaCell label="Last updated">
+            <MetaCell label="Updated on">
               <Typography variant="body2">{formatDate(p.updatedOn)}</Typography>
             </MetaCell>
-            <MetaCell label="Project ID">
-              <Mono>{p.id}</Mono>
+            <MetaCell label="Created on">
+              <Typography variant="body2">{formatDate(p.createdOn)}</Typography>
+            </MetaCell>
+            <MetaCell label={startDateLabel(p.createdOn, p.startDate)}>
+              <Typography variant="body2">{formatDate(p.startDate)}</Typography>
+            </MetaCell>
+            <MetaCell label={endDateLabel(p.endDate)}>
+              <Typography variant="body2">{formatDate(p.endDate)}</Typography>
             </MetaCell>
           </Box>
         </Card>
       )}
 
-      {activeTab === "issues" && (
+      {activeTab === "deployments" && <DeploymentsTab projectId={p.id} />}
+
+      {activeTab === "contacts" && (
+        <Card sx={{ p: 2.5 }}>
+          <Typography variant="subtitle2" gutterBottom>
+            Project contacts
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Project contacts are not available yet.
+          </Typography>
+        </Card>
+      )}
+
+      {activeTab === "workItems" && (
         <CsmIssuesView
-          entityNoun="issues"
+          entityNoun="work items"
           lockedFilters={{ projects: [p.id] }}
           hideProjectFilter
         />
       )}
-
-      {activeTab === "deployments" && <DeploymentsTab projectId={p.id} />}
     </Box>
   );
 }

@@ -27,17 +27,31 @@ export type SubscriptionType =
 
 export interface Project {
   id: string;
-  /** Absent when the project has no linked account. */
-  account?: { id: string; name: string };
-  sfId: string;
+  /** Null/absent when the project has no linked account. */
+  account?: { id: string; name: string } | null;
   name: string;
   // The search endpoint returns this as `key` (not `projectKey`).
   key: string;
   subscriptionType: SubscriptionType;
-  startDate: string;
-  endDate: string;
-  createdAt: string;
-  updatedAt: string;
+  /** Start of the current renewed period. Only recently added to the search
+   *  response, so treat as genuinely nullable. */
+  startDate: string | null;
+  /** End of the current renewed period. */
+  endDate: string | null;
+  /** When the project record was created. Never moves; distinct from
+   *  `startDate`, which advances on each renewal. */
+  createdOn: string;
+  /** Free-form closure-state string (e.g. `open`, `notify`, `read_only`,
+   *  `restricted`, `suspended`, `closed`). Unknown values must render as a
+   *  neutral chip, not crash — see `closureStatePresentation`. */
+  closureState: string | null;
+  endDateClosureState: string | null;
+  invoiceDueDateClosureState: string | null;
+  complianceViolationClosureState: string | null;
+  complianceViolationDate: string | null;
+  /** Opaque JSON describing in-flight suspension processing; not rendered
+   *  today. */
+  suspensionProcessState: unknown;
 }
 
 /**
@@ -58,9 +72,9 @@ export interface ProjectAccountRef {
 
 /**
  * Enriched single-project shape returned by `GET /projects/{id}`. Distinct from
- * {@link Project} (the search-result row): it embeds the parent `account`, and
- * uses `createdOn` / `updatedOn` rather than the search row's
- * `createdAt` / `updatedAt`.
+ * {@link Project} (the search-result row): it embeds the full parent
+ * `account`, and additionally carries `sfId` and `updatedOn`, neither of
+ * which the search row returns.
  */
 export interface ProjectDetails {
   id: string;
@@ -69,10 +83,12 @@ export interface ProjectDetails {
   name: string;
   key: string;
   subscriptionType: SubscriptionType;
-  startDate: string;
-  endDate: string;
+  startDate: string | null;
+  endDate: string | null;
   createdOn: string;
   updatedOn: string;
+  /** Free-form closure-state string; see {@link Project.closureState}. */
+  closureState: string | null;
 }
 
 export interface SearchProjectsRequest {
