@@ -113,15 +113,26 @@ func (s *snCommentSearchService) SearchComments(ctx context.Context, req domain.
 	}, nil
 }
 
+// validCreateCommentReferenceTypes is validReferenceTypes minus "case": case comments
+// are owned by the dedicated POST /cases/{id}/comments route, which applies the
+// case-specific rules (state and work-state gating, closed-case work notes). Allowing
+// "case" here too would give two routes to the same outcome, free to drift apart.
+var validCreateCommentReferenceTypes = map[domain.ReferenceType]struct{}{
+	domain.ReferenceTypeConversation:  {},
+	domain.ReferenceTypeChangeRequest: {},
+	domain.ReferenceTypeDeployment:    {},
+	domain.ReferenceTypeIncident:      {},
+}
+
 // CreateComment implements CommentService. It is the reference-generic counterpart of
-// snCaseService.CreateCaseComment, accepting any referenceType in validReferenceTypes
-// instead of hardcoding "case".
+// snCaseService.CreateCaseComment, accepting any referenceType in
+// validCreateCommentReferenceTypes: every supported reference type except "case".
 func (s *snCommentSearchService) CreateComment(ctx context.Context, req domain.CreateCommentRequest) (domain.CreateCommentResponse, error) {
 	if req.ReferenceID == "" {
 		return domain.CreateCommentResponse{}, &apierror.ValidationError{Msg: "referenceId is required"}
 	}
-	if _, ok := validReferenceTypes[req.ReferenceType]; !ok {
-		return domain.CreateCommentResponse{}, &apierror.ValidationError{Msg: "referenceType must be one of: case, conversation, change_request, deployment, incident"}
+	if _, ok := validCreateCommentReferenceTypes[req.ReferenceType]; !ok {
+		return domain.CreateCommentResponse{}, &apierror.ValidationError{Msg: "referenceType must be one of: conversation, change_request, deployment, incident"}
 	}
 	if !validCommentType[req.Type] {
 		return domain.CreateCommentResponse{}, &apierror.ValidationError{Msg: "type contains invalid value: " + string(req.Type)}

@@ -90,6 +90,16 @@ func mapUpstreamError(w http.ResponseWriter, err error, fallbackMsg string) {
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			writeError(w, http.StatusServiceUnavailable, fallbackMsg)
 		default:
+			// The 4xx branches above surface the upstream reason because those
+			// failures are caller-actionable: the caller can correct the request.
+			// This branch is not. It catches 500 and every unenumerated status,
+			// where the failure is internal to an upstream service and there is
+			// nothing for the caller to act on. Its body is also not guaranteed
+			// to be ours: this function is the error path for several clients,
+			// including the identity provider's, and a body being a JSON object
+			// with a message field proves its shape, not that its content is safe
+			// to show a portal client. So return the generic fallback only; the
+			// upstream detail is logged, not echoed.
 			writeError(w, http.StatusInternalServerError, fallbackMsg)
 		}
 		return

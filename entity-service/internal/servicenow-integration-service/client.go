@@ -384,6 +384,18 @@ func (c *Client) do(req *http.Request, path string) (json.RawMessage, error) {
 	case resp.StatusCode == http.StatusServiceUnavailable:
 		return nil, &apierror.ServiceUnavailableError{Msg: "downstream service unavailable"}
 	default:
-		return nil, fmt.Errorf("snclient: %s: unexpected status %d: %s", path, resp.StatusCode, raw)
+		// Most commonly a downstream 500. The downstream layer's error envelope
+		// carries a real reason there (a rejected state transition, a payload
+		// validation failure), and flattening it into an untyped error loses it:
+		// writeServiceError's default branch replaces it with the fixed
+		// "internal server error" literal, so the caller — and the user — is told
+		// nothing. Extract the reason through the same sanitizing helper the
+		// mapped branches use and keep it. The raw body is deliberately not
+		// included: it is downstream-controlled text and must not be logged
+		// verbatim.
+		log.Printf("snclient: %s: unexpected status %d", sanitizeLog(path), resp.StatusCode) // #nosec G706 -- path sanitized
+		return nil, &apierror.DownstreamError{
+			Msg: extractDownstreamMessage(raw, fmt.Sprintf("downstream service returned an unexpected status (%d)", resp.StatusCode)),
+		}
 	}
 }
