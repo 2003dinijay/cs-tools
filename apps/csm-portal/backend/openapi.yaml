@@ -1160,7 +1160,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Project'
+                $ref: '#/components/schemas/ProjectDetails'
         "400":
           description: BadRequest
           content:
@@ -5439,6 +5439,27 @@ components:
         phoneNumber:
           type: string
           description: Mobile phone number in E.164 format (sourced from SCIM)
+        team:
+          nullable: true
+          description: >
+            The caller's resolved account-based team. Absent when the caller has no
+            resolvable team membership, or when team resolution failed.
+          allOf:
+            - $ref: '#/components/schemas/UserTeam'
+
+    UserTeam:
+      type: object
+      description: An account-based team the caller belongs to.
+      properties:
+        teamKey:
+          type: string
+        teamName:
+          type: string
+        family:
+          type: string
+          description: >
+            Team family classification. May be empty: not every team is
+            classified into a family.
 
     UserUpdatePayload:
       type: object
@@ -5942,52 +5963,160 @@ components:
           type: integer
           description: Total number of matching contacts
 
-    Project:
+    ProjectClosureFields:
       type: object
+      description: >
+        Closure-tracking fields shared by the project search row and the project
+        detail response. Only populated for projects sourced from the backing
+        data source; null otherwise.
       properties:
-        id:
+        closureState:
           type: string
-        accountId:
+          nullable: true
+          description: >
+            The project's overall closure/access state. Derived by the backing data
+            source from the three sub-states below; never settable directly.
+        endDateClosureState:
           type: string
-        sfId:
+          nullable: true
+        invoiceDueDateClosureState:
           type: string
-        name:
+          nullable: true
+        complianceViolationClosureState:
           type: string
-        projectKey:
+          nullable: true
+        complianceViolationDate:
           type: string
-        subscriptionType:
-          type: string
-          enum:
-            - development_support
-            - managed_cloud_subscription
-            - evaluation_subscription
-            - subscription
-            - cloud_evaluation_support
-            - internal
-            - platformer_subscription
-            - cloud_support
-            - professional_services
-        startDate:
-          type: string
-          format: date-time
-        endDate:
-          type: string
-          format: date-time
-        createdOn:
-          type: string
-          format: date-time
-        updatedOn:
-          type: string
-          format: date-time
+          nullable: true
         suspensionProcessState:
           type: object
           additionalProperties: true
           nullable: true
           description: >
             Free-form, per-dimension Account Closure Process (ACP) suspension-process
-            state (event type + action results) written by an existing ServiceNow
-            suspension flow. This is opaque JSON passed through as-is — its shape is
-            not defined or validated by this layer.
+            state (event type + action results) written by an existing suspension
+            flow in the backing data source. This is opaque JSON passed through
+            as-is — its shape is not defined or validated by this layer.
+
+    Project:
+      description: >
+        A project search result row. Deliberately leaner than ProjectDetails: the
+        search projection carries no sfId and no updatedOn.
+      allOf:
+        - $ref: '#/components/schemas/ProjectClosureFields'
+        - type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            key:
+              type: string
+            subscriptionType:
+              type: string
+              enum:
+                - development_support
+                - managed_cloud_subscription
+                - evaluation_subscription
+                - subscription
+                - cloud_evaluation_support
+                - internal
+                - platformer_subscription
+                - cloud_support
+                - professional_services
+            startDate:
+              type: string
+              format: date-time
+              nullable: true
+              description: >
+                Start of the project's current renewed period. Null when the backing
+                data source has no start date recorded.
+            endDate:
+              type: string
+              format: date-time
+              nullable: true
+              description: End of the project's current renewed period.
+            createdOn:
+              type: string
+              format: date-time
+              description: >
+                When the project record was created. Distinct from startDate, which
+                moves forward on each renewal.
+            account:
+              nullable: true
+              description: Null when the project has no linked account.
+              allOf:
+                - $ref: '#/components/schemas/EntityRef'
+
+    ProjectDetails:
+      description: >
+        The enriched single-project response. Adds sfId, updatedOn, and a fuller
+        account reference on top of what the search row returns.
+      allOf:
+        - $ref: '#/components/schemas/ProjectClosureFields'
+        - type: object
+          properties:
+            id:
+              type: string
+            account:
+              $ref: '#/components/schemas/ProjectAccountRef'
+            sfId:
+              type: string
+            name:
+              type: string
+            key:
+              type: string
+            subscriptionType:
+              type: string
+              enum:
+                - development_support
+                - managed_cloud_subscription
+                - evaluation_subscription
+                - subscription
+                - cloud_evaluation_support
+                - internal
+                - platformer_subscription
+                - cloud_support
+                - professional_services
+            startDate:
+              type: string
+              format: date-time
+              nullable: true
+              description: Start of the project's current renewed period.
+            endDate:
+              type: string
+              format: date-time
+              nullable: true
+              description: End of the project's current renewed period.
+            createdOn:
+              type: string
+              format: date-time
+            updatedOn:
+              type: string
+              format: date-time
+
+    ProjectAccountRef:
+      type: object
+      description: The parent account summary embedded in a project detail response.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        activationDate:
+          type: string
+          format: date-time
+          nullable: true
+        tier:
+          type: string
+          description: Free-form tier label, not the lowercase account tier enum.
+        region:
+          type: string
+          nullable: true
+        agentEnabled:
+          type: boolean
+        kbReferencesEnabled:
+          type: boolean
 
     ProjectUpdatePayload:
       type: object

@@ -3341,6 +3341,11 @@ components:
           description: >
             When the project record was created. Distinct from startDate, which
             moves forward on each renewal.
+        account:
+          nullable: true
+          description: Null when the project has no linked account.
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
         closureState:
           type: string
           nullable: true
