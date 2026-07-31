@@ -280,9 +280,11 @@ export default function CsmAccountDetailPage(): JSX.Element {
           <MetaCell label="Activated on">
             <Typography variant="body2">{formatDate(a.activationDate)}</Typography>
           </MetaCell>
-          <MetaCell label={deactivationState === "future" ? "Deactivates on" : "Deactivated on"}>
-            <Typography variant="body2">{formatDate(a.deactivationDate)}</Typography>
-          </MetaCell>
+          {deactivationState !== "none" && (
+            <MetaCell label={deactivationState === "future" ? "Deactivates on" : "Deactivated on"}>
+              <Typography variant="body2">{formatDate(a.deactivationDate)}</Typography>
+            </MetaCell>
+          )}
           <MetaCell label="AI Chat Assistant (Novera)">
             <Chip
               size="small"

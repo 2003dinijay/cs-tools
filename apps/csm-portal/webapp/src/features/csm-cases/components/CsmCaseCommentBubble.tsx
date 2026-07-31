@@ -280,7 +280,7 @@ export default function CsmCaseCommentBubble({
           <Typography variant="subtitle2">
             <UserRefLink
               name={comment.authorName}
-              email={comment.authorEmail}
+              email={comment.authorUser?.email || comment.authorEmail}
               userId={comment.authorUser?.id}
             />
           </Typography>

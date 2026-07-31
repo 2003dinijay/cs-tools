@@ -36,8 +36,9 @@ vi.mock("@features/csm-cases/api/useResolvedInlineImageHtml", () => ({
 // under vitest (same approach as useQuickCaseSearch.test.tsx). The comment
 // author name renders through `UserRefLink`, which resolves an unknown id
 // through `useResolvedUserId`, which calls this client.
+const searchUsersByEmail = vi.fn().mockResolvedValue({ users: [] });
 vi.mock("@api/backend/client", () => ({
-  useBackendApi: () => ({ post: vi.fn().mockResolvedValue({ users: [] }) }),
+  useBackendApi: () => ({ post: searchUsersByEmail }),
 }));
 
 function makeComment(overrides: Partial<CsmCaseComment>): CsmCaseComment {
@@ -146,6 +147,30 @@ describe("CsmCaseCommentBubble", () => {
       />,
     );
     expect(screen.getByText("bold answer")).toBeInTheDocument();
+  });
+
+  it("resolves the author link from the canonical email when there is no legacy email and no id", async () => {
+    // Regression for a null canonical id + empty legacy `authorEmail`: the
+    // author link must still resolve through `comment.authorUser.email`
+    // rather than silently falling back to plain text.
+    searchUsersByEmail.mockResolvedValueOnce({
+      users: [{ id: "user-42", email: "canonical@example.com" }],
+    });
+    renderWithProviders(
+      <CsmCaseCommentBubble
+        comment={makeComment({
+          authorName: "Jane Doe",
+          authorEmail: undefined,
+          authorUser: {
+            id: null,
+            email: "canonical@example.com",
+            name: "Jane Doe",
+          },
+        })}
+      />,
+    );
+    const link = await screen.findByRole("link", { name: "Jane Doe" });
+    expect(link).toHaveAttribute("href", "/people/user-42");
   });
 
   it("renders a system comment as a compact inline row", () => {

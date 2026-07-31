@@ -550,7 +550,7 @@ export function WatchersWidget({
               label={
                 <UserRefLink
                   name={w.isMe ? `${w.name} (you)` : w.name}
-                  email={w.email}
+                  email={w.user?.email || w.email}
                   userId={w.user?.id}
                 />
               }
@@ -844,7 +844,7 @@ export function AttachmentsWidget({
                     {formatBytes(a.size)} · {a.contentType} · uploaded by{" "}
                     <UserRefLink
                       name={a.uploadedBy}
-                      email={a.uploadedByEmail}
+                      email={a.uploadedByUser?.email || a.uploadedByEmail}
                       userId={a.uploadedByUser?.id}
                     />{" "}
                     · <RelativeTime iso={a.uploadedAt} />

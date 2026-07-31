@@ -31,9 +31,9 @@ import { useState, type JSX, type MouseEvent, type ReactNode } from "react";
 import { Link as RouterLink, useParams } from "react-router";
 import { useGetProject } from "@features/csm-projects/api/useGetProject";
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
+import ClosureStateChip from "@features/csm-projects/components/ClosureStateChip";
 import DeploymentsTab from "@features/csm-projects/components/DeploymentsTab";
 import {
-  closureStatePresentation,
   endDateLabel,
   startDateLabel,
 } from "@features/csm-projects/utils/projectLifecycle";
@@ -113,19 +113,6 @@ function Mono({ children }: { children: ReactNode }): JSX.Element {
     <Typography variant="body2" sx={{ fontFamily: "monospace", wordBreak: "break-all" }}>
       {children}
     </Typography>
-  );
-}
-
-function ClosureStateChip({ closureState }: { closureState?: string | null }): JSX.Element {
-  const closure = closureStatePresentation(closureState);
-  if (!closure) return <Typography variant="body2">—</Typography>;
-  return (
-    <Chip
-      size="small"
-      label={closure.label}
-      color={closure.severity === "default" ? undefined : closure.severity}
-      variant="outlined"
-    />
   );
 }
 

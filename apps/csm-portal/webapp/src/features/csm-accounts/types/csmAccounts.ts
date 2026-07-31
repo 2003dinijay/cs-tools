@@ -25,10 +25,11 @@ export interface SupportTierRef {
 }
 
 // A named person reference as returned on the alternate response shape's
-// account manager / technical owner / renewal account manager fields. `email`
-// may be null when genuinely unset.
+// account manager / technical owner / renewal account manager fields. `id`
+// is null when the backing data source hasn't resolved this person to a
+// canonical user record; `email` may be null when genuinely unset.
 export interface PersonRef {
-  id: string;
+  id: string | null;
   name: string;
   email?: string | null;
 }

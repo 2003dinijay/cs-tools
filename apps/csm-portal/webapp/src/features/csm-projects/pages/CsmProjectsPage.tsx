@@ -16,7 +16,6 @@
 
 import {
   Box,
-  Chip,
   Skeleton,
   Table,
   TableBody,
@@ -33,8 +32,8 @@ import { Link as RouterLink } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useSearchProjects } from "@features/csm-projects/api/useSearchProjects";
+import ClosureStateChip from "@features/csm-projects/components/ClosureStateChip";
 import type { SearchProjectsRequest } from "@features/csm-projects/types/csmProjects";
-import { closureStatePresentation } from "@features/csm-projects/utils/projectLifecycle";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
@@ -51,19 +50,6 @@ function formatDate(value?: string | null): string {
         month: "short",
         day: "numeric",
       });
-}
-
-function ClosureStateChip({ closureState }: { closureState?: string | null }): JSX.Element {
-  const closure = closureStatePresentation(closureState);
-  if (!closure) return <>—</>;
-  return (
-    <Chip
-      size="small"
-      label={closure.label}
-      color={closure.severity === "default" ? undefined : closure.severity}
-      variant="outlined"
-    />
-  );
 }
 
 export default function CsmProjectsPage(): JSX.Element {
@@ -172,7 +158,10 @@ export default function CsmProjectsPage(): JSX.Element {
                     </TableCell>
                     <TableCell>{p.key}</TableCell>
                     <TableCell>
-                      <ClosureStateChip closureState={p.closureState} />
+                      <ClosureStateChip
+                        closureState={p.closureState}
+                        emptyFallback="—"
+                      />
                     </TableCell>
                     <TableCell>{formatDate(p.startDate)}</TableCell>
                     <TableCell>{formatDate(p.endDate)}</TableCell>
