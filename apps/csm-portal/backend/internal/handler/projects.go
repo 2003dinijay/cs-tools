@@ -161,9 +161,14 @@ func (h *ProjectHandler) GetProjectContact(w http.ResponseWriter, r *http.Reques
 	}
 
 	id := r.PathValue("id")
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
 	contactID := r.PathValue("contactId")
-	if id == "" || contactID == "" {
-		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+	if contactID == "" || !uuidRe.MatchString(contactID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
 	}
 

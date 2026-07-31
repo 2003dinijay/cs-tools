@@ -107,6 +107,8 @@ func TestReferenceHandler_SearchTeams(t *testing.T) {
 }
 
 func TestUsersHandler_GetUser(t *testing.T) {
+	const testUserID = "11111111-1111-1111-1111-111111111111"
+
 	t.Run("rejects an unauthenticated caller", func(t *testing.T) {
 		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{})
 		w := httptest.NewRecorder()
@@ -122,13 +124,13 @@ func TestUsersHandler_GetUser(t *testing.T) {
 				return []byte(`{"id":"` + id + `","userType":"internal","groups":[],"teams":[]}`), nil
 			},
 		})
-		r := withUser(httptest.NewRequest(http.MethodGet, "/users/11111111-1111-1111-1111-111111111111", nil))
-		r.SetPathValue("id", "11111111-1111-1111-1111-111111111111")
+		r := withUser(httptest.NewRequest(http.MethodGet, "/users/"+testUserID, nil))
+		r.SetPathValue("id", testUserID)
 		w := httptest.NewRecorder()
 		h.GetUser(w, r)
 
 		assertStatus(t, w, http.StatusOK)
-		if gotID != "11111111-1111-1111-1111-111111111111" {
+		if gotID != testUserID {
 			t.Errorf("id = %q, want the path value", gotID)
 		}
 	})
@@ -140,14 +142,37 @@ func TestUsersHandler_GetUser(t *testing.T) {
 		assertStatus(t, w, http.StatusBadRequest)
 	})
 
+	// A malformed id must be rejected locally: the entity service rejects non-UUID ids
+	// anyway, so calling it would spend a round trip to get back an upstream-mapped
+	// status instead of a clean 400.
+	t.Run("rejects a malformed id without calling upstream", func(t *testing.T) {
+		called := false
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{
+			getUserFn: func(_ context.Context, _ string) ([]byte, error) {
+				called = true
+				return []byte(`{}`), nil
+			},
+		})
+		r := withUser(httptest.NewRequest(http.MethodGet, "/users/not-a-uuid", nil))
+		r.SetPathValue("id", "not-a-uuid")
+		w := httptest.NewRecorder()
+		h.GetUser(w, r)
+
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgInvalidUUID)
+		if called {
+			t.Error("the entity client was called for a malformed id, want no upstream call")
+		}
+	})
+
 	t.Run("maps an upstream not-found", func(t *testing.T) {
 		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{
 			getUserFn: func(_ context.Context, _ string) ([]byte, error) {
 				return nil, errors.New("not found")
 			},
 		})
-		r := withUser(httptest.NewRequest(http.MethodGet, "/users/x", nil))
-		r.SetPathValue("id", "x")
+		r := withUser(httptest.NewRequest(http.MethodGet, "/users/"+testUserID, nil))
+		r.SetPathValue("id", testUserID)
 		w := httptest.NewRecorder()
 		h.GetUser(w, r)
 		if w.Code == http.StatusOK {
@@ -157,10 +182,15 @@ func TestUsersHandler_GetUser(t *testing.T) {
 }
 
 func TestProjectHandler_GetProjectContact(t *testing.T) {
+	const (
+		testProjectID = "22222222-2222-2222-2222-222222222222"
+		testContactID = "33333333-3333-3333-3333-333333333333"
+	)
+
 	t.Run("rejects an unauthenticated caller", func(t *testing.T) {
 		h := NewProjectHandler(&mockEntityProjectClient{})
 		w := httptest.NewRecorder()
-		h.GetProjectContact(w, httptest.NewRequest(http.MethodGet, "/projects/p/contacts/c", nil))
+		h.GetProjectContact(w, httptest.NewRequest(http.MethodGet, "/projects/"+testProjectID+"/contacts/"+testContactID, nil))
 		assertStatus(t, w, http.StatusUnauthorized)
 	})
 
@@ -172,24 +202,68 @@ func TestProjectHandler_GetProjectContact(t *testing.T) {
 				return []byte(`{"id":"` + contactID + `","registrationState":"REGISTERED"}`), nil
 			},
 		})
-		r := withUser(httptest.NewRequest(http.MethodGet, "/projects/pid/contacts/cid", nil))
-		r.SetPathValue("id", "pid")
-		r.SetPathValue("contactId", "cid")
+		r := withUser(httptest.NewRequest(http.MethodGet, "/projects/"+testProjectID+"/contacts/"+testContactID, nil))
+		r.SetPathValue("id", testProjectID)
+		r.SetPathValue("contactId", testContactID)
 		w := httptest.NewRecorder()
 		h.GetProjectContact(w, r)
 
 		assertStatus(t, w, http.StatusOK)
-		if gotProject != "pid" || gotContact != "cid" {
-			t.Fatalf("ids = %q/%q, want pid/cid", gotProject, gotContact)
+		if gotProject != testProjectID || gotContact != testContactID {
+			t.Fatalf("ids = %q/%q, want %q/%q", gotProject, gotContact, testProjectID, testContactID)
 		}
 	})
 
 	t.Run("rejects a missing contact id", func(t *testing.T) {
 		h := NewProjectHandler(&mockEntityProjectClient{})
-		r := withUser(httptest.NewRequest(http.MethodGet, "/projects/pid/contacts/", nil))
-		r.SetPathValue("id", "pid")
+		r := withUser(httptest.NewRequest(http.MethodGet, "/projects/"+testProjectID+"/contacts/", nil))
+		r.SetPathValue("id", testProjectID)
 		w := httptest.NewRecorder()
 		h.GetProjectContact(w, r)
 		assertStatus(t, w, http.StatusBadRequest)
+	})
+
+	// Both ids are UUIDs upstream, so a malformed one is rejected here rather than
+	// spending a round trip on an error the entity service would return anyway.
+	t.Run("rejects a malformed project id without calling upstream", func(t *testing.T) {
+		called := false
+		h := NewProjectHandler(&mockEntityProjectClient{
+			getProjectContactFn: func(_ context.Context, _, _ string) ([]byte, error) {
+				called = true
+				return []byte(`{}`), nil
+			},
+		})
+		r := withUser(httptest.NewRequest(http.MethodGet, "/projects/not-a-uuid/contacts/"+testContactID, nil))
+		r.SetPathValue("id", "not-a-uuid")
+		r.SetPathValue("contactId", testContactID)
+		w := httptest.NewRecorder()
+		h.GetProjectContact(w, r)
+
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgInvalidUUID)
+		if called {
+			t.Error("the entity client was called for a malformed project id, want no upstream call")
+		}
+	})
+
+	t.Run("rejects a malformed contact id without calling upstream", func(t *testing.T) {
+		called := false
+		h := NewProjectHandler(&mockEntityProjectClient{
+			getProjectContactFn: func(_ context.Context, _, _ string) ([]byte, error) {
+				called = true
+				return []byte(`{}`), nil
+			},
+		})
+		r := withUser(httptest.NewRequest(http.MethodGet, "/projects/"+testProjectID+"/contacts/not-a-uuid", nil))
+		r.SetPathValue("id", testProjectID)
+		r.SetPathValue("contactId", "not-a-uuid")
+		w := httptest.NewRecorder()
+		h.GetProjectContact(w, r)
+
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgInvalidUUID)
+		if called {
+			t.Error("the entity client was called for a malformed contact id, want no upstream call")
+		}
 	})
 }
