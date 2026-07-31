@@ -48,7 +48,7 @@ type AbtTeam struct {
 }
 
 // AbtTeamsFetcher fetches the raw ABT team registry JSON body from the
-// upstream Ballerina cs-entity-service (GET abt-teams). It is registered via
+// upstream Ballerina cs-entity-service (GET teams). It is registered via
 // SetAbtTeamsFetcher during service wiring, before the first call to
 // AbtGroupNames or FindAbtTeamByGroupName.
 type AbtTeamsFetcher func(ctx context.Context) (json.RawMessage, error)
@@ -92,6 +92,29 @@ func AbtGroupNames() []string {
 
 // FindAbtTeamByGroupName looks up the ABT team whose ServiceNow group name
 // exactly matches groupName. ok is false if no team in the registry matches.
+// FindAbtTeamByKey looks a team up by its registry key.
+func FindAbtTeamByKey(key string) (team AbtTeam, ok bool) {
+	ensureAbtRegistryLoaded()
+	abtMu.Lock()
+	defer abtMu.Unlock()
+	for _, t := range abtTeams {
+		if t.TeamKey == key {
+			return t, true
+		}
+	}
+	return AbtTeam{}, false
+}
+
+// AbtTeams returns every team in the registry. Empty if the registry never loaded.
+func AbtTeams() []AbtTeam {
+	ensureAbtRegistryLoaded()
+	abtMu.Lock()
+	defer abtMu.Unlock()
+	out := make([]AbtTeam, len(abtTeams))
+	copy(out, abtTeams)
+	return out
+}
+
 func FindAbtTeamByGroupName(groupName string) (team AbtTeam, ok bool) {
 	ensureAbtRegistryLoaded()
 
@@ -125,7 +148,7 @@ func ensureAbtRegistryLoaded() {
 	} else {
 		raw, err := fetch(context.Background())
 		if err != nil {
-			log.Printf("abtteam: fetch abt-teams registry failed: %v", err)
+			log.Printf("abtteam: fetch teams registry failed: %v", err)
 		} else {
 			teams, err = parseAbtTeamsResponse(raw)
 			if err != nil {

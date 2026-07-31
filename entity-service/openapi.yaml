@@ -83,6 +83,114 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /users/{id}:
+    get:
+      summary: Get one user's full profile.
+      description: >
+        Returns the user row plus group and team membership, and for external contacts
+        their per-project access with the reason access is or is not granted. ServiceNow
+        data source only. A deactivated user is still returned — that state is usually the
+        answer the caller is looking for.
+      operationId: getUser
+      tags: [Users]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The user's profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SNUserDetail'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /roles/search:
+    post:
+      summary: Search the role catalogue.
+      description: >
+        The platform's curated set of assignable role keys — the same values the user
+        search accepts in roleIds.
+      operationId: searchRoles
+      tags: [Users]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRolesRequest'
+      responses:
+        '200':
+          description: Matching roles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchRolesResponse'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /teams/search:
+    post:
+      summary: Search the team registry.
+      operationId: searchTeams
+      tags: [Users]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchTeamsRequest'
+      responses:
+        '200':
+          description: Matching teams.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchTeamsResponse'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /users/search:
     post:
       summary: Search users with optional filters, sort, and pagination.
@@ -2885,13 +2993,12 @@ components:
           type: string
           maxLength: 200
           description: Case-insensitive match against username and email.
-        roles:
+        roleIds:
           type: array
           maxItems: 20
           items:
-            type: string
-            enum: [internal, agent, admin, commenter, external, customer, customer_admin, partner, partner_admin]
-          description: Filter by one or more ServiceNow roles. ServiceNow data source only.
+            $ref: '#/components/schemas/RoleId'
+          description: Filter by one or more roles. ServiceNow data source only.
         userNames:
           type: array
           maxItems: 50
@@ -2904,6 +3011,31 @@ components:
           items:
             type: string
           description: Filter to specific email addresses (exact match).
+        userIds:
+          type: array
+          maxItems: 200
+          items:
+            type: string
+            format: uuid
+          description: >
+            Restrict to specific users. Intersects with the other filters. Supplying this
+            also lifts the active-only default, so a deactivated user stays retrievable by
+            id. ServiceNow data source only.
+        groupIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: >
+            Restrict to members of these groups. Resolved to a user-id set before the
+            upstream call, because the data source cannot join users against group
+            membership in one query. ServiceNow data source only.
+        teamIds:
+          type: array
+          items:
+            type: string
+          description: >
+            Restrict to members of these teams, by team key. ServiceNow data source only.
         active:
           type: boolean
           nullable: true
@@ -2967,6 +3099,14 @@ components:
         timeZone:
           type: string
           nullable: true
+        mobilePhone:
+          type: string
+          nullable: true
+          description: >
+            The number the on-call escalation flow dials — the only phone field the
+            platform surfaces.
+        userType:
+          $ref: '#/components/schemas/UserType'
         active:
           type: boolean
         createdOn:
@@ -2977,6 +3117,178 @@ components:
           type: array
           items:
             type: string
+
+    UserType:
+      type: string
+      description: >
+        Whether the user is staff or a customer/partner contact. The ServiceNow data source
+        emits internal or external; the postgres source emits internal, customer or system.
+        Callers branching on staff-vs-not must treat customer and external alike.
+      enum: [internal, external, customer, system]
+
+    RoleId:
+      type: string
+      description: A platform role key, as returned by POST /roles/search.
+      enum: [internal, agent, admin, commenter, external, customer, customer_admin, partner, partner_admin, timecard_approver]
+
+    Role:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          $ref: '#/components/schemas/RoleId'
+        name:
+          type: string
+          description: Human-readable label.
+
+    SearchRolesRequest:
+      type: object
+      properties:
+        filters:
+          type: object
+          properties:
+            searchQuery:
+              type: string
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    SearchRolesResponse:
+      type: object
+      required: [roles, total, offset, limit]
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
+
+    Team:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          description: >
+            Registry team key. Stable across environments, unlike the backing group's id.
+        name:
+          type: string
+        family:
+          type: string
+          description: Team family, when classified.
+
+    SearchTeamsRequest:
+      type: object
+      properties:
+        filters:
+          type: object
+          properties:
+            searchQuery:
+              type: string
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    SearchTeamsResponse:
+      type: object
+      required: [teams, total, offset, limit]
+      properties:
+        teams:
+          type: array
+          items:
+            $ref: '#/components/schemas/Team'
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
+
+    UserGroupRef:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+
+    UserTeamRef:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          description: Registry team key.
+        name:
+          type: string
+        family:
+          type: string
+
+    UserProjectAccess:
+      type: object
+      description: >
+        One project-contact row for a user, reported as stored rather than as filtered. The
+        backing access rule grants access only when the row's email matches the login
+        exactly AND a contact record is linked; rows failing either test make the project,
+        and every case on it, silently invisible to that user.
+      required: [projectId, projectName, contactEmail, contactRecordPresent, emailMatchesLogin, grantsCaseAccess]
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        projectName:
+          type: string
+        contactEmail:
+          type: string
+          description: The email as stored on the row itself.
+        contactRecordPresent:
+          type: boolean
+          description: False when the row has no contact record linked.
+        contactRecordEmail:
+          type: string
+          description: The linked record's own email, which may differ from contactEmail.
+        emailMatchesLogin:
+          type: boolean
+        registrationState:
+          type: string
+        notificationsEnabled:
+          type: boolean
+        roles:
+          type: array
+          items:
+            type: string
+        grantsCaseAccess:
+          type: boolean
+
+    SNUserDetail:
+      type: object
+      description: >
+        One user's full profile. The membership and project-access blocks are best-effort:
+        each is empty rather than absent when its upstream lookup fails, so a partial
+        profile still renders.
+      allOf:
+        - $ref: '#/components/schemas/SNUser'
+        - type: object
+          properties:
+            groups:
+              type: array
+              items:
+                $ref: '#/components/schemas/UserGroupRef'
+            teams:
+              type: array
+              description: The subset of groups that are registry teams.
+              items:
+                $ref: '#/components/schemas/UserTeamRef'
+            projectAccess:
+              type: array
+              description: Present for external contacts only.
+              items:
+                $ref: '#/components/schemas/UserProjectAccess'
 
     SearchUsersResponse:
       type: object

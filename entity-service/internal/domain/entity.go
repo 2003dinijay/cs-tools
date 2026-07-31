@@ -33,6 +33,11 @@ const (
 	UserTypeCustomer UserType = "customer"
 	// UserTypeSystem identifies automated system actors.
 	UserTypeSystem UserType = "system"
+	// UserTypeExternal identifies a customer or partner contact, as reported by the
+	// ServiceNow data source. Note the two sources name this concept differently: the
+	// postgres source emits "customer", ServiceNow emits "external". Callers that
+	// branch on staff-vs-not must treat both as non-staff.
+	UserTypeExternal UserType = "external"
 )
 
 // User represents a single user entity as stored in the database.
@@ -63,6 +68,9 @@ const (
 	UserRoleCustomerAdmin UserRole = "customer_admin"
 	UserRolePartner       UserRole = "partner"
 	UserRolePartnerAdmin  UserRole = "partner_admin"
+	// UserRoleTimecardApprover exists upstream but was absent from this enum, so it
+	// could not be filtered on.
+	UserRoleTimecardApprover UserRole = "timecard_approver"
 )
 
 // UserSortField enumerates the columns by which user search results may be ordered.
@@ -92,10 +100,21 @@ type Pagination struct {
 // SearchUsersFilters holds the optional filter criteria for a user search.
 type SearchUsersFilters struct {
 	SearchQuery string     `json:"searchQuery"`
-	Roles       []UserRole `json:"roles"`
+	RoleIDs     []UserRole `json:"roleIds"`
 	UserNames   []string   `json:"userNames"`
 	Emails      []string   `json:"emails"`
-	Active      *bool      `json:"active"`
+	// UserIDs restricts the search to specific users. It intersects with the other
+	// filters, and supplying it also lifts the active-only default so a deactivated
+	// user stays retrievable by ID.
+	UserIDs []string `json:"userIds"`
+	// GroupIDs restricts the search to members of these groups. Resolved to a user-ID
+	// set before the upstream call, since the data source cannot join users against
+	// group membership in one query.
+	GroupIDs []string `json:"groupIds"`
+	// TeamIDs restricts the search to members of these teams, by team key. Teams are
+	// resolved to their group names via the registry, then to a user-ID set.
+	TeamIDs []string `json:"teamIds"`
+	Active  *bool    `json:"active"`
 }
 
 // UserSortBy specifies the sort field and direction for a user search.
@@ -123,15 +142,126 @@ type SearchUsersResponse struct {
 
 // SNUser is the user view returned by the ServiceNow data source.
 type SNUser struct {
-	ID        string   `json:"id"`
-	UserName  string   `json:"userName"`
-	Name      string   `json:"name"`
-	Email     string   `json:"email"`
-	TimeZone  *string  `json:"timeZone"`
+	ID       string  `json:"id"`
+	UserName string  `json:"userName"`
+	Name     string  `json:"name"`
+	Email    string  `json:"email"`
+	TimeZone *string `json:"timeZone"`
+	// MobilePhone is the number the on-call escalation flow dials -- the only phone
+	// field the platform surfaces. Nil when the backing record has none.
+	MobilePhone *string `json:"mobilePhone,omitempty"`
+	// UserType distinguishes staff from customer/partner contacts. Derived by the
+	// backing data source from role membership, not stored as a column.
+	UserType  UserType `json:"userType,omitempty"`
 	Active    bool     `json:"active"`
 	CreatedOn string   `json:"createdOn"`
 	UpdatedOn string   `json:"updatedOn"`
 	Roles     []string `json:"roles"`
+}
+
+// SNUserDetail is a single user's full profile: the user row plus the memberships and
+// project access a caller would otherwise have to assemble from several searches.
+//
+// The enrichment blocks are best-effort. Each is empty rather than absent when its
+// upstream lookup fails, so a partial profile still renders instead of erroring.
+type SNUserDetail struct {
+	SNUser
+	// Groups is every group the user belongs to.
+	Groups []UserGroupRef `json:"groups"`
+	// Teams is the subset of Groups that are registry teams.
+	Teams []UserTeamRef `json:"teams"`
+	// ProjectAccess is populated for external contacts only; it is nil for staff.
+	ProjectAccess []UserProjectAccess `json:"projectAccess,omitempty"`
+}
+
+// UserGroupRef is a group the user is a member of.
+type UserGroupRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// UserTeamRef is a team the user is a member of. ID is the registry team key, which is
+// stable across environments -- unlike the underlying group id.
+type UserTeamRef struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Family string `json:"family,omitempty"`
+}
+
+// UserProjectAccess is one project-contact row for a user, reported as stored rather than
+// as filtered.
+//
+// The backing access rule only grants access when the row's email matches the login
+// exactly AND a contact record is linked. Rows failing either test make the project, and
+// every case on it, silently invisible to that user, so they are reported here with
+// GrantsCaseAccess spelling out the verdict instead of being dropped.
+type UserProjectAccess struct {
+	ProjectID   string `json:"projectId"`
+	ProjectName string `json:"projectName"`
+	// ContactEmail is the email as stored on the row itself.
+	ContactEmail string `json:"contactEmail"`
+	// ContactRecordPresent is false when the row has no contact record linked.
+	ContactRecordPresent bool `json:"contactRecordPresent"`
+	// ContactRecordEmail is the linked record's own email, which may differ from
+	// ContactEmail -- that mismatch is itself an access fault.
+	ContactRecordEmail   string   `json:"contactRecordEmail"`
+	EmailMatchesLogin    bool     `json:"emailMatchesLogin"`
+	RegistrationState    string   `json:"registrationState"`
+	NotificationsEnabled bool     `json:"notificationsEnabled"`
+	Roles                []string `json:"roles"`
+	GrantsCaseAccess     bool     `json:"grantsCaseAccess"`
+}
+
+// Role is an assignable platform role.
+type Role struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// SearchRolesRequest is the input for POST /roles/search.
+type SearchRolesRequest struct {
+	Filters    SearchRolesFilters `json:"filters"`
+	Pagination Pagination         `json:"pagination"`
+}
+
+// SearchRolesFilters holds optional filter criteria for role searches.
+type SearchRolesFilters struct {
+	SearchQuery string `json:"searchQuery,omitempty"`
+}
+
+// SearchRolesResponse is the paginated result of a role search.
+type SearchRolesResponse struct {
+	Roles  []Role `json:"roles"`
+	Total  int    `json:"total"`
+	Offset int    `json:"offset"`
+	Limit  int    `json:"limit"`
+}
+
+// Team is one of the organisation's teams. ID is the registry key, stable across
+// environments; the backing group's id is not.
+type Team struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Family string `json:"family,omitempty"`
+}
+
+// SearchTeamsRequest is the input for POST /teams/search.
+type SearchTeamsRequest struct {
+	Filters    SearchTeamsFilters `json:"filters"`
+	Pagination Pagination         `json:"pagination"`
+}
+
+// SearchTeamsFilters holds optional filter criteria for team searches.
+type SearchTeamsFilters struct {
+	SearchQuery string `json:"searchQuery,omitempty"`
+}
+
+// SearchTeamsResponse is the paginated result of a team search.
+type SearchTeamsResponse struct {
+	Teams  []Team `json:"teams"`
+	Total  int    `json:"total"`
+	Offset int    `json:"offset"`
+	Limit  int    `json:"limit"`
 }
 
 // SearchSNUsersResponse is the paginated result of a ServiceNow user search.

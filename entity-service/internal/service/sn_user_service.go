@@ -44,8 +44,9 @@ type snGroupMembersSearchPayload struct {
 }
 
 type snGroupMembersFilters struct {
-	GroupNames []string `json:"groupNames"`
-	UserID     string   `json:"userId"`
+	GroupIDs   []string `json:"groupIds,omitempty"`
+	GroupNames []string `json:"groupNames,omitempty"`
+	UserID     string   `json:"userId,omitempty"`
 }
 
 // snGroupMembersSearchResponse mirrors the Choreo POST group-members/search response.
@@ -87,15 +88,17 @@ type snUsersResponse struct {
 }
 
 type snUser struct {
-	ID        string   `json:"id"`
-	UserName  string   `json:"userName"`
-	Name      string   `json:"name"`
-	Email     string   `json:"email"`
-	TimeZone  *string  `json:"timeZone"`
-	Active    bool     `json:"active"`
-	CreatedOn string   `json:"createdOn"`
-	UpdatedOn string   `json:"updatedOn"`
-	Roles     []string `json:"roles"`
+	ID          string   `json:"id"`
+	UserName    string   `json:"userName"`
+	Name        string   `json:"name"`
+	Email       string   `json:"email"`
+	TimeZone    *string  `json:"timeZone"`
+	MobilePhone *string  `json:"mobilePhone"`
+	UserType    string   `json:"userType"`
+	Active      bool     `json:"active"`
+	CreatedOn   string   `json:"createdOn"`
+	UpdatedOn   string   `json:"updatedOn"`
+	Roles       []string `json:"roles"`
 }
 
 // snUserSearchPayload is the Choreo POST /users/search request body.
@@ -110,8 +113,41 @@ type snUserFilters struct {
 	Roles       []string `json:"roles,omitempty"`
 	UserNames   []string `json:"userNames,omitempty"`
 	Emails      []string `json:"emails,omitempty"`
+	UserIDs     []string `json:"userIds,omitempty"`
 	Active      *bool    `json:"active,omitempty"`
 }
+
+// snProjectContactRowsPayload is the Choreo POST project-contacts/search request body.
+type snProjectContactRowsPayload struct {
+	Filters snProjectContactRowsFilters `json:"filters"`
+}
+
+type snProjectContactRowsFilters struct {
+	Email string `json:"email"`
+}
+
+// snProjectContactRowsResponse mirrors the Choreo POST project-contacts/search response.
+type snProjectContactRowsResponse struct {
+	Contacts     []snProjectContactRow `json:"contacts"`
+	TotalRecords int                   `json:"totalRecords"`
+}
+
+type snProjectContactRow struct {
+	ProjectID              string   `json:"projectId"`
+	ProjectName            string   `json:"projectName"`
+	ContactEmail           string   `json:"contactEmail"`
+	CustomerContactPresent bool     `json:"customerContactPresent"`
+	CustomerContactEmail   string   `json:"customerContactEmail"`
+	EmailMatchesLogin      bool     `json:"emailMatchesLogin"`
+	RegistrationState      string   `json:"registrationState"`
+	NotificationsEnabled   bool     `json:"notificationsEnabled"`
+	Roles                  []string `json:"roles"`
+	GrantsCaseAccess       bool     `json:"grantsCaseAccess"`
+}
+
+// snUserIDFilterLimit caps how many ids one search may pass upstream. The upstream builds
+// an IN clause from them, and an over-long encoded query is silently truncated there.
+const snUserIDFilterLimit = 200
 
 type snUserSort struct {
 	Field string `json:"field"`
@@ -119,15 +155,16 @@ type snUserSort struct {
 }
 
 var validUserRole = map[domain.UserRole]bool{
-	domain.UserRoleInternal:      true,
-	domain.UserRoleAgent:         true,
-	domain.UserRoleAdmin:         true,
-	domain.UserRoleCommenter:     true,
-	domain.UserRoleExternal:      true,
-	domain.UserRoleCustomer:      true,
-	domain.UserRoleCustomerAdmin: true,
-	domain.UserRolePartner:       true,
-	domain.UserRolePartnerAdmin:  true,
+	domain.UserRoleInternal:         true,
+	domain.UserRoleAgent:            true,
+	domain.UserRoleAdmin:            true,
+	domain.UserRoleCommenter:        true,
+	domain.UserRoleExternal:         true,
+	domain.UserRoleCustomer:         true,
+	domain.UserRoleCustomerAdmin:    true,
+	domain.UserRolePartner:          true,
+	domain.UserRolePartnerAdmin:     true,
+	domain.UserRoleTimecardApprover: true,
 }
 
 var validUserSortField = map[domain.UserSortField]bool{
@@ -147,10 +184,10 @@ type snUserService struct {
 
 // NewServiceNowUserService constructs an SNUserService backed by the Choreo API.
 func NewServiceNowUserService(client *integrationservice.Client) SNUserService {
-	// The ABT team registry (GET abt-teams) is static reference data served
+	// The ABT team registry (GET teams) is static reference data served
 	// by the same Choreo-fronted Ballerina service — no user token needed.
 	domain.SetAbtTeamsFetcher(func(ctx context.Context) (json.RawMessage, error) {
-		return client.Get(ctx, "/abt-teams", "")
+		return client.Get(ctx, "/teams", "")
 	})
 	return &snUserService{client: client}
 }
@@ -162,8 +199,8 @@ func (s *snUserService) SearchUsers(ctx context.Context, req domain.SearchUsersR
 	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchSNUsersResponse{}, err
 	}
-	if len(req.Filters.Roles) > 20 {
-		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{Msg: "roles cannot contain more than 20 values"}
+	if len(req.Filters.RoleIDs) > 20 {
+		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{Msg: "roleIds cannot contain more than 20 values"}
 	}
 	if len(req.Filters.UserNames) > 50 {
 		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{Msg: "userNames cannot contain more than 50 values"}
@@ -171,9 +208,9 @@ func (s *snUserService) SearchUsers(ctx context.Context, req domain.SearchUsersR
 	if len(req.Filters.Emails) > 50 {
 		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{Msg: "emails cannot contain more than 50 values"}
 	}
-	for _, role := range req.Filters.Roles {
+	for _, role := range req.Filters.RoleIDs {
 		if !validUserRole[role] {
-			return domain.SearchSNUsersResponse{}, &apierror.ValidationError{Msg: "roles contains invalid value: " + string(role)}
+			return domain.SearchSNUsersResponse{}, &apierror.ValidationError{Msg: "roleIds contains invalid value: " + string(role)}
 		}
 	}
 	if req.SortBy.Field != "" && !validUserSortField[req.SortBy.Field] {
@@ -186,10 +223,34 @@ func (s *snUserService) SearchUsers(ctx context.Context, req domain.SearchUsersR
 		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{Msg: "sortBy.order contains invalid value: " + string(req.SortBy.Order)}
 	}
 
+	if len(req.Filters.UserIDs) > snUserIDFilterLimit {
+		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{
+			Msg: fmt.Sprintf("userIds cannot contain more than %d values", snUserIDFilterLimit)}
+	}
+
 	token := middleware.UserIDTokenFromContext(ctx)
 
-	roles := make([]string, len(req.Filters.Roles))
-	for i, r := range req.Filters.Roles {
+	// Group and team membership cannot be expressed as a user-search filter upstream --
+	// the data source cannot join users against group membership in one query. Resolve
+	// both to a user-ID set here and intersect with any explicit userIds, so paging and
+	// totals still come from the single upstream call rather than being recomputed here.
+	userIDs, err := s.resolveMembershipUserIDs(ctx, token, req.Filters)
+	if err != nil {
+		return domain.SearchSNUsersResponse{}, err
+	}
+	if userIDs != nil && len(userIDs) == 0 {
+		// A membership filter was supplied and matched nobody. Returning the unfiltered
+		// page here would be a silent lie, so return an empty page instead.
+		return domain.SearchSNUsersResponse{
+			Users:  []domain.SNUser{},
+			Total:  0,
+			Limit:  req.Pagination.Limit,
+			Offset: req.Pagination.Offset,
+		}, nil
+	}
+
+	roles := make([]string, len(req.Filters.RoleIDs))
+	for i, r := range req.Filters.RoleIDs {
 		roles[i] = string(r)
 	}
 
@@ -208,6 +269,7 @@ func (s *snUserService) SearchUsers(ctx context.Context, req domain.SearchUsersR
 			Roles:       roles,
 			UserNames:   req.Filters.UserNames,
 			Emails:      req.Filters.Emails,
+			UserIDs:     userIDs,
 			Active:      req.Filters.Active,
 		},
 		SortBy:     snSortBy,
@@ -231,15 +293,17 @@ func (s *snUserService) SearchUsers(ctx context.Context, req domain.SearchUsersR
 			roles = []string{}
 		}
 		users = append(users, domain.SNUser{
-			ID:        sysidToUUID(u.ID),
-			UserName:  u.UserName,
-			Name:      u.Name,
-			Email:     u.Email,
-			TimeZone:  u.TimeZone,
-			Active:    u.Active,
-			CreatedOn: u.CreatedOn,
-			UpdatedOn: u.UpdatedOn,
-			Roles:     roles,
+			ID:          sysidToUUID(u.ID),
+			UserName:    u.UserName,
+			Name:        u.Name,
+			Email:       u.Email,
+			TimeZone:    u.TimeZone,
+			MobilePhone: u.MobilePhone,
+			UserType:    domain.UserType(u.UserType),
+			Active:      u.Active,
+			CreatedOn:   u.CreatedOn,
+			UpdatedOn:   u.UpdatedOn,
+			Roles:       roles,
 		})
 	}
 
@@ -249,6 +313,232 @@ func (s *snUserService) SearchUsers(ctx context.Context, req domain.SearchUsersR
 		Limit:  req.Pagination.Limit,
 		Offset: req.Pagination.Offset,
 	}, nil
+}
+
+// resolveMembershipUserIDs turns the groupIds/teamIds/userIds filters into the single
+// user-id list the upstream search understands.
+//
+// nil means "do not constrain by id". An empty non-nil slice means a membership filter was
+// supplied and matched nobody, which the caller must render as an empty page.
+func (s *snUserService) resolveMembershipUserIDs(
+	ctx context.Context, token string, filters domain.SearchUsersFilters,
+) ([]string, error) {
+	explicit := make([]string, 0, len(filters.UserIDs))
+	for _, id := range filters.UserIDs {
+		explicit = append(explicit, uuidToSysid(id))
+	}
+
+	if len(filters.GroupIDs) == 0 && len(filters.TeamIDs) == 0 {
+		if len(explicit) == 0 {
+			return nil, nil
+		}
+		return explicit, nil
+	}
+
+	groupIDs := make([]string, 0, len(filters.GroupIDs))
+	for _, id := range filters.GroupIDs {
+		groupIDs = append(groupIDs, uuidToSysid(id))
+	}
+
+	// Teams resolve by group name, not id: the registry is keyed that way because the
+	// backing group ids differ between environments.
+	var groupNames []string
+	for _, key := range filters.TeamIDs {
+		team, ok := domain.FindAbtTeamByKey(key)
+		if !ok {
+			return nil, &apierror.ValidationError{Msg: "teamIds contains unknown team: " + key}
+		}
+		groupNames = append(groupNames, team.DisplayName)
+	}
+
+	members, err := s.searchGroupMemberships(ctx, token, groupIDs, groupNames, "")
+	if err != nil {
+		return nil, err
+	}
+
+	memberIDs := make([]string, 0, len(members))
+	seen := make(map[string]struct{}, len(members))
+	for _, m := range members {
+		if m.UserID == "" {
+			continue
+		}
+		if _, dup := seen[m.UserID]; dup {
+			continue
+		}
+		seen[m.UserID] = struct{}{}
+		memberIDs = append(memberIDs, m.UserID)
+	}
+
+	if len(explicit) == 0 {
+		return memberIDs, nil
+	}
+
+	// Both supplied: intersect, so the filters compose instead of one silently winning.
+	intersection := make([]string, 0, len(explicit))
+	for _, id := range explicit {
+		if _, ok := seen[id]; ok {
+			intersection = append(intersection, id)
+		}
+	}
+	return intersection, nil
+}
+
+// searchGroupMemberships calls the upstream group-membership search. At least one of
+// groupIDs, groupNames or userSysID must be set; passing only userSysID returns every
+// group that user belongs to.
+func (s *snUserService) searchGroupMemberships(
+	ctx context.Context, token string, groupIDs, groupNames []string, userSysID string,
+) ([]snGroupMembership, error) {
+	payload := snGroupMembersSearchPayload{
+		Filters: snGroupMembersFilters{
+			GroupIDs:   groupIDs,
+			GroupNames: groupNames,
+			UserID:     userSysID,
+		},
+	}
+
+	raw, err := s.client.Post(ctx, "/group-members/search", token, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp snGroupMembersSearchResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("sn users: parse group membership response: %w", err)
+	}
+	return resp.Memberships, nil
+}
+
+// GetUser handles GET /users/{id}.
+//
+// Built on the search's userIds filter because there is no get-by-id upstream. That filter
+// also lifts the active-only default, so a deactivated user is still returned -- which
+// matters, since "this user is deactivated" is often the answer the caller wants.
+func (s *snUserService) GetUser(ctx context.Context, id string) (domain.SNUserDetail, error) {
+	sysID := uuidToSysid(id)
+	if sysID == "" {
+		return domain.SNUserDetail{}, &apierror.ValidationError{Msg: "id is required"}
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	payload := snUserSearchPayload{
+		Filters:    snUserFilters{UserIDs: []string{sysID}},
+		Pagination: snProjectPagination{Limit: 1, Offset: 0},
+	}
+
+	raw, err := s.client.Post(ctx, "/users/search", token, payload)
+	if err != nil {
+		return domain.SNUserDetail{}, err
+	}
+
+	var snResp snUsersResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.SNUserDetail{}, fmt.Errorf("sn users: parse response: %w", err)
+	}
+	if len(snResp.Users) == 0 {
+		return domain.SNUserDetail{}, &apierror.NotFoundError{Msg: "user not found"}
+	}
+
+	u := snResp.Users[0]
+	roles := u.Roles
+	if roles == nil {
+		roles = []string{}
+	}
+
+	detail := domain.SNUserDetail{
+		SNUser: domain.SNUser{
+			ID:          sysidToUUID(u.ID),
+			UserName:    u.UserName,
+			Name:        u.Name,
+			Email:       u.Email,
+			TimeZone:    u.TimeZone,
+			MobilePhone: u.MobilePhone,
+			UserType:    domain.UserType(u.UserType),
+			Active:      u.Active,
+			CreatedOn:   u.CreatedOn,
+			UpdatedOn:   u.UpdatedOn,
+			Roles:       roles,
+		},
+	}
+
+	// The enrichments are best-effort: each degrades to empty on upstream failure rather
+	// than failing the whole profile, matching how the caller's own team is resolved on
+	// GET /users/me.
+	detail.Groups, detail.Teams = s.resolveUserGroupsAndTeams(ctx, token, sysID)
+	if detail.UserType == domain.UserTypeExternal {
+		detail.ProjectAccess = s.resolveProjectAccess(ctx, token, u.Email)
+	}
+
+	return detail, nil
+}
+
+// resolveUserGroupsAndTeams lists every group the user belongs to, marking the subset that
+// are registry teams.
+func (s *snUserService) resolveUserGroupsAndTeams(
+	ctx context.Context, token, userSysID string,
+) ([]domain.UserGroupRef, []domain.UserTeamRef) {
+	groups := []domain.UserGroupRef{}
+	teams := []domain.UserTeamRef{}
+
+	members, err := s.searchGroupMemberships(ctx, token, nil, nil, userSysID)
+	if err != nil {
+		log.Printf("sn users: group membership lookup for user failed: %v", err)
+		return groups, teams
+	}
+
+	for _, m := range members {
+		groups = append(groups, domain.UserGroupRef{ID: sysidToUUID(m.GroupID), Name: m.GroupName})
+		if team, ok := domain.FindAbtTeamByGroupName(m.GroupName); ok {
+			teams = append(teams, domain.UserTeamRef{
+				ID:     team.TeamKey,
+				Name:   team.DisplayName,
+				Family: string(team.Family),
+			})
+		}
+	}
+	return groups, teams
+}
+
+// resolveProjectAccess lists the user's project-contact rows, including the ones the
+// upstream access rule hides, so a caller can see why a contact cannot reach their cases.
+func (s *snUserService) resolveProjectAccess(
+	ctx context.Context, token, email string,
+) []domain.UserProjectAccess {
+	access := []domain.UserProjectAccess{}
+	if email == "" {
+		return access
+	}
+
+	payload := snProjectContactRowsPayload{Filters: snProjectContactRowsFilters{Email: email}}
+
+	raw, err := s.client.Post(ctx, "/project-contacts/search", token, payload)
+	if err != nil {
+		log.Printf("sn users: project contact lookup failed: %v", err)
+		return access
+	}
+
+	var resp snProjectContactRowsResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		log.Printf("sn users: parse project contact response failed: %v", err)
+		return access
+	}
+
+	for _, c := range resp.Contacts {
+		access = append(access, domain.UserProjectAccess{
+			ProjectID:            sysidToUUID(c.ProjectID),
+			ProjectName:          c.ProjectName,
+			ContactEmail:         c.ContactEmail,
+			ContactRecordPresent: c.CustomerContactPresent,
+			ContactRecordEmail:   c.CustomerContactEmail,
+			EmailMatchesLogin:    c.EmailMatchesLogin,
+			RegistrationState:    c.RegistrationState,
+			NotificationsEnabled: c.NotificationsEnabled,
+			Roles:                c.Roles,
+			GrantsCaseAccess:     c.GrantsCaseAccess,
+		})
+	}
+	return access
 }
 
 func (s *snUserService) GetMe(ctx context.Context) (domain.GetUserMeResponse, error) {

@@ -212,10 +212,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		taskHandler = handler.NewTaskHandler(service.NewServiceNowTaskService(serviceNowIntegrationServiceClient))
 	}
 
+	roleHandler := handler.NewRoleHandler(service.NewRoleService())
+	teamHandler := handler.NewTeamHandler(service.NewTeamService())
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handler.HealthCheck)
 	if snUserHandler != nil {
+		mux.HandleFunc("GET /users/{id}", snUserHandler.GetUser)
 		mux.HandleFunc("GET /users/me", snUserHandler.GetMe)
 		mux.HandleFunc("PATCH /users/me", snUserHandler.PatchMe)
 		mux.HandleFunc("POST /users/search", snUserHandler.SearchUsers)
@@ -316,6 +320,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	if groupHandler != nil {
 		mux.HandleFunc("POST /groups/search", groupHandler.SearchGroups)
 	}
+
+	// The role catalogue and the team registry are reference data, not data-source
+	// specific, so these are registered unconditionally.
+	mux.HandleFunc("POST /roles/search", roleHandler.SearchRoles)
+	mux.HandleFunc("POST /teams/search", teamHandler.SearchTeams)
 
 	if configurationItemHandler != nil {
 		mux.HandleFunc("POST /configuration-items/search", configurationItemHandler.SearchConfigurationItems)

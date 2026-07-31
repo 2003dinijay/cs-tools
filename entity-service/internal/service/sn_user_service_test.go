@@ -70,7 +70,7 @@ func TestSNUserService_GetMe_TeamMatch(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(snUserMeJSON(testAbtUserSysid)))
 	})
-	mux.HandleFunc("/abt-teams", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/teams", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(abtTeamsFixtureJSON))
 	})
@@ -134,7 +134,7 @@ func TestSNUserService_GetMe_FlatTeamMatch_IAMUS(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(snUserMeJSON(testAbtUserSysid)))
 	})
-	mux.HandleFunc("/abt-teams", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/teams", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(abtTeamsFixtureJSON))
 	})
@@ -167,7 +167,7 @@ func TestSNUserService_GetMe_UnclassifiedTeamMatch(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(snUserMeJSON(testAbtUserSysid)))
 	})
-	mux.HandleFunc("/abt-teams", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/teams", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(abtTeamsFixtureJSON))
 	})
@@ -197,7 +197,7 @@ func TestSNUserService_GetMe_NoMatch(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(snUserMeJSON(testAbtUserSysid)))
 	})
-	mux.HandleFunc("/abt-teams", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/teams", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(abtTeamsFixtureJSON))
 	})
@@ -228,7 +228,7 @@ func TestSNUserService_GetMe_GroupMembershipCallErrors_IdentityStillReturned(t *
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(snUserMeJSON(testAbtUserSysid)))
 	})
-	mux.HandleFunc("/abt-teams", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/teams", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(abtTeamsFixtureJSON))
 	})
@@ -261,7 +261,7 @@ func TestSNUserService_GetMe_RegistryFetchFails_IdentityStillReturned(t *testing
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(snUserMeJSON(testAbtUserSysid)))
 	})
-	mux.HandleFunc("/abt-teams", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/teams", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 	groupMembersCalled := false
