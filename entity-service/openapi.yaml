@@ -4827,11 +4827,13 @@ components:
           format: uuid
           description: UUID of the entity the comment belongs to.
         referenceType:
-          allOf:
-            - $ref: '#/components/schemas/ReferenceType'
+          type: string
+          enum: [conversation, change_request, deployment, incident]
           description: >-
-            One of conversation, change_request, deployment or incident. `case` is
-            not accepted here; use POST /cases/{id}/comments instead.
+            Deliberately a strict subset of ReferenceType: `case` is rejected with
+            400 here, because case comments are owned by POST /cases/{id}/comments.
+            Declared inline rather than referencing the shared ReferenceType, which
+            must keep accepting `case` for attachments and comment search.
         type:
           type: string
           enum: [work_note, comment, activity]
