@@ -127,6 +127,7 @@ import CaseTimeCardsPanel from "@features/csm-timecards/components/CaseTimeCards
 import LogTimeCardDialog from "@features/csm-timecards/components/LogTimeCardDialog";
 import { usePostTimeCard } from "@features/csm-timecards/api/useTimeCards";
 import { caseIdLabel } from "@features/csm-cases/utils/caseIdentity";
+import { parentRecordPath } from "@features/csm-cases/utils/parentRecordRoute";
 import { formatAbsoluteForUser } from "@utils/dateTime";
 import {
   isBlankHtml,
@@ -286,29 +287,6 @@ function findVerticalScrollAncestor(el: HTMLElement): HTMLElement {
     cur = cur.parentElement;
   }
   return (document.scrollingElement as HTMLElement | null) ?? document.documentElement;
-}
-
-/**
- * Route for a case's parentCase chip. A case's parent can be any task-derived
- * record (case, incident, change request, or problem), so this can't always
- * assume `/cases/{id}` -- `type` is undefined/null only for older data the
- * backend can't resolve a type for, which predates cross-table parents ever
- * being possible, so "case" is the correct fallback.
- */
-function parentCasePath(
-  parentCase: { id: string; type?: string | null } | undefined,
-): string {
-  if (!parentCase) return "/cases";
-  switch (parentCase.type) {
-    case "incident":
-      return `/operations/incidents/${parentCase.id}`;
-    case "change_request":
-      return `/operations/change-requests/${parentCase.id}`;
-    case "problem":
-      return `/operations/problems/${parentCase.id}`;
-    default:
-      return `/cases/${parentCase.id}`;
-  }
 }
 
 const TAB_DEFS: Array<{
@@ -1633,17 +1611,31 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 sx={{ fontWeight: 600 }}
               />
             )}
-            {!isAnnouncement && c.parentCase && (
-              <Chip
-                size="small"
-                variant="outlined"
-                clickable
-                icon={<LinkIcon size={14} />}
-                label={`Parent: ${c.parentCase.caseNumber ?? c.parentCase.id}`}
-                onClick={() => navigate(parentCasePath(c.parentCase))}
-                sx={{ fontWeight: 600 }}
-              />
-            )}
+            {!isAnnouncement &&
+              c.parentCase &&
+              (() => {
+                const parentPath = parentRecordPath(c.parentCase);
+                return (
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    clickable={parentPath !== null}
+                    icon={<LinkIcon size={14} />}
+                    label={`Parent: ${c.parentCase.caseNumber ?? c.parentCase.id}`}
+                    onClick={
+                      parentPath === null
+                        ? undefined
+                        : () => navigate(parentPath)
+                    }
+                    title={
+                      parentPath === null
+                        ? "This parent record's type could not be resolved, so it cannot be opened from here."
+                        : undefined
+                    }
+                    sx={{ fontWeight: 600 }}
+                  />
+                );
+              })()}
             {!isAnnouncement &&
               c.autoclosureStep &&
               c.autoclosureStep !== "DEFAULT" && (

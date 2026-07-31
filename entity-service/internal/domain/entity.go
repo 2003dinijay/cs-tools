@@ -976,9 +976,11 @@ type CaseNumberRef struct {
 	ID     string `json:"id"`
 	Number string `json:"number"`
 	// Type discriminates what kind of record this reference points at
-	// ("case", "incident", "change_request", "problem") -- a task-derived reference
-	// like ParentCase can point at any of these, not just another case. Nil when the
-	// backing data source doesn't resolve a type (ServiceNow data source only).
+	// ("case", "incident", "change_request", "problem") -- a parent reference can
+	// point at any of these, not just another case. Nil means the backing data
+	// source could not resolve the referenced record's kind, so a consumer must
+	// NOT fall back to treating it as a case: it may well be one of the other
+	// kinds, and linking to a case detail page for it would 404.
 	Type *string `json:"type"`
 }
 
