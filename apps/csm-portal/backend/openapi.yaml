@@ -4786,6 +4786,10 @@ components:
               format: uuid
             name:
               type: string
+        assignedToUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         resolutionCode:
           $ref: '#/components/schemas/CaseResolutionCode'
           nullable: true
@@ -4904,6 +4908,10 @@ components:
         email:
           type: string
           format: email
+        user:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
 
     Tag:
       type: object
@@ -5267,6 +5275,41 @@ components:
           type: string
           format: email
 
+    UserReference:
+      type: object
+      nullable: true
+      description: >-
+        Canonical reference to a person: id, email and display name, nothing
+        else. Emitted as a sibling of whatever actor fields a response already
+        carried, so every "who did this" value has one shape.
+
+
+        `id` is nullable by design. It is populated only where the backing data
+        source already resolves the actor to a user record (comment and
+        attachment authors, and the case assignee); it is deliberately left null
+        elsewhere (case creator, activity-feed actors, watchers) rather than
+        adding a per-row user lookup to hot list endpoints. `email` and `name`
+        are populated everywhere, so a consumer that needs the id resolves it
+        from the email through its own cached user lookup. The key is always
+        present: null means "no id available here", never "this producer is too
+        old to send one".
+      required: [id, email, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+          nullable: true
+          example: 00000000-0000-0000-0000-000000000000
+        email:
+          type: string
+          description: >-
+            The actor as recorded. Usually an email address, but can be a
+            non-user identifier such as an automation account.
+          example: jane.doe@example.com
+        name:
+          type: string
+          example: Jane Doe
+
     EntityRef:
       type: object
       properties:
@@ -5367,6 +5410,10 @@ components:
           description: Timestamp when the case was closed. null if not yet closed.
         createdBy:
           $ref: '#/components/schemas/UserRef'
+        createdByUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         project:
           $ref: '#/components/schemas/EntityRef'
         deployment:
@@ -5399,6 +5446,10 @@ components:
             - $ref: '#/components/schemas/EntityRef'
         assignedEngineer:
           $ref: '#/components/schemas/AssignedEngineerRef'
+        assignedEngineerUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         parentCase:
           $ref: '#/components/schemas/CaseNumberRef'
         relatedCase:
@@ -5583,6 +5634,10 @@ components:
           description: Timestamp when the case was closed. null if not yet closed.
         createdBy:
           $ref: '#/components/schemas/UserIDEmailRef'
+        createdByUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         project:
           $ref: '#/components/schemas/EntityRef'
         deployment:
@@ -5599,6 +5654,10 @@ components:
             - $ref: '#/components/schemas/EntityRef'
         assignedEngineer:
           $ref: '#/components/schemas/AssignedEngineerRef'
+        assignedEngineerUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         parentCase:
           $ref: '#/components/schemas/CaseNumberRef'
         relatedCase:
@@ -7084,6 +7143,10 @@ components:
           type: string
         createdBy:
           type: string
+        createdByUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         createdOn:
           type: string
           format: date-time
@@ -7149,6 +7212,10 @@ components:
           type: string
         createdBy:
           type: string
+        createdByUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         createdOn:
           type: string
           format: date-time
@@ -7327,6 +7394,10 @@ components:
           nullable: true
         createdBy:
           type: string
+        createdByUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         createdOn:
           type: string
           format: date-time
@@ -8361,6 +8432,10 @@ components:
               type: string
             fullName:
               type: string
+        createdByUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
 
     ConversationMessagesResponse:
       type: object
