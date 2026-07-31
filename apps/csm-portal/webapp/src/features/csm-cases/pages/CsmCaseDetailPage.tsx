@@ -416,8 +416,13 @@ export default function CsmCaseDetailPage(): JSX.Element {
 
   useEffect(() => {
     if (!caseId || !isMisrouted) return;
-    navigate(canonicalDetailPath, { replace: true });
-  }, [isMisrouted, canonicalDetailPath, caseId, navigate]);
+    // Carry the originating list location through the canonical redirect. Without
+    // it, a record reached on a non-canonical route (announcements, service
+    // requests, engagements, security reports) lands on its dedicated route with
+    // empty state, and Back then falls through to the bare route-specific path,
+    // dropping the filters, search and sort that got the user here.
+    navigate(canonicalDetailPath, { replace: true, state: { from: resolvedBackPath } });
+  }, [isMisrouted, canonicalDetailPath, caseId, navigate, resolvedBackPath]);
 
   const {
     data: comments,

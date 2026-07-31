@@ -193,6 +193,9 @@ export function countActiveCRFilters(filters: ChangeRequestFilters): number {
 //     for any of them.
 //   - `project`, `case`, `deployment`, `deployedProduct`, and `product` are
 //     read-only refs with no create-time field to set them from at all.
+//   - `serviceId`, `serviceOfferingId`, and `configurationItemId` are the
+//     mirror image: create accepts all three, and the read response carries no
+//     equivalent, so a clone always leaves them blank.
 //   - `assignedTeam` is read-only; create's nearest-sounding field
 //     (`groupId`, "Assignment group") is a *different* underlying reference
 //     with no confirmed equivalence to `assignedTeam` — mapping one into the
@@ -259,5 +262,6 @@ export function buildCloneChangeRequestNavState(
 export const CLONE_SOURCE_GAP_MESSAGE =
   "Copied the subject, description, justification, test plan, type, impact, and assigned engineer. " +
   "Category, priority, risk, implementation plan, risk/impact analysis, backout plan, assignment group, " +
-  "linked project/case, and affected product aren't available to copy and need to be re-entered. " +
+  "linked project/case, affected product, service, service offering, and configuration item aren't " +
+  "available to copy and need to be re-entered. " +
   "Deployment, schedule, and approval fields are intentionally left blank for you to set for the new environment.";

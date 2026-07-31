@@ -201,7 +201,10 @@ export default function CreateChangeRequestPage(): JSX.Element {
   // not reach back in and overwrite what they've typed.
   const cloneState = useLocation().state as CloneChangeRequestNavState | undefined;
 
-  const [subject, setSubject] = useState(cloneState?.subject ?? "");
+  // Slice on seed as well as on change: a source record at or beyond the cap
+  // would otherwise load untrimmed, show a negative characters-left count, and
+  // submit over-length if the user never edits the field.
+  const [subject, setSubject] = useState((cloneState?.subject ?? "").slice(0, SUBJECT_MAX));
   // Pre-selected to match the legacy ServiceNow form's own defaults, rather
   // than leaving every dropdown blank — most change requests are Normal
   // type, Other category, Low impact, Moderate risk. Priority has no default
