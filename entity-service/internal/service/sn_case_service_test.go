@@ -1026,3 +1026,88 @@ func TestCaseService_SearchTags_ServiceUnavailable(t *testing.T) {
 		t.Fatalf("expected *apierror.ServiceUnavailableError, got %T: %v", err, err)
 	}
 }
+
+// TestSNCaseService_GetCaseByID_MapsLinkedChangeRequests covers the reverse side of the
+// service-request <-> change-request link. Upstream sends the list under `changeRequests`
+// with 32-hex ids; the domain exposes it as `linkedChangeRequests` with canonical UUIDs.
+//
+// The cardinality cases matter: a service request can have several change requests (one per
+// environment the change is promoted to), so a single-value mapping would look correct
+// against a record that happens to have exactly one and be wrong in production.
+func TestSNCaseService_GetCaseByID_MapsLinkedChangeRequests(t *testing.T) {
+	crSysidA := sysid32('1')
+	crSysidB := sysid32('2')
+
+	newBody := func(changeRequests string) string {
+		return `{
+			"id": "` + testWLCaseSysid + `",
+			"internalId": "WSO2-001",
+			"number": "CS0001001",
+			"title": "Case subject",
+			"description": "Case description",
+			"createdOn": "2026-01-01 10:00:00",
+			"updatedOn": "2026-01-02 10:00:00",
+			"createdBy": "reporter@example.com",
+			"project": {"id": "` + testProjectSysid + `", "name": "Project A"},
+			"deployment": {"id": "", "name": ""},
+			"deployedProduct": {"id": "", "name": "", "version": ""},
+			"state": {"id": 1, "label": "Open"},
+			"changeRequests": ` + changeRequests + `
+		}`
+	}
+
+	get := func(t *testing.T, changeRequests string) domain.CaseView {
+		t.Helper()
+		client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(newBody(changeRequests)))
+		})
+		svc := NewServiceNowCaseService(client, nil)
+
+		cv, err := svc.GetCaseByID(contextWithUserIDToken("token"), sysidToUUID(testWLCaseSysid))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return cv
+	}
+
+	t.Run("null stays empty", func(t *testing.T) {
+		cv := get(t, "null")
+		if len(cv.LinkedChangeRequests) != 0 {
+			t.Fatalf("expected no linked change requests, got %+v", cv.LinkedChangeRequests)
+		}
+	})
+
+	t.Run("single entry maps with a canonical UUID", func(t *testing.T) {
+		cv := get(t, `[{"id": "`+crSysidA+`", "number": "CHG0000001", "name": "Promote to dev"}]`)
+		if len(cv.LinkedChangeRequests) != 1 {
+			t.Fatalf("expected 1 linked change request, got %d", len(cv.LinkedChangeRequests))
+		}
+		got := cv.LinkedChangeRequests[0]
+		if got.ID != sysidToUUID(crSysidA) {
+			t.Fatalf("expected id %q, got %q", sysidToUUID(crSysidA), got.ID)
+		}
+		if got.Number != "CHG0000001" || got.Name != "Promote to dev" {
+			t.Fatalf("unexpected mapping: %+v", got)
+		}
+	})
+
+	t.Run("several entries all map, order preserved", func(t *testing.T) {
+		cv := get(t, `[
+			{"id": "`+crSysidA+`", "number": "CHG0000001", "name": "Promote to dev"},
+			{"id": "`+crSysidB+`", "number": "CHG0000002", "name": ""}
+		]`)
+		if len(cv.LinkedChangeRequests) != 2 {
+			t.Fatalf("expected 2 linked change requests, got %d", len(cv.LinkedChangeRequests))
+		}
+		if cv.LinkedChangeRequests[0].Number != "CHG0000001" || cv.LinkedChangeRequests[1].Number != "CHG0000002" {
+			t.Fatalf("order not preserved: %+v", cv.LinkedChangeRequests)
+		}
+		if cv.LinkedChangeRequests[1].ID != sysidToUUID(crSysidB) {
+			t.Fatalf("expected id %q, got %q", sysidToUUID(crSysidB), cv.LinkedChangeRequests[1].ID)
+		}
+		if cv.LinkedChangeRequests[1].Name != "" {
+			t.Fatalf("expected empty name to pass through, got %q", cv.LinkedChangeRequests[1].Name)
+		}
+	})
+}

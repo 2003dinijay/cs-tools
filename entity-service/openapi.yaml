@@ -4296,6 +4296,19 @@ components:
             backing data source doesn't resolve a type (ServiceNow data
             source only).
 
+    LinkedChangeRequestRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+          description: Human-readable change request number.
+        name:
+          type: string
+          description: Change request subject. Empty string when the record has none.
+
     AccountRef:
       type: object
       nullable: true
@@ -4479,6 +4492,17 @@ components:
         account:
           nullable: true
           $ref: '#/components/schemas/AccountRef'
+        linkedChangeRequests:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/LinkedChangeRequestRef'
+          description: >-
+            Change requests raised from this case, in no particular order. Only
+            service-request cases carry them; absent or empty for every other case
+            type. This is a one-to-many relationship: promoting the same change
+            through each environment produces one change request per environment,
+            all pointing back at the same service request.
         resolvedOn:
           type: string
           format: date-time

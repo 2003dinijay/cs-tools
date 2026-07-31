@@ -5273,6 +5273,17 @@ components:
           description: >-
             Service-request cases whose parent points to this case. Populated on every
             case detail response, not just high-severity cases.
+        linkedChangeRequests:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/LinkedChangeRequestRef'
+          description: >-
+            Change requests raised from this case, in no particular order. Only
+            service-request cases carry them; absent or empty for every other case type.
+            One-to-many by nature: promoting the same change through each environment
+            produces one change request per environment, all pointing back at the same
+            service request.
         bestCaseFixEta:
           type: string
           format: date
@@ -6645,6 +6656,22 @@ components:
       description: >
         A service-request case whose parent points to this case or incident (the
         reverse of parentId).
+
+    LinkedChangeRequestRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+          description: Human-readable change request number.
+        name:
+          type: string
+          description: Change request subject. Empty string when the record has none.
+      description: >
+        A change request raised from this case (the reverse of
+        PatchChangeRequestPayload.caseId).
 
     AccountRef:
       type: object
