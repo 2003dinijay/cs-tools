@@ -21,7 +21,7 @@
 //   - customer.go / customer_client.go: CustomerEntityConfig/CustomerEntityClient
 //     — this repo's entity-service (cases, accounts, projects, products,
 //     deployments, users, incidents, etc.)
-//   - engineering.go: EngineeringEntityConfig/EngineeringEntityClient — the
-//     wso2-enterprise/digiops-engineering entity service, used to create
-//     GitHub issues in engineering repos.
+//   - engineering.go: EngineeringEntityConfig/EngineeringEntityClient — a
+//     separate internal engineering entity service, used to create GitHub
+//     issues in engineering repos.
 package entity

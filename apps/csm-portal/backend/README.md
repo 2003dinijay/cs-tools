@@ -121,7 +121,7 @@ Backs `entity.CustomerEntityClient` (this repo's entity-service; cases, accounts
 
 ### Engineering entity service (not yet wired in)
 
-Backs `entity.EngineeringEntityClient.CreateGitIssue` (wso2-enterprise/digiops-engineering) but is not constructed in `cmd/server/main.go` — no handler calls it yet. These variables are not read by any code today. It uses the same shared OAuth2 credentials above (same `OAUTH2_CLIENT_ID`/`_CLIENT_SECRET`/`_TOKEN_URL`) — only its base URL and scopes are its own.
+Backs `entity.EngineeringEntityClient.CreateGitIssue` (a separate internal engineering entity service) but is not constructed in `cmd/server/main.go` — no handler calls it yet. These variables are not read by any code today. It uses the same shared OAuth2 credentials above (same `OAUTH2_CLIENT_ID`/`_CLIENT_SECRET`/`_TOKEN_URL`) — only its base URL and scopes are its own.
 
 | Variable | Description |
 |---|---|

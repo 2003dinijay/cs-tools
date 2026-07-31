@@ -61,9 +61,9 @@ export const DEFAULT_BILLABLE = true;
  * time card's create/update request sends: an unconditional `after` business
  * rule (`TimeCard Non-billable Manager`) on the `time_card` table forces
  * `u_is_billable` back to false for cases of these severities (confirmed by
- * reading the live rule and its target Script Include on wso2sndev DEV — see
- * digiops-cs#2571). The FE billable switch is disabled rather than left
- * silently overridden after submit.
+ * reading the live rule and its target Script Include on the backing data
+ * source's dev environment — tracked separately). The FE billable switch is
+ * disabled rather than left silently overridden after submit.
  */
 export const NON_BILLABLE_SEVERITIES: readonly Severity[] = [
   "S0",
