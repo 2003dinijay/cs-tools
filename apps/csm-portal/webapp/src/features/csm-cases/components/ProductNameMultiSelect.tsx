@@ -68,11 +68,18 @@ export default function ProductNameMultiSelect({
     fetchNextPage,
   } = useInfiniteProductSearch(query, open);
 
-  // Lazy-load the next page when the listbox is scrolled near its end.
+  // Lazy-load the next page when the listbox is scrolled near its end. Also
+  // guard on `!isFetching`, not just `!isFetchingNextPage`: while a new
+  // search query's first page is loading, `isFetchingNextPage` is already
+  // false and `hasNextPage` can still reflect the previous query's state
+  // (kept visible via `placeholderData`) — without this, a scroll during
+  // that window could fetch a "next page" for a query that's about to be
+  // replaced entirely.
   const handleListboxScroll = (event: React.UIEvent<HTMLElement>): void => {
     const el = event.currentTarget;
     if (
       hasNextPage &&
+      !isFetching &&
       !isFetchingNextPage &&
       el.scrollHeight - el.scrollTop - el.clientHeight < 80
     ) {
