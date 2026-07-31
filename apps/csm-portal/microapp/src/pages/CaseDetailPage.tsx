@@ -364,6 +364,11 @@ function CaseDetailContent({ id }: { id: string }) {
           );
         }
         void queryClient.invalidateQueries({ queryKey: ["case", id, "comments"] });
+        // A comment (like a state transition, see invalidateCase above) bumps the case's own
+        // updatedOn server-side — without this, neither this page's own "Updated On" nor the
+        // cases list's sort order pick up the change until something else happens to invalidate
+        // them.
+        invalidateCase();
         // An attachment-only submission (no text) where every upload failed posted nothing at
         // all — resolve false so the composer keeps the picked files for retry instead of
         // clearing them after showing the error. A submission with text still succeeds here

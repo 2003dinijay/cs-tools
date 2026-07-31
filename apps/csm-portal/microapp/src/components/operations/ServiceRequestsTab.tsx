@@ -30,6 +30,7 @@ import { SearchBar } from "@components/support/SearchBar";
 import { FILTERABLE_STATES, STATE_LABELS, TAB_CONFIG, WORK_STATE_LABEL } from "@components/support/config";
 import { countActiveFilters, EMPTY_FILTERS, toCaseSearchFilters, type CaseFilters } from "@components/support/filters";
 import { useDebouncedValue } from "@utils/useDebouncedValue";
+import { compareByUpdatedOnDesc } from "@utils/dateTime";
 import { ServiceRequestsFiltersSheet } from "./ServiceRequestsFiltersSheet";
 
 const ALL_STATES_TAB = "all" as const;
@@ -156,7 +157,9 @@ function ServiceRequestListContent({
     return () => observer.disconnect();
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  const items = data.pages.flatMap((page) => page.items);
+  // sortBy: updatedOn desc is sent on every request (see cases.ts) but isn't reliably honored
+  // upstream — re-sort client-side as a backstop. See compareByUpdatedOnDesc for why.
+  const items = data.pages.flatMap((page) => page.items).sort((a, b) => compareByUpdatedOnDesc(a.updatedOn, b.updatedOn));
 
   if (items.length === 0) return <EmptyState message={TAB_CONFIG.service_request.emptyMessage} />;
 

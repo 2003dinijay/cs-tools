@@ -80,11 +80,17 @@ const createIncident = async (payload: IncidentCreatePayloadDto): Promise<Incide
 const INCIDENT_PAGE_LIMIT = 20;
 
 export const incidents = {
-  infinite: (payload: Omit<IncidentSearchPayloadDto, "pagination"> = {}) =>
+  // Most-recently-updated first, mirroring cases.ts's infinite (updatedOn desc) — not left to the
+  // backend's default order.
+  infinite: (payload: Omit<IncidentSearchPayloadDto, "pagination" | "sortBy"> = {}) =>
     infiniteQueryOptions({
       queryKey: ["incidents", "infinite", payload],
       queryFn: ({ pageParam }) =>
-        searchIncidents({ ...payload, pagination: { offset: pageParam, limit: INCIDENT_PAGE_LIMIT } }),
+        searchIncidents({
+          ...payload,
+          sortBy: { field: "updatedOn", order: "desc" },
+          pagination: { offset: pageParam, limit: INCIDENT_PAGE_LIMIT },
+        }),
       initialPageParam: 0,
       getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.offset + lastPage.limit : undefined),
     }),

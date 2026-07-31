@@ -16,7 +16,7 @@
 
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Box, IconButton, Typography, pxToRem } from "@wso2/oxygen-ui";
+import { Box, IconButton, Typography, pxToRem, useTheme } from "@wso2/oxygen-ui";
 import { ArrowLeft, Grip } from "@wso2/oxygen-ui-icons-react";
 import { goToMyAppsScreen } from "@components/microapp-bridge";
 import { ConfirmDialog } from "@components/common/ConfirmDialog";
@@ -29,6 +29,7 @@ export function TopBar() {
   const navigate = useNavigate();
   const isRootPath = ROOT_PATHS.includes(location.pathname);
   const mode = useThemeMode();
+  const theme = useTheme();
 
   return (
     <Box
@@ -49,6 +50,7 @@ export function TopBar() {
         // this TopBar has no such content, so it needs the calc instead.
         pt: "calc(var(--safe-top, 44px) + 28px)",
         backgroundColor: `${mode === "light" ? "white" : "black"} !important`,
+        zIndex: theme.zIndex.appBar,
       }}
     >
       <Box sx={{ minWidth: 32 }}>

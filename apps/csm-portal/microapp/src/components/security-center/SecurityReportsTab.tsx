@@ -21,6 +21,7 @@ import { Plus, SlidersHorizontal } from "@wso2/oxygen-ui-icons-react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { securityReports } from "@src/services/securityReports";
 import { useDebouncedValue } from "@utils/useDebouncedValue";
+import { compareByUpdatedOnDesc } from "@utils/dateTime";
 import { useInfiniteScrollSentinel } from "@utils/useInfiniteScrollSentinel";
 import {
   countActiveSecurityReportFilters,
@@ -52,7 +53,11 @@ export function SecurityReportsTab() {
     securityReports.infinite({ ...filters, search: debouncedSearch }),
   );
 
-  const items = data?.pages.flatMap((p) => p.items) ?? [];
+  // sortBy: updatedOn desc is sent on every request (see securityReports.ts) but isn't reliably
+  // honored upstream — re-sort client-side as a backstop. See compareByUpdatedOnDesc for why.
+  const items = (data?.pages.flatMap((p) => p.items) ?? []).sort((a, b) =>
+    compareByUpdatedOnDesc(a.updatedOn, b.updatedOn),
+  );
   const total = data?.pages[0]?.total ?? items.length;
 
   const sentinelRef = useInfiniteScrollSentinel({ hasNextPage, isFetchingNextPage, fetchNextPage });
