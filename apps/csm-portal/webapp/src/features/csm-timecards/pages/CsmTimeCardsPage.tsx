@@ -61,12 +61,11 @@ import {
   useMyTimeCards,
   type TimeCardPagination,
 } from "@features/csm-timecards/api/useTimeSheets";
-import { useProjectOptions } from "@features/csm-cases/api/useProjectOptions";
+import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
 import { BackendApiError } from "@api/backend/client";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
-import type { BeProject } from "@api/backend/types";
 import { TIME_CARD_STATE_META } from "@features/csm-timecards/constants/timeCardConstants";
 import { useTimecardRole } from "@features/csm-timecards/hooks/useTimecardRole";
 import TimeCardsTable from "@features/csm-timecards/components/TimeCardsTable";
@@ -100,6 +99,14 @@ function engineerOptionsFrom(cards: CsmTimeCard[] | undefined): {
  * only" caveat as {@link engineerOptionsFrom}. */
 function workItemOptionsFrom(cards: CsmTimeCard[] | undefined): string[] {
   return Array.from(new Set((cards ?? []).map((c) => c.caseNumber)));
+}
+
+/** `[projectId, projectName]` pairs present in a batch of cards — building
+ * block for the page-level accumulating project-name cache below. Each
+ * `CsmTimeCard` already carries both fields, so this is a free derivation,
+ * not a new fetch. */
+function projectNamesIn(cards: CsmTimeCard[] | undefined): [string, string][] {
+  return (cards ?? []).map((c) => [c.projectId, c.projectName]);
 }
 
 const DEFAULT_ROWS_PER_PAGE = 20;
@@ -183,7 +190,6 @@ export default function CsmTimeCardsPage(): JSX.Element {
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
 
-  const projects = useProjectOptions();
   // Search is unscoped by default: with no project filter picked we send no
   // `projectIds`, and the backend returns every time card the caller is
   // entitled to (internal agents get a global list). Picking the project
@@ -318,6 +324,48 @@ export default function CsmTimeCardsPage(): JSX.Element {
     () => workItemOptionsFrom(queue.data?.cards),
     [queue.data],
   );
+  // Persistent projectId -> projectName cache for the Project filter's chip
+  // labels, accumulated across every tab's loaded cards over the page's
+  // lifetime and never shrunk. Unlike workItemOptions/engineerOptions above
+  // (deliberately scoped to one tab's current page), this can't be a per-tab
+  // derivation: each tab's FilterBar/AsyncProjectMultiSelect instance
+  // unmounts on tab switch (conditional rendering below), which would
+  // otherwise drop a selected project's name the moment the newly active
+  // tab's own cards don't happen to include it — or are empty — leaving the
+  // chip showing a raw id until the dropdown is reopened and re-searched.
+  //
+  // Reconciled during render (React's "adjusting state when data changes"
+  // pattern: https://react.dev/reference/react/useState#storing-information-from-previous-renders)
+  // rather than in an effect, so a fresh name is available in the same
+  // render the data arrived in instead of one render later.
+  const [projectNameCache, setProjectNameCache] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  const [lastSeenCards, setLastSeenCards] = useState<{
+    mine?: typeof myCards.data;
+    all?: typeof allCards.data;
+    queue?: typeof queue.data;
+  }>(() => ({}));
+  if (
+    lastSeenCards.mine !== myCards.data ||
+    lastSeenCards.all !== allCards.data ||
+    lastSeenCards.queue !== queue.data
+  ) {
+    setLastSeenCards({ mine: myCards.data, all: allCards.data, queue: queue.data });
+    const learned = [
+      ...projectNamesIn(myCards.data?.cards),
+      ...projectNamesIn(allCards.data?.cards),
+      ...projectNamesIn(queue.data?.cards),
+    ];
+    let next: Map<string, string> | undefined;
+    for (const [id, name] of learned) {
+      if (projectNameCache.get(id) !== name) {
+        next ??= new Map(projectNameCache);
+        next.set(id, name);
+      }
+    }
+    if (next) setProjectNameCache(next);
+  }
   const allEngineerOptions = useMemo(
     () => engineerOptionsFrom(allCards.data?.cards),
     [allCards.data],
@@ -373,7 +421,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
       {activeTab === "mine" && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <FilterBar
-            projects={projects.data ?? []}
+            projectNameSeed={projectNameCache}
             filterProject={filterProject}
             setFilterProject={handleFilterProjectChange}
             filterWorkItem={filterWorkItem}
@@ -388,11 +436,6 @@ export default function CsmTimeCardsPage(): JSX.Element {
             onClear={clearFilters}
           />
 
-          {/* projects.isLoading is folded into the table's isLoading (not
-           just myCards.isLoading) so the empty state doesn't flash while
-           the Project filter dropdown's own data is still loading. The
-           filter bar itself renders regardless, same as Approvals below,
-           so it's never hidden behind this spinner. */}
           {myCards.isError ? (
             <Typography color="error">Could not load your time cards.</Typography>
           ) : (
@@ -405,7 +448,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
               </Box>
               <TimeCardsTable
                 cards={mineFilteredCards}
-                isLoading={myCards.isLoading || projects.isLoading}
+                isLoading={myCards.isLoading}
                 groupBy="case"
                 roleFor={mineRole}
                 onCardAction={handleCardAction}
@@ -442,7 +485,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
       {activeTab === "all" && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <FilterBar
-            projects={projects.data ?? []}
+            projectNameSeed={projectNameCache}
             filterProject={filterProject}
             setFilterProject={handleFilterProjectChange}
             filterWorkItem={filterWorkItem}
@@ -483,7 +526,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
               </Box>
               <TimeCardsTable
                 cards={allFilteredCards}
-                isLoading={allCards.isLoading || projects.isLoading}
+                isLoading={allCards.isLoading}
                 groupBy={groupBy}
                 showCaseEngineerColumns
                 roleFor={allRoleFor}
@@ -510,7 +553,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
       {activeTab === "approvals" && role.isApprover && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <FilterBar
-            projects={projects.data ?? []}
+            projectNameSeed={projectNameCache}
             filterProject={filterProject}
             setFilterProject={handleFilterProjectChange}
             filterWorkItem={filterWorkItem}
@@ -552,7 +595,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
               </Box>
               <TimeCardsTable
                 cards={approvalsFilteredCards}
-                isLoading={queue.isLoading || projects.isLoading}
+                isLoading={queue.isLoading}
                 groupBy={groupBy}
                 showCaseEngineerColumns
                 showActionsColumn
@@ -625,7 +668,7 @@ const FILTER_STATES: TimeCardState[] = ["submitted", "approved", "rejected"];
  * doesn't look and behave differently from every other list page's filters.
  */
 function FilterBar({
-  projects,
+  projectNameSeed,
   filterProject,
   setFilterProject,
   filterWorkItem,
@@ -642,7 +685,12 @@ function FilterBar({
   engineerActive,
   hideStateFilter,
 }: {
-  projects: BeProject[];
+  /** `projectId -> projectName` lookup for already-selected chips — the
+   * page-level, cross-tab accumulating cache (see `projectNameCache` in
+   * `CsmTimeCardsPage`), not a per-tab derivation, so a selected project's
+   * name survives this component remounting on tab switch. Async search
+   * resolves anything the cache hasn't learned yet. */
+  projectNameSeed: Map<string, string>;
   filterProject: string[];
   setFilterProject: (v: string[]) => void;
   filterWorkItem: string[];
@@ -714,14 +762,12 @@ function FilterBar({
               regardless of how many of these fields this tab shows. */}
           <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
             <Box sx={{ flex: "1 1 0", minWidth: 160 }}>
-              <SearchableMultiSelect
+              <AsyncProjectMultiSelect
                 id="timecards-filter-project"
                 label="Project"
-                placeholder="Search projects…"
                 values={filterProject}
-                options={projects.map((p) => p.id)}
-                formatOption={(id) => projects.find((p) => p.id === id)?.name ?? id}
                 onChange={setFilterProject}
+                nameSeed={projectNameSeed}
               />
             </Box>
             <Box sx={{ flex: "1 1 0", minWidth: 160 }}>

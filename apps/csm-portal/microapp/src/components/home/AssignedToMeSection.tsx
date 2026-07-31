@@ -20,6 +20,7 @@ import { currentUser } from "@src/services/currentUser";
 import { dashboard } from "@src/services/dashboard";
 import { CaseCard, CaseCardSkeleton } from "@components/support/CaseCard";
 import { ErrorState } from "@components/support/ErrorState";
+import { compareByUpdatedOnDesc } from "@utils/dateTime";
 import { RefreshButton } from "./RefreshButton";
 
 // The signed-in user's own non-closed cases — mirrors the webapp's "Assigned to me" widget
@@ -32,7 +33,9 @@ export function AssignedToMeSection() {
     dashboard.assignedToMe(currentUserId ?? null),
   );
 
-  const items = data?.items ?? [];
+  // sortBy: updatedOn desc is sent on the request (see dashboard.ts) but isn't reliably honored
+  // upstream — re-sort client-side as a backstop. See compareByUpdatedOnDesc for why.
+  const items = (data?.items ?? []).sort((a, b) => compareByUpdatedOnDesc(a.updatedOn, b.updatedOn));
 
   return (
     <Stack gap={1.5}>

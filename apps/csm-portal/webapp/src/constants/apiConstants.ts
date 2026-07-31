@@ -84,6 +84,8 @@ export const ApiQueryKeys = {
   USERS_SEARCH_BY_NAME: "users-search-by-name",
   CASES_SEARCH_FOR_SELECT: "cases-search-for-select",
   INCIDENTS_SEARCH_FOR_SELECT: "incidents-search-for-select",
+  CHANGE_REQUESTS_SEARCH_FOR_SELECT: "change-requests-search-for-select",
+  PROBLEMS_SEARCH_FOR_SELECT: "problems-search-for-select",
   CATALOGS_SEARCH: "catalogs-search",
   CATALOG_ITEM_VARIABLES: "catalog-item-variables",
   REGISTRY_TOKENS_SEARCH: "registry-tokens-search",

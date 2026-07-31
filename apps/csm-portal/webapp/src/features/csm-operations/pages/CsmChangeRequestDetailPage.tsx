@@ -29,6 +29,7 @@ import {
   ArrowLeft,
   Check,
   ClipboardCheck,
+  CopyPlus,
   FileText,
   MessageSquare,
   MessageSquarePlus,
@@ -45,7 +46,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import {  useParams } from "react-router";
+import { useLocation, useParams } from "react-router";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { isBlankHtml, sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 import { BackendApiError } from "@api/backend/client";
@@ -62,6 +63,7 @@ import ChangeRequestApprovals from "@features/csm-operations/components/ChangeRe
 import EditChangeRequestDialog from "@features/csm-operations/components/EditChangeRequestDialog";
 import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
 import {
+  buildCloneChangeRequestNavState,
   changeRequestCommentGateReason,
   changeRequestImpactColor,
   changeRequestImpactLabel,
@@ -182,6 +184,11 @@ const TAB_DEFS: Array<{
 export default function CsmChangeRequestDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavTransition();
+  // Prefer the list URL the row link captured (if any) so "back" returns to
+  // the exact view the engineer came from, falling back to the bare tab path
+  // for a bookmarked or directly-linked change request.
+  const backState = useLocation().state as { from?: string } | undefined;
+  const backTarget = backState?.from ?? OPERATIONS_CR_PATH;
   const { data, isLoading, isError } = useGetChangeRequest(id);
   const { showError } = useErrorBanner();
   const patchCr = usePatchChangeRequest();
@@ -235,7 +242,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   );
 
   const back = (): void => {
-    navigate(OPERATIONS_CR_PATH);
+    navigate(backTarget);
   };
 
   const BackButton = (
@@ -311,6 +318,19 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
     );
   };
 
+  // Opens the create form pre-filled from this record, so promoting the same
+  // change to another environment doesn't mean re-typing every field. Router
+  // state (not a query string) carries the values across — same pattern as
+  // "Create incident from case" — and the result is a new, independent change
+  // request: nothing here links it back to `cr`. See
+  // buildCloneChangeRequestNavState's doc comment for exactly which fields
+  // can and can't be carried over today.
+  const cloneChangeRequest = (): void => {
+    navigate("/operations/change-requests/new", {
+      state: buildCloneChangeRequestNavState(cr),
+    });
+  };
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
       {BackButton}
@@ -371,9 +391,18 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
           <Button
             variant="outlined"
             size="small"
+            startIcon={<CopyPlus size={14} />}
+            onClick={cloneChangeRequest}
+            sx={{ ml: stateAllowsRequestApproval ? 0 : "auto", flexShrink: 0 }}
+          >
+            Clone
+          </Button>
+          <Button
+            variant="outlined"
+            size="small"
             startIcon={<Pencil size={14} />}
             onClick={() => setEditOpen(true)}
-            sx={{ ml: stateAllowsRequestApproval ? 0 : "auto", flexShrink: 0 }}
+            sx={{ flexShrink: 0 }}
           >
             Edit
           </Button>

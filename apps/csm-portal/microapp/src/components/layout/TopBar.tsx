@@ -16,10 +16,11 @@
 
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Box, IconButton, Typography } from "@wso2/oxygen-ui";
+import { Box, IconButton, Typography, pxToRem, useTheme } from "@wso2/oxygen-ui";
 import { ArrowLeft, Grip } from "@wso2/oxygen-ui-icons-react";
 import { goToMyAppsScreen } from "@components/microapp-bridge";
 import { ConfirmDialog } from "@components/common/ConfirmDialog";
+import { useThemeMode } from "@context/theme";
 
 const ROOT_PATHS = ["/", "/support", "/operations", "/more"];
 
@@ -27,6 +28,8 @@ export function TopBar() {
   const location = useLocation();
   const navigate = useNavigate();
   const isRootPath = ROOT_PATHS.includes(location.pathname);
+  const mode = useThemeMode();
+  const theme = useTheme();
 
   return (
     <Box
@@ -37,26 +40,25 @@ export function TopBar() {
       px={2}
       pb={2}
       sx={{
-        // Ties directly to the device's actual safe-area inset (--safe-top, set from the native
-        // bridge) plus enough clearance for the ExitButton pill's own height, rather than a fixed
-        // value — a fixed pt (the customer-portal microapp's own AppBar.tsx uses one too) is only
-        // correct for whatever inset it was tuned against; on a Dynamic Island phone (~59px inset)
-        // it undershoots and the pill visually overflows into the page content below it.
-        pt: "calc(var(--safe-top, 44px) + 40px)",
-        // Solid, not the theme's `background.paper` token — see TabBar.tsx's identical comment.
-        // Matches the customer-portal microapp's own AppBar, which hardcodes solid black/white.
-        backgroundColor: (theme) => (theme.palette.mode === "dark" ? "#000000" : "#ffffff"),
-        borderBottom: "1px solid",
-        borderColor: "divider",
-        zIndex: (theme) => theme.zIndex.appBar,
+        // Not a flat pt:7 (customer-portal microapp's own AppBar.tsx uses that) — it ties to the
+        // device's actual safe-area inset (--safe-top, set from the native bridge) plus just
+        // enough clearance for the ExitButton pill's own height, since a flat value is only
+        // correct for whatever inset it was tuned against: on a Dynamic Island phone (~59px
+        // inset) pt:7 (56px) undershoots the inset and the pill overflows past this bar's solid
+        // background into the page content below it. customer-portal's AppBar doesn't have this
+        // problem because it always has title/subtitle content padding the bar out further;
+        // this TopBar has no such content, so it needs the calc instead.
+        pt: "calc(var(--safe-top, 44px) + 28px)",
+        backgroundColor: `${mode === "light" ? "white" : "black"} !important`,
+        zIndex: theme.zIndex.appBar,
       }}
     >
       <Box sx={{ minWidth: 32 }}>
         {isRootPath ? (
           <ExitButton />
         ) : (
-          <IconButton onClick={() => navigate(-1)} aria-label="Go back" size="small">
-            <ArrowLeft size={22} />
+          <IconButton onClick={() => navigate(-1)} aria-label="Go back" sx={{ p: 0 }} disableRipple>
+            <ArrowLeft size={pxToRem(20)} />
           </IconButton>
         )}
       </Box>
@@ -64,11 +66,6 @@ export function TopBar() {
   );
 }
 
-// Leaves the microapp WebView and returns to the native shell's app switcher — mirrors the
-// customer-portal microapp's own ExitButton (components/core/AppBar.tsx), shown on root pages in
-// place of the back button. Floats in the safe-area strip above the main row (same technique the
-// customer-portal version uses: absolutely positioned at `var(--safe-top)`), so it doesn't compete
-// with page content for width on narrow phones.
 function ExitButton() {
   const [open, setOpen] = useState(false);
 
@@ -80,16 +77,19 @@ function ExitButton() {
         sx={{
           gap: 1,
           position: "absolute",
-          top: "var(--safe-top, 44px)",
+          // A small fixed clearance on top of the raw inset — flush against --safe-top alone
+          // sits the pill right against the status bar/notch with no breathing room on devices
+          // where the bridge reports an accurate, tight inset (seen on Android). Still scales
+          // with the device's actual safe area rather than a flat offset, so it stays correct
+          // across notch depths/status bar heights.
+          top: "calc(var(--safe-top, 44px) + 8px)",
           left: 10,
           p: 0,
         }}
         onClick={() => setOpen(true)}
       >
-        <Grip size={20} />
-        <Typography variant="body2" fontWeight={600}>
-          Go to Apps
-        </Typography>
+        <Grip size={pxToRem(20)} />
+        <Typography>Go to Apps</Typography>
       </IconButton>
 
       <ConfirmDialog

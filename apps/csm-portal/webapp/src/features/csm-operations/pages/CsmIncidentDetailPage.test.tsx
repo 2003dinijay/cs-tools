@@ -43,6 +43,7 @@ vi.mock("@api/backend/client", () => ({
 
 vi.mock("react-router", () => ({
   useParams: () => ({ id: "inc-1" }),
+  useLocation: () => ({ pathname: "/operations/incidents/inc-1", search: "", state: undefined }),
 }));
 vi.mock("@hooks/useNavTransition", () => ({
   useNavTransition: () => navigateMock,
@@ -71,6 +72,9 @@ vi.mock("@features/csm-cases/components/CaseActivitiesFeed", () => ({
 }));
 vi.mock("@features/csm-cases/components/CaseDetailWidgets", () => ({
   AttachmentsWidget: () => null,
+}));
+vi.mock("@api/useSearchUsersByName", () => ({
+  useSearchUsersByName: () => ({ data: [], isFetching: false, isError: false }),
 }));
 
 // Imported after the mocks above so the module picks them up.
@@ -179,6 +183,46 @@ describe("CsmIncidentDetailPage — tabs", () => {
     render(<CsmIncidentDetailPage />);
     goToTab(/watchers/i);
     expect(screen.getByText("Jane Doe")).toBeInTheDocument();
+  });
+
+  it("does not render a Comments & notes card on the Details tab (duplicates the Activities tab)", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_INCIDENT,
+        additionalComments: "Customer says the issue recurred.",
+        workNotes: "Checked the gateway logs.",
+      },
+    });
+    render(<CsmIncidentDetailPage />);
+    goToTab(/details/i);
+    expect(screen.queryByText("Comments & notes")).not.toBeInTheDocument();
+    expect(screen.queryByText("Customer says the issue recurred.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Checked the gateway logs.")).not.toBeInTheDocument();
+  });
+});
+
+describe("CsmIncidentDetailPage — Watchers tab is read-only (watchList PATCH is a confirmed-live 404)", () => {
+  it("renders watcher chips with no remove affordance", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_INCIDENT,
+        watchList: [{ id: "u1", name: "Jane Doe", email: "jane.doe@example.com" }],
+      },
+    });
+    render(<CsmIncidentDetailPage />);
+    goToTab(/watchers/i);
+
+    const chip = screen.getByText("Jane Doe").closest(".MuiChip-root");
+    expect(chip?.querySelector(".MuiChip-deleteIcon")).toBeNull();
+  });
+
+  it("disables the 'Add watcher' button", () => {
+    mockQueryResult({ data: { ...BASE_INCIDENT, watchList: [] } });
+    render(<CsmIncidentDetailPage />);
+    goToTab(/watchers/i);
+
+    expect(screen.getByRole("button", { name: /add watcher/i })).toBeDisabled();
+    expect(patchMutateMock).not.toHaveBeenCalled();
   });
 });
 

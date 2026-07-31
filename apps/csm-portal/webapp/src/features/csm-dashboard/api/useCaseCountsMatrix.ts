@@ -96,6 +96,9 @@ export function useCaseCountsMatrix(): UseQueryResult<CaseCountsMatrix, Error> {
               filters: {
                 severities: [priorityFromSeverity(severity)],
                 states: [beStateFromUi(state)],
+                // Cells drill into the cases list, which is locked to plain
+                // cases — pin the count to the same type so it reconciles.
+                types: ["case"],
               },
             })
             .then((res) => ({ severity, state, count: res.total ?? 0 })),

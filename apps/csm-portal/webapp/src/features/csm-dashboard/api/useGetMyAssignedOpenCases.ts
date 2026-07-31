@@ -114,6 +114,10 @@ export function useGetMyAssignedOpenCases(
           filters: {
             assignedUserIds: [userId as string],
             states: NON_CLOSED_STATES,
+            // The "View all" link deep-links into the cases list, which is
+            // locked to plain cases — pin the widget to the same type so its
+            // count/rows match what that destination shows.
+            types: ["case"],
           },
         },
       );

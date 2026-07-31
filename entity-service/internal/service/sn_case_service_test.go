@@ -536,26 +536,30 @@ func TestSNCaseService_UpdateCase_FieldCountValidation(t *testing.T) {
 	}
 }
 
-// --- UpdateCase: close-gate ---
+// --- UpdateCase: close no longer gated on open visible tasks ---
+//
+// The open-visible-task close-gate previously enforced here has been removed:
+// it required two extra round trips (task search + per-task detail) to a
+// dependency whose own pagination limit violated the entity-service's
+// Pagination.limit constraint (max 50 vs the hardcoded 100 this gate sent),
+// which broke every case close in production. That business rule belongs at
+// the ServiceNow layer instead (see CaseUtils.patchCaseState's existing,
+// zero-round-trip child-case-block-close pattern) -- tracked in
+// tasks/active/2026-07-30-sn-close-gate-migration.md. This test guards
+// against silently reintroducing the Go-side gate.
 
-func TestSNCaseService_UpdateCase_CloseGate_BlocksOnOpenVisibleTask(t *testing.T) {
+func TestSNCaseService_UpdateCase_Close_NoLongerCallsTaskSearch(t *testing.T) {
+	taskSearchCalled := false
 	patchCalled := false
 	mux := http.NewServeMux()
 	mux.HandleFunc("/cases/"+testCaseSysid+"/tasks/search", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"tasks": []map[string]any{
-				{"id": testTaskSysid, "subject": "follow up", "state": "OPEN"},
-			},
-			"total": 1, "offset": 0, "limit": 100,
-		})
-	})
-	mux.HandleFunc("/tasks/"+testTaskSysid, func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": testTaskSysid, "subject": "follow up", "visibleToCustomer": true,
-		})
+		taskSearchCalled = true
+		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": []map[string]any{}, "total": 0, "offset": 0, "limit": 100})
 	})
 	mux.HandleFunc("/cases/"+testCaseSysid, func(w http.ResponseWriter, r *http.Request) {
-		patchCalled = true
+		if r.Method == http.MethodPatch {
+			patchCalled = true
+		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]any{"message": "ok", "case": map[string]any{"id": testCaseSysid, "updatedOn": "2026-01-01 00:00:00"}})
 	})
@@ -564,47 +568,14 @@ func TestSNCaseService_UpdateCase_CloseGate_BlocksOnOpenVisibleTask(t *testing.T
 	svc := NewServiceNowCaseService(client, nil)
 
 	closed := domain.CaseStateClosed
-	_, err := svc.UpdateCase(contextWithUserIDToken("token"), domain.UpdateCaseRequest{ID: testCaseUUID, State: &closed})
-	if _, ok := err.(*apierror.ValidationError); !ok {
-		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
-	}
-	if patchCalled {
-		t.Fatalf("expected PATCH /cases/{id} not to be called when an open visible task blocks the close")
-	}
-}
-
-func TestSNCaseService_UpdateCase_CloseGate_AllowsWhenNoVisibleOpenTask(t *testing.T) {
-	patchCalled := false
-	mux := http.NewServeMux()
-	mux.HandleFunc("/cases/"+testCaseSysid+"/tasks/search", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"tasks": []map[string]any{
-				{"id": testTaskSysid, "subject": "internal note", "state": "OPEN"},
-			},
-			"total": 1, "offset": 0, "limit": 100,
-		})
-	})
-	mux.HandleFunc("/tasks/"+testTaskSysid, func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": testTaskSysid, "subject": "internal note", "visibleToCustomer": false,
-		})
-	})
-	mux.HandleFunc("/cases/"+testCaseSysid, func(w http.ResponseWriter, r *http.Request) {
-		patchCalled = true
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{"message": "ok", "case": map[string]any{"id": testCaseSysid, "updatedOn": "2026-01-01 00:00:00"}})
-	})
-
-	client := newTestSNClient(t, mux)
-	svc := NewServiceNowCaseService(client, nil)
-
-	closed := domain.CaseStateClosed
-	_, err := svc.UpdateCase(contextWithUserIDToken("token"), domain.UpdateCaseRequest{ID: testCaseUUID, State: &closed})
-	if err != nil {
+	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), domain.UpdateCaseRequest{ID: testCaseUUID, State: &closed}); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
+	if taskSearchCalled {
+		t.Fatalf("expected closing a case not to call /cases/{id}/tasks/search (close-gate removed from Go)")
+	}
 	if !patchCalled {
-		t.Fatalf("expected PATCH /cases/{id} to be called when no visible open task blocks the close")
+		t.Fatalf("expected PATCH /cases/{id} to be called")
 	}
 }
 
@@ -932,6 +903,43 @@ func TestSNCaseService_UpdateCase_EchoesInternalFixEtaFieldsBack(t *testing.T) {
 }
 
 // --- SearchTags ---
+
+func TestSNCaseService_SearchCases_EmptyTypesFilterSendsNoTypeRestriction(t *testing.T) {
+	// An empty/omitted Types filter must mean "search every case type" -- SN's
+	// own case search already treats an empty caseTypes list this way. Guards
+	// against reintroducing a default like ["default_case"], which silently
+	// excluded service_request (and every other non-"case" type) from any
+	// caller searching across all types, e.g. the "does this engineer already
+	// have another ongoing work item" pre-check.
+	var gotBody struct {
+		Filters struct {
+			CaseTypes *[]string `json:"caseTypes"`
+		} `json:"filters"`
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cases/search", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"cases": []map[string]any{}, "total": 0, "offset": 0, "limit": 20})
+	})
+
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowCaseService(client, nil)
+
+	if _, err := svc.SearchCases(contextWithUserIDToken("token"), domain.SearchCasesRequest{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Decode caseTypes as *[]string (not []string) so this distinguishes the
+	// actual wire contract -- Go always sends an explicit empty array, never
+	// omits the field or sends null -- from a regression that would omit it.
+	if gotBody.Filters.CaseTypes == nil {
+		t.Fatalf("expected caseTypes to be sent as an explicit empty array, got the field omitted/null")
+	}
+	if len(*gotBody.Filters.CaseTypes) != 0 {
+		t.Fatalf("expected no caseTypes restriction sent when Types filter is empty, got %v", *gotBody.Filters.CaseTypes)
+	}
+}
 
 func TestSNCaseService_SearchTags_Success(t *testing.T) {
 	var gotQuery string

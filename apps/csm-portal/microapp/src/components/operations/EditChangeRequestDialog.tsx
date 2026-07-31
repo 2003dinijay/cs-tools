@@ -68,7 +68,7 @@ export function EditChangeRequestDialog({
       open
       onClose={onClose}
       slots={{ paper: (props) => <Card component={Stack} {...props} /> }}
-      slotProps={{ paper: { sx: { bgcolor: "background.paper", p: 1.5, gap: 2, m: 2 } } }}
+      slotProps={{ paper: { sx: { bgcolor: "background.default", p: 1.5, gap: 2, m: 2 } } }}
     >
       <Typography variant="h6" fontWeight={650}>
         Edit change request

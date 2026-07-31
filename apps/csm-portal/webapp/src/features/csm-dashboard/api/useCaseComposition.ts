@@ -105,6 +105,10 @@ export function useCaseComposition(): UseQueryResult<CaseComposition, Error> {
               filters: {
                 severities: [priorityFromSeverity(sev)],
                 states: activeStateKeys,
+                // The pies drill into the cases list, which is locked to
+                // plain cases — pin every count to the same type so the
+                // totals reconcile with that destination and the matrix.
+                types: ["case"],
               },
             }).then((n) => ({ key: sev, n })),
           ),
@@ -116,6 +120,7 @@ export function useCaseComposition(): UseQueryResult<CaseComposition, Error> {
               filters: {
                 states: [beStateFromUi(st)],
                 severities: allPriorityKeys,
+                types: ["case"],
               },
             }).then((n) => ({ key: st, n })),
           ),
@@ -125,6 +130,7 @@ export function useCaseComposition(): UseQueryResult<CaseComposition, Error> {
           filters: {
             states: [beStateFromUi("closed")],
             severities: allPriorityKeys,
+            types: ["case"],
           },
         }),
       ]);

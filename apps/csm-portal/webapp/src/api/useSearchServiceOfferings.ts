@@ -30,8 +30,9 @@ const SERVICE_OFFERING_SEARCH_LIMIT = 20;
  * Type-ahead service-offering search (`POST /service-offerings/search`) for
  * the "Service offering" picker on the change-request create form. Narrows
  * to offerings under `serviceId` when one is given (matching how the SN form
- * itself scopes this field once a Service is picked). Disabled until the
- * caller has typed something.
+ * itself scopes this field once a Service is picked). Fires as soon as the
+ * dropdown opens, even with an empty query, so the picker shows a default
+ * page instead of looking broken until the caller types something.
  *
  * `(query, enabled, serviceId)` — in that order, not `(query, serviceId,
  * enabled)` — so this matches AsyncEntitySelect's generic `useSearch` shape
@@ -62,7 +63,7 @@ export function useSearchServiceOfferings(
       });
       return res.serviceOfferings ?? [];
     },
-    enabled: enabled && q.length > 0,
+    enabled,
     placeholderData: keepPreviousData,
     staleTime: 60_000,
   });

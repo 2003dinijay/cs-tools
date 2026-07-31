@@ -30,8 +30,14 @@ const CASE_SEARCH_LIMIT = 20;
  * Type-ahead case search (`POST /cases/search`, `filters.searchQuery`) for
  * the problem create form's "Origin case" picker. Matches the
  * `(query, enabled) => {data, isFetching, isError}` shape `AsyncEntitySelect`
- * expects — same template as `useSearchGroups`/`useSearchUsersByName`.
- * Disabled until the caller has typed something.
+ * expects — same template as `useSearchGroups`/`useSearchUsersByName`. Fires
+ * as soon as the dropdown opens, even with an empty query, so the picker
+ * shows a default page instead of looking broken until the caller types
+ * something.
+ *
+ * A problem's origin case must be a plain case, not a service request,
+ * engagement, or other case type, so the search is pinned to `types:
+ * ["case"]` rather than relying on the backend's (now cross-type) default.
  */
 export function useSearchCasesForSelect(
   query: string,
@@ -45,11 +51,14 @@ export function useSearchCasesForSelect(
     queryFn: async (): Promise<BeCaseSearchView[]> => {
       const res = await api.post<BeCaseSearchPayload, BeCaseSearchResponse>(
         "/cases/search",
-        { filters: { searchQuery: q }, pagination: { offset: 0, limit: CASE_SEARCH_LIMIT } },
+        {
+          filters: { searchQuery: q, types: ["case"] },
+          pagination: { offset: 0, limit: CASE_SEARCH_LIMIT },
+        },
       );
       return res.cases ?? [];
     },
-    enabled: enabled && q.length > 0,
+    enabled,
     placeholderData: keepPreviousData,
     staleTime: 60_000,
   });

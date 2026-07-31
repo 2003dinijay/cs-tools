@@ -38,7 +38,9 @@ import { useSearchServiceOfferings } from "@api/useSearchServiceOfferings";
 import { useSearchConfigurationItems } from "@api/useSearchConfigurationItems";
 import { useSearchUsersByName } from "@api/useSearchUsersByName";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
-import AsyncEntityMultiSelect from "@components/AsyncEntityMultiSelect";
+import { useSearchIncidentsExcludingSelf } from "@features/csm-operations/api/useSearchIncidentsForSelect";
+import { useSearchChangeRequestsForSelect } from "@features/csm-operations/api/useSearchChangeRequestsForSelect";
+import { useSearchProblemsForSelect } from "@features/csm-operations/api/useSearchProblemsForSelect";
 import {
   CATEGORY_OPTIONS,
   CONTACT_TYPE_OPTIONS,
@@ -56,6 +58,8 @@ import {
   incidentStateLabel,
 } from "@features/csm-operations/utils/incidents";
 import type {
+  BeChangeRequestSearchView,
+  BeIncident,
   BeIncidentCategory,
   BeIncidentContactType,
   BeIncidentDetail,
@@ -63,6 +67,7 @@ import type {
   BeIncidentState,
   BeIncidentSubcategory,
   BeIncidentUrgency,
+  BeProblemSearchView,
   BeUpdateIncidentPayload,
   BeConfigurationItem,
   BeGroup,
@@ -70,6 +75,18 @@ import type {
   BeServiceOffering,
   BeUser,
 } from "@api/backend/types";
+
+function incidentLinkLabel(i: BeIncident): string {
+  return [i.number, i.subject].filter(Boolean).join(" — ") || i.id || "";
+}
+
+function changeRequestLinkLabel(cr: BeChangeRequestSearchView): string {
+  return [cr.number, cr.subject].filter(Boolean).join(" — ") || cr.id;
+}
+
+function problemLinkLabel(p: BeProblemSearchView): string {
+  return [p.number, p.subject].filter(Boolean).join(" — ") || p.id;
+}
 
 const UNSET = "" as const;
 const SELECT_PLACEHOLDER = "-- Select --";
@@ -102,9 +119,6 @@ interface EditState {
   configurationItemId: string;
   assignmentGroupId: string;
   assignedEngineerId: string;
-  watchList: string[];
-  workNotes: string;
-  additionalComments: string;
   parentId: string;
   changeRequestId: string;
   problemId: string;
@@ -127,21 +141,11 @@ function toEditState(incident: BeIncidentDetail): EditState {
     configurationItemId: incident.configurationItem?.id ?? "",
     assignmentGroupId: incident.assignmentGroup?.id ?? "",
     assignedEngineerId: incident.assignedTo?.id ?? "",
-    watchList: (incident.watchList ?? []).map((w) => w.id),
-    workNotes: incident.workNotes ?? "",
-    additionalComments: incident.additionalComments ?? "",
     parentId: incident.parent?.id ?? "",
     changeRequestId: incident.changeRequest?.id ?? "",
     problemId: incident.problem?.id ?? "",
     causedById: incident.causedBy?.id ?? "",
   };
-}
-
-function sameIds(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  const sortedA = [...a].sort();
-  const sortedB = [...b].sort();
-  return sortedA.every((id, i) => id === sortedB[i]);
 }
 
 /**
@@ -173,10 +177,6 @@ function buildPatch(initial: EditState, next: EditState): BeUpdateIncidentPayloa
   if (next.assignmentGroupId !== initial.assignmentGroupId) patch.assignmentGroupId = next.assignmentGroupId || null;
   if (next.assignedEngineerId !== initial.assignedEngineerId)
     patch.assignedEngineerId = next.assignedEngineerId || null;
-  if (!sameIds(next.watchList, initial.watchList)) patch.watchList = next.watchList;
-  if (next.workNotes.trim() !== initial.workNotes) patch.workNotes = next.workNotes.trim() || null;
-  if (next.additionalComments.trim() !== initial.additionalComments)
-    patch.additionalComments = next.additionalComments.trim() || null;
   if (next.parentId.trim() !== initial.parentId) patch.parentId = next.parentId.trim() || null;
   if (next.changeRequestId.trim() !== initial.changeRequestId)
     patch.changeRequestId = next.changeRequestId.trim() || null;
@@ -186,12 +186,15 @@ function buildPatch(initial: EditState, next: EditState): BeUpdateIncidentPayloa
 }
 
 /**
- * Edit dialog for an incident's classification, state, assignment, watch
- * list, notes, and linked-record ids — mirrors `CreateIncidentPage.tsx`'s
- * fields (same option lists, same async pickers) plus a State select, which
- * only makes sense once an incident already exists. Priority is never sent
- * directly here either — ServiceNow computes it from impact × urgency, same
- * rule as create.
+ * Edit dialog for an incident's classification, state, assignment, and
+ * linked-record ids — mirrors `CreateIncidentPage.tsx`'s fields (same option
+ * lists, same async pickers) plus a State select, which only makes sense
+ * once an incident already exists. Priority is never sent directly here
+ * either — ServiceNow computes it from impact × urgency, same rule as
+ * create. Watch-list editing lives in the incident detail page's Watchers
+ * tab instead of here (each add/remove PATCHes immediately, independent of
+ * this dialog's Save); comments/notes are handled by the Activities tab, not
+ * this dialog.
  */
 export default function EditIncidentDialog({
   incident,
@@ -201,11 +204,6 @@ export default function EditIncidentDialog({
 }: EditIncidentDialogProps): JSX.Element {
   const initial = useMemo(() => toEditState(incident), [incident]);
   const [state, setState] = useState<EditState>(initial);
-
-  const knownWatchListLabels = useMemo(
-    () => Object.fromEntries((incident.watchList ?? []).map((w) => [w.id, w.name])),
-    [incident.watchList],
-  );
 
   // The curated map (see its own doc comment) intentionally omits ~16
   // backend-valid subcategories that don't have an obvious curated home.
@@ -483,72 +481,58 @@ export default function EditIncidentDialog({
             </Box>
           </Box>
 
-          <AsyncEntityMultiSelect<BeUser>
-            id="edit-incident-watch-list"
-            label="Watch list"
-            placeholder="Search people…"
-            values={state.watchList}
-            onChange={(v) => set("watchList", v)}
-            disabled={isSaving}
-            useSearch={useSearchUsersByName}
-            getId={(u) => u.id!}
-            getLabel={userLabel}
-            knownLabels={knownWatchListLabels}
-            helperText="Notified on updates to this incident."
-          />
-
-          <Divider />
-          <Typography variant="subtitle2">Notes</Typography>
-          <TextField
-            label="Additional comments"
-            multiline
-            minRows={2}
-            value={state.additionalComments}
-            onChange={(e) => set("additionalComments", e.target.value)}
-            disabled={isSaving}
-            fullWidth
-            helperText="Visible to the customer."
-          />
-          <TextField
-            label="Internal work note"
-            multiline
-            minRows={2}
-            value={state.workNotes}
-            onChange={(e) => set("workNotes", e.target.value)}
-            disabled={isSaving}
-            fullWidth
-            helperText="Internal only — never shown to the customer."
-          />
-
           <Divider />
           <Typography variant="caption" color="text.secondary">
-            Advanced linking (portal UUIDs — no lookup available for these yet)
+            Linked records
           </Typography>
           <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
-            <TextField
-              label="Parent incident ID"
-              size="small"
-              value={state.parentId}
-              onChange={(e) => set("parentId", e.target.value)}
-              disabled={isSaving}
-              sx={{ flex: "1 1 220px" }}
-            />
-            <TextField
-              label="Change request ID"
-              size="small"
-              value={state.changeRequestId}
-              onChange={(e) => set("changeRequestId", e.target.value)}
-              disabled={isSaving}
-              sx={{ flex: "1 1 220px" }}
-            />
-            <TextField
-              label="Problem ID"
-              size="small"
-              value={state.problemId}
-              onChange={(e) => set("problemId", e.target.value)}
-              disabled={isSaving}
-              sx={{ flex: "1 1 220px" }}
-            />
+            <Box sx={{ flex: "1 1 220px" }}>
+              <AsyncEntitySelect<BeIncident>
+                id="edit-incident-parent"
+                label="Parent incident"
+                placeholder="Search incidents…"
+                value={state.parentId}
+                onChange={(v) => set("parentId", v)}
+                disabled={isSaving}
+                useSearch={useSearchIncidentsExcludingSelf}
+                searchExtra={incident.id ?? undefined}
+                getId={(i) => i.id!}
+                getLabel={incidentLinkLabel}
+                knownLabel={incident.parent?.name}
+              />
+            </Box>
+            <Box sx={{ flex: "1 1 220px" }}>
+              <AsyncEntitySelect<BeChangeRequestSearchView>
+                id="edit-incident-change-request"
+                label="Change request"
+                placeholder="Search change requests…"
+                value={state.changeRequestId}
+                onChange={(v) => set("changeRequestId", v)}
+                disabled={isSaving}
+                useSearch={useSearchChangeRequestsForSelect}
+                getId={(cr) => cr.id}
+                getLabel={changeRequestLinkLabel}
+                knownLabel={incident.changeRequest?.name}
+              />
+            </Box>
+            <Box sx={{ flex: "1 1 220px" }}>
+              <AsyncEntitySelect<BeProblemSearchView>
+                id="edit-incident-problem"
+                label="Problem"
+                placeholder="Search problems…"
+                value={state.problemId}
+                onChange={(v) => set("problemId", v)}
+                disabled={isSaving}
+                useSearch={useSearchProblemsForSelect}
+                getId={(p) => p.id}
+                getLabel={problemLinkLabel}
+                knownLabel={incident.problem?.name}
+              />
+            </Box>
+            {/* "Caused by" has no confirmed target record type (could be a
+                change request, a problem, or something else), so there's no
+                single search endpoint to point it at — left as a raw
+                portal-UUID field until that's resolved. */}
             <TextField
               label="Caused by ID"
               size="small"

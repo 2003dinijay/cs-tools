@@ -72,11 +72,17 @@ const createChangeRequest = async (payload: ChangeRequestCreatePayloadDto): Prom
 const CHANGE_REQUEST_PAGE_LIMIT = 20;
 
 export const changeRequests = {
-  infinite: (payload: Omit<ChangeRequestSearchPayloadDto, "pagination"> = {}) =>
+  // Most-recently-updated first, mirroring cases.ts's infinite (updatedOn desc) — not left to the
+  // backend's default order.
+  infinite: (payload: Omit<ChangeRequestSearchPayloadDto, "pagination" | "sortBy"> = {}) =>
     infiniteQueryOptions({
       queryKey: ["change-requests", "infinite", payload],
       queryFn: ({ pageParam }) =>
-        searchChangeRequests({ ...payload, pagination: { offset: pageParam, limit: CHANGE_REQUEST_PAGE_LIMIT } }),
+        searchChangeRequests({
+          ...payload,
+          sortBy: { field: "updatedOn", order: "desc" },
+          pagination: { offset: pageParam, limit: CHANGE_REQUEST_PAGE_LIMIT },
+        }),
       initialPageParam: 0,
       getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.offset + lastPage.limit : undefined),
     }),

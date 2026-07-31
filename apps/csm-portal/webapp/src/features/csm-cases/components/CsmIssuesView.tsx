@@ -27,12 +27,23 @@ import {
 } from "react";
 import { useSearchParams } from "react-router";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
+import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
+import { formatBackendTimestampForDisplay } from "@utils/dateTime";
+import { useBackendApi } from "@api/backend/client";
+import FilteredCsvExportButton from "@components/FilteredCsvExportButton";
 import CasesFilterBar, {
   type CasesFilters,
 } from "@features/csm-cases/components/CasesFilterBar";
 import CasesList from "@features/csm-cases/components/CasesList";
 import { useGetCsmCases } from "@features/csm-cases/api/useGetCsmCases";
+import {
+  ASSIGNEE_FILTER_RESOLVED_EMPTY,
+  buildCaseSearchFilters,
+  mapCaseSearchViewToRow,
+  resolveAssignedUserIds,
+} from "@features/csm-cases/utils/caseSearchPayload";
 import { useDirectoryUsers } from "@api/useDirectoryUsers";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { ALL_CASE_TYPES } from "@features/csm-cases/utils/caseType";
@@ -45,6 +56,10 @@ import {
   DEFAULT_CASES_SORT,
   type CasesSortOrder,
 } from "@features/csm-cases/utils/casesSort";
+import { stateLabel } from "@features/csm-dashboard/utils/abtDashboard";
+import { WORK_STATE_LABEL } from "@features/csm-cases/utils/caseWorkState";
+import type { BeCaseSearchPayload, BeCaseSearchResponse } from "@api/backend/types";
+import type { CsmCaseRow } from "@features/csm-cases/types/csmCases";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, DEFAULT_ROWS_PER_PAGE, BE_MAX_PAGE_LIMIT];
@@ -190,6 +205,89 @@ export default function CsmIssuesView({
   const { showError } = useErrorBanner();
   const hasShownErrorRef = useRef(false);
 
+  // Export CSV: pages `/cases/search` with the exact same filters/sort as the
+  // listing above (`buildCaseSearchFilters`/`resolveAssignedUserIds` are the
+  // same helpers `useGetCsmCases` uses), independent of the table's own
+  // page/rowsPerPage — the export always fetches the *whole* filtered result
+  // set, not whatever page happens to be on screen. See
+  // `useFilteredCsvExport`/`fetchAllPages` for the paging + truncation logic.
+  const api = useBackendApi();
+  const currentUserEmail = useIdTokenClaims()?.email;
+  const currentUserId = useCurrentUser().user?.id;
+  const exportSearch = queryFilters.search.trim();
+  const fetchCasesExportPage = useCallback(
+    async (offset: number, limit: number) => {
+      // Re-resolved per page when an assignee filter is active — a small,
+      // deterministic, targeted `/users/search` by email, not a directory
+      // scan — rather than caching it across pages, so the export can never
+      // serve a stale resolution if this closure is reused across a filter
+      // change mid-export (it isn't today, but this keeps that safe by
+      // construction rather than by care).
+      let assignedUserIds: string[] | undefined;
+      if (queryFilters.assignees.length > 0) {
+        const resolved = await resolveAssignedUserIds(
+          api,
+          queryFilters.assignees,
+          currentUserId,
+        );
+        if (resolved === ASSIGNEE_FILTER_RESOLVED_EMPTY) {
+          return { items: [] as CsmCaseRow[], total: 0 };
+        }
+        assignedUserIds = resolved;
+      }
+      const res = await api.post<BeCaseSearchPayload, BeCaseSearchResponse>(
+        "/cases/search",
+        {
+          pagination: { offset, limit },
+          sortBy: { field: "updatedOn", order: sortOrder },
+          filters: buildCaseSearchFilters(queryFilters, exportSearch, assignedUserIds),
+        },
+      );
+      const items = (res.cases ?? []).map((c) => mapCaseSearchViewToRow(c, currentUserEmail));
+      return { items, total: res.total };
+    },
+    [api, queryFilters, exportSearch, sortOrder, currentUserId, currentUserEmail],
+  );
+
+  // Same gate `CasesList` is given (`hideSeverityColumn={isServiceRequestOnly
+  // || hideSeverityColumn}`) so the export's column set can never drift from
+  // what's actually rendered.
+  const showExportSeverityColumn = !(isServiceRequestOnly || hideSeverityColumn);
+  const caseToCsvRow = useCallback(
+    (c: CsmCaseRow): string[] => {
+      const caseId =
+        c.wso2CaseId && c.caseNumber
+          ? `${c.wso2CaseId}/${c.caseNumber}`
+          : c.wso2CaseId || c.caseNumber || "";
+      const updated = formatBackendTimestampForDisplay(c.updatedAt, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      const stateText =
+        stateLabel(c.state) +
+        (c.state === "work_in_progress" && c.workState
+          ? ` (${WORK_STATE_LABEL[c.workState]})`
+          : "");
+      const row = [caseId, c.subject, c.projectName, c.product];
+      if (showExportSeverityColumn) row.push(c.severity);
+      row.push(stateText, updated ?? "");
+      return row;
+    },
+    [showExportSeverityColumn],
+  );
+  const exportHeader = [
+    "Case ID",
+    "Subject",
+    "Project",
+    "Product",
+    ...(showExportSeverityColumn ? ["Severity"] : []),
+    "State",
+    "Updated",
+  ];
+
   useEffect(() => {
     if (isError && !hasShownErrorRef.current) {
       hasShownErrorRef.current = true;
@@ -269,6 +367,14 @@ export default function CsmIssuesView({
           {breachedCount > 0 && (
             <Chip size="small" color="error" label={`${breachedCount} breached`} />
           )}
+          <FilteredCsvExportButton<CsmCaseRow>
+            entityName={entityNoun.replace(/\s+/g, "-")}
+            entityNounPlural={entityNoun}
+            header={exportHeader}
+            toRow={caseToCsvRow}
+            fetchPage={fetchCasesExportPage}
+            disabled={isError || total === 0}
+          />
           {actions}
         </Box>
       </Box>

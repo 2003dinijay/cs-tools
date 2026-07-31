@@ -29,8 +29,9 @@ const CONFIGURATION_ITEM_SEARCH_LIMIT = 20;
 /**
  * Type-ahead configuration-item search (`POST /configuration-items/search`)
  * for the "Configuration item" picker on the change-request create form.
- * Disabled until the caller has typed something — the CMDB is far too large
- * to load up front.
+ * Fires as soon as the dropdown opens, even with an empty query, so the
+ * picker shows a default page instead of looking broken until the caller
+ * types something.
  */
 export function useSearchConfigurationItems(
   query: string,
@@ -51,7 +52,7 @@ export function useSearchConfigurationItems(
       });
       return res.configurationItems ?? [];
     },
-    enabled: enabled && q.length > 0,
+    enabled,
     placeholderData: keepPreviousData,
     staleTime: 60_000,
   });
