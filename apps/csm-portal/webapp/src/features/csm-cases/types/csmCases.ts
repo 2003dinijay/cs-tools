@@ -27,6 +27,7 @@ import type {
   BeCaseResolutionCode,
   BeCaseType,
 } from "@api/backend/types";
+import type { UserReference } from "@/types/userReference";
 
 export interface CsmCaseRow {
   /**
@@ -113,6 +114,11 @@ export interface CsmCaseComment {
   /** Author's email, when the backend returns one — used to link the author
    * name to their profile page. */
   authorEmail?: string;
+  /** Canonical reference to the author, when the backend returns one. `id`
+   * is populated for a comment author — prefer this over {@link authorEmail}
+   * for linking; the email is still needed for bot detection and as the
+   * resolution fallback when `id` is null. */
+  authorUser?: UserReference;
   authorRole: CsmCommentAuthorRole;
   bodyHtml: string;
   createdAt: string;
@@ -134,6 +140,9 @@ export interface CaseAttachment {
   /** Uploader's email, when the backend returns one — used to link the
    * uploader name to their profile page. */
   uploadedByEmail?: string;
+  /** Canonical reference to the uploader, when the backend returns one. `id`
+   * is populated for an attachment uploader. */
+  uploadedByUser?: UserReference;
   uploadedAt: string;
 }
 
@@ -238,6 +247,10 @@ export interface CaseWatcher {
   name: string;
   email?: string;
   isMe?: boolean;
+  /** Canonical reference to this watcher, when the backend returns one. `id`
+   * is always null here — watchers resolve their profile link through the
+   * cached email lookup like any other actor without a resolved id. */
+  user?: UserReference;
 }
 
 export interface CaseLinkedItem {
@@ -506,6 +519,10 @@ export interface CsmCaseDetail extends CsmCaseRow {
   createdBy?: string;
   /** Email of the creator — used to tell a WSO2 engineer from a customer. */
   createdByEmail?: string;
+  /** Canonical reference to the case creator. `id` is always null here — the
+   * data source doesn't resolve the reporter to a user record on this view,
+   * so the profile link (if any) comes from resolving {@link createdByEmail}. */
+  createdByUser?: UserReference;
   /**
    * Raw assigned-engineer name, with no "Unassigned" display fallback baked
    * in (unlike `assignee`) — for callers that need to tell "actually
@@ -516,6 +533,9 @@ export interface CsmCaseDetail extends CsmCaseRow {
   /** Email of the assigned engineer, when the data source returns one — used
    * to link the assignee name to their profile page. */
   assigneeEmail?: string;
+  /** Canonical reference to the assigned engineer, when the backend returns
+   * one. `id` is populated for the case assignee. */
+  assigneeUser?: UserReference;
   customerContext: CaseCustomerContext;
   productContext: CaseProductContext;
   watchers: CaseWatcher[];

@@ -313,10 +313,14 @@ export default function App(): JSX.Element {
 
                   {/* Person profile — reachable by clicking any user reference
                       (case creator, assignee, watchers, comment authors,
-                      attachment uploaders). Not admin-gated: any signed-in CS
-                      engineer can look up any user. */}
+                      attachment uploaders). Keyed on the user id (not the
+                      email): most `UserReference` sites don't resolve an id
+                      themselves, so `UserRefLink` only ever links once one is
+                      known or resolved (see useResolvedUserId). Not
+                      admin-gated: any signed-in CS engineer can look up any
+                      user. */}
                   <Route
-                    path="people/:email"
+                    path="people/:id"
                     element={<UserProfilePage />}
                   />
 

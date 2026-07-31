@@ -15,8 +15,11 @@
 // under the License.
 
 import { fireEvent, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router";
 import CsmCaseCommentBubble from "@features/csm-cases/components/CsmCaseCommentBubble";
 import type { CsmCaseComment } from "@features/csm-cases/types/csmCases";
 
@@ -27,6 +30,14 @@ vi.mock("@features/csm-cases/api/useResolvedInlineImageHtml", () => ({
     resolvedHtml: html,
     isLoading: false,
   })),
+}));
+
+// The real client reads runtime config at module load, which isn't present
+// under vitest (same approach as useQuickCaseSearch.test.tsx). The comment
+// author name renders through `UserRefLink`, which resolves an unknown id
+// through `useResolvedUserId`, which calls this client.
+vi.mock("@api/backend/client", () => ({
+  useBackendApi: () => ({ post: vi.fn().mockResolvedValue({ users: [] }) }),
 }));
 
 function makeComment(overrides: Partial<CsmCaseComment>): CsmCaseComment {
@@ -41,22 +52,36 @@ function makeComment(overrides: Partial<CsmCaseComment>): CsmCaseComment {
   };
 }
 
+// `UserRefLink` (used for the comment author) renders a `react-router` `Link`
+// and resolves its id through react-query — needs both a Router and a
+// QueryClient context even outside a full app render.
+function renderWithProviders(ui: ReactElement): ReturnType<typeof render> {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
 describe("CsmCaseCommentBubble", () => {
   it("renders comment body HTML", () => {
-    render(<CsmCaseCommentBubble comment={makeComment({})} />);
+    renderWithProviders(<CsmCaseCommentBubble comment={makeComment({})} />);
     expect(screen.getByText("Hello there")).toBeInTheDocument();
     expect(screen.getByText("Jane Doe")).toBeInTheDocument();
   });
 
   it("returns null for a comment with no displayable content", () => {
-    const { container } = render(
+    const { container } = renderWithProviders(
       <CsmCaseCommentBubble comment={makeComment({ bodyHtml: "<p></p>" })} />,
     );
     expect(container).toBeEmptyDOMElement();
   });
 
   it("strips a single [code]...[/code] wrapper before rendering", () => {
-    render(
+    renderWithProviders(
       <CsmCaseCommentBubble
         comment={makeComment({ bodyHtml: "[code]<b>raw</b>[/code]" })}
       />,
@@ -65,7 +90,7 @@ describe("CsmCaseCommentBubble", () => {
   });
 
   it("linkifies a bare URL and opens it in a new tab safely", () => {
-    render(
+    renderWithProviders(
       <CsmCaseCommentBubble
         comment={makeComment({ bodyHtml: "See https://example.com/doc" })}
       />,
@@ -81,7 +106,7 @@ describe("CsmCaseCommentBubble", () => {
     // by linkifyBareUrls, which only special-cases `href=`, so it's avoided
     // here to keep this test focused on the click-to-zoom wiring.
     const onImageClick = vi.fn();
-    render(
+    renderWithProviders(
       <CsmCaseCommentBubble
         comment={makeComment({
           bodyHtml: '<img src="/abc123.iix" alt="a" />',
@@ -98,7 +123,7 @@ describe("CsmCaseCommentBubble", () => {
   });
 
   it("does not mark inline images as interactive when onImageClick is not provided", () => {
-    render(
+    renderWithProviders(
       <CsmCaseCommentBubble
         comment={makeComment({
           bodyHtml: '<img src="/abc123.iix" alt="a" />',
@@ -111,7 +136,7 @@ describe("CsmCaseCommentBubble", () => {
   });
 
   it("renders a chatbot comment's markdown body as HTML", () => {
-    render(
+    renderWithProviders(
       <CsmCaseCommentBubble
         comment={makeComment({
           authorRole: "chatbot",
@@ -124,7 +149,7 @@ describe("CsmCaseCommentBubble", () => {
   });
 
   it("renders a system comment as a compact inline row", () => {
-    render(
+    renderWithProviders(
       <CsmCaseCommentBubble
         comment={makeComment({
           authorRole: "system",
