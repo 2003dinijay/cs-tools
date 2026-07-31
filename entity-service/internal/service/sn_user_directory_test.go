@@ -18,8 +18,10 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -298,4 +300,100 @@ func asNotFoundError(err error, target **apierror.NotFoundError) bool {
 		*target = v
 	}
 	return ok
+}
+
+// Malformed ids are rejected at this boundary. uuidToSysid passes a non-canonical value
+// through unchanged, so without this check a bogus id reaches upstream, which answers with
+// an opaque error or an empty page that reads like a legitimate "no such user".
+func TestSNUserService_SearchUsers_RejectsMalformedFilterIDs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/teams", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(abtTeamsFixtureJSON))
+	})
+	mux.HandleFunc("/users/search", func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream search called; a malformed filter id should be rejected first")
+	})
+	mux.HandleFunc("/group-members/search", func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("membership search called; a malformed filter id should be rejected first")
+	})
+
+	svc := NewServiceNowUserService(newTestSNClient(t, mux))
+
+	tests := []struct {
+		name    string
+		filters domain.SearchUsersFilters
+	}{
+		{"malformed userIds", domain.SearchUsersFilters{UserIDs: []string{"not-a-uuid"}}},
+		{"malformed groupIds", domain.SearchUsersFilters{GroupIDs: []string{"not-a-uuid"}}},
+		{"too many userIds", domain.SearchUsersFilters{UserIDs: repeatUUID(snUserIDFilterLimit + 1)}},
+		{"too many groupIds", domain.SearchUsersFilters{GroupIDs: repeatUUID(snGroupIDFilterLimit + 1)}},
+		{"too many teamIds", domain.SearchUsersFilters{TeamIDs: repeatKey(snTeamIDFilterLimit + 1)}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.SearchUsers(contextWithUserIDToken("token"), domain.SearchUsersRequest{
+				Pagination: domain.Pagination{Limit: 20},
+				Filters:    tc.filters,
+			})
+			var verr *apierror.ValidationError
+			if !asValidationError(err, &verr) {
+				t.Fatalf("err = %v, want a ValidationError", err)
+			}
+		})
+	}
+}
+
+// GetUser must not report a malformed id as a missing one: "id is required" sends the caller
+// looking for a parameter they did supply.
+func TestSNUserService_GetUser_DistinguishesEmptyFromMalformedID(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/teams", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(abtTeamsFixtureJSON))
+	})
+	mux.HandleFunc("/users/search", func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream search called; an invalid id should be rejected first")
+	})
+
+	svc := NewServiceNowUserService(newTestSNClient(t, mux))
+
+	emptyErr := getUserErr(t, svc, "")
+	if emptyErr.Msg != "id is required" {
+		t.Errorf("empty id message = %q, want \"id is required\"", emptyErr.Msg)
+	}
+
+	malformedErr := getUserErr(t, svc, "not-a-uuid")
+	if malformedErr.Msg == "id is required" {
+		t.Errorf("malformed id reported as %q; it must not read as a missing parameter", malformedErr.Msg)
+	}
+	if !strings.Contains(malformedErr.Msg, "invalid UUID") {
+		t.Errorf("malformed id message = %q, want it to name the invalid UUID", malformedErr.Msg)
+	}
+}
+
+func getUserErr(t *testing.T, svc SNUserService, id string) *apierror.ValidationError {
+	t.Helper()
+	_, err := svc.GetUser(contextWithUserIDToken("token"), id)
+	var verr *apierror.ValidationError
+	if !asValidationError(err, &verr) {
+		t.Fatalf("GetUser(%q) err = %v, want a ValidationError", id, err)
+	}
+	return verr
+}
+
+// repeatUUID builds n distinct valid UUIDs, for exercising the filter count caps.
+func repeatUUID(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("00000000-0000-0000-0000-%012d", i)
+	}
+	return out
+}
+
+func repeatKey(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("team-%d", i)
+	}
+	return out
 }

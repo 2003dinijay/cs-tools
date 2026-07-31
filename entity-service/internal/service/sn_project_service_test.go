@@ -18,10 +18,14 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
@@ -177,13 +181,87 @@ func TestSNProjectContactService_SearchProjectContacts_OptionalContactID(t *test
 		t.Fatalf("got %d contacts, want 3", len(got.Contacts))
 	}
 
-	if want := sysidToUUID(contactSysid); got.Contacts[0].ID != want {
-		t.Errorf("linked contact ID = %q, want %q", got.Contacts[0].ID, want)
+	want := sysidToUUID(contactSysid)
+	if got.Contacts[0].ID == nil || *got.Contacts[0].ID != want {
+		t.Errorf("linked contact ID = %v, want %q", got.Contacts[0].ID, want)
 	}
-	if got.Contacts[1].ID != "" {
-		t.Errorf("null upstream id produced %q, want empty", got.Contacts[1].ID)
+	if got.Contacts[1].ID != nil {
+		t.Errorf("null upstream id produced %q, want nil", *got.Contacts[1].ID)
 	}
-	if got.Contacts[2].ID != "" {
-		t.Errorf("absent upstream id produced %q, want empty", got.Contacts[2].ID)
+	if got.Contacts[2].ID != nil {
+		t.Errorf("absent upstream id produced %q, want nil", *got.Contacts[2].ID)
+	}
+
+	// A nil id must be omitted from the wire payload, not emitted as null or "": the
+	// published contract documents the field as absent when no contact record is linked.
+	encoded, err := json.Marshal(got.Contacts[1])
+	if err != nil {
+		t.Fatalf("marshal contact: %v", err)
+	}
+	if strings.Contains(string(encoded), `"id"`) {
+		t.Errorf("unlinked contact serialized as %s, want no id key", encoded)
+	}
+}
+
+// TestSNProjectContactService_GetProjectContact_ScanLimitIsAccepted pins the scan window to
+// a value SearchProjectContacts will accept. A scan limit above maxLimit made every lookup
+// fail with a pagination validation error before the upstream call was ever made.
+func TestSNProjectContactService_GetProjectContact_ScanLimitIsAccepted(t *testing.T) {
+	if projectContactScanLimit > maxLimit {
+		t.Fatalf("projectContactScanLimit = %d exceeds maxLimit %d; every lookup would 400",
+			projectContactScanLimit, maxLimit)
+	}
+
+	projectUUID := sysidToUUID(sysid32('7'))
+	contactSysid := sysid32('8')
+	contactUUID := sysidToUUID(contactSysid)
+
+	var gotLimit int
+	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Pagination struct {
+				Limit int `json:"limit"`
+			} `json:"pagination"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		gotLimit = payload.Pagination.Limit
+		_, _ = w.Write([]byte(`{"contacts":[
+			{"id":"` + contactSysid + `","name":"Linked","email":"linked@example.com",
+			 "registrationState":"REGISTERED","notificationsEnabled":true,"roles":["r"]}
+		],"totalRecords":1,"offset":0,"limit":` + strconv.Itoa(projectContactScanLimit) + `}`))
+	}))
+
+	svc := NewServiceNowProjectContactService(client)
+
+	got, err := svc.GetProjectContact(contextWithUserIDToken("token"), projectUUID, contactUUID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.ID == nil || *got.ID != contactUUID {
+		t.Errorf("GetProjectContact returned ID %v, want %q", got.ID, contactUUID)
+	}
+	if gotLimit != projectContactScanLimit {
+		t.Errorf("upstream saw limit %d, want %d", gotLimit, projectContactScanLimit)
+	}
+}
+
+// TestSNProjectContactService_GetProjectContact_UnlinkedRowsDoNotMatch checks that a row
+// with no linked contact record never matches: nil is "no id", not "any id".
+func TestSNProjectContactService_GetProjectContact_UnlinkedRowsDoNotMatch(t *testing.T) {
+	projectUUID := sysidToUUID(sysid32('7'))
+
+	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"contacts":[
+			{"id":null,"name":"Orphaned","email":"orphan@example.com",
+			 "registrationState":"INVITED","notificationsEnabled":false,"roles":[]}
+		],"totalRecords":1,"offset":0,"limit":10}`))
+	}))
+
+	svc := NewServiceNowProjectContactService(client)
+
+	_, err := svc.GetProjectContact(contextWithUserIDToken("token"), projectUUID, sysidToUUID(sysid32('8')))
+	var notFound *apierror.NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("GetProjectContact error = %v, want NotFoundError", err)
 	}
 }

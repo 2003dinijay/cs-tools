@@ -37,15 +37,38 @@ const abtTeamsFixtureJSON = `{
 	]
 }`
 
-// resetAbtRegistry clears package-level ABT registry state between tests so
-// each test starts from a clean, unloaded cache.
+// resetAbtRegistry clears package-level ABT registry state so the calling test
+// starts from a clean, unloaded cache, and registers a cleanup that clears it
+// again on exit. Without the cleanup the last test to run leaves its fetcher and
+// cached teams in place, which any later test in this package would silently
+// inherit -- making results order-dependent.
 func resetAbtRegistry(t *testing.T) {
 	t.Helper()
+	clearAbtRegistry()
+	t.Cleanup(clearAbtRegistry)
+}
+
+func clearAbtRegistry() {
 	abtMu.Lock()
+	defer abtMu.Unlock()
 	abtFetcher = nil
 	abtLoaded = false
 	abtTeams = nil
+}
+
+// TestAbtRegistry_StartsClean deliberately does NOT call resetAbtRegistry: it asserts that
+// whatever ran before it left the package-level registry empty. It is the test that makes
+// resetAbtRegistry's cleanup load-bearing -- drop the cleanup and this fails under
+// -shuffle=on whenever it is not scheduled first.
+func TestAbtRegistry_StartsClean(t *testing.T) {
+	abtMu.Lock()
+	fetcher, loaded, teams := abtFetcher, abtLoaded, abtTeams
 	abtMu.Unlock()
+
+	if fetcher != nil || loaded || teams != nil {
+		t.Fatalf("registry not clean on entry: fetcher set=%t loaded=%t teams=%d; an earlier test leaked state",
+			fetcher != nil, loaded, len(teams))
+	}
 }
 
 func TestAbtRegistry_FetchAndCache_PopulatesCorrectly(t *testing.T) {
@@ -127,6 +150,60 @@ func TestAbtRegistry_NoFetcherRegistered_DegradesToEmptyRegistry(t *testing.T) {
 	names := AbtGroupNames()
 	if len(names) != 0 {
 		t.Fatalf("AbtGroupNames() = %v, want empty when no fetcher registered", names)
+	}
+}
+
+// TestAbtRegistry_FetchFailure_IsNotCached guards the availability property that
+// matters most here: one transient upstream failure must not leave the registry
+// permanently empty. A failed load is not committed, so the very next lookup
+// retries and picks up the recovered upstream.
+func TestAbtRegistry_FetchFailure_IsNotCached(t *testing.T) {
+	resetAbtRegistry(t)
+
+	calls := 0
+	failing := true
+	SetAbtTeamsFetcher(func(ctx context.Context) (json.RawMessage, error) {
+		calls++
+		if failing {
+			return nil, errors.New("upstream unavailable")
+		}
+		return json.RawMessage(abtTeamsFixtureJSON), nil
+	})
+
+	if names := AbtGroupNames(); len(names) != 0 {
+		t.Fatalf("AbtGroupNames() = %v, want empty while upstream is failing", names)
+	}
+
+	// Upstream recovers. No restart, no SetAbtTeamsFetcher call.
+	failing = false
+
+	names := AbtGroupNames()
+	if len(names) != 6 {
+		t.Fatalf("after recovery AbtGroupNames() returned %d names, want 6: %v", len(names), names)
+	}
+	if _, ok := FindAbtTeamByGroupName("Castor"); !ok {
+		t.Fatalf("expected Castor to resolve after the registry recovered")
+	}
+	if calls != 2 {
+		t.Fatalf("fetcher called %d times, want 2 (one failed attempt, then one retry that is cached)", calls)
+	}
+}
+
+// TestAbtRegistry_NoFetcher_IsNotCached checks the same for the missing-fetcher
+// path: a lookup made before service wiring registers the fetcher must not
+// permanently mark the registry loaded.
+func TestAbtRegistry_NoFetcher_IsNotCached(t *testing.T) {
+	resetAbtRegistry(t)
+
+	if names := AbtGroupNames(); len(names) != 0 {
+		t.Fatalf("AbtGroupNames() = %v, want empty with no fetcher registered", names)
+	}
+
+	abtMu.Lock()
+	loaded := abtLoaded
+	abtMu.Unlock()
+	if loaded {
+		t.Fatalf("abtLoaded = true after a lookup with no fetcher; the empty registry is now permanent")
 	}
 }
 

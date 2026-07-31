@@ -2961,6 +2961,25 @@ components:
           type: integer
           description: Zero-based offset into the result set.
 
+    UserTeam:
+      type: object
+      description: >
+        An account-based team (ABT), as published by the team registry.
+      required: [teamKey, teamName]
+      properties:
+        teamKey:
+          type: string
+          description: Registry team key. Stable across environments.
+        teamName:
+          type: string
+          description: The team's display name.
+        family:
+          type: string
+          enum: [cre, sre]
+          description: >
+            Team family, when the team is classified. Absent or empty for the teams the
+            registry leaves unclassified.
+
     GetUserMeResponse:
       type: object
       required: [id, email, lastName, roles]
@@ -2980,6 +2999,14 @@ components:
           type: array
           items:
             type: string
+        team:
+          allOf:
+            - $ref: '#/components/schemas/UserTeam'
+          description: >
+            The caller's resolved account-based team, derived from their group membership on
+            each call. Absent when no membership resolves to a known team, or when the
+            best-effort resolution failed -- resolution never fails the identity response,
+            so callers must treat an absent team as "unknown", not as an error.
 
     PatchUserMeRequest:
       type: object
@@ -3072,6 +3099,7 @@ components:
             id. ServiceNow data source only.
         groupIds:
           type: array
+          maxItems: 50
           items:
             type: string
             format: uuid
@@ -3081,6 +3109,7 @@ components:
             membership in one query. ServiceNow data source only.
         teamIds:
           type: array
+          maxItems: 50
           items:
             type: string
           description: >
@@ -3190,6 +3219,26 @@ components:
           type: string
           description: Human-readable label.
 
+    CatalogPagination:
+      type: object
+      description: >
+        Pagination for the small in-memory catalogue endpoints (roles, teams). These serve a
+        fixed reference list rather than a query, so the page size defaults high enough to
+        return the whole catalogue in one call, and an over-large limit is clamped rather
+        than rejected.
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+          description: Number of results per page. Defaults to 50, clamped at 200.
+        offset:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Zero-based offset into the result set.
+
     SearchRolesRequest:
       type: object
       properties:
@@ -3199,7 +3248,7 @@ components:
             searchQuery:
               type: string
         pagination:
-          $ref: '#/components/schemas/Pagination'
+          $ref: '#/components/schemas/CatalogPagination'
 
     SearchRolesResponse:
       type: object
@@ -3239,7 +3288,7 @@ components:
             searchQuery:
               type: string
         pagination:
-          $ref: '#/components/schemas/Pagination'
+          $ref: '#/components/schemas/CatalogPagination'
 
     SearchTeamsResponse:
       type: object

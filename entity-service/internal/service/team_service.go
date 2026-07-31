@@ -65,10 +65,10 @@ func (s *teamService) SearchTeams(
 	}
 
 	total := len(teams)
-	offset, limit := clampCatalogPagination(req.Pagination, total)
+	offset, limit, length := clampCatalogPagination(req.Pagination, total)
 
 	return domain.SearchTeamsResponse{
-		Teams:  teams[offset : offset+limit],
+		Teams:  teams[offset : offset+length],
 		Total:  total,
 		Offset: offset,
 		Limit:  limit,

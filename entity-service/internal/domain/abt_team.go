@@ -131,7 +131,9 @@ func FindAbtTeamByGroupName(groupName string) (team AbtTeam, ok bool) {
 
 // ensureAbtRegistryLoaded populates abtTeams on first use. Any failure (no
 // fetcher registered, fetch error, or parse error) is logged and degrades to
-// an empty registry rather than retrying on every subsequent call.
+// an empty registry for that call only: the failure is not cached, so the next
+// lookup retries. Caching a failure would leave team resolution permanently
+// empty for the rest of the process after one transient upstream outage.
 func ensureAbtRegistryLoaded() {
 	abtMu.Lock()
 	fetch := abtFetcher
@@ -143,6 +145,7 @@ func ensureAbtRegistryLoaded() {
 	}
 
 	var teams []AbtTeam
+	loaded := false
 	if fetch == nil {
 		log.Printf("abtteam: no fetcher registered; ABT team registry will be empty")
 	} else {
@@ -154,6 +157,10 @@ func ensureAbtRegistryLoaded() {
 			if err != nil {
 				log.Printf("abtteam: parse abt-teams registry failed: %v", err)
 				teams = nil
+			} else {
+				// A successful but empty response is still a load: the registry
+				// legitimately has no teams and there is nothing to retry.
+				loaded = true
 			}
 		}
 	}
@@ -161,8 +168,9 @@ func ensureAbtRegistryLoaded() {
 	abtMu.Lock()
 	defer abtMu.Unlock()
 	// Another goroutine may have loaded (or reset, via SetAbtTeamsFetcher)
-	// concurrently; only commit if still unloaded for this fetcher generation.
-	if !abtLoaded {
+	// concurrently; only commit if still unloaded for this fetcher generation,
+	// and only on success so a failed attempt does not poison the cache.
+	if !abtLoaded && loaded {
 		abtTeams = teams
 		abtLoaded = true
 	}

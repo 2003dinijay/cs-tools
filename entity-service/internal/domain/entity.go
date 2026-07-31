@@ -2188,11 +2188,13 @@ type SearchContactsFilters struct {
 // ProjectContact is a contact associated with a project. Supported by the
 // ServiceNow data source only; there is no Postgres equivalent.
 type ProjectContact struct {
-	// ID is the contact's user id, for linking a row to that user's profile. Empty when
+	// ID is the contact's user id, for linking a row to that user's profile. Nil when
 	// the row has no contact record linked, or when the backing instance predates the
 	// field -- both are normal, so callers must render the row without a link rather
-	// than treating it as an error.
-	ID                   string   `json:"id,omitempty"`
+	// than treating it as an error. A pointer keeps "no id" distinguishable from an
+	// empty id internally; on the wire both a nil and an absent id are omitted, so the
+	// published shape is unchanged.
+	ID                   *string  `json:"id,omitempty"`
 	Name                 string   `json:"name"`
 	Email                string   `json:"email"`
 	RegistrationState    string   `json:"registrationState"`

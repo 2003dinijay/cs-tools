@@ -149,6 +149,15 @@ type snProjectContactRow struct {
 // an IN clause from them, and an over-long encoded query is silently truncated there.
 const snUserIDFilterLimit = 200
 
+const (
+	// snGroupIDFilterLimit caps the groupIds filter. Each id widens the membership query
+	// that resolves the filter to a user-id set, and that set then feeds the same IN
+	// clause snUserIDFilterLimit protects.
+	snGroupIDFilterLimit = 50
+	// snTeamIDFilterLimit caps the teamIds filter, which expands to one group name each.
+	snTeamIDFilterLimit = 50
+)
+
 type snUserSort struct {
 	Field string `json:"field"`
 	Order string `json:"order"`
@@ -226,6 +235,23 @@ func (s *snUserService) SearchUsers(ctx context.Context, req domain.SearchUsersR
 	if len(req.Filters.UserIDs) > snUserIDFilterLimit {
 		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{
 			Msg: fmt.Sprintf("userIds cannot contain more than %d values", snUserIDFilterLimit)}
+	}
+	// Reject malformed ids here rather than letting uuidToSysid pass them through
+	// unchanged: upstream answers a bogus id with an opaque error, or an empty page that
+	// looks like a legitimate "no such user".
+	if err := validateUUIDs("userIds", req.Filters.UserIDs); err != nil {
+		return domain.SearchSNUsersResponse{}, err
+	}
+	if len(req.Filters.GroupIDs) > snGroupIDFilterLimit {
+		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{
+			Msg: fmt.Sprintf("groupIds cannot contain more than %d values", snGroupIDFilterLimit)}
+	}
+	if err := validateUUIDs("groupIds", req.Filters.GroupIDs); err != nil {
+		return domain.SearchSNUsersResponse{}, err
+	}
+	if len(req.Filters.TeamIDs) > snTeamIDFilterLimit {
+		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{
+			Msg: fmt.Sprintf("teamIds cannot contain more than %d values", snTeamIDFilterLimit)}
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
@@ -415,10 +441,16 @@ func (s *snUserService) searchGroupMemberships(
 // also lifts the active-only default, so a deactivated user is still returned -- which
 // matters, since "this user is deactivated" is often the answer the caller wants.
 func (s *snUserService) GetUser(ctx context.Context, id string) (domain.SNUserDetail, error) {
-	sysID := uuidToSysid(id)
-	if sysID == "" {
+	if id == "" {
 		return domain.SNUserDetail{}, &apierror.ValidationError{Msg: "id is required"}
 	}
+	// uuidToSysid returns a non-canonical id unchanged, so validate before converting:
+	// otherwise a malformed id is forwarded upstream, and reporting it as "required"
+	// would send the caller looking for a missing parameter they did supply.
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.SNUserDetail{}, err
+	}
+	sysID := uuidToSysid(id)
 
 	token := middleware.UserIDTokenFromContext(ctx)
 

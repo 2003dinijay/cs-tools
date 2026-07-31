@@ -61,10 +61,10 @@ func (s *roleService) SearchRoles(
 	}
 
 	total := len(roles)
-	offset, limit := clampCatalogPagination(req.Pagination, total)
+	offset, limit, length := clampCatalogPagination(req.Pagination, total)
 
 	return domain.SearchRolesResponse{
-		Roles:  roles[offset : offset+limit],
+		Roles:  roles[offset : offset+length],
 		Total:  total,
 		Offset: offset,
 		Limit:  limit,
@@ -85,9 +85,12 @@ func roleDisplayName(key string) string {
 }
 
 // clampCatalogPagination bounds an offset/limit pair against a known total, for the
-// in-memory catalogues. Returns an offset and a length that are always safe to slice with.
-func clampCatalogPagination(p domain.Pagination, total int) (offset, length int) {
-	limit := p.Limit
+// in-memory catalogues. It returns the offset, the effective page size to echo back to the
+// caller, and a length that is always safe to slice with. The two differ on the last page:
+// echoing the length as the limit would tell a caller advancing by limit that the page size
+// shrank, which every other search in this package does not do.
+func clampCatalogPagination(p domain.Pagination, total int) (offset, limit, length int) {
+	limit = p.Limit
 	if limit <= 0 {
 		limit = catalogDefaultLimit
 	}
@@ -107,7 +110,7 @@ func clampCatalogPagination(p domain.Pagination, total int) (offset, length int)
 	if offset+length > total {
 		length = total - offset
 	}
-	return offset, length
+	return offset, limit, length
 }
 
 const (

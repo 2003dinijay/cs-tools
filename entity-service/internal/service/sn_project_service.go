@@ -558,9 +558,10 @@ func (s *snProjectContactService) SearchProjectContacts(ctx context.Context, pro
 	for _, c := range snResp.Contacts {
 		// Convert only a real id; a nil or blank upstream id stays empty so the caller
 		// renders the row unlinked instead of pointing at a bogus profile.
-		contactID := ""
+		var contactID *string
 		if c.ID != nil && *c.ID != "" {
-			contactID = sysidToUUID(*c.ID)
+			id := sysidToUUID(*c.ID)
+			contactID = &id
 		}
 		contacts = append(contacts, domain.ProjectContact{
 			ID:                   contactID,
@@ -584,7 +585,11 @@ func (s *snProjectContactService) SearchProjectContacts(ctx context.Context, pro
 // scan. A project's contact list is a handful of people in practice, so paging to find one
 // is cheaper than adding a by-id filter to the upstream resource. If a project ever exceeds
 // this, the lookup reports not-found rather than silently scanning a partial list.
-const projectContactScanLimit = 200
+//
+// It is pinned to maxLimit because the scan goes through SearchProjectContacts, which
+// normalizes pagination and rejects anything larger outright: a bigger value here would
+// fail every lookup with a validation error rather than widening the window.
+const projectContactScanLimit = maxLimit
 
 // GetProjectContact implements ProjectContactService.
 //
@@ -610,7 +615,7 @@ func (s *snProjectContactService) GetProjectContact(
 	}
 
 	for _, c := range page.Contacts {
-		if c.ID == contactID {
+		if c.ID != nil && *c.ID == contactID {
 			return c, nil
 		}
 	}
