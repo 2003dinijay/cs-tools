@@ -4490,9 +4490,27 @@ components:
           enum: [case, incident, change_request, problem]
           nullable: true
           description: >
-            What kind of record this reference points at. Nil when the
-            backing data source doesn't resolve a type (ServiceNow data
-            source only).
+            What kind of record this reference points at. Null when the
+            backing data source could not resolve the referenced record's
+            kind; a client must not then assume it is a case, since linking
+            to a case detail page for a non-case record would 404.
+
+    LinkedChangeRequestRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+          description: Human-readable change request number.
+        name:
+          type: string
+          nullable: true
+          description: >-
+            Change request subject. Null when the record has none — an absent
+            subject is never reported as an empty string, so a caller can tell
+            "no subject recorded" from a subject deliberately left blank.
 
     AccountRef:
       type: object
@@ -4677,6 +4695,17 @@ components:
         account:
           nullable: true
           $ref: '#/components/schemas/AccountRef'
+        linkedChangeRequests:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/LinkedChangeRequestRef'
+          description: >-
+            Change requests raised from this case, in no particular order. Only
+            service-request cases carry them; absent or empty for every other case
+            type. This is a one-to-many relationship: promoting the same change
+            through each environment produces one change request per environment,
+            all pointing back at the same service request.
         resolvedOn:
           type: string
           format: date-time

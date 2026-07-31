@@ -976,9 +976,11 @@ type CaseNumberRef struct {
 	ID     string `json:"id"`
 	Number string `json:"number"`
 	// Type discriminates what kind of record this reference points at
-	// ("case", "incident", "change_request", "problem") -- a task-derived reference
-	// like ParentCase can point at any of these, not just another case. Nil when the
-	// backing data source doesn't resolve a type (ServiceNow data source only).
+	// ("case", "incident", "change_request", "problem") -- a parent reference can
+	// point at any of these, not just another case. Nil means the backing data
+	// source could not resolve the referenced record's kind, so a consumer must
+	// NOT fall back to treating it as a case: it may well be one of the other
+	// kinds, and linking to a case detail page for it would 404.
 	Type *string `json:"type"`
 }
 
@@ -989,6 +991,22 @@ type LinkedServiceRequestRef struct {
 	ID     string `json:"id"`
 	Number string `json:"number"`
 	Name   string `json:"name"`
+}
+
+// LinkedChangeRequestRef is a compact reference to a change request raised from a
+// service-request case (the reverse of PatchChangeRequestRequest.CaseID).
+//
+// This is a one-to-many relationship, not a single field: promoting the same change
+// through each environment produces one change request per environment, all pointing
+// at the same originating service request.
+// Name is the change request's subject. It is a pointer because the subject can
+// genuinely be absent upstream, and an absent value must be null rather than ""
+// — otherwise "no subject recorded" is indistinguishable from a subject
+// deliberately set to the empty string.
+type LinkedChangeRequestRef struct {
+	ID     string  `json:"id"`
+	Number string  `json:"number"`
+	Name   *string `json:"name"`
 }
 
 // AccountRef is a compact reference to an account.
@@ -1066,6 +1084,9 @@ type CaseView struct {
 	// LinkedServiceRequests lists any service-request cases whose parent points to this
 	// case. Populated on every case detail response, not just high-severity cases.
 	LinkedServiceRequests []LinkedServiceRequestRef `json:"linkedServiceRequests"`
+	// LinkedChangeRequests lists the change requests raised from this case. Only
+	// service-request cases carry them; empty for every other case type.
+	LinkedChangeRequests []LinkedChangeRequestRef `json:"linkedChangeRequests"`
 	// Resolution fields — populated only for resolved/closed ServiceNow cases.
 	ResolvedOn      *time.Time          `json:"resolvedOn"`
 	ResolutionCode  *CaseResolutionCode `json:"resolutionCode"`

@@ -69,7 +69,10 @@ type snCase struct {
 	RelatedCase           *snCaseRef                  `json:"relatedCase"`
 	Account               *snCaseAccount              `json:"account"`
 	LinkedServiceRequests []snLinkedServiceRequestRef `json:"linkedServiceRequests"`
-	ResolutionCode        *struct {
+	// ChangeRequests carries the change requests raised from this case, keyed as
+	// `changeRequests` upstream. Only populated for service-request cases.
+	ChangeRequests []snLinkedChangeRequestRef `json:"changeRequests"`
+	ResolutionCode *struct {
 		ID    json.Number `json:"id"`
 		Label string      `json:"label"`
 	} `json:"resolutionCode"`
@@ -142,6 +145,12 @@ type snCaseRef struct {
 }
 
 type snLinkedServiceRequestRef struct {
+	ID     string `json:"id"`
+	Number string `json:"number"`
+	Name   string `json:"name"`
+}
+
+type snLinkedChangeRequestRef struct {
 	ID     string `json:"id"`
 	Number string `json:"number"`
 	Name   string `json:"name"`
@@ -715,6 +724,19 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 			lsr = append(lsr, domain.LinkedServiceRequestRef{ID: sysidToUUID(r.ID), Number: r.Number, Name: r.Name})
 		}
 		cv.LinkedServiceRequests = lsr
+	}
+	if len(c.ChangeRequests) > 0 {
+		lcr := make([]domain.LinkedChangeRequestRef, 0, len(c.ChangeRequests))
+		for _, r := range c.ChangeRequests {
+			// An absent upstream subject becomes null, not "" — see the note on
+			// LinkedChangeRequestRef.Name.
+			var name *string
+			if r.Name != "" {
+				name = strPtr(r.Name)
+			}
+			lcr = append(lcr, domain.LinkedChangeRequestRef{ID: sysidToUUID(r.ID), Number: r.Number, Name: name})
+		}
+		cv.LinkedChangeRequests = lcr
 	}
 	if c.ResolutionCode != nil {
 		if rc, ok := snResolutionCodeByID[c.ResolutionCode.ID.String()]; ok {

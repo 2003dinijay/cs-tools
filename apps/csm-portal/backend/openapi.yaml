@@ -5273,6 +5273,17 @@ components:
           description: >-
             Service-request cases whose parent points to this case. Populated on every
             case detail response, not just high-severity cases.
+        linkedChangeRequests:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/LinkedChangeRequestRef'
+          description: >-
+            Change requests raised from this case, in no particular order. Only
+            service-request cases carry them; absent or empty for every other case type.
+            One-to-many by nature: promoting the same change through each environment
+            produces one change request per environment, all pointing back at the same
+            service request.
         bestCaseFixEta:
           type: string
           format: date
@@ -6628,9 +6639,10 @@ components:
           enum: [case, incident, change_request, problem]
           nullable: true
           description: >
-            What kind of record this reference points at. Nil when the
-            backing data source doesn't resolve a type (ServiceNow data
-            source only).
+            What kind of record this reference points at. Null when the
+            backing data source could not resolve the referenced record's
+            kind; a client must not then assume it is a case, since linking
+            to a case detail page for a non-case record would 404.
 
     LinkedServiceRequestRef:
       type: object
@@ -6645,6 +6657,26 @@ components:
       description: >
         A service-request case whose parent points to this case or incident (the
         reverse of parentId).
+
+    LinkedChangeRequestRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+          description: Human-readable change request number.
+        name:
+          type: string
+          nullable: true
+          description: >-
+            Change request subject. Null when the record has none — an absent
+            subject is never reported as an empty string, so a caller can tell
+            "no subject recorded" from a subject deliberately left blank.
+      description: >
+        A change request raised from this case (the reverse of
+        PatchChangeRequestPayload.caseId).
 
     AccountRef:
       type: object

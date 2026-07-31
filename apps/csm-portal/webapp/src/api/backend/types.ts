@@ -211,6 +211,21 @@ export interface BeLinkedServiceRequestRef {
 }
 
 /**
+ * A change request raised from this service-request case (the reverse of the
+ * change request's `caseId` link). One-to-many: promoting the same change
+ * through multiple environments produces one change request per environment,
+ * all pointing back at the same service request. Carries only id/number/name —
+ * no state or target environment; fetch `GET /change-requests/{id}` per entry
+ * for those.
+ */
+export interface BeLinkedChangeRequestRef {
+  id: string;
+  number: string;
+  /** Subject, or `null` when the record has none — never `""`. */
+  name: string | null;
+}
+
+/**
  * The assigned CS engineer embedded in case views. Carries `email` so the FE
  * can tell whether the case is assigned to the signed-in user (the only stable
  * identity the FE has from the JWT). `email` may be `null` depending on the data
@@ -310,6 +325,11 @@ export interface BeCaseView {
    * case detail response, not just high-severity cases.
    */
   linkedServiceRequests?: BeLinkedServiceRequestRef[] | null;
+  /**
+   * Change requests raised from this case. Only service-request cases carry
+   * these; absent/null/empty otherwise. See {@link BeLinkedChangeRequestRef}.
+   */
+  linkedChangeRequests?: BeLinkedChangeRequestRef[] | null;
   /**
    * The case, incident, change request, or problem this case is linked to as
    * its parent (the hierarchical major-case/child-case relationship, set via
@@ -1905,6 +1925,12 @@ export interface BePatchChangeRequestPayload {
   isCustomerReviewed?: boolean;
   assignedTeamId?: string;
   requestApproval?: true;
+  /**
+   * UUID of the service-request case this change request was raised from.
+   * Only settable via PATCH — `POST /change-requests` does not accept it, so
+   * the link is set by a follow-up PATCH once the change request exists.
+   */
+  caseId?: string;
 }
 
 /** `PATCH /change-requests/{id}` response — the touched identifiers. */
@@ -2151,6 +2177,25 @@ export interface BeIncidentSearchPayload {
     searchQuery?: string;
     priorities?: BeIncidentPriority[];
     parentIds?: string[];
+    /**
+     * At least one breached SLA record (optional). `false` and omitted are
+     * identical to the backend — it applies no SLA restriction either way,
+     * `false` does NOT mean "SLA met" — so callers should omit this key
+     * entirely rather than send `false`.
+     */
+    slaViolated?: boolean;
+    /** Inclusive UTC bound on the creation timestamp: `YYYY-MM-DDTHH:MM:SSZ`. */
+    startCreatedDate?: string;
+    /** Inclusive UTC bound on the creation timestamp: `YYYY-MM-DDTHH:MM:SSZ`. */
+    endCreatedDate?: string;
+    /**
+     * Union match on the name of the service the incident relates to
+     * (optional). Incidents carry no product dimension of their own, so this
+     * resolves against the related service's name, which is only ~43%
+     * populated and mixes real products with customer names and service
+     * categories — filtering by this misses roughly half of all incidents.
+     */
+    productNames?: string[];
   };
   sortBy?: {
     field?: "createdOn" | "updatedOn" | "openedOn";

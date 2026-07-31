@@ -30,6 +30,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
 import { useCallback, useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useSearchParams } from "react-router";
 import { useNavTransition } from "@hooks/useNavTransition";
 import QueryErrorState from "@components/QueryErrorState";
 import FilteredCsvExportButton from "@components/FilteredCsvExportButton";
@@ -38,6 +39,7 @@ import { useBackendApi } from "@api/backend/client";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { useSearchIncidents } from "@features/csm-operations/api/useSearchIncidents";
 import {
+  buildIncidentSearchFilters,
   DEFAULT_INCIDENT_FILTERS,
   incidentPriorityColor,
   incidentPriorityLabel,
@@ -45,6 +47,11 @@ import {
   incidentStateLabel,
   type IncidentFilters,
 } from "@features/csm-operations/utils/incidents";
+import {
+  INCIDENT_FILTER_PARAM_KEYS,
+  readIncidentFiltersFromUrl,
+  writeIncidentFiltersToUrl,
+} from "@features/csm-operations/utils/incidentsFiltersUrl";
 import IncidentsFilterBar from "@features/csm-operations/components/IncidentsFilterBar";
 import type { BeIncident, BeIncidentSearchPayload, BeIncidentSearchResponse } from "@api/backend/types";
 
@@ -64,13 +71,19 @@ function formatDate(value?: string | null): string {
 /**
  * Incidents listing for the Operations → Incidents tab. Searches
  * `POST /incidents/search` with server-side pagination, free-text search,
- * and a priority filter (the only filter field the backend supports beyond
- * search — see `IncidentsFilterBar`).
+ * and priority / SLA-violated / created-date-range / product filters (see
+ * `IncidentsFilterBar`). Filter state lives in the URL (tab-prefixed `inc...`
+ * params) rather than local state, so a plain tab switch doesn't reset it and
+ * a filtered list can be bookmarked or shared.
  */
 export default function IncidentsTab(): JSX.Element {
   const navigate = useNavTransition();
   const api = useBackendApi();
-  const [filters, setFilters] = useState<IncidentFilters>(DEFAULT_INCIDENT_FILTERS);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filters = useMemo<IncidentFilters>(
+    () => readIncidentFiltersFromUrl(searchParams),
+    [searchParams],
+  );
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
@@ -78,14 +91,11 @@ export default function IncidentsTab(): JSX.Element {
 
   const payload = useMemo(
     () => ({
-      filters: {
-        ...(debouncedSearch.length > 0 && { searchQuery: debouncedSearch }),
-        ...(filters.priorities.length > 0 && { priorities: filters.priorities }),
-      },
+      filters: buildIncidentSearchFilters(filters, debouncedSearch),
       sortBy: { field: "createdOn" as const, order: "desc" as const },
       pagination: { offset: page * rowsPerPage, limit: rowsPerPage },
     }),
-    [debouncedSearch, filters.priorities, page, rowsPerPage],
+    [filters, debouncedSearch, page, rowsPerPage],
   );
 
   const { data, isLoading, isError, error, isFetching } = useSearchIncidents(payload);
@@ -93,14 +103,28 @@ export default function IncidentsTab(): JSX.Element {
   const incidents = data?.incidents ?? [];
   const total = data?.total ?? 0;
 
+  const setFilters = useCallback(
+    (next: IncidentFilters) => {
+      setPage(0);
+      // Preserve any non-filter params (e.g. the active operations tab) and
+      // any other tab's own filter params (e.g. the change-requests tab's),
+      // rather than resetting the whole query string.
+      const merged = new URLSearchParams(searchParams);
+      INCIDENT_FILTER_PARAM_KEYS.forEach((k) => merged.delete(k));
+      writeIncidentFiltersToUrl(next).forEach((v, k) => merged.set(k, v));
+      // `replace: true` so switching tabs / paging doesn't spam browser
+      // history — same rationale as the shared cases list view.
+      setSearchParams(merged, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
   const handleFiltersChange = (next: IncidentFilters): void => {
     setFilters(next);
-    setPage(0);
   };
 
   const handleReset = (): void => {
     setFilters(DEFAULT_INCIDENT_FILTERS);
-    setPage(0);
   };
 
   const handleChangeRowsPerPage = (e: ChangeEvent<HTMLInputElement>): void => {
