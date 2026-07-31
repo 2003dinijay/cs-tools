@@ -528,7 +528,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 cards={allFilteredCards}
                 isLoading={allCards.isLoading}
                 groupBy={groupBy}
-                showCaseEngineerColumns
+                showEngineerColumn
                 roleFor={allRoleFor}
                 onCardAction={handleCardAction}
                 emptyText={anyFilterActive ? "No time cards match the current filters." : "No time logged yet."}
@@ -597,7 +597,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 cards={approvalsFilteredCards}
                 isLoading={queue.isLoading}
                 groupBy={groupBy}
-                showCaseEngineerColumns
+                showEngineerColumn
                 showActionsColumn
                 roleFor={approvalsRole}
                 onCardAction={handleCardAction}

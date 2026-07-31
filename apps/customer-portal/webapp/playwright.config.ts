@@ -1,0 +1,61 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+import { defineConfig, devices } from "@playwright/test";
+
+// Base URL of the locally-served app (vite dev server, see vite.config.ts).
+// Override with E2E_BASE_URL to point at a deployed environment, and set
+// E2E_NO_WEBSERVER=1 so the `webServer` block below is skipped in that case.
+const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:3000";
+
+export default defineConfig({
+  testDir: "./tests/e2e",
+  timeout: 30_000,
+  // Specs are expected to run against a real (staging) backend under a single
+  // captured account, where concurrent workers cause real network contention
+  // and flaky timeouts. Serial by default; revisit if specs ever get isolated
+  // per-account fixtures.
+  fullyParallel: false,
+  workers: 1,
+  forbidOnly: !!process.env.CI,
+  retries: 0,
+  outputDir: "test-results",
+  reporter: [["html", { open: "never" }], ["list"]],
+  use: {
+    baseURL: BASE_URL,
+    trace: "retain-on-failure",
+    video: "retain-on-failure",
+  },
+  // Boot the local dev server for the run (reused if already running). Skipped
+  // when targeting a remote E2E_BASE_URL.
+  webServer: process.env.E2E_NO_WEBSERVER
+    ? undefined
+    : {
+        command: "pnpm run dev",
+        url: BASE_URL,
+        // Locally, reuse an already-running dev server. In CI, always boot a
+        // fresh one — reusing a stray/stale process there could mask a real
+        // failure to start, or run against unexpected leftover state.
+        reuseExistingServer: !process.env.CI,
+        timeout: 120_000,
+      },
+  projects: [
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"] },
+    },
+  ],
+});

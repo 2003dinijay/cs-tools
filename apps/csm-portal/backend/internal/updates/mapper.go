@@ -19,7 +19,7 @@ package updates
 import "strconv"
 
 // mapProductUpdateLevels converts the upstream snake-case response to the
-// portal camelCase response shape, mirroring processProductUpdateLevels in utils.bal.
+// portal camelCase response shape, mirroring the upstream service's own mapping.
 func mapProductUpdateLevels(src []upstreamProductUpdateLevel) []ProductUpdateLevel {
 	out := make([]ProductUpdateLevel, len(src))
 	for i, s := range src {
@@ -41,7 +41,7 @@ func mapProductUpdateLevels(src []upstreamProductUpdateLevel) []ProductUpdateLev
 
 // buildSearchRequest constructs the upstream snake-case request from the portal
 // camelCase payload and the authenticated user's email, mirroring the request
-// construction in processSearchUpdatesBetweenUpdateLevels in utils.bal.
+// construction in the upstream service's search handling.
 func buildSearchRequest(payload SearchPayload, userEmail string) upstreamUpdateDescriptionRequest {
 	return upstreamUpdateDescriptionRequest{
 		ProductName:         payload.ProductName,
@@ -55,7 +55,7 @@ func buildSearchRequest(payload SearchPayload, userEmail string) upstreamUpdateD
 
 // groupByUpdateLevel groups update descriptions by their update level and
 // determines the overall update type for each group, mirroring groupByUpdateLevel
-// and processSearchUpdatesBetweenUpdateLevels in utils.bal.
+// and search handling in the upstream service.
 func groupByUpdateLevel(src []upstreamUpdateDescription) map[string]UpdateLevelGroup {
 	groups := make(map[string]UpdateLevelGroup)
 

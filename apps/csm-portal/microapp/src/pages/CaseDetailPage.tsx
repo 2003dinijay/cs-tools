@@ -58,6 +58,7 @@ import type {
   Comment,
 } from "@src/types";
 import { ErrorBoundary } from "@components/common/ErrorBoundary";
+import { CopyIconButton } from "@components/common/CopyIconButton";
 import { SeverityChip, StatusChip } from "@components/support/Chips";
 import { ErrorState } from "@components/support/ErrorState";
 import { ALL_SEVERITIES, SEVERITY_LABELS, TYPE_CONFIG } from "@components/support/config";
@@ -364,6 +365,11 @@ function CaseDetailContent({ id }: { id: string }) {
           );
         }
         void queryClient.invalidateQueries({ queryKey: ["case", id, "comments"] });
+        // A comment (like a state transition, see invalidateCase above) bumps the case's own
+        // updatedOn server-side — without this, neither this page's own "Updated On" nor the
+        // cases list's sort order pick up the change until something else happens to invalidate
+        // them.
+        invalidateCase();
         // An attachment-only submission (no text) where every upload failed posted nothing at
         // all — resolve false so the composer keeps the picked files for retry instead of
         // clearing them after showing the error. A submission with text still succeeds here
@@ -477,12 +483,13 @@ function CaseSummarySection({
   return (
     <Stack gap={1.5}>
       <Stack gap={0.5}>
-        <Stack direction="row" alignItems="center" gap={1}>
+        <Stack direction="row" alignItems="center" gap={0.5}>
           <Icon size={pxToRem(18)} color={color} />
           <Typography variant="subtitle2" color="text.secondary">
             {caseDetail.number}
             {caseDetail.wso2Id ? ` · ${caseDetail.wso2Id}` : ""}
           </Typography>
+          <CopyIconButton value={caseDetail.wso2Id || caseDetail.number} aria-label="Copy case ID" />
         </Stack>
 
         <Typography variant="h6">{caseDetail.subject}</Typography>

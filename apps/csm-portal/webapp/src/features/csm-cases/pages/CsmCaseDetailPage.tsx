@@ -350,6 +350,13 @@ export default function CsmCaseDetailPage(): JSX.Element {
         : isSecurityReportRoute
           ? `/security-center/security-reports/${caseId}`
           : `/cases/${caseId}`;
+  // The row link on the originating list carries its own (filtered) URL
+  // forward as router state, so the back button below returns to that exact
+  // list view — filters, search text, sort — instead of a bare list path.
+  // Falls back to the hardcoded backPath for a bookmarked or directly-linked
+  // detail page, which never got the state set.
+  const fromListState = location.state as { from?: string } | undefined;
+  const resolvedBackPath = fromListState?.from ?? backPath;
   const { data, isLoading, isError, error } = useGetCsmCaseDetail(caseId);
   // The route alone isn't a reliable signal once data has loaded: a "Related
   // case" link always points at /cases/:id regardless of the target's actual
@@ -387,8 +394,13 @@ export default function CsmCaseDetailPage(): JSX.Element {
 
   useEffect(() => {
     if (!caseId || !isMisrouted) return;
-    navigate(canonicalDetailPath, { replace: true });
-  }, [isMisrouted, canonicalDetailPath, caseId, navigate]);
+    // Carry the originating list location through the canonical redirect. Without
+    // it, a record reached on a non-canonical route (announcements, service
+    // requests, engagements, security reports) lands on its dedicated route with
+    // empty state, and Back then falls through to the bare route-specific path,
+    // dropping the filters, search and sort that got the user here.
+    navigate(canonicalDetailPath, { replace: true, state: { from: resolvedBackPath } });
+  }, [isMisrouted, canonicalDetailPath, caseId, navigate, resolvedBackPath]);
 
   const {
     data: comments,
@@ -1453,7 +1465,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           variant="text"
           size="small"
           startIcon={<ArrowLeft size={16} />}
-          onClick={() => navigate(backPath)}
+          onClick={() => navigate(resolvedBackPath)}
           sx={{ alignSelf: "flex-start" }}
         >
           {backLabel}
@@ -1473,7 +1485,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           variant="text"
           size="small"
           startIcon={<ArrowLeft size={16} />}
-          onClick={() => navigate(backPath)}
+          onClick={() => navigate(resolvedBackPath)}
           sx={{ alignSelf: "flex-start" }}
         >
           {backLabel}
@@ -1524,7 +1536,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
         variant="text"
         size="small"
         startIcon={<ArrowLeft size={16} />}
-        onClick={() => navigate(backPath)}
+        onClick={() => navigate(resolvedBackPath)}
         sx={{ alignSelf: "flex-start" }}
       >
         {backLabel}
@@ -1607,7 +1619,15 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 clickable
                 icon={<LinkIcon size={14} />}
                 label={`Related: ${relatedCase.caseNumber ?? relatedCase.id}`}
-                onClick={() => navigate(`/cases/${relatedCase.id}`)}
+                // Carries the same "back to list" target forward — there's no
+                // breadcrumb chain back through this case, so the related
+                // case's own back button returns to the filtered list this
+                // one was opened from rather than losing it a step early.
+                onClick={() =>
+                  navigate(`/cases/${relatedCase.id}`, {
+                    state: { from: resolvedBackPath },
+                  })
+                }
                 sx={{ fontWeight: 600 }}
               />
             )}
@@ -1622,10 +1642,17 @@ export default function CsmCaseDetailPage(): JSX.Element {
                     clickable={parentPath !== null}
                     icon={<LinkIcon size={14} />}
                     label={`Parent: ${c.parentCase.caseNumber ?? c.parentCase.id}`}
+                    // Carries the "back to list" target forward the same way
+                    // the related-case chip does, so the parent record's own
+                    // back button returns to the filtered list this case was
+                    // opened from.
                     onClick={
                       parentPath === null
                         ? undefined
-                        : () => navigate(parentPath)
+                        : () =>
+                            navigate(parentPath, {
+                              state: { from: resolvedBackPath },
+                            })
                     }
                     title={
                       parentPath === null

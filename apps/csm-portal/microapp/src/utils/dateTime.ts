@@ -60,6 +60,18 @@ export const parseBackendTimestamp = (raw: string): Date => new Date(normalizeBa
 export const parseOptionalBackendTimestamp = (raw: string | null | undefined): Date | null =>
   raw ? parseBackendTimestamp(raw) : null;
 
+// The backend is asked to sort every list by updatedOn desc, but that request isn't reliably
+// honored upstream (confirmed live: cases with an older updatedOn have shown up ranked above
+// more recently updated ones despite the request carrying the correct sortBy). Re-sort
+// client-side as a defensive backstop so what's on screen is at least correctly ordered,
+// even though it can't fix the page-boundary itself if the backend's own pagination cursor
+// isn't following this order. Missing/invalid dates sort last rather than crashing the compare.
+export function compareByUpdatedOnDesc(a: Date | null, b: Date | null): number {
+  const aTime = a && !Number.isNaN(a.getTime()) ? a.getTime() : -Infinity;
+  const bTime = b && !Number.isNaN(b.getTime()) ? b.getTime() : -Infinity;
+  return bTime - aTime;
+}
+
 /**
  * Lists the IANA time zones the runtime supports, for the profile time-zone picker.
  * Uses `Intl.supportedValuesOf` where available; falls back to the browser's own zone

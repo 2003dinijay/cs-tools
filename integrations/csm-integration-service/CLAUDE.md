@@ -46,7 +46,7 @@ under an M2M-only model. **Every call to this endpoint currently receives a mapp
 completeness (a real caller has somewhere to point at, and the shape of the
 request/response is documented and stable), not because it works today.
 
-Confirmed directly from the private `digiops-cs#2483` issue (written by the
+Confirmed directly from the owning team's internal issue (written by the
 engineer who built this): the full HTTP path was "deferred pending a captured
 end-user token" even in the original implementation — there is no existing
 service/system identity anywhere in this stack that this endpoint, or ACP, could

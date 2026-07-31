@@ -228,10 +228,9 @@ func snTaskDetailToDomain(t snTaskDetail) domain.TaskDetail {
 }
 
 // taskWritesUnavailable gates CreateCaseTask/UpdateTask while the downstream
-// Choreo task-write endpoints don't exist yet (tracked on the
-// ballerina-tasks-fixeta-tags branch, not yet merged to digiops-cs main). A
-// deliberate ServiceUnavailableError here -- rather than letting the request
-// reach the downstream client and come back as a generic 404 -- avoids
+// Choreo task-write endpoints don't exist yet (not yet available in the backing
+// service). A deliberate ServiceUnavailableError here -- rather than letting the
+// request reach the downstream client and come back as a generic 404 -- avoids
 // conflating "this operation isn't deployed yet" with "task not found".
 // Flip this to false once the downstream endpoints ship; the send logic below
 // is already wired and ready. A var (not const) so tests can flip it locally
@@ -242,11 +241,11 @@ const taskWritesUnavailableMsg = "task creation/update is not yet available: the
 // snCreateTaskPayload is the request body for the (not yet existing) Choreo
 // POST /cases/{id}/tasks endpoint.
 //
-// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): ServiceNow/Ballerina task support is read-only today
-// (TaskSearchPayload/TaskResponse only -- see modules/servicenow/types.bal).
-// No Choreo endpoint exists yet to create a sn_customerservice_task record.
-// Ask: add POST /cases/{id}/tasks (this payload shape) to servicenow.bal,
-// returning a TaskResponse-shaped detail.
+// Not yet available in the backing service: ServiceNow/Ballerina task support is
+// read-only today (task search/read only). No Choreo endpoint exists yet to create
+// a sn_customerservice_task record. Ask: add POST /cases/{id}/tasks (this payload
+// shape) to the backing service's case API, returning a task-detail-shaped
+// response.
 type snCreateTaskPayload struct {
 	Subject           string  `json:"subject"`
 	DueDate           *string `json:"dueDate,omitempty"`
@@ -261,8 +260,8 @@ type snCreateTaskResponse struct {
 
 // CreateCaseTask creates a new task on the case identified by caseID.
 //
-// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): see snCreateTaskPayload doc comment. Implemented so the
-// entity-service side is ready the moment Ballerina adds the endpoint; gated
+// Not yet available in the backing service: see snCreateTaskPayload doc comment.
+// Implemented so the entity-service side is ready the moment Ballerina adds it; gated
 // with a deliberate ServiceUnavailableError (see taskWritesUnavailableMsg)
 // until then.
 func (s *snTaskService) CreateCaseTask(ctx context.Context, caseID string, req domain.CreateCaseTaskRequest) (domain.TaskDetail, error) {
@@ -307,9 +306,9 @@ func (s *snTaskService) CreateCaseTask(ctx context.Context, caseID string, req d
 // must be provided per request, following the same convention as
 // snUpdateCasePayload.
 //
-// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): same gap as snCreateTaskPayload above. Ask: add
-// PATCH /tasks/{id} (this payload shape) to servicenow.bal, returning a
-// TaskResponse-shaped detail.
+// Not yet available in the backing service: same gap as snCreateTaskPayload above.
+// Ask: add PATCH /tasks/{id} (this payload shape) to the backing service's case
+// API, returning a task-detail-shaped response.
 type snUpdateTaskPayload struct {
 	State           *string `json:"state,omitempty"`
 	AssignedToEmail *string `json:"assignedToEmail,omitempty"`
@@ -324,8 +323,8 @@ type snUpdateTaskResponse struct {
 // UpdateTask updates exactly one of state, assignedToEmail, or dueDate on the
 // task identified by taskID.
 //
-// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): see snUpdateTaskPayload doc comment. Implemented so the
-// entity-service side is ready the moment Ballerina adds the endpoint; gated
+// Not yet available in the backing service: see snUpdateTaskPayload doc comment.
+// Implemented so the entity-service side is ready the moment Ballerina adds it; gated
 // with a deliberate ServiceUnavailableError (see taskWritesUnavailableMsg)
 // until then.
 func (s *snTaskService) UpdateTask(ctx context.Context, taskID string, req domain.UpdateTaskRequest) (domain.TaskDetail, error) {

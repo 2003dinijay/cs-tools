@@ -37,7 +37,7 @@ import (
 var engineeringTokenFetchTimeout = 10 * time.Second
 
 // EngineeringEntityConfig holds the configuration for the engineering entity
-// service client (wso2-enterprise/digiops-engineering).
+// service client (a separate internal service, not this repo's entity-service).
 type EngineeringEntityConfig struct {
 	BaseURL      string
 	TokenURL     string

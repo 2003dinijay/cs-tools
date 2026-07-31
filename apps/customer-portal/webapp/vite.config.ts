@@ -16,7 +16,10 @@
 
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig, mergeConfig } from "vite";
-import { defineConfig as defineVitestConfig } from "vitest/config";
+import {
+  configDefaults,
+  defineConfig as defineVitestConfig,
+} from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 const viteConfig = defineConfig({
@@ -107,6 +110,11 @@ const vitestConfig = defineVitestConfig({
     environment: "jsdom",
     setupFiles: ["./src/vitest.setup.ts"],
     css: true,
+    // Vitest's default glob (**/*.spec.ts) collides with the Playwright specs
+    // under tests/e2e/ (own runner, own tsconfig) -- exclude that tree plus
+    // Vitest's own defaults (which get overridden, not merged, once `exclude`
+    // is set explicitly).
+    exclude: [...configDefaults.exclude, "tests/e2e/**"],
     server: {
       deps: {
         inline: [

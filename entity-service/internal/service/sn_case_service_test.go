@@ -86,9 +86,9 @@ func timePtr(t time.Time) *time.Time { return &t }
 // TestSNCaseService_GetCaseByID_MapsWatchListAutoclosureAndTeams verifies the
 // additive read-side wire-up for items 2 (watchers), 6 (autoclosureStep/autoclosureStateTime),
 // and 10 (CRE/SRE team on account). AutoclosureStep/AutoclosureStateTime/CreTeam/SreTeam are
-// Ballerina-blocked today (digiops-cs does not send them), but this test simulates a future
-// response carrying them to prove the entity-service mapping code is ready once Ballerina adds
-// the fields.
+// Ballerina-blocked today (the backing service does not send them), but this test simulates a
+// future response carrying them to prove the entity-service mapping code is ready once
+// Ballerina adds the fields.
 func TestSNCaseService_GetCaseByID_MapsWatchListAutoclosureAndTeams(t *testing.T) {
 	body := `{
 		"id": "` + testWLCaseSysid + `",
@@ -166,10 +166,10 @@ func TestSNCaseService_GetCaseByID_MapsWatchListAutoclosureAndTeams(t *testing.T
 	}
 }
 
-// TestSnParentCaseTypeToDomain covers digiops-cs#2568's follow-up: a parent/related
-// case reference's raw ServiceNow type maps to the public enum for every known
-// sys_class_name-derived value, and an unmapped or absent raw value stays nil rather
-// than leaking an unrecognised string onto the API surface.
+// TestSnParentCaseTypeToDomain covers the parent/related-case follow-up (tracked
+// separately): a parent/related case reference's raw ServiceNow type maps to the
+// public enum for every known sys_class_name-derived value, and an unmapped or absent
+// raw value stays nil rather than leaking an unrecognised string onto the API surface.
 func TestSnParentCaseTypeToDomain(t *testing.T) {
 	tests := []struct {
 		name string
@@ -197,10 +197,11 @@ func TestSnParentCaseTypeToDomain(t *testing.T) {
 	}
 }
 
-// TestSNCaseService_GetCaseByID_MapsParentCaseType verifies digiops-cs#2568's follow-up
-// end to end: a GetCaseByID response carrying parentCase.type resolves to the matching
-// domain.CaseNumberRef.Type for a known value, and stays nil for an unrecognised one --
-// never passing the raw ServiceNow string through unmapped.
+// TestSNCaseService_GetCaseByID_MapsParentCaseType verifies the parent/related-case
+// follow-up (tracked separately) end to end: a GetCaseByID response carrying
+// parentCase.type resolves to the matching domain.CaseNumberRef.Type for a known
+// value, and stays nil for an unrecognised one -- never passing the raw ServiceNow
+// string through unmapped.
 func TestSNCaseService_GetCaseByID_MapsParentCaseType(t *testing.T) {
 	newBody := func(parentType string) string {
 		return `{
@@ -260,7 +261,7 @@ func TestSNCaseService_GetCaseByID_MapsParentCaseType(t *testing.T) {
 }
 
 // TestSNCaseService_GetCaseByID_BallerinaBlockedFieldsAbsent documents current reality:
-// against a real (unmodified) digiops-cs response with none of the blocked fields present,
+// against a real, unmodified backing-service response with none of the blocked fields present,
 // AutoclosureStep/AutoclosureStateTime/CreTeam/SreTeam all stay nil rather than zero-valuing.
 func TestSNCaseService_GetCaseByID_BallerinaBlockedFieldsAbsent(t *testing.T) {
 	body := `{

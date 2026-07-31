@@ -20,6 +20,7 @@ import { SlidersHorizontal } from "@wso2/oxygen-ui-icons-react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { engagements } from "@src/services/engagements";
 import { useDebouncedValue } from "@utils/useDebouncedValue";
+import { compareByUpdatedOnDesc } from "@utils/dateTime";
 import { countActiveEngagementFilters, EMPTY_ENGAGEMENT_FILTERS, type EngagementFilters } from "@utils/engagements";
 import { SearchBar } from "@components/support/SearchBar";
 import { EmptyState } from "@components/support/EmptyState";
@@ -44,7 +45,11 @@ export default function EngagementsPage() {
     engagements.infinite({ ...filters, search: debouncedSearch }),
   );
 
-  const items = data?.pages.flatMap((p) => p.items) ?? [];
+  // sortBy: updatedOn desc is sent on every request (see engagements.ts) but isn't reliably
+  // honored upstream — re-sort client-side as a backstop. See compareByUpdatedOnDesc for why.
+  const items = (data?.pages.flatMap((p) => p.items) ?? []).sort((a, b) =>
+    compareByUpdatedOnDesc(a.updatedOn, b.updatedOn),
+  );
   const total = data?.pages[0]?.total ?? items.length;
 
   const sentinelRef = useRef<HTMLDivElement>(null);

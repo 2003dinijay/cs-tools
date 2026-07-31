@@ -1098,11 +1098,11 @@ type CaseView struct {
 	// Tags are the free-text labels attached to the case via ServiceNow's generic
 	// platform label/label_entry mechanism (not a case-specific column).
 	//
-	// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina adapter exists yet for SN's generic
-	// label/label_entry tables. Confirmed real tag values exist in production
-	// (e.g. "micro-gw", "ws-policy", "node") but nothing in the current Choreo
-	// GET /cases/{id} contract returns them. This field is always nil until a
-	// Ballerina endpoint surfaces the case's tags.
+	// Not yet available in the backing service: no Ballerina adapter exists yet
+	// for SN's generic label/label_entry tables. Confirmed real tag values exist in
+	// production (e.g. "micro-gw", "ws-policy", "node") but nothing in the current
+	// Choreo GET /cases/{id} contract returns them. This field is always nil until
+	// a Ballerina endpoint surfaces the case's tags.
 	Tags []Tag `json:"tags"`
 }
 
@@ -1136,13 +1136,14 @@ type SearchCasesFilters struct {
 	WorkStates       []CaseWorkState  `json:"workStates"`
 	AssignedUserIDs  []string         `json:"assignedUserIds"`
 	ProductNames     []string         `json:"productNames"`
-	// Tags filters cases by attached free-text label. Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): same
-	// gap as CaseView.Tags — no Ballerina search-filter support exists yet, so this
-	// filter is accepted here but has no effect until Ballerina wires it through.
+	// Tags filters cases by attached free-text label. Not yet available in the
+	// backing service: same gap as CaseView.Tags — no Ballerina search-filter
+	// support exists yet, so this filter is accepted here but has no effect until
+	// Ballerina wires it through.
 	Tags []string `json:"tags"`
 	// ParentID filters to child cases of this case (the hierarchical major-case/
-	// child-case relationship set via the case PATCH parentId field). Ballerina
-	// support added on ballerina-case-field-additions.
+	// child-case relationship set via the case PATCH parentId field). Not yet
+	// available in the backing service.
 	ParentID *string `json:"parentId"`
 }
 
@@ -1416,11 +1417,11 @@ type CreateCaseCommentRequest struct {
 
 // AddCaseTagRequest is the request body for POST /cases/{id}/tags.
 //
-// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): SN's tagging is the generic platform label/label_entry
-// mechanism (table-agnostic, not a case column), so it needs an entirely new
-// Ballerina/Choreo adapter — nothing in the current contract creates a label on a
-// case. This request/the AddCaseTag service method are implemented so the
-// entity-service side is ready once Ballerina adds the endpoint.
+// Not yet available in the backing service: SN's tagging is the generic platform
+// label/label_entry mechanism (table-agnostic, not a case column), so it needs an
+// entirely new Ballerina/Choreo adapter — nothing in the current contract creates
+// a label on a case. This request/the AddCaseTag service method are implemented so
+// the entity-service side is ready once Ballerina adds the endpoint.
 type AddCaseTagRequest struct {
 	CaseID string `json:"-"`
 	Label  string `json:"label"`
@@ -2704,11 +2705,12 @@ type TaskDetail struct {
 
 // CreateCaseTaskRequest is the request body for POST /cases/{id}/tasks.
 //
-// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): ServiceNow/Ballerina task support is read-only today
-// (SearchCaseTasks/GetTask only). No Choreo endpoint exists yet to create a
-// sn_customerservice_task record. This request/the CreateCaseTask service method
-// are implemented so the entity-service side is ready the moment Ballerina adds
-// the corresponding endpoint; until then, calling it returns a downstream error.
+// Not yet available in the backing service: ServiceNow/Ballerina task support is
+// read-only today (SearchCaseTasks/GetTask only). No Choreo endpoint exists yet
+// to create a sn_customerservice_task record. This request/the CreateCaseTask
+// service method are implemented so the entity-service side is ready the moment
+// Ballerina adds the corresponding endpoint; until then, calling it returns a
+// downstream error.
 type CreateCaseTaskRequest struct {
 	CaseID            string     `json:"-"`
 	Subject           string     `json:"subject"`
@@ -2721,8 +2723,8 @@ type CreateCaseTaskRequest struct {
 // State, AssignedToEmail, or DueDate must be provided per request, following the
 // same convention as UpdateCaseRequest.
 //
-// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): same gap as CreateCaseTaskRequest above — no Choreo
-// write endpoint exists yet for sn_customerservice_task.
+// Not yet available in the backing service: same gap as CreateCaseTaskRequest
+// above — no Choreo write endpoint exists yet for sn_customerservice_task.
 type UpdateTaskRequest struct {
 	ID              string     `json:"-"`
 	State           *string    `json:"state"`
