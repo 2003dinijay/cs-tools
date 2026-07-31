@@ -31,6 +31,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// parentRefTypeCase is the CaseNumberRef.Type value for a parent that is itself a case.
+// Addressable because CaseNumberRef.Type is an optional (pointer) field.
+var parentRefTypeCase = "case"
 
 // CaseRepository defines the persistence operations for the cases table.
 type CaseRepository interface {
@@ -174,7 +177,10 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: *aeID, Name: *aeName}
 	}
 	if pcID != nil {
-		cv.ParentCase = &domain.CaseNumberRef{ID: *pcID, Number: *pcNum}
+		// cases.parent_case_id is a foreign key into cases, so a parent resolved from
+		// this data source is always another case -- state that explicitly rather than
+		// leaving Type nil, which means "kind unknown" and must not be routed as a case.
+		cv.ParentCase = &domain.CaseNumberRef{ID: *pcID, Number: *pcNum, Type: &parentRefTypeCase}
 	}
 	if rcID != nil {
 		cv.RelatedCase = &domain.CaseNumberRef{ID: *rcID, Number: *rcNum}
