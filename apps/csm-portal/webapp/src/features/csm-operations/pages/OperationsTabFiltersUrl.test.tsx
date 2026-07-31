@@ -38,6 +38,15 @@ vi.mock("@api/backend/client", () => ({
   BackendApiError: class BackendApiError extends Error {},
   useBackendApi: () => ({ post: vi.fn() }),
 }));
+// Both tabs now render a FilteredCsvExportButton, which reads these two
+// contexts — not under test here, so they're stubbed the same way
+// CreateChangeRequestPage's own tests stub the error banner.
+vi.mock("@context/error-banner/ErrorBannerContext", () => ({
+  useErrorBanner: () => ({ showError: vi.fn() }),
+}));
+vi.mock("@context/success-banner/SuccessBannerContext", () => ({
+  useSuccessBanner: () => ({ showSuccess: vi.fn() }),
+}));
 
 vi.mock("@features/csm-operations/api/useSearchChangeRequests", () => ({
   useSearchChangeRequests: vi.fn(),
