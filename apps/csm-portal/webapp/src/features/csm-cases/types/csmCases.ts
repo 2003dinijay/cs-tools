@@ -466,6 +466,13 @@ export interface CsmCaseDetail extends CsmCaseRow {
    */
   linkedServiceRequests?: { id: string; number: string; name: string }[];
   /**
+   * Change requests raised from this case. Only service-request cases carry
+   * these; absent/empty otherwise. One-to-many: promoting the same change
+   * through multiple environments produces one change request per
+   * environment, all pointing back at the same service request.
+   */
+  linkedChangeRequests?: { id: string; number: string; name: string }[];
+  /**
    * Where the case sits in the backing data source's staged auto-closure
    * sequence (ServiceNow only). Read-only; `undefined`/`"DEFAULT"` means no
    * hold is in effect.

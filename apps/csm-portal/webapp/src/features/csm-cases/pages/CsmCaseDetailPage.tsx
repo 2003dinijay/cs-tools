@@ -103,6 +103,7 @@ import AddTagDialog from "@features/csm-cases/components/AddTagDialog";
 import { useCreateCaseTask } from "@features/csm-cases/api/useCreateCaseTask";
 import { useAddCaseTag, useRemoveCaseTag } from "@features/csm-cases/api/useCaseTags";
 import { ChildCasesWidget } from "@features/csm-cases/components/ChildCasesWidget";
+import { LinkedChangeRequestsWidget } from "@features/csm-cases/components/LinkedChangeRequestsWidget";
 import { CreateGithubIssueDialog } from "@features/csm-cases/components/CreateGithubIssueDialog";
 import { isCloudSupportSubscription } from "@features/csm-projects/utils/subscriptionType";
 import { usePostCaseGithubIssue } from "@features/csm-cases/api/useCsmCaseGithubIssue";
@@ -2075,6 +2076,13 @@ export default function CsmCaseDetailPage(): JSX.Element {
           }}
         >
           <ChildCasesWidget caseId={c.id} />
+          {/* Content-relevance, not a data-source gate: shown whenever this is
+              a service request (the only case type that carries the link) or
+              the list already has entries — never checks the record's data
+              source. */}
+          {(isServiceRequest || (c.linkedChangeRequests?.length ?? 0) > 0) && (
+            <LinkedChangeRequestsWidget changeRequests={c.linkedChangeRequests} />
+          )}
           <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
             <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, flexWrap: "wrap" }}>
               <Typography variant="subtitle2">Linked service requests</Typography>

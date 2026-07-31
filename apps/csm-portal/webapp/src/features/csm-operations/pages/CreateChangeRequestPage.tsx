@@ -42,12 +42,14 @@ import Editor from "@components/rich-text-editor/Editor";
 import { isBlankHtml } from "@utils/sanitizeHtml";
 import { isPastDateTime } from "@utils/dateTime";
 import { usePostChangeRequest } from "@features/csm-operations/api/usePostChangeRequest";
+import { usePatchChangeRequest } from "@features/csm-operations/api/usePatchChangeRequest";
 import { useGetUsersMe } from "@features/settings/api/useGetUsersMe";
 import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchItServices } from "@api/useSearchItServices";
 import { useSearchServiceOfferings } from "@api/useSearchServiceOfferings";
 import { useSearchConfigurationItems } from "@api/useSearchConfigurationItems";
 import { useSearchUsersByName } from "@api/useSearchUsersByName";
+import { useSearchServiceRequestsForSelect } from "@features/csm-operations/api/useSearchServiceRequestsForSelect";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
 import {
   changeRequestStateLabel,
@@ -61,6 +63,7 @@ import type {
   BeChangeRequestRisk,
   BeChangeRequestState,
   BeChangeRequestType,
+  BeCaseSearchView,
   BeCreateChangeRequestPayload,
   BeConfigurationItem,
   BeGroup,
@@ -147,6 +150,10 @@ function configurationItemLabel(ci: BeConfigurationItem): string {
   return ci.name ?? ci.id;
 }
 
+function caseSearchLabel(c: BeCaseSearchView): string {
+  return [c.number, c.subject].filter(Boolean).join(" — ") || c.id;
+}
+
 /** `datetime-local` input value ("YYYY-MM-DDTHH:MM") to the BE's expected
  * "YYYY-MM-DD HH:MM:SS" string. */
 function toBackendDateTime(localValue: string): string {
@@ -191,6 +198,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const navigate = useNavigate();
   const { showError } = useErrorBanner();
   const postChangeRequest = usePostChangeRequest();
+  const patchChangeRequest = usePatchChangeRequest();
 
   // Set when opened from a change request's "Clone" action, which navigates
   // here with router state (not query params) — see
@@ -238,6 +246,9 @@ export default function CreateChangeRequestPage(): JSX.Element {
     cloneState?.assignedEngineerId ?? "",
   );
   const [requestedById, setRequestedById] = useState("");
+  // The service request this change request was raised from, when picked.
+  // Not part of BeCreateChangeRequestPayload — see handleSubmit's comment.
+  const [caseId, setCaseId] = useState("");
 
   // Defaults "Requested by" to the signed-in user, matching the legacy
   // ServiceNow form's own behaviour (usePostChangeRequest.ts/BE doesn't do
@@ -254,7 +265,8 @@ export default function CreateChangeRequestPage(): JSX.Element {
     setRequestedById(me.id);
   }
 
-  const canSubmit = subject.trim().length > 0 && !postChangeRequest.isPending;
+  const isSubmitting = postChangeRequest.isPending || patchChangeRequest.isPending;
+  const canSubmit = subject.trim().length > 0 && !isSubmitting;
   // Non-blocking: a past planned start/end is unusual but not forbidden
   // (e.g. logging a change that already happened), so this only warns.
   const plannedStartIsPast = isPastDateTime(parseDateTimeLocal(plannedStartDate));
@@ -291,8 +303,30 @@ export default function CreateChangeRequestPage(): JSX.Element {
     if (requestedById.trim()) payload.requestedById = requestedById.trim();
 
     postChangeRequest.mutate(payload, {
-      onSuccess: (created) =>
-        navigate(`/operations/change-requests/${created.changeRequest.id}`),
+      onSuccess: (created) => {
+        const createdId = created.changeRequest.id;
+        // POST /change-requests can't carry the originating-service-request
+        // link (it isn't an accepted create field), so it's set with a
+        // follow-up PATCH once the change request exists. A failed PATCH
+        // still leaves a valid, created change request — navigate there
+        // regardless, but surface the link failure rather than hiding it.
+        if (!caseId) {
+          navigate(`/operations/change-requests/${createdId}`);
+          return;
+        }
+        patchChangeRequest.mutate(
+          { id: createdId, patch: { caseId } },
+          {
+            onSuccess: () => navigate(`/operations/change-requests/${createdId}`),
+            onError: () => {
+              showError(
+                "The change request was created, but linking it to the originating service request failed. The change request itself is unaffected; the link is not set.",
+              );
+              navigate(`/operations/change-requests/${createdId}`);
+            },
+          },
+        );
+      },
       onError: (err) => {
         // The backend surfaces real validation messages on 4xx (e.g. an
         // invalid UUID in one of the advanced ID fields); show them.
@@ -314,7 +348,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
     onChange: (v: string) => void,
     options: Array<{ value: string; label: string }>,
   ): JSX.Element => (
-    <FormControl fullWidth size="small" disabled={postChangeRequest.isPending}>
+    <FormControl fullWidth size="small" disabled={isSubmitting}>
       <InputLabel id={`${id}-label`} shrink>
         {label}
       </InputLabel>
@@ -369,7 +403,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
           minHeight={100}
           maxHeight={300}
           toolbarVariant="full"
-          disabled={postChangeRequest.isPending}
+          disabled={isSubmitting}
         />
       </Box>
     </Box>
@@ -408,7 +442,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
             onChange={(e) => setSubject(e.target.value.slice(0, SUBJECT_MAX))}
             fullWidth
             required
-            disabled={postChangeRequest.isPending}
+            disabled={isSubmitting}
             placeholder="Short summary of the change"
             helperText={charsLeftHelper(subject, SUBJECT_MAX)}
           />
@@ -478,7 +512,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
                       : "",
                   )
                 }
-                disabled={postChangeRequest.isPending}
+                disabled={isSubmitting}
                 sx={{ flex: "1 1 240px" }}
                 slotProps={{
                   textField: {
@@ -502,7 +536,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
                       : "",
                   )
                 }
-                disabled={postChangeRequest.isPending}
+                disabled={isSubmitting}
                 sx={{ flex: "1 1 240px" }}
                 slotProps={{
                   textField: {
@@ -547,7 +581,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
                       // service — drop it rather than leave a stale pairing.
                       setServiceOfferingId("");
                     }}
-                    disabled={postChangeRequest.isPending}
+                    disabled={isSubmitting}
                     useSearch={useSearchItServices}
                     getId={(s) => s.id}
                     getLabel={itServiceLabel}
@@ -560,7 +594,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
                     placeholder="Search service offerings…"
                     value={serviceOfferingId}
                     onChange={setServiceOfferingId}
-                    disabled={postChangeRequest.isPending}
+                    disabled={isSubmitting}
                     useSearch={useSearchServiceOfferings}
                     searchExtra={serviceId || undefined}
                     getId={(o) => o.id}
@@ -575,7 +609,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
                     placeholder="Search configuration items…"
                     value={configurationItemId}
                     onChange={setConfigurationItemId}
-                    disabled={postChangeRequest.isPending}
+                    disabled={isSubmitting}
                     useSearch={useSearchConfigurationItems}
                     getId={(ci) => ci.id}
                     getLabel={configurationItemLabel}
@@ -588,7 +622,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
                     placeholder="Search groups…"
                     value={groupId}
                     onChange={setGroupId}
-                    disabled={postChangeRequest.isPending}
+                    disabled={isSubmitting}
                     useSearch={useSearchGroups}
                     getId={(g) => g.id}
                     getLabel={(g) => g.name}
@@ -601,7 +635,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
                     placeholder="Search people…"
                     value={assignedEngineerId}
                     onChange={setAssignedEngineerId}
-                    disabled={postChangeRequest.isPending}
+                    disabled={isSubmitting}
                     useSearch={useSearchUsersByName}
                     // useSearchUsersByName filters out any user without an id,
                     // so every option here is guaranteed to have one.
@@ -617,7 +651,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
                     placeholder="Search people…"
                     value={requestedById}
                     onChange={setRequestedById}
-                    disabled={postChangeRequest.isPending}
+                    disabled={isSubmitting}
                     useSearch={useSearchUsersByName}
                     // useSearchUsersByName filters out any user without an id,
                     // so every option here is guaranteed to have one.
@@ -625,6 +659,23 @@ export default function CreateChangeRequestPage(): JSX.Element {
                     getLabel={userLabel}
                     knownLabel={meLabel}
                     helperText="Defaults to you — clear it if this wasn't your request."
+                  />
+                </Box>
+                <Box sx={{ flex: "1 1 220px" }}>
+                  <AsyncEntitySelect<BeCaseSearchView>
+                    id="cr-originating-service-request"
+                    label="Originating service request"
+                    placeholder="Search service requests…"
+                    value={caseId}
+                    onChange={setCaseId}
+                    disabled={isSubmitting}
+                    // This form carries no account/project field, so there's
+                    // no context available to narrow suggestions — the search
+                    // is across all service requests by number/subject.
+                    useSearch={useSearchServiceRequestsForSelect}
+                    getId={(c) => c.id}
+                    getLabel={caseSearchLabel}
+                    helperText="Links this change request back to the service request it was raised from."
                   />
                 </Box>
               </Box>
@@ -643,7 +694,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
             variant="contained"
             onClick={handleSubmit}
             disabled={!canSubmit}
-            loading={postChangeRequest.isPending}
+            loading={isSubmitting}
           >
             Create change request
           </Button>

@@ -84,6 +84,7 @@ function detailFromBeCase(
       ? { id: c.parentCase.id, caseNumber: c.parentCase.number, type: c.parentCase.type }
       : undefined,
     linkedServiceRequests: c.linkedServiceRequests ?? undefined,
+    linkedChangeRequests: c.linkedChangeRequests ?? undefined,
     autoclosureStep: c.autoclosureStep ?? undefined,
     autoclosureStateTime: c.autoclosureStateTime ?? undefined,
     assignee,

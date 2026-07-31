@@ -991,6 +991,18 @@ type LinkedServiceRequestRef struct {
 	Name   string `json:"name"`
 }
 
+// LinkedChangeRequestRef is a compact reference to a change request raised from a
+// service-request case (the reverse of PatchChangeRequestRequest.CaseID).
+//
+// This is a one-to-many relationship, not a single field: promoting the same change
+// through each environment produces one change request per environment, all pointing
+// at the same originating service request.
+type LinkedChangeRequestRef struct {
+	ID     string `json:"id"`
+	Number string `json:"number"`
+	Name   string `json:"name"`
+}
+
 // AccountRef is a compact reference to an account.
 type AccountRef struct {
 	ID   string `json:"id"`
@@ -1066,6 +1078,9 @@ type CaseView struct {
 	// LinkedServiceRequests lists any service-request cases whose parent points to this
 	// case. Populated on every case detail response, not just high-severity cases.
 	LinkedServiceRequests []LinkedServiceRequestRef `json:"linkedServiceRequests"`
+	// LinkedChangeRequests lists the change requests raised from this case. Only
+	// service-request cases carry them; empty for every other case type.
+	LinkedChangeRequests []LinkedChangeRequestRef `json:"linkedChangeRequests"`
 	// Resolution fields — populated only for resolved/closed ServiceNow cases.
 	ResolvedOn      *time.Time          `json:"resolvedOn"`
 	ResolutionCode  *CaseResolutionCode `json:"resolutionCode"`
