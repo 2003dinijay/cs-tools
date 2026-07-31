@@ -221,7 +221,8 @@ export interface BeLinkedServiceRequestRef {
 export interface BeLinkedChangeRequestRef {
   id: string;
   number: string;
-  name: string;
+  /** Subject, or `null` when the record has none — never `""`. */
+  name: string | null;
 }
 
 /**

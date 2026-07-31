@@ -65,6 +65,27 @@ describe("readIncidentFiltersFromUrl", () => {
     expect(readIncidentFiltersFromUrl(params).createdEndDate).toBe("");
   });
 
+  it("drops the end bound when the range is inverted, keeping the start", () => {
+    // Both dates are individually valid, so each bound parses; only their
+    // relative order is wrong. Reachable from a hand-edited or stale URL — the
+    // pickers' own minDate/maxDate stop it happening through the UI.
+    const params = new URLSearchParams(
+      "incCreatedFrom=2026-05-31&incCreatedTo=2026-05-01",
+    );
+    const filters = readIncidentFiltersFromUrl(params);
+    expect(filters.createdStartDate).toBe("2026-05-31");
+    expect(filters.createdEndDate).toBe("");
+  });
+
+  it("keeps a range whose bounds are equal (single-day, inclusive)", () => {
+    const params = new URLSearchParams(
+      "incCreatedFrom=2026-05-01&incCreatedTo=2026-05-01",
+    );
+    const filters = readIncidentFiltersFromUrl(params);
+    expect(filters.createdStartDate).toBe("2026-05-01");
+    expect(filters.createdEndDate).toBe("2026-05-01");
+  });
+
   it("drops blank/whitespace product entries", () => {
     const params = new URLSearchParams("incProducts=Choreo,%20%20,,Asgardeo");
     expect(readIncidentFiltersFromUrl(params).products).toEqual([

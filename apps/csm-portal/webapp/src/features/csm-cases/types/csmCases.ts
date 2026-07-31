@@ -471,7 +471,12 @@ export interface CsmCaseDetail extends CsmCaseRow {
    * through multiple environments produces one change request per
    * environment, all pointing back at the same service request.
    */
-  linkedChangeRequests?: { id: string; number: string; name: string }[];
+  linkedChangeRequests?: {
+    id: string;
+    number: string;
+    /** Subject, or `null` when the record has none — never `""`. */
+    name: string | null;
+  }[];
   /**
    * Where the case sits in the backing data source's staged auto-closure
    * sequence (ServiceNow only). Read-only; `undefined`/`"DEFAULT"` means no

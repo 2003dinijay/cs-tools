@@ -999,10 +999,14 @@ type LinkedServiceRequestRef struct {
 // This is a one-to-many relationship, not a single field: promoting the same change
 // through each environment produces one change request per environment, all pointing
 // at the same originating service request.
+// Name is the change request's subject. It is a pointer because the subject can
+// genuinely be absent upstream, and an absent value must be null rather than ""
+// — otherwise "no subject recorded" is indistinguishable from a subject
+// deliberately set to the empty string.
 type LinkedChangeRequestRef struct {
-	ID     string `json:"id"`
-	Number string `json:"number"`
-	Name   string `json:"name"`
+	ID     string  `json:"id"`
+	Number string  `json:"number"`
+	Name   *string `json:"name"`
 }
 
 // AccountRef is a compact reference to an account.

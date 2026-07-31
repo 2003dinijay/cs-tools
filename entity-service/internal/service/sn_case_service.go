@@ -728,7 +728,13 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	if len(c.ChangeRequests) > 0 {
 		lcr := make([]domain.LinkedChangeRequestRef, 0, len(c.ChangeRequests))
 		for _, r := range c.ChangeRequests {
-			lcr = append(lcr, domain.LinkedChangeRequestRef{ID: sysidToUUID(r.ID), Number: r.Number, Name: r.Name})
+			// An absent upstream subject becomes null, not "" — see the note on
+			// LinkedChangeRequestRef.Name.
+			var name *string
+			if r.Name != "" {
+				name = strPtr(r.Name)
+			}
+			lcr = append(lcr, domain.LinkedChangeRequestRef{ID: sysidToUUID(r.ID), Number: r.Number, Name: name})
 		}
 		cv.LinkedChangeRequests = lcr
 	}

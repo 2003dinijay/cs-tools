@@ -1088,7 +1088,7 @@ func TestSNCaseService_GetCaseByID_MapsLinkedChangeRequests(t *testing.T) {
 		if got.ID != sysidToUUID(crSysidA) {
 			t.Fatalf("expected id %q, got %q", sysidToUUID(crSysidA), got.ID)
 		}
-		if got.Number != "CHG0000001" || got.Name != "Promote to dev" {
+		if got.Number != "CHG0000001" || got.Name == nil || *got.Name != "Promote to dev" {
 			t.Fatalf("unexpected mapping: %+v", got)
 		}
 	})
@@ -1107,8 +1107,10 @@ func TestSNCaseService_GetCaseByID_MapsLinkedChangeRequests(t *testing.T) {
 		if cv.LinkedChangeRequests[1].ID != sysidToUUID(crSysidB) {
 			t.Fatalf("expected id %q, got %q", sysidToUUID(crSysidB), cv.LinkedChangeRequests[1].ID)
 		}
-		if cv.LinkedChangeRequests[1].Name != "" {
-			t.Fatalf("expected empty name to pass through, got %q", cv.LinkedChangeRequests[1].Name)
+		// An absent upstream subject must surface as nil, not "": the two are
+		// otherwise indistinguishable to a caller.
+		if cv.LinkedChangeRequests[1].Name != nil {
+			t.Fatalf("expected an empty upstream name to map to nil, got %q", *cv.LinkedChangeRequests[1].Name)
 		}
 	})
 }

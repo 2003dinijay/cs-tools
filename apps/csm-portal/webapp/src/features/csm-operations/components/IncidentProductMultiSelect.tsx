@@ -90,7 +90,10 @@ export default function IncidentProductMultiSelect({
             {displayText}
           </Box>
         );
-        return value.length === 1 ? content : (
+        // Unconditional: a single product name is truncated by the same
+        // ellipsis styling as a multi-value list, so skipping the tooltip for
+        // one value left a long name with no way to read it in full.
+        return (
           <Tooltip title={displayText} placement="top">{content}</Tooltip>
         );
       }}

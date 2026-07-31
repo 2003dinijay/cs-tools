@@ -44,7 +44,9 @@ const LINKED_CHANGE_REQUESTS_COLUMNS = ["Change request", "State", "Target envir
 interface LinkedChangeRequestRef {
   id: string;
   number: string;
-  name: string;
+  /** Subject, or `null` when the record has none — never `""`. The row label
+   * filters falsy parts out, so both render as just the number. */
+  name: string | null;
 }
 
 interface LinkedChangeRequestsWidgetProps {

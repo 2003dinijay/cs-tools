@@ -86,12 +86,24 @@ function parseProductsCsv(raw: string | null): string[] {
 export function readIncidentFiltersFromUrl(
   params: URLSearchParams,
 ): IncidentFilters {
+  const createdStartDate = parseDateOnly(params.get("incCreatedFrom"));
+  let createdEndDate = parseDateOnly(params.get("incCreatedTo"));
+  // Each bound parses independently, so a hand-edited or stale URL can invert
+  // the range with two individually valid dates. Forwarded as-is that yields an
+  // always-empty result with nothing explaining why, and leaves the date
+  // pickers' minDate/maxDate contradicting the value they display. Drop the end
+  // bound — the same "malformed input falls back to unfiltered" rule this
+  // function already applies to every other param. Both dates are plain
+  // YYYY-MM-DD, so a lexicographic compare is also a chronological one.
+  if (createdStartDate && createdEndDate && createdStartDate > createdEndDate) {
+    createdEndDate = "";
+  }
   return {
     search: params.get("incQ") ?? "",
     priorities: parseCsv(params.get("incPriorities"), INCIDENT_PRIORITIES),
     slaViolated: params.get("incSlaViolated") === "1",
-    createdStartDate: parseDateOnly(params.get("incCreatedFrom")),
-    createdEndDate: parseDateOnly(params.get("incCreatedTo")),
+    createdStartDate,
+    createdEndDate,
     products: parseProductsCsv(params.get("incProducts")),
   };
 }

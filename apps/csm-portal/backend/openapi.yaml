@@ -6669,7 +6669,11 @@ components:
           description: Human-readable change request number.
         name:
           type: string
-          description: Change request subject. Empty string when the record has none.
+          nullable: true
+          description: >-
+            Change request subject. Null when the record has none — an absent
+            subject is never reported as an empty string, so a caller can tell
+            "no subject recorded" from a subject deliberately left blank.
       description: >
         A change request raised from this case (the reverse of
         PatchChangeRequestPayload.caseId).
