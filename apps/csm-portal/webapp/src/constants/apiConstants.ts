@@ -79,6 +79,7 @@ export const ApiQueryKeys = {
   PROBLEM_DETAILS: "problem-details",
   GROUPS_SEARCH: "groups-search",
   IT_SERVICES_SEARCH: "it-services-search",
+  IT_SERVICE_NAMES: "it-service-names",
   SERVICE_OFFERINGS_SEARCH: "service-offerings-search",
   CONFIGURATION_ITEMS_SEARCH: "configuration-items-search",
   USERS_SEARCH_BY_NAME: "users-search-by-name",
