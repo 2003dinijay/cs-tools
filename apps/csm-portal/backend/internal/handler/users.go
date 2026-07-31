@@ -40,6 +40,7 @@ type entityUserClient interface {
 	GetUserMe(ctx context.Context) ([]byte, error)
 	PatchUserMe(ctx context.Context, body []byte) ([]byte, error)
 	SearchUsers(ctx context.Context, body []byte) ([]byte, error)
+	GetUser(ctx context.Context, id string) ([]byte, error)
 }
 
 // UsersHandler handles HTTP requests for user-related operations.
@@ -237,6 +238,34 @@ func (h *UsersHandler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchUsers failed", "userID", user.UserID, "err", err)
 		mapUpstreamError(w, err, "Failed to search users.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// GetUser handles GET /users/{id}.
+//
+// Returns one user's profile including their group and team membership, and for external
+// contacts their per-project access. Registered after /users/me, which is the more specific
+// pattern and therefore still wins for that exact path.
+func (h *UsersHandler) GetUser(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.GetUser(r.Context(), id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity GetUser failed", "userID", user.UserID, "err", err)
+		mapUpstreamError(w, err, "Failed to fetch the user.")
 		return
 	}
 

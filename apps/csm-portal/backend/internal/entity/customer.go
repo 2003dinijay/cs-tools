@@ -85,6 +85,24 @@ func (c *CustomerEntityClient) SearchUsers(ctx context.Context, body []byte) ([]
 	return c.do(ctx, http.MethodPost, "/users/search", body)
 }
 
+// GetUser calls GET /users/{id} on the entity service.
+// Response is returned as raw JSON.
+func (c *CustomerEntityClient) GetUser(ctx context.Context, id string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, fmt.Sprintf("/users/%s", url.PathEscape(id)), nil)
+}
+
+// SearchRoles calls POST /roles/search on the entity service.
+// Response is returned as raw JSON.
+func (c *CustomerEntityClient) SearchRoles(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/roles/search", body)
+}
+
+// SearchTeams calls POST /teams/search on the entity service.
+// Response is returned as raw JSON.
+func (c *CustomerEntityClient) SearchTeams(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/teams/search", body)
+}
+
 // GetAccount calls GET /accounts/{id} on the entity service.
 // Response is returned as raw JSON; typed response structs are deferred.
 func (c *CustomerEntityClient) GetAccount(ctx context.Context, id string) ([]byte, error) {
