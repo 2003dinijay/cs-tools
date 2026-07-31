@@ -2975,10 +2975,12 @@ components:
           description: The team's display name.
         family:
           type: string
-          enum: [cre, sre]
           description: >
-            Team family, when the team is classified. Absent or empty for the teams the
-            registry leaves unclassified.
+            Team family, lowercased, when the team is classified. Absent or empty for the
+            teams the registry leaves unclassified. Deliberately not an enum: the registry
+            is owned upstream and its family vocabulary is open, so any value it publishes
+            is passed through rather than rejected. `cre` and `sre` are the values in use
+            today; a new one must not break registry parsing or invalidate this contract.
 
     GetUserMeResponse:
       type: object
