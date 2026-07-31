@@ -25,7 +25,7 @@ import { EmptyState } from "@components/support/EmptyState";
 import { ErrorState } from "@components/support/ErrorState";
 import { SearchBar } from "@components/support/SearchBar";
 import { useDebouncedValue } from "@utils/useDebouncedValue";
-import { formatDate } from "@utils/dateTime";
+import { compareByUpdatedOnDesc, formatDate } from "@utils/dateTime";
 import { ChangeRequestCard, ChangeRequestCardSkeleton } from "./ChangeRequestCard";
 import { ChangeRequestsFiltersSheet } from "./ChangeRequestsFiltersSheet";
 import { CHANGE_REQUEST_IMPACT_LABELS, CHANGE_REQUEST_STATE_LABELS } from "./config";
@@ -154,7 +154,9 @@ function ChangeRequestListContent({ search, filters }: { search: string; filters
     return () => observer.disconnect();
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  const items = data.pages.flatMap((page) => page.items);
+  // sortBy: updatedOn desc is sent on every request (see changeRequests.ts) but isn't reliably
+  // honored upstream — re-sort client-side as a backstop. See compareByUpdatedOnDesc for why.
+  const items = data.pages.flatMap((page) => page.items).sort((a, b) => compareByUpdatedOnDesc(a.updatedOn, b.updatedOn));
 
   if (items.length === 0) return <EmptyState message="No change requests found." />;
 

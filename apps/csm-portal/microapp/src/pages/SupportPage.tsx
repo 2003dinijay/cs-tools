@@ -42,6 +42,7 @@ import {
   WORK_STATE_LABEL,
 } from "@components/support/config";
 import { useDebouncedValue } from "@utils/useDebouncedValue";
+import { compareByUpdatedOnDesc } from "@utils/dateTime";
 
 const ALL_STATES_TAB = "all" as const;
 type StateTabValue = CaseState | typeof ALL_STATES_TAB;
@@ -180,7 +181,9 @@ function CaseListContent({
     return () => observer.disconnect();
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  const items = data.pages.flatMap((page) => page.items);
+  // sortBy: updatedOn desc is sent on every request (see cases.ts) but isn't reliably honored
+  // upstream — re-sort client-side as a backstop. See compareByUpdatedOnDesc for why.
+  const items = data.pages.flatMap((page) => page.items).sort((a, b) => compareByUpdatedOnDesc(a.updatedOn, b.updatedOn));
   const total = data.pages[0]?.total ?? items.length;
 
   if (items.length === 0) return <EmptyState message={TAB_CONFIG.case.emptyMessage} />;
