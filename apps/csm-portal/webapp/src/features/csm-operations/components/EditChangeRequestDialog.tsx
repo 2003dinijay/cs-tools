@@ -16,6 +16,7 @@
 
 import {
   AdapterDateFns,
+  Alert,
   Box,
   Button,
   DatePickers,
@@ -24,6 +25,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControlLabel,
+  FormHelperText,
   Switch,
 } from "@wso2/oxygen-ui";
 import { useMemo, useState, type JSX } from "react";
@@ -46,6 +48,13 @@ interface EditChangeRequestDialogProps {
   cr: BeChangeRequestDetail;
   /** True while the PATCH is in flight; disables the actions. */
   isSaving: boolean;
+  /**
+   * User-facing message for the most recent failed save, if any. Rendered
+   * inline in the dialog so the rejection is visible even if a page-level
+   * error banner is occluded or the dialog is otherwise the only thing the
+   * user is looking at.
+   */
+  saveError?: string | null;
   onClose: () => void;
   /** Submit only the changed fields (`PATCH /change-requests/{id}`). */
   onSave: (patch: BePatchChangeRequestPayload) => void;
@@ -76,6 +85,7 @@ function toBackendDateTime(local: string): string {
 export default function EditChangeRequestDialog({
   cr,
   isSaving,
+  saveError,
   onClose,
   onSave,
 }: EditChangeRequestDialogProps): JSX.Element {
@@ -117,11 +127,27 @@ export default function EditChangeRequestDialog({
   // only warns.
   const plannedStartIsPast = isPastDateTime(parseDateTimeLocal(plannedStart));
 
+  // The backend rejects a patch containing both isCustomerApproved and
+  // isCustomerReviewed outright — they, and requestApproval, are mutually
+  // exclusive. Mirror that here: once one of the two has been changed away
+  // from its saved value, lock the other to its current value until this
+  // save goes through (or the first change is undone), so the dialog can
+  // never build the two-key payload the backend always refuses.
+  const approvedChanged = approved !== !!cr.hasCustomerApproved;
+  const reviewedChanged = reviewed !== !!cr.hasCustomerReviewed;
+  const approvedLocked = reviewedChanged;
+  const reviewedLocked = approvedChanged;
+
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
       <DialogTitle>Edit change request</DialogTitle>
       <DialogContent dividers>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 0.5 }}>
+          {saveError && (
+            <Alert severity="error" sx={{ width: "100%" }}>
+              {saveError}
+            </Alert>
+          )}
           <LocalizationProvider dateAdapter={AdapterDateFns}>
             <DateTimePicker
               label="Planned start"
@@ -145,24 +171,51 @@ export default function EditChangeRequestDialog({
               }}
             />
           </LocalizationProvider>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={approved}
-                onChange={(e) => setApproved(e.target.checked)}
-              />
-            }
-            label="Customer approved"
-          />
-          <FormControlLabel
-            control={
-              <Switch
-                checked={reviewed}
-                onChange={(e) => setReviewed(e.target.checked)}
-              />
-            }
-            label="Customer reviewed"
-          />
+          <Box>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={approved}
+                  disabled={isSaving || approvedLocked}
+                  // Guard the handler too, not just the `disabled` attribute:
+                  // it's the actual mutual-exclusion enforcement, so it must
+                  // not depend on the DOM ignoring input while disabled.
+                  onChange={(e) => {
+                    if (approvedLocked) return;
+                    setApproved(e.target.checked);
+                  }}
+                />
+              }
+              label="Customer approved"
+            />
+            {approvedLocked && (
+              <FormHelperText>
+                Save the customer-reviewed change first — approved and
+                reviewed can&apos;t be changed in the same save.
+              </FormHelperText>
+            )}
+          </Box>
+          <Box>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={reviewed}
+                  disabled={isSaving || reviewedLocked}
+                  onChange={(e) => {
+                    if (reviewedLocked) return;
+                    setReviewed(e.target.checked);
+                  }}
+                />
+              }
+              label="Customer reviewed"
+            />
+            {reviewedLocked && (
+              <FormHelperText>
+                Save the customer-approved change first — approved and
+                reviewed can&apos;t be changed in the same save.
+              </FormHelperText>
+            )}
+          </Box>
           <AsyncEntitySelect<BeGroup>
             id="cr-edit-assigned-team"
             label="Assignment group"

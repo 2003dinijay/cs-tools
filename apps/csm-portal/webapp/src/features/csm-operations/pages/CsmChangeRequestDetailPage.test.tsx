@@ -24,7 +24,12 @@ import { BackendApiError } from "@api/backend/client";
 const navigateMock = vi.fn();
 const useGetChangeRequestMock = vi.fn();
 const patchMutateMock = vi.fn();
+const patchResetMock = vi.fn();
 const showErrorMock = vi.fn();
+const editChangeRequestDialogMock = vi.fn();
+let patchIsPending = false;
+let patchIsError = false;
+let patchError: Error | null = null;
 
 // The backend client reads runtime config (`CSM_PORTAL_BACKEND_BASE_URL`) at
 // module load, which isn't present under vitest. The page imports
@@ -56,11 +61,22 @@ vi.mock("@features/csm-operations/api/useGetChangeRequest", () => ({
 vi.mock("@features/csm-operations/api/usePatchChangeRequest", () => ({
   usePatchChangeRequest: () => ({
     mutate: patchMutateMock,
-    isPending: false,
+    reset: patchResetMock,
+    isPending: patchIsPending,
+    isError: patchIsError,
+    error: patchError,
   }),
 }));
 vi.mock("@features/csm-operations/components/ChangeRequestApprovals", () => ({
   default: () => null,
+}));
+// Exercised in isolation by EditChangeRequestDialog.test.tsx; here we only
+// assert this page wires `saveError` and resets the mutation before opening.
+vi.mock("@features/csm-operations/components/EditChangeRequestDialog", () => ({
+  default: (props: unknown) => {
+    editChangeRequestDialogMock(props);
+    return null;
+  },
 }));
 vi.mock("@features/csm-operations/api/useCsmChangeRequestComments", () => ({
   useGetCsmChangeRequestComments: () => ({ data: [] }),
@@ -108,6 +124,11 @@ beforeEach(() => {
   navigateMock.mockClear();
   patchMutateMock.mockClear();
   showErrorMock.mockClear();
+  patchIsPending = false;
+  patchIsError = false;
+  patchError = null;
+  patchResetMock.mockClear();
+  editChangeRequestDialogMock.mockClear();
 });
 
 describe("CsmChangeRequestDetailPage", () => {
@@ -284,5 +305,47 @@ describe("CsmChangeRequestDetailPage — Request approval (New -> Assess)", () =
       "Could not request approval for this change request.",
       err,
     );
+  });
+});
+
+describe("CsmChangeRequestDetailPage — Edit dialog error wiring", () => {
+  it("resets the shared mutation before opening the Edit dialog, so a stale error from elsewhere isn't shown as this save's error", () => {
+    mockQueryResult({ data: { ...BASE_CR, legalNextStates: ["assess"] } });
+    render(<CsmChangeRequestDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    expect(patchResetMock).toHaveBeenCalled();
+  });
+
+  it("passes no saveError to the dialog when the mutation hasn't failed", () => {
+    mockQueryResult({ data: { ...BASE_CR, legalNextStates: ["assess"] } });
+    render(<CsmChangeRequestDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const [props] = editChangeRequestDialogMock.mock.calls.at(-1)!;
+    expect(props.saveError).toBeNull();
+  });
+
+  it("passes the backend's rejection reason as saveError for a 4xx failure", () => {
+    patchIsError = true;
+    patchError = new BackendApiError(
+      400,
+      "isCustomerApproved, isCustomerReviewed, and requestApproval are mutually exclusive",
+    );
+    mockQueryResult({ data: { ...BASE_CR, legalNextStates: ["assess"] } });
+    render(<CsmChangeRequestDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const [props] = editChangeRequestDialogMock.mock.calls.at(-1)!;
+    expect(props.saveError).toBe(
+      "isCustomerApproved, isCustomerReviewed, and requestApproval are mutually exclusive",
+    );
+  });
+
+  it("falls back to a generic saveError for a 5xx failure", () => {
+    patchIsError = true;
+    patchError = new BackendApiError(500, "internal error detail");
+    mockQueryResult({ data: { ...BASE_CR, legalNextStates: ["assess"] } });
+    render(<CsmChangeRequestDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const [props] = editChangeRequestDialogMock.mock.calls.at(-1)!;
+    expect(props.saveError).toBe("Could not update the change request.");
   });
 });
