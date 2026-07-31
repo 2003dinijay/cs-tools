@@ -22,9 +22,10 @@ import {
   TextField,
   Tooltip,
 } from "@wso2/oxygen-ui";
-import { useMemo, type JSX } from "react";
+import { useMemo, useState, type JSX } from "react";
 import type * as React from "react";
-import { useProductNameOptions } from "@features/csm-cases/api/useProductNameOptions";
+import { useDebouncedValue } from "@hooks/useDebouncedValue";
+import { useInfiniteProductSearch } from "@features/csm-cases/api/useProductSearch";
 
 interface ProductNameMultiSelectProps {
   id?: string;
@@ -35,12 +36,15 @@ interface ProductNameMultiSelectProps {
 }
 
 /**
- * Product filter for the cases list. Products are a bounded catalogue, so the
- * distinct family names are fetched once ({@link useProductNameOptions}) and
- * filtered locally as the user types. The selected values ARE the names, which
- * flow straight into `filters.productNames` (ServiceNow matches `product.name`,
- * so every version of a product is included). Already-selected names are kept
- * in the option pool so their chips render even before the fetch resolves.
+ * Product filter for the cases list — the product-name twin of
+ * {@link AsyncProjectMultiSelect}. Loads the first page of distinct product
+ * family names on open (no typing needed) and pages through the rest on
+ * scroll, narrowing server-side as the user types, instead of paging through
+ * the entire product catalogue up front. The selected values ARE the names,
+ * which flow straight into `filters.productNames` (ServiceNow matches
+ * `product.name`, so every version of a product is included) — unlike
+ * Project/Assignee there's no id to resolve to a display name, so an
+ * already-selected name is simply unioned into the option pool directly.
  */
 export default function ProductNameMultiSelect({
   id = "cases-filter-product",
@@ -48,15 +52,48 @@ export default function ProductNameMultiSelect({
   values,
   onChange,
 }: ProductNameMultiSelectProps): JSX.Element {
-  const { data, isFetching, isError } = useProductNameOptions();
+  const [input, setInput] = useState("");
+  const [open, setOpen] = useState(false);
+  const debounced = useDebouncedValue(input, 300);
+  const query = debounced.trim();
+
+  // Enabled while the dropdown is open, so it loads the first page of product
+  // names on open (no typing needed) and re-pages as the user types.
+  const {
+    productNames,
+    isFetching,
+    isFetchingNextPage,
+    hasNextPage,
+    isError,
+    fetchNextPage,
+  } = useInfiniteProductSearch(query, open);
+
+  // Lazy-load the next page when the listbox is scrolled near its end. Also
+  // guard on `!isFetching`, not just `!isFetchingNextPage`: while a new
+  // search query's first page is loading, `isFetchingNextPage` is already
+  // false and `hasNextPage` can still reflect the previous query's state
+  // (kept visible via `placeholderData`) — without this, a scroll during
+  // that window could fetch a "next page" for a query that's about to be
+  // replaced entirely.
+  const handleListboxScroll = (event: React.UIEvent<HTMLElement>): void => {
+    const el = event.currentTarget;
+    if (
+      hasNextPage &&
+      !isFetching &&
+      !isFetchingNextPage &&
+      el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    ) {
+      fetchNextPage();
+    }
+  };
 
   // Union of the fetched names and any current selection, so selected chips
-  // stay valid even if a name isn't in the (cached) fetch yet.
+  // stay valid even if a name isn't in the currently-loaded pages yet.
   const options: string[] = useMemo(() => {
-    const merged = new Set<string>(data ?? []);
+    const merged = new Set<string>(productNames);
     values.forEach((v) => merged.add(v));
     return [...merged].sort((a, b) => a.localeCompare(b));
-  }, [data, values]);
+  }, [productNames, values]);
 
   return (
     <Autocomplete<string, true>
@@ -65,14 +102,27 @@ export default function ProductNameMultiSelect({
       id={id}
       options={options}
       value={values}
-      loading={isFetching && !data}
+      open={open}
+      onOpen={() => setOpen(true)}
+      onClose={() => setOpen(false)}
+      // Spinner only while the first page loads; later pages append on scroll.
+      loading={isFetching && productNames.length === 0}
       disableCloseOnSelect
       sx={{
         "& .MuiAutocomplete-inputRoot": { flexWrap: "nowrap", minHeight: 40 },
       }}
+      // The backend already filtered by the typed term; don't re-filter locally.
+      filterOptions={(opts) => opts}
       getOptionLabel={(opt) => opt}
       isOptionEqualToValue={(opt, val) => opt === val}
+      slotProps={{ listbox: { onScroll: handleListboxScroll } }}
       onChange={(_event, next) => onChange(next)}
+      inputValue={input}
+      onInputChange={(_event, value, reason) => {
+        // Keep the typed term after a selection (reason "reset") so the user can
+        // pick several from one search; clear only on explicit input/clear.
+        if (reason === "input" || reason === "clear") setInput(value);
+      }}
       noOptionsText={
         isError
           ? "Couldn't load products. Try again."
