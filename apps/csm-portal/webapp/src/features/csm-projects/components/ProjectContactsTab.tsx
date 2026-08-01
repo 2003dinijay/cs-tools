@@ -58,8 +58,8 @@ interface AccessStatus {
 }
 
 // Prefers the explicit access-status fields the backend computes per row
-// (customerContactPresent/emailMatchesLogin/grantsCaseAccess). Falls back to
-// the old id-presence heuristic when a backend predates those fields
+// (customerContactPresent/grantsCaseAccess). Falls back to the old
+// id-presence heuristic when a backend predates those fields
 // (`grantsCaseAccess` absent), so a backend deploy that hasn't caught up yet
 // degrades to the previous behaviour instead of mislabeling every row.
 function deriveAccessStatus(c: BeProjectContact): AccessStatus {
@@ -67,11 +67,11 @@ function deriveAccessStatus(c: BeProjectContact): AccessStatus {
     if (c.grantsCaseAccess) {
       return { label: "Has access", color: "success" };
     }
-    const reason =
-      c.customerContactPresent === false
-        ? "No linked contact record — this person can't see this project's cases."
-        : "Invited email doesn't match the linked account's own email — this person can't see this project's cases.";
-    return { label: "No access", color: "error", reason };
+    return {
+      label: "No access",
+      color: "error",
+      reason: "No linked contact record — this person can't see this project's cases.",
+    };
   }
   if (!c.id) {
     return {

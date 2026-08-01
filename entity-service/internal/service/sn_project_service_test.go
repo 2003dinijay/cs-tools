@@ -205,10 +205,10 @@ func TestSNProjectContactService_SearchProjectContacts_OptionalContactID(t *test
 
 // TestSNProjectContactService_SearchProjectContacts_MapsAccessStatus verifies that the
 // access-status fields ServiceNow computes per contact row (customerContactPresent,
-// emailMatchesLogin, grantsCaseAccess) flow through into domain.ProjectContact unchanged,
-// covering both a fully-granted row and a linked-but-mismatched row (the "hardest access
-// fault to spot by hand" case: a contact record is present, but the invited email doesn't
-// match the linked account's own email).
+// grantsCaseAccess) flow through into domain.ProjectContact unchanged, covering both a
+// linked and an orphaned row. grantsCaseAccess mirrors customerContactPresent directly —
+// there is no separate email-match check, since that only ever diverges for
+// integration/system accounts, not real customers.
 func TestSNProjectContactService_SearchProjectContacts_MapsAccessStatus(t *testing.T) {
 	projectUUID := sysidToUUID(sysid32('7'))
 
@@ -216,10 +216,10 @@ func TestSNProjectContactService_SearchProjectContacts_MapsAccessStatus(t *testi
 		_, _ = w.Write([]byte(`{"contacts":[
 			{"id":"` + sysid32('8') + `","name":"Granted","email":"granted@example.com",
 			 "registrationState":"REGISTERED","notificationsEnabled":true,"roles":["r"],
-			 "customerContactPresent":true,"emailMatchesLogin":true,"grantsCaseAccess":true},
-			{"id":"` + sysid32('9') + `","name":"Mismatched","email":"mismatched@example.com",
+			 "customerContactPresent":true,"grantsCaseAccess":true},
+			{"id":null,"name":"Orphaned","email":"orphaned@example.com",
 			 "registrationState":"INVITED","notificationsEnabled":false,"roles":[],
-			 "customerContactPresent":true,"emailMatchesLogin":false,"grantsCaseAccess":false}
+			 "customerContactPresent":false,"grantsCaseAccess":false}
 		],"totalRecords":2,"offset":0,"limit":10}`))
 	}))
 
@@ -235,16 +235,13 @@ func TestSNProjectContactService_SearchProjectContacts_MapsAccessStatus(t *testi
 	}
 
 	granted := got.Contacts[0]
-	if !granted.CustomerContactPresent || !granted.EmailMatchesLogin || !granted.GrantsCaseAccess {
-		t.Errorf("granted row = %+v, want all three access-status fields true", granted)
+	if !granted.CustomerContactPresent || !granted.GrantsCaseAccess {
+		t.Errorf("granted row = %+v, want both access-status fields true", granted)
 	}
 
-	mismatched := got.Contacts[1]
-	if !mismatched.CustomerContactPresent {
-		t.Errorf("mismatched row CustomerContactPresent = false, want true")
-	}
-	if mismatched.EmailMatchesLogin || mismatched.GrantsCaseAccess {
-		t.Errorf("mismatched row = %+v, want EmailMatchesLogin and GrantsCaseAccess both false", mismatched)
+	orphaned := got.Contacts[1]
+	if orphaned.CustomerContactPresent || orphaned.GrantsCaseAccess {
+		t.Errorf("orphaned row = %+v, want both access-status fields false", orphaned)
 	}
 }
 

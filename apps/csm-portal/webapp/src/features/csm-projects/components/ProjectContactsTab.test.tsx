@@ -100,21 +100,19 @@ const GRANTED_CONTACT: BeProjectContact = {
   email: "grant.access@example.com",
   registrationState: "registered",
   customerContactPresent: true,
-  emailMatchesLogin: true,
   grantsCaseAccess: true,
 };
 
-// A contact record IS linked (unlike ORPHANED_CONTACT), but the invited
-// email doesn't match that account's own email — the mismatch case the old
-// id-presence-only heuristic couldn't detect at all.
-const MISMATCHED_CONTACT: BeProjectContact = {
+// Still linked and still granted access, just not yet registered — used to
+// check the registration chip's "invited" colour independently of access
+// status, which no longer varies with registration state at all.
+const INVITED_GRANTED_CONTACT: BeProjectContact = {
   id: "20000000-0000-0000-0000-000000000000",
-  name: "Mismatch Case",
-  email: "mismatch@example.com",
+  name: "Invited Not Yet Registered",
+  email: "invited@example.com",
   registrationState: "invited",
   customerContactPresent: true,
-  emailMatchesLogin: false,
-  grantsCaseAccess: false,
+  grantsCaseAccess: true,
 };
 
 describe("ProjectContactsTab", () => {
@@ -183,7 +181,7 @@ describe("ProjectContactsTab", () => {
     expect(screen.getByText("Orphaned", { selector: ".MuiChip-label" })).toBeInTheDocument();
   });
 
-  it("shows a granted contact (customerContactPresent + emailMatchesLogin) as Has access, no reason line", () => {
+  it("shows a granted contact (customerContactPresent + grantsCaseAccess) as Has access, no reason line", () => {
     postMock.mockResolvedValue({ users: [] });
     mockQueryResult({ data: [GRANTED_CONTACT] });
     renderTab();
@@ -191,24 +189,21 @@ describe("ProjectContactsTab", () => {
     expect(screen.queryByText(/can't see this project's cases/i)).not.toBeInTheDocument();
   });
 
-  it("flags a linked-but-mismatched contact as No access with the email-mismatch reason, distinct from Orphaned", () => {
+  it("flags a row with grantsCaseAccess false as No access with the no-linked-record reason", () => {
     postMock.mockResolvedValue({ users: [] });
-    mockQueryResult({ data: [MISMATCHED_CONTACT] });
+    mockQueryResult({
+      data: [{ ...ORPHANED_CONTACT, customerContactPresent: false, grantsCaseAccess: false }],
+    });
     renderTab();
-    // Linked (has an id), so it's a clickable profile link, not "Orphaned" —
-    // the old id-presence heuristic would have missed this row's access
-    // fault entirely.
-    expect(screen.getByRole("link", { name: "Mismatch Case" })).toBeInTheDocument();
     expect(screen.getByText("No access", { selector: ".MuiChip-label" })).toBeInTheDocument();
-    expect(screen.queryByText("Orphaned", { selector: ".MuiChip-label" })).not.toBeInTheDocument();
     expect(
-      screen.getByText(/invited email doesn't match the linked account's own email/i),
+      screen.getByText(/no linked contact record.*can't see this project's cases/i),
     ).toBeInTheDocument();
   });
 
   it("colours the registration chip by state (registered=success-ish, invited=warning-ish) without changing the visible text", () => {
     postMock.mockResolvedValue({ users: [] });
-    mockQueryResult({ data: [GRANTED_CONTACT, MISMATCHED_CONTACT] });
+    mockQueryResult({ data: [GRANTED_CONTACT, INVITED_GRANTED_CONTACT] });
     renderTab();
     const registeredChip = screen.getByText("registered", { selector: ".MuiChip-label" });
     const invitedChip = screen.getByText("invited", { selector: ".MuiChip-label" });

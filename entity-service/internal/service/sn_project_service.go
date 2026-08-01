@@ -514,7 +514,6 @@ type snProjectContact struct {
 	NotificationsEnabled   bool     `json:"notificationsEnabled"`
 	Roles                  []string `json:"roles"`
 	CustomerContactPresent bool     `json:"customerContactPresent"`
-	EmailMatchesLogin      bool     `json:"emailMatchesLogin"`
 	GrantsCaseAccess       bool     `json:"grantsCaseAccess"`
 }
 
@@ -574,7 +573,6 @@ func (s *snProjectContactService) SearchProjectContacts(ctx context.Context, pro
 			NotificationsEnabled:   c.NotificationsEnabled,
 			Roles:                  c.Roles,
 			CustomerContactPresent: c.CustomerContactPresent,
-			EmailMatchesLogin:      c.EmailMatchesLogin,
 			GrantsCaseAccess:       c.GrantsCaseAccess,
 		})
 	}

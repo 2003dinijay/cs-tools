@@ -1211,17 +1211,9 @@ export interface BeProjectContact {
    */
   customerContactPresent?: boolean;
   /**
-   * Whether the email this row was invited under matches the linked
-   * account's own email. A row can be linked (`customerContactPresent:
-   * true`) yet still mismatched — invited under one address, registered
-   * under another.
-   */
-  emailMatchesLogin?: boolean;
-  /**
    * Whether this row would actually grant its person visibility into this
-   * project's cases, per the customer portal's own access rule
-   * (`emailMatchesLogin && customerContactPresent`). A row can be listed
-   * here without granting access.
+   * project's cases. Mirrors `customerContactPresent` directly — a row can
+   * be listed here without granting access.
    */
   grantsCaseAccess?: boolean;
 }
