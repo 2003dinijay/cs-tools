@@ -66,25 +66,40 @@ export default function AgentsLandingPagePilot({
           sx={{
             display: "grid",
             gap: 1.5,
+            // 12-column grid, matching each widget's own `gridWidth`; on very
+            // small screens there's only room for 4 columns, so a wide widget
+            // there wraps to (at most) one extra row rather than overflowing.
             gridTemplateColumns: {
-              xs: "repeat(1, minmax(0, 1fr))",
-              sm: "repeat(3, minmax(0, 1fr))",
+              xs: "repeat(4, minmax(0, 1fr))",
+              sm: "repeat(12, minmax(0, 1fr))",
             },
           }}
         >
           {isLoading
             ? Array.from({ length: PILOT_TILE_COUNT }, (_, i) => (
-                <Card key={i} variant="outlined" sx={{ p: 1.75 }}>
+                <Card key={i} variant="outlined" sx={{ p: 1.75, gridColumn: "span 4" }}>
                   <Skeleton variant="rounded" height={48} />
                 </Card>
               ))
             : (data?.widgets ?? []).map((widget) => (
-                <DashboardWidgetTile
+                <Box
                   key={widget.widgetId}
-                  widgetId={widget.widgetId}
-                  displayName={widget.displayName}
-                  filters={widget.filters}
-                />
+                  sx={{
+                    gridColumn: {
+                      xs: `span ${Math.min(widget.gridWidth, 4)}`,
+                      sm: `span ${widget.gridWidth}`,
+                    },
+                  }}
+                >
+                  <DashboardWidgetTile
+                    widgetId={widget.widgetId}
+                    displayName={widget.displayName}
+                    resourceType={widget.resourceType}
+                    shape={widget.shape}
+                    filters={widget.filters}
+                    listLimit={widget.listLimit}
+                  />
+                </Box>
               ))}
         </Box>
       )}

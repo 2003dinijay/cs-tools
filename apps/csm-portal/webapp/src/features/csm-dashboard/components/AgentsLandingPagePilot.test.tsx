@@ -19,6 +19,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router";
 
 const getMock = vi.fn();
 const postMock = vi.fn();
@@ -34,7 +35,9 @@ function renderWithClient(ui: ReactNode) {
     defaultOptions: { queries: { retry: false } },
   });
   return render(
-    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -46,19 +49,25 @@ const DASHBOARD_DETAIL = {
     {
       widgetId: "my_patches",
       displayName: "My Patches",
-      displayType: "single_score",
+      resourceType: "case",
+      shape: "count",
+      gridWidth: 3,
       filters: { assignedUserIds: ["user-1"], tags: ["patch"] },
     },
     {
       widgetId: "my_reminders",
       displayName: "My Reminders",
-      displayType: "single_score",
+      resourceType: "case",
+      shape: "count",
+      gridWidth: 3,
       filters: { assignedUserIds: ["user-1"], states: ["awaiting_info"] },
     },
     {
       widgetId: "open_incident_team",
       displayName: "Open Incidents (Team)",
-      displayType: "single_score",
+      resourceType: "case",
+      shape: "count",
+      gridWidth: 3,
       filters: { tags: ["s_dip"] },
     },
   ],

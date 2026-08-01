@@ -109,38 +109,3 @@ export interface CsmRecentActivity {
 // Dashboard ids now come from the backend registry (GET /dashboards, see
 // useDashboardList), not a fixed compile-time set, so this is just `string`.
 export type DashboardKey = string;
-
-export interface MockDashboardMeta {
-  description: string;
-  scopeBased: boolean;
-}
-
-/**
- * Description + scope-relevance for the mock placeholder dashboards (every
- * dashboard in the BE registry other than "agents_pilot", which has real
- * widgets and doesn't need an entry here). Keyed by dashboard id. Drives
- * `DashboardPlaceholder`'s card copy and the header's My ABT / All customers
- * toggle visibility (see CsmDashboardPage, AbtDashboardHeader).
- */
-export const MOCK_DASHBOARD_META: Record<string, MockDashboardMeta> = {
-  operations: {
-    description:
-      "Cross-team case throughput, state distribution, escalations, SLA breach trends.",
-    scopeBased: false,
-  },
-  iam: {
-    description:
-      "Identity Server / Asgardeo case posture, top accounts, vulnerability links.",
-    scopeBased: false,
-  },
-  security: {
-    description:
-      "Vulnerability posture, security report cases, response time.",
-    scopeBased: false,
-  },
-  team_performance: {
-    description:
-      "Per-team throughput, time-card distribution, on-call coverage gaps.",
-    scopeBased: false,
-  },
-};

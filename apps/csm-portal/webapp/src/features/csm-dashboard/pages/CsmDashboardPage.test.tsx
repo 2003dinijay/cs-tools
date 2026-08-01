@@ -19,18 +19,13 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import CsmDashboardPage from "@features/csm-dashboard/pages/CsmDashboardPage";
 import { useDashboardList } from "@features/csm-dashboard/api/useDashboardList";
-import { useDashboard } from "@features/csm-dashboard/api/useDashboard";
 
 vi.mock("@features/csm-dashboard/api/useDashboardList", () => ({
   useDashboardList: vi.fn(),
 }));
 
-vi.mock("@features/csm-dashboard/api/useDashboard", () => ({
-  useDashboard: vi.fn(),
-}));
-
-// Keeps this test focused on dashboard selection + the header; the pilot
-// widget grid has its own tests (AgentsLandingPagePilot.test.tsx).
+// Keeps this test focused on dashboard selection + the header; the widget
+// grid itself has its own tests (AgentsLandingPagePilot.test.tsx).
 vi.mock("@features/csm-dashboard/components/AgentsLandingPagePilot", () => ({
   default: ({ dashboardId }: { dashboardId: string }) => (
     <div data-testid="agents-landing-pilot">{dashboardId}</div>
@@ -38,7 +33,6 @@ vi.mock("@features/csm-dashboard/components/AgentsLandingPagePilot", () => ({
 }));
 
 const mockedUseDashboardList = vi.mocked(useDashboardList);
-const mockedUseDashboard = vi.mocked(useDashboard);
 
 const DASHBOARD_LIST = [
   { id: "operations", displayName: "Operations", isDefault: false },
@@ -57,26 +51,13 @@ function mockListResult(
   } as unknown as ReturnType<typeof useDashboardList>);
 }
 
-function mockDashboardResult(
-  overrides: Partial<ReturnType<typeof useDashboard>>,
-): void {
-  mockedUseDashboard.mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    isError: false,
-    ...overrides,
-  } as unknown as ReturnType<typeof useDashboard>);
-}
-
 beforeEach(() => {
   mockedUseDashboardList.mockReset();
-  mockedUseDashboard.mockReset();
 });
 
 describe("CsmDashboardPage", () => {
   it("shows a loading skeleton before the dashboard list resolves", () => {
     mockListResult({ data: undefined, isLoading: true });
-    mockDashboardResult({ data: undefined, isLoading: true });
 
     const { container } = render(<CsmDashboardPage />);
 
@@ -86,22 +67,6 @@ describe("CsmDashboardPage", () => {
 
   it("selects the isDefault dashboard once the list loads and renders the enabled, populated switcher", () => {
     mockListResult({ data: DASHBOARD_LIST, isLoading: false });
-    mockDashboardResult({
-      data: {
-        id: "agents_pilot",
-        displayName: "Engineer overview",
-        isDefault: true,
-        widgets: [
-          {
-            widgetId: "my_patches",
-            displayName: "My Patches",
-            displayType: "single_score",
-            filters: {},
-          },
-        ],
-      },
-      isLoading: false,
-    });
 
     render(<CsmDashboardPage />);
 
@@ -123,9 +88,9 @@ describe("CsmDashboardPage", () => {
     expect(within(listbox).getByText("Engineer overview")).toBeInTheDocument();
   });
 
-  it("renders the mock placeholder for a dashboard with no real widgets", () => {
-    // "operations" is the default entry here (a mock placeholder dashboard,
-    // unlike "agents_pilot" which always has real widgets).
+  it("renders the real widget grid for every dashboard, not only agents_pilot", () => {
+    // "operations" is the default entry here — every dashboard now has real
+    // widgets, so the grid renders regardless of which one is selected.
     mockListResult({
       data: [
         { id: "agents_pilot", displayName: "Engineer overview", isDefault: false },
@@ -133,19 +98,11 @@ describe("CsmDashboardPage", () => {
       ],
       isLoading: false,
     });
-    mockDashboardResult({
-      data: {
-        id: "operations",
-        displayName: "Operations",
-        isDefault: true,
-        widgets: [],
-      },
-      isLoading: false,
-    });
 
     render(<CsmDashboardPage />);
 
-    expect(screen.queryByTestId("agents-landing-pilot")).not.toBeInTheDocument();
-    expect(screen.getByText("Mock")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
+      "operations",
+    );
   });
 });

@@ -19,6 +19,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router";
 
 const postMock = vi.fn();
 
@@ -33,7 +34,9 @@ function renderWithClient(ui: ReactNode) {
     defaultOptions: { queries: { retry: false } },
   });
   return render(
-    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -45,7 +48,13 @@ describe("DashboardWidgetTile", () => {
   it("renders a skeleton while its own count is in flight", () => {
     postMock.mockReturnValue(new Promise(() => {}));
     const { container } = renderWithClient(
-      <DashboardWidgetTile widgetId="my_patches" displayName="My Patches" filters={{}} />,
+      <DashboardWidgetTile
+        widgetId="my_patches"
+        displayName="My Patches"
+        resourceType="case"
+        shape="count"
+        filters={{}}
+      />,
     );
     expect(container.querySelectorAll(".MuiSkeleton-root").length).toBe(1);
   });
@@ -54,7 +63,13 @@ describe("DashboardWidgetTile", () => {
     postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
 
     renderWithClient(
-      <DashboardWidgetTile widgetId="my_patches" displayName="My Patches" filters={{}} />,
+      <DashboardWidgetTile
+        widgetId="my_patches"
+        displayName="My Patches"
+        resourceType="case"
+        shape="count"
+        filters={{}}
+      />,
     );
 
     await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
@@ -69,11 +84,73 @@ describe("DashboardWidgetTile", () => {
     postMock.mockRejectedValue(new Error("boom"));
 
     renderWithClient(
-      <DashboardWidgetTile widgetId="my_patches" displayName="My Patches" filters={{}} />,
+      <DashboardWidgetTile
+        widgetId="my_patches"
+        displayName="My Patches"
+        resourceType="case"
+        shape="count"
+        filters={{}}
+      />,
     );
 
     await waitFor(() =>
       expect(screen.getByText("Could not load this widget.")).toBeInTheDocument(),
     );
+  });
+
+  it("renders a compact row list for shape: list, capped at listLimit", async () => {
+    postMock.mockResolvedValue({
+      total: 2,
+      cases: [
+        { number: "CS-1", subject: "Disk full", state: "open" },
+        { number: "CS-2", subject: "Auth failing", state: "work_in_progress" },
+      ],
+      limit: 5,
+      offset: 0,
+      hasMore: false,
+    });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="my_critical_open"
+        displayName="My Critical & High Cases"
+        resourceType="case"
+        shape="list"
+        filters={{}}
+        listLimit={5}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("CS-1 — Disk full")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("CS-2 — Auth failing")).toBeInTheDocument();
+    expect(postMock).toHaveBeenCalledWith("/cases/search", {
+      filters: {},
+      pagination: { offset: 0, limit: 5 },
+    });
+  });
+
+  it("navigates to /cases with translated filters when a case-resource tile is clicked", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="my_patches"
+        displayName="My Patches"
+        resourceType="case"
+        shape="count"
+        filters={{ severities: ["critical"], states: ["open"] }}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+
+    const link = screen.getByRole("link");
+    const href = link.getAttribute("href") ?? "";
+    expect(href.startsWith("/cases?")).toBe(true);
+    const params = new URLSearchParams(href.split("?")[1]);
+    expect(params.get("severities")).toBe("S1");
+    expect(params.get("states")).toBe("open");
   });
 });

@@ -14,35 +14,66 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Card, Skeleton, Typography } from "@wso2/oxygen-ui";
+import { Box, Card, Skeleton, Typography } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
-import type { BeCaseSearchFilters } from "@api/backend/types";
-import { useWidgetCaseCount } from "@features/csm-dashboard/api/useWidgetCaseCount";
+import { Link as RouterLink } from "react-router";
+import type { BeWidgetResourceType, BeWidgetShape } from "@api/backend/types";
+import { useWidgetData } from "@features/csm-dashboard/api/useWidgetData";
+import { WIDGET_RESOURCE_CONFIG } from "@features/csm-dashboard/config/widgetResourceConfig";
 
 interface DashboardWidgetTileProps {
   widgetId: string;
   displayName: string;
-  filters: BeCaseSearchFilters;
+  resourceType: BeWidgetResourceType;
+  shape: BeWidgetShape;
+  filters: Record<string, unknown>;
+  /** Only meaningful for shape "list"; how many rows to render. */
+  listLimit?: number;
 }
 
 /**
- * Single "single_score" dashboard widget tile: fetches and renders its own
- * count independently of any sibling tile, so one widget's loading/error
- * state never affects another's.
+ * Single dashboard widget tile: fetches and renders its own data
+ * independently of any sibling tile, so one widget's loading/error state
+ * never affects another's. Renders a big number for `shape: "count"`, a
+ * compact row list for `shape: "list"`, and is clickable through to the
+ * resource's own list page with the widget's filters translated into that
+ * page's own URL filter scheme (see `widgetResourceConfig.ts`).
  */
 export default function DashboardWidgetTile({
   widgetId,
   displayName,
+  resourceType,
+  shape,
   filters,
+  listLimit,
 }: DashboardWidgetTileProps): JSX.Element {
-  const {
-    data: count,
-    isLoading,
-    isError,
-  } = useWidgetCaseCount(widgetId, filters);
+  const { data, isLoading, isError } = useWidgetData(
+    widgetId,
+    resourceType,
+    filters,
+    shape,
+    listLimit,
+  );
+  const config = WIDGET_RESOURCE_CONFIG[resourceType];
+  const href = config.buildHref(filters);
 
   return (
-    <Card variant="outlined" sx={{ p: 1.75 }}>
+    <Card
+      variant="outlined"
+      component={RouterLink}
+      to={href}
+      sx={{
+        p: 1.75,
+        display: "block",
+        height: "100%",
+        cursor: "pointer",
+        color: "inherit",
+        textDecoration: "none",
+        transition: "background-color 0.15s ease",
+        "&:hover": { bgcolor: "action.hover" },
+        "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: -2 },
+      }}
+    >
       {isLoading ? (
         <Skeleton variant="rounded" height={48} />
       ) : isError ? (
@@ -54,11 +85,69 @@ export default function DashboardWidgetTile({
           <Typography variant="caption" color="text.secondary">
             {displayName}
           </Typography>
-          <Typography variant="h5" sx={{ mt: 0.5 }}>
-            {count}
-          </Typography>
+          {shape === "list" ? (
+            <WidgetListBody
+              items={data?.items ?? []}
+              limit={listLimit ?? 5}
+              resourceType={resourceType}
+            />
+          ) : shape === "count" ? (
+            <Typography variant="h5" sx={{ mt: 0.5 }}>
+              {data?.total ?? 0}
+            </Typography>
+          ) : (
+            // pie/bar: no aggregate endpoint exists anywhere in the stack
+            // today, so there is nothing to resolve or render yet — see
+            // `BeWidgetShape`.
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+              Not yet supported.
+            </Typography>
+          )}
         </>
       )}
     </Card>
+  );
+}
+
+interface WidgetListBodyProps {
+  items: Record<string, unknown>[];
+  limit: number;
+  resourceType: BeWidgetResourceType;
+}
+
+function WidgetListBody({ items, limit, resourceType }: WidgetListBodyProps): JSX.Element {
+  const config = WIDGET_RESOURCE_CONFIG[resourceType];
+  const rows = items.slice(0, limit);
+
+  if (rows.length === 0) {
+    return (
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+        No records.
+      </Typography>
+    );
+  }
+
+  return (
+    <Box sx={{ mt: 0.5, display: "flex", flexDirection: "column", gap: 0.5 }}>
+      {rows.map((item, i) => {
+        const secondary = config.secondaryLabel?.(item);
+        // Rows have no stable id in this loosely-typed shape; the primary
+        // label (usually a record number) is unique enough in practice for a
+        // short, non-reorderable list, with the index as a tiebreaker.
+        const key = `${config.primaryLabel(item)}-${i}`;
+        return (
+          <Box key={key} sx={{ minWidth: 0 }}>
+            <Typography variant="body2" noWrap>
+              {config.primaryLabel(item)}
+            </Typography>
+            {secondary && (
+              <Typography variant="caption" color="text.secondary">
+                {secondary}
+              </Typography>
+            )}
+          </Box>
+        );
+      })}
+    </Box>
   );
 }
