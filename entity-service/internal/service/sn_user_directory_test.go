@@ -186,7 +186,7 @@ func TestSNUserService_GetUser_GroupsAndTeams(t *testing.T) {
 		t.Fatalf("got %d groups, want 2", len(got.Groups))
 	}
 	if len(got.Teams) != 1 || got.Teams[0].ID != "alpha" {
-		t.Fatalf("teams = %+v, want just castor", got.Teams)
+		t.Fatalf("teams = %+v, want just alpha", got.Teams)
 	}
 	// Staff get no project-access block.
 	if got.ProjectAccess != nil {
