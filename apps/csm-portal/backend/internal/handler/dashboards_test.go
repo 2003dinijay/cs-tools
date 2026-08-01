@@ -83,7 +83,8 @@ func TestGetDashboardWidgets(t *testing.T) {
 			WidgetID    string `json:"widgetId"`
 			DisplayName string `json:"displayName"`
 			DisplayType string `json:"displayType"`
-			Count       int    `json:"count"`
+			Count       *int   `json:"count"`
+			Error       string `json:"error"`
 		}
 		if err := json.NewDecoder(w.Body).Decode(&results); err != nil {
 			t.Fatalf("decode response body: %v; raw: %s", err, w.Body.String())
@@ -95,8 +96,11 @@ func TestGetDashboardWidgets(t *testing.T) {
 			if res.DisplayType != "single_score" {
 				t.Errorf("widget %s displayType = %q, want single_score", res.WidgetID, res.DisplayType)
 			}
-			if res.Count != 7 {
-				t.Errorf("widget %s count = %d, want 7", res.WidgetID, res.Count)
+			if res.Error != "" {
+				t.Errorf("widget %s error = %q, want none", res.WidgetID, res.Error)
+			}
+			if res.Count == nil || *res.Count != 7 {
+				t.Errorf("widget %s count = %v, want 7", res.WidgetID, res.Count)
 			}
 			if res.DisplayName == "" {
 				t.Errorf("widget %s has empty displayName", res.WidgetID)
@@ -134,7 +138,7 @@ func TestGetDashboardWidgets(t *testing.T) {
 		}
 	})
 
-	t.Run("upstream error maps through mapUpstreamError", func(t *testing.T) {
+	t.Run("upstream error on every widget still returns 200 with each widget carrying its own error", func(t *testing.T) {
 		client := &mockDashboardEntityClient{
 			searchCasesFn: func(_ context.Context, _ []byte) ([]byte, error) {
 				return nil, &apierror.Error{StatusCode: http.StatusServiceUnavailable}
@@ -144,10 +148,30 @@ func TestGetDashboardWidgets(t *testing.T) {
 		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/agents_pilot/widgets", nil), "agents_pilot"))
 		w := httptest.NewRecorder()
 		h.GetDashboardWidgets(w, r)
-		assertStatus(t, w, http.StatusServiceUnavailable)
+		assertStatus(t, w, http.StatusOK)
+
+		var results []struct {
+			WidgetID string `json:"widgetId"`
+			Count    *int   `json:"count"`
+			Error    string `json:"error"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&results); err != nil {
+			t.Fatalf("decode response body: %v; raw: %s", err, w.Body.String())
+		}
+		if len(results) != 3 {
+			t.Fatalf("len(results) = %d, want 3", len(results))
+		}
+		for _, res := range results {
+			if res.Error == "" {
+				t.Errorf("widget %s error = %q, want non-empty", res.WidgetID, res.Error)
+			}
+			if res.Count != nil {
+				t.Errorf("widget %s count = %v, want omitted", res.WidgetID, *res.Count)
+			}
+		}
 	})
 
-	t.Run("non-apierror upstream failure maps to 500", func(t *testing.T) {
+	t.Run("non-apierror upstream failure is reported per widget, not as a handler-level 500", func(t *testing.T) {
 		client := &mockDashboardEntityClient{
 			searchCasesFn: func(_ context.Context, _ []byte) ([]byte, error) {
 				return nil, errors.New("connection refused")
@@ -157,6 +181,71 @@ func TestGetDashboardWidgets(t *testing.T) {
 		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/agents_pilot/widgets", nil), "agents_pilot"))
 		w := httptest.NewRecorder()
 		h.GetDashboardWidgets(w, r)
-		assertStatus(t, w, http.StatusInternalServerError)
+		assertStatus(t, w, http.StatusOK)
+
+		var results []struct {
+			Error string `json:"error"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&results); err != nil {
+			t.Fatalf("decode response body: %v; raw: %s", err, w.Body.String())
+		}
+		for _, res := range results {
+			if res.Error == "" {
+				t.Error("expected every widget to carry an error, got none")
+			}
+		}
+	})
+
+	t.Run("one widget's upstream failure does not take down its siblings", func(t *testing.T) {
+		var calls int
+		client := &mockDashboardEntityClient{
+			searchCasesFn: func(_ context.Context, _ []byte) ([]byte, error) {
+				calls++
+				if calls == 1 {
+					// Only the first-resolved widget ("my_patches") fails, mirroring the
+					// live SN DEV finding: an assignedUserIds-based search 400s for one
+					// widget while the others resolve normally in the same response.
+					return nil, &apierror.Error{StatusCode: http.StatusBadRequest, Body: `{"message":"no active user found for sys_id ..."}`}
+				}
+				return []byte(`{"cases":[],"total":7}`), nil
+			},
+		}
+		h := NewDashboardHandler(client)
+		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/agents_pilot/widgets", nil), "agents_pilot"))
+		w := httptest.NewRecorder()
+		h.GetDashboardWidgets(w, r)
+		assertStatus(t, w, http.StatusOK)
+
+		var results []struct {
+			WidgetID string `json:"widgetId"`
+			Count    *int   `json:"count"`
+			Error    string `json:"error"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&results); err != nil {
+			t.Fatalf("decode response body: %v; raw: %s", err, w.Body.String())
+		}
+		if len(results) != 3 {
+			t.Fatalf("len(results) = %d, want 3", len(results))
+		}
+
+		failed := results[0]
+		if failed.WidgetID != "my_patches" {
+			t.Fatalf("results[0].WidgetID = %q, want my_patches", failed.WidgetID)
+		}
+		if failed.Error == "" {
+			t.Errorf("widget %s: expected an error, got none", failed.WidgetID)
+		}
+		if failed.Count != nil {
+			t.Errorf("widget %s: count = %v, want omitted", failed.WidgetID, *failed.Count)
+		}
+
+		for _, res := range results[1:] {
+			if res.Error != "" {
+				t.Errorf("widget %s: unexpected error %q, want it unaffected by my_patches' failure", res.WidgetID, res.Error)
+			}
+			if res.Count == nil || *res.Count != 7 {
+				t.Errorf("widget %s: count = %v, want 7", res.WidgetID, res.Count)
+			}
+		}
 	})
 }

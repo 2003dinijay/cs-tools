@@ -2592,11 +2592,17 @@ export interface BeUserSearchByEmailResponse {
 // Dashboards
 // ---------------------------------------------------------------------------
 
-/** A single resolved widget from `GET /dashboards/{dashboardId}/widgets`. */
+/**
+ * A single resolved widget from `GET /dashboards/{dashboardId}/widgets`.
+ * `count` is present on success; `error` is present only when this widget's
+ * own data resolution failed, independent of the other widgets in the
+ * response.
+ */
 export interface BeDashboardWidget {
   widgetId: string;
   displayName: string;
   /** Only "single_score" exists today. */
   displayType: "single_score";
-  count: number;
+  count?: number;
+  error?: string;
 }

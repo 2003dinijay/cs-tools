@@ -24,7 +24,14 @@ interface DashboardWidgetTileProps {
   isError: boolean;
 }
 
-/** Single "single_score" dashboard widget tile: a display name and its count. */
+/**
+ * Single "single_score" dashboard widget tile: a display name and its count.
+ *
+ * `isError` reflects the shared query's own failure (e.g. the whole request
+ * never came back); `widget.error` reflects this widget's own upstream
+ * resolution failing while its siblings in the same response still resolved
+ * — the two are independent and both render the same error state.
+ */
 export default function DashboardWidgetTile({
   widget,
   isLoading,
@@ -34,7 +41,7 @@ export default function DashboardWidgetTile({
     <Card variant="outlined" sx={{ p: 1.75 }}>
       {isLoading ? (
         <Skeleton variant="rounded" height={48} />
-      ) : isError || !widget ? (
+      ) : isError || !widget || widget.error ? (
         <Typography variant="body2" color="text.secondary">
           Could not load this widget.
         </Typography>

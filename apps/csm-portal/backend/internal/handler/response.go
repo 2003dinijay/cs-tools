@@ -27,19 +27,20 @@ import (
 
 // Error message constants matching the customer-portal error vocabulary.
 const (
-	ErrMsgUnauthorized = "You are not authorized to perform this action. Please try again."
-	ErrMsgForbidden    = "Access to the requested resource is forbidden!"
-	ErrMsgNotFound     = "The requested resource was not found!"
-	ErrMsgBadRequest   = "Invalid request payload."
-	ErrMsgTooLarge          = "Request body too large."
-	ErrMsgInternal          = "An internal server error occurred. Please try again later."
-	ErrMsgInvalidTransition  = "Invalid state transition."
-	ErrMsgWorkStateNotAllowed = "Work state can only be updated when the case is in progress."
+	ErrMsgUnauthorized           = "You are not authorized to perform this action. Please try again."
+	ErrMsgForbidden              = "Access to the requested resource is forbidden!"
+	ErrMsgNotFound               = "The requested resource was not found!"
+	ErrMsgBadRequest             = "Invalid request payload."
+	ErrMsgTooLarge               = "Request body too large."
+	ErrMsgInternal               = "An internal server error occurred. Please try again later."
+	ErrMsgInvalidTransition      = "Invalid state transition."
+	ErrMsgWorkStateNotAllowed    = "Work state can only be updated when the case is in progress."
 	ErrMsgCommentNotAllowed      = "Comments can only be added when the case is in progress and the work state is ongoing."
 	ErrMsgWorkNoteOnClosedCase   = "Work notes cannot be added to a closed case."
 	ErrMsgAttachmentOnClosedCase = "Attachments cannot be added to a closed case."
 	ErrMsgInvalidUUID            = "Invalid UUID format."
-	errMsgReadBody          = "Failed to read request body."
+	ErrMsgWidgetResolutionFailed = "Failed to resolve this widget's data."
+	errMsgReadBody               = "Failed to read request body."
 )
 
 // errorBody is the JSON error payload format matching the customer-portal pattern.

@@ -74,4 +74,23 @@ describe("AgentsLandingPagePilot", () => {
       expect(screen.getAllByText("Could not load this widget.").length).toBe(3),
     );
   });
+
+  it("isolates one widget's error to its own tile while siblings render their real counts", async () => {
+    getMock.mockResolvedValue([
+      { widgetId: "my_patches", displayName: "My Patches", displayType: "single_score", error: "Failed to resolve this widget's data." },
+      { widgetId: "my_reminders", displayName: "My Reminders", displayType: "single_score", count: 5 },
+      { widgetId: "open_incident_team", displayName: "Open Incidents (Team)", displayType: "single_score", count: 12 },
+    ]);
+
+    renderWithClient(<AgentsLandingPagePilot />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Could not load this widget.").length).toBe(1),
+    );
+    expect(screen.getByText("My Reminders")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
+    expect(screen.getByText("Open Incidents (Team)")).toBeInTheDocument();
+    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(screen.queryByText("3")).not.toBeInTheDocument();
+  });
 });

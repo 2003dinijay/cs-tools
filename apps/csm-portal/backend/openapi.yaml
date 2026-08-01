@@ -5252,7 +5252,14 @@ components:
           type: integer
           description: >
             Resolved count for a single_score widget (the total from the
-            underlying case search, with pagination limited to 1)
+            underlying case search, with pagination limited to 1). Omitted
+            when error is set.
+        error:
+          type: string
+          description: >
+            Present only when this widget's own data resolution failed; the
+            other widgets in the same response are unaffected and still
+            carry a resolved count.
 
     Case:
       type: object
