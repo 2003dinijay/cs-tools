@@ -1175,6 +1175,37 @@ export interface BeProjectSearchResponse extends BeSearchResponseBase {
   projects: BeProject[];
 }
 
+/**
+ * A contact's attributes for one project, from `POST /projects/{id}/contacts/search`
+ * (also the shape of `GET /projects/{id}/contacts/{contactId}`).
+ */
+export interface BeProjectContact {
+  /**
+   * The contact's user id, for linking the row to that user's profile.
+   * Absent when the row has no contact record linked, or when the backing
+   * instance predates the field — render the row unlinked rather than
+   * treating it as an error.
+   */
+  id?: string;
+  name?: string;
+  email?: string;
+  registrationState?: string;
+  notificationsEnabled?: boolean;
+  roles?: string[];
+}
+
+export interface BeProjectContactSearchPayload {
+  filters?: { searchQuery?: string };
+  pagination?: BePagination;
+}
+
+export interface BeProjectContactSearchResponse {
+  contacts: BeProjectContact[];
+  offset: number;
+  limit: number;
+  total: number;
+}
+
 // ---------------------------------------------------------------------------
 // Deployments
 // ---------------------------------------------------------------------------

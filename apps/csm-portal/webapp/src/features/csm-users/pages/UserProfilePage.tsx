@@ -14,17 +14,28 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Button, Card, Chip, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
+import { Alert, Box, Button, Card, Chip, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
 import { type JSX, type ReactNode } from "react";
-import { useParams } from "react-router";
+import { Link as RouterLink, useParams } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
 import { useNavTransition } from "@hooks/useNavTransition";
+import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { useGetUserById } from "@features/csm-users/api/useGetUserById";
 import {
   INTERNAL_USER_ROLES,
-  type NormalizedUser,
+  type NormalizedUserDetail,
+  type UserProjectAccess,
 } from "@features/csm-users/types/csmUsers";
+
+function formatDateTime(value?: string | null): string {
+  return (
+    formatBackendTimestampForDisplay(value, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }) ?? "—"
+  );
+}
 
 function BackButton({ onClick }: { onClick: () => void }): JSX.Element {
   return (
@@ -62,12 +73,15 @@ function MetaCell({
 }
 
 /**
- * True when `user` is internal (WSO2 staff): either the postgres source's
- * direct `userType === "internal"`, or the ServiceNow source's `roles`
- * containing one of {@link INTERNAL_USER_ROLES}. Absent both signals, the
- * user is treated as a customer.
+ * True when `user` is internal (WSO2 staff): either a direct
+ * `userType === "internal"`, or (on a backend response predating `userType`)
+ * `roles` containing one of {@link INTERNAL_USER_ROLES}. Every other
+ * `userType` value (`external`, `customer`, `system`) is treated alike as
+ * "not internal" — the two data sources don't agree on the exact label, so
+ * branching on `=== "external"` alone would silently miss the postgres
+ * source's `customer`/`system` users.
  */
-function isInternalUser(user: NormalizedUser): boolean {
+function isInternalUser(user: NormalizedUserDetail): boolean {
   if (user.userType) return user.userType === "internal";
   return (user.roles ?? []).some((r) =>
     (INTERNAL_USER_ROLES as string[]).includes(r),
@@ -75,32 +89,183 @@ function isInternalUser(user: NormalizedUser): boolean {
 }
 
 /**
- * Placeholder section for data the backend doesn't expose yet, following the
- * same visual language as `CsmComingSoonPage` and the admin `roles`/`groups`
- * stub routes: a "Coming soon" chip plus a short description of what's
- * blocked and why, so it reads as an intentional gap rather than a bug.
+ * Human-readable reasons a project-access row doesn't grant case access.
+ * `grantsCaseAccess` is the verdict the backend already computed; these are
+ * the "why" a support engineer is looking for. Order matters: the missing
+ * contact record is the more fundamental failure, so it's listed first when
+ * both are true.
  */
-function NotAvailableYetSection({
-  title,
-  description,
-  blockedOn,
-}: {
-  title: string;
-  description: string;
-  blockedOn: string;
-}): JSX.Element {
+function blockedReasons(pa: UserProjectAccess): string[] {
+  const reasons: string[] = [];
+  if (!pa.contactRecordPresent) {
+    reasons.push("No contact record is linked to this project for this user.");
+  } else if (!pa.emailMatchesLogin) {
+    reasons.push(
+      pa.contactRecordEmail
+        ? `Contact record email (${pa.contactRecordEmail}) doesn't match the login email (${pa.contactEmail}).`
+        : "The linked contact record's email doesn't match the login email.",
+    );
+  }
+  return reasons;
+}
+
+/** One row of an external user's per-project access, with the reason surfaced when blocked. */
+function ProjectAccessRow({ pa }: { pa: UserProjectAccess }): JSX.Element {
+  const reasons = blockedReasons(pa);
   return (
-    <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-        <Typography variant="subtitle2">{title}</Typography>
-        <Chip size="small" label="Coming soon" color="warning" variant="outlined" />
+    <Box
+      sx={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 0.75,
+        p: 1.5,
+        border: 1,
+        borderColor: "divider",
+        borderRadius: 1,
+      }}
+    >
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+        <Typography
+          component={RouterLink}
+          to={`/customers/projects/${pa.projectId}`}
+          variant="body2"
+          sx={(t) => ({
+            fontWeight: 600,
+            textDecoration: "none",
+            color: t.palette.primary.dark,
+            ...t.applyStyles("dark", { color: t.palette.primary.main }),
+            "&:hover": { textDecoration: "underline" },
+          })}
+        >
+          {pa.projectName}
+        </Typography>
+        <Chip
+          size="small"
+          label={pa.grantsCaseAccess ? "Has case access" : "Blocked"}
+          color={pa.grantsCaseAccess ? "success" : "error"}
+          variant="outlined"
+        />
+        {pa.registrationState && (
+          <Chip size="small" label={pa.registrationState} variant="outlined" />
+        )}
+        {pa.roles?.map((r) => (
+          <Chip key={r} size="small" label={r} variant="outlined" />
+        ))}
       </Box>
-      <Typography variant="body2" color="text.secondary">
-        {description}
-      </Typography>
+
+      {!pa.grantsCaseAccess && reasons.length > 0 && (
+        <Stack spacing={0.25}>
+          {reasons.map((reason) => (
+            <Typography key={reason} variant="caption" color="error.main">
+              {reason}
+            </Typography>
+          ))}
+        </Stack>
+      )}
+
       <Typography variant="caption" color="text.secondary">
-        Blocked on: {blockedOn}
+        Contact email: {pa.contactEmail}
+        {pa.notificationsEnabled !== undefined &&
+          ` · Notifications ${pa.notificationsEnabled ? "on" : "off"}`}
       </Typography>
+    </Box>
+  );
+}
+
+/**
+ * An internal user's group and team memberships. Rendered even when empty —
+ * "no memberships" is itself an answer worth showing rather than hiding the
+ * card.
+ */
+function GroupsAndTeamsSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
+  const groups = user.groups ?? [];
+  const teams = user.teams ?? [];
+  return (
+    <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+      <Typography variant="subtitle2">Groups and teams</Typography>
+      <Box
+        sx={{
+          display: "grid",
+          gap: 2,
+          gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+        }}
+      >
+        <MetaCell label="Groups">
+          {groups.length > 0 ? (
+            <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5 }}>
+              {groups.map((g) => (
+                <Chip key={g.id} size="small" label={g.name} variant="outlined" />
+              ))}
+            </Stack>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              No group memberships.
+            </Typography>
+          )}
+        </MetaCell>
+        <MetaCell label="Teams">
+          {teams.length > 0 ? (
+            <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5 }}>
+              {teams.map((t) => (
+                <Chip
+                  key={t.id}
+                  size="small"
+                  label={t.family ? `${t.name} (${t.family})` : t.name}
+                  color="primary"
+                  variant="outlined"
+                />
+              ))}
+            </Stack>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              No team assignments.
+            </Typography>
+          )}
+        </MetaCell>
+      </Box>
+    </Card>
+  );
+}
+
+/**
+ * An external user's per-project access, with the reason called out whenever
+ * a project doesn't grant case access — this card exists to answer "why
+ * can't this customer see their cases?" at a glance.
+ */
+function ProjectAccessSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
+  const access = user.projectAccess ?? [];
+  const blockedCount = access.filter((pa) => !pa.grantsCaseAccess).length;
+
+  return (
+    <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+      <Typography variant="subtitle2">Project access</Typography>
+
+      {user.active === false && (
+        <Alert severity="error" variant="outlined">
+          This user's account is inactive — they can't access any project's cases,
+          regardless of the per-project rows below.
+        </Alert>
+      )}
+
+      {access.length === 0 ? (
+        <Typography variant="body2" color="text.secondary">
+          No project access records found for this user.
+        </Typography>
+      ) : (
+        <>
+          {blockedCount > 0 && (
+            <Alert severity="warning" variant="outlined">
+              Blocked on {blockedCount} of {access.length} project
+              {access.length === 1 ? "" : "s"} — see the reason under each row below.
+            </Alert>
+          )}
+          <Stack spacing={1.5}>
+            {access.map((pa) => (
+              <ProjectAccessRow key={pa.projectId} pa={pa} />
+            ))}
+          </Stack>
+        </>
+      )}
     </Card>
   );
 }
@@ -110,12 +275,13 @@ function NotAvailableYetSection({
  * portal (case creator, assignee, watchers, comment authors, attachment
  * uploaders) once its id is known or resolved (see `UserRefLink` /
  * `useResolvedUserId` — most actor fields carry only an email, resolved to an
- * id through a cached lookup before the link ever appears). Shows only what
- * `GET /users/{id}` already returns today — name, email, timezone,
- * roles/type, active status. There is no backend endpoint yet for a
- * customer's projects+roles or an internal user's groups/team, so that
- * section renders the same "not available yet" placeholder used by the admin
- * roles/groups stub routes rather than fabricating data.
+ * id through a cached lookup before the link ever appears).
+ *
+ * Renders everything `GET /users/{id}` returns: name, email, timezone, phone,
+ * roles, created/updated times, plus — split by `userType` — an internal
+ * user's group/team memberships or an external user's per-project access
+ * (with the reason surfaced whenever a project doesn't grant case access, per
+ * `UserProjectAccess.grantsCaseAccess`).
  */
 export default function UserProfilePage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
@@ -209,6 +375,17 @@ export default function UserProfilePage(): JSX.Element {
           <MetaCell label="Timezone">
             <Typography variant="body2">{user.timezone ?? "Not set"}</Typography>
           </MetaCell>
+          {internal && (
+            <MetaCell label="Phone">
+              <Typography variant="body2">{user.phone ?? "Not set"}</Typography>
+            </MetaCell>
+          )}
+          <MetaCell label="Created on">
+            <Typography variant="body2">{formatDateTime(user.createdOn)}</Typography>
+          </MetaCell>
+          <MetaCell label="Updated on">
+            <Typography variant="body2">{formatDateTime(user.updatedOn)}</Typography>
+          </MetaCell>
           <MetaCell label="Roles">
             {user.roles && user.roles.length > 0 ? (
               <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5 }}>
@@ -230,17 +407,9 @@ export default function UserProfilePage(): JSX.Element {
       </Card>
 
       {internal ? (
-        <NotAvailableYetSection
-          title="Groups, roles, and team"
-          description="This engineer's group memberships, permission roles, and CRE/SRE team assignment aren't available here yet."
-          blockedOn="csm-portal/backend groups and roles endpoints"
-        />
+        <GroupsAndTeamsSection user={user} />
       ) : (
-        <NotAvailableYetSection
-          title="Projects and roles per project"
-          description="The projects this customer has access to, and their role on each, aren't available here yet."
-          blockedOn="csm-portal/backend per-project role endpoints"
-        />
+        <ProjectAccessSection user={user} />
       )}
     </Box>
   );
