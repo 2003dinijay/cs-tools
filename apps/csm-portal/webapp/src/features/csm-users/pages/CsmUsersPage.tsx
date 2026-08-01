@@ -73,12 +73,17 @@ const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
 const MAX_VISIBLE_ROLES = 3;
 
 /**
- * The users list, with filters reflected in the URL (`q`, `roles`, `groups`,
- * `teams`, `active`) so a filtered link is shareable and survives a reload —
- * the same `read*FiltersFromUrl` / `write*FiltersToUrl` convention the cases
- * list uses (`casesFiltersUrl.ts`). Deliberately no project/account filter:
- * "who is on this project" is answered by the project-contacts search
- * instead. Role, group and team filters combine (AND together server-side).
+ * The users list, with filters reflected in the URL (`search`, `roles`,
+ * `groups`, `teams`, `active`) so a filtered link is shareable and survives a
+ * reload — the same `read*FiltersFromUrl` / `write*FiltersToUrl` convention
+ * the cases list uses (`casesFiltersUrl.ts`). The free-text key is `search`,
+ * not `q`: both this list and the cases list originally wrote it as `?q=`,
+ * which collides with the app's QuickNav command palette (it treats `?q=` as
+ * a one-shot deep link and pops open pre-filled with whatever's there) — keep
+ * it `search` in any future change here, or that collision comes back.
+ * Deliberately no project/account filter: "who is on this project" is
+ * answered by the project-contacts search instead. Role, group and team
+ * filters combine (AND together server-side).
  */
 export default function CsmUsersPage(): JSX.Element {
   const navigate = useNavTransition();
@@ -325,7 +330,6 @@ export default function CsmUsersPage(): JSX.Element {
                       onClick={goToProfile}
                       onKeyDown={handleRowKeyDown}
                       tabIndex={0}
-                      role="button"
                       aria-label={`View profile for ${u.name || u.userName}`}
                       sx={{ cursor: "pointer" }}
                     >
