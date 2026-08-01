@@ -26,7 +26,6 @@ import {
   TableBody,
   TableCell,
   TableContainer,
-  TableHead,
   TableRow,
   Typography,
 } from "@wso2/oxygen-ui";
@@ -204,13 +203,17 @@ interface MembershipRow {
  * `DirectoryEntityChip`). Rendered even when `rows` is empty — "no
  * memberships" is itself an answer worth showing rather than hiding the
  * section, per {@link emptyMessage}.
+ *
+ * Deliberately no header row naming the column ("Role"/"Group"/"Team") —
+ * the enclosing card's own title already says that, and repeating it inside
+ * read as "Groups" containing a table headed "Group".
  */
 function MembershipTable({
-  columnLabel,
+  ariaLabel,
   rows,
   emptyMessage,
 }: {
-  columnLabel: string;
+  ariaLabel: string;
   rows: MembershipRow[];
   emptyMessage: string;
 }): JSX.Element {
@@ -223,12 +226,7 @@ function MembershipTable({
   }
   return (
     <TableContainer sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}>
-      <Table size="small" aria-label={`${columnLabel} memberships`}>
-        <TableHead>
-          <TableRow sx={{ bgcolor: "action.hover" }}>
-            <TableCell>{columnLabel}</TableCell>
-          </TableRow>
-        </TableHead>
+      <Table size="small" aria-label={ariaLabel}>
         <TableBody>
           {rows.map((row) => (
             <TableRow key={row.key}>
@@ -248,7 +246,30 @@ function MembershipTable({
   );
 }
 
-/** This user's assigned roles, as a single-column table (all user types). */
+/**
+ * Roles/groups/teams as three cards in a row (wrapping to stacked on narrow
+ * viewports), so the three membership kinds read as siblings rather than a
+ * single long vertical list. Each card's title is the only place its kind is
+ * named — the table inside carries no repeated column header.
+ */
+function MembershipCard({
+  title,
+  rows,
+  emptyMessage,
+}: {
+  title: string;
+  rows: MembershipRow[];
+  emptyMessage: string;
+}): JSX.Element {
+  return (
+    <Card sx={{ p: 2.5, flex: "1 1 260px", minWidth: 220, display: "flex", flexDirection: "column", gap: 2 }}>
+      <Typography variant="subtitle2">{title}</Typography>
+      <MembershipTable ariaLabel={`${title} memberships`} rows={rows} emptyMessage={emptyMessage} />
+    </Card>
+  );
+}
+
+/** This user's assigned roles (all user types). */
 function RolesSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
   const rows: MembershipRow[] = (user.roles ?? []).map((r) => ({
     key: r,
@@ -257,15 +278,10 @@ function RolesSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
     routeBase: "/admin/roles",
     color: (INTERNAL_USER_ROLES as string[]).includes(r) ? "primary" : "default",
   }));
-  return (
-    <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-      <Typography variant="subtitle2">Roles</Typography>
-      <MembershipTable columnLabel="Role" rows={rows} emptyMessage="No roles assigned." />
-    </Card>
-  );
+  return <MembershipCard title="Roles" rows={rows} emptyMessage="No roles assigned." />;
 }
 
-/** An internal user's group memberships, as a single-column table. */
+/** An internal user's group memberships. */
 function GroupsSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
   const rows: MembershipRow[] = (user.groups ?? []).map((g) => ({
     key: g.id,
@@ -273,15 +289,10 @@ function GroupsSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
     label: g.name,
     routeBase: "/admin/groups",
   }));
-  return (
-    <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-      <Typography variant="subtitle2">Groups</Typography>
-      <MembershipTable columnLabel="Group" rows={rows} emptyMessage="No group memberships." />
-    </Card>
-  );
+  return <MembershipCard title="Groups" rows={rows} emptyMessage="No group memberships." />;
 }
 
-/** An internal user's CRE/SRE team assignments, as a single-column table. */
+/** An internal user's CRE/SRE team assignments. */
 function TeamsSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
   const rows: MembershipRow[] = (user.teams ?? []).map((t) => ({
     key: t.id,
@@ -290,12 +301,7 @@ function TeamsSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
     routeBase: "/admin/teams",
     color: "primary",
   }));
-  return (
-    <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-      <Typography variant="subtitle2">Teams</Typography>
-      <MembershipTable columnLabel="Team" rows={rows} emptyMessage="No team assignments." />
-    </Card>
-  );
+  return <MembershipCard title="Teams" rows={rows} emptyMessage="No team assignments." />;
 }
 
 /**
@@ -308,7 +314,7 @@ function ProjectAccessSection({ user }: { user: NormalizedUserDetail }): JSX.Ele
   const blockedCount = access.filter((pa) => !pa.grantsCaseAccess).length;
 
   return (
-    <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+    <Card sx={{ p: 2.5, flex: "2 1 400px", display: "flex", flexDirection: "column", gap: 2 }}>
       <Typography variant="subtitle2">Project access</Typography>
 
       {user.active === false && (
@@ -460,16 +466,17 @@ export default function UserProfilePage(): JSX.Element {
         </Box>
       </Card>
 
-      <RolesSection user={user} />
-
-      {internal ? (
-        <>
-          <GroupsSection user={user} />
-          <TeamsSection user={user} />
-        </>
-      ) : (
-        <ProjectAccessSection user={user} />
-      )}
+      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2.5 }}>
+        <RolesSection user={user} />
+        {internal ? (
+          <>
+            <GroupsSection user={user} />
+            <TeamsSection user={user} />
+          </>
+        ) : (
+          <ProjectAccessSection user={user} />
+        )}
+      </Box>
     </Box>
   );
 }
