@@ -78,18 +78,35 @@ export default function ErrorBanner({
           // included in `action` too, or it silently disappears.
           <Stack direction="row" spacing={0.5} alignItems="center">
             {referenceId && (
-              <Tooltip title={copied ? "Copied!" : "Copy reference ID"} placement="top">
-                <Button
-                  size="small"
-                  variant="text"
-                  color="inherit"
-                  onClick={handleCopy}
-                  sx={{ minWidth: 0, p: 0.5 }}
-                  aria-label="Copy reference ID"
+              <>
+                <Tooltip title={copied ? "Copied!" : "Copy reference ID"} placement="top">
+                  <Button
+                    size="small"
+                    variant="text"
+                    color="inherit"
+                    onClick={handleCopy}
+                    sx={{ minWidth: 0, p: 0.5 }}
+                    aria-label="Copy reference ID"
+                  >
+                    {copied ? <Check size={14} /> : <Copy size={14} />}
+                  </Button>
+                </Tooltip>
+                {/* The icon/tooltip swap on copy isn't announced to screen readers on
+                    its own; this visually-hidden live region is the actual completion
+                    signal for assistive tech. */}
+                <Box
+                  aria-live="polite"
+                  sx={{
+                    position: "absolute",
+                    width: 1,
+                    height: 1,
+                    overflow: "hidden",
+                    clip: "rect(0 0 0 0)",
+                  }}
                 >
-                  {copied ? <Check size={14} /> : <Copy size={14} />}
-                </Button>
-              </Tooltip>
+                  {copied ? "Reference ID copied." : ""}
+                </Box>
+              </>
             )}
             <IconButton size="small" color="inherit" onClick={onClose} aria-label="Close">
               <X size={16} />

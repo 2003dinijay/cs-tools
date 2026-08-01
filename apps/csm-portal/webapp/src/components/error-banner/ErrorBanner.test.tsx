@@ -54,6 +54,9 @@ describe("ErrorBanner", () => {
       screen.queryByText(/c3f1a9e2-1234-4abc-8def-0123456789ab/),
     ).not.toBeInTheDocument();
 
+    // The aria-live status is empty before any copy attempt.
+    expect(screen.queryByText("Reference ID copied.")).not.toBeInTheDocument();
+
     const button = screen.getByRole("button", { name: /copy reference id/i });
     fireEvent.click(button);
 
@@ -63,12 +66,20 @@ describe("ErrorBanner", () => {
       );
     });
 
+    // The icon swap alone isn't a completion signal for assistive tech --
+    // this live-region text is. Assert it appears, not just that the button's
+    // own (unchanged) aria-label is still present.
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /copy reference id/i })).toHaveAttribute(
-        "aria-label",
-        "Copy reference ID",
-      );
+      expect(screen.getByText("Reference ID copied.")).toBeInTheDocument();
     });
+
+    // ...and clears again after the transient-confirmation window.
+    await waitFor(
+      () => {
+        expect(screen.queryByText("Reference ID copied.")).not.toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
   });
 
   it("still renders a close button when a copy button is also present", () => {
