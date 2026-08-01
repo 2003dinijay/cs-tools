@@ -61,6 +61,7 @@ func main() {
 
 	customerEntityClient := entity.NewCustomerEntityClient(customerEntityCfg)
 	caseHandler := handler.NewCaseHandler(customerEntityClient)
+	dashboardHandler := handler.NewDashboardHandler(customerEntityClient)
 	accountHandler := handler.NewAccountHandler(customerEntityClient)
 	projectHandler := handler.NewProjectHandler(customerEntityClient)
 	productHandler := handler.NewProductHandler(customerEntityClient)
@@ -139,6 +140,7 @@ func main() {
 	mux.HandleFunc("DELETE /cases/{id}/tags/{tagId}", caseHandler.RemoveCaseTag)
 	mux.HandleFunc("GET /tags/search", caseHandler.SearchTags)
 	mux.HandleFunc("POST /cases/search", caseHandler.SearchCases)
+	mux.HandleFunc("GET /dashboards/{dashboardId}/widgets", dashboardHandler.GetDashboardWidgets)
 	mux.HandleFunc("GET /updates/product-update-levels", updatesHandler.GetProductUpdateLevels)
 	mux.HandleFunc("POST /updates/levels/search", updatesHandler.SearchUpdatesBetweenUpdateLevels)
 	mux.HandleFunc("GET /users/me", usersHandler.GetMe)
