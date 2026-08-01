@@ -19,6 +19,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactElement } from "react";
 
 const authFetchMock = vi.fn();
 
@@ -28,6 +29,10 @@ vi.mock("@config/apiConfig", () => ({
 vi.mock("@hooks/useAuthApiClient", () => ({
   useAuthApiClient: () => authFetchMock,
 }));
+// useSearchRoles (for role display names) goes through this client; give
+// `post` a real resolved value so react-query doesn't warn about an
+// undefined query result.
+const backendPostMock = vi.fn().mockResolvedValue({ roles: [], total: 0, limit: 50, offset: 0 });
 vi.mock("@api/backend/client", () => ({
   BackendApiError: class BackendApiError extends Error {
     status: number;
@@ -36,7 +41,7 @@ vi.mock("@api/backend/client", () => ({
       this.status = status;
     }
   },
-  useBackendApi: () => ({ post: vi.fn() }),
+  useBackendApi: () => ({ post: backendPostMock }),
 }));
 
 import RoleMembersPage from "@features/csm-admin/pages/RoleMembersPage";
@@ -56,7 +61,7 @@ function jsonResponse(body: unknown): Response {
 function renderAt(
   path: string,
   routePath: string,
-  element: React.ReactElement,
+  element: ReactElement,
 ): ReturnType<typeof render> {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
