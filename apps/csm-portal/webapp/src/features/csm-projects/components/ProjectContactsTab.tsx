@@ -24,7 +24,6 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
@@ -46,6 +45,15 @@ interface ProjectContactsTabProps {
  * record — renders unlinked and flagged, since that's precisely the case a
  * support engineer needs to notice: an orphaned contact row means that
  * person silently can't see this project's cases.
+ *
+ * A real project can return dozens of these rows with `name` *and* `email`
+ * both empty (no natural identifier at all, not even an email to show) — the
+ * explanatory line below the row is always rendered inline, not tucked behind
+ * a hover tooltip, so scanning the table surfaces every "can't see their
+ * cases" row without hovering each one. (If an upstream fix ever starts
+ * populating `email` for these rows, they fall into the ordinary
+ * has-some-info orphaned case below — same flag, same inline reason, just
+ * with a real address shown instead of "No linked contact record".)
  */
 export default function ProjectContactsTab({
   projectId,
@@ -95,8 +103,12 @@ export default function ProjectContactsTab({
               </TableRow>
             ) : (
               contacts.map((c, i) => {
-                const name = c.name || c.email || "—";
                 const orphaned = !c.id;
+                // No natural identifier at all when both are empty — say so
+                // plainly instead of showing a bare "—" that reads as a data
+                // glitch rather than the operationally meaningful fact that
+                // this row has no linked contact record.
+                const name = c.name || c.email || "No linked contact record";
                 return (
                   // Contacts have no stable identifier when unlinked (no `id`);
                   // email is the closest thing to a natural key, and index
@@ -105,15 +117,24 @@ export default function ProjectContactsTab({
                     <TableCell>
                       <UserRefLink name={name} email={c.email} userId={c.id ?? null} />
                       {orphaned && (
-                        <Tooltip title="No contact record is linked to this row — this person can't see this project's cases.">
-                          <Chip
-                            size="small"
-                            label="Orphaned"
-                            color="error"
-                            variant="outlined"
-                            sx={{ ml: 1 }}
-                          />
-                        </Tooltip>
+                        <Chip
+                          size="small"
+                          label="Orphaned"
+                          color="error"
+                          variant="outlined"
+                          sx={{ ml: 1 }}
+                        />
+                      )}
+                      {orphaned && (
+                        <Typography
+                          variant="caption"
+                          color="error.main"
+                          component="div"
+                          sx={{ mt: 0.25 }}
+                        >
+                          No contact record is linked to this row — this person
+                          can't see this project's cases.
+                        </Typography>
                       )}
                     </TableCell>
                     <TableCell sx={{ wordBreak: "break-all" }}>{c.email || "—"}</TableCell>

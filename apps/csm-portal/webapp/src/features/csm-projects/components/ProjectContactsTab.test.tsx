@@ -88,6 +88,12 @@ const ORPHANED_CONTACT: BeProjectContact = {
   registrationState: "pending",
 };
 
+// The more common real-world shape: no `id`, no `name`, *and* no `email` —
+// nothing to key the row on at all.
+const FULLY_BLANK_ORPHANED_CONTACT: BeProjectContact = {
+  registrationState: "pending",
+};
+
 describe("ProjectContactsTab", () => {
   it("renders a loading skeleton while the query is pending", () => {
     mockQueryResult({ isLoading: true });
@@ -124,6 +130,25 @@ describe("ProjectContactsTab", () => {
     expect(screen.getByText("John Smith")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "John Smith" })).not.toBeInTheDocument();
     expect(screen.getByText("Orphaned", { selector: ".MuiChip-label" })).toBeInTheDocument();
+  });
+
+  it("renders a fully-blank orphaned row (no id, name, or email) with a clearly-marked, always-visible reason rather than a blank row", () => {
+    postMock.mockResolvedValue({ users: [] });
+    mockQueryResult({ data: [FULLY_BLANK_ORPHANED_CONTACT] });
+    renderTab();
+
+    // Never a bare blank cell — the row states plainly that it has no
+    // linked contact record...
+    expect(screen.getByText("No linked contact record")).toBeInTheDocument();
+    // ...and the operationally important consequence is visible inline
+    // (not hidden behind a hover-only tooltip).
+    expect(
+      screen.getByText(/can't see this project's cases/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Orphaned", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "No linked contact record" }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders both a linked and an orphaned row together without crashing", () => {

@@ -38,16 +38,18 @@ import {
   Typography,
   type SelectChangeEvent,
 } from "@wso2/oxygen-ui";
-import { useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useMemo, useState, type ChangeEvent, type JSX, type KeyboardEvent } from "react";
 import { useSearchParams } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
 import UserRefLink from "@components/UserRefLink";
 import AsyncEntityMultiSelect from "@components/AsyncEntityMultiSelect";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
+import { useNavTransition } from "@hooks/useNavTransition";
 import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
 import { useSearchRoles } from "@features/csm-admin/api/useSearchRoles";
 import { useSearchTeams } from "@features/csm-admin/api/useSearchTeams";
+import DirectoryEntityChip from "@features/csm-admin/components/DirectoryEntityChip";
 import {
   INTERNAL_USER_ROLES,
   type SearchUsersRequest,
@@ -65,6 +67,10 @@ import type { BeGroup } from "@api/backend/types";
 const DEFAULT_ROWS_PER_PAGE = 20;
 // Top option is the backend's max page limit; larger requests are rejected.
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
+// Roles beyond this many collapse into a single "+N more" chip that links to
+// the user's profile — a table cell isn't the place to enumerate every role a
+// user carries.
+const MAX_VISIBLE_ROLES = 3;
 
 /**
  * The users list, with filters reflected in the URL (`q`, `roles`, `groups`,
@@ -75,6 +81,7 @@ const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
  * instead. Role, group and team filters combine (AND together server-side).
  */
 export default function CsmUsersPage(): JSX.Element {
+  const navigate = useNavTransition();
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = useMemo(() => readUsersFiltersFromUrl(searchParams), [searchParams]);
 
@@ -299,50 +306,94 @@ export default function CsmUsersPage(): JSX.Element {
                   </TableCell>
                 </TableRow>
               ) : (
-                users.map((u) => (
-                  <TableRow key={u.id} hover>
-                    <TableCell>
-                      <UserRefLink name={u.userName} email={u.email} userId={u.id} />
-                    </TableCell>
-                    <TableCell>{u.name || "—"}</TableCell>
-                    <TableCell>{u.email}</TableCell>
-                    <TableCell>
-                      <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5 }}>
-                        {u.roles && u.roles.length > 0
-                          ? u.roles.map((r) => (
-                              <Chip
-                                key={r}
-                                size="small"
-                                label={r}
-                                color={(INTERNAL_USER_ROLES as string[]).includes(r) ? "primary" : "default"}
-                                variant="outlined"
-                              />
-                            ))
-                          : u.userType
-                            ? <Chip
-                                size="small"
-                                label={u.userType}
-                                color={u.userType === "internal" ? "primary" : "default"}
-                                variant="outlined"
-                              />
-                            : "—"}
-                      </Stack>
-                    </TableCell>
-                    <TableCell>
-                      {u.active === undefined ? (
-                        "—"
-                      ) : (
-                        <Chip
-                          size="small"
-                          label={u.active ? "Active" : "Inactive"}
-                          color={u.active ? "success" : "default"}
-                          variant="outlined"
-                        />
-                      )}
-                    </TableCell>
-                    <TableCell>{u.timezone ?? "—"}</TableCell>
-                  </TableRow>
-                ))
+                users.map((u) => {
+                  const profilePath = `/people/${encodeURIComponent(u.id)}`;
+                  const goToProfile = (): void => navigate(profilePath);
+                  const handleRowKeyDown = (e: KeyboardEvent<HTMLTableRowElement>): void => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      goToProfile();
+                    }
+                  };
+                  const visibleRoles = u.roles?.slice(0, MAX_VISIBLE_ROLES) ?? [];
+                  const hiddenRoleCount = Math.max((u.roles?.length ?? 0) - MAX_VISIBLE_ROLES, 0);
+
+                  return (
+                    <TableRow
+                      key={u.id}
+                      hover
+                      onClick={goToProfile}
+                      onKeyDown={handleRowKeyDown}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`View profile for ${u.name || u.userName}`}
+                      sx={{ cursor: "pointer" }}
+                    >
+                      <TableCell>
+                        <UserRefLink name={u.userName} email={u.email} userId={u.id} />
+                      </TableCell>
+                      <TableCell>{u.name || "—"}</TableCell>
+                      <TableCell>{u.email}</TableCell>
+                      <TableCell>
+                        <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5 }}>
+                          {u.roles && u.roles.length > 0 ? (
+                            <>
+                              {visibleRoles.map((r) => (
+                                <DirectoryEntityChip
+                                  key={r}
+                                  id={r}
+                                  name={roleNameById.get(r) ?? r}
+                                  routeBase="/admin/roles"
+                                  color={(INTERNAL_USER_ROLES as string[]).includes(r) ? "primary" : "default"}
+                                />
+                              ))}
+                              {hiddenRoleCount > 0 && (
+                                <Chip
+                                  size="small"
+                                  variant="outlined"
+                                  label={`+${hiddenRoleCount} more`}
+                                  clickable
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    goToProfile();
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                      e.stopPropagation();
+                                    }
+                                  }}
+                                  aria-label={`View all ${u.roles.length} roles for ${u.name || u.userName}`}
+                                />
+                              )}
+                            </>
+                          ) : u.userType ? (
+                            <Chip
+                              size="small"
+                              label={u.userType}
+                              color={u.userType === "internal" ? "primary" : "default"}
+                              variant="outlined"
+                            />
+                          ) : (
+                            "—"
+                          )}
+                        </Stack>
+                      </TableCell>
+                      <TableCell>
+                        {u.active === undefined ? (
+                          "—"
+                        ) : (
+                          <Chip
+                            size="small"
+                            label={u.active ? "Active" : "Inactive"}
+                            color={u.active ? "success" : "default"}
+                            variant="outlined"
+                          />
+                        )}
+                      </TableCell>
+                      <TableCell>{u.timezone ?? "—"}</TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>
