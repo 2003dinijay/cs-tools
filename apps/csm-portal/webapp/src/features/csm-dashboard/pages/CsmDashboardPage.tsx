@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Skeleton } from "@wso2/oxygen-ui";
+import { Box, Skeleton, Typography } from "@wso2/oxygen-ui";
 import { useState, type JSX } from "react";
 import AbtDashboardHeader from "@features/csm-dashboard/components/AbtDashboardHeader";
 import AgentsLandingPagePilot from "@features/csm-dashboard/components/AgentsLandingPagePilot";
@@ -42,6 +42,17 @@ export default function CsmDashboardPage(): JSX.Element {
   const defaultEntry =
     list && list.length > 0 ? (list.find((d) => d.isDefault) ?? list[0]) : undefined;
   const dashboardKey = manualDashboardKey ?? defaultEntry?.id;
+
+  if (dashboardList.isError) {
+    return (
+      <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        <Typography variant="h5">Dashboard</Typography>
+        <Typography variant="body2" color="text.secondary">
+          Could not load the dashboard list.
+        </Typography>
+      </Box>
+    );
+  }
 
   if (dashboardKey === undefined) {
     return (

@@ -1630,7 +1630,8 @@ paths:
       description: >
         Returns every dashboard registered in the config-driven pilot: its
         id, display name, and whether it is the default dashboard. This is a
-        small static registry, not user-configurable.
+        registry loaded from the DASHBOARDS_CONFIG environment variable at
+        startup, not user-configurable at runtime.
       operationId: getDashboards
       responses:
         "200":
@@ -1666,10 +1667,12 @@ paths:
       description: >
         Returns the given dashboard id's display metadata plus every widget
         template registered for it: its display metadata and the filter
-        criteria to run against POST /cases/search. The caller resolves each
+        criteria to run against that widget's own resourceType search
+        endpoint (POST /{resourceType}s/search). The caller resolves each
         widget's own data by issuing that search itself; this endpoint does
-        not touch case data. This is a config-driven pilot: widget templates
-        are a small static registry, not user-configurable.
+        not read any resource data. This is a config-driven pilot: widget
+        templates are a registry loaded from the DASHBOARDS_CONFIG
+        environment variable at startup, not user-configurable at runtime.
       operationId: getDashboardDetail
       parameters:
         - name: dashboardId

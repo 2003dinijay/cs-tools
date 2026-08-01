@@ -153,6 +153,24 @@ function translateChangeRequestDashboardFilters(
   return out;
 }
 
+/** Shared "NUMBER — Subject" primary label, used by every resource whose
+ * response item carries `number`/`subject` fields (case, incident,
+ * change_request, problem). */
+function numberSubjectLabel(item: WidgetItem): string {
+  return (
+    [asString(item.number), asString(item.subject)].filter(Boolean).join(" — ") ||
+    "—"
+  );
+}
+
+/** Shared humanized-`state` secondary label, used by every resource whose
+ * response item carries a `state` field (case, change_request, problem —
+ * NOT incident, which has no state field and uses `priority` instead). */
+function stateSecondaryLabel(item: WidgetItem): string | undefined {
+  const state = asString(item.state);
+  return state ? humanizeState(state) : undefined;
+}
+
 export const WIDGET_RESOURCE_CONFIG: Record<
   BeWidgetResourceType,
   WidgetResourceConfig
@@ -160,23 +178,14 @@ export const WIDGET_RESOURCE_CONFIG: Record<
   case: {
     searchEndpoint: "/cases/search",
     itemsKey: "cases",
-    primaryLabel: (item) =>
-      [asString(item.number), asString(item.subject)]
-        .filter(Boolean)
-        .join(" — ") || "—",
-    secondaryLabel: (item) => {
-      const state = asString(item.state);
-      return state ? humanizeState(state) : undefined;
-    },
+    primaryLabel: numberSubjectLabel,
+    secondaryLabel: stateSecondaryLabel,
     buildHref: (filters) => casesHref(translateCaseDashboardFilters(filters)),
   },
   incident: {
     searchEndpoint: "/incidents/search",
     itemsKey: "incidents",
-    primaryLabel: (item) =>
-      [asString(item.number), asString(item.subject)]
-        .filter(Boolean)
-        .join(" — ") || "—",
+    primaryLabel: numberSubjectLabel,
     secondaryLabel: (item) => asString(item.priority),
     buildHref: (filters) =>
       operationsHref(
@@ -190,14 +199,8 @@ export const WIDGET_RESOURCE_CONFIG: Record<
   change_request: {
     searchEndpoint: "/change-requests/search",
     itemsKey: "changeRequests",
-    primaryLabel: (item) =>
-      [asString(item.number), asString(item.subject)]
-        .filter(Boolean)
-        .join(" — ") || "—",
-    secondaryLabel: (item) => {
-      const state = asString(item.state);
-      return state ? humanizeState(state) : undefined;
-    },
+    primaryLabel: numberSubjectLabel,
+    secondaryLabel: stateSecondaryLabel,
     buildHref: (filters) =>
       operationsHref(
         "change_requests",
@@ -210,14 +213,8 @@ export const WIDGET_RESOURCE_CONFIG: Record<
   problem: {
     searchEndpoint: "/problems/search",
     itemsKey: "problems",
-    primaryLabel: (item) =>
-      [asString(item.number), asString(item.subject)]
-        .filter(Boolean)
-        .join(" — ") || "—",
-    secondaryLabel: (item) => {
-      const state = asString(item.state);
-      return state ? humanizeState(state) : undefined;
-    },
+    primaryLabel: numberSubjectLabel,
+    secondaryLabel: stateSecondaryLabel,
     // No dashboard widget filters problems today; the tab has no URL filter
     // scheme of its own yet either, so this is unfiltered.
     buildHref: () => operationsHref("problems"),

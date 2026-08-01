@@ -48,11 +48,14 @@ describe("useDashboard", () => {
       id: "agents_pilot",
       displayName: "Engineer overview",
       isDefault: true,
+      isTeamBased: false,
       widgets: [
         {
           widgetId: "my_patches",
           displayName: "My Patches",
-          displayType: "single_score",
+          resourceType: "case",
+          shape: "count",
+          gridWidth: 3,
           filters: { assignedUserIds: ["user-1"], tags: ["patch"] },
         },
       ],
@@ -70,7 +73,9 @@ describe("useDashboard", () => {
       {
         widgetId: "my_patches",
         displayName: "My Patches",
-        displayType: "single_score",
+        resourceType: "case",
+        shape: "count",
+        gridWidth: 3,
         filters: { assignedUserIds: ["user-1"], tags: ["patch"] },
       },
     ]);

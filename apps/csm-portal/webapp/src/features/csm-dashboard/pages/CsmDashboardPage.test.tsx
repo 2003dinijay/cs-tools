@@ -114,4 +114,33 @@ describe("CsmDashboardPage", () => {
       "operations",
     );
   });
+
+  it("switches to another dashboard when picked from the switcher", () => {
+    mockListResult({ data: DASHBOARD_LIST, isLoading: false });
+
+    render(<CsmDashboardPage />);
+
+    expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
+      "agents_pilot",
+    );
+
+    const select = screen.getByRole("combobox");
+    fireEvent.mouseDown(select);
+    fireEvent.click(within(screen.getByRole("listbox")).getByText("Operations"));
+
+    expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
+      "operations",
+    );
+  });
+
+  it("shows an error state rather than an infinite skeleton when the list fails to load", () => {
+    mockListResult({ data: undefined, isLoading: false, isError: true });
+
+    render(<CsmDashboardPage />);
+
+    expect(
+      screen.getByText("Could not load the dashboard list."),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-landing-pilot")).not.toBeInTheDocument();
+  });
 });

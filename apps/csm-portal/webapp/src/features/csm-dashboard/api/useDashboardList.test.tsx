@@ -69,4 +69,16 @@ describe("useDashboardList", () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error?.message).toBe("boom");
   });
+
+  it("surfaces a query error rather than an empty list when the endpoint 404s", async () => {
+    // api.get resolves 404 to null; GET /dashboards has no path param and
+    // always returns 200 in practice, so a null here means the endpoint
+    // itself is missing (routing/deployment problem) — must not be
+    // silently treated as "zero dashboards configured".
+    getMock.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useDashboardList(), { wrapper });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+  });
 });

@@ -108,9 +108,9 @@ func assertJSONKeys(t *testing.T, obj map[string]json.RawMessage, want []string,
 	}
 }
 
-// assertJSONKeysSubset is like assertJSONKeys but only requires want to be
-// present; used for widgets that additionally carry an omitempty field
-// (groupBy/listLimit) beyond the base set.
+// assertJSONKeysSuperset is like assertJSONKeys but only requires every key in
+// want to be present; used for widgets that additionally carry an omitempty
+// field (groupBy/listLimit) beyond the base set.
 func assertJSONKeysSuperset(t *testing.T, obj map[string]json.RawMessage, want []string, context string) {
 	t.Helper()
 	for _, k := range want {
@@ -371,33 +371,31 @@ func TestGetDashboardDetail(t *testing.T) {
 			}
 		}
 
-		// Widgets with no assignedUserIds field in their template must not
-		// gain one during substitution: substituteCurrentUser only rewrites
-		// values already present, it never adds keys.
-		for _, id := range []string{"open_incident_team", "my_critical_open"} {
-			idx, ok := byID[id]
-			if !ok {
-				t.Fatalf("missing widget %q in response", id)
-			}
-			if id == "my_critical_open" {
-				// my_critical_open DOES carry assignedUserIds (the current
-				// user's critical/high cases) — verify it resolved cleanly
-				// instead of asserting absence.
-				filters := result.Widgets[idx].Filters
-				assignedRaw, present := filters["assignedUserIds"]
-				if !present {
-					t.Fatalf("widget %s filters has no assignedUserIds key", id)
-				}
-				assigned, ok := assignedRaw.([]any)
-				if !ok || len(assigned) != 1 || assigned[0] != testUser.UserID {
-					t.Errorf("widget %s assignedUserIds = %v, want [%q]", id, assignedRaw, testUser.UserID)
-				}
-				continue
-			}
-			filters := result.Widgets[idx].Filters
-			if _, present := filters["assignedUserIds"]; present {
-				t.Errorf("widget %s filters unexpectedly has an assignedUserIds key: %v", id, filters["assignedUserIds"])
-			}
+		// open_incident_team has no assignedUserIds field in its template and
+		// must not gain one during substitution: substituteCurrentUser only
+		// rewrites values already present, it never adds keys.
+		teamIdx, ok := byID["open_incident_team"]
+		if !ok {
+			t.Fatalf("missing widget %q in response", "open_incident_team")
+		}
+		teamFilters := result.Widgets[teamIdx].Filters
+		if v, present := teamFilters["assignedUserIds"]; present {
+			t.Errorf("widget open_incident_team filters unexpectedly has an assignedUserIds key: %v", v)
+		}
+
+		// my_critical_open DOES carry assignedUserIds (the current user's
+		// critical/high cases) — verify it resolved cleanly.
+		criticalIdx, ok := byID["my_critical_open"]
+		if !ok {
+			t.Fatalf("missing widget %q in response", "my_critical_open")
+		}
+		assignedRaw, present := result.Widgets[criticalIdx].Filters["assignedUserIds"]
+		if !present {
+			t.Fatalf("widget my_critical_open filters has no assignedUserIds key")
+		}
+		assigned, ok := assignedRaw.([]any)
+		if !ok || len(assigned) != 1 || assigned[0] != testUser.UserID {
+			t.Errorf("widget my_critical_open assignedUserIds = %v, want [%q]", assignedRaw, testUser.UserID)
 		}
 	})
 
@@ -427,8 +425,8 @@ func TestGetDashboardDetail(t *testing.T) {
 		}
 
 		byID := make(map[string]dashboardWidgetView)
-		for _, w := range result.Widgets {
-			byID[w.WidgetID] = w
+		for _, wd := range result.Widgets {
+			byID[wd.WidgetID] = wd
 		}
 
 		wantTypes := map[string]dashboard.ResourceType{
@@ -481,8 +479,8 @@ func TestGetDashboardDetail(t *testing.T) {
 		}
 
 		byID := make(map[string]dashboardWidgetView)
-		for _, w := range result.Widgets {
-			byID[w.WidgetID] = w
+		for _, wd := range result.Widgets {
+			byID[wd.WidgetID] = wd
 		}
 
 		critical, ok := byID["critical_vulns"]

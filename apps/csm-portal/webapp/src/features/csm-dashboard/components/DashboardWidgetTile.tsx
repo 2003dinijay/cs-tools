@@ -55,6 +55,23 @@ export default function DashboardWidgetTile({
     listLimit,
   );
   const config = WIDGET_RESOURCE_CONFIG[resourceType];
+
+  if (!config) {
+    // resourceType came from a runtime-configurable backend registry (not a
+    // compile-time-checked Go literal) — an unrecognized value must not
+    // crash this tile's render (config.buildHref below would throw).
+    return (
+      <Card variant="outlined" sx={{ p: 1.75 }}>
+        <Typography variant="caption" color="text.secondary">
+          {displayName}
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+          Unsupported widget type.
+        </Typography>
+      </Card>
+    );
+  }
+
   const href = config.buildHref(filters);
 
   return (

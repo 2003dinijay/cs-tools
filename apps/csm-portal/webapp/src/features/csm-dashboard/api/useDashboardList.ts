@@ -36,7 +36,15 @@ export function useDashboardList(): UseQueryResult<
     queryKey: [ApiQueryKeys.CSM_DASHBOARD_LIST],
     queryFn: async (): Promise<BeDashboardListItem[]> => {
       const res = await api.get<BeDashboardListItem[]>("/dashboards");
-      return res ?? [];
+      // GET /dashboards has no path param and always returns 200 (an empty
+      // array when DASHBOARDS_CONFIG is unset) — `api.get` resolving to
+      // `null` here means the endpoint itself 404'd (a routing/deployment
+      // problem), not "no dashboards configured". Throw so the query enters
+      // its error state instead of silently rendering an empty switcher.
+      if (res === null) {
+        throw new Error("GET /dashboards returned 404");
+      }
+      return res;
     },
     staleTime: 30_000,
   });

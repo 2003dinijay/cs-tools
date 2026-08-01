@@ -153,4 +153,41 @@ describe("DashboardWidgetTile", () => {
     expect(params.get("severities")).toBe("S1");
     expect(params.get("states")).toBe("open");
   });
+
+  it("renders a not-yet-supported message for shape pie/bar instead of crashing", async () => {
+    postMock.mockResolvedValue({ total: 0, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="cases_by_severity"
+        displayName="Open Cases by Severity"
+        resourceType="case"
+        shape="bar"
+        filters={{}}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("Not yet supported.")).toBeInTheDocument(),
+    );
+  });
+
+  it("renders an unsupported-widget message instead of crashing for an unrecognized resourceType", () => {
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="mystery_widget"
+        displayName="Mystery Widget"
+        // Simulates a resourceType the backend registry knows about (now
+        // runtime JSON config, not compile-time checked) but this frontend
+        // build doesn't yet have an entry for in WIDGET_RESOURCE_CONFIG.
+        resourceType={"future_resource" as unknown as never}
+        shape="count"
+        filters={{}}
+      />,
+    );
+
+    expect(screen.getByText("Mystery Widget")).toBeInTheDocument();
+    expect(screen.getByText("Unsupported widget type.")).toBeInTheDocument();
+    expect(postMock).not.toHaveBeenCalled();
+  });
 });

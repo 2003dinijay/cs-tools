@@ -73,6 +73,7 @@ export default function AbtDashboardHeader({
               value={selectedTeamId ?? ""}
               onChange={(e) => setSelectedTeamId(e.target.value || undefined)}
               displayEmpty
+              aria-label="Select team"
             >
               <MenuItem value="">
                 <em>All teams</em>
@@ -90,6 +91,7 @@ export default function AbtDashboardHeader({
             value={dashboardKey}
             onChange={(e) => onDashboardChange(e.target.value as DashboardKey)}
             displayEmpty
+            aria-label="Select dashboard"
           >
             {dashboardList.map((o) => (
               <MenuItem key={o.id} value={o.id}>

@@ -60,6 +60,13 @@ export function useWidgetData(
       limit,
     ],
     queryFn: async (): Promise<WidgetData> => {
+      if (!config) {
+        // A widget's resourceType came back from the backend (now a
+        // runtime-configurable registry, not a compile-time-checked Go
+        // literal) with no matching entry here — fail this widget's query
+        // rather than crash on the property accesses below.
+        throw new Error(`Unsupported widget resourceType: ${resourceType}`);
+      }
       const res = await api.post<
         { filters: Record<string, unknown>; pagination: { offset: number; limit: number } },
         Record<string, unknown>
