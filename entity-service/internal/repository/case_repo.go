@@ -173,8 +173,12 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		ws := domain.CaseWorkState(*workState)
 		cv.WorkState = &ws
 	}
+	cv.CreatedByUser = domain.NewUserReference(
+		cv.CreatedByDetails.ID, cv.CreatedByDetails.Email, cv.CreatedByDetails.Name)
 	if aeID != nil {
 		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: *aeID, Name: *aeName}
+		// This data source stores no email on the assignee join, only id and name.
+		cv.AssignedEngineerUser = domain.NewUserReference(*aeID, "", *aeName)
 	}
 	if pcID != nil {
 		// cases.parent_case_id is a foreign key into cases, so a parent resolved from
@@ -552,8 +556,12 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			cv.WorkState = workState
 			cv.CreatedOn = createdAt.UTC().Format(time.RFC3339)
 			cv.Product = &domain.EntityRef{ID: prodID, Name: prodName}
+			// The search projection carries only the creator's email, no id or
+			// display name, so the canonical reference keeps a null id.
+			cv.CreatedByUser = domain.NewUserReference("", cv.CreatedBy, "")
 			if aeID != nil {
 				cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: *aeID, Name: *aeName}
+				cv.AssignedEngineerUser = domain.NewUserReference(*aeID, "", *aeName)
 			}
 			if pcID != nil {
 				cv.ParentCase = &domain.EntityRef{ID: *pcID, Name: *pcNumber}

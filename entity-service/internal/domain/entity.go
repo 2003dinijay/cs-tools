@@ -33,6 +33,11 @@ const (
 	UserTypeCustomer UserType = "customer"
 	// UserTypeSystem identifies automated system actors.
 	UserTypeSystem UserType = "system"
+	// UserTypeExternal identifies a customer or partner contact, as reported by the
+	// ServiceNow data source. Note the two sources name this concept differently: the
+	// postgres source emits "customer", ServiceNow emits "external". Callers that
+	// branch on staff-vs-not must treat both as non-staff.
+	UserTypeExternal UserType = "external"
 )
 
 // User represents a single user entity as stored in the database.
@@ -63,6 +68,9 @@ const (
 	UserRoleCustomerAdmin UserRole = "customer_admin"
 	UserRolePartner       UserRole = "partner"
 	UserRolePartnerAdmin  UserRole = "partner_admin"
+	// UserRoleTimecardApprover exists upstream but was absent from this enum, so it
+	// could not be filtered on.
+	UserRoleTimecardApprover UserRole = "timecard_approver"
 )
 
 // UserSortField enumerates the columns by which user search results may be ordered.
@@ -92,10 +100,21 @@ type Pagination struct {
 // SearchUsersFilters holds the optional filter criteria for a user search.
 type SearchUsersFilters struct {
 	SearchQuery string     `json:"searchQuery"`
-	Roles       []UserRole `json:"roles"`
+	RoleIDs     []UserRole `json:"roleIds"`
 	UserNames   []string   `json:"userNames"`
 	Emails      []string   `json:"emails"`
-	Active      *bool      `json:"active"`
+	// UserIDs restricts the search to specific users. It intersects with the other
+	// filters, and supplying it also lifts the active-only default so a deactivated
+	// user stays retrievable by ID.
+	UserIDs []string `json:"userIds"`
+	// GroupIDs restricts the search to members of these groups. Resolved to a user-ID
+	// set before the upstream call, since the data source cannot join users against
+	// group membership in one query.
+	GroupIDs []string `json:"groupIds"`
+	// TeamIDs restricts the search to members of these teams, by team key. Teams are
+	// resolved to their group names via the registry, then to a user-ID set.
+	TeamIDs []string `json:"teamIds"`
+	Active  *bool    `json:"active"`
 }
 
 // UserSortBy specifies the sort field and direction for a user search.
@@ -123,15 +142,126 @@ type SearchUsersResponse struct {
 
 // SNUser is the user view returned by the ServiceNow data source.
 type SNUser struct {
-	ID        string   `json:"id"`
-	UserName  string   `json:"userName"`
-	Name      string   `json:"name"`
-	Email     string   `json:"email"`
-	TimeZone  *string  `json:"timeZone"`
+	ID       string  `json:"id"`
+	UserName string  `json:"userName"`
+	Name     string  `json:"name"`
+	Email    string  `json:"email"`
+	TimeZone *string `json:"timeZone"`
+	// MobilePhone is the number the on-call escalation flow dials -- the only phone
+	// field the platform surfaces. Nil when the backing record has none.
+	MobilePhone *string `json:"mobilePhone,omitempty"`
+	// UserType distinguishes staff from customer/partner contacts. Derived by the
+	// backing data source from role membership, not stored as a column.
+	UserType  UserType `json:"userType,omitempty"`
 	Active    bool     `json:"active"`
 	CreatedOn string   `json:"createdOn"`
 	UpdatedOn string   `json:"updatedOn"`
 	Roles     []string `json:"roles"`
+}
+
+// SNUserDetail is a single user's full profile: the user row plus the memberships and
+// project access a caller would otherwise have to assemble from several searches.
+//
+// The enrichment blocks are best-effort. Each is empty rather than absent when its
+// upstream lookup fails, so a partial profile still renders instead of erroring.
+type SNUserDetail struct {
+	SNUser
+	// Groups is every group the user belongs to.
+	Groups []UserGroupRef `json:"groups"`
+	// Teams is the subset of Groups that are registry teams.
+	Teams []UserTeamRef `json:"teams"`
+	// ProjectAccess is populated for external contacts only; it is nil for staff.
+	ProjectAccess []UserProjectAccess `json:"projectAccess,omitempty"`
+}
+
+// UserGroupRef is a group the user is a member of.
+type UserGroupRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// UserTeamRef is a team the user is a member of. ID is the registry team key, which is
+// stable across environments -- unlike the underlying group id.
+type UserTeamRef struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Family string `json:"family,omitempty"`
+}
+
+// UserProjectAccess is one project-contact row for a user, reported as stored rather than
+// as filtered.
+//
+// The backing access rule only grants access when the row's email matches the login
+// exactly AND a contact record is linked. Rows failing either test make the project, and
+// every case on it, silently invisible to that user, so they are reported here with
+// GrantsCaseAccess spelling out the verdict instead of being dropped.
+type UserProjectAccess struct {
+	ProjectID   string `json:"projectId"`
+	ProjectName string `json:"projectName"`
+	// ContactEmail is the email as stored on the row itself.
+	ContactEmail string `json:"contactEmail"`
+	// ContactRecordPresent is false when the row has no contact record linked.
+	ContactRecordPresent bool `json:"contactRecordPresent"`
+	// ContactRecordEmail is the linked record's own email, which may differ from
+	// ContactEmail -- that mismatch is itself an access fault.
+	ContactRecordEmail   string   `json:"contactRecordEmail"`
+	EmailMatchesLogin    bool     `json:"emailMatchesLogin"`
+	RegistrationState    string   `json:"registrationState"`
+	NotificationsEnabled bool     `json:"notificationsEnabled"`
+	Roles                []string `json:"roles"`
+	GrantsCaseAccess     bool     `json:"grantsCaseAccess"`
+}
+
+// Role is an assignable platform role.
+type Role struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// SearchRolesRequest is the input for POST /roles/search.
+type SearchRolesRequest struct {
+	Filters    SearchRolesFilters `json:"filters"`
+	Pagination Pagination         `json:"pagination"`
+}
+
+// SearchRolesFilters holds optional filter criteria for role searches.
+type SearchRolesFilters struct {
+	SearchQuery string `json:"searchQuery,omitempty"`
+}
+
+// SearchRolesResponse is the paginated result of a role search.
+type SearchRolesResponse struct {
+	Roles  []Role `json:"roles"`
+	Total  int    `json:"total"`
+	Offset int    `json:"offset"`
+	Limit  int    `json:"limit"`
+}
+
+// Team is one of the organisation's teams. ID is the registry key, stable across
+// environments; the backing group's id is not.
+type Team struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Family string `json:"family,omitempty"`
+}
+
+// SearchTeamsRequest is the input for POST /teams/search.
+type SearchTeamsRequest struct {
+	Filters    SearchTeamsFilters `json:"filters"`
+	Pagination Pagination         `json:"pagination"`
+}
+
+// SearchTeamsFilters holds optional filter criteria for team searches.
+type SearchTeamsFilters struct {
+	SearchQuery string `json:"searchQuery,omitempty"`
+}
+
+// SearchTeamsResponse is the paginated result of a team search.
+type SearchTeamsResponse struct {
+	Teams  []Team `json:"teams"`
+	Total  int    `json:"total"`
+	Offset int    `json:"offset"`
+	Limit  int    `json:"limit"`
 }
 
 // SearchSNUsersResponse is the paginated result of a ServiceNow user search.
@@ -142,6 +272,14 @@ type SearchSNUsersResponse struct {
 	Offset int      `json:"offset"`
 }
 
+// UserTeam identifies the caller's resolved ABT (Account-Based Team),
+// derived live from ServiceNow group membership on every GET /users/me call.
+type UserTeam struct {
+	TeamKey  string `json:"teamKey"`
+	TeamName string `json:"teamName"`
+	Family   string `json:"family"` // "cre" | "sre"
+}
+
 // GetUserMeResponse is the response for GET /users/me from the ServiceNow data source.
 type GetUserMeResponse struct {
 	ID        string   `json:"id"`
@@ -150,6 +288,10 @@ type GetUserMeResponse struct {
 	LastName  string   `json:"lastName"`
 	TimeZone  *string  `json:"timeZone,omitempty"`
 	Roles     []string `json:"roles"`
+	// Team is nil when the caller has no resolvable ABT team membership, or
+	// when team resolution failed — team resolution is best-effort and never
+	// fails the identity response.
+	Team *UserTeam `json:"team,omitempty"`
 }
 
 // PatchUserMeRequest is the request body for PATCH /users/me.
@@ -450,6 +592,10 @@ type ProjectView struct {
 	Name             string           `json:"name"`
 	Key              string           `json:"key"`
 	SubscriptionType SubscriptionType `json:"subscriptionType"`
+	// StartDate is the start of the project's current renewed period, and is nil
+	// when the backing data source has no start date recorded for this project
+	// (e.g. ServiceNow leaves it blank).
+	StartDate *time.Time `json:"startDate"`
 	// EndDate is nil when the backing data source has no end date recorded
 	// for this project (e.g. ServiceNow leaves it blank).
 	EndDate   *time.Time `json:"endDate"`
@@ -1045,6 +1191,51 @@ type PersonRef struct {
 	Email *string `json:"email"`
 }
 
+// UserReference is the canonical reference to a person appearing anywhere in
+// this service's responses: exactly the user's id, email and display name.
+// Every person-valued field carries one as a sibling of whatever
+// actor fields that response already returned, so a consumer has a single
+// shape for "who did this", whichever entity it hangs off.
+//
+// ID is a pointer, serialized as an explicit null and never omitted, and that
+// is deliberate — do not "fix" it.
+//
+// The backing data source hands over a user id only at the sites where it
+// already had to resolve the user record for another reason (comment and
+// attachment rows). Everywhere else — case creator, assignee on some
+// responses, activity-feed actors, watchers — filling the id in would mean an
+// extra per-row user lookup on hot list endpoints, in a data-source layer that
+// is shared with a live production consumer. That cost was weighed and
+// rejected: the id is left null there on purpose. Resolving it lazily inside
+// this service would reintroduce exactly the per-row query that was rejected.
+//
+// Email and Name are the load-bearing fields and are populated at every site.
+// A consumer that needs the id resolves it from the email through its own
+// cached user lookup. An explicit null says "no id available here, resolve it
+// yourself"; an omitted key would be indistinguishable from an older producer
+// that does not populate the field at all.
+type UserReference struct {
+	ID    *string `json:"id"`
+	Email string  `json:"email"`
+	Name  string  `json:"name"`
+}
+
+// NewUserReference builds a UserReference for an actor. Pass the user's id when
+// the data source already supplies one for that site, or "" when it does not:
+// an empty id becomes an explicit JSON null rather than a fabricated value.
+// Returns nil only when there is no actor at all, so a caller never emits a
+// reference to nobody.
+func NewUserReference(id, email, name string) *UserReference {
+	if id == "" && email == "" && name == "" {
+		return nil
+	}
+	ref := &UserReference{Email: email, Name: name}
+	if id != "" {
+		ref.ID = &id
+	}
+	return ref
+}
+
 // DeployedProductRef is a compact reference to a deployed product with a
 // computed display name combining the product name and version.
 type DeployedProductRef struct {
@@ -1054,21 +1245,25 @@ type DeployedProductRef struct {
 
 // CaseView is the enriched read representation of a case.
 type CaseView struct {
-	ID                     string               `json:"id"`
-	Number                 string               `json:"number"`
-	InternalID             string               `json:"internalId"`
-	Subject                string               `json:"subject"`
-	Description            string               `json:"description"`
-	Severity               CaseSeverity         `json:"severity"`
-	IssueType              CaseIssueType        `json:"issueType"`
-	State                  CaseState            `json:"state"`
-	WorkState              *CaseWorkState       `json:"workState"`
-	Type                   *string              `json:"type"`
-	EngagementType         *string              `json:"engagementType"`
-	CreatedOn              time.Time            `json:"createdOn"`
-	UpdatedOn              time.Time            `json:"updatedOn"`
-	ClosedOn               *time.Time           `json:"closedOn"`
-	CreatedByDetails       UserRef              `json:"createdBy"`
+	ID               string         `json:"id"`
+	Number           string         `json:"number"`
+	InternalID       string         `json:"internalId"`
+	Subject          string         `json:"subject"`
+	Description      string         `json:"description"`
+	Severity         CaseSeverity   `json:"severity"`
+	IssueType        CaseIssueType  `json:"issueType"`
+	State            CaseState      `json:"state"`
+	WorkState        *CaseWorkState `json:"workState"`
+	Type             *string        `json:"type"`
+	EngagementType   *string        `json:"engagementType"`
+	CreatedOn        time.Time      `json:"createdOn"`
+	UpdatedOn        time.Time      `json:"updatedOn"`
+	ClosedOn         *time.Time     `json:"closedOn"`
+	CreatedByDetails UserRef        `json:"createdBy"`
+	// CreatedByUser is the canonical user reference for the case creator, a
+	// sibling of createdBy. Its id is populated only where the backing data
+	// source already supplies one, and null otherwise: see UserReference.
+	CreatedByUser          *UserReference       `json:"createdByUser"`
 	ProjectDetails         EntityRef            `json:"project"`
 	DeploymentDetails      *EntityRef           `json:"deployment"`
 	DeployedProductDetails *DeployedProductRef  `json:"deployedProduct"`
@@ -1078,9 +1273,14 @@ type CaseView struct {
 	AssignedTeam           *EntityRef           `json:"assignedTeam"`
 	Conversation           *EntityRef           `json:"conversation"`
 	AssignedEngineer       *AssignedEngineerRef `json:"assignedEngineer"`
-	ParentCase             *CaseNumberRef       `json:"parentCase"`
-	RelatedCase            *CaseNumberRef       `json:"relatedCase"`
-	AccountDetails         *AccountRef          `json:"account"`
+	// AssignedEngineerUser is the canonical user reference for the assigned
+	// engineer, a sibling of assignedEngineer. Its id is populated: the
+	// assignee's own id already arrives with the response, so no extra lookup
+	// is involved. Null when the case is unassigned.
+	AssignedEngineerUser *UserReference `json:"assignedEngineerUser"`
+	ParentCase           *CaseNumberRef `json:"parentCase"`
+	RelatedCase          *CaseNumberRef `json:"relatedCase"`
+	AccountDetails       *AccountRef    `json:"account"`
 	// LinkedServiceRequests lists any service-request cases whose parent points to this
 	// case. Populated on every case detail response, not just high-severity cases.
 	LinkedServiceRequests []LinkedServiceRequestRef `json:"linkedServiceRequests"`
@@ -1177,11 +1377,15 @@ type SearchCasesRequest struct {
 // SearchCaseView is the unified case representation returned in search results.
 // Fields absent for a given data source are nil.
 type SearchCaseView struct {
-	ID               string               `json:"id"`
-	InternalID       string               `json:"internalId"`
-	Number           string               `json:"number"`
-	CreatedOn        string               `json:"createdOn"`
-	CreatedBy        string               `json:"createdBy"`
+	ID         string `json:"id"`
+	InternalID string `json:"internalId"`
+	Number     string `json:"number"`
+	CreatedOn  string `json:"createdOn"`
+	CreatedBy  string `json:"createdBy"`
+	// CreatedByUser is the canonical user reference for the case creator, a
+	// sibling of createdBy. Its id is populated only where the backing data
+	// source already supplies one, and null otherwise: see UserReference.
+	CreatedByUser    *UserReference       `json:"createdByUser"`
 	Subject          *string              `json:"subject"`
 	Description      *string              `json:"description"`
 	IssueType        *string              `json:"issueType"`
@@ -1198,9 +1402,13 @@ type SearchCaseView struct {
 	Deployment       *EntityRef           `json:"deployment"`
 	DeployedProduct  *EntityRef           `json:"deployedProduct"`
 	AssignedEngineer *AssignedEngineerRef `json:"assignedEngineer"`
-	ParentCase       *EntityRef           `json:"parentCase"`
-	RelatedCase      *EntityRef           `json:"relatedCase"`
-	Conversation     *EntityRef           `json:"conversation"`
+	// AssignedEngineerUser is the canonical user reference for the assigned
+	// engineer, a sibling of assignedEngineer. Its id is populated from the
+	// assignee id the response already carries. Null when unassigned.
+	AssignedEngineerUser *UserReference `json:"assignedEngineerUser"`
+	ParentCase           *EntityRef     `json:"parentCase"`
+	RelatedCase          *EntityRef     `json:"relatedCase"`
+	Conversation         *EntityRef     `json:"conversation"`
 }
 
 // SearchCasesResponse is the paginated result of a case search.
@@ -1302,19 +1510,23 @@ type CaseLabelRef struct {
 
 // UpdatedCase carries the fields of a case that may change after an update.
 type UpdatedCase struct {
-	ID             string               `json:"id"`
-	UpdatedOn      time.Time            `json:"updatedOn"`
-	UpdatedBy      string               `json:"updatedBy,omitempty"`
-	State          CaseState            `json:"state,omitempty"`
-	Severity       CaseSeverity         `json:"severity,omitempty"`
-	WorkState      *CaseWorkState       `json:"workState"`
-	WatchList      []WatchListUser      `json:"watchList,omitempty"`
-	AssignedTo     *AssignedEngineerRef `json:"assignedTo,omitempty"`
-	ResolutionCode *CaseResolutionCode  `json:"resolutionCode,omitempty"`
-	Cause          *CaseCause           `json:"cause,omitempty"`
-	CloseNotes     *string              `json:"closeNotes,omitempty"`
-	ResolvedOn     *time.Time           `json:"resolvedOn,omitempty"`
-	ParentCase     *CaseNumberRef       `json:"parentCase,omitempty"`
+	ID         string               `json:"id"`
+	UpdatedOn  time.Time            `json:"updatedOn"`
+	UpdatedBy  string               `json:"updatedBy,omitempty"`
+	State      CaseState            `json:"state,omitempty"`
+	Severity   CaseSeverity         `json:"severity,omitempty"`
+	WorkState  *CaseWorkState       `json:"workState"`
+	WatchList  []WatchListUser      `json:"watchList,omitempty"`
+	AssignedTo *AssignedEngineerRef `json:"assignedTo,omitempty"`
+	// AssignedToUser is the canonical user reference for the new assignee, a
+	// sibling of assignedTo. Present only when the update set the assignee, and
+	// its id is populated from the assignee id the response already carries.
+	AssignedToUser *UserReference      `json:"assignedToUser,omitempty"`
+	ResolutionCode *CaseResolutionCode `json:"resolutionCode,omitempty"`
+	Cause          *CaseCause          `json:"cause,omitempty"`
+	CloseNotes     *string             `json:"closeNotes,omitempty"`
+	ResolvedOn     *time.Time          `json:"resolvedOn,omitempty"`
+	ParentCase     *CaseNumberRef      `json:"parentCase,omitempty"`
 	// BestCaseFixEta echoes the updated internal-only best-case fix-commitment
 	// date (u_best_case_fix_eta) back on a successful PATCH, as a date-only
 	// "YYYY-MM-DD" string. Present only when the update set bestCaseFixEta.
@@ -1337,6 +1549,13 @@ type WatchListUser struct {
 	UserName string `json:"userName"`
 	Name     string `json:"name,omitempty"`
 	Email    string `json:"email,omitempty"`
+	// User is the canonical user reference for this watcher, a sibling of the
+	// flat id/userName/name/email fields. Its id is always null: a watch-list
+	// entry is not guaranteed to point at a user record (the list collapses
+	// several upstream lists, which may also name groups), so emitting the
+	// entry's own id here could hand a consumer an id that is not a user's.
+	// See UserReference.
+	User *UserReference `json:"user"`
 }
 
 // CreateCaseResponse is the unified response for POST /cases across all data sources.
@@ -1422,7 +1641,13 @@ type CaseComment struct {
 	Type      CommentType    `json:"type"`
 	Content   string         `json:"content"`
 	CreatedBy CommentUserRef `json:"createdBy"`
-	CreatedOn time.Time      `json:"createdOn"`
+	// CreatedByUser is the canonical user reference for the comment author, a
+	// sibling of createdBy (whose id field is the author's email, not an id).
+	// Its id is populated when the backing data source resolved the author to a
+	// real user record, and null otherwise — a comment can be written by an
+	// automation or integration account that is not a user. See UserReference.
+	CreatedByUser *UserReference `json:"createdByUser"`
+	CreatedOn     time.Time      `json:"createdOn"`
 }
 
 // CreateCaseCommentRequest is the input for creating a new case comment.
@@ -1531,6 +1756,10 @@ type CaseActivity struct {
 	CreatedByFirstName string       `json:"createdByFirstName"`
 	CreatedByLastName  string       `json:"createdByLastName"`
 	CreatedByFullName  string       `json:"createdByFullName"`
+	// CreatedByUser is the canonical user reference for the actor behind this
+	// activity entry, a sibling of the createdBy* fields. Its id is always
+	// null: the activity feed carries no user id. See UserReference.
+	CreatedByUser *UserReference `json:"createdByUser"`
 	// CommentType is set only for Type == ActivityTypeComment.
 	CommentType *CommentType `json:"commentType,omitempty"`
 	// FileName, ContentType, SizeBytes, and DownloadURL are set only for
@@ -1571,6 +1800,11 @@ type Comment struct {
 	Type        CommentType    `json:"type"`
 	CreatedOn   time.Time      `json:"createdOn"`
 	CreatedBy   CommentUserRef `json:"createdBy"`
+	// CreatedByUser is the canonical user reference for the comment author, a
+	// sibling of createdBy (whose id field is the author's email, not an id).
+	// Its id is populated when the backing data source resolved the author to a
+	// real user record, and null otherwise. See UserReference.
+	CreatedByUser *UserReference `json:"createdByUser"`
 }
 
 // SearchCommentsRequest is the input for POST /comments/search.
@@ -1646,9 +1880,14 @@ type Attachment struct {
 	SizeBytes     int           `json:"sizeBytes"`
 	Description   *string       `json:"description"`
 	CreatedBy     UserRef       `json:"createdBy"`
-	CreatedOn     time.Time     `json:"createdOn"`
-	DownloadURL   *string       `json:"downloadUrl"`
-	PreviewURL        *string       `json:"previewUrl"`
+	// CreatedByUser is the canonical user reference for whoever uploaded the
+	// attachment, a sibling of createdBy. Its id is populated when the backing
+	// data source resolved the uploader to a real user record, and null
+	// otherwise. See UserReference.
+	CreatedByUser *UserReference `json:"createdByUser"`
+	CreatedOn     time.Time      `json:"createdOn"`
+	DownloadURL   *string        `json:"downloadUrl"`
+	PreviewURL    *string        `json:"previewUrl"`
 }
 
 // CreateAttachmentRequest is the input for POST /attachments.
@@ -1949,6 +2188,13 @@ type SearchContactsFilters struct {
 // ProjectContact is a contact associated with a project. Supported by the
 // ServiceNow data source only; there is no Postgres equivalent.
 type ProjectContact struct {
+	// ID is the contact's user id, for linking a row to that user's profile. Nil when
+	// the row has no contact record linked, or when the backing instance predates the
+	// field -- both are normal, so callers must render the row without a link rather
+	// than treating it as an error. A pointer keeps "no id" distinguishable from an
+	// empty id internally; on the wire both a nil and an absent id are omitted, so the
+	// published shape is unchanged.
+	ID                   *string  `json:"id,omitempty"`
 	Name                 string   `json:"name"`
 	Email                string   `json:"email"`
 	RegistrationState    string   `json:"registrationState"`

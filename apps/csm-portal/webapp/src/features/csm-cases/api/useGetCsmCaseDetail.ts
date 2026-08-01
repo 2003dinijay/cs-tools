@@ -18,7 +18,11 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { ApiQueryKeys } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
-import { severityFromPriority, uiStateFromBe } from "@api/backend/mappers";
+import {
+  severityFromPriority,
+  uiStateFromBe,
+  userReferenceFromBe,
+} from "@api/backend/mappers";
 import type { BeCaseView } from "@api/backend/types";
 import type { CsmCaseDetail } from "@features/csm-cases/types/csmCases";
 
@@ -43,6 +47,7 @@ function detailFromBeCase(
       name: w.name?.trim() || w.userName,
       email,
       isMe: !!email && !!myEmail && email.toLowerCase() === myEmail,
+      user: userReferenceFromBe(w.user),
     };
   });
   // createdBy.name can be empty for unhydrated users, so fall back to the email.
@@ -90,6 +95,7 @@ function detailFromBeCase(
     assignee,
     assigneeName,
     assigneeEmail,
+    assigneeUser: userReferenceFromBe(c.assignedEngineerUser),
     assigneeIsMe,
     slaClockType: "ack",
     minutesToBreach: 0,
@@ -101,6 +107,7 @@ function detailFromBeCase(
     conversationId: c.conversation?.id,
     createdBy: reporter,
     createdByEmail: c.createdBy?.email,
+    createdByUser: userReferenceFromBe(c.createdByUser),
     customerContext: {
       accountName: customer,
       // Account tier from the embedded account's `type` (e.g. "Enterprise");

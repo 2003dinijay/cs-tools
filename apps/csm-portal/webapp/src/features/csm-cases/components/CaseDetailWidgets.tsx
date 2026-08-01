@@ -550,7 +550,8 @@ export function WatchersWidget({
               label={
                 <UserRefLink
                   name={w.isMe ? `${w.name} (you)` : w.name}
-                  email={w.email}
+                  email={w.user?.email || w.email}
+                  userId={w.user?.id}
                 />
               }
               disabled={isSaving}
@@ -841,8 +842,12 @@ export function AttachmentsWidget({
                   )}
                   <Typography variant="caption" color="text.secondary" noWrap>
                     {formatBytes(a.size)} · {a.contentType} · uploaded by{" "}
-                    <UserRefLink name={a.uploadedBy} email={a.uploadedByEmail} /> ·{" "}
-                    <RelativeTime iso={a.uploadedAt} />
+                    <UserRefLink
+                      name={a.uploadedBy}
+                      email={a.uploadedByUser?.email || a.uploadedByEmail}
+                      userId={a.uploadedByUser?.id}
+                    />{" "}
+                    · <RelativeTime iso={a.uploadedAt} />
                   </Typography>
                 </Box>
                 {preview &&

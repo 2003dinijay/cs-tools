@@ -278,7 +278,11 @@ export default function CsmCaseCommentBubble({
       >
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
           <Typography variant="subtitle2">
-            <UserRefLink name={comment.authorName} email={comment.authorEmail} />
+            <UserRefLink
+              name={comment.authorName}
+              email={comment.authorUser?.email || comment.authorEmail}
+              userId={comment.authorUser?.id}
+            />
           </Typography>
           {comment.authorRole !== "wso2_engineer" && (
             <Chip

@@ -100,6 +100,7 @@ func (s *snCommentSearchService) SearchComments(ctx context.Context, req domain.
 				LastName:  c.CreatedByLastName,
 				FullName:  c.CreatedByFullName,
 			},
+			CreatedByUser: snUserReference(c.CreatedByUser, c.CreatedBy, c.CreatedByFullName),
 		})
 	}
 

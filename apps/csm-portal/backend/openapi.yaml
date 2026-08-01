@@ -915,6 +915,153 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /users/{id}:
+    get:
+      summary: Get one user's full profile.
+      description: >
+        Returns the user row plus every group they belong to, the subset of those that are
+        teams, and for external contacts their per-project access with the reason access is
+        or is not granted. ServiceNow data source only. A deactivated user is still
+        returned — that state is usually the answer the caller is looking for.
+      operationId: getUserById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The user's profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SNUserDetail'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /roles/search:
+    post:
+      summary: Search the role catalogue.
+      description: >
+        The platform's curated set of assignable role keys — the same values the user search
+        accepts in roleIds. The body is optional; omitting it returns the first page
+        unfiltered.
+      operationId: postRolesSearch
+      requestBody:
+        description: Role search payload
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRolesRequest'
+      responses:
+        "200":
+          description: Matching roles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchRolesResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /teams/search:
+    post:
+      summary: Search the team registry.
+      description: >
+        A team's id is its registry key, which is stable across environments — unlike the
+        backing group's id. The body is optional.
+      operationId: postTeamsSearch
+      requestBody:
+        description: Team search payload
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchTeamsRequest'
+      responses:
+        "200":
+          description: Matching teams.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchTeamsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /users/search:
     post:
       summary: Search users with optional filters, sort, and pagination.
@@ -1160,7 +1307,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Project'
+                $ref: '#/components/schemas/ProjectDetails'
         "400":
           description: BadRequest
           content:
@@ -1296,6 +1443,66 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /projects/{id}/contacts/{contactId}:
+    get:
+      summary: Get one contact's attributes for a single project.
+      description: >
+        Returns the contact's roles on this project, their registration state and their
+        notification preference. Returns 404 when the contact is not a contact on this
+        project — including when their row has no linked contact record and therefore no id
+        to match.
+      operationId: getProjectContact
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: contactId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The contact's attributes for this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectContact'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Contact not found on this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
           content:
             application/json:
               schema:
@@ -4579,6 +4786,10 @@ components:
               format: uuid
             name:
               type: string
+        assignedToUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         resolutionCode:
           $ref: '#/components/schemas/CaseResolutionCode'
           nullable: true
@@ -4697,6 +4908,10 @@ components:
         email:
           type: string
           format: email
+        user:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
 
     Tag:
       type: object
@@ -5060,6 +5275,41 @@ components:
           type: string
           format: email
 
+    UserReference:
+      type: object
+      nullable: true
+      description: >-
+        Canonical reference to a person: id, email and display name, nothing
+        else. Emitted as a sibling of whatever actor fields a response already
+        carried, so every "who did this" value has one shape.
+
+
+        `id` is nullable by design. It is populated only where the backing data
+        source already resolves the actor to a user record (comment and
+        attachment authors, and the case assignee); it is deliberately left null
+        elsewhere (case creator, activity-feed actors, watchers) rather than
+        adding a per-row user lookup to hot list endpoints. `email` and `name`
+        are populated everywhere, so a consumer that needs the id resolves it
+        from the email through its own cached user lookup. The key is always
+        present: null means "no id available here", never "this producer is too
+        old to send one".
+      required: [id, email, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+          nullable: true
+          example: 00000000-0000-0000-0000-000000000000
+        email:
+          type: string
+          description: >-
+            The actor as recorded. Usually an email address, but can be a
+            non-user identifier such as an automation account.
+          example: jane.doe@example.com
+        name:
+          type: string
+          example: Jane Doe
+
     EntityRef:
       type: object
       properties:
@@ -5160,6 +5410,10 @@ components:
           description: Timestamp when the case was closed. null if not yet closed.
         createdBy:
           $ref: '#/components/schemas/UserRef'
+        createdByUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         project:
           $ref: '#/components/schemas/EntityRef'
         deployment:
@@ -5192,6 +5446,10 @@ components:
             - $ref: '#/components/schemas/EntityRef'
         assignedEngineer:
           $ref: '#/components/schemas/AssignedEngineerRef'
+        assignedEngineerUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         parentCase:
           $ref: '#/components/schemas/CaseNumberRef'
         relatedCase:
@@ -5376,6 +5634,10 @@ components:
           description: Timestamp when the case was closed. null if not yet closed.
         createdBy:
           $ref: '#/components/schemas/UserIDEmailRef'
+        createdByUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         project:
           $ref: '#/components/schemas/EntityRef'
         deployment:
@@ -5392,6 +5654,10 @@ components:
             - $ref: '#/components/schemas/EntityRef'
         assignedEngineer:
           $ref: '#/components/schemas/AssignedEngineerRef'
+        assignedEngineerUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         parentCase:
           $ref: '#/components/schemas/CaseNumberRef'
         relatedCase:
@@ -5439,6 +5705,27 @@ components:
         phoneNumber:
           type: string
           description: Mobile phone number in E.164 format (sourced from SCIM)
+        team:
+          nullable: true
+          description: >
+            The caller's resolved account-based team. Absent when the caller has no
+            resolvable team membership, or when team resolution failed.
+          allOf:
+            - $ref: '#/components/schemas/UserTeam'
+
+    UserTeam:
+      type: object
+      description: An account-based team the caller belongs to.
+      properties:
+        teamKey:
+          type: string
+        teamName:
+          type: string
+        family:
+          type: string
+          description: >
+            Team family classification. May be empty: not every team is
+            classified into a family.
 
     UserUpdatePayload:
       type: object
@@ -5485,6 +5772,169 @@ components:
           minimum: 0
           default: 0
 
+    UserType:
+      type: string
+      description: >
+        Whether the user is staff or a customer/partner contact. The ServiceNow data source
+        emits internal or external; the postgres source emits internal, customer or system.
+        Callers branching on staff-vs-not must treat customer and external alike.
+      enum: [internal, external, customer, system]
+
+    RoleId:
+      type: string
+      description: A platform role key, as returned by POST /roles/search.
+      enum: [internal, agent, admin, commenter, external, customer, customer_admin, partner, partner_admin, timecard_approver]
+
+    Role:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          $ref: '#/components/schemas/RoleId'
+        name:
+          type: string
+
+    SearchRolesRequest:
+      type: object
+      properties:
+        filters:
+          type: object
+          properties:
+            searchQuery:
+              type: string
+        pagination:
+          $ref: '#/components/schemas/UserPagination'
+
+    SearchRolesResponse:
+      type: object
+      required: [roles, total, offset, limit]
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
+
+    Team:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          description: Registry team key. Stable across environments, unlike the group's id.
+        name:
+          type: string
+        family:
+          type: string
+
+    SearchTeamsRequest:
+      type: object
+      properties:
+        filters:
+          type: object
+          properties:
+            searchQuery:
+              type: string
+        pagination:
+          $ref: '#/components/schemas/UserPagination'
+
+    SearchTeamsResponse:
+      type: object
+      required: [teams, total, offset, limit]
+      properties:
+        teams:
+          type: array
+          items:
+            $ref: '#/components/schemas/Team'
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
+
+    UserGroupRef:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+
+    UserTeamRef:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        family:
+          type: string
+
+    UserProjectAccess:
+      type: object
+      description: >
+        One project-contact row for a user, reported as stored rather than as filtered. The
+        backing access rule grants access only when the row's email matches the login exactly
+        AND a contact record is linked; rows failing either test make the project, and every
+        case on it, silently invisible to that user.
+      required: [projectId, projectName, contactEmail, contactRecordPresent, emailMatchesLogin, grantsCaseAccess]
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        projectName:
+          type: string
+        contactEmail:
+          type: string
+        contactRecordPresent:
+          type: boolean
+        contactRecordEmail:
+          type: string
+        emailMatchesLogin:
+          type: boolean
+        registrationState:
+          type: string
+        notificationsEnabled:
+          type: boolean
+        roles:
+          type: array
+          items:
+            type: string
+        grantsCaseAccess:
+          type: boolean
+
+    SNUserDetail:
+      type: object
+      description: >
+        One user's full profile. The membership and project-access blocks are best-effort:
+        each is empty rather than absent when its upstream lookup fails.
+      allOf:
+        - $ref: '#/components/schemas/SNUser'
+        - type: object
+          properties:
+            groups:
+              type: array
+              items:
+                $ref: '#/components/schemas/UserGroupRef'
+            teams:
+              type: array
+              items:
+                $ref: '#/components/schemas/UserTeamRef'
+            projectAccess:
+              type: array
+              description: Present for external contacts only.
+              items:
+                $ref: '#/components/schemas/UserProjectAccess'
+
     UserSearchFilters:
       type: object
       properties:
@@ -5492,13 +5942,33 @@ components:
           type: string
           maxLength: 200
           description: Case-insensitive match against username and email.
-        roles:
+        roleIds:
           type: array
           maxItems: 20
           items:
+            $ref: '#/components/schemas/RoleId'
+          description: Filter by one or more roles. ServiceNow data source only.
+        userIds:
+          type: array
+          maxItems: 200
+          items:
             type: string
-            enum: [internal, agent, admin, commenter, external, customer, customer_admin, partner, partner_admin]
-          description: Filter by one or more ServiceNow roles. ServiceNow data source only.
+            format: uuid
+          description: >
+            Restrict to specific users. Intersects with the other filters. Supplying this
+            also lifts the active-only default, so a deactivated user stays retrievable by
+            id. ServiceNow data source only.
+        groupIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Restrict to members of these groups. ServiceNow data source only.
+        teamIds:
+          type: array
+          items:
+            type: string
+          description: Restrict to members of these teams, by team key. ServiceNow data source only.
         userNames:
           type: array
           maxItems: 50
@@ -5563,6 +6033,14 @@ components:
         timeZone:
           type: string
           nullable: true
+        mobilePhone:
+          type: string
+          nullable: true
+          description: >
+            The number the on-call escalation flow dials — the only phone field the platform
+            surfaces.
+        userType:
+          $ref: '#/components/schemas/UserType'
         active:
           type: boolean
         createdOn:
@@ -5914,6 +6392,30 @@ components:
                   default: 20
                   maximum: 100
 
+    ProjectContact:
+      type: object
+      description: A contact's attributes for one project.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: >
+            The contact's user id, for linking the row to that user's profile. Absent when the
+            row has no contact record linked, or when the backing instance predates the field —
+            render the row unlinked rather than treating it as an error.
+        name:
+          type: string
+        email:
+          type: string
+        registrationState:
+          type: string
+        notificationsEnabled:
+          type: boolean
+        roles:
+          type: array
+          items:
+            type: string
+
     ProjectContactSearchResponse:
       type: object
       properties:
@@ -5922,6 +6424,13 @@ components:
           items:
             type: object
             properties:
+              id:
+                type: string
+                format: uuid
+                description: >
+                  The contact's user id, for linking the row to that user's profile. Absent when the
+                  row has no contact record linked, or when the backing instance predates the field —
+                  render the row unlinked rather than treating it as an error.
               name:
                 type: string
               email:
@@ -5942,52 +6451,160 @@ components:
           type: integer
           description: Total number of matching contacts
 
-    Project:
+    ProjectClosureFields:
       type: object
+      description: >
+        Closure-tracking fields shared by the project search row and the project
+        detail response. Only populated for projects sourced from the backing
+        data source; null otherwise.
       properties:
-        id:
+        closureState:
           type: string
-        accountId:
+          nullable: true
+          description: >
+            The project's overall closure/access state. Derived by the backing data
+            source from the three sub-states below; never settable directly.
+        endDateClosureState:
           type: string
-        sfId:
+          nullable: true
+        invoiceDueDateClosureState:
           type: string
-        name:
+          nullable: true
+        complianceViolationClosureState:
           type: string
-        projectKey:
+          nullable: true
+        complianceViolationDate:
           type: string
-        subscriptionType:
-          type: string
-          enum:
-            - development_support
-            - managed_cloud_subscription
-            - evaluation_subscription
-            - subscription
-            - cloud_evaluation_support
-            - internal
-            - platformer_subscription
-            - cloud_support
-            - professional_services
-        startDate:
-          type: string
-          format: date-time
-        endDate:
-          type: string
-          format: date-time
-        createdOn:
-          type: string
-          format: date-time
-        updatedOn:
-          type: string
-          format: date-time
+          nullable: true
         suspensionProcessState:
           type: object
           additionalProperties: true
           nullable: true
           description: >
             Free-form, per-dimension Account Closure Process (ACP) suspension-process
-            state (event type + action results) written by an existing ServiceNow
-            suspension flow. This is opaque JSON passed through as-is — its shape is
-            not defined or validated by this layer.
+            state (event type + action results) written by an existing suspension
+            flow in the backing data source. This is opaque JSON passed through
+            as-is — its shape is not defined or validated by this layer.
+
+    Project:
+      description: >
+        A project search result row. Deliberately leaner than ProjectDetails: the
+        search projection carries no sfId and no updatedOn.
+      allOf:
+        - $ref: '#/components/schemas/ProjectClosureFields'
+        - type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            key:
+              type: string
+            subscriptionType:
+              type: string
+              enum:
+                - development_support
+                - managed_cloud_subscription
+                - evaluation_subscription
+                - subscription
+                - cloud_evaluation_support
+                - internal
+                - platformer_subscription
+                - cloud_support
+                - professional_services
+            startDate:
+              type: string
+              format: date-time
+              nullable: true
+              description: >
+                Start of the project's current renewed period. Null when the backing
+                data source has no start date recorded.
+            endDate:
+              type: string
+              format: date-time
+              nullable: true
+              description: End of the project's current renewed period.
+            createdOn:
+              type: string
+              format: date-time
+              description: >
+                When the project record was created. Distinct from startDate, which
+                moves forward on each renewal.
+            account:
+              nullable: true
+              description: Null when the project has no linked account.
+              allOf:
+                - $ref: '#/components/schemas/EntityRef'
+
+    ProjectDetails:
+      description: >
+        The enriched single-project response. Adds sfId, updatedOn, and a fuller
+        account reference on top of what the search row returns.
+      allOf:
+        - $ref: '#/components/schemas/ProjectClosureFields'
+        - type: object
+          properties:
+            id:
+              type: string
+            account:
+              $ref: '#/components/schemas/ProjectAccountRef'
+            sfId:
+              type: string
+            name:
+              type: string
+            key:
+              type: string
+            subscriptionType:
+              type: string
+              enum:
+                - development_support
+                - managed_cloud_subscription
+                - evaluation_subscription
+                - subscription
+                - cloud_evaluation_support
+                - internal
+                - platformer_subscription
+                - cloud_support
+                - professional_services
+            startDate:
+              type: string
+              format: date-time
+              nullable: true
+              description: Start of the project's current renewed period.
+            endDate:
+              type: string
+              format: date-time
+              nullable: true
+              description: End of the project's current renewed period.
+            createdOn:
+              type: string
+              format: date-time
+            updatedOn:
+              type: string
+              format: date-time
+
+    ProjectAccountRef:
+      type: object
+      description: The parent account summary embedded in a project detail response.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        activationDate:
+          type: string
+          format: date-time
+          nullable: true
+        tier:
+          type: string
+          description: Free-form tier label, not the lowercase account tier enum.
+        region:
+          type: string
+          nullable: true
+        agentEnabled:
+          type: boolean
+        kbReferencesEnabled:
+          type: boolean
 
     ProjectUpdatePayload:
       type: object
@@ -6526,6 +7143,10 @@ components:
           type: string
         createdBy:
           type: string
+        createdByUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         createdOn:
           type: string
           format: date-time
@@ -6591,6 +7212,10 @@ components:
           type: string
         createdBy:
           type: string
+        createdByUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         createdOn:
           type: string
           format: date-time
@@ -6769,6 +7394,10 @@ components:
           nullable: true
         createdBy:
           type: string
+        createdByUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
         createdOn:
           type: string
           format: date-time
@@ -7803,6 +8432,10 @@ components:
               type: string
             fullName:
               type: string
+        createdByUser:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UserReference'
 
     ConversationMessagesResponse:
       type: object

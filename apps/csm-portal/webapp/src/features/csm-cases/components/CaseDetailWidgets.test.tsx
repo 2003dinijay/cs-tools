@@ -15,10 +15,20 @@
 // under the License.
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ComponentProps, type JSX, type ReactElement } from "react";
 import { MemoryRouter } from "react-router";
 import "@testing-library/jest-dom/vitest";
+
+// The real client reads runtime config at module load, which isn't present
+// under vitest (same approach as useQuickCaseSearch.test.tsx). `UserRefLink`
+// (used for the watcher chip and the attachment uploader) resolves an
+// unknown id through `useResolvedUserId`, which calls this client.
+vi.mock("@api/backend/client", () => ({
+  useBackendApi: () => ({ post: vi.fn().mockResolvedValue({ users: [] }) }),
+}));
+
 import {
   AttachmentsWidget,
   TagsWidget,
@@ -99,10 +109,18 @@ const WATCHERS: CaseWatcher[] = [
 ];
 
 // `WatchersWidget` links each watcher's name to their profile page via
-// `UserRefLink`, which renders a `react-router` `Link` — needs a Router
-// context even outside a full app render.
+// `UserRefLink`, which renders a `react-router` `Link` and resolves its id
+// through react-query — needs both a Router and a QueryClient context even
+// outside a full app render.
 function renderWithRouter(ui: ReactElement): ReturnType<typeof render> {
-  return render(<MemoryRouter>{ui}</MemoryRouter>);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 describe("TagsWidget", () => {
@@ -239,7 +257,7 @@ describe("AttachmentsWidget — preview affordance", () => {
   });
 
   it("shows Preview for an image but not for a video or a zip, when a fetcher is supplied", () => {
-    render(
+    renderWithRouter(
       <AttachmentsWidgetHarness
         attachments={[IMAGE_ATTACHMENT, VIDEO_ATTACHMENT, ZIP_ATTACHMENT]}
         onGetPreviewContent={vi.fn()}
@@ -263,7 +281,7 @@ describe("AttachmentsWidget — preview affordance", () => {
   });
 
   it("hides every Preview affordance when no fetcher is supplied", () => {
-    render(
+    renderWithRouter(
       <AttachmentsWidgetHarness attachments={[IMAGE_ATTACHMENT, VIDEO_ATTACHMENT]} />,
     );
     expect(screen.queryByRole("button", { name: /^preview /i })).not.toBeInTheDocument();
@@ -273,7 +291,7 @@ describe("AttachmentsWidget — preview affordance", () => {
     const fetchContent = vi
       .fn()
       .mockResolvedValue(new Blob(["fake"], { type: "image/png" }));
-    render(
+    renderWithRouter(
       <AttachmentsWidgetHarness
         attachments={[IMAGE_ATTACHMENT]}
         onGetPreviewContent={fetchContent}
@@ -296,7 +314,7 @@ describe("AttachmentsWidget — preview affordance", () => {
 
   it("shows an error message when the preview fetch fails", async () => {
     const fetchContent = vi.fn().mockRejectedValue(new Error("network down"));
-    render(
+    renderWithRouter(
       <AttachmentsWidgetHarness
         attachments={[IMAGE_ATTACHMENT]}
         onGetPreviewContent={fetchContent}
@@ -313,7 +331,7 @@ describe("AttachmentsWidget — preview affordance", () => {
   });
 
   it("still shows Download for every attachment regardless of preview support", () => {
-    render(
+    renderWithRouter(
       <AttachmentsWidgetHarness
         attachments={[IMAGE_ATTACHMENT, ZIP_ATTACHMENT]}
         onDownload={vi.fn()}

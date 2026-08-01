@@ -427,7 +427,11 @@ export default function CaseActivitiesFeed({
                     <Typography variant="subtitle2">
                       <UserRefLink
                         name={e.attachment.uploadedBy}
-                        email={e.attachment.uploadedByEmail}
+                        email={
+                          e.attachment.uploadedByUser?.email ||
+                          e.attachment.uploadedByEmail
+                        }
+                        userId={e.attachment.uploadedByUser?.id}
                       />
                     </Typography>
                     <Chip size="small" variant="outlined" label="Attachment" />
@@ -545,8 +549,12 @@ export function AttachmentsList({
             </Typography>
             <Typography variant="caption" color="text.secondary">
               {formatBytes(a.size)} · {a.contentType} · uploaded by{" "}
-              <UserRefLink name={a.uploadedBy} email={a.uploadedByEmail} /> ·{" "}
-              <RelativeTime iso={a.uploadedAt} />
+              <UserRefLink
+                name={a.uploadedBy}
+                email={a.uploadedByUser?.email || a.uploadedByEmail}
+                userId={a.uploadedByUser?.id}
+              />{" "}
+              · <RelativeTime iso={a.uploadedAt} />
             </Typography>
           </Box>
         </Paper>

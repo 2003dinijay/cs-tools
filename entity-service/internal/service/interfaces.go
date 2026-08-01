@@ -44,6 +44,10 @@ type SNUserService interface {
 	GetMe(ctx context.Context) (domain.GetUserMeResponse, error)
 	// PatchMe updates mutable fields on the currently authenticated user in ServiceNow.
 	PatchMe(ctx context.Context, req domain.PatchUserMeRequest) (domain.PatchUserMeResponse, error)
+	// GetUser returns one user's full profile: the user row plus group and team
+	// membership, and for external contacts their per-project access. A NotFoundError
+	// is returned when no user has that id.
+	GetUser(ctx context.Context, id string) (domain.SNUserDetail, error)
 }
 
 // AccountService defines the operations available on the account entity.
@@ -93,6 +97,10 @@ type ProjectContactService interface {
 	// SearchProjectContacts returns a paginated list of contacts associated with
 	// the project identified by projectID.
 	SearchProjectContacts(ctx context.Context, projectID string, req domain.SearchProjectContactsRequest) (domain.SearchProjectContactsResponse, error)
+	// GetProjectContact returns one contact's attributes for a single project: their
+	// roles on it, their registration state and their notification preference. A
+	// NotFoundError is returned when that contact is not a contact on that project.
+	GetProjectContact(ctx context.Context, projectID, contactID string) (domain.ProjectContact, error)
 }
 
 // AccountContactService defines the operations available on account contacts.
@@ -424,4 +432,16 @@ type ConversationService interface {
 	// project IDs, states, search query, and createdByMe. A ValidationError is returned
 	// for invalid input.
 	SearchConversations(ctx context.Context, req domain.SearchConversationsRequest) (domain.SearchConversationsResponse, error)
+}
+
+// RoleService serves the platform's assignable-role catalogue.
+type RoleService interface {
+	// SearchRoles returns a paginated slice of the role catalogue.
+	SearchRoles(ctx context.Context, req domain.SearchRolesRequest) (domain.SearchRolesResponse, error)
+}
+
+// TeamService serves the team registry.
+type TeamService interface {
+	// SearchTeams returns a paginated slice of the team registry.
+	SearchTeams(ctx context.Context, req domain.SearchTeamsRequest) (domain.SearchTeamsResponse, error)
 }

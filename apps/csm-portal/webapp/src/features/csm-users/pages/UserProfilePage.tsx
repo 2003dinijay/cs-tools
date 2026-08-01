@@ -16,11 +16,11 @@
 
 import { Box, Button, Card, Chip, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, type JSX, type ReactNode } from "react";
+import { type JSX, type ReactNode } from "react";
 import { useParams } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
 import { useNavTransition } from "@hooks/useNavTransition";
-import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
+import { useGetUserById } from "@features/csm-users/api/useGetUserById";
 import {
   INTERNAL_USER_ROLES,
   type NormalizedUser,
@@ -108,32 +108,20 @@ function NotAvailableYetSection({
 /**
  * A person's profile page, reachable by clicking any user reference in the
  * portal (case creator, assignee, watchers, comment authors, attachment
- * uploaders). Shows only what `POST /users/search` already returns today —
- * name, email, timezone, roles/type, active status. There is no backend
- * endpoint yet for a customer's projects+roles or an internal user's
- * groups/team, so that section renders the same "not available yet"
- * placeholder used by the admin roles/groups stub routes rather than
- * fabricating data.
+ * uploaders) once its id is known or resolved (see `UserRefLink` /
+ * `useResolvedUserId` — most actor fields carry only an email, resolved to an
+ * id through a cached lookup before the link ever appears). Shows only what
+ * `GET /users/{id}` already returns today — name, email, timezone,
+ * roles/type, active status. There is no backend endpoint yet for a
+ * customer's projects+roles or an internal user's groups/team, so that
+ * section renders the same "not available yet" placeholder used by the admin
+ * roles/groups stub routes rather than fabricating data.
  */
 export default function UserProfilePage(): JSX.Element {
-  const { email: emailParam } = useParams<{ email: string }>();
+  const { id } = useParams<{ id: string }>();
   const navigate = useNavTransition();
-  const email = useMemo(() => {
-    if (!emailParam) return undefined;
-    try {
-      return decodeURIComponent(emailParam);
-    } catch {
-      // Malformed percent-encoding (e.g. a lone "%") — fall through to the
-      // existing not-found state instead of throwing during render.
-      return undefined;
-    }
-  }, [emailParam]);
 
-  const { data, isLoading, isError, error } = useSearchUsers({
-    filters: email ? { emails: [email] } : undefined,
-  });
-
-  const user = data?.users?.[0];
+  const { data: user, isLoading, isError, error } = useGetUserById(id);
 
   if (isLoading) {
     return (
@@ -162,7 +150,7 @@ export default function UserProfilePage(): JSX.Element {
         <BackButton onClick={() => navigate(-1)} />
         <Typography variant="h5">User not found</Typography>
         <Typography variant="body2" color="text.secondary">
-          No user with email <code>{email}</code>.
+          No user with id <code>{id}</code>.
         </Typography>
       </Box>
     );

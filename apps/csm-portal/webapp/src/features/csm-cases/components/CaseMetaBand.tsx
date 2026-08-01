@@ -345,6 +345,7 @@ export default function CaseMetaBand({
                   <UserRefLink
                     name={c.createdBy ?? c.customerContext.primaryContact ?? "—"}
                     email={c.createdByEmail}
+                    userId={c.createdByUser?.id}
                   />
                 </Typography>
               </Cell>
@@ -352,10 +353,18 @@ export default function CaseMetaBand({
                 <Typography variant="body2" noWrap>
                   {c.assigneeIsMe ? (
                     <strong>
-                      <UserRefLink name={c.assignee} email={c.assigneeEmail} />
+                      <UserRefLink
+                        name={c.assignee}
+                        email={c.assigneeEmail}
+                        userId={c.assigneeUser?.id}
+                      />
                     </strong>
                   ) : (
-                    <UserRefLink name={c.assignee} email={c.assigneeEmail} />
+                    <UserRefLink
+                      name={c.assignee}
+                      email={c.assigneeEmail}
+                      userId={c.assigneeUser?.id}
+                    />
                   )}
                 </Typography>
               </Cell>

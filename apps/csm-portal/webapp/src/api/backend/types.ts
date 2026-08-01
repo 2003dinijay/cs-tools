@@ -181,6 +181,30 @@ export interface BeUserRef {
   email?: string;
 }
 
+/**
+ * Canonical reference to a person: id, email and display name, nothing else.
+ * Emitted as a sibling of whatever actor field a response already carried
+ * (`createdBy`, `assignedEngineer`, the watch-list entry, ...), so every
+ * "who did this" value has one shape.
+ *
+ * `id` is nullable by design: it is populated only where the backing data
+ * source already resolves the actor to a user record (comment/attachment
+ * authors, the case assignee); it is deliberately left null elsewhere (case
+ * creator, activity-feed actors, watchers) rather than adding a per-row user
+ * lookup to hot list endpoints shared with the customer portal. `email` and
+ * `name` are always populated, so a consumer that needs the id resolves it
+ * from the email through its own cached user lookup — see
+ * `useResolvedUserId`. The whole object is `null`/absent when there is no
+ * actor at all, or when talking to a backend that predates this field.
+ */
+export interface BeUserReference {
+  id: string | null;
+  /** The actor as recorded. Usually an email, but can be a non-user
+   * identifier such as an automation account (e.g. "system"). */
+  email: string;
+  name: string;
+}
+
 /** A referenced entity carrying its display name (project, deployment, ...). */
 export interface BeEntityRef {
   id: string;
@@ -290,8 +314,15 @@ export interface BeCaseView {
   /** The case this one was created as related to, when any. */
   relatedCase?: BeCaseNumberRef | null;
   createdBy?: BeUserRef;
+  /** Canonical reference to the case creator. `id` is always null here — the
+   * data source doesn't resolve the reporter to a user record on this view.
+   * See {@link BeUserReference}. */
+  createdByUser?: BeUserReference | null;
   /** The CS engineer the case is assigned to; null when unassigned. */
   assignedEngineer?: BeAssignedEngineerRef | null;
+  /** Canonical reference to the assigned engineer, `id` populated. See
+   * {@link BeUserReference}. */
+  assignedEngineerUser?: BeUserReference | null;
   account?: BeCaseAccountRef;
   project?: BeEntityRef;
   /** Nullable: ServiceNow-sourced cases may have no deployment / product. */
@@ -672,6 +703,9 @@ export interface BeWatchListUser {
   userName: string;
   name?: string;
   email?: string;
+  /** Canonical reference to this watcher. `id` is always null here. See
+   * {@link BeUserReference}. */
+  user?: BeUserReference | null;
 }
 
 /** The mutated case fields echoed by `PATCH /cases/{id}`. */
@@ -684,6 +718,12 @@ export interface BeUpdatedCase {
   workState?: BeCaseWorkState | null;
   watchList?: BeWatchListUser[];
   assignedTo?: BeEntityRef | null;
+  /** Canonical reference to the newly assigned engineer, `id` populated. Key
+   * is omitted entirely (not just null) when this update didn't set an
+   * assignee — the FE currently ignores this echoed body and refetches the
+   * case detail instead, but the field is typed here to match the contract.
+   * See {@link BeUserReference}. */
+  assignedToUser?: BeUserReference | null;
   /** Present when the update set `parentId` — the record this case is now linked to as its parent. */
   parentCase?: BeCaseNumberRef | null;
   /** Echoes the updated internal-only best-case fix estimate. Present when the update set `bestCaseFixEta`. */
@@ -793,11 +833,17 @@ export interface BeCaseSearchView {
   workState?: BeCaseWorkState | null;
   /** The CS engineer the case is assigned to; null when unassigned. */
   assignedEngineer?: BeAssignedEngineerRef | null;
+  /** Canonical reference to the assigned engineer, `id` populated. See
+   * {@link BeUserReference}. */
+  assignedEngineerUser?: BeUserReference | null;
   createdOn?: string;
   /** Often absent on the search view (unlike the GET view); tolerate it missing. */
   updatedOn?: string;
   /** Created-by is a bare email string here (not a UserRef like the GET view). */
   createdBy?: string;
+  /** Canonical reference to the case creator. `id` is always null here. See
+   * {@link BeUserReference}. */
+  createdByUser?: BeUserReference | null;
   project?: BeEntityRef;
   /** Nullable: ServiceNow-sourced cases may have no deployment / product. */
   deployment?: BeEntityRef | null;
@@ -875,6 +921,10 @@ export interface BeComment {
   type: string;
   createdOn: string;
   createdBy: BeCaseCommentAuthor | string | null;
+  /** Canonical reference to the author, `id` populated. Absent on the
+   * comment-create ack, which echoes only the bare-string `createdBy`. See
+   * {@link BeUserReference}. */
+  createdByUser?: BeUserReference | null;
 }
 
 export interface BeCommentSearchResponse extends BeSearchResponseBase {
@@ -916,6 +966,9 @@ export interface BeCaseActivityEntry {
   createdByFirstName?: string;
   createdByLastName?: string;
   createdByFullName?: string;
+  /** Canonical reference to the actor. `id` is always null here. See
+   * {@link BeUserReference}. */
+  createdByUser?: BeUserReference | null;
   /** Only present on `type === "field_change"` entries. */
   changes?: BeFieldChange[];
 }
@@ -957,6 +1010,9 @@ export interface BeAttachment {
   description?: string | null;
   /** Uploader, in the same `{ id, name, email }` shape used elsewhere (e.g. case `createdBy`). */
   createdBy: BeUserRef;
+  /** Canonical reference to the uploader, `id` populated. See
+   * {@link BeUserReference}. */
+  createdByUser?: BeUserReference | null;
   createdOn: string;
   downloadUrl?: string | null;
   previewUrl?: string | null;
@@ -2515,4 +2571,19 @@ export interface BeUpdateTimeCardPayload {
 export interface BeTimeCardMutationResponse {
   message?: string;
   timeCard: BeTimeCardView;
+}
+
+// ---------------------------------------------------------------------------
+// Users
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal shape read out of `POST /users/search`'s response for the
+ * email-to-id resolution lookup (see `useResolvedUserId`). The full response
+ * is a `oneOf` (postgres `User` vs ServiceNow `SnUser` — see
+ * `features/csm-users/types/csmUsers.ts`), but `id`/`email` are common to
+ * both and are all this lookup reads.
+ */
+export interface BeUserSearchByEmailResponse {
+  users?: Array<{ id: string; email: string }>;
 }

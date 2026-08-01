@@ -81,6 +81,80 @@ func TestGetMe(t *testing.T) {
 		}
 	})
 
+	t.Run("passes through the resolved ABT team when present", func(t *testing.T) {
+		entityClient := &mockEntityUserClient{
+			getUserMeFn: func(_ context.Context) ([]byte, error) {
+				return []byte(`{"id":"u-1","email":"agent@example.com","lastName":"Doe","roles":["agent"],"team":{"teamKey":"abt-1","teamName":"ABT One","family":"cre"}}`), nil
+			},
+		}
+		h := NewUsersHandler(&mockSCIMClient{}, entityClient)
+		r := withUser(httptest.NewRequest(http.MethodGet, "/users/me", nil))
+		w := httptest.NewRecorder()
+		h.GetMe(w, r)
+
+		assertStatus(t, w, http.StatusOK)
+		type getMeResp struct {
+			Team *struct {
+				TeamKey  string `json:"teamKey"`
+				TeamName string `json:"teamName"`
+				Family   string `json:"family"`
+			} `json:"team"`
+		}
+		resp := decodeJSON[getMeResp](t, w)
+		if resp.Team == nil {
+			t.Fatal("team should be present")
+		}
+		if resp.Team.TeamKey != "abt-1" || resp.Team.TeamName != "ABT One" || resp.Team.Family != "cre" {
+			t.Errorf("team = %+v, want {abt-1 ABT One cre}", resp.Team)
+		}
+	})
+
+	t.Run("passes through the resolved ABT team when family is unclassified (empty string)", func(t *testing.T) {
+		entityClient := &mockEntityUserClient{
+			getUserMeFn: func(_ context.Context) ([]byte, error) {
+				return []byte(`{"id":"u-1","email":"agent@example.com","lastName":"Doe","roles":["agent"],"team":{"teamKey":"abt-2","teamName":"ABT Two","family":""}}`), nil
+			},
+		}
+		h := NewUsersHandler(&mockSCIMClient{}, entityClient)
+		r := withUser(httptest.NewRequest(http.MethodGet, "/users/me", nil))
+		w := httptest.NewRecorder()
+		h.GetMe(w, r)
+
+		assertStatus(t, w, http.StatusOK)
+		type getMeResp struct {
+			Team *struct {
+				TeamKey  string `json:"teamKey"`
+				TeamName string `json:"teamName"`
+				Family   string `json:"family"`
+			} `json:"team"`
+		}
+		resp := decodeJSON[getMeResp](t, w)
+		if resp.Team == nil {
+			t.Fatal("team should be present")
+		}
+		if resp.Team.Family != "" {
+			t.Errorf("family = %q, want empty string", resp.Team.Family)
+		}
+	})
+
+	t.Run("omits team when absent from the entity response", func(t *testing.T) {
+		entityClient := &mockEntityUserClient{
+			getUserMeFn: func(_ context.Context) ([]byte, error) {
+				return []byte(`{"id":"u-1","email":"agent@example.com","lastName":"Doe","roles":["agent"]}`), nil
+			},
+		}
+		h := NewUsersHandler(&mockSCIMClient{}, entityClient)
+		r := withUser(httptest.NewRequest(http.MethodGet, "/users/me", nil))
+		w := httptest.NewRecorder()
+		h.GetMe(w, r)
+
+		assertStatus(t, w, http.StatusOK)
+		resp := decodeJSON[map[string]any](t, w)
+		if _, ok := resp["team"]; ok {
+			t.Error("team should be absent when the entity response has no team")
+		}
+	})
+
 	t.Run("searches SCIM by the JWT email and returns phone number", func(t *testing.T) {
 		phone := "+94771234567"
 		var capturedEmail string

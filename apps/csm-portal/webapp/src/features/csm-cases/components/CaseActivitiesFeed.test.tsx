@@ -15,10 +15,22 @@
 // under the License.
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ComponentProps, type JSX, type ReactElement } from "react";
 import { MemoryRouter } from "react-router";
 import "@testing-library/jest-dom/vitest";
+
+// The real client reads runtime config at module load, which isn't present
+// under vitest (same approach as useQuickCaseSearch.test.tsx). `UserRefLink`
+// (used for the attachment uploader) resolves an unknown id through
+// `useResolvedUserId`, which calls this client — the attachments in this file
+// carry no `uploadedByUser`, so it never actually fires, but the mock keeps
+// the hook's `useBackendApi()` call from throwing on missing runtime config.
+vi.mock("@api/backend/client", () => ({
+  useBackendApi: () => ({ post: vi.fn().mockResolvedValue({ users: [] }) }),
+}));
+
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
 import { formatAbsoluteForUser } from "@utils/dateTime";
 import type {
@@ -27,10 +39,18 @@ import type {
 } from "@features/csm-cases/types/csmCases";
 
 // `UserRefLink` (used for the attachment uploader and the comment/lifecycle
-// actor) renders a `react-router` `Link`, so every render needs a Router
-// context even outside a full app render.
+// actor) renders a `react-router` `Link` and resolves its id through
+// react-query, so every render needs both a Router and a QueryClient context
+// even outside a full app render.
 function renderWithRouter(ui: ReactElement): ReturnType<typeof render> {
-  return render(<MemoryRouter>{ui}</MemoryRouter>);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 // `previewTarget`/`onPreviewTargetChange` (part of the feed's `preview`

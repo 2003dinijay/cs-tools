@@ -657,6 +657,9 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 			Name:  c.CreatedByFullName,
 			Email: c.CreatedBy,
 		},
+		// The case read carries no id for the creator, only the email and full
+		// name, so the canonical reference is emitted with a null id.
+		CreatedByUser:  domain.NewUserReference("", c.CreatedBy, c.CreatedByFullName),
 		ProjectDetails: domain.EntityRef{ID: sysidToUUID(c.Project.ID), Name: c.Project.Name},
 	}
 
@@ -696,6 +699,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	}
 	if c.AssignedEngineer != nil {
 		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
+		cv.AssignedEngineerUser = domain.NewUserReference(cv.AssignedEngineer.ID, snStr(c.AssignedEngineer.Email), c.AssignedEngineer.Name)
 	}
 	if c.ParentCase != nil {
 		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number, Type: snParentCaseTypeToDomain(c.ParentCase.Type)}
@@ -766,6 +770,10 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 			if u.Email != nil {
 				wlu.Email = *u.Email
 			}
+			// A watch-list entry's own id is not necessarily a sys_user sys_id
+			// (the list collapses several upstream glide_lists), so the
+			// canonical reference keeps a null id rather than risk a non-user id.
+			wlu.User = domain.NewUserReference("", wlu.Email, wlu.Name)
 			wl = append(wl, wlu)
 		}
 		cv.WatchList = wl
@@ -883,6 +891,10 @@ type snComment struct {
 	CreatedByFirstName string `json:"createdByFirstName"`
 	CreatedByLastName  string `json:"createdByLastName"`
 	CreatedByFullName  string `json:"createdByFullName"`
+	// CreatedByUser is the author's resolved sys_user record: nil when the
+	// author is not a real user (e.g. "system") and when the ServiceNow side
+	// predates the field. See snUserRef.
+	CreatedByUser *snUserRef `json:"createdByUser"`
 }
 
 type snSearchCommentsResponse struct {
@@ -964,7 +976,8 @@ func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.Searc
 				LastName:  c.CreatedByLastName,
 				FullName:  c.CreatedByFullName,
 			},
-			CreatedOn: createdAt,
+			CreatedByUser: snUserReference(c.CreatedByUser, c.CreatedBy, c.CreatedByFullName),
+			CreatedOn:     createdAt,
 		})
 	}
 
@@ -1409,6 +1422,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 			ID:   sysidToUUID(snResp.Case.AssignedTo.ID),
 			Name: snResp.Case.AssignedTo.Name,
 		}
+		resp.Case.AssignedToUser = domain.NewUserReference(resp.Case.AssignedTo.ID, "", resp.Case.AssignedTo.Name)
 	}
 	if len(snResp.Case.WatchList) > 0 {
 		wl := make([]domain.WatchListUser, 0, len(snResp.Case.WatchList))
@@ -1418,6 +1432,8 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 				UserName: u.UserName,
 				Name:     u.Name,
 				Email:    u.Email,
+				// Null id by design, as on the case read above.
+				User: domain.NewUserReference("", u.Email, u.Name),
 			})
 		}
 		resp.Case.WatchList = wl
@@ -1581,17 +1597,21 @@ type snSearchAttachmentsPayload struct {
 }
 
 type snAttachment struct {
-	ID          string  `json:"id"`
-	ReferenceID string  `json:"referenceId"`
-	Name        string  `json:"name"`
-	Type        string  `json:"type"`
-	SizeBytes   int     `json:"sizeBytes"`
+	ID                string  `json:"id"`
+	ReferenceID       string  `json:"referenceId"`
+	Name              string  `json:"name"`
+	Type              string  `json:"type"`
+	SizeBytes         int     `json:"sizeBytes"`
 	Description       *string `json:"description"`
 	CreatedBy         string  `json:"createdBy"`
 	CreatedByFullName string  `json:"createdByFullName"`
-	CreatedOn         string  `json:"createdOn"`
-	DownloadURL       *string `json:"downloadUrl"`
-	PreviewURL        *string `json:"previewUrl"`
+	// CreatedByUser is the uploader's resolved sys_user record: nil when the
+	// uploader is not a real user and when the ServiceNow side predates the
+	// field. See snUserRef.
+	CreatedByUser *snUserRef `json:"createdByUser"`
+	CreatedOn     string     `json:"createdOn"`
+	DownloadURL   *string    `json:"downloadUrl"`
+	PreviewURL    *string    `json:"previewUrl"`
 }
 
 type snSearchAttachmentsResponse struct {
@@ -1649,9 +1669,10 @@ func (s *snCaseService) SearchCaseAttachments(ctx context.Context, req domain.Se
 				Name:  a.CreatedByFullName,
 				Email: a.CreatedBy,
 			},
-			CreatedOn:   createdOn,
-			DownloadURL: a.DownloadURL,
-			PreviewURL:  a.PreviewURL,
+			CreatedByUser: snUserReference(a.CreatedByUser, a.CreatedBy, a.CreatedByFullName),
+			CreatedOn:     createdOn,
+			DownloadURL:   a.DownloadURL,
+			PreviewURL:    a.PreviewURL,
 		})
 	}
 
@@ -1742,6 +1763,9 @@ func (s *snCaseService) SearchCaseActivities(ctx context.Context, req domain.Sea
 			CreatedByFirstName: a.CreatedByFirstName,
 			CreatedByLastName:  a.CreatedByLastName,
 			CreatedByFullName:  a.CreatedByFullName,
+			// The activity feed carries no user id for the actor, so the
+			// canonical reference is emitted with a null id.
+			CreatedByUser: domain.NewUserReference("", a.CreatedBy, a.CreatedByFullName),
 		}
 		switch domain.ActivityType(a.Type) {
 		case domain.ActivityTypeComment:
@@ -1938,11 +1962,14 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		}
 
 		cv := domain.SearchCaseView{
-			ID:             sysidToUUID(c.ID),
-			Number:         c.Number,
-			InternalID:     c.InternalID,
-			CreatedOn:      c.CreatedOn,
-			CreatedBy:      c.CreatedBy,
+			ID:         sysidToUUID(c.ID),
+			Number:     c.Number,
+			InternalID: c.InternalID,
+			CreatedOn:  c.CreatedOn,
+			CreatedBy:  c.CreatedBy,
+			// The case search carries no id for the creator, only the email and
+			// full name, so the canonical reference is emitted with a null id.
+			CreatedByUser:  domain.NewUserReference("", c.CreatedBy, c.CreatedByFullName),
 			Subject:        &title,
 			Description:    &description,
 			IssueType:      issueTypeLabel,
@@ -1984,6 +2011,7 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		}
 		if c.AssignedEngineer != nil {
 			cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
+			cv.AssignedEngineerUser = domain.NewUserReference(cv.AssignedEngineer.ID, snStr(c.AssignedEngineer.Email), c.AssignedEngineer.Name)
 		}
 		if c.ParentCase != nil {
 			cv.ParentCase = &domain.EntityRef{ID: sysidToUUID(c.ParentCase.ID), Name: c.ParentCase.Number}

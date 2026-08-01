@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -55,6 +56,7 @@ type snProject struct {
 	Name      string                  `json:"name"`
 	Key       string                  `json:"key"`
 	Type      snProjectType           `json:"type"`
+	StartDate *string                 `json:"startDate"`
 	EndDate   string                  `json:"endDate"`
 	CreatedOn string                  `json:"createdOn"`
 	Account   snProjectSummaryAccount `json:"account"`
@@ -165,6 +167,14 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 		if err != nil {
 			return domain.SearchProjectsResponse{}, fmt.Errorf("sn projects: project %q: %w", p.ID, err)
 		}
+		var startDate *time.Time
+		if p.StartDate != nil && *p.StartDate != "" {
+			parsed, err := time.Parse(snDateLayout, *p.StartDate)
+			if err != nil {
+				return domain.SearchProjectsResponse{}, fmt.Errorf("sn projects: parse startDate %q: %w", *p.StartDate, err)
+			}
+			startDate = &parsed
+		}
 		var endDate *time.Time
 		if p.EndDate != "" {
 			parsed, err := time.Parse(snDateLayout, p.EndDate)
@@ -182,6 +192,7 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 			Name:             p.Name,
 			Key:              p.Key,
 			SubscriptionType: subType,
+			StartDate:        startDate,
 			EndDate:          endDate,
 			CreatedOn:        createdOn,
 			Account:          account,
@@ -494,6 +505,9 @@ type snProjectContactsResponse struct {
 }
 
 type snProjectContact struct {
+	// ID is absent on instances that predate the upstream change, and null for a row
+	// with no linked contact record.
+	ID                   *string  `json:"id"`
 	Name                 string   `json:"name"`
 	Email                string   `json:"email"`
 	RegistrationState    string   `json:"registrationState"`
@@ -542,7 +556,15 @@ func (s *snProjectContactService) SearchProjectContacts(ctx context.Context, pro
 
 	contacts := make([]domain.ProjectContact, 0, len(snResp.Contacts))
 	for _, c := range snResp.Contacts {
+		// Convert only a real id; a nil or blank upstream id stays empty so the caller
+		// renders the row unlinked instead of pointing at a bogus profile.
+		var contactID *string
+		if c.ID != nil && *c.ID != "" {
+			id := sysidToUUID(*c.ID)
+			contactID = &id
+		}
 		contacts = append(contacts, domain.ProjectContact{
+			ID:                   contactID,
 			Name:                 c.Name,
 			Email:                c.Email,
 			RegistrationState:    c.RegistrationState,
@@ -557,4 +579,53 @@ func (s *snProjectContactService) SearchProjectContacts(ctx context.Context, pro
 		Limit:    req.Pagination.Limit,
 		Offset:   req.Pagination.Offset,
 	}, nil
+}
+
+// projectContactScanLimit bounds how many of a project's contacts GetProjectContact will
+// scan. A project's contact list is a handful of people in practice, so paging to find one
+// is cheaper than adding a by-id filter to the upstream resource. If a project ever exceeds
+// this, the lookup reports not-found rather than silently scanning a partial list.
+//
+// It is pinned to maxLimit because the scan goes through SearchProjectContacts, which
+// normalizes pagination and rejects anything larger outright: a bigger value here would
+// fail every lookup with a validation error rather than widening the window.
+const projectContactScanLimit = maxLimit
+
+// GetProjectContact implements ProjectContactService.
+//
+// There is no by-id contact resource upstream, so this reads the project's contacts and
+// picks the matching row. That keeps the whole feature inside this layer: no new upstream
+// surface, and the row shape stays identical to the one the list returns, so a caller
+// showing contact detail renders the same fields it already knows.
+func (s *snProjectContactService) GetProjectContact(
+	ctx context.Context, projectID, contactID string,
+) (domain.ProjectContact, error) {
+	if err := validateUUIDs("id", []string{projectID}); err != nil {
+		return domain.ProjectContact{}, err
+	}
+	if err := validateUUIDs("contactId", []string{contactID}); err != nil {
+		return domain.ProjectContact{}, err
+	}
+
+	page, err := s.SearchProjectContacts(ctx, projectID, domain.SearchProjectContactsRequest{
+		Pagination: domain.Pagination{Limit: projectContactScanLimit, Offset: 0},
+	})
+	if err != nil {
+		return domain.ProjectContact{}, err
+	}
+
+	for _, c := range page.Contacts {
+		if c.ID != nil && *c.ID == contactID {
+			return c, nil
+		}
+	}
+
+	// Either the contact is not on this project, or their row has no linked contact
+	// record and therefore no id to match. Both are "not a contact on this project" as
+	// far as a caller is concerned.
+	if page.Total > len(page.Contacts) {
+		log.Printf("sn project contacts: project %s has %d contacts, only %d scanned; contact %s not found in that window",
+			projectID, page.Total, len(page.Contacts), contactID)
+	}
+	return domain.ProjectContact{}, &apierror.NotFoundError{Msg: "contact not found on this project"}
 }
