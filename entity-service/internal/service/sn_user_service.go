@@ -163,19 +163,6 @@ type snUserSort struct {
 	Order string `json:"order"`
 }
 
-var validUserRole = map[domain.UserRole]bool{
-	domain.UserRoleInternal:         true,
-	domain.UserRoleAgent:            true,
-	domain.UserRoleAdmin:            true,
-	domain.UserRoleCommenter:        true,
-	domain.UserRoleExternal:         true,
-	domain.UserRoleCustomer:         true,
-	domain.UserRoleCustomerAdmin:    true,
-	domain.UserRolePartner:          true,
-	domain.UserRolePartnerAdmin:     true,
-	domain.UserRoleTimecardApprover: true,
-}
-
 var validUserSortField = map[domain.UserSortField]bool{
 	domain.UserSortFieldName:      true,
 	domain.UserSortFieldCreatedOn: true,
@@ -193,11 +180,8 @@ type snUserService struct {
 
 // NewServiceNowUserService constructs an SNUserService backed by the Choreo API.
 func NewServiceNowUserService(client *integrationservice.Client) SNUserService {
-	// The ABT team registry (GET teams) is static reference data served
-	// by the same Choreo-fronted Ballerina service — no user token needed.
-	domain.SetAbtTeamsFetcher(func(ctx context.Context) (json.RawMessage, error) {
-		return client.Get(ctx, "/teams", "")
-	})
+	// The ABT team registry is deployment configuration installed at startup
+	// (domain.SetAbtTeams), not something this service fetches.
 	return &snUserService{client: client}
 }
 
@@ -218,7 +202,7 @@ func (s *snUserService) SearchUsers(ctx context.Context, req domain.SearchUsersR
 		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{Msg: "emails cannot contain more than 50 values"}
 	}
 	for _, role := range req.Filters.RoleIDs {
-		if !validUserRole[role] {
+		if !isValidUserRole(role) {
 			return domain.SearchSNUsersResponse{}, &apierror.ValidationError{Msg: "roleIds contains invalid value: " + string(role)}
 		}
 	}
