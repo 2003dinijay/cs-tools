@@ -14,48 +14,29 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import {
-  Box,
-  Button,
-  FormControl,
-  MenuItem,
-  Select,
-  Tooltip,
-  Typography,
-} from "@wso2/oxygen-ui";
+import { Box, FormControl, MenuItem, Select, Typography } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
 import type { BeDashboardListItem } from "@api/backend/types";
-import type {
-  DashboardKey,
-  DashboardScope,
-} from "@features/csm-dashboard/types/abtDashboard";
-
-// ABT (Account-Based Team) scoping is not implemented yet, so the My ABT / All
-// customers toggle is disabled and the dashboard is locked to "all customers".
-// Flip this to re-enable the toggle once ABT membership data is available.
-const ABT_SCOPING_ENABLED = false;
+import type { DashboardKey } from "@features/csm-dashboard/types/abtDashboard";
 
 interface AbtDashboardHeaderProps {
-  scope: DashboardScope;
-  onScopeChange: (scope: DashboardScope) => void;
   dashboardKey: DashboardKey;
   onDashboardChange: (key: DashboardKey) => void;
   /** Every dashboard in the BE registry (GET /dashboards), for the switcher. */
   dashboardList: BeDashboardListItem[];
-  /** Whether the selected dashboard is scope-relevant (shows the My ABT / All
-   * customers toggle). Computed by the caller — see CsmDashboardPage — since
-   * that depends on whether the dashboard has real widgets or is a mock
-   * placeholder, which the header itself doesn't know about. */
-  scopeBased: boolean;
 }
 
+/**
+ * Dashboard header: title plus the dashboard switcher. Dashboards are
+ * selected purely by dropdown — there is no other per-dashboard scoping
+ * control (the earlier My ABT / All customers toggle was removed; ABT
+ * scoping was never implemented and dashboards carry no other special
+ * per-dashboard behavior beyond which one is selected).
+ */
 export default function AbtDashboardHeader({
-  scope,
-  onScopeChange,
   dashboardKey,
   onDashboardChange,
   dashboardList,
-  scopeBased,
 }: AbtDashboardHeaderProps): JSX.Element {
   const currentOption = dashboardList.find((o) => o.id === dashboardKey);
 
@@ -75,53 +56,19 @@ export default function AbtDashboardHeader({
           {currentOption?.displayName ?? ""}
         </Typography>
       </Box>
-      <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
-        {scopeBased && (
-          <Tooltip
-            title={
-              ABT_SCOPING_ENABLED
-                ? ""
-                : "ABT scoping is not available yet — showing all customers."
-            }
-          >
-            <Box sx={{ display: "flex", gap: 1 }}>
-              <Button
-                size="small"
-                variant={scope === "my_abt" ? "contained" : "outlined"}
-                color="primary"
-                disabled={!ABT_SCOPING_ENABLED}
-                onClick={() => onScopeChange("my_abt")}
-              >
-                My ABT
-              </Button>
-              <Button
-                size="small"
-                variant={scope === "all_customers" ? "contained" : "outlined"}
-                color="primary"
-                disabled={!ABT_SCOPING_ENABLED}
-                onClick={() => onScopeChange("all_customers")}
-              >
-                All customers
-              </Button>
-            </Box>
-          </Tooltip>
-        )}
-        <FormControl size="small" sx={{ minWidth: 200 }}>
-          <Select
-            value={dashboardKey}
-            onChange={(e) =>
-              onDashboardChange(e.target.value as DashboardKey)
-            }
-            displayEmpty
-          >
-            {dashboardList.map((o) => (
-              <MenuItem key={o.id} value={o.id}>
-                {o.displayName}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-      </Box>
+      <FormControl size="small" sx={{ minWidth: 200 }}>
+        <Select
+          value={dashboardKey}
+          onChange={(e) => onDashboardChange(e.target.value as DashboardKey)}
+          displayEmpty
+        >
+          {dashboardList.map((o) => (
+            <MenuItem key={o.id} value={o.id}>
+              {o.displayName}
+            </MenuItem>
+          ))}
+        </Select>
+      </FormControl>
     </Box>
   );
 }

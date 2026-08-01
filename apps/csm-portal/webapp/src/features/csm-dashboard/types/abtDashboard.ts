@@ -40,8 +40,6 @@ export type CaseWorkState = "ongoing" | "paused";
 
 export type SlaClockType = "ack" | "first_response" | "resolution";
 
-export type DashboardScope = "my_abt" | "all_customers";
-
 export interface CsmQueueCase {
   id: string;
   caseNumber: string;

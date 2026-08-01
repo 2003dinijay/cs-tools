@@ -19,24 +19,17 @@ import { useState, type JSX } from "react";
 import AbtDashboardHeader from "@features/csm-dashboard/components/AbtDashboardHeader";
 import AgentsLandingPagePilot from "@features/csm-dashboard/components/AgentsLandingPagePilot";
 import { useDashboardList } from "@features/csm-dashboard/api/useDashboardList";
-import type {
-  DashboardKey,
-  DashboardScope,
-} from "@features/csm-dashboard/types/abtDashboard";
+import type { DashboardKey } from "@features/csm-dashboard/types/abtDashboard";
 
 /**
  * Top-level CSM dashboard. The dashboard list and the default selection are
- * BE-driven: `GET /dashboards` populates the switcher in the header (always
- * enabled, see AbtDashboardHeader), and the `isDefault` entry is selected on
- * load. Every dashboard in the registry now has at least one real
- * (config-driven) widget, so this always renders the real widget grid — the
- * earlier mock `DashboardPlaceholder` (pinned KPI numbers per dashboard) is
- * gone.
+ * BE-driven: `GET /dashboards` populates the switcher in the header, and the
+ * `isDefault` entry is selected on load. Dashboards are selected purely by
+ * dropdown — there is no other per-dashboard scoping control. Every
+ * dashboard in the registry has at least one real (config-driven) widget,
+ * so this always renders the real widget grid.
  */
 export default function CsmDashboardPage(): JSX.Element {
-  // ABT scoping is not implemented yet, so default to (and stay on)
-  // all-customers; the My ABT / All customers toggle is disabled in the header.
-  const [scope, setScope] = useState<DashboardScope>("all_customers");
   // Undefined until the switcher is used; until then the selection derives
   // from the loaded list's isDefault entry (see `dashboardKey` below), so
   // there is nothing to synchronize via an effect.
@@ -50,12 +43,6 @@ export default function CsmDashboardPage(): JSX.Element {
     list && list.length > 0 ? (list.find((d) => d.isDefault) ?? list[0]) : undefined;
   const dashboardKey = manualDashboardKey ?? defaultEntry?.id;
 
-  // Only the engineer-overview dashboard is a personal queue (my patches, my
-  // reminders, ...); every other dashboard is team/org-wide and has no
-  // scope-relevant My ABT / All customers toggle. Not worth a BE field for
-  // this single-dashboard UI nuance.
-  const scopeBased = dashboardKey === "agents_pilot";
-
   if (dashboardKey === undefined) {
     return (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -68,12 +55,9 @@ export default function CsmDashboardPage(): JSX.Element {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
       <AbtDashboardHeader
-        scope={scope}
-        onScopeChange={setScope}
         dashboardKey={dashboardKey}
         onDashboardChange={setManualDashboardKey}
         dashboardList={dashboardList.data ?? []}
-        scopeBased={scopeBased}
       />
       <AgentsLandingPagePilot dashboardId={dashboardKey} />
     </Box>
