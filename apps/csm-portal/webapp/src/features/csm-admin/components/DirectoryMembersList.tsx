@@ -18,7 +18,6 @@ import {
   Box,
   Chip,
   Skeleton,
-  Stack,
   Table,
   TableBody,
   TableCell,
@@ -28,11 +27,13 @@ import {
   TableRow,
   Typography,
 } from "@wso2/oxygen-ui";
-import { useState, type ChangeEvent, type JSX } from "react";
+import { useMemo, useState, type ChangeEvent, type JSX } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import UserRefLink from "@components/UserRefLink";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
-import { INTERNAL_USER_ROLES, type SearchUsersRequest } from "@features/csm-users/types/csmUsers";
+import { useSearchRoles } from "@features/csm-admin/api/useSearchRoles";
+import RoleChipList from "@features/csm-admin/components/RoleChipList";
+import type { SearchUsersRequest } from "@features/csm-users/types/csmUsers";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
@@ -77,6 +78,12 @@ export default function DirectoryMembersList({
   const { data, isLoading, isFetching, isError, error } = useSearchUsers(request);
   const users = data?.users ?? [];
   const total = data?.total ?? 0;
+
+  const { data: rolesData } = useSearchRoles({ pagination: { limit: BE_MAX_PAGE_LIMIT } });
+  const roleNameById = useMemo(
+    () => new Map((rolesData?.roles ?? []).map((r) => [r.id, r.name])),
+    [rolesData],
+  );
 
   const handleChangeRowsPerPage = (e: ChangeEvent<HTMLInputElement>): void => {
     setRowsPerPage(parseInt(e.target.value, 10));
@@ -133,19 +140,12 @@ export default function DirectoryMembersList({
                   <TableCell>{u.name || "—"}</TableCell>
                   <TableCell sx={{ wordBreak: "break-all" }}>{u.email}</TableCell>
                   <TableCell>
-                    <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5 }}>
-                      {u.roles && u.roles.length > 0
-                        ? u.roles.map((r) => (
-                            <Chip
-                              key={r}
-                              size="small"
-                              label={r}
-                              color={(INTERNAL_USER_ROLES as string[]).includes(r) ? "primary" : "default"}
-                              variant="outlined"
-                            />
-                          ))
-                        : "—"}
-                    </Stack>
+                    <RoleChipList
+                      roleIds={u.roles ?? []}
+                      roleNameById={roleNameById}
+                      userId={u.id}
+                      userLabel={u.name || u.userName}
+                    />
                   </TableCell>
                   <TableCell>
                     {u.active === undefined ? (

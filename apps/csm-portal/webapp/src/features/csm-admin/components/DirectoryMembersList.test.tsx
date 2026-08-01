@@ -36,7 +36,10 @@ vi.mock("@hooks/useAuthApiClient", () => ({
 }));
 // UserRefLink resolves an unknown id via POST /users/search through
 // useBackendApi; every row here already carries an id, so resolution is never
-// triggered, but the module still needs a working mock to import cleanly.
+// triggered. useSearchRoles (for role display names) goes through this same
+// client, so `post` needs a real implementation -- an empty vi.fn() resolves
+// to undefined, which react-query rejects ("Query data cannot be undefined").
+const backendPostMock = vi.fn();
 vi.mock("@api/backend/client", () => ({
   BackendApiError: class BackendApiError extends Error {
     status: number;
@@ -45,7 +48,7 @@ vi.mock("@api/backend/client", () => ({
       this.status = status;
     }
   },
-  useBackendApi: () => ({ post: vi.fn() }),
+  useBackendApi: () => ({ post: backendPostMock }),
 }));
 
 import DirectoryMembersList from "@features/csm-admin/components/DirectoryMembersList";
@@ -89,9 +92,24 @@ const MEMBER = {
   roles: ["agent"],
 };
 
+const ROLES_RESPONSE = {
+  roles: [
+    { id: "agent", name: "Agent" },
+    { id: "admin", name: "Admin" },
+    { id: "commenter", name: "Commenter" },
+    { id: "customer", name: "Customer" },
+    { id: "partner", name: "Partner" },
+  ],
+  total: 5,
+  limit: 50,
+  offset: 0,
+};
+
 describe("DirectoryMembersList", () => {
   beforeEach(() => {
     authFetchMock.mockReset();
+    backendPostMock.mockReset();
+    backendPostMock.mockResolvedValue(ROLES_RESPONSE);
   });
 
   it("sends roleIds (not groupIds/teamIds) for a role's member page", async () => {
@@ -154,6 +172,40 @@ describe("DirectoryMembersList", () => {
 
     expect(await screen.findByText(/No members found for this team/i)).toBeInTheDocument();
     expect(screen.queryByText(/Failed to load members/i)).not.toBeInTheDocument();
+  });
+
+  it("truncates a member's roles beyond 3 with a '+N more' chip, same as the user list", async () => {
+    // Regression test: role truncation was implemented directly in
+    // CsmUsersPage's own row rendering, not as a shared component, so every
+    // role/group/team member-list page rendered every role uncapped despite
+    // the user list itself being fixed.
+    const memberWithManyRoles = {
+      ...MEMBER,
+      roles: ["agent", "admin", "commenter", "customer", "partner"],
+    };
+    authFetchMock.mockResolvedValueOnce(
+      jsonResponse({ users: [memberWithManyRoles], total: 1, limit: 20, offset: 0 }),
+    );
+    renderList();
+
+    // Names come from the roles catalogue lookup, proving it's wired, not
+    // just raw ids threaded through unchanged.
+    expect(await screen.findByText("Agent")).toBeInTheDocument();
+    expect(screen.getByText("Admin")).toBeInTheDocument();
+    expect(screen.getByText("Commenter")).toBeInTheDocument();
+    expect(screen.queryByText("Customer")).not.toBeInTheDocument();
+    expect(screen.queryByText("Partner")).not.toBeInTheDocument();
+    expect(screen.getByText("+2 more")).toBeInTheDocument();
+  });
+
+  it("does not show a '+N more' chip at 3 roles or fewer", async () => {
+    authFetchMock.mockResolvedValueOnce(
+      jsonResponse({ users: [MEMBER], total: 1, limit: 20, offset: 0 }),
+    );
+    renderList();
+
+    expect(await screen.findByText("Agent")).toBeInTheDocument();
+    expect(screen.queryByText(/more$/)).not.toBeInTheDocument();
   });
 
   it("renders an error state when the search fails", async () => {
