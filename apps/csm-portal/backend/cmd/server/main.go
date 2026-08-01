@@ -31,6 +31,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/dashboard"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/handler"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
@@ -42,6 +43,12 @@ import (
 func main() {
 	loadDotEnv(".env")
 	middleware.ConfigureLogger()
+
+	// The dashboard registry is config-driven and loaded once at startup; a
+	// missing or malformed DASHBOARDS_CONFIG logs an error (see
+	// ParseDashboardsConfig) and leaves it empty rather than failing
+	// startup, since no other endpoint depends on it.
+	dashboard.Dashboards = dashboard.ParseDashboardsConfig(os.Getenv("DASHBOARDS_CONFIG"))
 
 	// All upstream service clients (entity, updates, SCIM, and future notification
 	// channels) authenticate as the same OAuth2 client-credentials app; only the
@@ -61,6 +68,7 @@ func main() {
 
 	customerEntityClient := entity.NewCustomerEntityClient(customerEntityCfg)
 	caseHandler := handler.NewCaseHandler(customerEntityClient)
+	dashboardHandler := handler.NewDashboardHandler(customerEntityClient)
 	accountHandler := handler.NewAccountHandler(customerEntityClient)
 	projectHandler := handler.NewProjectHandler(customerEntityClient)
 	productHandler := handler.NewProductHandler(customerEntityClient)
@@ -139,6 +147,8 @@ func main() {
 	mux.HandleFunc("DELETE /cases/{id}/tags/{tagId}", caseHandler.RemoveCaseTag)
 	mux.HandleFunc("GET /tags/search", caseHandler.SearchTags)
 	mux.HandleFunc("POST /cases/search", caseHandler.SearchCases)
+	mux.HandleFunc("GET /dashboards", dashboardHandler.GetDashboards)
+	mux.HandleFunc("GET /dashboards/{dashboardId}", dashboardHandler.GetDashboardDetail)
 	mux.HandleFunc("GET /updates/product-update-levels", updatesHandler.GetProductUpdateLevels)
 	mux.HandleFunc("POST /updates/levels/search", updatesHandler.SearchUpdatesBetweenUpdateLevels)
 	mux.HandleFunc("GET /users/me", usersHandler.GetMe)

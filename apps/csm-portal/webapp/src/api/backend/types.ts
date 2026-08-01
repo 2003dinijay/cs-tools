@@ -2678,3 +2678,98 @@ export interface BeTimeCardMutationResponse {
 export interface BeUserSearchByEmailResponse {
   users?: Array<{ id: string; email: string }>;
 }
+
+// ---------------------------------------------------------------------------
+// Dashboards
+// ---------------------------------------------------------------------------
+
+/**
+ * Which resource a widget's filters search against — the widget resolves its
+ * own data by issuing a `POST /{resourceType}s/search`-shaped request (see
+ * `widgetResourceConfig.ts` for the real endpoint per type) with `filters`
+ * forwarded verbatim.
+ */
+export type BeWidgetResourceType =
+  | "case"
+  | "incident"
+  | "change_request"
+  | "account"
+  | "project"
+  | "user"
+  | "time_card"
+  | "problem"
+  | "product_vulnerability";
+
+/**
+ * How a widget's resolved data should be rendered. `pie`/`bar` are not
+ * resolvable by any `/search` endpoint today (no aggregate endpoint exists
+ * anywhere in the stack) — reserved for a future dashboard.
+ */
+export type BeWidgetShape = "count" | "list" | "pie" | "bar";
+
+/**
+ * A single widget template, embedded in {@link BeDashboard}: display metadata
+ * plus its already-resolved filter criteria. The caller resolves the
+ * widget's own data by issuing its own `POST /{resourceType}s/search` with
+ * `filters` and reading `total` (or the item list) off the response.
+ */
+export interface BeDashboardWidget {
+  widgetId: string;
+  displayName: string;
+  resourceType: BeWidgetResourceType;
+  shape: BeWidgetShape;
+  /** CSS grid columns out of 12 this widget should occupy. */
+  gridWidth: number;
+  /**
+   * Opaque filter criteria, with any current-user placeholder already
+   * substituted. Pass this directly as the `filters` of that
+   * `resourceType`'s own `POST /{resourceType}s/search` request.
+   */
+  filters: Record<string, unknown>;
+  /** Only meaningful for shape pie/bar; the field to group counts by. */
+  groupBy?: string;
+  /** Only meaningful for shape list; how many records to show. */
+  listLimit?: number;
+}
+
+/**
+ * One entry from `GET /dashboards`: every dashboard registered in the
+ * config-driven pilot, without its widgets. A small static registry, not
+ * user-configurable — drives the dashboard switcher and the initial
+ * dashboard selection (the `isDefault` entry).
+ */
+export interface BeDashboardListItem {
+  id: string;
+  displayName: string;
+  isDefault: boolean;
+  /** Whether this dashboard should show a team selector (from
+   * `POST /teams/search`) alongside the dashboard switcher when selected.
+   * UI skeleton only today — selecting a team doesn't yet scope any
+   * widget's data. */
+  isTeamBased: boolean;
+}
+
+/**
+ * Response of `GET /dashboards/{dashboardId}`: a dashboard's display
+ * metadata plus every widget template registered for it. `widgets` is
+ * always an array; every dashboard in the registry has at least one.
+ */
+export interface BeDashboard {
+  id: string;
+  displayName: string;
+  isDefault: boolean;
+  /** Descriptive metadata for which team this dashboard targets; not
+   * enforced — every dashboard is returned to every caller. */
+  targetTeam?: string;
+  /** See {@link BeDashboardListItem.isTeamBased}. */
+  isTeamBased: boolean;
+  widgets: BeDashboardWidget[];
+}
+
+/** One team from `POST /teams/search`. `id` is the registry team key,
+ * stable across environments (unlike a group id). */
+export interface BeTeam {
+  id: string;
+  name: string;
+  family?: string;
+}

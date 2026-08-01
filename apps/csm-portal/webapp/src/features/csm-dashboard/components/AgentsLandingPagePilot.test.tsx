@@ -1,0 +1,147 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+import { render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import "@testing-library/jest-dom/vitest";
+import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router";
+
+const getMock = vi.fn();
+const postMock = vi.fn();
+
+vi.mock("@api/backend/client", () => ({
+  useBackendApi: () => ({ get: getMock, post: postMock }),
+}));
+
+import AgentsLandingPagePilot from "@features/csm-dashboard/components/AgentsLandingPagePilot";
+
+function renderWithClient(ui: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+const DASHBOARD_DETAIL = {
+  id: "agents_pilot",
+  displayName: "Engineer overview",
+  isDefault: true,
+  widgets: [
+    {
+      widgetId: "my_patches",
+      displayName: "My Patches",
+      resourceType: "case",
+      shape: "count",
+      gridWidth: 3,
+      filters: { assignedUserIds: ["user-1"], tags: ["patch"] },
+    },
+    {
+      widgetId: "my_reminders",
+      displayName: "My Reminders",
+      resourceType: "case",
+      shape: "count",
+      gridWidth: 3,
+      filters: { assignedUserIds: ["user-1"], states: ["awaiting_info"] },
+    },
+    {
+      widgetId: "open_incident_team",
+      displayName: "Open Incidents (Team)",
+      resourceType: "case",
+      shape: "count",
+      gridWidth: 3,
+      filters: { tags: ["s_dip"] },
+    },
+  ],
+};
+
+function searchResponseFor(total: number) {
+  return { total, cases: [], limit: 1, offset: 0, hasMore: false };
+}
+
+describe("AgentsLandingPagePilot", () => {
+  beforeEach(() => {
+    getMock.mockReset();
+    postMock.mockReset();
+  });
+
+  it("renders skeleton tiles while the template list is in flight", () => {
+    getMock.mockReturnValue(new Promise(() => {}));
+    const { container } = renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
+    expect(container.querySelectorAll(".MuiSkeleton-root").length).toBe(3);
+  });
+
+  it("renders one tile per widget, each resolving its own count independently", async () => {
+    getMock.mockResolvedValue(DASHBOARD_DETAIL);
+    postMock.mockImplementation((_path: string, body: { filters: Record<string, unknown> }) => {
+      if (body.filters.tags && (body.filters.tags as string[]).includes("patch")) {
+        return Promise.resolve(searchResponseFor(3));
+      }
+      if (body.filters.states) {
+        return Promise.resolve(searchResponseFor(5));
+      }
+      return Promise.resolve(searchResponseFor(12));
+    });
+
+    renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
+
+    await waitFor(() => expect(screen.getByText("My Patches")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("5")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("12")).toBeInTheDocument());
+    expect(postMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("shows an error state when the template list itself fails to load", async () => {
+    getMock.mockRejectedValue(new Error("boom"));
+
+    renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
+
+    await waitFor(() =>
+      expect(screen.getByText("Could not load the widget pilot.")).toBeInTheDocument(),
+    );
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("isolates one widget's failed count fetch to its own tile while siblings render their real counts", async () => {
+    getMock.mockResolvedValue(DASHBOARD_DETAIL);
+    postMock.mockImplementation((_path: string, body: { filters: Record<string, unknown> }) => {
+      if (body.filters.tags && (body.filters.tags as string[]).includes("patch")) {
+        return Promise.reject(new Error("boom"));
+      }
+      if (body.filters.states) {
+        return Promise.resolve(searchResponseFor(5));
+      }
+      return Promise.resolve(searchResponseFor(12));
+    });
+
+    renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
+
+    await waitFor(() =>
+      expect(screen.getByText("Could not load this widget.")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("My Reminders")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
+    expect(screen.getByText("Open Incidents (Team)")).toBeInTheDocument();
+    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(screen.queryByText("3")).not.toBeInTheDocument();
+  });
+});
