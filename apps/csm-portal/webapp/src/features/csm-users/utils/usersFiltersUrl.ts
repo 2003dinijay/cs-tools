@@ -62,7 +62,7 @@ export function readUsersFiltersFromUrl(params: URLSearchParams): UsersFilters {
     : "all";
 
   return {
-    search: params.get("q") ?? "",
+    search: params.get("search") ?? "",
     roleIds: parseIdsCsv(params.get("roles")),
     groupIds: parseIdsCsv(params.get("groups")),
     teamIds: parseIdsCsv(params.get("teams")),
@@ -76,7 +76,7 @@ export function readUsersFiltersFromUrl(params: URLSearchParams): UsersFilters {
  */
 export function writeUsersFiltersToUrl(f: UsersFilters): URLSearchParams {
   const out = new URLSearchParams();
-  if (f.search) out.set("q", f.search);
+  if (f.search) out.set("search", f.search);
   if (f.roleIds.length) out.set("roles", f.roleIds.join(","));
   if (f.groupIds.length) out.set("groups", f.groupIds.join(","));
   if (f.teamIds.length) out.set("teams", f.teamIds.join(","));

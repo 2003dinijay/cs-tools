@@ -120,7 +120,7 @@ describe("CsmUsersPage", () => {
 
   it("combines name/email search, role, group, team and status into one request with every key set", async () => {
     renderPage(
-      "/admin/users?q=jane&roles=agent&groups=11111111-1111-1111-1111-111111111111&teams=alpha&active=active",
+      "/admin/users?search=jane&roles=agent&groups=11111111-1111-1111-1111-111111111111&teams=alpha&active=active",
     );
 
     await waitFor(() => expect(authFetchMock).toHaveBeenCalled());
