@@ -30,13 +30,15 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
-import { type JSX, type ReactNode } from "react";
+import { useMemo, type JSX, type ReactNode } from "react";
 import { Link as RouterLink, useParams } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { useGetUserById } from "@features/csm-users/api/useGetUserById";
+import { useSearchRoles } from "@features/csm-admin/api/useSearchRoles";
 import DirectoryEntityChip from "@features/csm-admin/components/DirectoryEntityChip";
+import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import {
   INTERNAL_USER_ROLES,
   type NormalizedUserDetail,
@@ -269,12 +271,20 @@ function MembershipCard({
   );
 }
 
-/** This user's assigned roles (all user types). */
+/** This user's assigned roles (all user types). Labels resolve through the
+ * same role catalogue the users list uses, so a role reads "Agent" here too,
+ * not the raw key "agent". */
 function RolesSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
+  const { data: rolesData } = useSearchRoles({ pagination: { limit: BE_MAX_PAGE_LIMIT } });
+  const roleNameById = useMemo(
+    () => new Map((rolesData?.roles ?? []).map((r) => [r.id, r.name])),
+    [rolesData],
+  );
+
   const rows: MembershipRow[] = (user.roles ?? []).map((r) => ({
     key: r,
     id: r,
-    label: r,
+    label: roleNameById.get(r) ?? r,
     routeBase: "/admin/roles",
     color: (INTERNAL_USER_ROLES as string[]).includes(r) ? "primary" : "default",
   }));

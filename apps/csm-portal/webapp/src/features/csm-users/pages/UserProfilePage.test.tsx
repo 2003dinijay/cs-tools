@@ -15,10 +15,10 @@
 // under the License.
 
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { MemoryRouter } from "react-router";
-import type { UseQueryResult } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, type UseQueryResult } from "@tanstack/react-query";
 import type { NormalizedUserDetail } from "@features/csm-users/types/csmUsers";
 
 const navigateMock = vi.fn();
@@ -35,7 +35,10 @@ vi.mock("@hooks/useNavTransition", () => ({
 // module load, which isn't present under vitest. `QueryErrorState` imports
 // `BackendApiError` from it directly, so stub the module with a real class
 // (so `instanceof` still works) — same approach as
-// CsmChangeRequestDetailPage.test.tsx.
+// CsmChangeRequestDetailPage.test.tsx. `useBackendApi` also needs a working
+// `post`: RolesSection resolves role display names via `useSearchRoles`,
+// which goes through this same client.
+const backendPostMock = vi.fn();
 vi.mock("@api/backend/client", () => ({
   BackendApiError: class BackendApiError extends Error {
     status: number;
@@ -44,6 +47,7 @@ vi.mock("@api/backend/client", () => ({
       this.status = status;
     }
   },
+  useBackendApi: () => ({ post: backendPostMock }),
 }));
 vi.mock("@features/csm-users/api/useGetUserById", () => ({
   useGetUserById: () => useGetUserByIdMock(),
@@ -116,14 +120,33 @@ function mockQueryResult(
 }
 
 function renderPage(): ReturnType<typeof render> {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter>
-      <UserProfilePage />
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <UserProfilePage />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
+const ROLES_RESPONSE = {
+  roles: [
+    { id: "internal", name: "Internal" },
+    { id: "agent", name: "Agent" },
+    { id: "customer", name: "Customer" },
+  ],
+  total: 3,
+  limit: 50,
+  offset: 0,
+};
+
 describe("UserProfilePage", () => {
+  beforeEach(() => {
+    backendPostMock.mockReset();
+    backendPostMock.mockResolvedValue(ROLES_RESPONSE);
+  });
+
   it("renders a loading skeleton while the query is pending", () => {
     mockQueryResult({ isLoading: true });
     const { container } = renderPage();
@@ -142,15 +165,23 @@ describe("UserProfilePage", () => {
     expect(screen.getByText(/User not found/i)).toBeInTheDocument();
   });
 
-  it("renders an internal user's groups and teams, with roles, phone and timestamps", () => {
+  it("renders an internal user's groups and teams, with roles, phone and timestamps", async () => {
     mockQueryResult({ data: INTERNAL_USER });
     renderPage();
     expect(screen.getByText("Jane Doe")).toBeInTheDocument();
-    expect(screen.getByText("Internal", { selector: ".MuiChip-label" })).toBeInTheDocument();
     expect(screen.getByText("+10000000000")).toBeInTheDocument();
     expect(screen.getByText("Tier 2 support")).toBeInTheDocument();
     expect(screen.getByText("CRE (CRE)")).toBeInTheDocument();
-    expect(screen.getByText("agent", { selector: ".MuiChip-label" })).toBeInTheDocument();
+
+    // Role labels resolve through the roles catalogue, same as the users
+    // list, so this reads "Agent" (and "Internal", appearing twice: once as
+    // the account-type chip, once as a role chip) rather than the raw keys
+    // "agent"/"internal".
+    expect(await screen.findByText("Agent", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(screen.getAllByText("Internal", { selector: ".MuiChip-label" }).length).toBeGreaterThan(
+      0,
+    );
+    expect(screen.queryByText("agent", { selector: ".MuiChip-label" })).not.toBeInTheDocument();
   });
 
   it("renders 'No team assignments' rather than hiding the card when an internal user has no teams", () => {
