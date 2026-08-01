@@ -58,12 +58,10 @@ interface AccessStatus {
 }
 
 // Prefers the explicit access-status fields the backend computes per row
-// (customerContactPresent/emailMatchesLogin/grantsCaseAccess — the same
-// booleans ServiceNow's per-email diagnostic view uses, mirrored here for a
-// whole project's contact list). Falls back to the old id-presence heuristic
-// when a backend predates those fields (`grantsCaseAccess` absent), so a Go
-// entity-service deploy that hasn't caught up yet degrades to the previous
-// behaviour instead of mislabeling every row.
+// (customerContactPresent/emailMatchesLogin/grantsCaseAccess). Falls back to
+// the old id-presence heuristic when a backend predates those fields
+// (`grantsCaseAccess` absent), so a backend deploy that hasn't caught up yet
+// degrades to the previous behaviour instead of mislabeling every row.
 function deriveAccessStatus(c: BeProjectContact): AccessStatus {
   if (c.grantsCaseAccess !== undefined) {
     if (c.grantsCaseAccess) {
