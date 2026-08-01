@@ -1087,12 +1087,25 @@ export interface BeUser {
 export interface BeUserSearchFilters {
   /** Case-insensitive match against username and email. */
   searchQuery?: string;
-  /** ServiceNow data source only. */
-  roles?: string[];
+  /** Filter by one or more role keys, as returned by `/roles/search`. Backing
+   * data source only. */
+  roleIds?: string[];
+  /** Restrict to specific users. Intersects with the other filters and lifts
+   * the active-only default. Backing data source only. */
+  userIds?: string[];
+  /** Restrict to members of these groups (group UUIDs). Backing data source
+   * only. */
+  groupIds?: string[];
+  /** Restrict to members of these teams, by team registry key. Backing data
+   * source only. */
+  teamIds?: string[];
   /** Exact match. */
   userNames?: string[];
   /** Exact match. */
   emails?: string[];
+  /** When set, restricts results to active or inactive users. Backing data
+   * source only. */
+  active?: boolean | null;
 }
 
 export interface BeUserSearchPayload {
@@ -1936,6 +1949,53 @@ export interface BeGroupSearchPayload {
 
 export interface BeGroupSearchResponse {
   groups: BeGroup[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// ---------------------------------------------------------------------------
+// Roles & teams — the platform's own directory catalogues (`/roles/search`,
+// `/teams/search`). Unlike `BeGroup` above, which is a live query against the
+// backing data source's assignment groups, these two are curated vocabularies:
+// `/roles/search` is the set of assignable role keys that
+// `UserSearchFilters.roleIds` accepts, and `/teams/search` is the team
+// registry. A team's `id` is its registry key (e.g. "alpha"), not a UUID —
+// registry keys are stable across environments, whereas the backing group's id
+// is not, which is why the key is what this API exposes.
+// ---------------------------------------------------------------------------
+
+export interface BeRole {
+  id: string;
+  name: string;
+}
+
+export interface BeRoleSearchPayload {
+  filters?: { searchQuery?: string };
+  pagination?: BePagination;
+}
+
+export interface BeRoleSearchResponse {
+  roles: BeRole[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BeTeam {
+  /** Registry team key, e.g. "alpha" — not the backing group's UUID. */
+  id: string;
+  name: string;
+  family?: string;
+}
+
+export interface BeTeamSearchPayload {
+  filters?: { searchQuery?: string };
+  pagination?: BePagination;
+}
+
+export interface BeTeamSearchResponse {
+  teams: BeTeam[];
   total: number;
   limit: number;
   offset: number;

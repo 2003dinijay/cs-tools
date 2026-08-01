@@ -129,11 +129,25 @@ export interface SnUserDetail extends SnUser {
 
 export interface UserSearchFilters {
   searchQuery?: string;
-  /** ServiceNow data source only. */
-  roles?: SnUserRole[];
+  /**
+   * Filter by one or more role keys, as returned by `POST /roles/search`.
+   * Backing data source only. Named `roleIds` (not `roles`) to match the
+   * backend contract — a role's "id" is its key (e.g. "agent"), not a
+   * separate numeric identifier.
+   */
+  roleIds?: string[];
+  /** Restrict to specific users by id. Intersects with the other filters and
+   * lifts the active-only default. Backing data source only. */
+  userIds?: string[];
+  /** Restrict to members of these groups (group ids). Backing data source
+   * only. */
+  groupIds?: string[];
+  /** Restrict to members of these teams, by team registry key (not a UUID).
+   * Backing data source only. */
+  teamIds?: string[];
   userNames?: string[];
   emails?: string[];
-  /** ServiceNow data source only. */
+  /** Backing data source only. */
   active?: boolean | null;
 }
 
