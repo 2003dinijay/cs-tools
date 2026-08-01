@@ -1624,17 +1624,53 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /dashboards/{dashboardId}/widgets:
+  /dashboards:
     get:
-      summary: Get the widget templates for a dashboard.
+      summary: List available dashboards.
       description: >
-        Returns every widget template registered for the given dashboard id:
-        its display metadata and the filter criteria to run against
-        POST /cases/search. The caller resolves each widget's own data by
-        issuing that search itself; this endpoint does not touch case data.
-        This is a config-driven pilot: widget templates are a small static
-        registry, not user-configurable.
-      operationId: getDashboardWidgets
+        Returns every dashboard registered in the config-driven pilot: its
+        id, display name, and whether it is the default dashboard. This is a
+        small static registry, not user-configurable.
+      operationId: getDashboards
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DashboardListItem'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /dashboards/{dashboardId}:
+    get:
+      summary: Get a dashboard's metadata and widget templates.
+      description: >
+        Returns the given dashboard id's display metadata plus every widget
+        template registered for it: its display metadata and the filter
+        criteria to run against POST /cases/search. The caller resolves each
+        widget's own data by issuing that search itself; this endpoint does
+        not touch case data. This is a config-driven pilot: widget templates
+        are a small static registry, not user-configurable.
+      operationId: getDashboardDetail
       parameters:
         - name: dashboardId
           in: path
@@ -1648,9 +1684,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/DashboardWidget'
+                $ref: '#/components/schemas/Dashboard'
         "401":
           description: Unauthorized
           content:
@@ -5257,6 +5291,34 @@ components:
             placeholder already substituted. Pass this directly as the
             filters of a POST /cases/search request to resolve the widget's
             data.
+
+    DashboardListItem:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Static id of the dashboard
+        displayName:
+          type: string
+        isDefault:
+          type: boolean
+          description: Whether this is the default dashboard to show first
+
+    Dashboard:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Static id of the dashboard
+        displayName:
+          type: string
+        isDefault:
+          type: boolean
+          description: Whether this is the default dashboard to show first
+        widgets:
+          type: array
+          items:
+            $ref: '#/components/schemas/DashboardWidget'
 
     Case:
       type: object

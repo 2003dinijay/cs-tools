@@ -24,7 +24,7 @@ import (
 )
 
 // dashboardWidgetView is a single widget's filter criteria and display
-// metadata, returned by GET /dashboards/{dashboardId}/widgets. The caller
+// metadata, returned as part of GET /dashboards/{dashboardId}. The caller
 // resolves each widget's own data by issuing its own POST /cases/search
 // request with Filters.
 type dashboardWidgetView struct {
@@ -32,6 +32,23 @@ type dashboardWidgetView struct {
 	DisplayName string                      `json:"displayName"`
 	DisplayType dashboard.DisplayType       `json:"displayType"`
 	Filters     dashboard.CaseSearchFilters `json:"filters"`
+}
+
+// dashboardListItemView is a dashboard's list-level metadata, returned by
+// GET /dashboards.
+type dashboardListItemView struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
+	IsDefault   bool   `json:"isDefault"`
+}
+
+// dashboardDetailView is a dashboard's full metadata plus its resolved
+// widgets, returned by GET /dashboards/{dashboardId}.
+type dashboardDetailView struct {
+	ID          string                `json:"id"`
+	DisplayName string                `json:"displayName"`
+	IsDefault   bool                  `json:"isDefault"`
+	Widgets     []dashboardWidgetView `json:"widgets"`
 }
 
 // DashboardHandler handles HTTP requests for the config-driven dashboard
@@ -43,8 +60,28 @@ func NewDashboardHandler() *DashboardHandler {
 	return &DashboardHandler{}
 }
 
-// GetDashboardWidgets handles GET /dashboards/{dashboardId}/widgets.
-func (h *DashboardHandler) GetDashboardWidgets(w http.ResponseWriter, r *http.Request) {
+// GetDashboards handles GET /dashboards.
+func (h *DashboardHandler) GetDashboards(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	views := make([]dashboardListItemView, 0, len(dashboard.Dashboards))
+	for _, d := range dashboard.Dashboards {
+		views = append(views, dashboardListItemView{
+			ID:          d.ID,
+			DisplayName: d.DisplayName,
+			IsDefault:   d.IsDefault,
+		})
+	}
+
+	writeJSONValue(w, http.StatusOK, views)
+}
+
+// GetDashboardDetail handles GET /dashboards/{dashboardId}.
+func (h *DashboardHandler) GetDashboardDetail(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
@@ -52,15 +89,15 @@ func (h *DashboardHandler) GetDashboardWidgets(w http.ResponseWriter, r *http.Re
 	}
 
 	dashboardID := r.PathValue("dashboardId")
-	templates, ok := dashboard.Dashboards[dashboardID]
+	d, ok := dashboard.DashboardByID(dashboardID)
 	if !ok {
 		writeError(w, http.StatusNotFound, ErrMsgNotFound)
 		return
 	}
 
-	views := make([]dashboardWidgetView, 0, len(templates))
-	for _, tpl := range templates {
-		views = append(views, dashboardWidgetView{
+	widgets := make([]dashboardWidgetView, 0, len(d.Widgets))
+	for _, tpl := range d.Widgets {
+		widgets = append(widgets, dashboardWidgetView{
 			WidgetID:    tpl.ID,
 			DisplayName: tpl.DisplayName,
 			DisplayType: tpl.DisplayType,
@@ -68,5 +105,10 @@ func (h *DashboardHandler) GetDashboardWidgets(w http.ResponseWriter, r *http.Re
 		})
 	}
 
-	writeJSONValue(w, http.StatusOK, views)
+	writeJSONValue(w, http.StatusOK, dashboardDetailView{
+		ID:          d.ID,
+		DisplayName: d.DisplayName,
+		IsDefault:   d.IsDefault,
+		Widgets:     widgets,
+	})
 }

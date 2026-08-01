@@ -52,52 +52,102 @@ type WidgetTemplate struct {
 	Filters     CaseSearchFilters
 }
 
-// Dashboards is the static registry of widget templates, keyed by dashboard id.
-var Dashboards = map[string][]WidgetTemplate{
-	"agents_pilot": {
-		{
-			ID:          "my_patches",
-			DisplayName: "My Patches",
-			DisplayType: DisplayTypeSingleScore,
-			Filters: CaseSearchFilters{
-				AssignedUserIDs: []string{CurrentUserPlaceholder},
-				Tags:            []string{"patch"},
-				States: []string{
-					"open",
-					"work_in_progress",
-					"waiting_on_wso2",
-					"reopened",
-					"awaiting_info",
+// Dashboard is a single dashboard's metadata plus its static widget
+// templates.
+type Dashboard struct {
+	ID          string
+	DisplayName string
+	IsDefault   bool
+	Widgets     []WidgetTemplate
+}
+
+// Dashboards is the ordered, static registry of dashboards. Order is
+// deterministic and is what the frontend's dashboard picker displays.
+var Dashboards = []Dashboard{
+	{
+		ID:          "agents_pilot",
+		DisplayName: "Engineer overview",
+		IsDefault:   true,
+		Widgets: []WidgetTemplate{
+			{
+				ID:          "my_patches",
+				DisplayName: "My Patches",
+				DisplayType: DisplayTypeSingleScore,
+				Filters: CaseSearchFilters{
+					AssignedUserIDs: []string{CurrentUserPlaceholder},
+					Tags:            []string{"patch"},
+					States: []string{
+						"open",
+						"work_in_progress",
+						"waiting_on_wso2",
+						"reopened",
+						"awaiting_info",
+					},
 				},
 			},
-		},
-		{
-			ID:          "my_reminders",
-			DisplayName: "My Reminders",
-			DisplayType: DisplayTypeSingleScore,
-			Filters: CaseSearchFilters{
-				AssignedUserIDs: []string{CurrentUserPlaceholder},
-				States: []string{
-					"awaiting_info",
-					"solution_proposed",
+			{
+				ID:          "my_reminders",
+				DisplayName: "My Reminders",
+				DisplayType: DisplayTypeSingleScore,
+				Filters: CaseSearchFilters{
+					AssignedUserIDs: []string{CurrentUserPlaceholder},
+					States: []string{
+						"awaiting_info",
+						"solution_proposed",
+					},
 				},
 			},
-		},
-		{
-			ID:          "open_incident_team",
-			DisplayName: "Open Incident (Team)",
-			DisplayType: DisplayTypeSingleScore,
-			Filters: CaseSearchFilters{
-				Tags: []string{"s_dip"},
-				States: []string{
-					"work_in_progress",
-					"open",
-					"waiting_on_wso2",
-					"reopened",
+			{
+				ID:          "open_incident_team",
+				DisplayName: "Open Incident (Team)",
+				DisplayType: DisplayTypeSingleScore,
+				Filters: CaseSearchFilters{
+					Tags: []string{"s_dip"},
+					States: []string{
+						"work_in_progress",
+						"open",
+						"waiting_on_wso2",
+						"reopened",
+					},
 				},
 			},
 		},
 	},
+	{
+		ID:          "operations",
+		DisplayName: "Operations",
+		IsDefault:   false,
+		Widgets:     nil,
+	},
+	{
+		ID:          "iam",
+		DisplayName: "IAM CS",
+		IsDefault:   false,
+		Widgets:     nil,
+	},
+	{
+		ID:          "security",
+		DisplayName: "Security center",
+		IsDefault:   false,
+		Widgets:     nil,
+	},
+	{
+		ID:          "team_performance",
+		DisplayName: "Team performance",
+		IsDefault:   false,
+		Widgets:     nil,
+	},
+}
+
+// DashboardByID looks up a dashboard by id, returning ok=false if the id
+// isn't in the registry.
+func DashboardByID(id string) (Dashboard, bool) {
+	for _, d := range Dashboards {
+		if d.ID == id {
+			return d, true
+		}
+	}
+	return Dashboard{}, false
 }
 
 // ResolveFilters substitutes CurrentUserPlaceholder in tpl's AssignedUserIDs
