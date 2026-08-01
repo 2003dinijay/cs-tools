@@ -203,6 +203,51 @@ func TestSNProjectContactService_SearchProjectContacts_OptionalContactID(t *test
 	}
 }
 
+// TestSNProjectContactService_SearchProjectContacts_MapsAccessStatus verifies that the
+// access-status fields ServiceNow computes per contact row (customerContactPresent,
+// emailMatchesLogin, grantsCaseAccess) flow through into domain.ProjectContact unchanged,
+// covering both a fully-granted row and a linked-but-mismatched row (the "hardest access
+// fault to spot by hand" case: a contact record is present, but the invited email doesn't
+// match the linked account's own email).
+func TestSNProjectContactService_SearchProjectContacts_MapsAccessStatus(t *testing.T) {
+	projectUUID := sysidToUUID(sysid32('7'))
+
+	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"contacts":[
+			{"id":"` + sysid32('8') + `","name":"Granted","email":"granted@example.com",
+			 "registrationState":"REGISTERED","notificationsEnabled":true,"roles":["r"],
+			 "customerContactPresent":true,"emailMatchesLogin":true,"grantsCaseAccess":true},
+			{"id":"` + sysid32('9') + `","name":"Mismatched","email":"mismatched@example.com",
+			 "registrationState":"INVITED","notificationsEnabled":false,"roles":[],
+			 "customerContactPresent":true,"emailMatchesLogin":false,"grantsCaseAccess":false}
+		],"totalRecords":2,"offset":0,"limit":10}`))
+	}))
+
+	svc := NewServiceNowProjectContactService(client)
+
+	got, err := svc.SearchProjectContacts(contextWithUserIDToken("token"), projectUUID,
+		domain.SearchProjectContactsRequest{Pagination: domain.Pagination{Limit: 10}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Contacts) != 2 {
+		t.Fatalf("got %d contacts, want 2", len(got.Contacts))
+	}
+
+	granted := got.Contacts[0]
+	if !granted.CustomerContactPresent || !granted.EmailMatchesLogin || !granted.GrantsCaseAccess {
+		t.Errorf("granted row = %+v, want all three access-status fields true", granted)
+	}
+
+	mismatched := got.Contacts[1]
+	if !mismatched.CustomerContactPresent {
+		t.Errorf("mismatched row CustomerContactPresent = false, want true")
+	}
+	if mismatched.EmailMatchesLogin || mismatched.GrantsCaseAccess {
+		t.Errorf("mismatched row = %+v, want EmailMatchesLogin and GrantsCaseAccess both false", mismatched)
+	}
+}
+
 // TestSNProjectContactService_GetProjectContact_ScanLimitIsAccepted pins the scan window to
 // a value SearchProjectContacts will accept. A scan limit above maxLimit made every lookup
 // fail with a pagination validation error before the upstream call was ever made.

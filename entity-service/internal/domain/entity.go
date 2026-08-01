@@ -2200,6 +2200,19 @@ type ProjectContact struct {
 	RegistrationState    string   `json:"registrationState"`
 	NotificationsEnabled bool     `json:"notificationsEnabled"`
 	Roles                []string `json:"roles"`
+	// CustomerContactPresent, EmailMatchesLogin and GrantsCaseAccess answer "can this
+	// person actually see this project's cases" per row, not just "are they listed".
+	// CustomerContactPresent is whether a contact record is linked at all (false is the
+	// same fault ID==nil signals, restated as an explicit boolean rather than an absence
+	// a caller has to notice). EmailMatchesLogin is whether the email this row was
+	// invited under matches the linked account's own email -- a row can be linked yet
+	// still mismatched, invited under one address and registered under another.
+	// GrantsCaseAccess mirrors the customer portal's own access rule
+	// (EmailMatchesLogin && CustomerContactPresent) so a caller never has to
+	// reimplement it or drift from what the portal actually enforces.
+	CustomerContactPresent bool `json:"customerContactPresent"`
+	EmailMatchesLogin      bool `json:"emailMatchesLogin"`
+	GrantsCaseAccess       bool `json:"grantsCaseAccess"`
 }
 
 // SearchProjectContactsRequest is the input for POST /projects/{id}/contacts/search.

@@ -6415,6 +6415,23 @@ components:
           type: array
           items:
             type: string
+        customerContactPresent:
+          type: boolean
+          description: >
+            Whether a contact record is linked to this row at all. False is the same fault an
+            absent `id` signals, restated as an explicit boolean.
+        emailMatchesLogin:
+          type: boolean
+          description: >
+            Whether the email this row was invited under matches the linked account's own email.
+            A row can be linked (`customerContactPresent: true`) yet still mismatched — invited
+            under one address, registered under another.
+        grantsCaseAccess:
+          type: boolean
+          description: >
+            Whether this row would actually grant its person visibility into this project's
+            cases, per the customer portal's own access rule (`emailMatchesLogin &&
+            customerContactPresent`). A row can be listed here without granting access.
 
     ProjectContactSearchResponse:
       type: object
