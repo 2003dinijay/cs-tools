@@ -82,8 +82,15 @@ type Dashboard struct {
 	// TargetTeam is purely descriptive metadata (e.g. for a future FE team
 	// picker); it is not enforced anywhere. GET /dashboards still returns
 	// every dashboard to every caller regardless of team membership.
-	TargetTeam string           `json:"targetTeam"`
-	Widgets    []WidgetTemplate `json:"widgets"`
+	TargetTeam string `json:"targetTeam"`
+	// IsTeamBased marks a dashboard whose FE view should offer a team
+	// selector (populated from POST /teams/search) alongside the dashboard
+	// switcher. This is currently UI skeleton only: selecting a team does
+	// not yet scope any widget's data. Wiring a selected team into widget
+	// filters (e.g. resolving its member user IDs into a case widget's
+	// assignedUserIds) is deliberately deferred to a later increment.
+	IsTeamBased bool             `json:"isTeamBased"`
+	Widgets     []WidgetTemplate `json:"widgets"`
 }
 
 // Dashboards is the ordered registry of dashboards, populated once at process

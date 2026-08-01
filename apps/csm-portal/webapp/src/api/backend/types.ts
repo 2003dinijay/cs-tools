@@ -2651,6 +2651,11 @@ export interface BeDashboardListItem {
   id: string;
   displayName: string;
   isDefault: boolean;
+  /** Whether this dashboard should show a team selector (from
+   * `POST /teams/search`) alongside the dashboard switcher when selected.
+   * UI skeleton only today — selecting a team doesn't yet scope any
+   * widget's data. */
+  isTeamBased: boolean;
 }
 
 /**
@@ -2665,5 +2670,15 @@ export interface BeDashboard {
   /** Descriptive metadata for which team this dashboard targets; not
    * enforced — every dashboard is returned to every caller. */
   targetTeam?: string;
+  /** See {@link BeDashboardListItem.isTeamBased}. */
+  isTeamBased: boolean;
   widgets: BeDashboardWidget[];
+}
+
+/** One team from `POST /teams/search`. `id` is the registry team key,
+ * stable across environments (unlike a group id). */
+export interface BeTeam {
+  id: string;
+  name: string;
+  family?: string;
 }

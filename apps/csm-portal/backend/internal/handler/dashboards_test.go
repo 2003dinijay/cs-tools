@@ -57,7 +57,7 @@ const testDashboardsConfigJSON = `[
     {"id":"high_vulns","displayName":"High Vulnerabilities","resourceType":"product_vulnerability","shape":"count","gridWidth":4,"filters":{"priority":"high"}},
     {"id":"sra_cases_open","displayName":"Open SRAs","resourceType":"case","shape":"count","gridWidth":4,"filters":{"types":["security_report_analysis"],"states":["open","work_in_progress","awaiting_info"]}}
   ]},
-  {"id":"team_performance","displayName":"Team performance","targetTeam":"cs_team_leads","widgets":[
+  {"id":"team_performance","displayName":"Team performance","targetTeam":"cs_team_leads","isTeamBased":true,"widgets":[
     {"id":"time_cards_pending_approval","displayName":"Time Cards Pending Approval","resourceType":"time_card","shape":"count","gridWidth":6,"filters":{"states":["pending"]}},
     {"id":"team_open_cases","displayName":"Team Open P0/P1","resourceType":"case","shape":"count","gridWidth":6,"filters":{"severities":["catastrophic","critical"],"states":["open","work_in_progress"]}}
   ]}
@@ -88,11 +88,11 @@ var dashboardWidgetJSONKeys = []string{"widgetId", "displayName", "resourceType"
 
 // dashboardListItemJSONKeys are the top-level JSON keys openapi.yaml's
 // DashboardListItem schema declares.
-var dashboardListItemJSONKeys = []string{"id", "displayName", "isDefault"}
+var dashboardListItemJSONKeys = []string{"id", "displayName", "isDefault", "isTeamBased"}
 
 // dashboardDetailJSONKeys are the top-level JSON keys openapi.yaml's
 // Dashboard schema declares.
-var dashboardDetailJSONKeys = []string{"id", "displayName", "isDefault", "targetTeam", "widgets"}
+var dashboardDetailJSONKeys = []string{"id", "displayName", "isDefault", "targetTeam", "isTeamBased", "widgets"}
 
 func assertJSONKeys(t *testing.T, obj map[string]json.RawMessage, want []string, context string) {
 	t.Helper()
@@ -183,6 +183,22 @@ func TestGetDashboards(t *testing.T) {
 			if got.IsDefault != want.IsDefault {
 				t.Errorf("result[%d].IsDefault = %v, want %v", i, got.IsDefault, want.IsDefault)
 			}
+			if got.IsTeamBased != want.IsTeamBased {
+				t.Errorf("result[%d].IsTeamBased = %v, want %v", i, got.IsTeamBased, want.IsTeamBased)
+			}
+		}
+
+		teamBasedCount := 0
+		for _, res := range results {
+			if res.IsTeamBased {
+				teamBasedCount++
+				if res.ID != "team_performance" {
+					t.Errorf("unexpected team-based dashboard %q, want team_performance", res.ID)
+				}
+			}
+		}
+		if teamBasedCount != 1 {
+			t.Errorf("teamBasedCount = %d, want exactly 1 (team_performance)", teamBasedCount)
 		}
 
 		defaultCount := 0

@@ -24,6 +24,15 @@ vi.mock("@features/csm-dashboard/api/useDashboardList", () => ({
   useDashboardList: vi.fn(),
 }));
 
+// None of these dashboards are team-based, so the header's team selector
+// never renders/fetches here, but useTeams still needs mocking since
+// AbtDashboardHeader calls it unconditionally (the fetch itself is disabled
+// via its `enabled` param) — without this, the real hook reaches the real
+// API client, which throws under vitest (no runtime config).
+vi.mock("@features/csm-dashboard/api/useTeams", () => ({
+  useTeams: vi.fn(() => ({ data: undefined })),
+}));
+
 // Keeps this test focused on dashboard selection + the header; the widget
 // grid itself has its own tests (AgentsLandingPagePilot.test.tsx).
 vi.mock("@features/csm-dashboard/components/AgentsLandingPagePilot", () => ({
@@ -35,9 +44,9 @@ vi.mock("@features/csm-dashboard/components/AgentsLandingPagePilot", () => ({
 const mockedUseDashboardList = vi.mocked(useDashboardList);
 
 const DASHBOARD_LIST = [
-  { id: "operations", displayName: "Operations", isDefault: false },
-  { id: "agents_pilot", displayName: "Engineer overview", isDefault: true },
-  { id: "iam", displayName: "IAM CS", isDefault: false },
+  { id: "operations", displayName: "Operations", isDefault: false, isTeamBased: false },
+  { id: "agents_pilot", displayName: "Engineer overview", isDefault: true, isTeamBased: false },
+  { id: "iam", displayName: "IAM CS", isDefault: false, isTeamBased: false },
 ];
 
 function mockListResult(
@@ -93,8 +102,8 @@ describe("CsmDashboardPage", () => {
     // widgets, so the grid renders regardless of which one is selected.
     mockListResult({
       data: [
-        { id: "agents_pilot", displayName: "Engineer overview", isDefault: false },
-        { id: "operations", displayName: "Operations", isDefault: true },
+        { id: "agents_pilot", displayName: "Engineer overview", isDefault: false, isTeamBased: false },
+        { id: "operations", displayName: "Operations", isDefault: true, isTeamBased: false },
       ],
       isLoading: false,
     });

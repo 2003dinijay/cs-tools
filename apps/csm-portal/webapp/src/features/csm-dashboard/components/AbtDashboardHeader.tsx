@@ -15,9 +15,10 @@
 // under the License.
 
 import { Box, FormControl, MenuItem, Select, Typography } from "@wso2/oxygen-ui";
-import type { JSX } from "react";
+import { useState, type JSX } from "react";
 import type { BeDashboardListItem } from "@api/backend/types";
 import type { DashboardKey } from "@features/csm-dashboard/types/abtDashboard";
+import { useTeams } from "@features/csm-dashboard/api/useTeams";
 
 interface AbtDashboardHeaderProps {
   dashboardKey: DashboardKey;
@@ -27,11 +28,14 @@ interface AbtDashboardHeaderProps {
 }
 
 /**
- * Dashboard header: title plus the dashboard switcher. Dashboards are
- * selected purely by dropdown — there is no other per-dashboard scoping
- * control (the earlier My ABT / All customers toggle was removed; ABT
- * scoping was never implemented and dashboards carry no other special
- * per-dashboard behavior beyond which one is selected).
+ * Dashboard header: title, the dashboard switcher, and (for a dashboard
+ * flagged `isTeamBased`) a team selector sourced from `POST /teams/search`.
+ * Team selection is UI state only today — it does not yet scope any
+ * widget's data (see `Dashboard.isTeamBased` on the backend); wiring a
+ * selected team into widget filters is a later increment. The earlier My
+ * ABT / All customers toggle was removed entirely — ABT scoping was never
+ * implemented and dashboards carry no other special behavior beyond which
+ * one (and, for team-based ones, which team) is selected.
  */
 export default function AbtDashboardHeader({
   dashboardKey,
@@ -39,6 +43,12 @@ export default function AbtDashboardHeader({
   dashboardList,
 }: AbtDashboardHeaderProps): JSX.Element {
   const currentOption = dashboardList.find((o) => o.id === dashboardKey);
+  const isTeamBased = currentOption?.isTeamBased ?? false;
+
+  const [selectedTeamId, setSelectedTeamId] = useState<string | undefined>(
+    undefined,
+  );
+  const teams = useTeams(isTeamBased);
 
   return (
     <Box
@@ -56,19 +66,39 @@ export default function AbtDashboardHeader({
           {currentOption?.displayName ?? ""}
         </Typography>
       </Box>
-      <FormControl size="small" sx={{ minWidth: 200 }}>
-        <Select
-          value={dashboardKey}
-          onChange={(e) => onDashboardChange(e.target.value as DashboardKey)}
-          displayEmpty
-        >
-          {dashboardList.map((o) => (
-            <MenuItem key={o.id} value={o.id}>
-              {o.displayName}
-            </MenuItem>
-          ))}
-        </Select>
-      </FormControl>
+      <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
+        {isTeamBased && (
+          <FormControl size="small" sx={{ minWidth: 180 }}>
+            <Select
+              value={selectedTeamId ?? ""}
+              onChange={(e) => setSelectedTeamId(e.target.value || undefined)}
+              displayEmpty
+            >
+              <MenuItem value="">
+                <em>All teams</em>
+              </MenuItem>
+              {(teams.data ?? []).map((t) => (
+                <MenuItem key={t.id} value={t.id}>
+                  {t.name}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
+        <FormControl size="small" sx={{ minWidth: 200 }}>
+          <Select
+            value={dashboardKey}
+            onChange={(e) => onDashboardChange(e.target.value as DashboardKey)}
+            displayEmpty
+          >
+            {dashboardList.map((o) => (
+              <MenuItem key={o.id} value={o.id}>
+                {o.displayName}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </Box>
     </Box>
   );
 }

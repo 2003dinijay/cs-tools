@@ -39,11 +39,14 @@ type dashboardWidgetView struct {
 }
 
 // dashboardListItemView is a dashboard's list-level metadata, returned by
-// GET /dashboards.
+// GET /dashboards. IsTeamBased is included here (not just on the detail
+// view) so the frontend can decide whether to show a team selector for the
+// currently-selected dashboard without waiting on a second fetch.
 type dashboardListItemView struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
 	IsDefault   bool   `json:"isDefault"`
+	IsTeamBased bool   `json:"isTeamBased"`
 }
 
 // dashboardDetailView is a dashboard's full metadata plus its resolved
@@ -53,6 +56,7 @@ type dashboardDetailView struct {
 	DisplayName string                `json:"displayName"`
 	IsDefault   bool                  `json:"isDefault"`
 	TargetTeam  string                `json:"targetTeam"`
+	IsTeamBased bool                  `json:"isTeamBased"`
 	Widgets     []dashboardWidgetView `json:"widgets"`
 }
 
@@ -79,6 +83,7 @@ func (h *DashboardHandler) GetDashboards(w http.ResponseWriter, r *http.Request)
 			ID:          d.ID,
 			DisplayName: d.DisplayName,
 			IsDefault:   d.IsDefault,
+			IsTeamBased: d.IsTeamBased,
 		})
 	}
 
@@ -119,6 +124,7 @@ func (h *DashboardHandler) GetDashboardDetail(w http.ResponseWriter, r *http.Req
 		DisplayName: d.DisplayName,
 		IsDefault:   d.IsDefault,
 		TargetTeam:  d.TargetTeam,
+		IsTeamBased: d.IsTeamBased,
 		Widgets:     widgets,
 	})
 }

@@ -5335,6 +5335,13 @@ components:
         isDefault:
           type: boolean
           description: Whether this is the default dashboard to show first
+        isTeamBased:
+          type: boolean
+          description: >
+            Whether the frontend should offer a team selector (from
+            POST /teams/search) alongside the dashboard switcher when this
+            dashboard is selected. UI skeleton only today — selecting a team
+            does not yet scope any widget's data.
 
     Dashboard:
       type: object
@@ -5352,6 +5359,13 @@ components:
           description: >
             Descriptive metadata for which team this dashboard targets; not
             enforced — every dashboard is returned to every caller.
+        isTeamBased:
+          type: boolean
+          description: >
+            Whether the frontend should offer a team selector (from
+            POST /teams/search) alongside the dashboard switcher when this
+            dashboard is selected. UI skeleton only today — selecting a team
+            does not yet scope any widget's data.
         widgets:
           type: array
           items:
