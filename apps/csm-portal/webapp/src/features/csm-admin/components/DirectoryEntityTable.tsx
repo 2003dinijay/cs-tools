@@ -115,8 +115,10 @@ export default function DirectoryEntityTable({
                 <TableCell>Name</TableCell>
               </TableRow>
             </TableHead>
-            <TableBody>
-              {isLoading || isFetching ? (
+            <TableBody
+              sx={isFetching ? { opacity: 0.6, transition: "opacity 0.15s" } : undefined}
+            >
+              {isLoading ? (
                 Array.from({ length: rowsPerPage }).map((_, i) => (
                   <TableRow key={i}>
                     <TableCell>
