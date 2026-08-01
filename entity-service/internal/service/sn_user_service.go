@@ -109,12 +109,17 @@ type snUserSearchPayload struct {
 }
 
 type snUserFilters struct {
-	SearchQuery string   `json:"searchQuery,omitempty"`
-	Roles       []string `json:"roles,omitempty"`
-	UserNames   []string `json:"userNames,omitempty"`
-	Emails      []string `json:"emails,omitempty"`
-	UserIDs     []string `json:"userIds,omitempty"`
-	Active      *bool    `json:"active,omitempty"`
+	SearchQuery string `json:"searchQuery,omitempty"`
+	// RoleNames is sent under the backing data source's open, unconstrained role
+	// filter rather than its closed "roles" enum -- this service's own role catalogue
+	// is itself configuration-driven (CSM_USER_ROLES) and not limited to that closed
+	// set, so a role outside it (e.g. timecard_approver) must not be sent under "roles",
+	// which the upstream layer rejects at request binding for values it doesn't recognize.
+	RoleNames []string `json:"roleNames,omitempty"`
+	UserNames []string `json:"userNames,omitempty"`
+	Emails    []string `json:"emails,omitempty"`
+	UserIDs   []string `json:"userIds,omitempty"`
+	Active    *bool    `json:"active,omitempty"`
 }
 
 // snProjectContactRowsPayload is the Choreo POST project-contacts/search request body.
@@ -276,7 +281,7 @@ func (s *snUserService) SearchUsers(ctx context.Context, req domain.SearchUsersR
 	payload := snUserSearchPayload{
 		Filters: snUserFilters{
 			SearchQuery: req.Filters.SearchQuery,
-			Roles:       roles,
+			RoleNames:   roles,
 			UserNames:   req.Filters.UserNames,
 			Emails:      req.Filters.Emails,
 			UserIDs:     userIDs,
