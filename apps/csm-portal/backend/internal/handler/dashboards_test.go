@@ -21,12 +21,59 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"sort"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/dashboard"
 )
+
+// testDashboardsConfigJSON is the pilot's 5-dashboard registry, identical to
+// the DASHBOARDS_CONFIG example documented in .env.example. dashboard.Dashboards
+// is populated from DASHBOARDS_CONFIG only in cmd/server/main.go, which tests
+// never run, so TestMain below seeds it directly via the same parse function
+// production uses — every assertion in this file exercises the real
+// production parsing/lookup/resolution path, just with the config supplied
+// in-process instead of via the environment.
+const testDashboardsConfigJSON = `[
+  {"id":"agents_pilot","displayName":"Engineer overview","isDefault":true,"targetTeam":"cs_engineers","widgets":[
+    {"id":"my_patches","displayName":"My Patches","resourceType":"case","shape":"count","gridWidth":3,"filters":{"assignedUserIds":["__current_user__"],"tags":["patch"],"states":["open","work_in_progress","waiting_on_wso2","reopened","awaiting_info"]}},
+    {"id":"my_reminders","displayName":"My Reminders","resourceType":"case","shape":"count","gridWidth":3,"filters":{"assignedUserIds":["__current_user__"],"states":["awaiting_info","solution_proposed"]}},
+    {"id":"open_incident_team","displayName":"Open Incident (Team)","resourceType":"case","shape":"count","gridWidth":3,"filters":{"tags":["s_dip"],"states":["work_in_progress","open","waiting_on_wso2","reopened"]}},
+    {"id":"my_critical_open","displayName":"My Critical & High Cases","resourceType":"case","shape":"list","gridWidth":3,"listLimit":5,"filters":{"assignedUserIds":["__current_user__"],"severities":["catastrophic","critical"],"states":["open","work_in_progress"]}}
+  ]},
+  {"id":"operations","displayName":"Operations","targetTeam":"cs_operations","widgets":[
+    {"id":"p0_p1_open","displayName":"P0/P1 Open","resourceType":"case","shape":"count","gridWidth":4,"filters":{"severities":["catastrophic","critical"],"states":["open","work_in_progress"]}},
+    {"id":"open_critical_incidents","displayName":"Open Critical Incidents","resourceType":"incident","shape":"count","gridWidth":4,"filters":{"priorities":["CRITICAL","HIGH"]}},
+    {"id":"crs_awaiting_approval","displayName":"CRs Awaiting Approval","resourceType":"change_request","shape":"count","gridWidth":4,"filters":{"states":["customer_approval"]}}
+  ]},
+  {"id":"iam","displayName":"IAM CS","targetTeam":"iam_cs","widgets":[
+    {"id":"iam_open_cases","displayName":"IAM Open Cases","resourceType":"case","shape":"count","gridWidth":6,"filters":{"tags":["iam"],"states":["open","work_in_progress","awaiting_info"]}},
+    {"id":"asgardeo_open_cases","displayName":"Asgardeo Open Cases","resourceType":"case","shape":"count","gridWidth":6,"filters":{"tags":["asgardeo"],"states":["open","work_in_progress","awaiting_info"]}}
+  ]},
+  {"id":"security","displayName":"Security center","targetTeam":"security","widgets":[
+    {"id":"critical_vulns","displayName":"Critical Vulnerabilities","resourceType":"product_vulnerability","shape":"count","gridWidth":4,"filters":{"priority":"critical"}},
+    {"id":"high_vulns","displayName":"High Vulnerabilities","resourceType":"product_vulnerability","shape":"count","gridWidth":4,"filters":{"priority":"high"}},
+    {"id":"sra_cases_open","displayName":"Open SRAs","resourceType":"case","shape":"count","gridWidth":4,"filters":{"types":["security_report_analysis"],"states":["open","work_in_progress","awaiting_info"]}}
+  ]},
+  {"id":"team_performance","displayName":"Team performance","targetTeam":"cs_team_leads","widgets":[
+    {"id":"time_cards_pending_approval","displayName":"Time Cards Pending Approval","resourceType":"time_card","shape":"count","gridWidth":6,"filters":{"states":["pending"]}},
+    {"id":"team_open_cases","displayName":"Team Open P0/P1","resourceType":"case","shape":"count","gridWidth":6,"filters":{"severities":["catastrophic","critical"],"states":["open","work_in_progress"]}}
+  ]}
+]`
+
+// TestMain seeds dashboard.Dashboards before any test in this package runs.
+// In production it is populated once at process startup by cmd/server/main.go
+// from DASHBOARDS_CONFIG; tests never invoke main(), so they must seed it
+// themselves via the same ParseDashboardsConfig function.
+func TestMain(m *testing.M) {
+	dashboard.Dashboards = dashboard.ParseDashboardsConfig(testDashboardsConfigJSON)
+	if len(dashboard.Dashboards) != 5 {
+		panic(fmt.Sprintf("TestMain: seeding dashboard.Dashboards failed, got %d dashboards, want 5", len(dashboard.Dashboards)))
+	}
+	os.Exit(m.Run())
+}
 
 // dashboardWidgetJSONKeys are the top-level JSON keys openapi.yaml's
 // DashboardWidget schema declares. Kept in sync with that schema by hand;

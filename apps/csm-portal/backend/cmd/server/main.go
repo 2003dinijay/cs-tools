@@ -31,6 +31,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/dashboard"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/handler"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
@@ -42,6 +43,12 @@ import (
 func main() {
 	loadDotEnv(".env")
 	middleware.ConfigureLogger()
+
+	// The dashboard registry is config-driven and loaded once at startup; a
+	// missing or malformed DASHBOARDS_CONFIG logs an error (see
+	// ParseDashboardsConfig) and leaves it empty rather than failing
+	// startup, since no other endpoint depends on it.
+	dashboard.Dashboards = dashboard.ParseDashboardsConfig(os.Getenv("DASHBOARDS_CONFIG"))
 
 	// All upstream service clients (entity, updates, SCIM, and future notification
 	// channels) authenticate as the same OAuth2 client-credentials app; only the

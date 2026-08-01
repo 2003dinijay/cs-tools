@@ -14,13 +14,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package dashboard holds the pilot's static, config-driven dashboard widget
+// Package dashboard holds the pilot's config-driven dashboard widget
 // templates. Each widget resolves to a search against that ResourceType's own
 // /search endpoint (every resource's search payload shape is
 // {filters: {...}, pagination: {...}}) — there is no generic filter DSL and
-// no database backing this; new widgets are added by extending the
-// Dashboards registry below.
+// no database backing this; the registry itself is loaded from the
+// DASHBOARDS_CONFIG environment variable at process startup (see
+// ParseDashboardsConfig and cmd/server/main.go).
 package dashboard
+
+import (
+	"encoding/json"
+	"log/slog"
+)
 
 // CurrentUserPlaceholder marks a filter value that must be resolved to the
 // requesting user's id before the filters are sent upstream. It never
@@ -58,142 +64,52 @@ const (
 // shape is {filters: {...}, pagination: {...}}). The BE never interprets
 // filter contents beyond substituting the current-user placeholder.
 type WidgetTemplate struct {
-	ID           string
-	DisplayName  string
-	ResourceType ResourceType
-	Shape        Shape
-	GridWidth    int // 1-12, CSS grid columns out of 12
-	Filters      map[string]any
-	GroupBy      string `json:",omitempty"` // only meaningful for Shape pie/bar — see the caveat on those consts; unused by every widget below
-	ListLimit    int    `json:",omitempty"` // only meaningful for Shape list; how many records to show
+	ID           string         `json:"id"`
+	DisplayName  string         `json:"displayName"`
+	ResourceType ResourceType   `json:"resourceType"`
+	Shape        Shape          `json:"shape"`
+	GridWidth    int            `json:"gridWidth"` // 1-12, CSS grid columns out of 12
+	Filters      map[string]any `json:"filters"`
+	GroupBy      string         `json:"groupBy,omitempty"`   // only meaningful for Shape pie/bar — see the caveat on those consts; unused by every widget below
+	ListLimit    int            `json:"listLimit,omitempty"` // only meaningful for Shape list; how many records to show
 }
 
-// Dashboard is a single dashboard's metadata plus its static widget
-// templates.
+// Dashboard is a single dashboard's metadata plus its widget templates.
 type Dashboard struct {
-	ID          string
-	DisplayName string
-	IsDefault   bool
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
+	IsDefault   bool   `json:"isDefault"`
 	// TargetTeam is purely descriptive metadata (e.g. for a future FE team
 	// picker); it is not enforced anywhere. GET /dashboards still returns
 	// every dashboard to every caller regardless of team membership.
-	TargetTeam string
-	Widgets    []WidgetTemplate
+	TargetTeam string           `json:"targetTeam"`
+	Widgets    []WidgetTemplate `json:"widgets"`
 }
 
-// Dashboards is the ordered, static registry of dashboards. Order is
-// deterministic and is what the frontend's dashboard picker displays.
-var Dashboards = []Dashboard{
-	{
-		ID: "agents_pilot", DisplayName: "Engineer overview", IsDefault: true, TargetTeam: "cs_engineers",
-		Widgets: []WidgetTemplate{
-			{
-				ID: "my_patches", DisplayName: "My Patches", ResourceType: ResourceCase, Shape: ShapeCount, GridWidth: 3,
-				Filters: map[string]any{
-					"assignedUserIds": []string{CurrentUserPlaceholder},
-					"tags":            []string{"patch"},
-					"states":          []string{"open", "work_in_progress", "waiting_on_wso2", "reopened", "awaiting_info"},
-				},
-			},
-			{
-				ID: "my_reminders", DisplayName: "My Reminders", ResourceType: ResourceCase, Shape: ShapeCount, GridWidth: 3,
-				Filters: map[string]any{
-					"assignedUserIds": []string{CurrentUserPlaceholder},
-					"states":          []string{"awaiting_info", "solution_proposed"},
-				},
-			},
-			{
-				ID: "open_incident_team", DisplayName: "Open Incident (Team)", ResourceType: ResourceCase, Shape: ShapeCount, GridWidth: 3,
-				Filters: map[string]any{
-					"tags":   []string{"s_dip"},
-					"states": []string{"work_in_progress", "open", "waiting_on_wso2", "reopened"},
-				},
-			},
-			{
-				ID: "my_critical_open", DisplayName: "My Critical & High Cases", ResourceType: ResourceCase, Shape: ShapeList, GridWidth: 3, ListLimit: 5,
-				Filters: map[string]any{
-					"assignedUserIds": []string{CurrentUserPlaceholder},
-					"severities":      []string{"catastrophic", "critical"},
-					"states":          []string{"open", "work_in_progress"},
-				},
-			},
-		},
-	},
-	{
-		ID: "operations", DisplayName: "Operations", TargetTeam: "cs_operations",
-		Widgets: []WidgetTemplate{
-			{
-				ID: "p0_p1_open", DisplayName: "P0/P1 Open", ResourceType: ResourceCase, Shape: ShapeCount, GridWidth: 4,
-				Filters: map[string]any{
-					"severities": []string{"catastrophic", "critical"},
-					"states":     []string{"open", "work_in_progress"},
-				},
-			},
-			{
-				ID: "open_critical_incidents", DisplayName: "Open Critical Incidents", ResourceType: ResourceIncident, Shape: ShapeCount, GridWidth: 4,
-				Filters: map[string]any{"priorities": []string{"CRITICAL", "HIGH"}},
-			},
-			{
-				ID: "crs_awaiting_approval", DisplayName: "CRs Awaiting Approval", ResourceType: ResourceChangeRequest, Shape: ShapeCount, GridWidth: 4,
-				Filters: map[string]any{"states": []string{"customer_approval"}},
-			},
-		},
-	},
-	{
-		ID: "iam", DisplayName: "IAM CS", TargetTeam: "iam_cs",
-		Widgets: []WidgetTemplate{
-			{
-				ID: "iam_open_cases", DisplayName: "IAM Open Cases", ResourceType: ResourceCase, Shape: ShapeCount, GridWidth: 6,
-				Filters: map[string]any{
-					"tags":   []string{"iam"},
-					"states": []string{"open", "work_in_progress", "awaiting_info"},
-				},
-			},
-			{
-				ID: "asgardeo_open_cases", DisplayName: "Asgardeo Open Cases", ResourceType: ResourceCase, Shape: ShapeCount, GridWidth: 6,
-				Filters: map[string]any{
-					"tags":   []string{"asgardeo"},
-					"states": []string{"open", "work_in_progress", "awaiting_info"},
-				},
-			},
-		},
-	},
-	{
-		ID: "security", DisplayName: "Security center", TargetTeam: "security",
-		Widgets: []WidgetTemplate{
-			{
-				ID: "critical_vulns", DisplayName: "Critical Vulnerabilities", ResourceType: ResourceProductVulnerability, Shape: ShapeCount, GridWidth: 4,
-				Filters: map[string]any{"priority": "critical"},
-			},
-			{
-				ID: "high_vulns", DisplayName: "High Vulnerabilities", ResourceType: ResourceProductVulnerability, Shape: ShapeCount, GridWidth: 4,
-				Filters: map[string]any{"priority": "high"},
-			},
-			{
-				ID: "sra_cases_open", DisplayName: "Open SRAs", ResourceType: ResourceCase, Shape: ShapeCount, GridWidth: 4,
-				Filters: map[string]any{
-					"types":  []string{"security_report_analysis"},
-					"states": []string{"open", "work_in_progress", "awaiting_info"},
-				},
-			},
-		},
-	},
-	{
-		ID: "team_performance", DisplayName: "Team performance", TargetTeam: "cs_team_leads",
-		Widgets: []WidgetTemplate{
-			{
-				ID: "time_cards_pending_approval", DisplayName: "Time Cards Pending Approval", ResourceType: ResourceTimeCard, Shape: ShapeCount, GridWidth: 6,
-				Filters: map[string]any{"states": []string{"pending"}},
-			},
-			{
-				ID: "team_open_cases", DisplayName: "Team Open P0/P1", ResourceType: ResourceCase, Shape: ShapeCount, GridWidth: 6,
-				Filters: map[string]any{
-					"severities": []string{"catastrophic", "critical"},
-					"states":     []string{"open", "work_in_progress"},
-				},
-			},
-		},
-	},
+// Dashboards is the ordered registry of dashboards, populated once at process
+// startup from the DASHBOARDS_CONFIG environment variable (see
+// ParseDashboardsConfig, called from cmd/server/main.go). It is empty (nil)
+// until main() populates it; there is no file-watching or hot-reload — a
+// config change requires restarting the process. Order is deterministic and
+// is what the frontend's dashboard picker displays.
+var Dashboards []Dashboard
+
+// ParseDashboardsConfig decodes DASHBOARDS_CONFIG, a JSON array of Dashboard
+// objects (see the Dashboard and WidgetTemplate json tags for the expected
+// shape). A missing or malformed value logs an error and yields no
+// dashboards rather than failing startup, since callers always check
+// dashboard.Dashboards for emptiness (GET /dashboards simply returns an empty
+// list; GET /dashboards/{id} 404s) instead of crashing the process.
+func ParseDashboardsConfig(raw string) []Dashboard {
+	if raw == "" {
+		return nil
+	}
+	var dashboards []Dashboard
+	if err := json.Unmarshal([]byte(raw), &dashboards); err != nil {
+		slog.Error("failed to parse DASHBOARDS_CONFIG; no dashboards will be available", "err", err)
+		return nil
+	}
+	return dashboards
 }
 
 // DashboardByID looks up a dashboard by id, returning ok=false if the id
