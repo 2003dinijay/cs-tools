@@ -81,9 +81,9 @@ export default function AssignEngineerDialog({
   const { data, isFetching, isError } = useSearchUsers({
     filters: {
       ...(search.length > 0 && { searchQuery: search }),
-      // Internal-facing roles only (ServiceNow source); the BE applies the
+      // Internal-facing roles only (backing data source); the BE applies the
       // filter, so we no longer client-gate on `userType` (absent on SnUser).
-      roles: INTERNAL_USER_ROLES,
+      roleIds: INTERNAL_USER_ROLES,
       // Don't offer inactive accounts as assignment targets.
       active: true,
     },
