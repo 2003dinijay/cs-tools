@@ -19,15 +19,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { ReactNode } from "react";
 
-const getMock = vi.fn();
+const postMock = vi.fn();
 
-// The real client reads runtime config at module load, which isn't present
-// under vitest (same approach as useSearchGroups.test.tsx).
 vi.mock("@api/backend/client", () => ({
-  useBackendApi: () => ({ get: getMock }),
+  useBackendApi: () => ({ post: postMock }),
 }));
 
-import { useDashboardWidgets } from "@features/csm-dashboard/api/useDashboardWidgets";
+import { useWidgetCaseCount } from "@features/csm-dashboard/api/useWidgetCaseCount";
 
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({
@@ -38,41 +36,40 @@ function wrapper({ children }: { children: ReactNode }) {
   );
 }
 
-describe("useDashboardWidgets", () => {
+describe("useWidgetCaseCount", () => {
   beforeEach(() => {
-    getMock.mockReset();
+    postMock.mockReset();
   });
 
-  it("fetches the agents_pilot widget template set from a single call", async () => {
-    getMock.mockResolvedValue([
-      {
-        widgetId: "my_patches",
-        displayName: "My Patches",
-        displayType: "single_score",
-        filters: { assignedUserIds: ["user-1"], tags: ["patch"] },
-      },
-    ]);
+  it("resolves the widget's count from its own /cases/search call", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
 
-    const { result } = renderHook(() => useDashboardWidgets(), { wrapper });
+    const { result } = renderHook(
+      () =>
+        useWidgetCaseCount("my_patches", {
+          assignedUserIds: ["user-1"],
+          tags: ["patch"],
+        }),
+      { wrapper },
+    );
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    expect(getMock).toHaveBeenCalledTimes(1);
-    expect(getMock).toHaveBeenCalledWith("/dashboards/agents_pilot/widgets");
-    expect(result.current.data).toEqual([
-      {
-        widgetId: "my_patches",
-        displayName: "My Patches",
-        displayType: "single_score",
-        filters: { assignedUserIds: ["user-1"], tags: ["patch"] },
-      },
-    ]);
+    expect(postMock).toHaveBeenCalledTimes(1);
+    expect(postMock).toHaveBeenCalledWith("/cases/search", {
+      filters: { assignedUserIds: ["user-1"], tags: ["patch"] },
+      pagination: { offset: 0, limit: 1 },
+    });
+    expect(result.current.data).toBe(3);
   });
 
   it("surfaces a query error when the call fails", async () => {
-    getMock.mockRejectedValue(new Error("boom"));
+    postMock.mockRejectedValue(new Error("boom"));
 
-    const { result } = renderHook(() => useDashboardWidgets(), { wrapper });
+    const { result } = renderHook(
+      () => useWidgetCaseCount("my_reminders", { states: ["awaiting_info"] }),
+      { wrapper },
+    );
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error?.message).toBe("boom");

@@ -23,13 +23,12 @@ import type { BeDashboardWidget } from "@api/backend/types";
 export const AGENTS_PILOT_DASHBOARD_ID = "agents_pilot";
 
 /**
- * Resolved widgets for the "agents_pilot" dashboard.
- *
- * All widgets on a dashboard resolve in one backend call (not one request per
- * widget) so the pattern scales to dozens of widgets without request
- * fan-out — see `GET /dashboards/{dashboardId}/widgets`. Callers render one
- * tile per entry in the returned array; every tile shares this single query's
- * loading/error state.
+ * Widget templates for the "agents_pilot" dashboard: display metadata plus
+ * each widget's resolved filter criteria, from a single
+ * `GET /dashboards/{dashboardId}/widgets` call. This does not resolve any
+ * widget's data — callers render one tile per entry and each tile resolves
+ * its own data independently via its own `POST /cases/search` call (see
+ * `useWidgetCaseCount`).
  */
 export function useDashboardWidgets(): UseQueryResult<
   BeDashboardWidget[],

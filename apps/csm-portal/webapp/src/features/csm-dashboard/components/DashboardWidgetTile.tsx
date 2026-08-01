@@ -16,42 +16,46 @@
 
 import { Card, Skeleton, Typography } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
-import type { BeDashboardWidget } from "@api/backend/types";
+import type { BeCaseSearchFilters } from "@api/backend/types";
+import { useWidgetCaseCount } from "@features/csm-dashboard/api/useWidgetCaseCount";
 
 interface DashboardWidgetTileProps {
-  widget?: BeDashboardWidget;
-  isLoading: boolean;
-  isError: boolean;
+  widgetId: string;
+  displayName: string;
+  filters: BeCaseSearchFilters;
 }
 
 /**
- * Single "single_score" dashboard widget tile: a display name and its count.
- *
- * `isError` reflects the shared query's own failure (e.g. the whole request
- * never came back); `widget.error` reflects this widget's own upstream
- * resolution failing while its siblings in the same response still resolved
- * — the two are independent and both render the same error state.
+ * Single "single_score" dashboard widget tile: fetches and renders its own
+ * count independently of any sibling tile, so one widget's loading/error
+ * state never affects another's.
  */
 export default function DashboardWidgetTile({
-  widget,
-  isLoading,
-  isError,
+  widgetId,
+  displayName,
+  filters,
 }: DashboardWidgetTileProps): JSX.Element {
+  const {
+    data: count,
+    isLoading,
+    isError,
+  } = useWidgetCaseCount(widgetId, filters);
+
   return (
     <Card variant="outlined" sx={{ p: 1.75 }}>
       {isLoading ? (
         <Skeleton variant="rounded" height={48} />
-      ) : isError || !widget || widget.error ? (
+      ) : isError ? (
         <Typography variant="body2" color="text.secondary">
           Could not load this widget.
         </Typography>
       ) : (
         <>
           <Typography variant="caption" color="text.secondary">
-            {widget.displayName}
+            {displayName}
           </Typography>
           <Typography variant="h5" sx={{ mt: 0.5 }}>
-            {widget.count}
+            {count}
           </Typography>
         </>
       )}

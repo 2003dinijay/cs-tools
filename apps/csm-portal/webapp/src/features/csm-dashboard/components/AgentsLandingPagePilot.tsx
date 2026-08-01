@@ -14,27 +14,27 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box } from "@wso2/oxygen-ui";
+import { Box, Card, Skeleton, Typography } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
 import { useDashboardWidgets } from "@features/csm-dashboard/api/useDashboardWidgets";
 import DashboardWidgetTile from "@features/csm-dashboard/components/DashboardWidgetTile";
 import SectionCard from "@features/csm-dashboard/components/SectionCard";
 import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
 
-/** Placeholder count while the pilot's single shared query is in flight. */
+/** Placeholder tile count while the widget template list is in flight. */
 const PILOT_TILE_COUNT = 3;
 
 /**
  * Pilot section for the config-driven dashboard widget system (the
- * "agents_pilot" dashboard: 3 `single_score` widgets resolved by one backend
- * call — see {@link useDashboardWidgets}). Kept as a clearly separate,
- * labeled add-on below the existing dashboard sections, not a redesign.
+ * "agents_pilot" dashboard: 3 `single_score` widgets). The widget template
+ * list — display metadata plus each widget's filter criteria — is fetched
+ * once via {@link useDashboardWidgets}; each rendered tile then resolves its
+ * own data independently. Kept as a clearly separate, labeled add-on below
+ * the existing dashboard sections, not a redesign.
  */
 export default function AgentsLandingPagePilot(): JSX.Element {
   const { data, isLoading, isError, isFetching, refetch } =
     useDashboardWidgets();
-
-  const tiles = data ?? new Array<undefined>(PILOT_TILE_COUNT).fill(undefined);
 
   return (
     <SectionCard
@@ -48,25 +48,37 @@ export default function AgentsLandingPagePilot(): JSX.Element {
         />
       }
     >
-      <Box
-        sx={{
-          display: "grid",
-          gap: 1.5,
-          gridTemplateColumns: {
-            xs: "repeat(1, minmax(0, 1fr))",
-            sm: "repeat(3, minmax(0, 1fr))",
-          },
-        }}
-      >
-        {tiles.map((widget, i) => (
-          <DashboardWidgetTile
-            key={widget?.widgetId ?? i}
-            widget={widget}
-            isLoading={isLoading}
-            isError={isError}
-          />
-        ))}
-      </Box>
+      {isError ? (
+        <Typography variant="body2" color="text.secondary">
+          Could not load the widget pilot.
+        </Typography>
+      ) : (
+        <Box
+          sx={{
+            display: "grid",
+            gap: 1.5,
+            gridTemplateColumns: {
+              xs: "repeat(1, minmax(0, 1fr))",
+              sm: "repeat(3, minmax(0, 1fr))",
+            },
+          }}
+        >
+          {isLoading
+            ? Array.from({ length: PILOT_TILE_COUNT }, (_, i) => (
+                <Card key={i} variant="outlined" sx={{ p: 1.75 }}>
+                  <Skeleton variant="rounded" height={48} />
+                </Card>
+              ))
+            : (data ?? []).map((widget) => (
+                <DashboardWidgetTile
+                  key={widget.widgetId}
+                  widgetId={widget.widgetId}
+                  displayName={widget.displayName}
+                  filters={widget.filters}
+                />
+              ))}
+        </Box>
+      )}
     </SectionCard>
   );
 }
