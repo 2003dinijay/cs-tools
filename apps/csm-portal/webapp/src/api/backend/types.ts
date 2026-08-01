@@ -1205,6 +1205,17 @@ export interface BeProjectContact {
   registrationState?: string;
   notificationsEnabled?: boolean;
   roles?: string[];
+  /**
+   * Whether a contact record is linked to this row at all. False is the same
+   * fault an absent `id` signals, restated as an explicit boolean.
+   */
+  customerContactPresent?: boolean;
+  /**
+   * Whether this row would actually grant its person visibility into this
+   * project's cases. Mirrors `customerContactPresent` directly — a row can
+   * be listed here without granting access.
+   */
+  grantsCaseAccess?: boolean;
 }
 
 export interface BeProjectContactSearchPayload {

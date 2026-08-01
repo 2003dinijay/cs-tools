@@ -30,30 +30,81 @@ import type { JSX } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import UserRefLink from "@components/UserRefLink";
 import { useSearchProjectContacts } from "@features/csm-projects/api/useSearchProjectContacts";
+import type { BeProjectContact } from "@api/backend/types";
 
-const COLUMN_COUNT = 4;
+const COLUMN_COUNT = 5;
+
+type ChipColor = "success" | "warning" | "error" | "default";
+
+// Mirrors the customer portal's own registration-status colour convention
+// (`getUserStatusColor` in `project-details/utils/projectDetails.ts`) so the
+// two surfaces agree on what "registered" vs "invited" looks like, without
+// importing across the customer-portal/CSM-portal boundary.
+function registrationChipColor(state: string | undefined): ChipColor {
+  switch ((state ?? "").toLowerCase()) {
+    case "registered":
+      return "success";
+    case "invited":
+      return "warning";
+    default:
+      return "default";
+  }
+}
+
+interface AccessStatus {
+  label: string;
+  color: ChipColor;
+  reason?: string;
+}
+
+// Prefers the explicit access-status fields the backend computes per row
+// (customerContactPresent/grantsCaseAccess). Falls back to the old
+// id-presence heuristic when a backend predates those fields
+// (`grantsCaseAccess` absent), so a backend deploy that hasn't caught up yet
+// degrades to the previous behaviour instead of mislabeling every row.
+function deriveAccessStatus(c: BeProjectContact): AccessStatus {
+  if (c.grantsCaseAccess !== undefined) {
+    if (c.grantsCaseAccess) {
+      return { label: "Has access", color: "success" };
+    }
+    return {
+      label: "No access",
+      color: "error",
+      reason: "No linked contact record — this person can't see this project's cases.",
+    };
+  }
+  if (!c.id) {
+    return {
+      label: "Orphaned",
+      color: "error",
+      reason: "No linked contact record — this person can't see this project's cases.",
+    };
+  }
+  return { label: "Has access", color: "success" };
+}
 
 interface ProjectContactsTabProps {
   projectId: string;
 }
 
 /**
- * Lists a project's contacts (`POST /projects/{id}/contacts/search`). Every
- * row with a linked contact record is click-through to that person's profile
- * via `UserRefLink` (so nullable-id resolution and the plain-text fallback
- * come for free); a row with no `id` — meaning it has no linked contact
- * record — renders unlinked and flagged, since that's precisely the case a
- * support engineer needs to notice: an orphaned contact row means that
- * person silently can't see this project's cases.
+ * Lists a project's contacts (`POST /projects/{id}/contacts/search`), with an
+ * Access column showing whether each row would actually grant its person
+ * visibility into this project's cases — not just whether they're listed.
+ * Every row with a linked contact record is click-through to that person's
+ * profile via `UserRefLink` (so nullable-id resolution and the plain-text
+ * fallback come for free); a row that would fail the customer portal's own
+ * access rule renders unlinked-or-flagged with an inline reason, since
+ * that's precisely the case a support engineer needs to notice without
+ * hovering — a row can fail access two distinct ways (no linked contact
+ * record at all, or a linked contact whose email doesn't match what this row
+ * was invited under), and the reason line says which.
  *
  * A real project can return dozens of these rows with `name` *and* `email`
  * both empty (no natural identifier at all, not even an email to show) — the
- * explanatory line below the row is always rendered inline, not tucked behind
- * a hover tooltip, so scanning the table surfaces every "can't see their
- * cases" row without hovering each one. (If an upstream fix ever starts
- * populating `email` for these rows, they fall into the ordinary
- * has-some-info orphaned case below — same flag, same inline reason, just
- * with a real address shown instead of "No linked contact record".)
+ * explanatory line is always rendered inline, not tucked behind a hover
+ * tooltip, so scanning the table surfaces every "can't see their cases" row
+ * without hovering each one.
  */
 export default function ProjectContactsTab({
   projectId,
@@ -71,6 +122,7 @@ export default function ProjectContactsTab({
               <TableCell>Email</TableCell>
               <TableCell>Roles</TableCell>
               <TableCell>Registration</TableCell>
+              <TableCell>Access</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -103,12 +155,12 @@ export default function ProjectContactsTab({
               </TableRow>
             ) : (
               contacts.map((c, i) => {
-                const orphaned = !c.id;
                 // No natural identifier at all when both are empty — say so
                 // plainly instead of showing a bare "—" that reads as a data
                 // glitch rather than the operationally meaningful fact that
                 // this row has no linked contact record.
                 const name = c.name || c.email || "No linked contact record";
+                const access = deriveAccessStatus(c);
                 return (
                   // Contacts have no stable identifier when unlinked (no `id`);
                   // email is the closest thing to a natural key, and index
@@ -116,26 +168,6 @@ export default function ProjectContactsTab({
                   <TableRow key={c.id ?? `${c.email ?? "unknown"}-${i}`} hover>
                     <TableCell>
                       <UserRefLink name={name} email={c.email} userId={c.id ?? null} />
-                      {orphaned && (
-                        <Chip
-                          size="small"
-                          label="Orphaned"
-                          color="error"
-                          variant="outlined"
-                          sx={{ ml: 1 }}
-                        />
-                      )}
-                      {orphaned && (
-                        <Typography
-                          variant="caption"
-                          color="error.main"
-                          component="div"
-                          sx={{ mt: 0.25 }}
-                        >
-                          No contact record is linked to this row — this person
-                          can't see this project's cases.
-                        </Typography>
-                      )}
                     </TableCell>
                     <TableCell sx={{ wordBreak: "break-all" }}>{c.email || "—"}</TableCell>
                     <TableCell>
@@ -151,7 +183,31 @@ export default function ProjectContactsTab({
                           ))
                         : "—"}
                     </TableCell>
-                    <TableCell>{c.registrationState || "—"}</TableCell>
+                    <TableCell>
+                      {c.registrationState ? (
+                        <Chip
+                          size="small"
+                          label={c.registrationState}
+                          color={registrationChipColor(c.registrationState)}
+                          variant="outlined"
+                        />
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <Chip size="small" label={access.label} color={access.color} variant="outlined" />
+                      {access.reason && (
+                        <Typography
+                          variant="caption"
+                          color="error.main"
+                          component="div"
+                          sx={{ mt: 0.25 }}
+                        >
+                          {access.reason}
+                        </Typography>
+                      )}
+                    </TableCell>
                   </TableRow>
                 );
               })

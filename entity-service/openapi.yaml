@@ -3900,6 +3900,17 @@ components:
           type: array
           items:
             type: string
+        customerContactPresent:
+          type: boolean
+          description: >
+            Whether a contact record is linked to this row at all. False is the same fault an
+            absent `id` signals, restated as an explicit boolean.
+        grantsCaseAccess:
+          type: boolean
+          description: >
+            Whether this row would actually grant its person visibility into this project's
+            cases. Mirrors `customerContactPresent` directly — a row can be listed here without
+            granting access.
 
     SearchProjectContactsResponse:
       type: object

@@ -6604,6 +6604,17 @@ components:
           type: array
           items:
             type: string
+        customerContactPresent:
+          type: boolean
+          description: >
+            Whether a contact record is linked to this row at all. False is the same fault an
+            absent `id` signals, restated as an explicit boolean.
+        grantsCaseAccess:
+          type: boolean
+          description: >
+            Whether this row would actually grant its person visibility into this project's
+            cases. Mirrors `customerContactPresent` directly — a row can be listed here without
+            granting access.
 
     ProjectContactSearchResponse:
       type: object
@@ -6611,27 +6622,7 @@ components:
         contacts:
           type: array
           items:
-            type: object
-            properties:
-              id:
-                type: string
-                format: uuid
-                description: >
-                  The contact's user id, for linking the row to that user's profile. Absent when the
-                  row has no contact record linked, or when the backing instance predates the field —
-                  render the row unlinked rather than treating it as an error.
-              name:
-                type: string
-              email:
-                type: string
-              registrationState:
-                type: string
-              notificationsEnabled:
-                type: boolean
-              roles:
-                type: array
-                items:
-                  type: string
+            $ref: '#/components/schemas/ProjectContact'
         offset:
           type: integer
         limit:
