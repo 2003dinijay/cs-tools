@@ -17,6 +17,8 @@
 package handler
 
 import (
+	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/dashboard"
@@ -62,11 +64,50 @@ type dashboardDetailView struct {
 
 // DashboardHandler handles HTTP requests for the config-driven dashboard
 // widget pilot.
-type DashboardHandler struct{}
+type DashboardHandler struct {
+	entity entityUserClient
+}
 
-// NewDashboardHandler creates a DashboardHandler.
-func NewDashboardHandler() *DashboardHandler {
-	return &DashboardHandler{}
+// NewDashboardHandler creates a DashboardHandler backed by the given entity
+// client, used to resolve the caller's own platform user id (see
+// resolveCurrentUserID) for widgets whose filters need it.
+func NewDashboardHandler(entity entityUserClient) *DashboardHandler {
+	return &DashboardHandler{entity: entity}
+}
+
+// resolveCurrentUserID returns the caller's platform user id — the same id
+// GET /users/me resolves via the entity service — for substituting
+// dashboard.CurrentUserPlaceholder into widget filters.
+//
+// This is deliberately NOT user.UserID from the JWT: that claim is whatever
+// identity value the gateway/IdP embeds (e.g. the Asgardeo subject), which is
+// a different id than the platform's own SN/Postgres-backed user record.
+// Using the JWT claim directly here was the actual bug behind an
+// "identity-mapping gap" this task had, until now, treated as an accepted
+// ServiceNow DEV environment limitation: /cases/search correctly rejected
+// that id with "no active user found for sys_id ..." because it was never a
+// valid sys_id to begin with. Falls back to the JWT claim (rather than an
+// empty string) only if the entity lookup itself fails, so a transient
+// entity-service error degrades to the previous (broken but non-crashing)
+// behavior instead of a hard failure.
+func (h *DashboardHandler) resolveCurrentUserID(r *http.Request, user *middleware.UserInfo) string {
+	raw, err := h.entity.GetUserMe(r.Context())
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity GetUserMe failed while resolving dashboard current-user id", "userID", user.UserID, "err", err)
+		return user.UserID
+	}
+	var me struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &me); err != nil {
+		slog.ErrorContext(r.Context(), "entity GetUserMe: parse response failed while resolving dashboard current-user id", "userID", user.UserID, "err", err)
+		return user.UserID
+	}
+	if me.ID == "" {
+		slog.ErrorContext(r.Context(), "entity GetUserMe returned an empty id while resolving dashboard current-user id", "userID", user.UserID)
+		return user.UserID
+	}
+	return me.ID
 }
 
 // GetDashboards handles GET /dashboards.
@@ -105,6 +146,8 @@ func (h *DashboardHandler) GetDashboardDetail(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	currentUserID := h.resolveCurrentUserID(r, user)
+
 	widgets := make([]dashboardWidgetView, 0, len(d.Widgets))
 	for _, tpl := range d.Widgets {
 		widgets = append(widgets, dashboardWidgetView{
@@ -113,7 +156,7 @@ func (h *DashboardHandler) GetDashboardDetail(w http.ResponseWriter, r *http.Req
 			ResourceType: tpl.ResourceType,
 			Shape:        tpl.Shape,
 			GridWidth:    tpl.GridWidth,
-			Filters:      dashboard.ResolveFilters(tpl, user.UserID),
+			Filters:      dashboard.ResolveFilters(tpl, currentUserID),
 			GroupBy:      tpl.GroupBy,
 			ListLimit:    tpl.ListLimit,
 		})

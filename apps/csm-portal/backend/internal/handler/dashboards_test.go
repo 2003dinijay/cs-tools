@@ -17,7 +17,9 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -134,9 +136,16 @@ func withDashboardID(r *http.Request, dashboardID string) *http.Request {
 	return r
 }
 
+// resolvedCurrentUserID is mockEntityUserClient's default GET /users/me id
+// (helpers_test.go). It is deliberately NOT testUser.UserID (the JWT claim):
+// the handler resolves __current_user__ via the entity service's /users/me,
+// the same id GET /users/me itself returns — see
+// DashboardHandler.resolveCurrentUserID's doc comment for why.
+const resolvedCurrentUserID = "11111111-1111-1111-1111-111111111111"
+
 func TestGetDashboards(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
-		h := NewDashboardHandler()
+		h := NewDashboardHandler(&mockEntityUserClient{})
 		r := httptest.NewRequest(http.MethodGet, "/dashboards", nil)
 		w := httptest.NewRecorder()
 		h.GetDashboards(w, r)
@@ -146,7 +155,7 @@ func TestGetDashboards(t *testing.T) {
 	})
 
 	t.Run("returns all dashboards in registry order with correct isDefault", func(t *testing.T) {
-		h := NewDashboardHandler()
+		h := NewDashboardHandler(&mockEntityUserClient{})
 		r := withUser(httptest.NewRequest(http.MethodGet, "/dashboards", nil))
 		w := httptest.NewRecorder()
 		h.GetDashboards(w, r)
@@ -231,7 +240,7 @@ func TestAllDashboardsHaveWidgets(t *testing.T) {
 
 func TestGetDashboardDetail(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
-		h := NewDashboardHandler()
+		h := NewDashboardHandler(&mockEntityUserClient{})
 		r := withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/agents_pilot", nil), "agents_pilot")
 		w := httptest.NewRecorder()
 		h.GetDashboardDetail(w, r)
@@ -241,7 +250,7 @@ func TestGetDashboardDetail(t *testing.T) {
 	})
 
 	t.Run("unknown dashboard id returns 404", func(t *testing.T) {
-		h := NewDashboardHandler()
+		h := NewDashboardHandler(&mockEntityUserClient{})
 		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/bogus", nil), "bogus"))
 		w := httptest.NewRecorder()
 		h.GetDashboardDetail(w, r)
@@ -250,7 +259,7 @@ func TestGetDashboardDetail(t *testing.T) {
 	})
 
 	t.Run("agents_pilot returns metadata and its four widgets", func(t *testing.T) {
-		h := NewDashboardHandler()
+		h := NewDashboardHandler(&mockEntityUserClient{})
 		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/agents_pilot", nil), "agents_pilot"))
 		w := httptest.NewRecorder()
 		h.GetDashboardDetail(w, r)
@@ -361,8 +370,8 @@ func TestGetDashboardDetail(t *testing.T) {
 			if !ok {
 				t.Fatalf("widget %s assignedUserIds is %T, want []any", id, assignedRaw)
 			}
-			if len(assigned) != 1 || assigned[0] != testUser.UserID {
-				t.Errorf("widget %s assignedUserIds = %v, want [%q]", id, assigned, testUser.UserID)
+			if len(assigned) != 1 || assigned[0] != resolvedCurrentUserID {
+				t.Errorf("widget %s assignedUserIds = %v, want [%q]", id, assigned, resolvedCurrentUserID)
 			}
 			for _, uid := range assigned {
 				if uid == "__current_user__" {
@@ -394,13 +403,13 @@ func TestGetDashboardDetail(t *testing.T) {
 			t.Fatalf("widget my_critical_open filters has no assignedUserIds key")
 		}
 		assigned, ok := assignedRaw.([]any)
-		if !ok || len(assigned) != 1 || assigned[0] != testUser.UserID {
-			t.Errorf("widget my_critical_open assignedUserIds = %v, want [%q]", assignedRaw, testUser.UserID)
+		if !ok || len(assigned) != 1 || assigned[0] != resolvedCurrentUserID {
+			t.Errorf("widget my_critical_open assignedUserIds = %v, want [%q]", assignedRaw, resolvedCurrentUserID)
 		}
 	})
 
 	t.Run("operations dashboard has three resource-type-diverse widgets", func(t *testing.T) {
-		h := NewDashboardHandler()
+		h := NewDashboardHandler(&mockEntityUserClient{})
 		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/operations", nil), "operations"))
 		w := httptest.NewRecorder()
 		h.GetDashboardDetail(w, r)
@@ -459,7 +468,7 @@ func TestGetDashboardDetail(t *testing.T) {
 	})
 
 	t.Run("security dashboard's product_vulnerability widget has a scalar string filter", func(t *testing.T) {
-		h := NewDashboardHandler()
+		h := NewDashboardHandler(&mockEntityUserClient{})
 		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/security", nil), "security"))
 		w := httptest.NewRecorder()
 		h.GetDashboardDetail(w, r)
@@ -500,7 +509,7 @@ func TestGetDashboardDetail(t *testing.T) {
 	})
 
 	t.Run("every dashboard in the registry now has at least one widget", func(t *testing.T) {
-		h := NewDashboardHandler()
+		h := NewDashboardHandler(&mockEntityUserClient{})
 		for _, d := range dashboard.Dashboards {
 			r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/"+d.ID, nil), d.ID))
 			w := httptest.NewRecorder()
@@ -516,4 +525,77 @@ func TestGetDashboardDetail(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestResolveCurrentUserID_UsesEntityUsersMeNotJWTClaim guards against the
+// regression this task shipped once already: substituting the raw JWT
+// userid claim into a widget's assignedUserIds instead of the platform user
+// id GET /users/me resolves via the entity service. The two ids are
+// deliberately different here (testUser.UserID vs the mock's GetUserMe id)
+// so a reversion back to user.UserID would fail this test immediately
+// rather than silently reintroducing the bug.
+func TestResolveCurrentUserID_UsesEntityUsersMeNotJWTClaim(t *testing.T) {
+	const entityResolvedID = "22222222-2222-2222-2222-222222222222"
+	if entityResolvedID == testUser.UserID {
+		t.Fatal("test setup bug: entityResolvedID must differ from testUser.UserID")
+	}
+
+	mock := &mockEntityUserClient{
+		getUserMeFn: func(ctx context.Context) ([]byte, error) {
+			return []byte(`{"id":"` + entityResolvedID + `"}`), nil
+		},
+	}
+	h := NewDashboardHandler(mock)
+	r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/agents_pilot", nil), "agents_pilot"))
+	w := httptest.NewRecorder()
+	h.GetDashboardDetail(w, r)
+	assertStatus(t, w, http.StatusOK)
+
+	var result dashboardDetailView
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode response body: %v; raw: %s", err, w.Body.Bytes())
+	}
+	byID := make(map[string]dashboardWidgetView)
+	for _, wd := range result.Widgets {
+		byID[wd.WidgetID] = wd
+	}
+
+	assigned, ok := byID["my_patches"].Filters["assignedUserIds"].([]any)
+	if !ok || len(assigned) != 1 {
+		t.Fatalf("my_patches assignedUserIds = %v, want a 1-element array", byID["my_patches"].Filters["assignedUserIds"])
+	}
+	if assigned[0] != entityResolvedID {
+		t.Errorf("my_patches assignedUserIds[0] = %v, want the entity-resolved id %q (not the JWT claim %q)",
+			assigned[0], entityResolvedID, testUser.UserID)
+	}
+}
+
+// TestResolveCurrentUserID_FallsBackToJWTClaimOnEntityError confirms a
+// transient entity-service failure degrades to the previous (broken but
+// non-crashing) behavior — the endpoint still returns 200, not a 500 — since
+// dashboards are best-effort convenience data, not core functionality.
+func TestResolveCurrentUserID_FallsBackToJWTClaimOnEntityError(t *testing.T) {
+	mock := &mockEntityUserClient{
+		getUserMeFn: func(ctx context.Context) ([]byte, error) {
+			return nil, errors.New("entity unavailable")
+		},
+	}
+	h := NewDashboardHandler(mock)
+	r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/agents_pilot", nil), "agents_pilot"))
+	w := httptest.NewRecorder()
+	h.GetDashboardDetail(w, r)
+	assertStatus(t, w, http.StatusOK)
+
+	var result dashboardDetailView
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode response body: %v; raw: %s", err, w.Body.Bytes())
+	}
+	byID := make(map[string]dashboardWidgetView)
+	for _, wd := range result.Widgets {
+		byID[wd.WidgetID] = wd
+	}
+	assigned, ok := byID["my_patches"].Filters["assignedUserIds"].([]any)
+	if !ok || len(assigned) != 1 || assigned[0] != testUser.UserID {
+		t.Errorf("my_patches assignedUserIds = %v, want the JWT-claim fallback [%q]", byID["my_patches"].Filters["assignedUserIds"], testUser.UserID)
+	}
 }
