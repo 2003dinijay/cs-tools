@@ -1626,12 +1626,14 @@ paths:
 
   /dashboards/{dashboardId}/widgets:
     get:
-      summary: Get the resolved widgets for a dashboard.
+      summary: Get the widget templates for a dashboard.
       description: >
-        Resolves every widget template registered for the given dashboard id
-        against the current case data, using the same filters accepted by
-        POST /cases/search. This is a config-driven pilot: widget templates
-        are a small static registry, not user-configurable.
+        Returns every widget template registered for the given dashboard id:
+        its display metadata and the filter criteria to run against
+        POST /cases/search. The caller resolves each widget's own data by
+        issuing that search itself; this endpoint does not touch case data.
+        This is a config-driven pilot: widget templates are a small static
+        registry, not user-configurable.
       operationId: getDashboardWidgets
       parameters:
         - name: dashboardId
@@ -5247,19 +5249,14 @@ components:
           type: string
           enum:
             - single_score
-          description: How the widget's resolved data should be rendered
-        count:
-          type: integer
+          description: How the widget's data should be rendered once resolved
+        filters:
+          $ref: '#/components/schemas/CaseSearchFilters'
           description: >
-            Resolved count for a single_score widget (the total from the
-            underlying case search, with pagination limited to 1). Omitted
-            when error is set.
-        error:
-          type: string
-          description: >
-            Present only when this widget's own data resolution failed; the
-            other widgets in the same response are unaffected and still
-            carry a resolved count.
+            Filter criteria for this widget, with any current-user
+            placeholder already substituted. Pass this directly as the
+            filters of a POST /cases/search request to resolve the widget's
+            data.
 
     Case:
       type: object

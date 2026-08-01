@@ -17,45 +17,30 @@
 package handler
 
 import (
-	"context"
-	"encoding/json"
-	"log/slog"
 	"net/http"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/dashboard"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
-// dashboardEntityClient is the subset of entityCaseClient DashboardHandler
-// needs: it resolves each widget's filters through the same /cases/search
-// path CaseHandler.SearchCases uses.
-type dashboardEntityClient interface {
-	SearchCases(ctx context.Context, body []byte) ([]byte, error)
-}
-
-// widgetResult is a single resolved widget's data, returned by
-// GET /dashboards/{dashboardId}/widgets. Count is set on success; Error is
-// set when this widget's own data resolution failed. A failure is scoped to
-// its own widget and never prevents the other widgets in the same response
-// from carrying a resolved Count.
-type widgetResult struct {
-	WidgetID    string                `json:"widgetId"`
-	DisplayName string                `json:"displayName"`
-	DisplayType dashboard.DisplayType `json:"displayType"`
-	Count       *int                  `json:"count,omitempty"`
-	Error       string                `json:"error,omitempty"`
+// dashboardWidgetView is a single widget's filter criteria and display
+// metadata, returned by GET /dashboards/{dashboardId}/widgets. The caller
+// resolves each widget's own data by issuing its own POST /cases/search
+// request with Filters.
+type dashboardWidgetView struct {
+	WidgetID    string                      `json:"widgetId"`
+	DisplayName string                      `json:"displayName"`
+	DisplayType dashboard.DisplayType       `json:"displayType"`
+	Filters     dashboard.CaseSearchFilters `json:"filters"`
 }
 
 // DashboardHandler handles HTTP requests for the config-driven dashboard
-// widget pilot, delegating each widget's data resolution to the entity
-// service's case search.
-type DashboardHandler struct {
-	entity dashboardEntityClient
-}
+// widget pilot.
+type DashboardHandler struct{}
 
-// NewDashboardHandler creates a DashboardHandler backed by the given entity client.
-func NewDashboardHandler(entity dashboardEntityClient) *DashboardHandler {
-	return &DashboardHandler{entity: entity}
+// NewDashboardHandler creates a DashboardHandler.
+func NewDashboardHandler() *DashboardHandler {
+	return &DashboardHandler{}
 }
 
 // GetDashboardWidgets handles GET /dashboards/{dashboardId}/widgets.
@@ -73,49 +58,16 @@ func (h *DashboardHandler) GetDashboardWidgets(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	results := make([]widgetResult, 0, len(templates))
+	views := make([]dashboardWidgetView, 0, len(templates))
 	for _, tpl := range templates {
-		results = append(results, h.resolveWidget(r.Context(), tpl, user.UserID))
+		resolved := dashboard.ResolveFilters(tpl, user.UserID)
+		views = append(views, dashboardWidgetView{
+			WidgetID:    tpl.ID,
+			DisplayName: tpl.DisplayName,
+			DisplayType: tpl.DisplayType,
+			Filters:     resolved.Filters,
+		})
 	}
 
-	writeJSONValue(w, http.StatusOK, results)
-}
-
-// resolveWidget resolves a single widget's data. A failure here (marshal,
-// upstream search, or parse) is scoped to this widget: it is reported via
-// the returned result's Error field rather than aborting the whole handler,
-// so one widget's upstream failure never takes down its siblings.
-func (h *DashboardHandler) resolveWidget(ctx context.Context, tpl dashboard.WidgetTemplate, currentUserID string) widgetResult {
-	base := widgetResult{
-		WidgetID:    tpl.ID,
-		DisplayName: tpl.DisplayName,
-		DisplayType: tpl.DisplayType,
-	}
-
-	payload := dashboard.ResolveFilters(tpl, currentUserID)
-	body, err := json.Marshal(payload)
-	if err != nil {
-		slog.ErrorContext(ctx, "failed to marshal widget search payload", "userID", currentUserID, "widgetID", tpl.ID, "err", err)
-		base.Error = ErrMsgWidgetResolutionFailed
-		return base
-	}
-
-	searchResult, err := h.entity.SearchCases(ctx, body)
-	if err != nil {
-		slog.ErrorContext(ctx, "entity SearchCases failed for widget", "userID", currentUserID, "widgetID", tpl.ID, "err", summarizeErr(err))
-		base.Error = ErrMsgWidgetResolutionFailed
-		return base
-	}
-
-	var parsed struct {
-		Total int `json:"total"`
-	}
-	if err := json.Unmarshal(searchResult, &parsed); err != nil {
-		slog.ErrorContext(ctx, "failed to parse widget search response", "userID", currentUserID, "widgetID", tpl.ID, "err", err)
-		base.Error = ErrMsgWidgetResolutionFailed
-		return base
-	}
-
-	base.Count = &parsed.Total
-	return base
+	writeJSONValue(w, http.StatusOK, views)
 }

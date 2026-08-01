@@ -39,7 +39,6 @@ const (
 	ErrMsgWorkNoteOnClosedCase   = "Work notes cannot be added to a closed case."
 	ErrMsgAttachmentOnClosedCase = "Attachments cannot be added to a closed case."
 	ErrMsgInvalidUUID            = "Invalid UUID format."
-	ErrMsgWidgetResolutionFailed = "Failed to resolve this widget's data."
 	errMsgReadBody               = "Failed to read request body."
 )
 
