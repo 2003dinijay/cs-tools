@@ -43,18 +43,6 @@ type CaseSearchFilters struct {
 	AssignedUserIDs []string `json:"assignedUserIds,omitempty"`
 }
 
-// caseSearchPagination mirrors the Pagination fields /cases/search accepts.
-type caseSearchPagination struct {
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
-}
-
-// CaseSearchPayload is the body ResolveFilters produces for /cases/search.
-type CaseSearchPayload struct {
-	Filters    CaseSearchFilters    `json:"filters"`
-	Pagination caseSearchPagination `json:"pagination"`
-}
-
 // WidgetTemplate is a static, config-driven widget definition: which case
 // filters it runs and how its resolved data should be displayed.
 type WidgetTemplate struct {
@@ -112,12 +100,11 @@ var Dashboards = map[string][]WidgetTemplate{
 	},
 }
 
-// ResolveFilters builds the /cases/search payload for tpl, substituting
-// CurrentUserPlaceholder in AssignedUserIDs with currentUserID. Pagination is
-// fixed at limit 1: callers only need the response's total count, matching
-// the existing count-only /cases/search usage pattern (see
-// useCaseCountsMatrix.ts on the frontend).
-func ResolveFilters(tpl WidgetTemplate, currentUserID string) CaseSearchPayload {
+// ResolveFilters substitutes CurrentUserPlaceholder in tpl's AssignedUserIDs
+// with currentUserID, returning the filters to send to /cases/search. The
+// caller adds its own pagination (the frontend hardcodes limit 1, since it
+// only needs the response's total count).
+func ResolveFilters(tpl WidgetTemplate, currentUserID string) CaseSearchFilters {
 	filters := tpl.Filters
 	if len(filters.AssignedUserIDs) > 0 {
 		resolved := make([]string, len(filters.AssignedUserIDs))
@@ -129,8 +116,5 @@ func ResolveFilters(tpl WidgetTemplate, currentUserID string) CaseSearchPayload 
 		}
 		filters.AssignedUserIDs = resolved
 	}
-	return CaseSearchPayload{
-		Filters:    filters,
-		Pagination: caseSearchPagination{Limit: 1, Offset: 0},
-	}
+	return filters
 }

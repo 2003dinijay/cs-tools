@@ -60,12 +60,11 @@ func (h *DashboardHandler) GetDashboardWidgets(w http.ResponseWriter, r *http.Re
 
 	views := make([]dashboardWidgetView, 0, len(templates))
 	for _, tpl := range templates {
-		resolved := dashboard.ResolveFilters(tpl, user.UserID)
 		views = append(views, dashboardWidgetView{
 			WidgetID:    tpl.ID,
 			DisplayName: tpl.DisplayName,
 			DisplayType: tpl.DisplayType,
-			Filters:     resolved.Filters,
+			Filters:     dashboard.ResolveFilters(tpl, user.UserID),
 		})
 	}
 

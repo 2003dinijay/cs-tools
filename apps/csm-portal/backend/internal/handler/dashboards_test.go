@@ -20,8 +20,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/dashboard"
 )
+
+// dashboardWidgetJSONKeys are the top-level JSON keys openapi.yaml's
+// DashboardWidget schema declares. Kept in sync with that schema by hand;
+// TestGetDashboardWidgets fails if the handler's actual response keys ever
+// diverge from this set, catching an unannounced field rename/add/remove
+// that a struct-only decode (which silently ignores unknown keys and
+// zero-values missing ones) would miss.
+var dashboardWidgetJSONKeys = []string{"widgetId", "displayName", "displayType", "filters"}
 
 func withDashboardID(r *http.Request, dashboardID string) *http.Request {
 	r.SetPathValue("dashboardId", dashboardID)
@@ -57,28 +69,47 @@ func TestGetDashboardWidgets(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 		assertContentType(t, w, "application/json")
 
-		var results []struct {
-			WidgetID    string `json:"widgetId"`
-			DisplayName string `json:"displayName"`
-			DisplayType string `json:"displayType"`
-			Filters     struct {
-				AssignedUserIDs []string `json:"assignedUserIds"`
-				Tags            []string `json:"tags"`
-				States          []string `json:"states"`
-			} `json:"filters"`
-		}
-		if err := json.NewDecoder(w.Body).Decode(&results); err != nil {
-			t.Fatalf("decode response body: %v; raw: %s", err, w.Body.String())
+		body := w.Body.Bytes()
+
+		// Decode into the real production type (dashboardWidgetView, defined
+		// in dashboards.go), not a duplicate ad hoc struct — a JSON tag
+		// rename on the real type breaks this decode/assertions directly,
+		// instead of silently zero-valuing a field in a copy that has
+		// already drifted from what's actually returned.
+		var results []dashboardWidgetView
+		if err := json.Unmarshal(body, &results); err != nil {
+			t.Fatalf("decode response body: %v; raw: %s", err, body)
 		}
 		if len(results) != 3 {
 			t.Fatalf("len(results) = %d, want 3", len(results))
 		}
 
+		// Confirm the actual JSON keys match openapi.yaml's declared
+		// DashboardWidget schema exactly — catches an added/removed field
+		// that the struct decode above wouldn't (json.Unmarshal ignores
+		// unknown keys and zero-values missing ones).
+		var raw []map[string]json.RawMessage
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Fatalf("decode response body as raw keys: %v; raw: %s", err, body)
+		}
+		wantKeys := append([]string(nil), dashboardWidgetJSONKeys...)
+		sort.Strings(wantKeys)
+		for i, obj := range raw {
+			gotKeys := make([]string, 0, len(obj))
+			for k := range obj {
+				gotKeys = append(gotKeys, k)
+			}
+			sort.Strings(gotKeys)
+			if !reflect.DeepEqual(gotKeys, wantKeys) {
+				t.Errorf("result[%d] JSON keys = %v, want %v (keep dashboardWidgetJSONKeys in sync with openapi.yaml's DashboardWidget schema)", i, gotKeys, wantKeys)
+			}
+		}
+
 		byID := make(map[string]int)
 		for i, res := range results {
 			byID[res.WidgetID] = i
-			if res.DisplayType != "single_score" {
-				t.Errorf("widget %s displayType = %q, want single_score", res.WidgetID, res.DisplayType)
+			if res.DisplayType != dashboard.DisplayTypeSingleScore {
+				t.Errorf("widget %s displayType = %q, want %q", res.WidgetID, res.DisplayType, dashboard.DisplayTypeSingleScore)
 			}
 			if res.DisplayName == "" {
 				t.Errorf("widget %s has empty displayName", res.WidgetID)

@@ -29,8 +29,8 @@ const PILOT_TILE_COUNT = 3;
  * "agents_pilot" dashboard: 3 `single_score` widgets). The widget template
  * list — display metadata plus each widget's filter criteria — is fetched
  * once via {@link useDashboardWidgets}; each rendered tile then resolves its
- * own data independently. Kept as a clearly separate, labeled add-on below
- * the existing dashboard sections, not a redesign.
+ * own data independently. Renders as the engineer dashboard's sole content
+ * for this pilot rollout (see CsmDashboardPage.tsx).
  */
 export default function AgentsLandingPagePilot(): JSX.Element {
   const { data, isLoading, isError, isFetching, refetch } =

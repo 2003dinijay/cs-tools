@@ -26,13 +26,13 @@ import {
 
 /**
  * Top-level CSM dashboard. Currently locked to the Engineer dashboard and
- * showing only the "Cases by severity and state" matrix: the queue / SLA /
- * customers / activity widgets are hidden, and the dashboard switcher dropdown
- * (Operations, IAM CS, Security, Team performance) is disabled in the header
- * because those are mock placeholders. Re-enable via DASHBOARD_SWITCHER_ENABLED
- * in AbtDashboardHeader and restore the hidden sections here once the real
- * tab+widget model (DashboardsAndReportsProposal.md, entity-service reports
- * DSL) lands. The placeholder dashboards below are kept for that restore.
+ * showing the config-driven widget pilot (AgentsLandingPagePilot), and the
+ * dashboard switcher dropdown (Operations, IAM CS, Security, Team
+ * performance) is disabled in the header because those are mock
+ * placeholders. Re-enable via DASHBOARD_SWITCHER_ENABLED in
+ * AbtDashboardHeader once the real tab+widget model
+ * (DashboardsAndReportsProposal.md, entity-service reports DSL) lands. The
+ * placeholder dashboards below are kept for that restore.
  */
 export default function CsmDashboardPage(): JSX.Element {
   // ABT scoping is not implemented yet, so default to (and stay on)
