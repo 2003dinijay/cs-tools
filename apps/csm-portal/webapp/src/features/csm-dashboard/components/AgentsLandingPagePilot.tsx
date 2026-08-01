@@ -16,25 +16,34 @@
 
 import { Box, Card, Skeleton, Typography } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
-import { useDashboardWidgets } from "@features/csm-dashboard/api/useDashboardWidgets";
+import { useDashboard } from "@features/csm-dashboard/api/useDashboard";
 import DashboardWidgetTile from "@features/csm-dashboard/components/DashboardWidgetTile";
 import SectionCard from "@features/csm-dashboard/components/SectionCard";
 import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
 
-/** Placeholder tile count while the widget template list is in flight. */
+/** Placeholder tile count while the dashboard detail is in flight. */
 const PILOT_TILE_COUNT = 3;
 
+interface AgentsLandingPagePilotProps {
+  /** Id of the dashboard to render (e.g. "agents_pilot"). */
+  dashboardId: string;
+}
+
 /**
- * Pilot section for the config-driven dashboard widget system (the
- * "agents_pilot" dashboard: 3 `single_score` widgets). The widget template
- * list — display metadata plus each widget's filter criteria — is fetched
- * once via {@link useDashboardWidgets}; each rendered tile then resolves its
- * own data independently. Renders as the engineer dashboard's sole content
- * for this pilot rollout (see CsmDashboardPage.tsx).
+ * Pilot section for the config-driven dashboard widget system: renders
+ * whichever dashboard's real `single_score` widgets are passed in via
+ * `dashboardId`. The dashboard's metadata plus its widget templates —
+ * display metadata and each widget's filter criteria — are fetched once via
+ * {@link useDashboard}; each rendered tile then resolves its own data
+ * independently. Today only the "agents_pilot" dashboard has real widgets
+ * (see CsmDashboardPage.tsx), but this component is generic over any
+ * dashboard id with widgets.
  */
-export default function AgentsLandingPagePilot(): JSX.Element {
+export default function AgentsLandingPagePilot({
+  dashboardId,
+}: AgentsLandingPagePilotProps): JSX.Element {
   const { data, isLoading, isError, isFetching, refetch } =
-    useDashboardWidgets();
+    useDashboard(dashboardId);
 
   return (
     <SectionCard
@@ -69,7 +78,7 @@ export default function AgentsLandingPagePilot(): JSX.Element {
                   <Skeleton variant="rounded" height={48} />
                 </Card>
               ))
-            : (data ?? []).map((widget) => (
+            : (data?.widgets ?? []).map((widget) => (
                 <DashboardWidgetTile
                   key={widget.widgetId}
                   widgetId={widget.widgetId}

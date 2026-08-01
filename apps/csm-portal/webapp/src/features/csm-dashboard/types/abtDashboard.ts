@@ -105,49 +105,42 @@ export interface CsmRecentActivity {
 // Multi-dashboard switcher — mirrors ServiceNow Performance Analytics where
 // engineers pivot between several dashboards (Engineer / Operations / IAM /
 // Security / Team Performance). See DashboardsAndReportsProposal.md.
-export type DashboardKey =
-  | "engineer"
-  | "operations"
-  | "iam"
-  | "security"
-  | "team_performance";
+//
+// Dashboard ids now come from the backend registry (GET /dashboards, see
+// useDashboardList), not a fixed compile-time set, so this is just `string`.
+export type DashboardKey = string;
 
-export interface DashboardOption {
-  key: DashboardKey;
-  name: string;
+export interface MockDashboardMeta {
   description: string;
   scopeBased: boolean;
 }
 
-export const DASHBOARD_OPTIONS: DashboardOption[] = [
-  {
-    key: "engineer",
-    name: "Engineer overview",
-    description: "Personal queue, SLA at risk, customers in scope, recent activity.",
-    scopeBased: true,
-  },
-  {
-    key: "operations",
-    name: "Operations",
-    description: "Cross-team case throughput, state distribution, escalations, SLA breach trends.",
+/**
+ * Description + scope-relevance for the mock placeholder dashboards (every
+ * dashboard in the BE registry other than "agents_pilot", which has real
+ * widgets and doesn't need an entry here). Keyed by dashboard id. Drives
+ * `DashboardPlaceholder`'s card copy and the header's My ABT / All customers
+ * toggle visibility (see CsmDashboardPage, AbtDashboardHeader).
+ */
+export const MOCK_DASHBOARD_META: Record<string, MockDashboardMeta> = {
+  operations: {
+    description:
+      "Cross-team case throughput, state distribution, escalations, SLA breach trends.",
     scopeBased: false,
   },
-  {
-    key: "iam",
-    name: "IAM CS",
-    description: "Identity Server / Asgardeo case posture, top accounts, vulnerability links.",
+  iam: {
+    description:
+      "Identity Server / Asgardeo case posture, top accounts, vulnerability links.",
     scopeBased: false,
   },
-  {
-    key: "security",
-    name: "Security center",
-    description: "Vulnerability posture, security report cases, response time.",
+  security: {
+    description:
+      "Vulnerability posture, security report cases, response time.",
     scopeBased: false,
   },
-  {
-    key: "team_performance",
-    name: "Team performance",
-    description: "Per-team throughput, time-card distribution, on-call coverage gaps.",
+  team_performance: {
+    description:
+      "Per-team throughput, time-card distribution, on-call coverage gaps.",
     scopeBased: false,
   },
-];
+};

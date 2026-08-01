@@ -14,33 +14,61 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Card, Chip, Typography } from "@wso2/oxygen-ui";
+import { Box, Card, Chip, Skeleton, Typography } from "@wso2/oxygen-ui";
 import { useState, type JSX } from "react";
 import AbtDashboardHeader from "@features/csm-dashboard/components/AbtDashboardHeader";
 import AgentsLandingPagePilot from "@features/csm-dashboard/components/AgentsLandingPagePilot";
+import { useDashboardList } from "@features/csm-dashboard/api/useDashboardList";
+import { useDashboard } from "@features/csm-dashboard/api/useDashboard";
 import {
-  DASHBOARD_OPTIONS,
+  MOCK_DASHBOARD_META,
   type DashboardKey,
   type DashboardScope,
 } from "@features/csm-dashboard/types/abtDashboard";
 
 /**
- * Top-level CSM dashboard. Currently locked to the Engineer dashboard and
- * showing the config-driven widget pilot (AgentsLandingPagePilot), and the
- * dashboard switcher dropdown (Operations, IAM CS, Security, Team
- * performance) is disabled in the header because those are mock
- * placeholders. Re-enable via DASHBOARD_SWITCHER_ENABLED in
- * AbtDashboardHeader once the real tab+widget model
- * (DashboardsAndReportsProposal.md, entity-service reports DSL) lands. The
- * placeholder dashboards below are kept for that restore.
+ * Top-level CSM dashboard. The dashboard list and the default selection are
+ * BE-driven: `GET /dashboards` populates the switcher in the header (now
+ * always enabled, see AbtDashboardHeader), and the `isDefault` entry is
+ * selected on load. Only the "agents_pilot" dashboard has real
+ * (config-driven) widgets today; every other dashboard in the registry
+ * (Operations, IAM CS, Security, Team performance) renders the mock
+ * `DashboardPlaceholder` below until the real tab+widget model
+ * (DashboardsAndReportsProposal.md, entity-service reports DSL) lands.
  */
 export default function CsmDashboardPage(): JSX.Element {
   // ABT scoping is not implemented yet, so default to (and stay on)
   // all-customers; the My ABT / All customers toggle is disabled in the header.
   const [scope, setScope] = useState<DashboardScope>("all_customers");
-  // Locked to the Engineer dashboard: the switcher is disabled in the header
-  // (the other dashboards are mock placeholders), so this never changes today.
-  const [dashboardKey, setDashboardKey] = useState<DashboardKey>("engineer");
+  // Undefined until the switcher is used; until then the selection derives
+  // from the loaded list's isDefault entry (see `dashboardKey` below), so
+  // there is nothing to synchronize via an effect.
+  const [manualDashboardKey, setManualDashboardKey] = useState<
+    DashboardKey | undefined
+  >(undefined);
+
+  const dashboardList = useDashboardList();
+  const list = dashboardList.data;
+  const defaultEntry =
+    list && list.length > 0 ? (list.find((d) => d.isDefault) ?? list[0]) : undefined;
+  const dashboardKey = manualDashboardKey ?? defaultEntry?.id;
+
+  const dashboard = useDashboard(dashboardKey);
+  const hasRealWidgets = (dashboard.data?.widgets.length ?? 0) > 0;
+  const mockMeta = dashboardKey ? MOCK_DASHBOARD_META[dashboardKey] : undefined;
+  // Real (widget-bearing) dashboards are personal-queue-shaped and always
+  // scope-relevant; mock placeholders use their own FE-local metadata.
+  const scopeBased = hasRealWidgets ? true : (mockMeta?.scopeBased ?? false);
+  const currentEntry = dashboardList.data?.find((d) => d.id === dashboardKey);
+
+  if (dashboardKey === undefined) {
+    return (
+      <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        <Skeleton variant="rounded" height={32} width={240} />
+        <Skeleton variant="rounded" height={200} />
+      </Box>
+    );
+  }
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -48,12 +76,17 @@ export default function CsmDashboardPage(): JSX.Element {
         scope={scope}
         onScopeChange={setScope}
         dashboardKey={dashboardKey}
-        onDashboardChange={setDashboardKey}
+        onDashboardChange={setManualDashboardKey}
+        dashboardList={dashboardList.data ?? []}
+        scopeBased={scopeBased}
       />
-      {dashboardKey === "engineer" ? (
-        <AgentsLandingPagePilot />
+      {hasRealWidgets ? (
+        <AgentsLandingPagePilot dashboardId={dashboardKey} />
       ) : (
-        <DashboardPlaceholder dashboardKey={dashboardKey} />
+        <DashboardPlaceholder
+          dashboardKey={dashboardKey}
+          displayName={currentEntry?.displayName ?? dashboardKey}
+        />
       )}
     </Box>
   );
@@ -61,11 +94,15 @@ export default function CsmDashboardPage(): JSX.Element {
 
 interface DashboardPlaceholderProps {
   dashboardKey: DashboardKey;
+  displayName: string;
 }
 
-function DashboardPlaceholder({ dashboardKey }: DashboardPlaceholderProps): JSX.Element {
-  const option = DASHBOARD_OPTIONS.find((o) => o.key === dashboardKey);
-  if (!option) return <></>;
+function DashboardPlaceholder({
+  dashboardKey,
+  displayName,
+}: DashboardPlaceholderProps): JSX.Element {
+  const meta = MOCK_DASHBOARD_META[dashboardKey];
+  if (!meta) return <></>;
 
   // Mock KPI tiles per dashboard. Numbers are pinned (no real query); the
   // shape matches the v1 widget set in DashboardsAndReportsProposal.md.
@@ -74,9 +111,9 @@ function DashboardPlaceholder({ dashboardKey }: DashboardPlaceholderProps): JSX.
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
       <Card variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6">{option.name}</Typography>
+        <Typography variant="h6">{displayName}</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          {option.description}
+          {meta.description}
         </Typography>
         <Box sx={{ display: "flex", gap: 0.5, mt: 1 }}>
           <Chip size="small" label="Mock" color="warning" variant="outlined" />
@@ -136,8 +173,8 @@ interface Tile {
   color: TileColor;
 }
 
-const TILE_SETS: Record<DashboardKey, Tile[]> = {
-  engineer: [],
+const TILE_SETS: Record<string, Tile[]> = {
+  agents_pilot: [],
   operations: [
     { label: "Open cases", value: "287", color: "neutral" },
     { label: "Created today", value: "34", sub: "+12% vs 7d avg", color: "info" },

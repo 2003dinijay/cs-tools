@@ -24,10 +24,10 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
-import {
-  DASHBOARD_OPTIONS,
-  type DashboardKey,
-  type DashboardScope,
+import type { BeDashboardListItem } from "@api/backend/types";
+import type {
+  DashboardKey,
+  DashboardScope,
 } from "@features/csm-dashboard/types/abtDashboard";
 
 // ABT (Account-Based Team) scoping is not implemented yet, so the My ABT / All
@@ -35,16 +35,18 @@ import {
 // Flip this to re-enable the toggle once ABT membership data is available.
 const ABT_SCOPING_ENABLED = false;
 
-// Only the Engineer dashboard is live; the others are mock placeholders, so the
-// switcher is disabled and locked to Engineer. Flip this to re-enable the
-// dropdown once the other dashboards are real.
-const DASHBOARD_SWITCHER_ENABLED = false;
-
 interface AbtDashboardHeaderProps {
   scope: DashboardScope;
   onScopeChange: (scope: DashboardScope) => void;
   dashboardKey: DashboardKey;
   onDashboardChange: (key: DashboardKey) => void;
+  /** Every dashboard in the BE registry (GET /dashboards), for the switcher. */
+  dashboardList: BeDashboardListItem[];
+  /** Whether the selected dashboard is scope-relevant (shows the My ABT / All
+   * customers toggle). Computed by the caller — see CsmDashboardPage — since
+   * that depends on whether the dashboard has real widgets or is a mock
+   * placeholder, which the header itself doesn't know about. */
+  scopeBased: boolean;
 }
 
 export default function AbtDashboardHeader({
@@ -52,9 +54,10 @@ export default function AbtDashboardHeader({
   onScopeChange,
   dashboardKey,
   onDashboardChange,
+  dashboardList,
+  scopeBased,
 }: AbtDashboardHeaderProps): JSX.Element {
-  const currentOption = DASHBOARD_OPTIONS.find((o) => o.key === dashboardKey);
-  const showScopeButtons = currentOption?.scopeBased ?? false;
+  const currentOption = dashboardList.find((o) => o.id === dashboardKey);
 
   return (
     <Box
@@ -69,11 +72,11 @@ export default function AbtDashboardHeader({
       <Box>
         <Typography variant="h5">Dashboard</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          Engineer overview
+          {currentOption?.displayName ?? ""}
         </Typography>
       </Box>
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
-        {showScopeButtons && (
+        {scopeBased && (
           <Tooltip
             title={
               ABT_SCOPING_ENABLED
@@ -103,30 +106,21 @@ export default function AbtDashboardHeader({
             </Box>
           </Tooltip>
         )}
-        <Tooltip
-          title={
-            DASHBOARD_SWITCHER_ENABLED
-              ? ""
-              : "Other dashboards are not available yet — showing the Engineer dashboard."
-          }
-        >
-          <FormControl size="small" sx={{ minWidth: 200 }}>
-            <Select
-              value={dashboardKey}
-              onChange={(e) =>
-                onDashboardChange(e.target.value as DashboardKey)
-              }
-              disabled={!DASHBOARD_SWITCHER_ENABLED}
-              displayEmpty
-            >
-              {DASHBOARD_OPTIONS.map((o) => (
-                <MenuItem key={o.key} value={o.key}>
-                  {o.name}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        </Tooltip>
+        <FormControl size="small" sx={{ minWidth: 200 }}>
+          <Select
+            value={dashboardKey}
+            onChange={(e) =>
+              onDashboardChange(e.target.value as DashboardKey)
+            }
+            displayEmpty
+          >
+            {dashboardList.map((o) => (
+              <MenuItem key={o.id} value={o.id}>
+                {o.displayName}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
       </Box>
     </Box>
   );

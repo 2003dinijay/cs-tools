@@ -38,26 +38,31 @@ function renderWithClient(ui: ReactNode) {
   );
 }
 
-const TEMPLATES = [
-  {
-    widgetId: "my_patches",
-    displayName: "My Patches",
-    displayType: "single_score",
-    filters: { assignedUserIds: ["user-1"], tags: ["patch"] },
-  },
-  {
-    widgetId: "my_reminders",
-    displayName: "My Reminders",
-    displayType: "single_score",
-    filters: { assignedUserIds: ["user-1"], states: ["awaiting_info"] },
-  },
-  {
-    widgetId: "open_incident_team",
-    displayName: "Open Incidents (Team)",
-    displayType: "single_score",
-    filters: { tags: ["s_dip"] },
-  },
-];
+const DASHBOARD_DETAIL = {
+  id: "agents_pilot",
+  displayName: "Engineer overview",
+  isDefault: true,
+  widgets: [
+    {
+      widgetId: "my_patches",
+      displayName: "My Patches",
+      displayType: "single_score",
+      filters: { assignedUserIds: ["user-1"], tags: ["patch"] },
+    },
+    {
+      widgetId: "my_reminders",
+      displayName: "My Reminders",
+      displayType: "single_score",
+      filters: { assignedUserIds: ["user-1"], states: ["awaiting_info"] },
+    },
+    {
+      widgetId: "open_incident_team",
+      displayName: "Open Incidents (Team)",
+      displayType: "single_score",
+      filters: { tags: ["s_dip"] },
+    },
+  ],
+};
 
 function searchResponseFor(total: number) {
   return { total, cases: [], limit: 1, offset: 0, hasMore: false };
@@ -71,12 +76,12 @@ describe("AgentsLandingPagePilot", () => {
 
   it("renders skeleton tiles while the template list is in flight", () => {
     getMock.mockReturnValue(new Promise(() => {}));
-    const { container } = renderWithClient(<AgentsLandingPagePilot />);
+    const { container } = renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
     expect(container.querySelectorAll(".MuiSkeleton-root").length).toBe(3);
   });
 
   it("renders one tile per widget, each resolving its own count independently", async () => {
-    getMock.mockResolvedValue(TEMPLATES);
+    getMock.mockResolvedValue(DASHBOARD_DETAIL);
     postMock.mockImplementation((_path: string, body: { filters: Record<string, unknown> }) => {
       if (body.filters.tags && (body.filters.tags as string[]).includes("patch")) {
         return Promise.resolve(searchResponseFor(3));
@@ -87,7 +92,7 @@ describe("AgentsLandingPagePilot", () => {
       return Promise.resolve(searchResponseFor(12));
     });
 
-    renderWithClient(<AgentsLandingPagePilot />);
+    renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
 
     await waitFor(() => expect(screen.getByText("My Patches")).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
@@ -99,7 +104,7 @@ describe("AgentsLandingPagePilot", () => {
   it("shows an error state when the template list itself fails to load", async () => {
     getMock.mockRejectedValue(new Error("boom"));
 
-    renderWithClient(<AgentsLandingPagePilot />);
+    renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
 
     await waitFor(() =>
       expect(screen.getByText("Could not load the widget pilot.")).toBeInTheDocument(),
@@ -108,7 +113,7 @@ describe("AgentsLandingPagePilot", () => {
   });
 
   it("isolates one widget's failed count fetch to its own tile while siblings render their real counts", async () => {
-    getMock.mockResolvedValue(TEMPLATES);
+    getMock.mockResolvedValue(DASHBOARD_DETAIL);
     postMock.mockImplementation((_path: string, body: { filters: Record<string, unknown> }) => {
       if (body.filters.tags && (body.filters.tags as string[]).includes("patch")) {
         return Promise.reject(new Error("boom"));
@@ -119,7 +124,7 @@ describe("AgentsLandingPagePilot", () => {
       return Promise.resolve(searchResponseFor(12));
     });
 
-    renderWithClient(<AgentsLandingPagePilot />);
+    renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
 
     await waitFor(() =>
       expect(screen.getByText("Could not load this widget.")).toBeInTheDocument(),

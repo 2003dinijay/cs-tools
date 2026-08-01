@@ -2593,10 +2593,10 @@ export interface BeUserSearchByEmailResponse {
 // ---------------------------------------------------------------------------
 
 /**
- * A single widget template from `GET /dashboards/{dashboardId}/widgets`:
- * display metadata plus its already-resolved filter criteria. The caller
- * resolves the widget's own data by issuing its own `POST /cases/search`
- * with `filters` and reading `total` off the response.
+ * A single widget template, embedded in {@link BeDashboard}: display metadata
+ * plus its already-resolved filter criteria. The caller resolves the
+ * widget's own data by issuing its own `POST /cases/search` with `filters`
+ * and reading `total` off the response.
  */
 export interface BeDashboardWidget {
   widgetId: string;
@@ -2604,4 +2604,29 @@ export interface BeDashboardWidget {
   /** Only "single_score" exists today. */
   displayType: "single_score";
   filters: BeCaseSearchFilters;
+}
+
+/**
+ * One entry from `GET /dashboards`: every dashboard registered in the
+ * config-driven pilot, without its widgets. A small static registry, not
+ * user-configurable — drives the dashboard switcher and the initial
+ * dashboard selection (the `isDefault` entry).
+ */
+export interface BeDashboardListItem {
+  id: string;
+  displayName: string;
+  isDefault: boolean;
+}
+
+/**
+ * Response of `GET /dashboards/{dashboardId}`: a dashboard's display
+ * metadata plus every widget template registered for it. `widgets` is
+ * always an array, `[]` when the dashboard has none (mock placeholder
+ * dashboards today).
+ */
+export interface BeDashboard {
+  id: string;
+  displayName: string;
+  isDefault: boolean;
+  widgets: BeDashboardWidget[];
 }

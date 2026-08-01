@@ -27,7 +27,7 @@ vi.mock("@api/backend/client", () => ({
   useBackendApi: () => ({ get: getMock }),
 }));
 
-import { useDashboardWidgets } from "@features/csm-dashboard/api/useDashboardWidgets";
+import { useDashboardList } from "@features/csm-dashboard/api/useDashboardList";
 
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({
@@ -38,41 +38,33 @@ function wrapper({ children }: { children: ReactNode }) {
   );
 }
 
-describe("useDashboardWidgets", () => {
+describe("useDashboardList", () => {
   beforeEach(() => {
     getMock.mockReset();
   });
 
-  it("fetches the agents_pilot widget template set from a single call", async () => {
+  it("fetches the dashboard registry from a single call", async () => {
     getMock.mockResolvedValue([
-      {
-        widgetId: "my_patches",
-        displayName: "My Patches",
-        displayType: "single_score",
-        filters: { assignedUserIds: ["user-1"], tags: ["patch"] },
-      },
+      { id: "agents_pilot", displayName: "Engineer overview", isDefault: true },
+      { id: "operations", displayName: "Operations", isDefault: false },
     ]);
 
-    const { result } = renderHook(() => useDashboardWidgets(), { wrapper });
+    const { result } = renderHook(() => useDashboardList(), { wrapper });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(getMock).toHaveBeenCalledTimes(1);
-    expect(getMock).toHaveBeenCalledWith("/dashboards/agents_pilot/widgets");
+    expect(getMock).toHaveBeenCalledWith("/dashboards");
     expect(result.current.data).toEqual([
-      {
-        widgetId: "my_patches",
-        displayName: "My Patches",
-        displayType: "single_score",
-        filters: { assignedUserIds: ["user-1"], tags: ["patch"] },
-      },
+      { id: "agents_pilot", displayName: "Engineer overview", isDefault: true },
+      { id: "operations", displayName: "Operations", isDefault: false },
     ]);
   });
 
   it("surfaces a query error when the call fails", async () => {
     getMock.mockRejectedValue(new Error("boom"));
 
-    const { result } = renderHook(() => useDashboardWidgets(), { wrapper });
+    const { result } = renderHook(() => useDashboardList(), { wrapper });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error?.message).toBe("boom");
