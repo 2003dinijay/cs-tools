@@ -24,11 +24,17 @@ import type {
 } from "@api/backend/types";
 
 const PAGE_LIMIT = BE_MAX_PAGE_LIMIT;
+// A project with a genuinely larger contact list than this is not known to
+// exist (the largest seen in practice is ~103), but `total` is server-supplied
+// and this loop's only termination condition otherwise -- an independent cap
+// means a wrong or stuck `total` can't turn this into an unbounded fetch loop.
+const MAX_PAGES = 100;
 
 /**
  * A project's contacts, via `POST /projects/{id}/contacts/search`. Pages
  * through the full list — the response has no `hasMore` flag, so `offset +
- * contacts.length < total` is the continuation check. Disabled until a
+ * contacts.length < total` is the continuation check, bounded by
+ * {@link MAX_PAGES} regardless of what `total` reports. Disabled until a
  * project id is provided.
  */
 export function useSearchProjectContacts(
@@ -41,17 +47,21 @@ export function useSearchProjectContacts(
     queryFn: async (): Promise<BeProjectContact[]> => {
       const all: BeProjectContact[] = [];
       let total = Infinity;
-      for (let offset = 0; all.length < total; offset += PAGE_LIMIT) {
+      for (
+        let offset = 0, page = 0;
+        all.length < total && page < MAX_PAGES;
+        offset += PAGE_LIMIT, page++
+      ) {
         const res = await api.post<
           BeProjectContactSearchPayload,
           BeProjectContactSearchResponse
         >(`/projects/${encodeURIComponent(projectId ?? "")}/contacts/search`, {
           pagination: { offset, limit: PAGE_LIMIT },
         });
-        const page = res.contacts ?? [];
-        all.push(...page);
-        total = res.total ?? all.length;
-        if (page.length === 0) break;
+        const contactsPage = res.contacts ?? [];
+        all.push(...contactsPage);
+        total = res.total;
+        if (contactsPage.length === 0) break;
       }
       return all;
     },
