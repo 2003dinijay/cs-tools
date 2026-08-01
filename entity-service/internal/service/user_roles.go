@@ -48,11 +48,24 @@ var defaultUserRoles = []domain.UserRole{
 
 // The configured allow-list does double duty: it validates the roleIds user
 // filter and it is the catalogue POST /roles/search serves. One list drives
-// both, so the dropdown and the filter can never disagree.
+// both, so the dropdown and the filter can never disagree. userRoles keeps
+// the configured order for the catalogue response; validUserRoles is the
+// same set as a map, kept in sync in SetUserRoles, so isValidUserRole is an
+// O(1) lookup rather than a linear scan on every filtered search request.
 var (
-	userRolesMu sync.RWMutex
-	userRoles   = append([]domain.UserRole(nil), defaultUserRoles...)
+	userRolesMu    sync.RWMutex
+	userRoles      = append([]domain.UserRole(nil), defaultUserRoles...)
+	validUserRoles = toUserRoleSet(defaultUserRoles)
 )
+
+// toUserRoleSet builds a membership set from an ordered role list.
+func toUserRoleSet(roles []domain.UserRole) map[domain.UserRole]bool {
+	set := make(map[domain.UserRole]bool, len(roles))
+	for _, r := range roles {
+		set[r] = true
+	}
+	return set
+}
 
 // SetUserRoles installs the assignable-role allow-list. Called once during
 // startup with the parsed configuration, and by tests.
@@ -60,6 +73,7 @@ func SetUserRoles(roles []domain.UserRole) {
 	userRolesMu.Lock()
 	defer userRolesMu.Unlock()
 	userRoles = append([]domain.UserRole(nil), roles...)
+	validUserRoles = toUserRoleSet(roles)
 }
 
 // UserRoleCatalogue returns the configured allow-list, in configured order.
@@ -73,12 +87,7 @@ func UserRoleCatalogue() []domain.UserRole {
 func isValidUserRole(role domain.UserRole) bool {
 	userRolesMu.RLock()
 	defer userRolesMu.RUnlock()
-	for _, r := range userRoles {
-		if r == role {
-			return true
-		}
-	}
-	return false
+	return validUserRoles[role]
 }
 
 // ParseUserRoles parses the assignable-role allow-list from its configuration
