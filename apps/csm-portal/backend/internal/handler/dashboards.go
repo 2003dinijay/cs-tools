@@ -25,13 +25,17 @@ import (
 
 // dashboardWidgetView is a single widget's filter criteria and display
 // metadata, returned as part of GET /dashboards/{dashboardId}. The caller
-// resolves each widget's own data by issuing its own POST /cases/search
-// request with Filters.
+// resolves each widget's own data by issuing its own POST /{resourceType}s/search
+// request (see ResourceType) with Filters.
 type dashboardWidgetView struct {
-	WidgetID    string                      `json:"widgetId"`
-	DisplayName string                      `json:"displayName"`
-	DisplayType dashboard.DisplayType       `json:"displayType"`
-	Filters     dashboard.CaseSearchFilters `json:"filters"`
+	WidgetID     string                 `json:"widgetId"`
+	DisplayName  string                 `json:"displayName"`
+	ResourceType dashboard.ResourceType `json:"resourceType"`
+	Shape        dashboard.Shape        `json:"shape"`
+	GridWidth    int                    `json:"gridWidth"`
+	Filters      map[string]any         `json:"filters"`
+	GroupBy      string                 `json:"groupBy,omitempty"`
+	ListLimit    int                    `json:"listLimit,omitempty"`
 }
 
 // dashboardListItemView is a dashboard's list-level metadata, returned by
@@ -48,6 +52,7 @@ type dashboardDetailView struct {
 	ID          string                `json:"id"`
 	DisplayName string                `json:"displayName"`
 	IsDefault   bool                  `json:"isDefault"`
+	TargetTeam  string                `json:"targetTeam"`
 	Widgets     []dashboardWidgetView `json:"widgets"`
 }
 
@@ -98,10 +103,14 @@ func (h *DashboardHandler) GetDashboardDetail(w http.ResponseWriter, r *http.Req
 	widgets := make([]dashboardWidgetView, 0, len(d.Widgets))
 	for _, tpl := range d.Widgets {
 		widgets = append(widgets, dashboardWidgetView{
-			WidgetID:    tpl.ID,
-			DisplayName: tpl.DisplayName,
-			DisplayType: tpl.DisplayType,
-			Filters:     dashboard.ResolveFilters(tpl, user.UserID),
+			WidgetID:     tpl.ID,
+			DisplayName:  tpl.DisplayName,
+			ResourceType: tpl.ResourceType,
+			Shape:        tpl.Shape,
+			GridWidth:    tpl.GridWidth,
+			Filters:      dashboard.ResolveFilters(tpl, user.UserID),
+			GroupBy:      tpl.GroupBy,
+			ListLimit:    tpl.ListLimit,
 		})
 	}
 
@@ -109,6 +118,7 @@ func (h *DashboardHandler) GetDashboardDetail(w http.ResponseWriter, r *http.Req
 		ID:          d.ID,
 		DisplayName: d.DisplayName,
 		IsDefault:   d.IsDefault,
+		TargetTeam:  d.TargetTeam,
 		Widgets:     widgets,
 	})
 }
