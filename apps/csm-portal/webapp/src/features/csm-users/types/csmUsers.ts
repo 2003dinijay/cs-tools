@@ -15,11 +15,11 @@
 // under the License.
 
 /**
- * Whether the user is staff or a customer/partner contact. The postgres data
- * source emits `internal`, `customer`, or `system`; the ServiceNow data
- * source emits `internal` or `external`. Callers branching on staff-vs-not
- * must treat everything other than `internal` alike, not just `customer` or
- * just `external` — see `isInternalUser` in `UserProfilePage`.
+ * Whether the user is staff or a customer/partner contact. The value set
+ * differs by backing data source: one emits `internal`, `customer` or
+ * `system`, the other `internal` or `external`. Callers branching on
+ * staff-vs-not must treat everything other than `internal` alike, not just
+ * `customer` or just `external` — see `isInternalUser` in `UserProfilePage`.
  */
 export type UserType = "internal" | "external" | "customer" | "system";
 
@@ -116,7 +116,8 @@ export interface UserProjectAccess {
 /**
  * `GET /users/{id}` response: the user row plus every group they belong to,
  * the subset of those that are teams, and — for external contacts — their
- * per-project access. ServiceNow data source only. The membership and
+ * per-project access. Populated only for users sourced from the data source
+ * that carries group and project-contact records. The membership and
  * project-access blocks are best-effort: empty rather than absent when their
  * upstream lookup fails.
  */
