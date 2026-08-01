@@ -107,6 +107,7 @@ export const ApiQueryKeys = {
   CSM_CASES: "csm-cases",
   CSM_ANNOUNCEMENTS: "csm-announcements",
   CSM_CASE_COUNTS: "csm-case-counts",
+  CSM_DASHBOARD_WIDGETS: "csm-dashboard-widgets",
   CSM_CASE_DETAIL: "csm-case-detail",
   CSM_CASE_COMMENTS: "csm-case-comments",
   CSM_CASE_ATTACHMENTS: "csm-case-attachments",

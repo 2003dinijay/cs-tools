@@ -2587,3 +2587,16 @@ export interface BeTimeCardMutationResponse {
 export interface BeUserSearchByEmailResponse {
   users?: Array<{ id: string; email: string }>;
 }
+
+// ---------------------------------------------------------------------------
+// Dashboards
+// ---------------------------------------------------------------------------
+
+/** A single resolved widget from `GET /dashboards/{dashboardId}/widgets`. */
+export interface BeDashboardWidget {
+  widgetId: string;
+  displayName: string;
+  /** Only "single_score" exists today. */
+  displayType: "single_score";
+  count: number;
+}

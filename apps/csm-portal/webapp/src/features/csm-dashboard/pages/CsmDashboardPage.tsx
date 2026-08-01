@@ -14,9 +14,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Card, Chip, Typography } from "@wso2/oxygen-ui";
+import { Box, Card, Chip, Divider, Typography } from "@wso2/oxygen-ui";
 import { useState, type JSX } from "react";
 import AbtDashboardHeader from "@features/csm-dashboard/components/AbtDashboardHeader";
+import AgentsLandingPagePilot from "@features/csm-dashboard/components/AgentsLandingPagePilot";
 import CaseCompositionCharts from "@features/csm-dashboard/components/CaseCompositionCharts";
 import CaseCountsMatrix from "@features/csm-dashboard/components/CaseCountsMatrix";
 import MyAssignedCases from "@features/csm-dashboard/components/MyAssignedCases";
@@ -57,6 +58,12 @@ export default function CsmDashboardPage(): JSX.Element {
           <MyAssignedCases />
           <CaseCountsMatrix />
           <CaseCompositionCharts />
+          {/* Pilot add-on: config-driven dashboard widgets, kept clearly
+              separate from the sections above rather than blended in. */}
+          <Divider textAlign="left">
+            <Chip size="small" label="Pilot" variant="outlined" />
+          </Divider>
+          <AgentsLandingPagePilot />
         </>
       ) : (
         <DashboardPlaceholder dashboardKey={dashboardKey} />
