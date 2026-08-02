@@ -1684,6 +1684,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               caseDetail={c}
               onAction={onAction}
               closeBlockedReason={closeBlockedReason}
+              isPending={patchCase.isPending}
             />
           </Box>
         )}
