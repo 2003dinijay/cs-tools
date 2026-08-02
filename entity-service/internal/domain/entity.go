@@ -1421,6 +1421,20 @@ type ParsedCaseFilters struct {
 	// ResolutionNotesEmpty, when true, filters to cases with empty resolution notes.
 	// false and omitted are treated identically (optional).
 	ResolutionNotesEmpty bool
+	// TaskSLAFilter filters cases by Task SLA businessElapsedPercent range (optional).
+	// Populated from the "taskSLABusinessElapsedPercent" filter field's gte/lte bounds.
+	// Requires ServiceNow data source (not available via PostgreSQL-only path).
+	// Filtering logic is confined to the SN adapter per vendor-neutral boundary.
+	TaskSLAFilter *TaskSLAFilter
+}
+
+// TaskSLAFilter specifies a range of business-elapsed-percent values for Task SLA
+// filtering. Cases are matched if they have at least one Task SLA record where
+// businessElapsedPercent falls within [MinBusinessElapsedPercent,
+// MaxBusinessElapsedPercent] inclusive.
+type TaskSLAFilter struct {
+	MinBusinessElapsedPercent *int
+	MaxBusinessElapsedPercent *int
 }
 
 // SearchCasesRequest is the input for a case search operation.

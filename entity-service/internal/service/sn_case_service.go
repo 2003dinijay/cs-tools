@@ -311,6 +311,32 @@ type snCaseFilters struct {
 	IntegrationCsTeamIDs      []string `json:"integrationCsTeamIds,omitempty"`
 	Unassigned                bool     `json:"unassigned,omitempty"`
 	ResolutionNotesEmpty      bool     `json:"resolutionNotesEmpty,omitempty"`
+	// TaskSLAFilter: SN-side join on Task SLA table, filtering by businessElapsedPercent
+	// range. Confined to SN adapter per vendor-neutral boundary; see
+	// domain.TaskSLAFilter doc comment.
+	TaskSLAFilter *snTaskSLAFilter `json:"taskSLAFilter,omitempty"`
+}
+
+// snTaskSLAFilter represents the Task SLA filter for SN's POST /cases/search request.
+type snTaskSLAFilter struct {
+	MinBusinessElapsedPercent int `json:"minBusinessElapsedPercent,omitempty"`
+	MaxBusinessElapsedPercent int `json:"maxBusinessElapsedPercent,omitempty"`
+}
+
+// buildSNTaskSLAFilter converts a domain.TaskSLAFilter into the SN wire shape,
+// or nil if no filter was supplied.
+func buildSNTaskSLAFilter(f *domain.TaskSLAFilter) *snTaskSLAFilter {
+	if f == nil {
+		return nil
+	}
+	sn := &snTaskSLAFilter{}
+	if f.MinBusinessElapsedPercent != nil {
+		sn.MinBusinessElapsedPercent = *f.MinBusinessElapsedPercent
+	}
+	if f.MaxBusinessElapsedPercent != nil {
+		sn.MaxBusinessElapsedPercent = *f.MaxBusinessElapsedPercent
+	}
+	return sn
 }
 
 // snStateIDMap maps domain CaseState enums to SN numeric state IDs.
@@ -1910,6 +1936,7 @@ func buildSNCaseFilters(parsed domain.ParsedCaseFilters, searchQuery string) snC
 		IntegrationCsTeamIDs:      uuidsToSysids(parsed.IntegrationCsTeamIDs),
 		Unassigned:                parsed.Unassigned,
 		ResolutionNotesEmpty:      parsed.ResolutionNotesEmpty,
+		TaskSLAFilter:             buildSNTaskSLAFilter(parsed.TaskSLAFilter),
 	}
 }
 

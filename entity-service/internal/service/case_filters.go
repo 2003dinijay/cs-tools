@@ -41,7 +41,7 @@ var caseFilterFieldSet = map[string]bool{
 	"deploymentId": true, "assignedUserId": true, "createdBy": true,
 	"createdOn": true, "updatedOn": true, "closedOn": true, "product": true,
 	"projectOnboardingStatus": true, "projectType": true, "integrationCsTeam": true,
-	"resolutionNotes": true, "parentId": true,
+	"resolutionNotes": true, "parentId": true, "taskSLABusinessElapsedPercent": true,
 }
 
 // caseFilterOpSet is the exact set of CaseFieldFilter.Op values accepted by
@@ -499,10 +499,40 @@ func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string,
 			}
 			id := f.Values[0]
 			p.ParentID = &id
+
+		case "taskSLABusinessElapsedPercent":
+			if err := requireCaseFilterValues(f); err != nil {
+				return domain.ParsedCaseFilters{}, err
+			}
+			pct, err := parseCaseFilterPercent(f, f.Values[0])
+			if err != nil {
+				return domain.ParsedCaseFilters{}, err
+			}
+			if p.TaskSLAFilter == nil {
+				p.TaskSLAFilter = &domain.TaskSLAFilter{}
+			}
+			switch f.Op {
+			case "gte":
+				p.TaskSLAFilter.MinBusinessElapsedPercent = &pct
+			case "lte":
+				p.TaskSLAFilter.MaxBusinessElapsedPercent = &pct
+			default:
+				return domain.ParsedCaseFilters{}, badCaseFilterCombo(f)
+			}
 		}
 	}
 
 	return p, nil
+}
+
+// parseCaseFilterPercent parses a single filter value into a 0-100 integer
+// percentage, for fields like taskSLABusinessElapsedPercent.
+func parseCaseFilterPercent(f domain.CaseFieldFilter, value string) (int, error) {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 || n > 100 {
+		return 0, &apierror.ValidationError{Msg: fmt.Sprintf("filters: field %q op %q value %q must be an integer between 0 and 100", f.Field, f.Op, value)}
+	}
+	return n, nil
 }
 
 // resolveCaseFilterCallerEmail resolves the authenticated caller's email from

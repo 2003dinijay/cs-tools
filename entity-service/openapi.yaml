@@ -4854,6 +4854,7 @@ components:
             - integrationCsTeam
             - resolutionNotes
             - parentId
+            - taskSLABusinessElapsedPercent
         op:
           type: string
           enum: [eq, in, notIn, isEmpty, isNotEmpty, gte, lte]
@@ -4927,6 +4928,13 @@ components:
           is no distinct "resolution notes present" behavior to express.
         - **parentId** (eq): a single case UUID; matches child cases of that
           case (the hierarchical major-case/child-case relationship).
+        - **taskSLABusinessElapsedPercent** (gte / lte): an integer 0-100.
+          Matches cases with at least one Task SLA record whose
+          businessElapsedPercent falls within the given bound(s) (both bounds
+          may be supplied together to express a range, e.g. gte 75 + lte 100
+          for "at risk or breached"). Only applied by the ServiceNow data
+          source (a Task SLA table join); filtering logic is confined to the
+          SN adapter.
 
     SearchCasesFilters:
       type: object
