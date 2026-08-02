@@ -15,7 +15,7 @@
 // under the License.
 
 import { Box, FormControl, MenuItem, Select, Typography } from "@wso2/oxygen-ui";
-import { useState, type JSX } from "react";
+import { type JSX } from "react";
 import type { BeDashboardListItem } from "@api/backend/types";
 import type { DashboardKey } from "@features/csm-dashboard/types/abtDashboard";
 import { useTeams } from "@features/csm-dashboard/api/useTeams";
@@ -25,29 +25,37 @@ interface AbtDashboardHeaderProps {
   onDashboardChange: (key: DashboardKey) => void;
   /** Every dashboard in the BE registry (GET /dashboards), for the switcher. */
   dashboardList: BeDashboardListItem[];
+  /** The currently selected team, controlled by the parent (URL-synced) —
+   * `undefined` when no team is selected, or when the current dashboard
+   * isn't `isTeamBased` (the parent never passes a stale team id through in
+   * that case). */
+  selectedTeamId: string | undefined;
+  onTeamChange: (teamId: string | undefined) => void;
 }
 
 /**
  * Dashboard header: title, the dashboard switcher, and (for a dashboard
  * flagged `isTeamBased`) a team selector sourced from `POST /teams/search`.
- * Team selection is UI state only today — it does not yet scope any
- * widget's data (see `Dashboard.isTeamBased` on the backend); wiring a
- * selected team into widget filters is a later increment. The earlier My
- * ABT / All customers toggle was removed entirely — ABT scoping was never
- * implemented and dashboards carry no other special behavior beyond which
- * one (and, for team-based ones, which team) is selected.
+ * Both the selected dashboard and the selected team are owned by the parent
+ * (`CsmDashboardPage`), which keeps them in sync with the URL so a specific
+ * dashboard/team view is shareable. Team selection is UI state only today —
+ * it does not yet scope any widget's data (see `Dashboard.isTeamBased` on
+ * the backend); wiring a selected team into widget filters is a later
+ * increment. The earlier My ABT / All customers toggle was removed
+ * entirely — ABT scoping was never implemented and dashboards carry no
+ * other special behavior beyond which one (and, for team-based ones, which
+ * team) is selected.
  */
 export default function AbtDashboardHeader({
   dashboardKey,
   onDashboardChange,
   dashboardList,
+  selectedTeamId,
+  onTeamChange,
 }: AbtDashboardHeaderProps): JSX.Element {
   const currentOption = dashboardList.find((o) => o.id === dashboardKey);
   const isTeamBased = currentOption?.isTeamBased ?? false;
 
-  const [selectedTeamId, setSelectedTeamId] = useState<string | undefined>(
-    undefined,
-  );
   const teams = useTeams(isTeamBased);
 
   return (
@@ -71,7 +79,7 @@ export default function AbtDashboardHeader({
           <FormControl size="small" sx={{ minWidth: 180 }}>
             <Select
               value={selectedTeamId ?? ""}
-              onChange={(e) => setSelectedTeamId(e.target.value || undefined)}
+              onChange={(e) => onTeamChange(e.target.value || undefined)}
               displayEmpty
               aria-label="Select team"
             >

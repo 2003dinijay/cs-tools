@@ -53,6 +53,8 @@ describe("AbtDashboardHeader", () => {
         dashboardKey="agents_pilot"
         onDashboardChange={vi.fn()}
         dashboardList={DASHBOARD_LIST}
+        selectedTeamId={undefined}
+        onTeamChange={vi.fn()}
       />,
     );
 
@@ -74,6 +76,8 @@ describe("AbtDashboardHeader", () => {
         dashboardKey="team_performance"
         onDashboardChange={vi.fn()}
         dashboardList={DASHBOARD_LIST}
+        selectedTeamId={undefined}
+        onTeamChange={vi.fn()}
       />,
     );
 
@@ -91,5 +95,29 @@ describe("AbtDashboardHeader", () => {
     ).toBeInTheDocument();
     expect(within(listbox).getByText("CS Operations")).toBeInTheDocument();
     expect(within(listbox).getByText("All teams")).toBeInTheDocument();
+  });
+
+  it("calls onTeamChange when a team is picked", async () => {
+    postMock.mockResolvedValue({
+      teams: [{ id: "cs_team_leads", name: "CS Team Leads" }],
+    });
+    const onTeamChange = vi.fn();
+
+    renderWithClient(
+      <AbtDashboardHeader
+        dashboardKey="team_performance"
+        onDashboardChange={vi.fn()}
+        dashboardList={DASHBOARD_LIST}
+        selectedTeamId={undefined}
+        onTeamChange={onTeamChange}
+      />,
+    );
+
+    const [teamSelect] = screen.getAllByRole("combobox");
+    fireEvent.mouseDown(teamSelect);
+    const listbox = await screen.findByRole("listbox");
+    fireEvent.click(await within(listbox).findByText("CS Team Leads"));
+
+    expect(onTeamChange).toHaveBeenCalledWith("cs_team_leads");
   });
 });
