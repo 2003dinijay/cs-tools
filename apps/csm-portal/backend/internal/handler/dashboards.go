@@ -25,19 +25,32 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
+// dashboardPieSliceView is one wedge of a Shape "pie" widget — see
+// dashboard.PieSlice. Filters is this slice's own criteria only (already
+// __current_user__-resolved), meant to be merged under the parent widget's
+// own (also resolved) Filters by the caller.
+type dashboardPieSliceView struct {
+	Label   string         `json:"label"`
+	Color   string         `json:"color,omitempty"`
+	Filters map[string]any `json:"filters"`
+}
+
 // dashboardWidgetView is a single widget's filter criteria and display
 // metadata, returned as part of GET /dashboards/{dashboardId}. The caller
 // resolves each widget's own data by issuing its own POST /{resourceType}s/search
 // request (see ResourceType) with Filters.
 type dashboardWidgetView struct {
-	WidgetID     string                 `json:"widgetId"`
-	DisplayName  string                 `json:"displayName"`
-	ResourceType dashboard.ResourceType `json:"resourceType"`
-	Shape        dashboard.Shape        `json:"shape"`
-	GridWidth    int                    `json:"gridWidth"`
-	Filters      map[string]any         `json:"filters"`
-	GroupBy      string                 `json:"groupBy,omitempty"`
-	ListLimit    int                    `json:"listLimit,omitempty"`
+	WidgetID     string                  `json:"widgetId"`
+	DisplayName  string                  `json:"displayName"`
+	Description  string                  `json:"description,omitempty"`
+	ResourceType dashboard.ResourceType  `json:"resourceType"`
+	Shape        dashboard.Shape         `json:"shape"`
+	GridWidth    int                     `json:"gridWidth"`
+	Filters      map[string]any          `json:"filters"`
+	GroupBy      string                  `json:"groupBy,omitempty"`
+	ListLimit    int                     `json:"listLimit,omitempty"`
+	Slices       []dashboardPieSliceView `json:"slices,omitempty"`
+	Section      string                  `json:"section,omitempty"`
 }
 
 // dashboardListItemView is a dashboard's list-level metadata, returned by
@@ -150,15 +163,29 @@ func (h *DashboardHandler) GetDashboardDetail(w http.ResponseWriter, r *http.Req
 
 	widgets := make([]dashboardWidgetView, 0, len(d.Widgets))
 	for _, tpl := range d.Widgets {
+		var slices []dashboardPieSliceView
+		if len(tpl.Slices) > 0 {
+			slices = make([]dashboardPieSliceView, 0, len(tpl.Slices))
+			for _, slice := range tpl.Slices {
+				slices = append(slices, dashboardPieSliceView{
+					Label:   slice.Label,
+					Color:   slice.Color,
+					Filters: dashboard.ResolveSliceFilters(slice, currentUserID),
+				})
+			}
+		}
 		widgets = append(widgets, dashboardWidgetView{
 			WidgetID:     tpl.ID,
 			DisplayName:  tpl.DisplayName,
+			Description:  tpl.Description,
 			ResourceType: tpl.ResourceType,
 			Shape:        tpl.Shape,
 			GridWidth:    tpl.GridWidth,
 			Filters:      dashboard.ResolveFilters(tpl, currentUserID),
 			GroupBy:      tpl.GroupBy,
 			ListLimit:    tpl.ListLimit,
+			Slices:       slices,
+			Section:      tpl.Section,
 		})
 	}
 

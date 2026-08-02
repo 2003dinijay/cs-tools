@@ -61,7 +61,12 @@ const testDashboardsConfigJSON = `[
   ]},
   {"id":"team_performance","displayName":"Team performance","targetTeam":"cs_team_leads","isTeamBased":true,"widgets":[
     {"id":"time_cards_pending_approval","displayName":"Time Cards Pending Approval","resourceType":"time_card","shape":"count","gridWidth":6,"filters":{"states":["pending"]}},
-    {"id":"team_open_cases","displayName":"Team Open P0/P1","resourceType":"case","shape":"count","gridWidth":6,"filters":{"severities":["catastrophic","critical"],"states":["open","work_in_progress"]}}
+    {"id":"team_open_cases","displayName":"Team Open P0/P1","resourceType":"case","shape":"count","gridWidth":6,"filters":{"severities":["catastrophic","critical"],"states":["open","work_in_progress"]}},
+    {"id":"cases_by_severity","displayName":"Cases by severity","description":"Share of active cases at each severity level.","resourceType":"case","shape":"pie","gridWidth":6,"filters":{"states":["open","work_in_progress"]},"slices":[
+      {"label":"Critical","color":"error","filters":{"severities":["critical"]}},
+      {"label":"Mine","filters":{"assignedUserIds":["__current_user__"]}}
+    ]},
+    {"id":"incident_wow","displayName":"Incident WOW","section":"SLA Violation","resourceType":"incident","shape":"count","gridWidth":6,"filters":{}}
   ]}
 ]`
 
@@ -505,6 +510,118 @@ func TestGetDashboardDetail(t *testing.T) {
 		}
 		if s, ok := priority.(string); !ok || s != "critical" {
 			t.Errorf("critical_vulns filters.priority = %v (%T), want string %q", priority, priority, "critical")
+		}
+	})
+
+	t.Run("team_performance's pie widget resolves description, slices, and per-slice current-user placeholders", func(t *testing.T) {
+		h := NewDashboardHandler(&mockEntityUserClient{})
+		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/team_performance", nil), "team_performance"))
+		w := httptest.NewRecorder()
+		h.GetDashboardDetail(w, r)
+
+		assertStatus(t, w, http.StatusOK)
+		body := w.Body.Bytes()
+		t.Logf("GET /dashboards/team_performance response: %s", body)
+
+		var result dashboardDetailView
+		if err := json.Unmarshal(body, &result); err != nil {
+			t.Fatalf("decode response body: %v; raw: %s", err, body)
+		}
+
+		byID := make(map[string]dashboardWidgetView)
+		for _, wd := range result.Widgets {
+			byID[wd.WidgetID] = wd
+		}
+		pie, ok := byID["cases_by_severity"]
+		if !ok {
+			t.Fatalf("missing widget %q in response", "cases_by_severity")
+		}
+		if pie.Description != "Share of active cases at each severity level." {
+			t.Errorf("cases_by_severity Description = %q, want the configured subtitle", pie.Description)
+		}
+		if len(pie.Slices) != 2 {
+			t.Fatalf("len(cases_by_severity.Slices) = %d, want 2", len(pie.Slices))
+		}
+
+		var critical, mine *dashboardPieSliceView
+		for i := range pie.Slices {
+			switch pie.Slices[i].Label {
+			case "Critical":
+				critical = &pie.Slices[i]
+			case "Mine":
+				mine = &pie.Slices[i]
+			}
+		}
+		if critical == nil {
+			t.Fatalf("missing the %q slice in cases_by_severity.Slices", "Critical")
+		}
+		if critical.Color != "error" {
+			t.Errorf("Critical slice Color = %q, want %q", critical.Color, "error")
+		}
+		if _, present := critical.Filters["states"]; present {
+			t.Errorf("Critical slice Filters must not carry the widget's own base filters, got %v", critical.Filters)
+		}
+
+		if mine == nil {
+			t.Fatalf("missing the %q slice in cases_by_severity.Slices", "Mine")
+		}
+		assigned, ok := mine.Filters["assignedUserIds"].([]any)
+		if !ok || len(assigned) != 1 || assigned[0] != resolvedCurrentUserID {
+			t.Errorf("Mine slice assignedUserIds = %v, want [%q] (resolved, not the raw placeholder)", mine.Filters["assignedUserIds"], resolvedCurrentUserID)
+		}
+
+		// Confirm the wire keys match the updated openapi.yaml schema.
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Fatalf("decode response body as raw keys: %v; raw: %s", err, body)
+		}
+		var rawWidgets []map[string]json.RawMessage
+		if err := json.Unmarshal(raw["widgets"], &rawWidgets); err != nil {
+			t.Fatalf("decode widgets as raw keys: %v; raw: %s", err, raw["widgets"])
+		}
+		var rawPie map[string]json.RawMessage
+		for _, obj := range rawWidgets {
+			var id string
+			if err := json.Unmarshal(obj["widgetId"], &id); err == nil && id == "cases_by_severity" {
+				rawPie = obj
+			}
+		}
+		if rawPie == nil {
+			t.Fatalf("cases_by_severity not found among raw widgets: %v", rawWidgets)
+		}
+		assertJSONKeysSuperset(t, rawPie, append(append([]string(nil), dashboardWidgetJSONKeys...), "description", "slices"), "cases_by_severity")
+	})
+
+	t.Run("team_performance's incident_wow widget carries its configured section, unset for widgets with no section", func(t *testing.T) {
+		h := NewDashboardHandler(&mockEntityUserClient{})
+		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/team_performance", nil), "team_performance"))
+		w := httptest.NewRecorder()
+		h.GetDashboardDetail(w, r)
+
+		assertStatus(t, w, http.StatusOK)
+		var result dashboardDetailView
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+			t.Fatalf("decode response body: %v; raw: %s", err, w.Body.Bytes())
+		}
+		byID := make(map[string]dashboardWidgetView)
+		for _, wd := range result.Widgets {
+			byID[wd.WidgetID] = wd
+		}
+
+		wow, ok := byID["incident_wow"]
+		if !ok {
+			t.Fatalf("missing widget %q in response", "incident_wow")
+		}
+		if wow.Section != "SLA Violation" {
+			t.Errorf("incident_wow.Section = %q, want %q", wow.Section, "SLA Violation")
+		}
+
+		teamOpenCases, ok := byID["team_open_cases"]
+		if !ok {
+			t.Fatalf("missing widget %q in response", "team_open_cases")
+		}
+		if teamOpenCases.Section != "" {
+			t.Errorf("team_open_cases.Section = %q, want empty (no section configured)", teamOpenCases.Section)
 		}
 	})
 

@@ -14,10 +14,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Card, Skeleton, Typography } from "@wso2/oxygen-ui";
+import { Box, Card, Divider, Skeleton, Typography } from "@wso2/oxygen-ui";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState, type JSX } from "react";
+import { Fragment, useState, type JSX } from "react";
 import { ApiQueryKeys } from "@constants/apiConstants";
+import type { BeDashboardWidget } from "@api/backend/types";
 import { useDashboard } from "@features/csm-dashboard/api/useDashboard";
 import DashboardWidgetTile from "@features/csm-dashboard/components/DashboardWidgetTile";
 import SectionCard from "@features/csm-dashboard/components/SectionCard";
@@ -25,6 +26,59 @@ import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
 
 /** Placeholder tile count while the dashboard detail is in flight. */
 const PILOT_TILE_COUNT = 3;
+
+/** 12-column grid, matching each widget's own `gridWidth`; on very small
+ * screens there's only room for 4 columns, so a wide widget there wraps to
+ * (at most) one extra row rather than overflowing. */
+const WIDGET_GRID_SX = {
+  display: "grid",
+  gap: 1.5,
+  gridTemplateColumns: {
+    xs: "repeat(4, minmax(0, 1fr))",
+    sm: "repeat(12, minmax(0, 1fr))",
+  },
+} as const;
+
+interface WidgetGroup {
+  /** `undefined` for the untitled/default group — every widget with no
+   * `section` set lands here, rendered exactly as before this field
+   * existed (no heading). */
+  section?: string;
+  widgets: BeDashboardWidget[];
+}
+
+/** Groups widgets by `section`, preserving the order each distinct section
+ * value (including the untitled default) first appears among `widgets` —
+ * see `BeDashboardWidget.section`. */
+function groupWidgetsBySection(widgets: BeDashboardWidget[]): WidgetGroup[] {
+  const groups: WidgetGroup[] = [];
+  const indexBySection = new Map<string | undefined, number>();
+  for (const widget of widgets) {
+    const key = widget.section || undefined;
+    let index = indexBySection.get(key);
+    if (index === undefined) {
+      index = groups.length;
+      indexBySection.set(key, index);
+      groups.push({ section: key, widgets: [] });
+    }
+    groups[index].widgets.push(widget);
+  }
+  return groups;
+}
+
+function widgetGridColumnSx(widget: BeDashboardWidget) {
+  // A list-shape widget renders a real table (4 rows, several columns) —
+  // its configured `gridWidth` was sized for the old compact text list, so
+  // it always spans the full row here regardless of that value.
+  return widget.shape === "list"
+    ? { gridColumn: "1 / -1" }
+    : {
+        gridColumn: {
+          xs: `span ${Math.min(widget.gridWidth, 4)}`,
+          sm: `span ${widget.gridWidth}`,
+        },
+      };
+}
 
 interface AgentsLandingPagePilotProps {
   /** Id of the dashboard to render (e.g. "agents_pilot"). */
@@ -82,55 +136,71 @@ export default function AgentsLandingPagePilot({
         <Typography variant="body2" color="text.secondary">
           Could not load the widget pilot.
         </Typography>
-      ) : (
-        <Box
-          sx={{
-            display: "grid",
-            gap: 1.5,
-            // 12-column grid, matching each widget's own `gridWidth`; on very
-            // small screens there's only room for 4 columns, so a wide widget
-            // there wraps to (at most) one extra row rather than overflowing.
-            gridTemplateColumns: {
-              xs: "repeat(4, minmax(0, 1fr))",
-              sm: "repeat(12, minmax(0, 1fr))",
-            },
-          }}
-        >
-          {isLoading || isRefreshing
-            ? Array.from({ length: PILOT_TILE_COUNT }, (_, i) => (
-                <Card key={i} variant="outlined" sx={{ p: 1.75, gridColumn: "span 4" }}>
-                  <Skeleton variant="rounded" height={48} />
-                </Card>
-              ))
-            : (data?.widgets ?? []).map((widget) => (
-                <Box
-                  key={widget.widgetId}
-                  sx={
-                    // A list-shape widget renders a real table (4 rows,
-                    // several columns) — its configured `gridWidth` was
-                    // sized for the old compact text list, so it always
-                    // spans the full row here regardless of that value.
-                    widget.shape === "list"
-                      ? { gridColumn: "1 / -1" }
-                      : {
-                          gridColumn: {
-                            xs: `span ${Math.min(widget.gridWidth, 4)}`,
-                            sm: `span ${widget.gridWidth}`,
-                          },
-                        }
-                  }
-                >
-                  <DashboardWidgetTile
-                    widgetId={widget.widgetId}
-                    displayName={widget.displayName}
-                    resourceType={widget.resourceType}
-                    shape={widget.shape}
-                    filters={widget.filters}
-                    listLimit={widget.listLimit}
-                  />
-                </Box>
-              ))}
+      ) : isLoading || isRefreshing ? (
+        <Box sx={WIDGET_GRID_SX}>
+          {Array.from({ length: PILOT_TILE_COUNT }, (_, i) => (
+            <Card key={i} variant="outlined" sx={{ p: 1.75, gridColumn: "span 4" }}>
+              <Skeleton variant="rounded" height={48} />
+            </Card>
+          ))}
         </Box>
+      ) : (
+        (() => {
+          const widgets = data?.widgets ?? [];
+          const renderTile = (widget: BeDashboardWidget) => {
+            return (
+              <Box key={widget.widgetId} sx={widgetGridColumnSx(widget)}>
+                <DashboardWidgetTile
+                  widgetId={widget.widgetId}
+                  displayName={widget.displayName}
+                  description={widget.description}
+                  resourceType={widget.resourceType}
+                  shape={widget.shape}
+                  filters={widget.filters}
+                  listLimit={widget.listLimit}
+                  slices={widget.slices}
+                />
+              </Box>
+            );
+          };
+
+          const groups = groupWidgetsBySection(widgets);
+
+          return (
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
+              {groups.map((group, i) => {
+                // Chart-shaped widgets (pie/bar) are visually grouped into
+                // their own row below this group's count/list tiles, rather
+                // than sharing one undifferentiated grid with them.
+                const mainWidgets = group.widgets.filter((w) => w.shape !== "pie" && w.shape !== "bar");
+                const chartWidgets = group.widgets.filter((w) => w.shape === "pie" || w.shape === "bar");
+                if (mainWidgets.length === 0 && chartWidgets.length === 0) return null;
+
+                return (
+                  <Fragment key={group.section ?? `__default_${i}`}>
+                    {i > 0 && <Divider />}
+                    <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+                      {group.section && (
+                        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                          {group.section}
+                        </Typography>
+                      )}
+                      {mainWidgets.length > 0 && (
+                        <Box sx={WIDGET_GRID_SX}>{mainWidgets.map(renderTile)}</Box>
+                      )}
+                      {chartWidgets.length > 0 && (
+                        <>
+                          {mainWidgets.length > 0 && <Divider sx={{ my: 0.5 }} />}
+                          <Box sx={WIDGET_GRID_SX}>{chartWidgets.map(renderTile)}</Box>
+                        </>
+                      )}
+                    </Box>
+                  </Fragment>
+                );
+              })}
+            </Box>
+          );
+        })()
       )}
     </SectionCard>
   );

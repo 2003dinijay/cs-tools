@@ -54,9 +54,25 @@ type Shape string
 const (
 	ShapeCount Shape = "count" // single resolved number
 	ShapeList  Shape = "list"  // top-N matching records
-	ShapePie   Shape = "pie"   // grouped counts — NOT resolvable by any /search endpoint today (no aggregate endpoint exists anywhere in the stack); keep the const so a future dashboard doesn't need a schema migration, but do not wire any rendering logic for it beyond accepting the value
-	ShapeBar   Shape = "bar"   // same caveat as ShapePie
+	ShapePie   Shape = "pie"   // one search per Slices entry, each resolved via its own total — see PieSlice
+	ShapeBar   Shape = "bar"   // same resolution as ShapePie (one search per Slices entry); differs only in how the frontend renders the resolved data
 )
+
+// PieSlice is one wedge of a Shape "pie" widget. The caller resolves its
+// value by issuing that widget's own ResourceType's /search with Filters
+// merged under the widget's own base Filters (this slice's keys win on
+// conflict) and pagination.limit=1, reading total off the response — the
+// exact same mechanism Shape "count" uses, just once per slice.
+type PieSlice struct {
+	Label string `json:"label"`
+	// Color is a palette key ("primary", "secondary", "success", "error",
+	// "info", "warning") the frontend already uses elsewhere in this system
+	// (see WidgetTemplate's own icon color convention on the frontend) — not
+	// validated here, forwarded verbatim. Falls back to a fixed rotation over
+	// the same palette on the frontend if omitted.
+	Color   string         `json:"color,omitempty"`
+	Filters map[string]any `json:"filters"`
+}
 
 // WidgetTemplate is resource-agnostic: Filters is opaque JSON, forwarded
 // verbatim (after __current_user__ substitution) as the filters object of
@@ -64,14 +80,27 @@ const (
 // shape is {filters: {...}, pagination: {...}}). The BE never interprets
 // filter contents beyond substituting the current-user placeholder.
 type WidgetTemplate struct {
-	ID           string         `json:"id"`
-	DisplayName  string         `json:"displayName"`
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
+	// Description is an explanatory subtitle shown under DisplayName —
+	// config-owned text, not hardcoded per ResourceType/Shape on the
+	// frontend.
+	Description  string         `json:"description,omitempty"`
 	ResourceType ResourceType   `json:"resourceType"`
 	Shape        Shape          `json:"shape"`
 	GridWidth    int            `json:"gridWidth"` // 1-12, CSS grid columns out of 12
 	Filters      map[string]any `json:"filters"`
-	GroupBy      string         `json:"groupBy,omitempty"`   // only meaningful for Shape pie/bar — see the caveat on those consts; unused by every widget below
+	GroupBy      string         `json:"groupBy,omitempty"`   // unused
 	ListLimit    int            `json:"listLimit,omitempty"` // only meaningful for Shape list; how many records to show
+	Slices       []PieSlice     `json:"slices,omitempty"`    // only meaningful for Shape pie/bar; one search per slice
+	// Section groups widgets sharing the same (non-empty) value under a
+	// titled sub-section within the dashboard, in the order that value
+	// first appears among the dashboard's widgets — e.g. a handful of
+	// "count" widgets all set to Section: "SLA Violation" render together
+	// under that heading, separately from the dashboard's other widgets.
+	// Widgets with no Section (the common case) render in one untitled
+	// group, exactly as before this field existed.
+	Section string `json:"section,omitempty"`
 }
 
 // Dashboard is a single dashboard's metadata plus its widget templates.
@@ -136,6 +165,18 @@ func DashboardByID(id string) (Dashboard, bool) {
 // userIds). It does not mutate tpl.Filters.
 func ResolveFilters(tpl WidgetTemplate, currentUserID string) map[string]any {
 	return substituteCurrentUser(tpl.Filters, currentUserID).(map[string]any)
+}
+
+// ResolveSliceFilters is ResolveFilters' counterpart for one Shape "pie"
+// slice: substitutes CurrentUserPlaceholder in slice.Filters only. It
+// deliberately does NOT merge in the widget's own base Filters — the caller
+// (frontend) merges this slice's filters under the widget's own resolved
+// Filters itself (this slice's keys win on conflict), the same way it
+// already merges any other per-slice override. Sending the two separately,
+// rather than one pre-merged object per slice, avoids repeating the base
+// filters' JSON in every slice over the wire. Does not mutate slice.Filters.
+func ResolveSliceFilters(slice PieSlice, currentUserID string) map[string]any {
+	return substituteCurrentUser(slice.Filters, currentUserID).(map[string]any)
 }
 
 func substituteCurrentUser(v any, currentUserID string) any {
