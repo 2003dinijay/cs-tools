@@ -160,7 +160,7 @@ export default function ProductVulnerabilitiesTab(): JSX.Element {
                 <TableRow>
                   <TableCell colSpan={6} align="center">
                     <QueryErrorState
-                      message={error instanceof Error ? error.message : "Failed to load vulnerabilities."}
+                      message={error instanceof Error && error.message.trim() ? error.message : "Failed to load vulnerabilities."}
                       error={error}
                     />
                   </TableCell>

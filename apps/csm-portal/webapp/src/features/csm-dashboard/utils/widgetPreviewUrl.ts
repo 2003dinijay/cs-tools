@@ -26,19 +26,6 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === "string");
 }
 
-/** Values this app's dashboard widget filters never actually take today
- * (every field seen in `widgetResourceConfig.ts`'s translators is a flat
- * string array) — kept only as a lossless fallback for a filter shape a
- * future widget config might introduce. */
-function looksLikeJsonLiteral(raw: string): boolean {
-  return (
-    raw === "true" ||
-    raw === "false" ||
-    /^[{[]/.test(raw) ||
-    /^-?\d+(\.\d+)?$/.test(raw)
-  );
-}
-
 /**
  * Builds the URL a dashboard widget tile's "View more" link points at — a
  * real, bookmarkable/shareable/refresh-safe URL (no router state): the
@@ -73,8 +60,6 @@ export function buildWidgetPreviewHref(params: {
       q.set(key, masked.join(","));
     } else if (typeof value === "string") {
       q.set(key, value === params.currentUserId ? CURRENT_USER_SENTINEL : value);
-    } else if (value !== undefined && value !== null) {
-      q.set(key, JSON.stringify(value));
     }
   }
   return `/dashboard/${params.previewSlug}?${q.toString()}`;
@@ -88,9 +73,10 @@ export interface ParsedWidgetPreviewFilters {
 }
 
 /** Parses every non-reserved (`w`/`n`) query param back into the widget's
- * filters object — the inverse of `buildWidgetPreviewHref`. Never throws;
- * an individual malformed value is simply dropped rather than failing the
- * whole page. */
+ * filters object — the inverse of `buildWidgetPreviewHref`. Every value is
+ * decoded as a comma-split string array (matching how every current dashboard
+ * widget filter field is shaped — see `widgetResourceConfig.ts`'s
+ * translators), so this never throws. */
 export function parseWidgetPreviewFilters(
   searchParams: URLSearchParams,
 ): ParsedWidgetPreviewFilters {
@@ -99,15 +85,6 @@ export function parseWidgetPreviewFilters(
 
   for (const [key, raw] of searchParams.entries()) {
     if (RESERVED_PARAMS.has(key)) continue;
-
-    if (looksLikeJsonLiteral(raw)) {
-      try {
-        filters[key] = JSON.parse(raw);
-        continue;
-      } catch {
-        // Not actually valid JSON — fall through and treat as a plain value.
-      }
-    }
 
     const values = raw.split(",");
     if (values.includes(CURRENT_USER_SENTINEL)) needsCurrentUser = true;

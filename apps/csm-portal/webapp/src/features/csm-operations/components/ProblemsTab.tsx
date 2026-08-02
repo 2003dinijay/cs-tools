@@ -138,7 +138,7 @@ export default function ProblemsTab(): JSX.Element {
                 <TableRow>
                   <TableCell colSpan={5} align="center">
                     <QueryErrorState
-                      message={error instanceof Error ? error.message : "Failed to load problems."}
+                      message={error instanceof Error && error.message.trim() ? error.message : "Failed to load problems."}
                       error={error}
                     />
                   </TableCell>

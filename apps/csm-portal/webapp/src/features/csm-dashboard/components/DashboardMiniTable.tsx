@@ -28,8 +28,10 @@ export interface DashboardMiniTableRow {
   key: string;
   /** Row's own detail page — the row is a real link (not a click handler),
    * same rationale as `CasesList`: supports cmd/middle-click and exposes a
-   * copyable URL. */
-  href: string;
+   * copyable URL. Omit when the row's id is unknown (e.g. a nullable `id`
+   * field on the search response) — the row then renders inert rather than
+   * linking to a broken `/…/undefined` URL. */
+  href?: string;
   cells: ReactNode[];
 }
 
@@ -123,8 +125,7 @@ export default function DashboardMiniTable({
         rows.map((row) => (
           <Box
             key={row.key}
-            component={RouterLink}
-            to={row.href}
+            {...(row.href ? { component: RouterLink, to: row.href } : {})}
             sx={{
               gridColumn: "1 / -1",
               display: "grid",
@@ -135,15 +136,17 @@ export default function DashboardMiniTable({
               py: 1,
               borderBottom: 1,
               borderColor: "divider",
-              cursor: "pointer",
               color: "inherit",
               textDecoration: "none",
-              "&:hover": { bgcolor: "action.hover" },
-              "&:focus-visible": {
-                outline: `2px solid ${theme.palette.primary.main}`,
-                outlineOffset: -2,
-              },
               "&:last-of-type": { borderBottom: 0 },
+              ...(row.href && {
+                cursor: "pointer",
+                "&:hover": { bgcolor: "action.hover" },
+                "&:focus-visible": {
+                  outline: `2px solid ${theme.palette.primary.main}`,
+                  outlineOffset: -2,
+                },
+              }),
             }}
           >
             {row.cells.map((cell, i) => (

@@ -117,7 +117,7 @@ function IncidentWidgetList({ items, isLoading }: WidgetListRendererProps): JSX.
       ]}
       rows={incidents.map((incident, i) => ({
         key: incident.id ?? `incident-${i}`,
-        href: `/operations/incidents/${incident.id}`,
+        href: incident.id ? `/operations/incidents/${incident.id}` : undefined,
         cells: [
           <Typography key="number" variant="body2" noWrap>
             {incident.number || "—"}
@@ -175,7 +175,7 @@ function ChangeRequestWidgetList({ items, isLoading }: WidgetListRendererProps):
       ]}
       rows={changeRequests.map((cr, i) => ({
         key: cr.id ?? `cr-${i}`,
-        href: `/operations/change-requests/${cr.id}`,
+        href: cr.id ? `/operations/change-requests/${cr.id}` : undefined,
         cells: [
           <Typography key="number" variant="body2" noWrap>
             {cr.number || "—"}
@@ -232,7 +232,7 @@ function ProblemWidgetList({ items, isLoading }: WidgetListRendererProps): JSX.E
       ]}
       rows={problems.map((problem, i) => ({
         key: problem.id ?? `problem-${i}`,
-        href: `/operations/problems/${problem.id}`,
+        href: problem.id ? `/operations/problems/${problem.id}` : undefined,
         cells: [
           <Typography key="number" variant="body2" noWrap>
             {problem.number || "—"}

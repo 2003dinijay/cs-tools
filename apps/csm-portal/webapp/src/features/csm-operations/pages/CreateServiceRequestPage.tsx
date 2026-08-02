@@ -411,7 +411,7 @@ export default function CreateServiceRequestPage(): JSX.Element {
                 </Box>
               ) : variables.isError ? (
                 <QueryErrorState
-                  message={variables.error instanceof Error ? variables.error.message : "Could not load the request form for this catalog item."}
+                  message={variables.error instanceof Error && variables.error.message.trim() ? variables.error.message : "Could not load the request form for this catalog item."}
                   error={variables.error}
                 />
               ) : renderableVars.length === 0 ? (

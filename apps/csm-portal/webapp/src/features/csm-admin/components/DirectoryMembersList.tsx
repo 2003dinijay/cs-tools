@@ -118,7 +118,7 @@ export default function DirectoryMembersList({
               <TableRow>
                 <TableCell colSpan={COLUMN_COUNT} align="center">
                   <QueryErrorState
-                    message={error instanceof Error ? error.message : "Failed to load members."}
+                    message={error instanceof Error && error.message.trim() ? error.message : "Failed to load members."}
                     error={error}
                   />
                 </TableCell>

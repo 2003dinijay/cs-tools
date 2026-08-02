@@ -1445,7 +1445,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           Back
         </Button>
         <QueryErrorState
-          message={error instanceof Error ? error.message : "Could not load this case."}
+          message={error instanceof Error && error.message.trim() ? error.message : "Could not load this case."}
           error={error}
         />
       </Box>

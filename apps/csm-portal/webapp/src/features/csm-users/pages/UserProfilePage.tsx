@@ -390,7 +390,7 @@ export default function UserProfilePage(): JSX.Element {
       <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
         <BackButton onClick={() => navigate(-1)} />
         <QueryErrorState
-          message={error instanceof Error ? error.message : "Failed to load user."}
+          message={error instanceof Error && error.message.trim() ? error.message : "Failed to load user."}
           error={error}
         />
       </Box>
