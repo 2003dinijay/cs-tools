@@ -70,8 +70,6 @@ export default function AgentsLandingPagePilot({
 
   return (
     <SectionCard
-      title="Widget pilot"
-      subtitle="Config-driven dashboard widgets (preview)"
       action={
         <RefreshButton
           onRefresh={() => void handleRefresh()}

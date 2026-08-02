@@ -19,9 +19,11 @@ import { ArrowRight, Info } from "@wso2/oxygen-ui-icons-react";
 import type { JSX, ReactNode } from "react";
 import { Link as RouterLink } from "react-router";
 import type { BeWidgetResourceType, BeWidgetShape } from "@api/backend/types";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useWidgetData } from "@features/csm-dashboard/api/useWidgetData";
 import { WIDGET_RESOURCE_CONFIG } from "@features/csm-dashboard/config/widgetResourceConfig";
 import { WIDGET_LIST_RENDERERS } from "@features/csm-dashboard/config/widgetListConfig";
+import { buildWidgetPreviewHref } from "@features/csm-dashboard/utils/widgetPreviewUrl";
 
 interface DashboardWidgetTileProps {
   widgetId: string;
@@ -29,7 +31,9 @@ interface DashboardWidgetTileProps {
   resourceType: BeWidgetResourceType;
   shape: BeWidgetShape;
   filters: Record<string, unknown>;
-  /** Only meaningful for shape "list"; how many rows to render. */
+  /** Only meaningful for shape "list"; how many rows to render. Defaults to
+   * 4 (see useWidgetData's DEFAULT_LIST_LIMIT) — set explicitly per-widget
+   * via the backend's DASHBOARDS_CONFIG, not overridden here. */
   listLimit?: number;
 }
 
@@ -40,12 +44,14 @@ interface DashboardWidgetTileProps {
  * `shape: "list"` renders that resource type's own real table (see
  * `widgetListConfig.tsx` — e.g. cases render through the same `CasesList`
  * the Cases tab itself uses), capped at `listLimit`, with a "View more" link
- * through to that resource's own tab with the widget's filters translated
- * into that tab's own URL filter scheme (see `widgetResourceConfig.ts`).
+ * to that widget's own preview page (`DashboardWidgetPreviewPage`, more rows,
+ * same table) — not directly to the resource's own tab (that's "View all",
+ * one hop further, via `widgetResourceConfig.ts`'s `buildHref`).
  *
- * `shape: "count"` tiles are themselves one big link to that same
- * destination; `shape: "list"` tiles can't be (their rows and "View more"
- * need their own nested links), so only they get a plain, non-link `Card`.
+ * `shape: "count"` tiles are themselves one big link straight to the
+ * resource's own tab; `shape: "list"` tiles can't be (their rows and "View
+ * more" need their own nested links), so only they get a plain, non-link
+ * `Card`.
  */
 export default function DashboardWidgetTile({
   widgetId,
@@ -56,6 +62,7 @@ export default function DashboardWidgetTile({
   listLimit,
 }: DashboardWidgetTileProps): JSX.Element {
   const theme = useTheme();
+  const { user } = useCurrentUser();
   const { data, isLoading, isError } = useWidgetData(
     widgetId,
     resourceType,
@@ -157,7 +164,13 @@ export default function DashboardWidgetTile({
               <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 1 }}>
                 <Button
                   component={RouterLink}
-                  to={href}
+                  to={buildWidgetPreviewHref({
+                    previewSlug: config.previewSlug,
+                    widgetId,
+                    displayName,
+                    filters,
+                    currentUserId: user?.id,
+                  })}
                   size="small"
                   variant="text"
                   endIcon={<ArrowRight size={14} />}

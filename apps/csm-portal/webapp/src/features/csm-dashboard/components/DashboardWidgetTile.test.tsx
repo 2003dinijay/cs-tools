@@ -32,6 +32,13 @@ vi.mock("@api/backend/client", () => ({
 vi.mock("@config/apiConfig", () => ({
   apiConfig: { backendUrl: "https://example.test" },
 }));
+vi.mock("@context/current-user/CurrentUserContext", () => ({
+  useCurrentUser: () => ({
+    user: { id: "11111111-aaaa-bbbb-cccc-000000000001" },
+    isLoading: false,
+    isError: false,
+  }),
+}));
 
 import DashboardWidgetTile from "@features/csm-dashboard/components/DashboardWidgetTile";
 
@@ -185,7 +192,44 @@ describe("DashboardWidgetTile", () => {
     );
 
     const viewMoreLink = await screen.findByRole("link", { name: /view more/i });
-    expect(viewMoreLink.getAttribute("href")).toMatch(/^\/cases/);
+    const href = viewMoreLink.getAttribute("href") ?? "";
+    // Goes to the widget's own preview page (real, bookmarkable URL — see
+    // widgetPreviewUrl.ts), not straight to the resource's own tab.
+    expect(href.startsWith("/dashboard/cases?")).toBe(true);
+    const params = new URLSearchParams(href.split("?")[1]);
+    expect(params.get("w")).toBe("my_critical_open_2");
+    expect(params.get("n")).toBe("My Critical & High Cases");
+    expect(params.get("f")).toBeNull();
+  });
+
+  it("masks the signed-in user's own id in the 'View more' link's filter query params", async () => {
+    postMock.mockResolvedValue({
+      total: 6,
+      cases: [{ id: "11111111-1111-1111-1111-111111111111", number: "CS-1", subject: "Disk full", state: "open" }],
+      limit: 5,
+      offset: 0,
+      hasMore: true,
+    });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="my_cases"
+        displayName="My Cases"
+        resourceType="case"
+        shape="list"
+        // "11111111-aaaa-bbbb-cccc-000000000001" is the mocked signed-in
+        // user's own id (see the CurrentUserContext mock above) — it must
+        // never appear verbatim in the resulting URL.
+        filters={{ assignedUserIds: ["11111111-aaaa-bbbb-cccc-000000000001"] }}
+        listLimit={5}
+      />,
+    );
+
+    const viewMoreLink = await screen.findByRole("link", { name: /view more/i });
+    const href = viewMoreLink.getAttribute("href") ?? "";
+    expect(href).not.toContain("11111111-aaaa-bbbb-cccc-000000000001");
+    const params = new URLSearchParams(href.split("?")[1]);
+    expect(params.get("assignedUserIds")).toBe("@me");
   });
 
   it("navigates to /cases with translated filters when a case-resource tile is clicked", async () => {
