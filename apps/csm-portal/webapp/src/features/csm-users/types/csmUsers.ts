@@ -94,19 +94,20 @@ export interface UserTeamRef {
 
 /**
  * One project-contact row for an external user, reported as stored rather
- * than as filtered. The backing access rule grants access only when the
- * row's email matches the login exactly AND a contact record is linked; a
- * row failing either test makes the project, and every case on it, silently
- * invisible to that user — {@link grantsCaseAccess} is the verdict, the rest
- * of the fields are the reasons.
+ * than as filtered. A row with no linked contact record makes the project,
+ * and every case on it, silently invisible to that user —
+ * {@link grantsCaseAccess} is the verdict, mirroring
+ * {@link contactRecordPresent} directly (deliberately not the stricter
+ * email-match rule the live access check enforces, since that only diverges
+ * for integration/system accounts).
  */
 export interface UserProjectAccess {
   projectId: string;
   projectName: string;
+  projectKey: string;
   contactEmail: string;
   contactRecordPresent: boolean;
   contactRecordEmail?: string;
-  emailMatchesLogin: boolean;
   registrationState?: string;
   notificationsEnabled?: boolean;
   roles?: string[];

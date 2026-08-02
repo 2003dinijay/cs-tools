@@ -6071,16 +6071,19 @@ components:
     UserProjectAccess:
       type: object
       description: >
-        One project-contact row for a user, reported as stored rather than as filtered. The
-        backing access rule grants access only when the row's email matches the login exactly
-        AND a contact record is linked; rows failing either test make the project, and every
-        case on it, silently invisible to that user.
-      required: [projectId, projectName, contactEmail, contactRecordPresent, emailMatchesLogin, grantsCaseAccess]
+        One project-contact row for a user, reported as stored rather than as filtered. A
+        row with no linked contact record makes the project, and every case on it, silently
+        invisible to that user. grantsCaseAccess mirrors contactRecordPresent directly --
+        deliberately not the stricter email-match rule the live access check enforces, since
+        that only diverges for integration/system accounts.
+      required: [projectId, projectName, projectKey, contactEmail, contactRecordPresent, grantsCaseAccess]
       properties:
         projectId:
           type: string
           format: uuid
         projectName:
+          type: string
+        projectKey:
           type: string
         contactEmail:
           type: string
@@ -6088,8 +6091,6 @@ components:
           type: boolean
         contactRecordEmail:
           type: string
-        emailMatchesLogin:
-          type: boolean
         registrationState:
           type: string
         notificationsEnabled:

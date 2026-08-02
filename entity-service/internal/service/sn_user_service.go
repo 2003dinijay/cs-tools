@@ -140,10 +140,10 @@ type snProjectContactRowsResponse struct {
 type snProjectContactRow struct {
 	ProjectID              string   `json:"projectId"`
 	ProjectName            string   `json:"projectName"`
+	ProjectKey             string   `json:"projectKey"`
 	ContactEmail           string   `json:"contactEmail"`
 	CustomerContactPresent bool     `json:"customerContactPresent"`
 	CustomerContactEmail   string   `json:"customerContactEmail"`
-	EmailMatchesLogin      bool     `json:"emailMatchesLogin"`
 	RegistrationState      string   `json:"registrationState"`
 	NotificationsEnabled   bool     `json:"notificationsEnabled"`
 	Roles                  []string `json:"roles"`
@@ -549,10 +549,10 @@ func (s *snUserService) resolveProjectAccess(
 		access = append(access, domain.UserProjectAccess{
 			ProjectID:            sysidToUUID(c.ProjectID),
 			ProjectName:          c.ProjectName,
+			ProjectKey:           c.ProjectKey,
 			ContactEmail:         c.ContactEmail,
 			ContactRecordPresent: c.CustomerContactPresent,
 			ContactRecordEmail:   c.CustomerContactEmail,
-			EmailMatchesLogin:    c.EmailMatchesLogin,
 			RegistrationState:    c.RegistrationState,
 			NotificationsEnabled: c.NotificationsEnabled,
 			Roles:                c.Roles,
