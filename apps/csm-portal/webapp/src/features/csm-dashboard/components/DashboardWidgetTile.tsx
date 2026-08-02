@@ -14,7 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Card, Skeleton, Typography } from "@wso2/oxygen-ui";
+import { Box, Card, Skeleton, Tooltip, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
+import { Info } from "@wso2/oxygen-ui-icons-react";
 import type { JSX } from "react";
 import { Link as RouterLink } from "react-router";
 import type { BeWidgetResourceType, BeWidgetShape } from "@api/backend/types";
@@ -47,6 +48,7 @@ export default function DashboardWidgetTile({
   filters,
   listLimit,
 }: DashboardWidgetTileProps): JSX.Element {
+  const theme = useTheme();
   const { data, isLoading, isError } = useWidgetData(
     widgetId,
     resourceType,
@@ -73,6 +75,7 @@ export default function DashboardWidgetTile({
   }
 
   const href = config.buildHref(filters);
+  const Icon = config.icon;
 
   return (
     <Card
@@ -80,17 +83,40 @@ export default function DashboardWidgetTile({
       component={RouterLink}
       to={href}
       sx={{
+        position: "relative",
         p: 1.75,
         display: "block",
         height: "100%",
         cursor: "pointer",
         color: "inherit",
         textDecoration: "none",
-        transition: "background-color 0.15s ease",
-        "&:hover": { bgcolor: "action.hover" },
+        transition: "box-shadow 0.2s ease, transform 0.15s ease",
+        "&:hover": {
+          boxShadow: `0 0 0 1px ${theme.palette.primary.main}, 0 4px 16px rgba(0,0,0,0.12)`,
+          transform: "translateY(-2px)",
+        },
         "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: -2 },
       }}
     >
+      {/* Tooltip copy is intentionally empty until the per-widget messages
+          are finalized — the icon renders now so the layout/interaction is
+          in place ahead of that content. */}
+      <Tooltip title="">
+        <Box
+          component="span"
+          sx={{
+            position: "absolute",
+            top: 8,
+            right: 8,
+            zIndex: 1,
+            display: "inline-flex",
+            color: "text.secondary",
+          }}
+        >
+          <Info size={14} />
+        </Box>
+      </Tooltip>
+
       {isLoading ? (
         <Skeleton variant="rounded" height={48} />
       ) : isError ? (
@@ -98,29 +124,46 @@ export default function DashboardWidgetTile({
           Could not load this widget.
         </Typography>
       ) : (
-        <>
-          <Typography variant="caption" color="text.secondary">
-            {displayName}
-          </Typography>
-          {shape === "list" ? (
-            <WidgetListBody
-              items={data?.items ?? []}
-              limit={listLimit ?? 5}
-              resourceType={resourceType}
-            />
-          ) : shape === "count" ? (
-            <Typography variant="h5" sx={{ mt: 0.5 }}>
-              {data?.total ?? 0}
+        <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.25 }}>
+          <Box
+            sx={{
+              p: 0.75,
+              mt: 0.25,
+              borderRadius: "50%",
+              bgcolor: alpha(theme.palette[config.iconColor].light, 0.1),
+              color: theme.palette[config.iconColor].light,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+            }}
+          >
+            <Icon size={16} />
+          </Box>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography variant="caption" color="text.secondary">
+              {displayName}
             </Typography>
-          ) : (
-            // pie/bar: no aggregate endpoint exists anywhere in the stack
-            // today, so there is nothing to resolve or render yet — see
-            // `BeWidgetShape`.
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-              Not yet supported.
-            </Typography>
-          )}
-        </>
+            {shape === "list" ? (
+              <WidgetListBody
+                items={data?.items ?? []}
+                limit={listLimit ?? 5}
+                resourceType={resourceType}
+              />
+            ) : shape === "count" ? (
+              <Typography variant="h5" sx={{ mt: 0.5 }}>
+                {data?.total ?? 0}
+              </Typography>
+            ) : (
+              // pie/bar: no aggregate endpoint exists anywhere in the stack
+              // today, so there is nothing to resolve or render yet — see
+              // `BeWidgetShape`.
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                Not yet supported.
+              </Typography>
+            )}
+          </Box>
+        </Box>
       )}
     </Card>
   );

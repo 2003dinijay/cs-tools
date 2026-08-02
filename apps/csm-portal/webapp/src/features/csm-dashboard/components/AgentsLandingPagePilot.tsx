@@ -15,7 +15,9 @@
 // under the License.
 
 import { Box, Card, Skeleton, Typography } from "@wso2/oxygen-ui";
-import type { JSX } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useState, type JSX } from "react";
+import { ApiQueryKeys } from "@constants/apiConstants";
 import { useDashboard } from "@features/csm-dashboard/api/useDashboard";
 import DashboardWidgetTile from "@features/csm-dashboard/components/DashboardWidgetTile";
 import SectionCard from "@features/csm-dashboard/components/SectionCard";
@@ -42,8 +44,29 @@ interface AgentsLandingPagePilotProps {
 export default function AgentsLandingPagePilot({
   dashboardId,
 }: AgentsLandingPagePilotProps): JSX.Element {
+  const queryClient = useQueryClient();
   const { data, isLoading, isError, isFetching, refetch } =
     useDashboard(dashboardId);
+  // Separate from `isFetching` (which only covers the dashboard's own
+  // metadata refetch): each tile resolves its own count/list data via its
+  // own `useWidgetData` query, so a "refresh" click has to also invalidate
+  // those — tracked here so the skeleton grid stays up across the whole
+  // round trip, not just the metadata half of it.
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleRefresh = async (): Promise<void> => {
+    setIsRefreshing(true);
+    try {
+      await Promise.all([
+        refetch(),
+        queryClient.invalidateQueries({
+          queryKey: [ApiQueryKeys.CSM_DASHBOARD_WIDGET_DATA],
+        }),
+      ]);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   return (
     <SectionCard
@@ -51,8 +74,8 @@ export default function AgentsLandingPagePilot({
       subtitle="Config-driven dashboard widgets (preview)"
       action={
         <RefreshButton
-          onRefresh={() => void refetch()}
-          isFetching={isFetching}
+          onRefresh={() => void handleRefresh()}
+          isFetching={isFetching || isRefreshing}
           label="Refresh widget pilot"
         />
       }
@@ -75,7 +98,7 @@ export default function AgentsLandingPagePilot({
             },
           }}
         >
-          {isLoading
+          {isLoading || isRefreshing
             ? Array.from({ length: PILOT_TILE_COUNT }, (_, i) => (
                 <Card key={i} variant="outlined" sx={{ p: 1.75, gridColumn: "span 4" }}>
                   <Skeleton variant="rounded" height={48} />
