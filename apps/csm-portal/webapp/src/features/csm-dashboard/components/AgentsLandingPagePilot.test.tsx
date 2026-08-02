@@ -188,4 +188,51 @@ describe("AgentsLandingPagePilot", () => {
     await waitFor(() => expect(postMock).toHaveBeenCalledTimes(6));
     expect(screen.getByText("My Patches")).toBeInTheDocument();
   });
+
+  it("groups widgets sharing a `section` under a titled heading, separate from unsectioned widgets", async () => {
+    getMock.mockResolvedValue({
+      id: "team_performance",
+      displayName: "Team performance",
+      isDefault: false,
+      widgets: [
+        {
+          widgetId: "team_open_cases",
+          displayName: "Team Open P0/P1",
+          resourceType: "case",
+          shape: "count",
+          gridWidth: 6,
+          filters: {},
+        },
+        {
+          widgetId: "incident_wow",
+          displayName: "Incident WOW",
+          section: "SLA Violation",
+          resourceType: "case",
+          shape: "count",
+          gridWidth: 6,
+          filters: {},
+        },
+        {
+          widgetId: "query_wow",
+          displayName: "Query WOW",
+          section: "SLA Violation",
+          resourceType: "case",
+          shape: "count",
+          gridWidth: 6,
+          filters: {},
+        },
+      ],
+    });
+    postMock.mockResolvedValue(searchResponseFor(3));
+
+    renderWithClient(<AgentsLandingPagePilot dashboardId="team_performance" />);
+
+    await waitFor(() => expect(screen.getByText("Team Open P0/P1")).toBeInTheDocument());
+    expect(screen.getByText("Incident WOW")).toBeInTheDocument();
+    expect(screen.getByText("Query WOW")).toBeInTheDocument();
+
+    // Exactly one "SLA Violation" heading — both of its widgets share the
+    // section, they don't each get their own repeated heading.
+    expect(screen.getAllByText("SLA Violation")).toHaveLength(1);
+  });
 });

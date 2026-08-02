@@ -126,3 +126,80 @@ func TestParseDashboardsConfig_ValidRoundTrip(t *testing.T) {
 		t.Errorf("ResolveFilters(...)[assignedUserIds] = %v, want [\"user-123\"]", resolved["assignedUserIds"])
 	}
 }
+
+func TestParseDashboardsConfig_PieWidgetSlicesAndDescription(t *testing.T) {
+	const raw = `[
+		{
+			"id": "team_performance",
+			"displayName": "Team performance",
+			"widgets": [
+				{
+					"id": "cases_by_severity",
+					"displayName": "Cases by severity",
+					"description": "Share of active cases at each severity level.",
+					"resourceType": "case",
+					"shape": "pie",
+					"gridWidth": 6,
+					"filters": {"states": ["open"]},
+					"slices": [
+						{"label": "Critical", "color": "error", "filters": {"severities": ["critical"]}},
+						{"label": "Mine", "filters": {"assignedUserIds": ["__current_user__"]}}
+					]
+				}
+			]
+		}
+	]`
+
+	got := ParseDashboardsConfig(raw)
+	if len(got) != 1 || len(got[0].Widgets) != 1 {
+		t.Fatalf("ParseDashboardsConfig(raw) = %+v, want 1 dashboard with 1 widget", got)
+	}
+
+	w := got[0].Widgets[0]
+	if w.Description != "Share of active cases at each severity level." {
+		t.Errorf("WidgetTemplate.Description = %q, want the configured subtitle", w.Description)
+	}
+	if len(w.Slices) != 2 {
+		t.Fatalf("len(WidgetTemplate.Slices) = %d, want 2", len(w.Slices))
+	}
+	if w.Slices[0].Label != "Critical" || w.Slices[0].Color != "error" {
+		t.Errorf("Slices[0] = %+v, want {Label: Critical, Color: error}", w.Slices[0])
+	}
+
+	// A slice's own filters resolve the current-user placeholder
+	// independently of the widget's own base Filters — ResolveSliceFilters
+	// must not require (or merge in) the base at all.
+	resolved := ResolveSliceFilters(w.Slices[1], "user-123")
+	assigned, ok := resolved["assignedUserIds"].([]any)
+	if !ok || len(assigned) != 1 || assigned[0] != "user-123" {
+		t.Errorf("ResolveSliceFilters(Slices[1], ...)[assignedUserIds] = %v, want [\"user-123\"]", resolved["assignedUserIds"])
+	}
+	if _, present := resolved["states"]; present {
+		t.Errorf("ResolveSliceFilters must not merge in the widget's own base filters, got %v", resolved)
+	}
+}
+
+func TestParseDashboardsConfig_WidgetSection(t *testing.T) {
+	const raw = `[
+		{
+			"id": "team_performance",
+			"displayName": "Team performance",
+			"widgets": [
+				{"id": "team_open_cases", "displayName": "Team Open P0/P1", "resourceType": "case", "shape": "count", "gridWidth": 6, "filters": {}},
+				{"id": "incident_wow", "displayName": "Incident WOW", "section": "SLA Violation", "resourceType": "incident", "shape": "count", "gridWidth": 6, "filters": {}}
+			]
+		}
+	]`
+
+	got := ParseDashboardsConfig(raw)
+	if len(got) != 1 || len(got[0].Widgets) != 2 {
+		t.Fatalf("ParseDashboardsConfig(raw) = %+v, want 1 dashboard with 2 widgets", got)
+	}
+
+	if section := got[0].Widgets[0].Section; section != "" {
+		t.Errorf("team_open_cases.Section = %q, want empty (no section configured)", section)
+	}
+	if section := got[0].Widgets[1].Section; section != "SLA Violation" {
+		t.Errorf("incident_wow.Section = %q, want %q", section, "SLA Violation")
+	}
+}

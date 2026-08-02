@@ -5282,6 +5282,11 @@ components:
           description: Static id of the widget template within its dashboard
         displayName:
           type: string
+        description:
+          type: string
+          description: >
+            Explanatory subtitle shown under displayName. Config-owned text,
+            not hardcoded per resourceType/shape on the frontend.
         resourceType:
           type: string
           enum:
@@ -5303,10 +5308,11 @@ components:
             - pie
             - bar
           description: >
-            How the widget's data should be rendered once resolved. pie/bar
-            are not resolvable by any /search endpoint today (no aggregate
-            endpoint exists anywhere in the stack); reserved for a future
-            dashboard.
+            How the widget's data should be rendered once resolved. shapes
+            "pie" and "bar" both resolve one search per slices entry, the
+            same way "count" resolves its own single search (see slices
+            below) — they differ only in how the frontend renders the same
+            resolved data (wedges vs. bars), not in how it's fetched.
         gridWidth:
           type: integer
           minimum: 1
@@ -5319,13 +5325,50 @@ components:
             Filter criteria for this widget, with any current-user
             placeholder already substituted. Pass this directly as the
             filters of that resourceType's own POST /{resourceType}s/search
-            request to resolve the widget's data.
+            request to resolve the widget's data. For shapes "pie"/"bar"
+            this is a shared base merged under every slices entry's own
+            filters (caller-side; slices entry keys win on conflict) rather
+            than queried on its own.
         groupBy:
           type: string
-          description: Only meaningful for shape pie/bar; the field to group counts by
+          description: Unused
         listLimit:
           type: integer
           description: Only meaningful for shape list; how many records to show
+        slices:
+          type: array
+          description: >
+            Only meaningful for shapes "pie"/"bar": one search per entry,
+            each resolved via its own total, the same mechanism shape
+            "count" uses. Merge each entry's filters under this widget's
+            own filters (entry keys win on conflict) before searching.
+          items:
+            type: object
+            properties:
+              label:
+                type: string
+              color:
+                type: string
+                description: >
+                  Palette key (e.g. "primary", "error") the frontend already
+                  uses elsewhere in this system; not validated here, forwarded
+                  verbatim. Falls back to a fixed rotation over the same
+                  palette on the frontend if omitted.
+              filters:
+                type: object
+                additionalProperties: true
+                description: >
+                  This slice's own criteria only, with any current-user
+                  placeholder already substituted — merge under the parent
+                  widget's own filters to resolve this slice's total.
+        section:
+          type: string
+          description: >
+            Groups widgets sharing the same (non-empty) value under a
+            titled sub-section within the dashboard, in the order that
+            value first appears among the dashboard's widgets. Widgets
+            with no section (the common case) render in one untitled
+            group, same as before this field existed.
 
     DashboardListItem:
       type: object

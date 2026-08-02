@@ -2712,11 +2712,35 @@ export type BeWidgetResourceType =
   | "product_vulnerability";
 
 /**
- * How a widget's resolved data should be rendered. `pie`/`bar` are not
- * resolvable by any `/search` endpoint today (no aggregate endpoint exists
- * anywhere in the stack) — reserved for a future dashboard.
+ * How a widget's resolved data should be rendered. `pie` and `bar` both
+ * resolve the same way `count` does, just once per slice — see
+ * {@link BeDashboardWidget.slices} — differing only in how the frontend
+ * renders the resolved data (wedges vs. bars), not in how it's fetched.
  */
 export type BeWidgetShape = "count" | "list" | "pie" | "bar";
+
+/** Palette key a dashboard config can use to color a pie slice — the same
+ * vocabulary `WidgetResourceConfig.iconColor` already uses elsewhere in this
+ * system, so one dashboard has one consistent color language. */
+export type BeWidgetPaletteColor =
+  | "primary"
+  | "secondary"
+  | "success"
+  | "error"
+  | "info"
+  | "warning";
+
+/** One wedge of a `shape: "pie"` widget. Resolved by issuing this
+ * resourceType's own `POST /{resourceType}s/search` with `filters` merged
+ * under the widget's own base `filters` (this slice's keys win on
+ * conflict) and `pagination: { limit: 1 }`, reading `total` — the exact
+ * same mechanism `shape: "count"` uses, just once per slice. */
+export interface BeDashboardPieSlice {
+  label: string;
+  /** Falls back to a fixed rotation over the same palette if omitted. */
+  color?: BeWidgetPaletteColor;
+  filters: Record<string, unknown>;
+}
 
 /**
  * A single widget template, embedded in {@link BeDashboard}: display metadata
@@ -2727,6 +2751,9 @@ export type BeWidgetShape = "count" | "list" | "pie" | "bar";
 export interface BeDashboardWidget {
   widgetId: string;
   displayName: string;
+  /** Explanatory subtitle shown under `displayName` — config-owned text,
+   * not hardcoded per resourceType/shape on the frontend. */
+  description?: string;
   resourceType: BeWidgetResourceType;
   shape: BeWidgetShape;
   /** CSS grid columns out of 12 this widget should occupy. */
@@ -2734,13 +2761,25 @@ export interface BeDashboardWidget {
   /**
    * Opaque filter criteria, with any current-user placeholder already
    * substituted. Pass this directly as the `filters` of that
-   * `resourceType`'s own `POST /{resourceType}s/search` request.
+   * `resourceType`'s own `POST /{resourceType}s/search` request. For
+   * shapes "pie"/"bar" this is a shared base merged under every slice's own
+   * `filters` (see {@link BeDashboardPieSlice}), rather than queried on
+   * its own.
    */
   filters: Record<string, unknown>;
   /** Only meaningful for shape pie/bar; the field to group counts by. */
   groupBy?: string;
+  /** Only meaningful for shapes "pie"/"bar": one search per slice, each
+   * read via its own `total`. */
+  slices?: BeDashboardPieSlice[];
   /** Only meaningful for shape list; how many records to show. */
   listLimit?: number;
+  /** Groups widgets sharing the same (non-empty) value under a titled
+   * sub-section within the dashboard, in the order that value first
+   * appears among the dashboard's widgets. Widgets with no `section` (the
+   * common case) render in one untitled group, same as before this field
+   * existed. */
+  section?: string;
 }
 
 /**

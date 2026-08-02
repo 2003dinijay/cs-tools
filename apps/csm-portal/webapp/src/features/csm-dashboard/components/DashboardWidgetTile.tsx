@@ -17,17 +17,23 @@
 import { Box, Button, Card, Skeleton, Tooltip, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
 import { ArrowRight, Info } from "@wso2/oxygen-ui-icons-react";
 import type { JSX, ReactNode } from "react";
-import { Link as RouterLink } from "react-router";
-import type { BeWidgetResourceType, BeWidgetShape } from "@api/backend/types";
+import { Link as RouterLink, useNavigate } from "react-router";
+import type { BeDashboardPieSlice, BeWidgetResourceType, BeWidgetShape } from "@api/backend/types";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useWidgetData } from "@features/csm-dashboard/api/useWidgetData";
+import { useWidgetPieData, type PieSliceResult } from "@features/csm-dashboard/api/useWidgetPieData";
 import { WIDGET_RESOURCE_CONFIG } from "@features/csm-dashboard/config/widgetResourceConfig";
 import { WIDGET_LIST_RENDERERS } from "@features/csm-dashboard/config/widgetListConfig";
 import { buildWidgetPreviewHref } from "@features/csm-dashboard/utils/widgetPreviewUrl";
+import DashboardPieChart from "@features/csm-dashboard/components/DashboardPieChart";
+import DashboardBarChart from "@features/csm-dashboard/components/DashboardBarChart";
 
 interface DashboardWidgetTileProps {
   widgetId: string;
   displayName: string;
+  /** Explanatory subtitle shown under `displayName` — only rendered for
+   * shapes "pie"/"bar" today, but not shape-specific by design. */
+  description?: string;
   resourceType: BeWidgetResourceType;
   shape: BeWidgetShape;
   filters: Record<string, unknown>;
@@ -35,6 +41,10 @@ interface DashboardWidgetTileProps {
    * 4 (see useWidgetData's DEFAULT_LIST_LIMIT) — set explicitly per-widget
    * via the backend's DASHBOARDS_CONFIG, not overridden here. */
   listLimit?: number;
+  /** Only meaningful for shape "pie"/"bar"; one search per slice (see
+   * `useWidgetPieData`). Empty/absent renders an empty chart rather than
+   * crashing. */
+  slices?: BeDashboardPieSlice[];
 }
 
 /**
@@ -56,19 +66,33 @@ interface DashboardWidgetTileProps {
 export default function DashboardWidgetTile({
   widgetId,
   displayName,
+  description,
   resourceType,
   shape,
   filters,
   listLimit,
+  slices,
 }: DashboardWidgetTileProps): JSX.Element {
   const theme = useTheme();
+  const navigate = useNavigate();
   const { user } = useCurrentUser();
+  // Shape "pie" resolves via useWidgetPieData instead (one search per
+  // slice) — skip this one's own network call rather than wasting it, but
+  // still call the hook unconditionally (rules of hooks; a widget's shape
+  // never changes across this component's lifetime).
   const { data, isLoading, isError } = useWidgetData(
     widgetId,
     resourceType,
     filters,
     shape,
     listLimit,
+    0,
+    shape !== "pie" && shape !== "bar",
+  );
+  const pieData = useWidgetPieData(
+    resourceType,
+    filters,
+    shape === "pie" || shape === "bar" ? (slices ?? []) : [],
   );
   const config = WIDGET_RESOURCE_CONFIG[resourceType];
 
@@ -185,6 +209,39 @@ export default function DashboardWidgetTile({
     );
   }
 
+  if (shape === "pie" || shape === "bar") {
+    // Each slice/legend row (or bar) navigates independently, so — same
+    // rationale as shape "list" — this can't be one big link the way shape
+    // "count" is; it's a plain, non-link Card with its own nested click
+    // targets.
+    const ChartComponent = shape === "pie" ? DashboardPieChart : DashboardBarChart;
+    return (
+      <Card variant="outlined" sx={{ p: 1.75, height: "100%" }}>
+        {/* The header's own bottom padding — not just a top margin on the
+            chart below it — so the chart's top edge (and, at the size this
+            chart renders at, its tooltip) never sits flush against/behind
+            the title row above it. */}
+        <Box sx={{ pb: description ? 1 : 2.5 }}>{header}</Box>
+        {description && (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+            {description}
+          </Typography>
+        )}
+        <Box>
+          <ChartComponent
+            slices={pieData.slices}
+            total={pieData.total}
+            isLoading={pieData.isLoading}
+            isError={pieData.isError}
+            onSliceClick={(slice: PieSliceResult) =>
+              navigate(config.buildHref({ ...filters, ...slice.filters }))
+            }
+          />
+        </Box>
+      </Card>
+    );
+  }
+
   let body: ReactNode;
   if (isLoading) {
     body = <Skeleton variant="rounded" height={48} />;
@@ -194,7 +251,7 @@ export default function DashboardWidgetTile({
         Could not load this widget.
       </Typography>
     );
-  } else if (shape === "count") {
+  } else {
     body = (
       <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.25 }}>
         <Box
@@ -218,36 +275,6 @@ export default function DashboardWidgetTile({
           </Typography>
           <Typography variant="h5" sx={{ mt: 0.5 }}>
             {data?.total ?? 0}
-          </Typography>
-        </Box>
-      </Box>
-    );
-  } else {
-    // pie/bar: no aggregate endpoint exists anywhere in the stack today, so
-    // there is nothing to resolve or render yet — see `BeWidgetShape`.
-    body = (
-      <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.25 }}>
-        <Box
-          sx={{
-            p: 0.75,
-            mt: 0.25,
-            borderRadius: "50%",
-            bgcolor: alpha(theme.palette[config.iconColor].light, 0.1),
-            color: theme.palette[config.iconColor].light,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-          }}
-        >
-          <Icon size={16} />
-        </Box>
-        <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography variant="caption" color="text.secondary">
-            {displayName}
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-            Not yet supported.
           </Typography>
         </Box>
       </Box>

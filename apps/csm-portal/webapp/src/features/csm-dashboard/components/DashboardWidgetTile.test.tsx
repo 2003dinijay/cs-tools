@@ -14,12 +14,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import type { ReactNode } from "react";
-import { MemoryRouter } from "react-router";
+import { Children, cloneElement, isValidElement, type ReactElement, type ReactNode } from "react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 
 const postMock = vi.fn();
 
@@ -39,6 +39,63 @@ vi.mock("@context/current-user/CurrentUserContext", () => ({
     isError: false,
   }),
 }));
+// Recharts' ResponsiveContainer measures a real layout size, which jsdom
+// always reports as 0 — nothing would render. Stubbed to a plain list of
+// slice buttons (label + value), enough to assert on data/clicks without
+// depending on actual SVG geometry (same approach the customer-portal app's
+// own chart tests use for this same package).
+vi.mock("@wso2/oxygen-ui-charts-react", () => ({
+  ResponsiveContainer: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  PieChart: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  Pie: ({
+    data,
+    onClick,
+  }: {
+    data: { name: string; value: number }[];
+    onClick?: (item: unknown, index: number) => void;
+  }) => (
+    <div>
+      {data.map((item, i) => (
+        <button key={item.name} type="button" onClick={() => onClick?.(item, i)}>
+          slice:{item.name}:{item.value}
+        </button>
+      ))}
+    </div>
+  ),
+  Cell: () => null,
+  // `data` is a BarChart-level prop (not Bar's own) in the real package —
+  // clone it onto the Bar child so the mock below can read it.
+  BarChart: ({
+    children,
+    data,
+  }: {
+    children: ReactNode;
+    data?: { name: string; value: number }[];
+  }) => (
+    <div>
+      {Children.map(children, (child) =>
+        isValidElement(child)
+          ? cloneElement(child as ReactElement<{ data?: typeof data }>, { data })
+          : child,
+      )}
+    </div>
+  ),
+  Bar: ({
+    data,
+    onClick,
+  }: {
+    data?: { name: string; value: number }[];
+    onClick?: (item: unknown, index: number) => void;
+  }) => (
+    <div>
+      {(data ?? []).map((item, i) => (
+        <button key={item.name} type="button" onClick={() => onClick?.(item, i)}>
+          bar:{item.name}:{item.value}
+        </button>
+      ))}
+    </div>
+  ),
+}));
 
 import DashboardWidgetTile from "@features/csm-dashboard/components/DashboardWidgetTile";
 
@@ -49,6 +106,29 @@ function renderWithClient(ui: ReactNode) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location-probe">{location.pathname + location.search}</div>;
+}
+
+/** For tests that need to observe where a click actually navigated to —
+ * `renderWithClient` has no destination route to land on. */
+function renderWithRoutes(ui: ReactNode, destinationPath: string) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route path="/" element={ui} />
+          <Route path={destinationPath} element={<LocationProbe />} />
+        </Routes>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -255,22 +335,149 @@ describe("DashboardWidgetTile", () => {
     expect(params.get("states")).toBe("open");
   });
 
-  it("renders a not-yet-supported message for shape pie/bar instead of crashing", async () => {
-    postMock.mockResolvedValue({ total: 0, cases: [], limit: 1, offset: 0, hasMore: false });
+  it("shape bar: issues one search per slice and renders a bar per slice, clickable the same way as a pie slice", async () => {
+    postMock.mockImplementation(
+      (_path: string, body: { filters: Record<string, unknown> }) => {
+        const severities = body.filters.severities as string[] | undefined;
+        if (severities?.includes("critical")) return Promise.resolve({ total: 1 });
+        if (severities?.includes("high")) return Promise.resolve({ total: 3 });
+        return Promise.resolve({ total: 0 });
+      },
+    );
 
-    renderWithClient(
+    renderWithRoutes(
       <DashboardWidgetTile
         widgetId="cases_by_severity"
         displayName="Open Cases by Severity"
         resourceType="case"
         shape="bar"
+        filters={{ states: ["open"] }}
+        slices={[
+          { label: "S1 · Critical", color: "error", filters: { severities: ["critical"] } },
+          { label: "S2 · High", color: "warning", filters: { severities: ["high"] } },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("bar:S1 · Critical:1")).toBeInTheDocument());
+    expect(screen.getByText("bar:S2 · High:3")).toBeInTheDocument();
+    expect(postMock).toHaveBeenCalledWith("/cases/search", {
+      filters: { states: ["open"], severities: ["critical"] },
+      pagination: { offset: 0, limit: 1 },
+    });
+
+    fireEvent.click(screen.getByText("bar:S1 · Critical:1"));
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    const params = new URLSearchParams(probeText.split("?")[1]);
+    expect(params.get("severities")).toBe("S1");
+    expect(params.get("states")).toBe("open");
+  });
+
+  it("shape pie: issues one search per slice (own filters merged under the widget's base filters) and renders values + percentages", async () => {
+    postMock.mockImplementation(
+      (_path: string, body: { filters: Record<string, unknown> }) => {
+        const severities = body.filters.severities as string[] | undefined;
+        if (severities?.includes("critical")) return Promise.resolve({ total: 1 });
+        if (severities?.includes("high")) return Promise.resolve({ total: 3 });
+        return Promise.resolve({ total: 0 });
+      },
+    );
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        description="Share of active cases at each severity level."
+        resourceType="case"
+        shape="pie"
+        filters={{ states: ["open"] }}
+        slices={[
+          { label: "S1 · Critical", color: "error", filters: { severities: ["critical"] } },
+          { label: "S2 · High", color: "warning", filters: { severities: ["high"] } },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Share of active cases at each severity level.")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("slice:S1 · Critical:1")).toBeInTheDocument());
+    expect(screen.getByText("slice:S2 · High:3")).toBeInTheDocument();
+    expect(screen.getByText("1 (25%)")).toBeInTheDocument();
+    expect(screen.getByText("3 (75%)")).toBeInTheDocument();
+    expect(postMock).toHaveBeenCalledWith("/cases/search", {
+      filters: { states: ["open"], severities: ["critical"] },
+      pagination: { offset: 0, limit: 1 },
+    });
+    expect(postMock).toHaveBeenCalledWith("/cases/search", {
+      filters: { states: ["open"], severities: ["high"] },
+      pagination: { offset: 0, limit: 1 },
+    });
+  });
+
+  it("shape pie: clicking a slice navigates to /cases with the widget's base filters merged under that slice's own filters", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ states: ["open"] }}
+        slices={[{ label: "Critical", filters: { severities: ["critical"] } }]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:Critical:2")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("slice:Critical:2"));
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    expect(probeText.startsWith("/cases?")).toBe(true);
+    const params = new URLSearchParams(probeText.split("?")[1]);
+    expect(params.get("severities")).toBe("S1");
+    expect(params.get("states")).toBe("open");
+  });
+
+  it("shape pie: clicking a legend row navigates the same way as clicking the slice", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{}}
+        slices={[{ label: "Critical", filters: { severities: ["critical"] } }]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("Critical")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Critical"));
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    expect(new URLSearchParams(probeText.split("?")[1]).get("severities")).toBe("S1");
+  });
+
+  it("shape pie: renders an empty state (no slices, zero total) rather than crashing when a widget has no slices configured yet", async () => {
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
         filters={{}}
       />,
     );
 
-    await waitFor(() =>
-      expect(screen.getByText("Not yet supported.")).toBeInTheDocument(),
-    );
+    expect(screen.getByText("Cases by severity")).toBeInTheDocument();
+    expect(screen.getByText("Nothing to show here right now")).toBeInTheDocument();
+    expect(postMock).not.toHaveBeenCalled();
   });
 
   it("renders an unsupported-widget message instead of crashing for an unrecognized resourceType", () => {
