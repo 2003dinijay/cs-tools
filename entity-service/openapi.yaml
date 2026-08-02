@@ -5263,6 +5263,9 @@ components:
         createdOn:
           type: string
           description: Creation timestamp. RFC3339 for Postgres; raw SN timestamp string for ServiceNow.
+        updatedOn:
+          type: string
+          description: Last-updated timestamp. RFC3339 for Postgres; raw SN timestamp string for ServiceNow.
         createdBy:
           type: string
           format: email

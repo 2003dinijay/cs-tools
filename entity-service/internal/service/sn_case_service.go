@@ -1960,6 +1960,33 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "type contains invalid value: " + t}
 		}
 	}
+	// domainStatesToSNIDs/domainSeveritiesToSNIDs/domainIssueTypesToSNIDs/
+	// domainEngagementTypesToSNIDs silently skip unrecognized values, which
+	// omitempty then drops from the SN payload entirely -- validate up front
+	// so an unrecognized value errors instead of silently widening the result
+	// set. Validated against the same validXxx maps the Postgres backend uses
+	// (confirmed to cover the exact same value sets as the snXxxIDMap maps
+	// this backend converts through).
+	for _, st := range req.Parsed.States {
+		if !validCaseState[st] {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "state contains invalid value: " + string(st)}
+		}
+	}
+	for _, sv := range req.Parsed.Severities {
+		if !validCaseSeverity[sv] {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "severity contains invalid value: " + string(sv)}
+		}
+	}
+	for _, it := range req.Parsed.IssueTypes {
+		if !validCaseIssueType[it] {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "issueType contains invalid value: " + string(it)}
+		}
+	}
+	for _, et := range req.Parsed.EngagementTypes {
+		if !validEngagementType[et] {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "engagementType contains invalid value: " + string(et)}
+		}
+	}
 
 	snFilters := buildSNCaseFilters(req.Parsed, req.Filters.SearchQuery)
 
@@ -1997,11 +2024,17 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 			caseTypeDomain = *t
 		}
 
+		updatedOn := c.CreatedOn
+		if c.UpdatedOn != nil && *c.UpdatedOn != "" {
+			updatedOn = *c.UpdatedOn
+		}
+
 		cv := domain.SearchCaseView{
 			ID:         sysidToUUID(c.ID),
 			Number:     c.Number,
 			InternalID: c.InternalID,
 			CreatedOn:  c.CreatedOn,
+			UpdatedOn:  updatedOn,
 			CreatedBy:  c.CreatedBy,
 			// The case search carries no id for the creator, only the email and
 			// full name, so the canonical reference is emitted with a null id.
