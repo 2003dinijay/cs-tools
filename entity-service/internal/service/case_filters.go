@@ -525,12 +525,16 @@ func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string,
 	return p, nil
 }
 
-// parseCaseFilterPercent parses a single filter value into a 0-100 integer
-// percentage, for fields like taskSLABusinessElapsedPercent.
+// parseCaseFilterPercent parses a single filter value into a non-negative
+// integer percentage, for fields like taskSLABusinessElapsedPercent. No upper
+// bound: confirmed live against wso2sndev that a long-overdue, never-resolved
+// SLA's businessElapsedPercent keeps climbing well past 100 (observed up to
+// 45950) rather than capping there -- a value like 100 correctly means
+// "breached", not "the maximum possible value".
 func parseCaseFilterPercent(f domain.CaseFieldFilter, value string) (int, error) {
 	n, err := strconv.Atoi(value)
-	if err != nil || n < 0 || n > 100 {
-		return 0, &apierror.ValidationError{Msg: fmt.Sprintf("filters: field %q op %q value %q must be an integer between 0 and 100", f.Field, f.Op, value)}
+	if err != nil || n < 0 {
+		return 0, &apierror.ValidationError{Msg: fmt.Sprintf("filters: field %q op %q value %q must be a non-negative integer", f.Field, f.Op, value)}
 	}
 	return n, nil
 }
