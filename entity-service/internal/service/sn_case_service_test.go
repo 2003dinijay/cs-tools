@@ -942,6 +942,90 @@ func TestSNCaseService_SearchCases_EmptyTypesFilterSendsNoTypeRestriction(t *tes
 	}
 }
 
+// TestSNCaseService_SearchCases_GenericFiltersTranslateToSNPayload proves the
+// generic filters array (the new public contract) still produces the exact
+// same named-field Ballerina payload SearchCases has always sent, just fed by
+// ParseCaseFieldFilters + buildSNCaseFilters instead of directly by named
+// request struct fields.
+func TestSNCaseService_SearchCases_GenericFiltersTranslateToSNPayload(t *testing.T) {
+	var gotBody snCaseSearchPayload
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cases/search", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"cases": []map[string]any{}, "total": 0, "offset": 0, "limit": 20})
+	})
+
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowCaseService(client, nil)
+
+	req := domain.SearchCasesRequest{
+		Filters: domain.SearchCasesFilters{
+			Filters: []domain.CaseFieldFilter{
+				{Field: "tag", Op: "in", Values: []string{"patch"}},
+				{Field: "tag", Op: "notIn", Values: []string{"beta"}},
+				{Field: "assignedUserId", Op: "isEmpty"},
+				{Field: "resolutionNotes", Op: "isEmpty"},
+				{Field: "createdBy", Op: "eq", Values: []string{currentUserFilterPlaceholder}},
+			},
+		},
+	}
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	if _, err := svc.SearchCases(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(gotBody.Filters.Tags) != 1 || gotBody.Filters.Tags[0] != "patch" {
+		t.Fatalf("Tags = %v", gotBody.Filters.Tags)
+	}
+	if len(gotBody.Filters.ExcludeTags) != 1 || gotBody.Filters.ExcludeTags[0] != "beta" {
+		t.Fatalf("ExcludeTags = %v", gotBody.Filters.ExcludeTags)
+	}
+	if !gotBody.Filters.Unassigned {
+		t.Fatalf("expected Unassigned = true")
+	}
+	if !gotBody.Filters.ResolutionNotesEmpty {
+		t.Fatalf("expected ResolutionNotesEmpty = true")
+	}
+	if !gotBody.Filters.CreatedByMe {
+		t.Fatalf("expected CreatedByMe = true (forwarded as a flag, not resolved into CreatedBy)")
+	}
+	if len(gotBody.Filters.CreatedBy) != 0 {
+		t.Fatalf("expected CreatedBy to stay empty for the current-user placeholder, got %v", gotBody.Filters.CreatedBy)
+	}
+}
+
+// TestSNCaseService_SearchCases_RejectsBadFilterFieldAndCombo proves invalid
+// field names and invalid field/op combinations are rejected before ever
+// reaching the backing service, not silently ignored or forwarded.
+func TestSNCaseService_SearchCases_RejectsBadFilterFieldAndCombo(t *testing.T) {
+	client := newTestSNClient(t, http.NewServeMux())
+	svc := NewServiceNowCaseService(client, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	t.Run("bad field name", func(t *testing.T) {
+		req := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+			Filters: []domain.CaseFieldFilter{{Field: "bogusField", Op: "in", Values: []string{"x"}}},
+		}}
+		_, err := svc.SearchCases(ctx, req)
+		if _, ok := err.(*apierror.ValidationError); !ok {
+			t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("bad field+op combo", func(t *testing.T) {
+		req := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+			Filters: []domain.CaseFieldFilter{{Field: "type", Op: "gte", Values: []string{"case"}}},
+		}}
+		_, err := svc.SearchCases(ctx, req)
+		if _, ok := err.(*apierror.ValidationError); !ok {
+			t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+		}
+	})
+}
+
 func TestSNCaseService_SearchTags_Success(t *testing.T) {
 	var gotQuery string
 	mux := http.NewServeMux()

@@ -20,6 +20,7 @@ import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import type {
+  BeCaseFieldFilter,
   BeCaseSearchPayload,
   BeCaseSearchResponse,
 } from "@api/backend/types";
@@ -72,17 +73,24 @@ export function useFindMyOngoingCases(): (
 
       const matches: MyOngoingCase[] = [];
       for (let page = 0; page < MAX_PAGES; page += 1) {
+        const fieldFilters: BeCaseFieldFilter[] = [
+          { field: "state", op: "in", values: ["work_in_progress"] },
+          { field: "workState", op: "in", values: ["ongoing"] },
+        ];
+        // Filter by assignee server-side when we know our platform id;
+        // otherwise (entity service down → `/users/me` omits it) omit the
+        // filter and rely on the email backstop below.
+        if (myUserId) {
+          fieldFilters.push({
+            field: "assignedUserId",
+            op: "in",
+            values: [myUserId],
+          });
+        }
         const res = await api.post<BeCaseSearchPayload, BeCaseSearchResponse>(
           "/cases/search",
           {
-            filters: {
-              states: ["work_in_progress"],
-              workStates: ["ongoing"],
-              // Filter by assignee server-side when we know our platform id;
-              // otherwise (entity service down → `/users/me` omits it) omit the
-              // filter and rely on the email backstop below.
-              ...(myUserId && { assignedUserIds: [myUserId] }),
-            },
+            filters: { filters: fieldFilters },
             pagination: { offset: page * SEARCH_LIMIT, limit: SEARCH_LIMIT },
           },
         );

@@ -302,8 +302,15 @@ type snCaseFilters struct {
 	// Forwarded to Choreo so filtering starts working the moment Ballerina adds
 	// support, but the current POST /cases/search contract ignores this field.
 	Tags []string `json:"tags,omitempty"`
+	// ExcludeTags: see domain.SearchCasesFilters.ExcludeTags doc comment.
+	ExcludeTags []string `json:"excludeTags,omitempty"`
 	// ParentID: see domain.SearchCasesFilters.ParentID doc comment.
-	ParentID string `json:"parentId,omitempty"`
+	ParentID                  string   `json:"parentId,omitempty"`
+	ProjectOnboardingStatuses []string `json:"projectOnboardingStatuses,omitempty"`
+	ProjectTypeIDs            []string `json:"projectTypeIds,omitempty"`
+	IntegrationCsTeamIDs      []string `json:"integrationCsTeamIds,omitempty"`
+	Unassigned                bool     `json:"unassigned,omitempty"`
+	ResolutionNotesEmpty      bool     `json:"resolutionNotesEmpty,omitempty"`
 }
 
 // snStateIDMap maps domain CaseState enums to SN numeric state IDs.
@@ -1840,6 +1847,51 @@ func (s *snCaseService) DeleteCaseAttachment(ctx context.Context, req domain.Del
 	return domain.DeleteAttachmentResponse{Message: snResp.Message}, nil
 }
 
+// buildSNCaseFilters maps a domain.ParsedCaseFilters (already translated from
+// the generic filters array by ParseCaseFieldFilters) into the exact same
+// snCaseFilters payload SearchCases has always sent to the backing service --
+// this function changes what feeds the mapping, not the mapping itself.
+func buildSNCaseFilters(parsed domain.ParsedCaseFilters, searchQuery string) snCaseFilters {
+	// An empty/omitted Types filter means "no type restriction" -- SN's own case
+	// search (CaseUtils._resolveCaseTypeIds + applyFilters) already treats an
+	// empty caseTypes list this way, skipping the type query entirely. Defaulting
+	// it to ["default_case"] here silently excluded every non-"case" type (most
+	// importantly service_request) from callers that search across all types,
+	// e.g. the "does this engineer already have another ongoing work item"
+	// pre-check before starting a new case.
+	snCaseTypes := domainTypeKeysToSN(parsed.Types)
+
+	return snCaseFilters{
+		CaseTypes:                 snCaseTypes,
+		SearchQuery:               searchQuery,
+		ProjectIDs:                uuidsToSysids(parsed.ProjectIDs),
+		DeploymentIDs:             uuidsToSysids(parsed.DeploymentIDs),
+		StateKeys:                 domainStatesToSNIDs(parsed.States),
+		SeverityKeys:              domainSeveritiesToSNIDs(parsed.Severities),
+		IssueTypeKeys:             domainIssueTypesToSNIDs(parsed.IssueTypes),
+		EngagementTypeKeys:        domainEngagementTypesToSNIDs(parsed.EngagementTypes),
+		ClosedStartDate:           formatSNDate(parsed.ClosedStartDate),
+		ClosedEndDate:             formatSNDate(parsed.ClosedEndDate),
+		StartCreatedDate:          formatSNDate(parsed.StartCreatedDate),
+		EndCreatedDate:            formatSNDate(parsed.EndCreatedDate),
+		StartUpdatedDate:          formatSNDate(parsed.StartUpdatedDate),
+		EndUpdatedDate:            formatSNDate(parsed.EndUpdatedDate),
+		CreatedBy:                 parsed.CreatedBy,
+		CreatedByMe:               parsed.CreatedByMe,
+		WorkStateKeys:             domainWorkStatesToSNIDs(parsed.WorkStates),
+		AssignedUserIDs:           uuidsToSysids(parsed.AssignedUserIDs),
+		ProductNames:              parsed.ProductNames,
+		Tags:                      parsed.Tags,
+		ExcludeTags:               parsed.ExcludeTags,
+		ParentID:                  snParentIDFilter(parsed.ParentID),
+		ProjectOnboardingStatuses: parsed.ProjectOnboardingStatuses,
+		ProjectTypeIDs:            uuidsToSysids(parsed.ProjectTypeIDs),
+		IntegrationCsTeamIDs:      uuidsToSysids(parsed.IntegrationCsTeamIDs),
+		Unassigned:                parsed.Unassigned,
+		ResolutionNotesEmpty:      parsed.ResolutionNotesEmpty,
+	}
+}
+
 // SearchCases implements CaseService by calling the Choreo POST /cases/search endpoint.
 func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesRequest) (domain.SearchCasesResponse, error) {
 	if err := normalizePagination(&req.Pagination); err != nil {
@@ -1849,34 +1901,46 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		return domain.SearchCasesResponse{}, err
 	}
 
-	if req.Filters.ClosedEndDate != nil && req.Filters.ClosedStartDate != nil &&
-		req.Filters.ClosedEndDate.Before(*req.Filters.ClosedStartDate) {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "closedEndDate must not be before closedStartDate"}
-	}
-	if req.Filters.EndCreatedDate != nil && req.Filters.StartCreatedDate != nil &&
-		req.Filters.EndCreatedDate.Before(*req.Filters.StartCreatedDate) {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "endCreatedDate must not be before startCreatedDate"}
-	}
-	if req.Filters.EndUpdatedDate != nil && req.Filters.StartUpdatedDate != nil &&
-		req.Filters.EndUpdatedDate.Before(*req.Filters.StartUpdatedDate) {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "endUpdatedDate must not be before startUpdatedDate"}
-	}
-
-	for _, ws := range req.Filters.WorkStates {
-		if ws != domain.CaseWorkStateOngoing && ws != domain.CaseWorkStatePaused {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "workStates contains invalid value: " + string(ws)}
-		}
-	}
-	if err := validateUUIDs("assignedUserIds", req.Filters.AssignedUserIDs); err != nil {
+	token := middleware.UserIDTokenFromContext(ctx)
+	callerEmail, callerEmailErr := resolveCaseFilterCallerEmail(token)
+	parsed, err := ParseCaseFieldFilters(req.Filters.Filters, callerEmail, callerEmailErr)
+	if err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
-	if req.Filters.ParentID != nil {
-		if err := validateUUIDs("parentId", []string{*req.Filters.ParentID}); err != nil {
+	req.Parsed = parsed
+
+	if req.Parsed.ClosedEndDate != nil && req.Parsed.ClosedStartDate != nil &&
+		req.Parsed.ClosedEndDate.Before(*req.Parsed.ClosedStartDate) {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "closedOn: lte value must not be before gte value"}
+	}
+	if req.Parsed.EndCreatedDate != nil && req.Parsed.StartCreatedDate != nil &&
+		req.Parsed.EndCreatedDate.Before(*req.Parsed.StartCreatedDate) {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "createdOn: lte value must not be before gte value"}
+	}
+	if req.Parsed.EndUpdatedDate != nil && req.Parsed.StartUpdatedDate != nil &&
+		req.Parsed.EndUpdatedDate.Before(*req.Parsed.StartUpdatedDate) {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "updatedOn: lte value must not be before gte value"}
+	}
+
+	for _, ws := range req.Parsed.WorkStates {
+		if ws != domain.CaseWorkStateOngoing && ws != domain.CaseWorkStatePaused {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "workState contains invalid value: " + string(ws)}
+		}
+	}
+	if err := validateUUIDs("assignedUserId", req.Parsed.AssignedUserIDs); err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+	if req.Parsed.ParentID != nil {
+		if err := validateUUIDs("parentId", []string{*req.Parsed.ParentID}); err != nil {
 			return domain.SearchCasesResponse{}, err
 		}
 	}
-
-	token := middleware.UserIDTokenFromContext(ctx)
+	if err := validateUUIDs("projectType", req.Parsed.ProjectTypeIDs); err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+	if err := validateUUIDs("integrationCsTeam", req.Parsed.IntegrationCsTeamIDs); err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
 
 	var snSortBy *snCaseSort
 	if req.SortBy.Field != "" {
@@ -1891,44 +1955,16 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		snSortBy = &snCaseSort{Field: snField, Order: order}
 	}
 
-	for _, t := range req.Filters.Types {
+	for _, t := range req.Parsed.Types {
 		if _, ok := snCaseTypeMap[t]; !ok {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "types contains invalid value: " + t}
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "type contains invalid value: " + t}
 		}
 	}
-	// An empty/omitted Types filter means "no type restriction" -- SN's own case
-	// search (CaseUtils._resolveCaseTypeIds + applyFilters) already treats an
-	// empty caseTypes list this way, skipping the type query entirely. Defaulting
-	// it to ["default_case"] here silently excluded every non-"case" type (most
-	// importantly service_request) from callers that search across all types,
-	// e.g. the "does this engineer already have another ongoing work item"
-	// pre-check before starting a new case.
-	snCaseTypes := domainTypeKeysToSN(req.Filters.Types)
+
+	snFilters := buildSNCaseFilters(req.Parsed, req.Filters.SearchQuery)
 
 	payload := snCaseSearchPayload{
-		Filters: snCaseFilters{
-			CaseTypes:          snCaseTypes,
-			SearchQuery:        req.Filters.SearchQuery,
-			ProjectIDs:         uuidsToSysids(req.Filters.ProjectIDs),
-			DeploymentIDs:      uuidsToSysids(req.Filters.DeploymentIDs),
-			StateKeys:          domainStatesToSNIDs(req.Filters.States),
-			SeverityKeys:       domainSeveritiesToSNIDs(req.Filters.Severities),
-			IssueTypeKeys:      domainIssueTypesToSNIDs(req.Filters.IssueTypes),
-			EngagementTypeKeys: domainEngagementTypesToSNIDs(req.Filters.EngagementTypes),
-			ClosedStartDate:    formatSNDate(req.Filters.ClosedStartDate),
-			ClosedEndDate:      formatSNDate(req.Filters.ClosedEndDate),
-			StartCreatedDate:   formatSNDate(req.Filters.StartCreatedDate),
-			EndCreatedDate:     formatSNDate(req.Filters.EndCreatedDate),
-			StartUpdatedDate:   formatSNDate(req.Filters.StartUpdatedDate),
-			EndUpdatedDate:     formatSNDate(req.Filters.EndUpdatedDate),
-			CreatedBy:          req.Filters.CreatedBy,
-			CreatedByMe:        req.Filters.CreatedByMe,
-			WorkStateKeys:      domainWorkStatesToSNIDs(req.Filters.WorkStates),
-			AssignedUserIDs:    uuidsToSysids(req.Filters.AssignedUserIDs),
-			ProductNames:       req.Filters.ProductNames,
-			Tags:               req.Filters.Tags,
-			ParentID:           snParentIDFilter(req.Filters.ParentID),
-		},
+		Filters:    snFilters,
 		SortBy:     snSortBy,
 		Pagination: snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
 	}

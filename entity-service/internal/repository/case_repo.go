@@ -346,27 +346,27 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 
 	where := "WHERE 1=1"
 
-	if len(req.Filters.Types) > 0 {
+	if len(req.Parsed.Types) > 0 {
 		where += fmt.Sprintf(" AND c.type = ANY($%d::case_type_enum[])", argIdx)
-		filterArgs = append(filterArgs, req.Filters.Types)
+		filterArgs = append(filterArgs, req.Parsed.Types)
 		argIdx++
 	}
 
-	if len(req.Filters.ProjectIDs) > 0 {
+	if len(req.Parsed.ProjectIDs) > 0 {
 		where += fmt.Sprintf(" AND c.project_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Filters.ProjectIDs)
+		filterArgs = append(filterArgs, req.Parsed.ProjectIDs)
 		argIdx++
 	}
 
-	if len(req.Filters.DeploymentIDs) > 0 {
+	if len(req.Parsed.DeploymentIDs) > 0 {
 		where += fmt.Sprintf(" AND c.deployment_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Filters.DeploymentIDs)
+		filterArgs = append(filterArgs, req.Parsed.DeploymentIDs)
 		argIdx++
 	}
 
-	if len(req.Filters.States) > 0 {
-		stateStrings := make([]string, len(req.Filters.States))
-		for i, s := range req.Filters.States {
+	if len(req.Parsed.States) > 0 {
+		stateStrings := make([]string, len(req.Parsed.States))
+		for i, s := range req.Parsed.States {
 			stateStrings[i] = string(s)
 		}
 		where += fmt.Sprintf(" AND c.state = ANY($%d::case_state_enum[])", argIdx)
@@ -374,9 +374,9 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.Filters.Severities) > 0 {
-		severityStrings := make([]string, len(req.Filters.Severities))
-		for i, s := range req.Filters.Severities {
+	if len(req.Parsed.Severities) > 0 {
+		severityStrings := make([]string, len(req.Parsed.Severities))
+		for i, s := range req.Parsed.Severities {
 			severityStrings[i] = string(s)
 		}
 		where += fmt.Sprintf(" AND c.severity = ANY($%d::case_severity_enum[])", argIdx)
@@ -384,9 +384,9 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.Filters.IssueTypes) > 0 {
-		issueTypeStrings := make([]string, len(req.Filters.IssueTypes))
-		for i, it := range req.Filters.IssueTypes {
+	if len(req.Parsed.IssueTypes) > 0 {
+		issueTypeStrings := make([]string, len(req.Parsed.IssueTypes))
+		for i, it := range req.Parsed.IssueTypes {
 			issueTypeStrings[i] = string(it)
 		}
 		where += fmt.Sprintf(" AND c.issue_type = ANY($%d::case_issue_type_enum[])", argIdx)
@@ -394,9 +394,9 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.Filters.EngagementTypes) > 0 {
-		engTypeStrings := make([]string, len(req.Filters.EngagementTypes))
-		for i, et := range req.Filters.EngagementTypes {
+	if len(req.Parsed.EngagementTypes) > 0 {
+		engTypeStrings := make([]string, len(req.Parsed.EngagementTypes))
+		for i, et := range req.Parsed.EngagementTypes {
 			engTypeStrings[i] = string(et)
 		}
 		where += fmt.Sprintf(" AND c.engagement_type = ANY($%d::engagement_type_enum[])", argIdx)
@@ -404,15 +404,15 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.Filters.CreatedBy) > 0 {
+	if len(req.Parsed.CreatedBy) > 0 {
 		where += fmt.Sprintf(" AND u.email = ANY($%d)", argIdx)
-		filterArgs = append(filterArgs, req.Filters.CreatedBy)
+		filterArgs = append(filterArgs, req.Parsed.CreatedBy)
 		argIdx++
 	}
 
-	if len(req.Filters.WorkStates) > 0 {
-		workStateStrings := make([]string, len(req.Filters.WorkStates))
-		for i, ws := range req.Filters.WorkStates {
+	if len(req.Parsed.WorkStates) > 0 {
+		workStateStrings := make([]string, len(req.Parsed.WorkStates))
+		for i, ws := range req.Parsed.WorkStates {
 			workStateStrings[i] = string(ws)
 		}
 		where += fmt.Sprintf(" AND c.work_state = ANY($%d::case_work_state_enum[])", argIdx)
@@ -420,40 +420,40 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.Filters.AssignedUserIDs) > 0 {
+	if len(req.Parsed.AssignedUserIDs) > 0 {
 		where += fmt.Sprintf(" AND c.assigned_engineer = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Filters.AssignedUserIDs)
+		filterArgs = append(filterArgs, req.Parsed.AssignedUserIDs)
 		argIdx++
 	}
 
-	if req.Filters.ClosedStartDate != nil {
+	if req.Parsed.ClosedStartDate != nil {
 		where += fmt.Sprintf(" AND c.closed_at >= $%d", argIdx)
-		filterArgs = append(filterArgs, req.Filters.ClosedStartDate)
+		filterArgs = append(filterArgs, req.Parsed.ClosedStartDate)
 		argIdx++
 	}
-	if req.Filters.ClosedEndDate != nil {
+	if req.Parsed.ClosedEndDate != nil {
 		where += fmt.Sprintf(" AND c.closed_at <= $%d", argIdx)
-		filterArgs = append(filterArgs, req.Filters.ClosedEndDate)
+		filterArgs = append(filterArgs, req.Parsed.ClosedEndDate)
 		argIdx++
 	}
-	if req.Filters.StartCreatedDate != nil {
+	if req.Parsed.StartCreatedDate != nil {
 		where += fmt.Sprintf(" AND c.created_at >= $%d", argIdx)
-		filterArgs = append(filterArgs, req.Filters.StartCreatedDate)
+		filterArgs = append(filterArgs, req.Parsed.StartCreatedDate)
 		argIdx++
 	}
-	if req.Filters.EndCreatedDate != nil {
+	if req.Parsed.EndCreatedDate != nil {
 		where += fmt.Sprintf(" AND c.created_at <= $%d", argIdx)
-		filterArgs = append(filterArgs, req.Filters.EndCreatedDate)
+		filterArgs = append(filterArgs, req.Parsed.EndCreatedDate)
 		argIdx++
 	}
-	if req.Filters.StartUpdatedDate != nil {
+	if req.Parsed.StartUpdatedDate != nil {
 		where += fmt.Sprintf(" AND c.updated_at >= $%d", argIdx)
-		filterArgs = append(filterArgs, req.Filters.StartUpdatedDate)
+		filterArgs = append(filterArgs, req.Parsed.StartUpdatedDate)
 		argIdx++
 	}
-	if req.Filters.EndUpdatedDate != nil {
+	if req.Parsed.EndUpdatedDate != nil {
 		where += fmt.Sprintf(" AND c.updated_at <= $%d", argIdx)
-		filterArgs = append(filterArgs, req.Filters.EndUpdatedDate)
+		filterArgs = append(filterArgs, req.Parsed.EndUpdatedDate)
 		argIdx++
 	}
 

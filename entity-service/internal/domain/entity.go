@@ -1337,44 +1337,97 @@ type Tag struct {
 	Color *string `json:"color"`
 }
 
-// SearchCasesFilters holds all optional filter criteria for a case search.
+// CaseFieldFilter is a single predicate in a case search's generic filter
+// expression array: "field op values". Replaces what used to be dozens of
+// individually named filter fields (types, states, severities, projectIds, ...)
+// on SearchCasesFilters, so a new filtering capability no longer needs a new
+// named field threaded through every layer -- see ParseCaseFieldFilters in the
+// service package for the field/op enum and translation into the internal,
+// per-backend representation.
+type CaseFieldFilter struct {
+	Field  string   `json:"field"`
+	Op     string   `json:"op"`
+	Values []string `json:"values,omitempty"`
+}
+
+// SearchCasesFilters is the case-search filter contract. SearchQuery stays
+// special-cased (a free-text match, not a field predicate); every other
+// criterion is expressed as an entry in Filters.
 type SearchCasesFilters struct {
-	Types            []string         `json:"types"`
-	SearchQuery      string           `json:"searchQuery"`
-	ProjectIDs       []string         `json:"projectIds"`
-	DeploymentIDs    []string         `json:"deploymentIds"`
-	States           []CaseState      `json:"states"`
-	Severities       []CaseSeverity   `json:"severities"`
-	IssueTypes       []CaseIssueType  `json:"issueTypes"`
-	EngagementTypes  []EngagementType `json:"engagementTypes"`
-	ClosedStartDate  *time.Time       `json:"closedStartDate"`
-	ClosedEndDate    *time.Time       `json:"closedEndDate"`
-	StartCreatedDate *time.Time       `json:"startCreatedDate"`
-	EndCreatedDate   *time.Time       `json:"endCreatedDate"`
-	StartUpdatedDate *time.Time       `json:"startUpdatedDate"`
-	EndUpdatedDate   *time.Time       `json:"endUpdatedDate"`
-	CreatedBy        []string         `json:"createdBy"`
-	CreatedByMe      bool             `json:"createdByMe"`
-	WorkStates       []CaseWorkState  `json:"workStates"`
-	AssignedUserIDs  []string         `json:"assignedUserIds"`
-	ProductNames     []string         `json:"productNames"`
+	SearchQuery string            `json:"searchQuery,omitempty"`
+	Filters     []CaseFieldFilter `json:"filters,omitempty"`
+}
+
+// ParsedCaseFilters is the internal, named-field representation that
+// SearchCasesFilters.Filters is translated into by
+// service.ParseCaseFieldFilters. Both CaseService backends (ServiceNow and
+// Postgres) and the Postgres repository consume this shape rather than
+// re-parsing the wire-level generic filter array themselves, so this is
+// where the pre-redesign per-field validation and query/payload-building
+// logic still lives, unchanged.
+type ParsedCaseFilters struct {
+	Types            []string
+	ProjectIDs       []string
+	DeploymentIDs    []string
+	States           []CaseState
+	Severities       []CaseSeverity
+	IssueTypes       []CaseIssueType
+	EngagementTypes  []EngagementType
+	ClosedStartDate  *time.Time
+	ClosedEndDate    *time.Time
+	StartCreatedDate *time.Time
+	EndCreatedDate   *time.Time
+	StartUpdatedDate *time.Time
+	EndUpdatedDate   *time.Time
+	CreatedBy        []string
+	// CreatedByMe is true when the array carried a createdBy+eq current-user
+	// placeholder filter. The ServiceNow backend forwards this as-is (Ballerina
+	// resolves the caller itself); the Postgres backend folds the caller's
+	// resolved email into CreatedBy, exactly as the old createdByMe:true
+	// request field did.
+	CreatedByMe     bool
+	WorkStates      []CaseWorkState
+	AssignedUserIDs []string
+	ProductNames    []string
 	// Tags filters cases by attached free-text label. Not yet available in the
 	// backing service: same gap as CaseView.Tags — no Ballerina search-filter
 	// support exists yet, so this filter is accepted here but has no effect until
 	// Ballerina wires it through.
-	Tags []string `json:"tags"`
+	Tags []string
+	// ExcludeTags filters to cases NOT carrying any of these free-text tag labels (optional).
+	ExcludeTags []string
 	// ParentID filters to child cases of this case (the hierarchical major-case/
 	// child-case relationship set via the case PATCH parentId field). Not yet
 	// available in the backing service.
-	ParentID *string `json:"parentId"`
+	ParentID *string
+	// ProjectOnboardingStatuses filters to cases whose parent project's onboarding
+	// status is one of these values (optional; free-text SN choice labels, e.g.
+	// "Completed", "Not-Applicable" -- not a closed enum at this layer).
+	ProjectOnboardingStatuses []string
+	// ProjectTypeIDs filters to cases whose parent project's type is one of these
+	// project-type UUIDs (optional).
+	ProjectTypeIDs []string
+	// IntegrationCsTeamIDs filters to cases whose parent account's integration CS
+	// team is one of these team UUIDs (optional).
+	IntegrationCsTeamIDs []string
+	// Unassigned, when true, filters to cases with no assigned engineer. false and
+	// omitted are treated identically (optional).
+	Unassigned bool
+	// ResolutionNotesEmpty, when true, filters to cases with empty resolution notes.
+	// false and omitted are treated identically (optional).
+	ResolutionNotesEmpty bool
 }
 
 // SearchCasesRequest is the input for a case search operation.
 // All filter fields are optional and nested under Filters. SortBy defaults to createdOn desc.
 type SearchCasesRequest struct {
-	Filters    SearchCasesFilters `json:"filters"`
-	SortBy     CaseSort           `json:"sortBy"`
-	Pagination Pagination         `json:"pagination"`
+	Filters SearchCasesFilters `json:"filters"`
+	// Parsed is populated by the service layer (service.ParseCaseFieldFilters)
+	// from Filters.Filters before the request reaches a CaseService backend or
+	// the Postgres repository; it carries no wire representation of its own.
+	Parsed     ParsedCaseFilters `json:"-"`
+	SortBy     CaseSort          `json:"sortBy"`
+	Pagination Pagination        `json:"pagination"`
 }
 
 // SearchCaseView is the unified case representation returned in search results.

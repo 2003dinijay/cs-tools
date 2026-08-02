@@ -85,4 +85,69 @@ describe("widgetPreviewUrl", () => {
     const { filters } = parseWidgetPreviewFilters(searchParams);
     expect(filters).toEqual({ severities: ["critical"] });
   });
+
+  it("flattens a case widget's nested field/op/values filter array into readable query params", () => {
+    const href = buildWidgetPreviewHref({
+      previewSlug: "cases",
+      widgetId: "my_critical_open",
+      displayName: "My Critical & High Cases",
+      filters: {
+        filters: [
+          { field: "severity", op: "in", values: ["critical", "high"] },
+          { field: "state", op: "in", values: ["open"] },
+        ],
+      },
+    });
+
+    const params = new URLSearchParams(href.split("?")[1]);
+    expect(params.get("severity")).toBe("critical,high");
+    expect(params.get("state")).toBe("open");
+    // No opaque JSON blob under the literal `filters` key.
+    expect(params.get("filters")).toBeNull();
+  });
+
+  it("masks the current user's own id inside a case widget's nested filter array", () => {
+    const href = buildWidgetPreviewHref({
+      previewSlug: "cases",
+      widgetId: "my_cases",
+      displayName: "My Cases",
+      filters: {
+        filters: [{ field: "assignedUserId", op: "in", values: [CURRENT_USER_ID] }],
+      },
+      currentUserId: CURRENT_USER_ID,
+    });
+
+    expect(href).not.toContain(CURRENT_USER_ID);
+    const params = new URLSearchParams(href.split("?")[1]);
+    expect(params.get("assignedUserId")).toBe("@me");
+  });
+
+  it("round-trips a case widget's nested filter array through parse + resolveCurrentUserSentinels", () => {
+    const href = buildWidgetPreviewHref({
+      previewSlug: "cases",
+      widgetId: "my_cases",
+      displayName: "My Cases",
+      filters: {
+        filters: [
+          { field: "assignedUserId", op: "in", values: [CURRENT_USER_ID] },
+          { field: "severity", op: "in", values: ["critical"] },
+        ],
+      },
+      currentUserId: CURRENT_USER_ID,
+    });
+
+    const searchParams = new URLSearchParams(href.split("?")[1]);
+    const { filters, needsCurrentUser } = parseWidgetPreviewFilters(searchParams);
+    expect(needsCurrentUser).toBe(true);
+    expect(filters.filters).toEqual([
+      { field: "assignedUserId", op: "in", values: ["@me"] },
+      { field: "severity", op: "in", values: ["critical"] },
+    ]);
+
+    const resolved = resolveCurrentUserSentinels(filters, CURRENT_USER_ID);
+    expect(resolved.filters).toEqual([
+      { field: "assignedUserId", op: "in", values: [CURRENT_USER_ID] },
+      { field: "severity", op: "in", values: ["critical"] },
+    ]);
+  });
 });

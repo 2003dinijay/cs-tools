@@ -89,16 +89,21 @@ export function useCaseCountsMatrix(): UseQueryResult<CaseCountsMatrix, Error> {
         MATRIX_STATES.map((state) => ({ severity, state })),
       );
       const counted = await Promise.all(
+        // Each cell builds its own fresh `filters` array literal (never a
+        // shared/mutated one across iterations), so parallel requests can't
+        // clobber each other's filter criteria.
         cells.map(({ severity, state }) =>
           api
             .post<BeCaseSearchPayload, BeCaseSearchResponse>("/cases/search", {
               pagination: { offset: 0, limit: 1 },
               filters: {
-                severities: [priorityFromSeverity(severity)],
-                states: [beStateFromUi(state)],
-                // Cells drill into the cases list, which is locked to plain
-                // cases — pin the count to the same type so it reconciles.
-                types: ["case"],
+                filters: [
+                  { field: "severity", op: "in", values: [priorityFromSeverity(severity)] },
+                  { field: "state", op: "in", values: [beStateFromUi(state)] },
+                  // Cells drill into the cases list, which is locked to plain
+                  // cases — pin the count to the same type so it reconciles.
+                  { field: "type", op: "in", values: ["case"] },
+                ],
               },
             })
             .then((res) => ({ severity, state, count: res.total ?? 0 })),

@@ -25,6 +25,7 @@ import { useWidgetPieData, type PieSliceResult } from "@features/csm-dashboard/a
 import { WIDGET_RESOURCE_CONFIG } from "@features/csm-dashboard/config/widgetResourceConfig";
 import { WIDGET_LIST_RENDERERS } from "@features/csm-dashboard/config/widgetListConfig";
 import { buildWidgetPreviewHref } from "@features/csm-dashboard/utils/widgetPreviewUrl";
+import { mergeWidgetFilters } from "@features/csm-dashboard/utils/widgetFilterMerge";
 import DashboardPieChart from "@features/csm-dashboard/components/DashboardPieChart";
 import DashboardBarChart from "@features/csm-dashboard/components/DashboardBarChart";
 
@@ -234,7 +235,7 @@ export default function DashboardWidgetTile({
             isLoading={pieData.isLoading}
             isError={pieData.isError}
             onSliceClick={(slice: PieSliceResult) =>
-              navigate(config.buildHref({ ...filters, ...slice.filters }))
+              navigate(config.buildHref(mergeWidgetFilters(filters, slice.filters)))
             }
           />
         </Box>

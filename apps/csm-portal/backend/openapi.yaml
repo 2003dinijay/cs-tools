@@ -5096,141 +5096,116 @@ components:
             type: string
           description: Optional list of user IDs to notify.
 
+    CaseFieldFilter:
+      type: object
+      required: [field, op]
+      properties:
+        field:
+          type: string
+          enum:
+            - type
+            - state
+            - severity
+            - engagementType
+            - issueType
+            - workState
+            - tag
+            - projectId
+            - deploymentId
+            - assignedUserId
+            - createdBy
+            - createdOn
+            - updatedOn
+            - closedOn
+            - product
+            - projectOnboardingStatus
+            - projectType
+            - integrationCsTeam
+            - resolutionNotes
+            - parentId
+        op:
+          type: string
+          enum: [eq, in, notIn, isEmpty, isNotEmpty, gte, lte]
+        values:
+          type: array
+          items:
+            type: string
+          description: |
+            Required and non-empty for eq/in/notIn/gte/lte; absent/ignored for
+            isEmpty/isNotEmpty.
+      description: |
+        One predicate in a case search's generic filter expression array:
+        "field op values". Replaces the old individually-named filter fields
+        (types, states, severities, projectIds, ...) with a single extensible
+        contract, so a new filtering capability no longer needs a new named
+        field threaded through every layer.
+
+        Not every field/op combination is valid; OpenAPI cannot express a
+        conditional enum constraint, so the supported combinations are listed
+        here instead. A request naming an unsupported field, or a supported
+        field with an incompatible op, is rejected with a validation error.
+
+        - **type** (in): case type, one of case/service_request/
+          security_report_analysis/announcement/engagement.
+        - **state** (in): one of open/work_in_progress/waiting_on_wso2/
+          awaiting_info/reopened/solution_proposed/closed.
+        - **severity** (in): one of catastrophic/critical/high/medium/low.
+          Only applicable when a type filter includes case.
+        - **engagementType** (in): one of migration/consultancy/
+          new_feature_improvement/follow_up/onboarding. Only applicable when a
+          type filter includes engagement.
+        - **issueType** (in): one of error/partial_outage/
+          performance_degradation/question/security_or_compliance/
+          total_outage.
+        - **workState** (in): one of ongoing/paused. Only applicable when
+          state is work_in_progress. For the ServiceNow data source, ongoing
+          maps to key 1 and paused maps to key 2.
+        - **tag** (in / notIn): free-text case tag labels. in matches cases
+          carrying any of the given tags; notIn excludes cases carrying any of
+          them.
+        - **projectId** (in): project UUIDs.
+        - **deploymentId** (in): deployment UUIDs.
+        - **assignedUserId** (in / isEmpty): in matches assigned-engineer user
+          UUIDs; isEmpty (values ignored) matches cases with no assigned
+          engineer. isNotEmpty is not supported (no way to express "assigned
+          to someone, but not to anyone in particular").
+        - **createdBy** (in / eq): in matches a list of literal creator email
+          addresses. eq only supports the single literal value
+          `"__current_user_email__"`, meaning "the authenticated caller" (the
+          old createdByMe:true behavior) — any other literal email must use
+          in with a single value instead.
+        - **createdOn** / **updatedOn** / **closedOn** (gte / lte): a single
+          RFC3339 timestamp or YYYY-MM-DD date bounding the case's created,
+          last-updated, or closed timestamp respectively. gte is inclusive
+          "on or after"; lte is inclusive "on or before".
+        - **product** (in): product family names (e.g. "API Manager",
+          "Identity Server", "Asgardeo"). Matches every version of each named
+          product. Only applied by the ServiceNow data source.
+        - **projectOnboardingStatus** (in): free-text SN choice labels for the
+          parent project's onboarding status (e.g. "Completed",
+          "Not-Applicable" -- not a closed enum at this layer).
+        - **projectType** (in): the parent project's type, as project-type
+          UUIDs.
+        - **integrationCsTeam** (in): the parent account's integration CS
+          team, as team UUIDs.
+        - **resolutionNotes** (isEmpty): values ignored; matches cases with
+          empty resolution notes. isNotEmpty is not supported: false and
+          omitted were always treated identically for this filter, so there
+          is no distinct "resolution notes present" behavior to express.
+        - **parentId** (eq): a single case UUID; matches child cases of that
+          case (the hierarchical major-case/child-case relationship).
+
     CaseSearchFilters:
       type: object
       properties:
-        types:
-          type: array
-          items:
-            type: string
-            enum:
-              - case
-              - service_request
-              - security_report_analysis
-              - announcement
-              - engagement
-          description: Filter by case type (optional)
         searchQuery:
           type: string
-          description: Searches across subject, number, and wso2Id (case-insensitive)
-        projectIds:
+          description: Case-insensitive match against subject, number, and internal_id.
+        filters:
           type: array
           items:
-            type: string
-          description: Filter by project IDs (optional)
-        deploymentIds:
-          type: array
-          items:
-            type: string
-          description: Filter by deployment IDs (optional)
-        states:
-          type: array
-          items:
-            type: string
-            enum:
-              - open
-              - work_in_progress
-              - waiting_on_wso2
-              - awaiting_info
-              - reopened
-              - solution_proposed
-              - closed
-          description: Filter by case state (optional)
-        severities:
-          type: array
-          items:
-            type: string
-            enum:
-              - catastrophic
-              - critical
-              - high
-              - medium
-              - low
-          description: Filter by severity (optional)
-        engagementTypes:
-          type: array
-          items:
-            type: string
-            enum:
-              - migration
-              - consultancy
-              - new_feature_improvement
-              - follow_up
-              - onboarding
-          description: Filter by engagement type (optional; only applies to engagement cases)
-        issueTypes:
-          type: array
-          items:
-            type: string
-            enum:
-              - error
-              - partial_outage
-              - performance_degradation
-              - question
-              - security_or_compliance
-              - total_outage
-          description: Filter by issue type (optional)
-        closedStartDate:
-          type: string
-          format: date-time
-          description: Filter cases closed on or after this UTC datetime (optional)
-        closedEndDate:
-          type: string
-          format: date-time
-          description: Filter cases closed on or before this UTC datetime (optional)
-        startCreatedDate:
-          type: string
-          format: date-time
-          description: Filter cases created on or after this UTC datetime (optional)
-        endCreatedDate:
-          type: string
-          format: date-time
-          description: Filter cases created on or before this UTC datetime (optional)
-        startUpdatedDate:
-          type: string
-          format: date-time
-          description: Filter cases updated on or after this UTC datetime (optional)
-        endUpdatedDate:
-          type: string
-          format: date-time
-          description: Filter cases updated on or before this UTC datetime (optional)
-        createdBy:
-          type: array
-          items:
-            type: string
-            format: email
-          description: Filter to cases created by these email addresses (optional)
-        createdByMe:
-          type: boolean
-          description: When true, the caller's email (from JWT) is appended to createdBy (optional)
-        workStates:
-          type: array
-          items:
-            type: string
-            enum:
-              - ongoing
-              - paused
-          description: >
-            Filter by work sub-state (optional). Only meaningful when `states` includes `work_in_progress`.
-            For the ServiceNow data source, ongoing maps to key 1 and paused maps to key 2.
-        assignedUserIds:
-          type: array
-          items:
-            type: string
-            format: uuid
-          description: Filter by assigned engineer user UUIDs (optional)
-        parentId:
-          type: string
-          format: uuid
-          description: >
-            Filter to child cases of this case UUID (the hierarchical major-case/child-case
-            relationship set via the PATCH `parentId` field). Optional — used to list a case's
-            children via the existing search endpoint rather than a dedicated one.
-        tags:
-          type: array
-          items:
-            type: string
-          description: Filter to cases carrying any of these free-text tag labels (optional)
+            $ref: '#/components/schemas/CaseFieldFilter'
+          description: The generic filter expression array -- see CaseFieldFilter.
 
     CaseSearchPayload:
       type: object

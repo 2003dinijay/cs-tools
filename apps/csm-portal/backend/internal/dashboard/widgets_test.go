@@ -56,9 +56,11 @@ func TestParseDashboardsConfig_ValidRoundTrip(t *testing.T) {
 					"shape": "count",
 					"gridWidth": 3,
 					"filters": {
-						"assignedUserIds": ["__current_user__"],
-						"tags": ["patch"],
-						"states": ["open", "work_in_progress"]
+						"filters": [
+							{"field": "assignedUserId", "op": "in", "values": ["__current_user__"]},
+							{"field": "tag", "op": "in", "values": ["patch"]},
+							{"field": "state", "op": "in", "values": ["open", "work_in_progress"]}
+						]
 					}
 				}
 			]
@@ -106,24 +108,39 @@ func TestParseDashboardsConfig_ValidRoundTrip(t *testing.T) {
 	// []any, not []string — assert the actual runtime type, not just
 	// presence, since substituteCurrentUser's []any and []string cases
 	// behave identically but are reached via different type switches.
-	assignedRaw, present := w.Filters["assignedUserIds"]
-	if !present {
-		t.Fatalf("Filters has no assignedUserIds key")
+	//
+	// Filters is opaque to this package (see widgets.go's WidgetTemplate doc
+	// comment), so the specific case-search filter DSL shape used here
+	// ({"filters":[{"field","op","values"}, ...]}, see .env.example's
+	// DASHBOARDS_CONFIG) is just realistic example data for this generic
+	// substitution test, not something ResolveFilters interprets.
+	assignedEntryValues := func(filters map[string]any) ([]any, bool) {
+		arr, ok := filters["filters"].([]any)
+		if !ok || len(arr) == 0 {
+			return nil, false
+		}
+		entry, ok := arr[0].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		values, ok := entry["values"].([]any)
+		return values, ok
 	}
-	assigned, ok := assignedRaw.([]any)
+
+	assigned, ok := assignedEntryValues(w.Filters)
 	if !ok {
-		t.Fatalf("Filters[assignedUserIds] is %T, want []any", assignedRaw)
+		t.Fatalf("Filters has no filters[0].values entry")
 	}
 	if len(assigned) != 1 || assigned[0] != CurrentUserPlaceholder {
-		t.Errorf("Filters[assignedUserIds] = %v, want [%q]", assigned, CurrentUserPlaceholder)
+		t.Errorf("Filters[filters][0][values] = %v, want [%q]", assigned, CurrentUserPlaceholder)
 	}
 
 	// End-to-end: resolving through the real substitution path yields a
 	// concrete user id in place of the placeholder.
 	resolved := ResolveFilters(w, "user-123")
-	resolvedAssigned, ok := resolved["assignedUserIds"].([]any)
+	resolvedAssigned, ok := assignedEntryValues(resolved)
 	if !ok || len(resolvedAssigned) != 1 || resolvedAssigned[0] != "user-123" {
-		t.Errorf("ResolveFilters(...)[assignedUserIds] = %v, want [\"user-123\"]", resolved["assignedUserIds"])
+		t.Errorf("ResolveFilters(...)[filters][0][values] = %v, want [\"user-123\"]", resolvedAssigned)
 	}
 }
 
