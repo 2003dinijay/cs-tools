@@ -409,6 +409,27 @@ func formatSNDate(t *time.Time) string {
 	return t.UTC().Format(snCreatedOnLayout)
 }
 
+// snUtcDateTimeLayout is the ISO 8601 UTC wire format ("UtcDateTimeString" in the
+// integration service's OpenAPI contract, e.g. servicenow:CaseSearchFilters'
+// startCreatedDate/endCreatedDate/closedStartDate/closedEndDate) that case- and
+// change-request-search date-range filters must be sent in. Distinct from
+// snCreatedOnLayout (space-separated, "YYYY-MM-DD HH:MM:SS"): that layout is what SN
+// itself returns for a record's own created_on/updated_on/resolved_on fields, not what
+// the integration service's search-filter contract accepts for a caller-supplied date
+// range. Sending the space-separated layout here 400s with a payload-schema pattern
+// validation error.
+const snUtcDateTimeLayout = "2006-01-02T15:04:05Z"
+
+// formatSNDateTimeUTC renders a date-range search-filter bound in the integration
+// service's UtcDateTimeString format. See snUtcDateTimeLayout for why this differs
+// from formatSNDate.
+func formatSNDateTimeUTC(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(snUtcDateTimeLayout)
+}
+
 // snDateOnlyLayout is the date-only wire format the integration service expects for
 // fields whose contract carries a date with no time component.
 const snDateOnlyLayout = "2006-01-02"
@@ -1870,12 +1891,12 @@ func buildSNCaseFilters(parsed domain.ParsedCaseFilters, searchQuery string) snC
 		SeverityKeys:              domainSeveritiesToSNIDs(parsed.Severities),
 		IssueTypeKeys:             domainIssueTypesToSNIDs(parsed.IssueTypes),
 		EngagementTypeKeys:        domainEngagementTypesToSNIDs(parsed.EngagementTypes),
-		ClosedStartDate:           formatSNDate(parsed.ClosedStartDate),
-		ClosedEndDate:             formatSNDate(parsed.ClosedEndDate),
-		StartCreatedDate:          formatSNDate(parsed.StartCreatedDate),
-		EndCreatedDate:            formatSNDate(parsed.EndCreatedDate),
-		StartUpdatedDate:          formatSNDate(parsed.StartUpdatedDate),
-		EndUpdatedDate:            formatSNDate(parsed.EndUpdatedDate),
+		ClosedStartDate:           formatSNDateTimeUTC(parsed.ClosedStartDate),
+		ClosedEndDate:             formatSNDateTimeUTC(parsed.ClosedEndDate),
+		StartCreatedDate:          formatSNDateTimeUTC(parsed.StartCreatedDate),
+		EndCreatedDate:            formatSNDateTimeUTC(parsed.EndCreatedDate),
+		StartUpdatedDate:          formatSNDateTimeUTC(parsed.StartUpdatedDate),
+		EndUpdatedDate:            formatSNDateTimeUTC(parsed.EndUpdatedDate),
 		CreatedBy:                 parsed.CreatedBy,
 		CreatedByMe:               parsed.CreatedByMe,
 		WorkStateKeys:             domainWorkStatesToSNIDs(parsed.WorkStates),
