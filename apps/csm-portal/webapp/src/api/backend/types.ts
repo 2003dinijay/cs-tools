@@ -2712,10 +2712,10 @@ export type BeWidgetResourceType =
   | "product_vulnerability";
 
 /**
- * How a widget's resolved data should be rendered. `bar` is not resolvable
- * by any `/search` endpoint today (no aggregate endpoint exists anywhere in
- * the stack) — reserved for a future dashboard. `pie` is resolved the same
- * way `count` is, just once per slice — see {@link BeDashboardWidget.slices}.
+ * How a widget's resolved data should be rendered. `pie` and `bar` both
+ * resolve the same way `count` does, just once per slice — see
+ * {@link BeDashboardWidget.slices} — differing only in how the frontend
+ * renders the resolved data (wedges vs. bars), not in how it's fetched.
  */
 export type BeWidgetShape = "count" | "list" | "pie" | "bar";
 

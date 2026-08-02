@@ -32,7 +32,7 @@ interface DashboardWidgetTileProps {
   widgetId: string;
   displayName: string;
   /** Explanatory subtitle shown under `displayName` — only rendered for
-   * shape "pie" today, but not shape-specific by design. */
+   * shapes "pie"/"bar" today, but not shape-specific by design. */
   description?: string;
   resourceType: BeWidgetResourceType;
   shape: BeWidgetShape;
