@@ -29,6 +29,7 @@ import (
 // entityTaskClient abstracts the entity service task operations.
 type entityTaskClient interface {
 	SearchCaseTasks(ctx context.Context, caseID string, body []byte) ([]byte, error)
+	SearchTasks(ctx context.Context, body []byte) ([]byte, error)
 	GetTask(ctx context.Context, id string) ([]byte, error)
 	CreateCaseTask(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	UpdateTask(ctx context.Context, id string, body []byte) ([]byte, error)
@@ -80,6 +81,42 @@ func (h *TaskHandler) SearchCaseTasks(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchCaseTasks failed", "userID", user.UserID, "caseID", caseID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to retrieve case tasks.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// SearchTasks handles POST /tasks/search — standalone task search across all
+// cases (not scoped to one case; see SearchCaseTasks for that path). Raw
+// pass-through body/response, matching CaseHandler.SearchCases.
+func (h *TaskHandler) SearchTasks(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		if _, ok := err.(*http.MaxBytesError); ok {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
+		return
+	}
+
+	if len(body) > 0 && !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.SearchTasks(r.Context(), body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity SearchTasks failed", "userID", user.UserID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to search tasks.")
 		return
 	}
 

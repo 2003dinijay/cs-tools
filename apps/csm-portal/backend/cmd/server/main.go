@@ -195,6 +195,7 @@ func main() {
 	mux.HandleFunc("POST /slas/search", taskSlaHandler.SearchTaskSlas)
 	mux.HandleFunc("GET /slas/{id}", taskSlaHandler.GetTaskSla)
 	mux.HandleFunc("POST /cases/{caseId}/tasks/search", taskHandler.SearchCaseTasks)
+	mux.HandleFunc("POST /tasks/search", taskHandler.SearchTasks)
 	mux.HandleFunc("GET /tasks/{id}", taskHandler.GetTask)
 	mux.HandleFunc("POST /cases/{caseId}/tasks", taskHandler.CreateCaseTask)
 	mux.HandleFunc("PATCH /tasks/{id}", taskHandler.UpdateTask)
