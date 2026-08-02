@@ -1437,6 +1437,7 @@ type SearchCaseView struct {
 	InternalID string `json:"internalId"`
 	Number     string `json:"number"`
 	CreatedOn  string `json:"createdOn"`
+	UpdatedOn  string `json:"updatedOn"`
 	CreatedBy  string `json:"createdBy"`
 	// CreatedByUser is the canonical user reference for the case creator, a
 	// sibling of createdBy. Its id is populated only where the backing data

@@ -155,7 +155,6 @@ export function useGetMyAssignedOpenCases(
           hasSla: false,
           createdAt: c.createdOn ?? "",
           updatedAt: c.updatedOn ?? c.createdOn ?? "",
-          updatedAtIsCreatedFallback: !c.updatedOn && !!c.createdOn,
         };
       });
 

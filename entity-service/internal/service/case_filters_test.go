@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -184,6 +185,30 @@ func TestParseCaseFieldFilters_Rejections(t *testing.T) {
 				t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
 			}
 		})
+	}
+}
+
+func TestParseCaseFieldFilters_DateOnlyLteBoundIncludesWholeDay(t *testing.T) {
+	filters := []domain.CaseFieldFilter{
+		{Field: "createdOn", Op: "lte", Values: []string{"2026-01-31"}},
+	}
+
+	p, err := ParseCaseFieldFilters(filters, "caller@example.com", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.EndCreatedDate == nil {
+		t.Fatalf("expected EndCreatedDate to be set")
+	}
+
+	endOfDay := time.Date(2026, 1, 31, 23, 59, 59, 999999999, time.UTC)
+	if !p.EndCreatedDate.Equal(endOfDay) {
+		t.Fatalf("expected EndCreatedDate %v to equal the exact inclusive boundary %v", p.EndCreatedDate, endOfDay)
+	}
+
+	startOfNextDay := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	if !p.EndCreatedDate.Before(startOfNextDay) {
+		t.Fatalf("expected EndCreatedDate %v to exclude 00:00:00 of the next day", p.EndCreatedDate)
 	}
 }
 

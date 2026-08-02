@@ -82,11 +82,9 @@ export interface CsmCaseRow {
    */
   hasSla?: boolean;
   createdAt: string;
+  /** Falls back to {@link createdAt} when the backend hasn't returned
+   * `updatedOn` for this row; rendered unprefixed either way. */
   updatedAt: string;
-  /** True when the backend didn't return `updatedOn` and {@link updatedAt}
-   * was filled in from {@link createdAt} instead — the list renders that
-   * fallback labeled "Created", never silently as "Updated". */
-  updatedAtIsCreatedFallback?: boolean;
 }
 
 export interface CsmCasesListResponse {

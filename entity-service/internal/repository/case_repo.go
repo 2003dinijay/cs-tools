@@ -483,7 +483,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	dataQuery := fmt.Sprintf(
 		`SELECT c.id, c.number, c.internal_id,
 		        c.type, c.subject, c.description, c.severity, c.issue_type, c.state,
-		        c.engagement_type, c.work_state, c.created_at,
+		        c.engagement_type, c.work_state, c.created_at, c.updated_at,
 		        u.email,
 		        p.id, p.name,
 		        d.id, d.name,
@@ -523,7 +523,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			var cv domain.SearchCaseView
 			var caseType, subject, description string
 			var severity, issueType, engagementType, workState *string
-			var createdAt time.Time
+			var createdAt, updatedAt time.Time
 			var aeID, aeName *string
 			var pcID, pcNumber *string
 			var rcID, rcNumber *string
@@ -533,7 +533,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			if err := rows.Scan(
 				&cv.ID, &cv.Number, &cv.InternalID,
 				&caseType, &subject, &description, &severity, &issueType, &cv.State,
-				&engagementType, &workState, &createdAt,
+				&engagementType, &workState, &createdAt, &updatedAt,
 				&cv.CreatedBy,
 				&cv.Project.ID, &cv.Project.Name,
 				&depID, &depName,
@@ -555,6 +555,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			cv.EngagementType = engagementType
 			cv.WorkState = workState
 			cv.CreatedOn = createdAt.UTC().Format(time.RFC3339)
+			cv.UpdatedOn = updatedAt.UTC().Format(time.RFC3339)
 			cv.Product = &domain.EntityRef{ID: prodID, Name: prodName}
 			// The search projection carries only the creator's email, no id or
 			// display name, so the canonical reference keeps a null id.

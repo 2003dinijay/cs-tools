@@ -31,42 +31,34 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/dashboard"
 )
 
-// testDashboardsConfigJSON is the pilot's 5-dashboard registry, identical to
-// the DASHBOARDS_CONFIG example documented in .env.example. dashboard.Dashboards
-// is populated from DASHBOARDS_CONFIG only in cmd/server/main.go, which tests
-// never run, so TestMain below seeds it directly via the same parse function
-// production uses — every assertion in this file exercises the real
-// production parsing/lookup/resolution path, just with the config supplied
-// in-process instead of via the environment.
+// testDashboardsConfigJSON is a small, entirely dummy 2-dashboard fixture —
+// generic names/ids only, no real WSO2 CS-team structure — extended slightly
+// beyond the DASHBOARDS_CONFIG example documented in .env.example (which has
+// the same two dashboards) with two additional widgets (an "incident"-typed
+// widget with empty filters and a "change_request"-typed widget) purely to
+// keep this file's resourceType-diversity and scalar-filter test coverage,
+// since the trimmed .env.example example doesn't need those shapes to make
+// its point. dashboard.Dashboards is populated from DASHBOARDS_CONFIG only in
+// cmd/server/main.go, which tests never run, so TestMain below seeds it
+// directly via the same parse function production uses — every assertion in
+// this file exercises the real production parsing/lookup/resolution path,
+// just with the config supplied in-process instead of via the environment.
 const testDashboardsConfigJSON = `[
-  {"id":"agents_pilot","displayName":"Engineer overview","isDefault":true,"targetTeam":"cs_engineers","widgets":[
-    {"id":"my_patches","displayName":"My Patches","resourceType":"case","shape":"count","gridWidth":3,"filters":{"filters":[{"field":"assignedUserId","op":"in","values":["__current_user__"]},{"field":"tag","op":"in","values":["patch"]},{"field":"state","op":"in","values":["open","work_in_progress","waiting_on_wso2","reopened","awaiting_info"]}]}},
-    {"id":"my_reminders","displayName":"My Reminders","resourceType":"case","shape":"count","gridWidth":3,"filters":{"filters":[{"field":"assignedUserId","op":"in","values":["__current_user__"]},{"field":"state","op":"in","values":["awaiting_info","solution_proposed"]}]}},
-    {"id":"open_incident_team","displayName":"Open Incident (Team)","resourceType":"case","shape":"count","gridWidth":3,"filters":{"filters":[{"field":"tag","op":"in","values":["s_dip"]},{"field":"state","op":"in","values":["work_in_progress","open","waiting_on_wso2","reopened"]}]}},
-    {"id":"my_critical_open","displayName":"My Critical & High Cases","resourceType":"case","shape":"list","gridWidth":3,"listLimit":5,"filters":{"filters":[{"field":"assignedUserId","op":"in","values":["__current_user__"]},{"field":"severity","op":"in","values":["catastrophic","critical"]},{"field":"state","op":"in","values":["open","work_in_progress"]}]}}
+  {"id":"sample-dashboard","displayName":"Sample Dashboard","isDefault":true,"targetTeam":"sample-team","widgets":[
+    {"id":"my-open-cases","displayName":"My Open Cases","resourceType":"case","shape":"count","gridWidth":3,"filters":{"filters":[{"field":"assignedUserId","op":"in","values":["__current_user__"]},{"field":"state","op":"in","values":["open","work_in_progress"]}]}},
+    {"id":"recent-cases","displayName":"Recent Cases","resourceType":"case","shape":"list","gridWidth":6,"listLimit":5,"filters":{"filters":[{"field":"tag","op":"in","values":["example-tag"]},{"field":"tag","op":"notIn","values":["excluded-example-tag"]}]}},
+    {"id":"pending-time-cards","displayName":"Pending Time Cards","resourceType":"time_card","shape":"count","gridWidth":3,"filters":{"states":["pending"]}},
+    {"id":"open-vulnerabilities","displayName":"Open Vulnerabilities","resourceType":"product_vulnerability","shape":"count","gridWidth":3,"filters":{"priority":"high"}}
   ]},
-  {"id":"operations","displayName":"Operations","targetTeam":"cs_operations","widgets":[
-    {"id":"p0_p1_open","displayName":"P0/P1 Open","resourceType":"case","shape":"count","gridWidth":4,"filters":{"filters":[{"field":"severity","op":"in","values":["catastrophic","critical"]},{"field":"state","op":"in","values":["open","work_in_progress"]}]}},
-    {"id":"open_critical_incidents","displayName":"Open Critical Incidents","resourceType":"incident","shape":"count","gridWidth":4,"filters":{"priorities":["CRITICAL","HIGH"]}},
-    {"id":"crs_awaiting_approval","displayName":"CRs Awaiting Approval","resourceType":"change_request","shape":"count","gridWidth":4,"filters":{"states":["customer_approval"]}}
-  ]},
-  {"id":"iam","displayName":"IAM CS","targetTeam":"iam_cs","widgets":[
-    {"id":"iam_open_cases","displayName":"IAM Open Cases","resourceType":"case","shape":"count","gridWidth":6,"filters":{"filters":[{"field":"tag","op":"in","values":["iam"]},{"field":"state","op":"in","values":["open","work_in_progress","awaiting_info"]}]}},
-    {"id":"asgardeo_open_cases","displayName":"Asgardeo Open Cases","resourceType":"case","shape":"count","gridWidth":6,"filters":{"filters":[{"field":"tag","op":"in","values":["asgardeo"]},{"field":"state","op":"in","values":["open","work_in_progress","awaiting_info"]}]}}
-  ]},
-  {"id":"security","displayName":"Security center","targetTeam":"security","widgets":[
-    {"id":"critical_vulns","displayName":"Critical Vulnerabilities","resourceType":"product_vulnerability","shape":"count","gridWidth":4,"filters":{"priority":"critical"}},
-    {"id":"high_vulns","displayName":"High Vulnerabilities","resourceType":"product_vulnerability","shape":"count","gridWidth":4,"filters":{"priority":"high"}},
-    {"id":"sra_cases_open","displayName":"Open SRAs","resourceType":"case","shape":"count","gridWidth":4,"filters":{"filters":[{"field":"type","op":"in","values":["security_report_analysis"]},{"field":"state","op":"in","values":["open","work_in_progress","awaiting_info"]}]}}
-  ]},
-  {"id":"team_performance","displayName":"Team performance","targetTeam":"cs_team_leads","isTeamBased":true,"widgets":[
-    {"id":"time_cards_pending_approval","displayName":"Time Cards Pending Approval","resourceType":"time_card","shape":"count","gridWidth":6,"filters":{"states":["pending"]}},
-    {"id":"team_open_cases","displayName":"Team Open P0/P1","resourceType":"case","shape":"count","gridWidth":6,"filters":{"filters":[{"field":"severity","op":"in","values":["catastrophic","critical"]},{"field":"state","op":"in","values":["open","work_in_progress"]}]}},
-    {"id":"cases_by_severity","displayName":"Cases by severity","description":"Share of active cases at each severity level.","resourceType":"case","shape":"pie","gridWidth":6,"filters":{"filters":[{"field":"state","op":"in","values":["open","work_in_progress"]}]},"slices":[
+  {"id":"sample-team-dashboard","displayName":"Sample Team Dashboard","targetTeam":"sample-team","isTeamBased":true,"widgets":[
+    {"id":"team-open-cases","displayName":"Team Open Cases","section":"Overview","resourceType":"case","shape":"count","gridWidth":4,"filters":{"filters":[{"field":"severity","op":"in","values":["critical","high"]},{"field":"state","op":"in","values":["open","work_in_progress"]}]}},
+    {"id":"unassigned-cases","displayName":"Unassigned Cases","section":"Overview","resourceType":"case","shape":"count","gridWidth":4,"filters":{"filters":[{"field":"assignedUserId","op":"isEmpty"},{"field":"state","op":"in","values":["open"]}]}},
+    {"id":"cases-by-severity","displayName":"Cases by Severity","description":"Share of active cases at each severity level.","resourceType":"case","shape":"pie","gridWidth":4,"filters":{"filters":[{"field":"state","op":"in","values":["open","work_in_progress"]}]},"slices":[
       {"label":"Critical","color":"error","filters":{"filters":[{"field":"severity","op":"in","values":["critical"]}]}},
       {"label":"Mine","filters":{"filters":[{"field":"assignedUserId","op":"in","values":["__current_user__"]}]}}
     ]},
-    {"id":"incident_wow","displayName":"Incident WOW","section":"SLA Violation","resourceType":"incident","shape":"count","gridWidth":6,"filters":{}}
+    {"id":"escalated-incidents","displayName":"Escalated Incidents","section":"Escalations","resourceType":"incident","shape":"count","gridWidth":4,"filters":{}},
+    {"id":"pending-change-requests","displayName":"Pending Change Requests","resourceType":"change_request","shape":"count","gridWidth":4,"filters":{"states":["customer_approval"]}}
   ]}
 ]`
 
@@ -99,8 +91,8 @@ func filterValuesByField(filters map[string]any, field string) ([]any, bool) {
 // themselves via the same ParseDashboardsConfig function.
 func TestMain(m *testing.M) {
 	dashboard.Dashboards = dashboard.ParseDashboardsConfig(testDashboardsConfigJSON)
-	if len(dashboard.Dashboards) != 5 {
-		panic(fmt.Sprintf("TestMain: seeding dashboard.Dashboards failed, got %d dashboards, want 5", len(dashboard.Dashboards)))
+	if len(dashboard.Dashboards) != 2 {
+		panic(fmt.Sprintf("TestMain: seeding dashboard.Dashboards failed, got %d dashboards, want 2", len(dashboard.Dashboards)))
 	}
 	os.Exit(m.Run())
 }
@@ -225,25 +217,26 @@ func TestGetDashboards(t *testing.T) {
 			}
 		}
 
+		wantTeamBased := map[string]bool{"sample-team-dashboard": true}
 		teamBasedCount := 0
 		for _, res := range results {
 			if res.IsTeamBased {
 				teamBasedCount++
-				if res.ID != "team_performance" {
-					t.Errorf("unexpected team-based dashboard %q, want team_performance", res.ID)
+				if !wantTeamBased[res.ID] {
+					t.Errorf("unexpected team-based dashboard %q, want sample-team-dashboard", res.ID)
 				}
 			}
 		}
-		if teamBasedCount != 1 {
-			t.Errorf("teamBasedCount = %d, want exactly 1 (team_performance)", teamBasedCount)
+		if teamBasedCount != len(wantTeamBased) {
+			t.Errorf("teamBasedCount = %d, want exactly %d (sample-team-dashboard)", teamBasedCount, len(wantTeamBased))
 		}
 
 		defaultCount := 0
 		for _, res := range results {
 			if res.IsDefault {
 				defaultCount++
-				if res.ID != "agents_pilot" {
-					t.Errorf("unexpected default dashboard %q, want agents_pilot", res.ID)
+				if res.ID != "sample-dashboard" {
+					t.Errorf("unexpected default dashboard %q, want sample-dashboard", res.ID)
 				}
 			}
 		}
@@ -256,8 +249,8 @@ func TestGetDashboards(t *testing.T) {
 // TestAllDashboardsHaveWidgets is the "no more mock/empty placeholders"
 // guarantee: every dashboard in the registry now has real widgets.
 func TestAllDashboardsHaveWidgets(t *testing.T) {
-	if len(dashboard.Dashboards) != 5 {
-		t.Fatalf("len(dashboard.Dashboards) = %d, want 5", len(dashboard.Dashboards))
+	if len(dashboard.Dashboards) != 2 {
+		t.Fatalf("len(dashboard.Dashboards) = %d, want 2", len(dashboard.Dashboards))
 	}
 	for _, d := range dashboard.Dashboards {
 		if len(d.Widgets) == 0 {
@@ -269,7 +262,7 @@ func TestAllDashboardsHaveWidgets(t *testing.T) {
 func TestGetDashboardDetail(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
 		h := NewDashboardHandler(&mockEntityUserClient{})
-		r := withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/agents_pilot", nil), "agents_pilot")
+		r := withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/sample-dashboard", nil), "sample-dashboard")
 		w := httptest.NewRecorder()
 		h.GetDashboardDetail(w, r)
 		assertStatus(t, w, http.StatusUnauthorized)
@@ -286,9 +279,9 @@ func TestGetDashboardDetail(t *testing.T) {
 		assertErrorMessage(t, w, ErrMsgNotFound)
 	})
 
-	t.Run("agents_pilot returns metadata and its four widgets", func(t *testing.T) {
+	t.Run("sample-dashboard returns metadata and its four widgets", func(t *testing.T) {
 		h := NewDashboardHandler(&mockEntityUserClient{})
-		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/agents_pilot", nil), "agents_pilot"))
+		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/sample-dashboard", nil), "sample-dashboard"))
 		w := httptest.NewRecorder()
 		h.GetDashboardDetail(w, r)
 
@@ -296,7 +289,7 @@ func TestGetDashboardDetail(t *testing.T) {
 		assertContentType(t, w, "application/json")
 
 		body := w.Body.Bytes()
-		t.Logf("GET /dashboards/agents_pilot response: %s", body)
+		t.Logf("GET /dashboards/sample-dashboard response: %s", body)
 
 		// Decode into the real production type (dashboardDetailView, defined
 		// in dashboards.go), not a duplicate ad hoc struct — a JSON tag
@@ -308,17 +301,17 @@ func TestGetDashboardDetail(t *testing.T) {
 			t.Fatalf("decode response body: %v; raw: %s", err, body)
 		}
 
-		if result.ID != "agents_pilot" {
-			t.Errorf("ID = %q, want %q", result.ID, "agents_pilot")
+		if result.ID != "sample-dashboard" {
+			t.Errorf("ID = %q, want %q", result.ID, "sample-dashboard")
 		}
-		if result.DisplayName != "Engineer overview" {
-			t.Errorf("DisplayName = %q, want %q", result.DisplayName, "Engineer overview")
+		if result.DisplayName != "Sample Dashboard" {
+			t.Errorf("DisplayName = %q, want %q", result.DisplayName, "Sample Dashboard")
 		}
 		if !result.IsDefault {
 			t.Errorf("IsDefault = %v, want true", result.IsDefault)
 		}
-		if result.TargetTeam != "cs_engineers" {
-			t.Errorf("TargetTeam = %q, want %q", result.TargetTeam, "cs_engineers")
+		if result.TargetTeam != "sample-team" {
+			t.Errorf("TargetTeam = %q, want %q", result.TargetTeam, "sample-team")
 		}
 		if len(result.Widgets) != 4 {
 			t.Fatalf("len(result.Widgets) = %d, want 4", len(result.Widgets))
@@ -358,10 +351,10 @@ func TestGetDashboardDetail(t *testing.T) {
 			shape        dashboard.Shape
 			gridWidth    int
 		}{
-			"my_patches":         {dashboard.ResourceCase, dashboard.ShapeCount, 3},
-			"my_reminders":       {dashboard.ResourceCase, dashboard.ShapeCount, 3},
-			"open_incident_team": {dashboard.ResourceCase, dashboard.ShapeCount, 3},
-			"my_critical_open":   {dashboard.ResourceCase, dashboard.ShapeList, 3},
+			"my-open-cases":        {dashboard.ResourceCase, dashboard.ShapeCount, 3},
+			"recent-cases":         {dashboard.ResourceCase, dashboard.ShapeList, 6},
+			"pending-time-cards":   {dashboard.ResourceTimeCard, dashboard.ShapeCount, 3},
+			"open-vulnerabilities": {dashboard.ResourceProductVulnerability, dashboard.ShapeCount, 3},
 		}
 		for id, want := range wantResourceShape {
 			idx, ok := byID[id]
@@ -380,61 +373,46 @@ func TestGetDashboardDetail(t *testing.T) {
 			}
 		}
 
-		if idx := byID["my_critical_open"]; result.Widgets[idx].ListLimit != 5 {
-			t.Errorf("widget my_critical_open listLimit = %d, want 5", result.Widgets[idx].ListLimit)
+		if idx := byID["recent-cases"]; result.Widgets[idx].ListLimit != 5 {
+			t.Errorf("widget recent-cases listLimit = %d, want 5", result.Widgets[idx].ListLimit)
 		}
 
-		for _, id := range []string{"my_patches", "my_reminders"} {
-			idx, ok := byID[id]
-			if !ok {
-				t.Fatalf("missing widget %q in response", id)
-			}
-			filters := result.Widgets[idx].Filters
-			assigned, present := filterValuesByField(filters, "assignedUserId")
-			if !present {
-				t.Fatalf("widget %s filters has no assignedUserId field entry", id)
-			}
-			if len(assigned) != 1 || assigned[0] != resolvedCurrentUserID {
-				t.Errorf("widget %s assignedUserId values = %v, want [%q]", id, assigned, resolvedCurrentUserID)
-			}
-			for _, uid := range assigned {
-				if uid == "__current_user__" {
-					t.Errorf("widget %s assignedUserId values leaked the unresolved placeholder", id)
-				}
-			}
-		}
-
-		// open_incident_team has no assignedUserId filter entry in its
-		// template and must not gain one during substitution:
-		// substituteCurrentUser only rewrites values already present, it
-		// never adds entries.
-		teamIdx, ok := byID["open_incident_team"]
+		// my-open-cases carries an assignedUserId filter (the current user's
+		// open cases) — verify __current_user__ resolved to a concrete id,
+		// not the raw placeholder.
+		openIdx, ok := byID["my-open-cases"]
 		if !ok {
-			t.Fatalf("missing widget %q in response", "open_incident_team")
+			t.Fatalf("missing widget %q in response", "my-open-cases")
 		}
-		teamFilters := result.Widgets[teamIdx].Filters
-		if v, present := filterValuesByField(teamFilters, "assignedUserId"); present {
-			t.Errorf("widget open_incident_team filters unexpectedly has an assignedUserId field entry: %v", v)
-		}
-
-		// my_critical_open DOES carry an assignedUserId filter (the current
-		// user's critical/high cases) — verify it resolved cleanly.
-		criticalIdx, ok := byID["my_critical_open"]
-		if !ok {
-			t.Fatalf("missing widget %q in response", "my_critical_open")
-		}
-		assigned, present := filterValuesByField(result.Widgets[criticalIdx].Filters, "assignedUserId")
+		assigned, present := filterValuesByField(result.Widgets[openIdx].Filters, "assignedUserId")
 		if !present {
-			t.Fatalf("widget my_critical_open filters has no assignedUserId field entry")
+			t.Fatalf("widget my-open-cases filters has no assignedUserId field entry")
 		}
 		if len(assigned) != 1 || assigned[0] != resolvedCurrentUserID {
-			t.Errorf("widget my_critical_open assignedUserId values = %v, want [%q]", assigned, resolvedCurrentUserID)
+			t.Errorf("widget my-open-cases assignedUserId values = %v, want [%q]", assigned, resolvedCurrentUserID)
+		}
+		for _, uid := range assigned {
+			if uid == "__current_user__" {
+				t.Errorf("widget my-open-cases assignedUserId values leaked the unresolved placeholder")
+			}
+		}
+
+		// recent-cases has no assignedUserId filter entry in its template and
+		// must not gain one during substitution: substituteCurrentUser only
+		// rewrites values already present, it never adds entries.
+		recentIdx, ok := byID["recent-cases"]
+		if !ok {
+			t.Fatalf("missing widget %q in response", "recent-cases")
+		}
+		recentFilters := result.Widgets[recentIdx].Filters
+		if v, present := filterValuesByField(recentFilters, "assignedUserId"); present {
+			t.Errorf("widget recent-cases filters unexpectedly has an assignedUserId field entry: %v", v)
 		}
 	})
 
-	t.Run("operations dashboard has three resource-type-diverse widgets", func(t *testing.T) {
+	t.Run("sample-team-dashboard has resource-type-diverse widgets (case, incident, change_request)", func(t *testing.T) {
 		h := NewDashboardHandler(&mockEntityUserClient{})
-		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/operations", nil), "operations"))
+		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/sample-team-dashboard", nil), "sample-team-dashboard"))
 		w := httptest.NewRecorder()
 		h.GetDashboardDetail(w, r)
 
@@ -447,14 +425,14 @@ func TestGetDashboardDetail(t *testing.T) {
 		if err := json.Unmarshal(body, &result); err != nil {
 			t.Fatalf("decode response body: %v; raw: %s", err, body)
 		}
-		if result.ID != "operations" {
-			t.Errorf("ID = %q, want %q", result.ID, "operations")
+		if result.ID != "sample-team-dashboard" {
+			t.Errorf("ID = %q, want %q", result.ID, "sample-team-dashboard")
 		}
-		if result.TargetTeam != "cs_operations" {
-			t.Errorf("TargetTeam = %q, want %q", result.TargetTeam, "cs_operations")
+		if result.TargetTeam != "sample-team" {
+			t.Errorf("TargetTeam = %q, want %q", result.TargetTeam, "sample-team")
 		}
-		if len(result.Widgets) != 3 {
-			t.Fatalf("len(result.Widgets) = %d, want 3", len(result.Widgets))
+		if len(result.Widgets) != 5 {
+			t.Fatalf("len(result.Widgets) = %d, want 5", len(result.Widgets))
 		}
 
 		byID := make(map[string]dashboardWidgetView)
@@ -463,9 +441,9 @@ func TestGetDashboardDetail(t *testing.T) {
 		}
 
 		wantTypes := map[string]dashboard.ResourceType{
-			"p0_p1_open":              dashboard.ResourceCase,
-			"open_critical_incidents": dashboard.ResourceIncident,
-			"crs_awaiting_approval":   dashboard.ResourceChangeRequest,
+			"team-open-cases":         dashboard.ResourceCase,
+			"escalated-incidents":     dashboard.ResourceIncident,
+			"pending-change-requests": dashboard.ResourceChangeRequest,
 		}
 		for id, wantType := range wantTypes {
 			got, ok := byID[id]
@@ -477,23 +455,23 @@ func TestGetDashboardDetail(t *testing.T) {
 			}
 		}
 
-		incident, ok := byID["open_critical_incidents"]
+		changeRequest, ok := byID["pending-change-requests"]
 		if !ok {
-			t.Fatalf("missing widget %q in response", "open_critical_incidents")
+			t.Fatalf("missing widget %q in response", "pending-change-requests")
 		}
-		prioritiesRaw, present := incident.Filters["priorities"]
+		statesRaw, present := changeRequest.Filters["states"]
 		if !present {
-			t.Fatalf("open_critical_incidents filters has no priorities key: %v", incident.Filters)
+			t.Fatalf("pending-change-requests filters has no states key: %v", changeRequest.Filters)
 		}
-		priorities, ok := prioritiesRaw.([]any)
-		if !ok || len(priorities) != 2 || priorities[0] != "CRITICAL" || priorities[1] != "HIGH" {
-			t.Errorf("open_critical_incidents filters.priorities = %v, want [CRITICAL HIGH] unmodified", prioritiesRaw)
+		states, ok := statesRaw.([]any)
+		if !ok || len(states) != 1 || states[0] != "customer_approval" {
+			t.Errorf("pending-change-requests filters.states = %v, want [customer_approval] unmodified", statesRaw)
 		}
 	})
 
-	t.Run("security dashboard's product_vulnerability widget has a scalar string filter", func(t *testing.T) {
+	t.Run("sample-dashboard's product_vulnerability widget has a scalar string filter", func(t *testing.T) {
 		h := NewDashboardHandler(&mockEntityUserClient{})
-		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/security", nil), "security"))
+		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/sample-dashboard", nil), "sample-dashboard"))
 		w := httptest.NewRecorder()
 		h.GetDashboardDetail(w, r)
 
@@ -501,14 +479,14 @@ func TestGetDashboardDetail(t *testing.T) {
 		assertContentType(t, w, "application/json")
 
 		body := w.Body.Bytes()
-		t.Logf("GET /dashboards/security response: %s", body)
+		t.Logf("GET /dashboards/sample-dashboard response: %s", body)
 
 		var result dashboardDetailView
 		if err := json.Unmarshal(body, &result); err != nil {
 			t.Fatalf("decode response body: %v; raw: %s", err, body)
 		}
-		if len(result.Widgets) != 3 {
-			t.Fatalf("len(result.Widgets) = %d, want 3", len(result.Widgets))
+		if len(result.Widgets) != 4 {
+			t.Fatalf("len(result.Widgets) = %d, want 4", len(result.Widgets))
 		}
 
 		byID := make(map[string]dashboardWidgetView)
@@ -516,31 +494,31 @@ func TestGetDashboardDetail(t *testing.T) {
 			byID[wd.WidgetID] = wd
 		}
 
-		critical, ok := byID["critical_vulns"]
+		vulns, ok := byID["open-vulnerabilities"]
 		if !ok {
-			t.Fatalf("missing widget %q in response", "critical_vulns")
+			t.Fatalf("missing widget %q in response", "open-vulnerabilities")
 		}
-		if critical.ResourceType != dashboard.ResourceProductVulnerability {
-			t.Errorf("critical_vulns resourceType = %q, want %q", critical.ResourceType, dashboard.ResourceProductVulnerability)
+		if vulns.ResourceType != dashboard.ResourceProductVulnerability {
+			t.Errorf("open-vulnerabilities resourceType = %q, want %q", vulns.ResourceType, dashboard.ResourceProductVulnerability)
 		}
-		priority, present := critical.Filters["priority"]
+		priority, present := vulns.Filters["priority"]
 		if !present {
-			t.Fatalf("critical_vulns filters has no priority key: %v", critical.Filters)
+			t.Fatalf("open-vulnerabilities filters has no priority key: %v", vulns.Filters)
 		}
-		if s, ok := priority.(string); !ok || s != "critical" {
-			t.Errorf("critical_vulns filters.priority = %v (%T), want string %q", priority, priority, "critical")
+		if s, ok := priority.(string); !ok || s != "high" {
+			t.Errorf("open-vulnerabilities filters.priority = %v (%T), want string %q", priority, priority, "high")
 		}
 	})
 
-	t.Run("team_performance's pie widget resolves description, slices, and per-slice current-user placeholders", func(t *testing.T) {
+	t.Run("sample-team-dashboard's pie widget resolves description, slices, and per-slice current-user placeholders", func(t *testing.T) {
 		h := NewDashboardHandler(&mockEntityUserClient{})
-		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/team_performance", nil), "team_performance"))
+		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/sample-team-dashboard", nil), "sample-team-dashboard"))
 		w := httptest.NewRecorder()
 		h.GetDashboardDetail(w, r)
 
 		assertStatus(t, w, http.StatusOK)
 		body := w.Body.Bytes()
-		t.Logf("GET /dashboards/team_performance response: %s", body)
+		t.Logf("GET /dashboards/sample-team-dashboard response: %s", body)
 
 		var result dashboardDetailView
 		if err := json.Unmarshal(body, &result); err != nil {
@@ -551,15 +529,15 @@ func TestGetDashboardDetail(t *testing.T) {
 		for _, wd := range result.Widgets {
 			byID[wd.WidgetID] = wd
 		}
-		pie, ok := byID["cases_by_severity"]
+		pie, ok := byID["cases-by-severity"]
 		if !ok {
-			t.Fatalf("missing widget %q in response", "cases_by_severity")
+			t.Fatalf("missing widget %q in response", "cases-by-severity")
 		}
 		if pie.Description != "Share of active cases at each severity level." {
-			t.Errorf("cases_by_severity Description = %q, want the configured subtitle", pie.Description)
+			t.Errorf("cases-by-severity Description = %q, want the configured subtitle", pie.Description)
 		}
 		if len(pie.Slices) != 2 {
-			t.Fatalf("len(cases_by_severity.Slices) = %d, want 2", len(pie.Slices))
+			t.Fatalf("len(cases-by-severity.Slices) = %d, want 2", len(pie.Slices))
 		}
 
 		var critical, mine *dashboardPieSliceView
@@ -572,7 +550,7 @@ func TestGetDashboardDetail(t *testing.T) {
 			}
 		}
 		if critical == nil {
-			t.Fatalf("missing the %q slice in cases_by_severity.Slices", "Critical")
+			t.Fatalf("missing the %q slice in cases-by-severity.Slices", "Critical")
 		}
 		if critical.Color != "error" {
 			t.Errorf("Critical slice Color = %q, want %q", critical.Color, "error")
@@ -582,7 +560,7 @@ func TestGetDashboardDetail(t *testing.T) {
 		}
 
 		if mine == nil {
-			t.Fatalf("missing the %q slice in cases_by_severity.Slices", "Mine")
+			t.Fatalf("missing the %q slice in cases-by-severity.Slices", "Mine")
 		}
 		assigned, ok := filterValuesByField(mine.Filters, "assignedUserId")
 		if !ok || len(assigned) != 1 || assigned[0] != resolvedCurrentUserID {
@@ -601,19 +579,19 @@ func TestGetDashboardDetail(t *testing.T) {
 		var rawPie map[string]json.RawMessage
 		for _, obj := range rawWidgets {
 			var id string
-			if err := json.Unmarshal(obj["widgetId"], &id); err == nil && id == "cases_by_severity" {
+			if err := json.Unmarshal(obj["widgetId"], &id); err == nil && id == "cases-by-severity" {
 				rawPie = obj
 			}
 		}
 		if rawPie == nil {
-			t.Fatalf("cases_by_severity not found among raw widgets: %v", rawWidgets)
+			t.Fatalf("cases-by-severity not found among raw widgets: %v", rawWidgets)
 		}
-		assertJSONKeysSuperset(t, rawPie, append(append([]string(nil), dashboardWidgetJSONKeys...), "description", "slices"), "cases_by_severity")
+		assertJSONKeysSuperset(t, rawPie, append(append([]string(nil), dashboardWidgetJSONKeys...), "description", "slices"), "cases-by-severity")
 	})
 
-	t.Run("team_performance's incident_wow widget carries its configured section, unset for widgets with no section", func(t *testing.T) {
+	t.Run("sample-team-dashboard's escalated-incidents widget carries its configured section, unset for widgets with no section", func(t *testing.T) {
 		h := NewDashboardHandler(&mockEntityUserClient{})
-		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/team_performance", nil), "team_performance"))
+		r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/sample-team-dashboard", nil), "sample-team-dashboard"))
 		w := httptest.NewRecorder()
 		h.GetDashboardDetail(w, r)
 
@@ -627,20 +605,20 @@ func TestGetDashboardDetail(t *testing.T) {
 			byID[wd.WidgetID] = wd
 		}
 
-		wow, ok := byID["incident_wow"]
+		escalated, ok := byID["escalated-incidents"]
 		if !ok {
-			t.Fatalf("missing widget %q in response", "incident_wow")
+			t.Fatalf("missing widget %q in response", "escalated-incidents")
 		}
-		if wow.Section != "SLA Violation" {
-			t.Errorf("incident_wow.Section = %q, want %q", wow.Section, "SLA Violation")
+		if escalated.Section != "Escalations" {
+			t.Errorf("escalated-incidents.Section = %q, want %q", escalated.Section, "Escalations")
 		}
 
-		teamOpenCases, ok := byID["team_open_cases"]
+		casesBySeverity, ok := byID["cases-by-severity"]
 		if !ok {
-			t.Fatalf("missing widget %q in response", "team_open_cases")
+			t.Fatalf("missing widget %q in response", "cases-by-severity")
 		}
-		if teamOpenCases.Section != "" {
-			t.Errorf("team_open_cases.Section = %q, want empty (no section configured)", teamOpenCases.Section)
+		if casesBySeverity.Section != "" {
+			t.Errorf("cases-by-severity.Section = %q, want empty (no section configured)", casesBySeverity.Section)
 		}
 	})
 
@@ -682,7 +660,7 @@ func TestResolveCurrentUserID_UsesEntityUsersMeNotJWTClaim(t *testing.T) {
 		},
 	}
 	h := NewDashboardHandler(mock)
-	r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/agents_pilot", nil), "agents_pilot"))
+	r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/sample-dashboard", nil), "sample-dashboard"))
 	w := httptest.NewRecorder()
 	h.GetDashboardDetail(w, r)
 	assertStatus(t, w, http.StatusOK)
@@ -696,12 +674,12 @@ func TestResolveCurrentUserID_UsesEntityUsersMeNotJWTClaim(t *testing.T) {
 		byID[wd.WidgetID] = wd
 	}
 
-	assigned, ok := filterValuesByField(byID["my_patches"].Filters, "assignedUserId")
+	assigned, ok := filterValuesByField(byID["my-open-cases"].Filters, "assignedUserId")
 	if !ok || len(assigned) != 1 {
-		t.Fatalf("my_patches assignedUserId values = %v, want a 1-element array", assigned)
+		t.Fatalf("my-open-cases assignedUserId values = %v, want a 1-element array", assigned)
 	}
 	if assigned[0] != entityResolvedID {
-		t.Errorf("my_patches assignedUserId values[0] = %v, want the entity-resolved id %q (not the JWT claim %q)",
+		t.Errorf("my-open-cases assignedUserId values[0] = %v, want the entity-resolved id %q (not the JWT claim %q)",
 			assigned[0], entityResolvedID, testUser.UserID)
 	}
 }
@@ -717,7 +695,7 @@ func TestResolveCurrentUserID_FallsBackToJWTClaimOnEntityError(t *testing.T) {
 		},
 	}
 	h := NewDashboardHandler(mock)
-	r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/agents_pilot", nil), "agents_pilot"))
+	r := withUser(withDashboardID(httptest.NewRequest(http.MethodGet, "/dashboards/sample-dashboard", nil), "sample-dashboard"))
 	w := httptest.NewRecorder()
 	h.GetDashboardDetail(w, r)
 	assertStatus(t, w, http.StatusOK)
@@ -730,8 +708,8 @@ func TestResolveCurrentUserID_FallsBackToJWTClaimOnEntityError(t *testing.T) {
 	for _, wd := range result.Widgets {
 		byID[wd.WidgetID] = wd
 	}
-	assigned, ok := filterValuesByField(byID["my_patches"].Filters, "assignedUserId")
+	assigned, ok := filterValuesByField(byID["my-open-cases"].Filters, "assignedUserId")
 	if !ok || len(assigned) != 1 || assigned[0] != testUser.UserID {
-		t.Errorf("my_patches assignedUserId values = %v, want the JWT-claim fallback [%q]", assigned, testUser.UserID)
+		t.Errorf("my-open-cases assignedUserId values = %v, want the JWT-claim fallback [%q]", assigned, testUser.UserID)
 	}
 }

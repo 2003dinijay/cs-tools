@@ -326,7 +326,6 @@ export default function CasesList({
                 )}
               </Box>
               <Typography variant="caption" color="text.secondary" noWrap>
-                {c.updatedAtIsCreatedFallback && "Created "}
                 <RelativeTime iso={c.updatedAt} />
               </Typography>
             </Box>

@@ -271,10 +271,20 @@ export default function DashboardWidgetTile({
           <Icon size={16} />
         </Box>
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="caption" color="text.secondary" noWrap>
             {displayName}
           </Typography>
-          <Typography variant="h5" sx={{ mt: 0.5 }}>
+          <Typography
+            noWrap
+            sx={{
+              mt: 0.5,
+              lineHeight: 1.1,
+              fontWeight: 700,
+              fontSize: "3.25rem",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
             {data?.total ?? 0}
           </Typography>
         </Box>

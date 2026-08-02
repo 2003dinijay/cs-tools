@@ -44,21 +44,21 @@ func TestParseDashboardsConfig_MalformedShape(t *testing.T) {
 func TestParseDashboardsConfig_ValidRoundTrip(t *testing.T) {
 	const raw = `[
 		{
-			"id": "agents_pilot",
-			"displayName": "Engineer overview",
+			"id": "sample-dashboard",
+			"displayName": "Sample Dashboard",
 			"isDefault": true,
-			"targetTeam": "cs_engineers",
+			"targetTeam": "sample-team",
 			"widgets": [
 				{
-					"id": "my_patches",
-					"displayName": "My Patches",
+					"id": "my-open-cases",
+					"displayName": "My Open Cases",
 					"resourceType": "case",
 					"shape": "count",
 					"gridWidth": 3,
 					"filters": {
 						"filters": [
 							{"field": "assignedUserId", "op": "in", "values": ["__current_user__"]},
-							{"field": "tag", "op": "in", "values": ["patch"]},
+							{"field": "tag", "op": "in", "values": ["example-tag"]},
 							{"field": "state", "op": "in", "values": ["open", "work_in_progress"]}
 						]
 					}
@@ -73,25 +73,25 @@ func TestParseDashboardsConfig_ValidRoundTrip(t *testing.T) {
 	}
 
 	d := got[0]
-	if d.ID != "agents_pilot" {
-		t.Errorf("Dashboard.ID = %q, want %q", d.ID, "agents_pilot")
+	if d.ID != "sample-dashboard" {
+		t.Errorf("Dashboard.ID = %q, want %q", d.ID, "sample-dashboard")
 	}
-	if d.DisplayName != "Engineer overview" {
-		t.Errorf("Dashboard.DisplayName = %q, want %q", d.DisplayName, "Engineer overview")
+	if d.DisplayName != "Sample Dashboard" {
+		t.Errorf("Dashboard.DisplayName = %q, want %q", d.DisplayName, "Sample Dashboard")
 	}
 	if !d.IsDefault {
 		t.Errorf("Dashboard.IsDefault = false, want true")
 	}
-	if d.TargetTeam != "cs_engineers" {
-		t.Errorf("Dashboard.TargetTeam = %q, want %q", d.TargetTeam, "cs_engineers")
+	if d.TargetTeam != "sample-team" {
+		t.Errorf("Dashboard.TargetTeam = %q, want %q", d.TargetTeam, "sample-team")
 	}
 	if len(d.Widgets) != 1 {
 		t.Fatalf("len(Dashboard.Widgets) = %d, want 1", len(d.Widgets))
 	}
 
 	w := d.Widgets[0]
-	if w.ID != "my_patches" {
-		t.Errorf("WidgetTemplate.ID = %q, want %q", w.ID, "my_patches")
+	if w.ID != "my-open-cases" {
+		t.Errorf("WidgetTemplate.ID = %q, want %q", w.ID, "my-open-cases")
 	}
 	if w.ResourceType != ResourceCase {
 		t.Errorf("WidgetTemplate.ResourceType = %q, want %q", w.ResourceType, ResourceCase)
@@ -147,12 +147,12 @@ func TestParseDashboardsConfig_ValidRoundTrip(t *testing.T) {
 func TestParseDashboardsConfig_PieWidgetSlicesAndDescription(t *testing.T) {
 	const raw = `[
 		{
-			"id": "team_performance",
-			"displayName": "Team performance",
+			"id": "sample-team-dashboard",
+			"displayName": "Sample Team Dashboard",
 			"widgets": [
 				{
-					"id": "cases_by_severity",
-					"displayName": "Cases by severity",
+					"id": "cases-by-severity",
+					"displayName": "Cases by Severity",
 					"description": "Share of active cases at each severity level.",
 					"resourceType": "case",
 					"shape": "pie",
@@ -199,11 +199,11 @@ func TestParseDashboardsConfig_PieWidgetSlicesAndDescription(t *testing.T) {
 func TestParseDashboardsConfig_WidgetSection(t *testing.T) {
 	const raw = `[
 		{
-			"id": "team_performance",
-			"displayName": "Team performance",
+			"id": "sample-team-dashboard",
+			"displayName": "Sample Team Dashboard",
 			"widgets": [
-				{"id": "team_open_cases", "displayName": "Team Open P0/P1", "resourceType": "case", "shape": "count", "gridWidth": 6, "filters": {}},
-				{"id": "incident_wow", "displayName": "Incident WOW", "section": "SLA Violation", "resourceType": "incident", "shape": "count", "gridWidth": 6, "filters": {}}
+				{"id": "team-open-cases", "displayName": "Team Open Cases", "resourceType": "case", "shape": "count", "gridWidth": 6, "filters": {}},
+				{"id": "escalated-incidents", "displayName": "Escalated Incidents", "section": "Escalations", "resourceType": "incident", "shape": "count", "gridWidth": 6, "filters": {}}
 			]
 		}
 	]`
@@ -214,9 +214,9 @@ func TestParseDashboardsConfig_WidgetSection(t *testing.T) {
 	}
 
 	if section := got[0].Widgets[0].Section; section != "" {
-		t.Errorf("team_open_cases.Section = %q, want empty (no section configured)", section)
+		t.Errorf("team-open-cases.Section = %q, want empty (no section configured)", section)
 	}
-	if section := got[0].Widgets[1].Section; section != "SLA Violation" {
-		t.Errorf("incident_wow.Section = %q, want %q", section, "SLA Violation")
+	if section := got[0].Widgets[1].Section; section != "Escalations" {
+		t.Errorf("escalated-incidents.Section = %q, want %q", section, "Escalations")
 	}
 }

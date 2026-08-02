@@ -425,6 +425,38 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "updatedOn: lte value must not be before gte value"}
 	}
 
+	// These fields dot-walk into ServiceNow-specific concepts (tags,
+	// project-onboarding-status, integration-CS-team, etc.) that have no
+	// equivalent in the Postgres schema and no repository query support today.
+	// Reject rather than silently drop the predicate and widen the result set.
+	if len(parsed.Tags) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "tag" is not supported by this data source`}
+	}
+	if len(parsed.ExcludeTags) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "tag" (notIn) is not supported by this data source`}
+	}
+	if parsed.ParentID != nil {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "parentId" is not supported by this data source`}
+	}
+	if len(parsed.ProductNames) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "product" is not supported by this data source`}
+	}
+	if len(parsed.ProjectOnboardingStatuses) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "projectOnboardingStatus" is not supported by this data source`}
+	}
+	if len(parsed.ProjectTypeIDs) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "projectType" is not supported by this data source`}
+	}
+	if len(parsed.IntegrationCsTeamIDs) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "integrationCsTeam" is not supported by this data source`}
+	}
+	if parsed.Unassigned {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "assignedUserId" (isEmpty) is not supported by this data source`}
+	}
+	if parsed.ResolutionNotesEmpty {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "resolutionNotes" is not supported by this data source`}
+	}
+
 	req.Parsed = parsed
 
 	if req.SortBy.Field == "" {

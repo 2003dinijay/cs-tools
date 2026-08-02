@@ -15,10 +15,33 @@
 // under the License.
 
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import { MemoryRouter, useLocation } from "react-router";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
+import type { JSX } from "react";
 import CsmDashboardPage from "@features/csm-dashboard/pages/CsmDashboardPage";
 import { useDashboardList } from "@features/csm-dashboard/api/useDashboardList";
+
+/** Surfaces the router's current `location.search` for assertions — the
+ * `MemoryRouter`'s history is in-memory, not reflected on `window.location`,
+ * so this reads it via `useLocation` instead. */
+function LocationDisplay(): JSX.Element {
+  const location = useLocation();
+  return <div data-testid="location-search">{location.search}</div>;
+}
+
+function renderAt(initialEntry: string): ReturnType<typeof render> {
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <CsmDashboardPage />
+      <LocationDisplay />
+    </MemoryRouter>,
+  );
+}
+
+function currentSearch(): string {
+  return screen.getByTestId("location-search").textContent ?? "";
+}
 
 vi.mock("@features/csm-dashboard/api/useDashboardList", () => ({
   useDashboardList: vi.fn(),
@@ -68,7 +91,7 @@ describe("CsmDashboardPage", () => {
   it("shows a loading skeleton before the dashboard list resolves", () => {
     mockListResult({ data: undefined, isLoading: true });
 
-    const { container } = render(<CsmDashboardPage />);
+    const { container } = renderAt("/");
 
     expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
     expect(screen.queryByTestId("agents-landing-pilot")).not.toBeInTheDocument();
@@ -77,7 +100,7 @@ describe("CsmDashboardPage", () => {
   it("selects the isDefault dashboard once the list loads and renders the enabled, populated switcher", () => {
     mockListResult({ data: DASHBOARD_LIST, isLoading: false });
 
-    render(<CsmDashboardPage />);
+    renderAt("/");
 
     // The isDefault entry ("agents_pilot") is selected on load.
     expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
@@ -108,7 +131,7 @@ describe("CsmDashboardPage", () => {
       isLoading: false,
     });
 
-    render(<CsmDashboardPage />);
+    renderAt("/");
 
     expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
       "operations",
@@ -118,7 +141,7 @@ describe("CsmDashboardPage", () => {
   it("switches to another dashboard when picked from the switcher", () => {
     mockListResult({ data: DASHBOARD_LIST, isLoading: false });
 
-    render(<CsmDashboardPage />);
+    renderAt("/");
 
     expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
       "agents_pilot",
@@ -136,11 +159,62 @@ describe("CsmDashboardPage", () => {
   it("shows an error state rather than an infinite skeleton when the list fails to load", () => {
     mockListResult({ data: undefined, isLoading: false, isError: true });
 
-    render(<CsmDashboardPage />);
+    renderAt("/");
 
     expect(
       screen.getByText("Could not load the dashboard list."),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("agents-landing-pilot")).not.toBeInTheDocument();
+  });
+
+  it("selects the dashboard named by the URL's `dashboard` param, not the BE default", () => {
+    mockListResult({ data: DASHBOARD_LIST, isLoading: false });
+
+    renderAt("/dashboard?dashboard=iam");
+
+    expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent("iam");
+  });
+
+  it("falls back to the BE default when the URL names a dashboard id that isn't in the list", () => {
+    mockListResult({ data: DASHBOARD_LIST, isLoading: false });
+
+    renderAt("/dashboard?dashboard=does-not-exist");
+
+    expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
+      "agents_pilot",
+    );
+  });
+
+  it("writes the `dashboard` param to the URL (via replace) when the switcher is used", () => {
+    mockListResult({ data: DASHBOARD_LIST, isLoading: false });
+
+    renderAt("/dashboard");
+
+    const select = screen.getByRole("combobox");
+    fireEvent.mouseDown(select);
+    fireEvent.click(within(screen.getByRole("listbox")).getByText("Operations"));
+
+    expect(currentSearch()).toBe("?dashboard=operations");
+  });
+
+  it("clears a stale `team` param from the URL when switching to a non-team-based dashboard", () => {
+    mockListResult({
+      data: [
+        ...DASHBOARD_LIST,
+        { id: "team_performance", displayName: "Team performance", isDefault: false, isTeamBased: true },
+      ],
+      isLoading: false,
+    });
+
+    renderAt("/dashboard?dashboard=team_performance&team=cs_team_leads");
+
+    // Two comboboxes render for a team-based dashboard (team + dashboard);
+    // the dashboard switcher is always the second.
+    const selects = screen.getAllByRole("combobox");
+    const select = selects[selects.length - 1];
+    fireEvent.mouseDown(select);
+    fireEvent.click(within(screen.getByRole("listbox")).getByText("Operations"));
+
+    expect(currentSearch()).toBe("?dashboard=operations");
   });
 });

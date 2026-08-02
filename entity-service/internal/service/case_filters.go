@@ -73,6 +73,10 @@ func parseCaseFilterDate(f domain.CaseFieldFilter, value string) (*time.Time, er
 		return &t, nil
 	}
 	if t, err := time.Parse("2006-01-02", value); err == nil {
+		// A date-only lte bound means "on or before that whole day".
+		if f.Op == "lte" {
+			t = t.AddDate(0, 0, 1).Add(-time.Nanosecond)
+		}
 		return &t, nil
 	}
 	return nil, &apierror.ValidationError{Msg: fmt.Sprintf("filters: field %q op %q value %q must be an RFC3339 timestamp or YYYY-MM-DD date", f.Field, f.Op, value)}

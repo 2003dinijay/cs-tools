@@ -1026,6 +1026,133 @@ func TestSNCaseService_SearchCases_RejectsBadFilterFieldAndCombo(t *testing.T) {
 	})
 }
 
+// TestSNCaseService_SearchCases_RejectsUnrecognizedEnumValues proves that
+// State/Severity/IssueType/EngagementType filter values not present in the
+// domain's validXxx maps are rejected outright, rather than being silently
+// dropped by domainStatesToSNIDs/domainSeveritiesToSNIDs/domainIssueTypesToSNIDs/
+// domainEngagementTypesToSNIDs (which skip unrecognized values, producing an
+// empty key slice that omitempty then drops from the SN payload entirely --
+// previously this widened the result set instead of erroring).
+func TestSNCaseService_SearchCases_RejectsUnrecognizedEnumValues(t *testing.T) {
+	client := newTestSNClient(t, http.NewServeMux())
+	svc := NewServiceNowCaseService(client, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	cases := []struct {
+		name   string
+		filter domain.CaseFieldFilter
+	}{
+		{name: "state", filter: domain.CaseFieldFilter{Field: "state", Op: "in", Values: []string{"bogus_state"}}},
+		{name: "severity", filter: domain.CaseFieldFilter{Field: "severity", Op: "in", Values: []string{"bogus_severity"}}},
+		{name: "issueType", filter: domain.CaseFieldFilter{Field: "issueType", Op: "in", Values: []string{"bogus_issue_type"}}},
+		{name: "engagementType", filter: domain.CaseFieldFilter{Field: "engagementType", Op: "in", Values: []string{"bogus_engagement_type"}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+				Filters: []domain.CaseFieldFilter{tc.filter},
+			}}
+			_, err := svc.SearchCases(ctx, req)
+			if _, ok := err.(*apierror.ValidationError); !ok {
+				t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+// TestSNCaseService_SearchCases_AcceptsAllPreviouslyValidEnumValues proves the
+// new enum validation added alongside TestSNCaseService_SearchCases_RejectsUnrecognizedEnumValues
+// does not newly reject any value that was previously forwarded to SN, for
+// each of State/Severity/IssueType/EngagementType.
+func TestSNCaseService_SearchCases_AcceptsAllPreviouslyValidEnumValues(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cases/search", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"cases": []map[string]any{}, "total": 0, "offset": 0, "limit": 20})
+	})
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowCaseService(client, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	allStates := make([]string, 0, len(validCaseState))
+	for s := range validCaseState {
+		allStates = append(allStates, string(s))
+	}
+	allSeverities := make([]string, 0, len(validCaseSeverity))
+	for s := range validCaseSeverity {
+		allSeverities = append(allSeverities, string(s))
+	}
+	allIssueTypes := make([]string, 0, len(validCaseIssueType))
+	for s := range validCaseIssueType {
+		allIssueTypes = append(allIssueTypes, string(s))
+	}
+	allEngagementTypes := make([]string, 0, len(validEngagementType))
+	for s := range validEngagementType {
+		allEngagementTypes = append(allEngagementTypes, string(s))
+	}
+
+	req := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+		Filters: []domain.CaseFieldFilter{
+			{Field: "state", Op: "in", Values: allStates},
+			{Field: "severity", Op: "in", Values: allSeverities},
+			{Field: "issueType", Op: "in", Values: allIssueTypes},
+			{Field: "engagementType", Op: "in", Values: allEngagementTypes},
+		},
+	}}
+	if _, err := svc.SearchCases(ctx, req); err != nil {
+		t.Fatalf("unexpected error for previously-valid enum values: %v", err)
+	}
+}
+
+// TestSNCaseService_SearchCases_PopulatesUpdatedOn proves SearchCases carries
+// a real, non-empty updatedOn distinct from createdOn when the SN response
+// supplies one, fixing the case-list "Updated" column always showing the
+// created date.
+func TestSNCaseService_SearchCases_PopulatesUpdatedOn(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cases/search", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"cases": []map[string]any{
+				{
+					"id":         "case-sys-id",
+					"internalId": "INT-1",
+					"number":     "CS0001",
+					"title":      "t",
+					"description": "d",
+					"createdOn":  "2026-01-01 00:00:00",
+					"updatedOn":  "2026-01-15 12:30:00",
+					"createdBy":  "jane.doe@example.com",
+					"project":    map[string]any{"id": "proj-sys-id", "name": "Proj"},
+					"deployment": map[string]any{"id": "", "name": ""},
+					"deployedProduct": map[string]any{"id": "", "name": "", "product": map[string]any{"id": "", "name": ""}},
+				},
+			},
+			"total": 1, "offset": 0, "limit": 20,
+		})
+	})
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowCaseService(client, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	resp, err := svc.SearchCases(ctx, domain.SearchCasesRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Cases) != 1 {
+		t.Fatalf("expected 1 case, got %d", len(resp.Cases))
+	}
+	got := resp.Cases[0]
+	if got.UpdatedOn == "" {
+		t.Fatalf("expected non-empty UpdatedOn")
+	}
+	if got.UpdatedOn == got.CreatedOn {
+		t.Fatalf("expected UpdatedOn %q to differ from CreatedOn %q", got.UpdatedOn, got.CreatedOn)
+	}
+	if got.UpdatedOn != "2026-01-15 12:30:00" {
+		t.Fatalf("UpdatedOn = %q, want the SN updatedOn field value", got.UpdatedOn)
+	}
+}
+
 func TestSNCaseService_SearchTags_Success(t *testing.T) {
 	var gotQuery string
 	mux := http.NewServeMux()
