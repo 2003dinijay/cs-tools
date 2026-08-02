@@ -47,6 +47,9 @@ import { ErrorPageProvider } from "@context/error-page/ErrorPageContext";
 const CsmDashboardPage = lazy(
   () => import("@features/csm-dashboard/pages/CsmDashboardPage"),
 );
+const DashboardWidgetPreviewPage = lazy(
+  () => import("@features/csm-dashboard/pages/DashboardWidgetPreviewPage"),
+);
 const CsmCasesPage = lazy(
   () => import("@features/csm-cases/pages/CsmCasesPage"),
 );
@@ -335,6 +338,15 @@ export default function App(): JSX.Element {
                   />
 
                   <Route path="dashboard" element={<CsmDashboardPage />} />
+                  {/* Dashboard widget "View more" preview — :previewSlug is
+                      one of WIDGET_RESOURCE_CONFIG's own previewSlug values
+                      (e.g. "cases"), resolved back to a resourceType by
+                      resourceTypeForPreviewSlug. Distinct from the resource's
+                      own real list route (e.g. /cases). */}
+                  <Route
+                    path="dashboard/:previewSlug"
+                    element={<DashboardWidgetPreviewPage />}
+                  />
                   <Route path="cases" element={<CsmCasesPage />} />
                   <Route path="cases/new" element={<CsmCaseCreatePage />} />
                   <Route path="cases/:caseId" element={<CsmCaseDetailPage />} />

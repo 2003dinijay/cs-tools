@@ -69,6 +69,11 @@ export interface WidgetResourceConfig {
   /** Theme palette key the icon (and nothing else — see DashboardWidgetTile's
    * hover treatment) is colored with. */
   iconColor: "primary" | "secondary" | "success" | "error" | "info" | "warning";
+  /** Friendly plural URL segment for this resource type's dashboard-widget
+   * "View more" preview page, e.g. `/dashboard/cases`. Distinct from that
+   * resource's own tab path (`buildHref`'s destination) — this route is
+   * dashboard-widget-scoped, not the resource's real list page. */
+  previewSlug: string;
 }
 
 function asString(v: unknown): string | undefined {
@@ -201,6 +206,7 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     buildHref: (filters) => casesHref(translateCaseDashboardFilters(filters)),
     icon: Briefcase,
     iconColor: "primary",
+    previewSlug: "cases",
   },
   incident: {
     searchEndpoint: "/incidents/search",
@@ -217,6 +223,7 @@ export const WIDGET_RESOURCE_CONFIG: Record<
       ),
     icon: AlertTriangle,
     iconColor: "warning",
+    previewSlug: "incidents",
   },
   change_request: {
     searchEndpoint: "/change-requests/search",
@@ -233,6 +240,7 @@ export const WIDGET_RESOURCE_CONFIG: Record<
       ),
     icon: GitPullRequest,
     iconColor: "info",
+    previewSlug: "change-requests",
   },
   problem: {
     searchEndpoint: "/problems/search",
@@ -244,6 +252,7 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     buildHref: () => operationsHref("problems"),
     icon: AlertOctagon,
     iconColor: "error",
+    previewSlug: "problems",
   },
   account: {
     searchEndpoint: "/accounts/search",
@@ -253,6 +262,7 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     buildHref: () => "/customers/accounts",
     icon: Building2,
     iconColor: "secondary",
+    previewSlug: "accounts",
   },
   project: {
     searchEndpoint: "/projects/search",
@@ -262,6 +272,7 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     buildHref: () => "/customers/projects",
     icon: FolderKanban,
     iconColor: "secondary",
+    previewSlug: "projects",
   },
   user: {
     searchEndpoint: "/users/search",
@@ -276,6 +287,7 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     buildHref: () => "/admin/users",
     icon: Users,
     iconColor: "info",
+    previewSlug: "users",
   },
   time_card: {
     searchEndpoint: "/time-cards/search",
@@ -292,6 +304,7 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     buildHref: () => "/time-cards",
     icon: Clock,
     iconColor: "warning",
+    previewSlug: "time-cards",
   },
   product_vulnerability: {
     searchEndpoint: "/products/vulnerabilities/search",
@@ -300,11 +313,27 @@ export const WIDGET_RESOURCE_CONFIG: Record<
       asString(item.cveId) ?? asString(item.vulnerabilityId) ?? "—",
     secondaryLabel: (item) =>
       asString(item.priority) ?? asString(item.productName),
-    buildHref: () => "/security-center",
+    // The tab default is "security_reports" (see csmNavItems.ts), so the
+    // vulnerabilities tab needs its own `?tab=` — omitting it, as this did
+    // before, silently lands the click on the wrong tab.
+    buildHref: () => "/security-center?tab=vulnerabilities",
     icon: ShieldAlert,
     iconColor: "error",
+    previewSlug: "vulnerabilities",
   },
 };
+
+/** Reverse lookup of `previewSlug` back to its `resourceType`, for the
+ * dashboard widget "View more" preview page's own `/dashboard/:previewSlug`
+ * route — the only place a URL segment needs mapping back to a resourceType. */
+export function resourceTypeForPreviewSlug(
+  slug: string | undefined,
+): BeWidgetResourceType | undefined {
+  const entry = (Object.entries(WIDGET_RESOURCE_CONFIG) as [BeWidgetResourceType, WidgetResourceConfig][]).find(
+    ([, config]) => config.previewSlug === slug,
+  );
+  return entry?.[0];
+}
 
 function nestedNumber(v: unknown): string | undefined {
   if (v && typeof v === "object" && "number" in v) {

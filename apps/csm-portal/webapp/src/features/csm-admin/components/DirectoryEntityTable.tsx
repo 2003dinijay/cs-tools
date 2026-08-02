@@ -130,9 +130,11 @@ export default function DirectoryEntityTable({
                 <TableRow>
                   <TableCell align="center">
                     <QueryErrorState
-                      message={`Failed to load ${entityNounPlural}: ${
-                        error instanceof Error ? error.message : "unknown error"
-                      }`}
+                      message={
+                        error instanceof Error
+                          ? error.message
+                          : `Failed to load ${entityNounPlural}.`
+                      }
                       error={error}
                     />
                   </TableCell>

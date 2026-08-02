@@ -140,7 +140,7 @@ export default function ProjectContactsTab({
               <TableRow>
                 <TableCell colSpan={COLUMN_COUNT} align="center">
                   <QueryErrorState
-                    message={`Failed to load project contacts: ${error instanceof Error ? error.message : "unknown error"}`}
+                    message={error instanceof Error && error.message.trim() ? error.message : "Failed to load project contacts."}
                     error={error}
                   />
                 </TableCell>

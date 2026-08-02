@@ -70,8 +70,6 @@ export default function AgentsLandingPagePilot({
 
   return (
     <SectionCard
-      title="Widget pilot"
-      subtitle="Config-driven dashboard widgets (preview)"
       action={
         <RefreshButton
           onRefresh={() => void handleRefresh()}
@@ -107,12 +105,20 @@ export default function AgentsLandingPagePilot({
             : (data?.widgets ?? []).map((widget) => (
                 <Box
                   key={widget.widgetId}
-                  sx={{
-                    gridColumn: {
-                      xs: `span ${Math.min(widget.gridWidth, 4)}`,
-                      sm: `span ${widget.gridWidth}`,
-                    },
-                  }}
+                  sx={
+                    // A list-shape widget renders a real table (4 rows,
+                    // several columns) — its configured `gridWidth` was
+                    // sized for the old compact text list, so it always
+                    // spans the full row here regardless of that value.
+                    widget.shape === "list"
+                      ? { gridColumn: "1 / -1" }
+                      : {
+                          gridColumn: {
+                            xs: `span ${Math.min(widget.gridWidth, 4)}`,
+                            sm: `span ${widget.gridWidth}`,
+                          },
+                        }
+                  }
                 >
                   <DashboardWidgetTile
                     widgetId={widget.widgetId}
