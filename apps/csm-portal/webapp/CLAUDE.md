@@ -98,6 +98,8 @@ interface BeDashboardWidget {
   gridWidth: number;            // 1-12, CSS grid columns this widget occupies
   filters: Record<string, unknown>;  // opaque; passed verbatim as the filters of that
                                       // resourceType's own POST /{resourceType}s/search
+  groupBy?: string;             // present on the wire; unused today — `slices` (below) is what
+                                 // actually drives pie/bar grouping
   listLimit?: number;           // shape "list" only: how many rows to show
   slices?: BeDashboardPieSlice[]; // shapes "pie"/"bar" only: see below
   section?: string;            // groups widgets under a titled sub-heading — see below
@@ -118,7 +120,7 @@ Every field beyond `widgetId`/`displayName`/`resourceType`/`shape`/`gridWidth`/`
 All four shapes ultimately do the same thing — issue that `resourceType`'s own `POST /{resourceType}s/search` and read the response — they just differ in *how many* searches and what they do with the result(s):
 
 - **`count`** (`useWidgetData`, shape `"count"`): one search, `pagination.limit: 1`, reads `total`. Renders a big number, the whole tile is a link to that resource's own tab (`WIDGET_RESOURCE_CONFIG[resourceType].buildHref(filters)`).
-- **`list`** (`useWidgetData`, shape `"list"`): one search, `pagination.limit: listLimit ?? 4`, reads the item array. Renders through `WIDGET_LIST_RENDERERS[resourceType]` (`widgetListConfig.tsx`) — reuses each resource's **own real tab component** where one exists (e.g. `case` renders through the identical `CasesList` the Cases tab uses, via the same `mapCaseSearchViewToRow` mapper), falling back to the generic `DashboardMiniTable` otherwise. A "View more" link (shown only once `total > listLimit`) goes to a dedicated, real, bookmarkable preview route (`DashboardWidgetPreviewPage`, `/dashboard/:previewSlug`) with pagination and search — not directly to the resource's own tab.
+- **`list`** (`useWidgetData`, shape `"list"`): one search, `pagination.limit: listLimit ?? 4`, reads the item array. Renders through `WIDGET_LIST_RENDERERS[resourceType]` (`widgetListConfig.tsx`) — reuses each resource's **own real tab component** where one exists (e.g. `case` renders through the identical `CasesList` the Cases tab uses, via the same `mapCaseSearchViewToRow` mapper), falling back to the generic `DashboardMiniTable` otherwise. A "View more" link (shown only once `total > (listLimit ?? 4)`) goes to a dedicated, real, bookmarkable preview route (`DashboardWidgetPreviewPage`, `/dashboard/:previewSlug`) with pagination and search — not directly to the resource's own tab.
 - **`pie`** / **`bar`** (`useWidgetPieData`): one search **per `slices` entry**, each with `pagination.limit: 1`, merging that slice's own `filters` under the widget's base `filters` (slice keys win). `useWidgetPieData` is shape-agnostic — it just resolves N labeled totals; `DashboardPieChart`/`DashboardBarChart` (both under `components/`) render the same resolved data as wedges or bars respectively. Each wedge/bar/legend row navigates to that slice's own filtered destination the same way a `count` tile does. A total of `0` across every slice renders an empty state (inbox icon + "Nothing to show here right now"), not an all-grey chart.
 
 `DashboardWidgetTile.tsx` is the per-widget dispatcher: it reads `shape` and picks which of the above to render, plus the shared per-widget loading/error states.
