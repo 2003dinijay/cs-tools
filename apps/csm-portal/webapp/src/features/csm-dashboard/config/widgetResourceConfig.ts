@@ -157,17 +157,17 @@ function translateCaseDashboardFilters(
   const fieldFilters = asCaseFieldFilters(filters.filters);
 
   const states = caseFilterValues(fieldFilters, "state");
-  if (states) out.states = states as CasesFilters["states"];
+  if (states && states.length > 0) out.states = states as CasesFilters["states"];
   const severities = caseFilterValues(fieldFilters, "severity");
-  if (severities) {
+  if (severities && severities.length > 0) {
     out.severities = severities
       .map((s) => DASHBOARD_SEVERITY_TO_S_CODE[s])
       .filter((s): s is Severity => Boolean(s));
   }
   const types = caseFilterValues(fieldFilters, "type");
-  if (types) out.caseTypes = types as CasesFilters["caseTypes"];
+  if (types && types.length > 0) out.caseTypes = types as CasesFilters["caseTypes"];
   const productNames = caseFilterValues(fieldFilters, "product");
-  if (productNames) out.productNames = productNames;
+  if (productNames && productNames.length > 0) out.productNames = productNames;
   const assignedUserIds = caseFilterValues(fieldFilters, "assignedUserId");
   if (assignedUserIds && assignedUserIds.length > 0) out.assignees = ["@me"];
   return out;
