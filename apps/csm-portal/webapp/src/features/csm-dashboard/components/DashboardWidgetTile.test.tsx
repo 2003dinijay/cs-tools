@@ -352,10 +352,10 @@ describe("DashboardWidgetTile", () => {
 
   it("shape bar: issues one search per slice and renders a bar per slice, clickable the same way as a pie slice", async () => {
     postMock.mockImplementation(
-      (_path: string, body: { filters: Record<string, unknown> }) => {
-        const severities = body.filters.severities as string[] | undefined;
-        if (severities?.includes("critical")) return Promise.resolve({ total: 1 });
-        if (severities?.includes("high")) return Promise.resolve({ total: 3 });
+      (_path: string, body: { filters: { filters: { field: string; values?: string[] }[] } }) => {
+        const severity = body.filters.filters.find((f) => f.field === "severity")?.values;
+        if (severity?.includes("critical")) return Promise.resolve({ total: 1 });
+        if (severity?.includes("high")) return Promise.resolve({ total: 3 });
         return Promise.resolve({ total: 0 });
       },
     );
@@ -366,10 +366,18 @@ describe("DashboardWidgetTile", () => {
         displayName="Open Cases by Severity"
         resourceType="case"
         shape="bar"
-        filters={{ states: ["open"] }}
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
         slices={[
-          { label: "S1 · Critical", color: "error", filters: { severities: ["critical"] } },
-          { label: "S2 · High", color: "warning", filters: { severities: ["high"] } },
+          {
+            label: "S1 · Critical",
+            color: "error",
+            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+          {
+            label: "S2 · High",
+            color: "warning",
+            filters: { filters: [{ field: "severity", op: "in", values: ["high"] }] },
+          },
         ]}
       />,
       "/cases",
@@ -378,7 +386,12 @@ describe("DashboardWidgetTile", () => {
     await waitFor(() => expect(screen.getByText("bar:S1 · Critical:1")).toBeInTheDocument());
     expect(screen.getByText("bar:S2 · High:3")).toBeInTheDocument();
     expect(postMock).toHaveBeenCalledWith("/cases/search", {
-      filters: { states: ["open"], severities: ["critical"] },
+      filters: {
+        filters: [
+          { field: "state", op: "in", values: ["open"] },
+          { field: "severity", op: "in", values: ["critical"] },
+        ],
+      },
       pagination: { offset: 0, limit: 1 },
     });
 
@@ -392,10 +405,10 @@ describe("DashboardWidgetTile", () => {
 
   it("shape pie: issues one search per slice (own filters merged under the widget's base filters) and renders values + percentages", async () => {
     postMock.mockImplementation(
-      (_path: string, body: { filters: Record<string, unknown> }) => {
-        const severities = body.filters.severities as string[] | undefined;
-        if (severities?.includes("critical")) return Promise.resolve({ total: 1 });
-        if (severities?.includes("high")) return Promise.resolve({ total: 3 });
+      (_path: string, body: { filters: { filters: { field: string; values?: string[] }[] } }) => {
+        const severity = body.filters.filters.find((f) => f.field === "severity")?.values;
+        if (severity?.includes("critical")) return Promise.resolve({ total: 1 });
+        if (severity?.includes("high")) return Promise.resolve({ total: 3 });
         return Promise.resolve({ total: 0 });
       },
     );
@@ -407,10 +420,18 @@ describe("DashboardWidgetTile", () => {
         description="Share of active cases at each severity level."
         resourceType="case"
         shape="pie"
-        filters={{ states: ["open"] }}
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
         slices={[
-          { label: "S1 · Critical", color: "error", filters: { severities: ["critical"] } },
-          { label: "S2 · High", color: "warning", filters: { severities: ["high"] } },
+          {
+            label: "S1 · Critical",
+            color: "error",
+            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+          {
+            label: "S2 · High",
+            color: "warning",
+            filters: { filters: [{ field: "severity", op: "in", values: ["high"] }] },
+          },
         ]}
       />,
     );
@@ -421,11 +442,21 @@ describe("DashboardWidgetTile", () => {
     expect(screen.getByText("1 (25%)")).toBeInTheDocument();
     expect(screen.getByText("3 (75%)")).toBeInTheDocument();
     expect(postMock).toHaveBeenCalledWith("/cases/search", {
-      filters: { states: ["open"], severities: ["critical"] },
+      filters: {
+        filters: [
+          { field: "state", op: "in", values: ["open"] },
+          { field: "severity", op: "in", values: ["critical"] },
+        ],
+      },
       pagination: { offset: 0, limit: 1 },
     });
     expect(postMock).toHaveBeenCalledWith("/cases/search", {
-      filters: { states: ["open"], severities: ["high"] },
+      filters: {
+        filters: [
+          { field: "state", op: "in", values: ["open"] },
+          { field: "severity", op: "in", values: ["high"] },
+        ],
+      },
       pagination: { offset: 0, limit: 1 },
     });
   });
@@ -439,8 +470,13 @@ describe("DashboardWidgetTile", () => {
         displayName="Cases by severity"
         resourceType="case"
         shape="pie"
-        filters={{ states: ["open"] }}
-        slices={[{ label: "Critical", filters: { severities: ["critical"] } }]}
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
       />,
       "/cases",
     );
@@ -466,7 +502,12 @@ describe("DashboardWidgetTile", () => {
         resourceType="case"
         shape="pie"
         filters={{}}
-        slices={[{ label: "Critical", filters: { severities: ["critical"] } }]}
+        slices={[
+          {
+            label: "Critical",
+            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
       />,
       "/cases",
     );

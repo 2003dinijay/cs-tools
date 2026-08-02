@@ -19,6 +19,7 @@ import { ApiQueryKeys } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
 import type { BeDashboardPieSlice, BeWidgetResourceType } from "@api/backend/types";
 import { WIDGET_RESOURCE_CONFIG } from "@features/csm-dashboard/config/widgetResourceConfig";
+import { mergeWidgetFilters } from "@features/csm-dashboard/utils/widgetFilterMerge";
 
 export interface PieSliceResult extends BeDashboardPieSlice {
   value: number;
@@ -50,7 +51,7 @@ export function useWidgetPieData(
 
   const queries = useQueries({
     queries: slices.map((slice) => {
-      const filters = { ...baseFilters, ...slice.filters };
+      const filters = mergeWidgetFilters(baseFilters, slice.filters);
       return {
         queryKey: [
           ApiQueryKeys.CSM_DASHBOARD_WIDGET_DATA,

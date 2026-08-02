@@ -38,7 +38,7 @@ function isStringArray(value: unknown): value is string[] {
  * works with every resourceType's opaque `Record<string, unknown>` filters,
  * not just case's.
  */
-interface WidgetCaseFieldFilterLike {
+export interface WidgetCaseFieldFilterLike {
   field: string;
   op: string;
   values?: string[];
@@ -54,7 +54,7 @@ interface WidgetCaseFieldFilterLike {
  * `op: "in"` — a lossy simplification acceptable only because op isn't
  * configurable from this preview UI yet.
  */
-function isCaseFieldFilterArray(value: unknown): value is WidgetCaseFieldFilterLike[] {
+export function isCaseFieldFilterArray(value: unknown): value is WidgetCaseFieldFilterLike[] {
   return (
     Array.isArray(value) &&
     value.length > 0 &&
