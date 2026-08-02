@@ -108,7 +108,7 @@ export default function AgentsLandingPagePilot({
                 <Box
                   key={widget.widgetId}
                   sx={
-                    // A list-shape widget renders a real table (5 rows,
+                    // A list-shape widget renders a real table (4 rows,
                     // several columns) — its configured `gridWidth` was
                     // sized for the old compact text list, so it always
                     // spans the full row here regardless of that value.

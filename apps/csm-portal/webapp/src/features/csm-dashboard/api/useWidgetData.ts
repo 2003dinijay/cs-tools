@@ -22,7 +22,7 @@ import { WIDGET_RESOURCE_CONFIG } from "@features/csm-dashboard/config/widgetRes
 
 /** Default number of rows fetched for a `shape: "list"` widget when the
  * template doesn't set its own `listLimit`. */
-const DEFAULT_LIST_LIMIT = 5;
+const DEFAULT_LIST_LIMIT = 4;
 
 export interface WidgetData {
   /** Total matching records — what a `shape: "count"` tile renders. */

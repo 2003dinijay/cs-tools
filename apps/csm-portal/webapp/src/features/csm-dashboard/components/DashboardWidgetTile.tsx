@@ -139,15 +139,21 @@ export default function DashboardWidgetTile({
       <Card variant="outlined" sx={{ position: "relative", p: 1.75, height: "100%" }}>
         {header}
         {isLoading ? (
-          <Skeleton variant="rounded" height={28 * (listLimit ?? 5) + 40} sx={{ mt: 1 }} />
+          <Skeleton variant="rounded" height={28 * (listLimit ?? 4) + 40} sx={{ mt: 1 }} />
         ) : isError ? (
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             Could not load this widget.
           </Typography>
         ) : (
           <>
-            <ListRenderer items={data?.items ?? []} isLoading={false} />
-            {(data?.total ?? 0) > (listLimit ?? 5) && (
+            {/* CasesList/TimeCardsTable (case, time_card) carry no margin of
+                their own — this is the one place spacing between the header
+                and the table is enforced for every resource type, so the
+                header's icon never sits flush against the table's border. */}
+            <Box sx={{ mt: 1.5 }}>
+              <ListRenderer items={data?.items ?? []} isLoading={false} />
+            </Box>
+            {(data?.total ?? 0) > (listLimit ?? 4) && (
               <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 1 }}>
                 <Button
                   component={RouterLink}

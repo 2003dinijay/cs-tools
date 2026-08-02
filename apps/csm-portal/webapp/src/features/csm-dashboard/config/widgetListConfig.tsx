@@ -80,7 +80,7 @@ function CaseWidgetList({ items, isLoading }: WidgetListRendererProps): JSX.Elem
   const cases = items.map((item) =>
     mapCaseSearchViewToRow(item as unknown as BeCaseSearchView, undefined),
   );
-  return <CasesList cases={cases} isLoading={isLoading} skeletonCount={5} />;
+  return <CasesList cases={cases} isLoading={isLoading} skeletonCount={4} />;
 }
 
 /** Time card: reuses `TimeCardsTable` verbatim via the tab's own `mapTimeCard`
@@ -92,7 +92,7 @@ function TimeCardWidgetList({ items, isLoading }: WidgetListRendererProps): JSX.
     <TimeCardsTable
       cards={cards}
       isLoading={isLoading}
-      skeletonCount={5}
+      skeletonCount={4}
       emptyText="No time cards match this widget's filters."
       groupBy="case"
       showActionsColumn={false}

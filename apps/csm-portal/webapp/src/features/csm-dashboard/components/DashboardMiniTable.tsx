@@ -37,8 +37,8 @@ interface DashboardMiniTableProps {
   columns: DashboardMiniTableColumn[];
   rows: DashboardMiniTableRow[];
   isLoading: boolean;
-  /** Number of skeleton rows to show while loading. Defaults to 5 — dashboard
-   * list widgets are always capped at 5 records. */
+  /** Number of skeleton rows to show while loading. Defaults to 4 — dashboard
+   * list widgets are always capped at 4 records. */
   skeletonCount?: number;
   emptyMessage: string;
 }
@@ -55,7 +55,7 @@ export default function DashboardMiniTable({
   columns,
   rows,
   isLoading,
-  skeletonCount = 5,
+  skeletonCount = 4,
   emptyMessage,
 }: DashboardMiniTableProps): JSX.Element {
   const theme = useTheme();
@@ -64,7 +64,6 @@ export default function DashboardMiniTable({
   return (
     <Box
       sx={{
-        mt: 1,
         border: 1,
         borderColor: "divider",
         borderRadius: 1,
