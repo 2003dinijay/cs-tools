@@ -99,7 +99,7 @@ Follow these steps in order:
 ## Testing
 
 - Mocks live in `internal/handler/helpers_test.go` — when you extend a handler interface, add the new field and method to the mock there
-- `upstreamErrors(fallback)` returns the standard upstream error table used across all handler tests
+- `upstreamErrors(fallback)` is the error table for the ten `mapUpstreamError` PATCH-handler tests (surfaces the upstream 400/409/422 reason); `upstreamErrorsGeneric(fallback)` is its counterpart for every other handler's tests, which call `mapUpstreamErrorGeneric` and always expect `fallback` for those statuses instead
 - `withUser()` injects a test user into the request context
 - `decodeJSON[T]()` decodes response bodies in assertions
 - Use real UUIDs (e.g. `"11111111-1111-1111-1111-111111111111"`) for UUID path param test values — not fake slugs like `"case-1"`

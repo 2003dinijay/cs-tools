@@ -118,11 +118,11 @@ func mapUpstreamError(w http.ResponseWriter, err error, fallbackMsg string) {
 // mapUpstreamErrorGeneric is mapUpstreamError's counterpart for every
 // non-PATCH endpoint: 401/403/404 still translate to the fixed messages, but
 // every other case — 400, 409, 422, 5xx, and unmapped statuses alike — falls
-// back to fallbackMsg instead of echoing the upstream body. The real reason
-// is still available: the caller always logs it via
-// slog.ErrorContext(ctx, ..., "err", err) before calling this, and
-// apierror.Error.Error() includes both the status code and the body, so nothing
-// is lost — it just isn't returned to the browser.
+// back to fallbackMsg instead of echoing the upstream body to the caller.
+// The full upstream reason (status + body) is still expected in the caller's
+// own slog.ErrorContext(ctx, ..., "err", err) call — server-side logs are
+// operator-facing, not caller-facing, so the detail this function withholds
+// from the HTTP response is deliberately preserved there for debugging.
 func mapUpstreamErrorGeneric(w http.ResponseWriter, err error, fallbackMsg string) {
 	var apiErr *apierror.Error
 	if errors.As(err, &apiErr) {

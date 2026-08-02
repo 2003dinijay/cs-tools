@@ -684,6 +684,29 @@ func TestCreateChangeRequestComment(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("upstream CreateComment error is mapped correctly", func(t *testing.T) {
+		for _, tc := range upstreamErrorsGeneric("Failed to create change request comment.") {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				client := &mockEntityChangeRequestClient{
+					getChangeRequestFn: func(_ context.Context, _ string) ([]byte, error) {
+						return []byte(`{"id":"` + testCRID + `"}`), nil
+					},
+					createCommentFn: func(_ context.Context, _ []byte) ([]byte, error) {
+						return nil, tc.err
+					},
+				}
+				h := NewChangeRequestHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests/"+testCRID+"/comments", strings.NewReader(`{"type":"comment","content":"hi"}`)))
+				r.SetPathValue("id", testCRID)
+				w := httptest.NewRecorder()
+				h.CreateChangeRequestComment(w, r)
+				assertStatus(t, w, tc.wantCode)
+				assertErrorMessage(t, w, tc.wantMsg)
+			})
+		}
+	})
 }
 
 func TestSearchChangeRequestComments(t *testing.T) {

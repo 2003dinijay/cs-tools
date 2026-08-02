@@ -108,7 +108,10 @@ export default function IncidentsFilterBar({
   const activeCount = countActiveIncidentFilters(filters);
   const hasActive = activeCount > 0;
 
-  const today = useMemo(() => todayUTCDateOnly(), []);
+  // Recomputed every render (not memoized) — a `useMemo(..., [])` would
+  // freeze this at the component's mount date and stop matching "today" for
+  // any session left open across a UTC midnight.
+  const today = todayUTCDateOnly();
   const createdEndDate = parseDateOnly(filters.createdEndDate);
   const createdStartDate = parseDateOnly(filters.createdStartDate);
   const fromMaxDate = createdEndDate && createdEndDate < today ? createdEndDate : today;
@@ -128,6 +131,31 @@ export default function IncidentsFilterBar({
       ...filters,
       priorities: (Array.isArray(val) ? val : [val]) as BeIncidentPriority[],
     });
+  };
+
+  /**
+   * `minDate`/`maxDate` only constrain the calendar popup — MUI's DatePicker
+   * still fires `onChange` for an out-of-range value typed directly into the
+   * field, so each handler re-checks the same bound here before accepting it,
+   * rather than trusting the picker's UI-only validation.
+   */
+  const handleCreatedStartChange = (date: unknown): void => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+      onChange({ ...filters, createdStartDate: "" });
+      return;
+    }
+    if (date > fromMaxDate) return;
+    onChange({ ...filters, createdStartDate: formatDateOnly(date) });
+  };
+
+  const handleCreatedEndChange = (date: unknown): void => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+      onChange({ ...filters, createdEndDate: "" });
+      return;
+    }
+    if (date > today) return;
+    if (createdStartDate && date < createdStartDate) return;
+    onChange({ ...filters, createdEndDate: formatDateOnly(date) });
   };
 
   return (
@@ -251,15 +279,7 @@ export default function IncidentsFilterBar({
                   label="Created from (UTC)"
                   value={createdStartDate}
                   maxDate={fromMaxDate}
-                  onChange={(date) =>
-                    onChange({
-                      ...filters,
-                      createdStartDate:
-                        date instanceof Date && !Number.isNaN(date.getTime())
-                          ? formatDateOnly(date)
-                          : "",
-                    })
-                  }
+                  onChange={handleCreatedStartChange}
                   slotProps={{
                     textField: { size: "small", fullWidth: true },
                     field: { clearable: true },
@@ -275,15 +295,7 @@ export default function IncidentsFilterBar({
                   value={createdEndDate}
                   minDate={createdStartDate ?? undefined}
                   maxDate={today}
-                  onChange={(date) =>
-                    onChange({
-                      ...filters,
-                      createdEndDate:
-                        date instanceof Date && !Number.isNaN(date.getTime())
-                          ? formatDateOnly(date)
-                          : "",
-                    })
-                  }
+                  onChange={handleCreatedEndChange}
                   slotProps={{
                     textField: { size: "small", fullWidth: true },
                     field: { clearable: true },
