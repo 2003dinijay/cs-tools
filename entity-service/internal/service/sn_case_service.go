@@ -344,6 +344,8 @@ type snCaseFilters struct {
 	// IsEscalated: a *bool (not bool) so that an explicit false is still sent on
 	// the wire -- omitempty on a pointer only drops a nil, not a false value.
 	IsEscalated *bool `json:"isEscalated,omitempty"`
+	// OrGroups: see domain.SearchCasesFilters.OrGroups doc comment.
+	OrGroups []snCaseFilterGroup `json:"orGroups,omitempty"`
 }
 
 // snTaskSLAFilter represents the Task SLA filter for SN's POST /cases/search request.
@@ -1923,6 +1925,92 @@ func (s *snCaseService) DeleteCaseAttachment(ctx context.Context, req domain.Del
 	return domain.DeleteAttachmentResponse{Message: snResp.Message}, nil
 }
 
+// validateOrGroupEnums validates one OrGroups branch's enum-valued fields
+// against the same validXxx maps the top-level (AND-only) filters use,
+// mirroring that validation exactly (unrecognized values would otherwise be
+// silently dropped by domainStatesToSNIDs/etc's omitempty behavior).
+func validateOrGroupEnums(i int, group domain.CaseFilterGroup) error {
+	for _, t := range group.Types {
+		if _, ok := snCaseTypeMap[t]; !ok {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: type contains invalid value: %s", i, t)}
+		}
+	}
+	for _, st := range group.States {
+		if !validCaseState[st] {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: state contains invalid value: %s", i, st)}
+		}
+	}
+	for _, sv := range group.Severities {
+		if !validCaseSeverity[sv] {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: severity contains invalid value: %s", i, sv)}
+		}
+	}
+	for _, it := range group.IssueTypes {
+		if !validCaseIssueType[it] {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: issueType contains invalid value: %s", i, it)}
+		}
+	}
+	for _, et := range group.EngagementTypes {
+		if !validEngagementType[et] {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: engagementType contains invalid value: %s", i, et)}
+		}
+	}
+	for _, ws := range group.WorkStates {
+		if ws != domain.CaseWorkStateOngoing && ws != domain.CaseWorkStatePaused {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: workState contains invalid value: %s", i, ws)}
+		}
+	}
+	for _, lvl := range group.EscalationLevels {
+		if !validEscalationLevel[lvl] {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: escalationLevel contains invalid value: %s", i, lvl)}
+		}
+	}
+	if err := validateUUIDs(fmt.Sprintf("orGroups[%d].assignedUserId", i), group.AssignedUserIDs); err != nil {
+		return err
+	}
+	return nil
+}
+
+// snCaseFilterGroup is one ANDed branch of an snCaseFilters.OrGroups entry --
+// see domain.CaseFilterGroup doc comment for which fields are supported here.
+type snCaseFilterGroup struct {
+	CaseTypes          []string `json:"caseTypes,omitempty"`
+	StateKeys          []int    `json:"stateKeys,omitempty"`
+	SeverityKeys       []int    `json:"severityKeys,omitempty"`
+	IssueTypeKeys      []int    `json:"issueTypeKeys,omitempty"`
+	EngagementTypeKeys []int    `json:"engagementTypeKeys,omitempty"`
+	WorkStateKeys      []int    `json:"workStateKeys,omitempty"`
+	ProjectIDs         []string `json:"projectIds,omitempty"`
+	DeploymentIDs      []string `json:"deploymentIds,omitempty"`
+	AssignedUserIDs    []string `json:"assignedUserIds,omitempty"`
+	EscalationLevels   []string `json:"escalationLevel,omitempty"`
+}
+
+// buildSNCaseFilterGroups maps each domain.CaseFilterGroup branch into its SN
+// wire shape, reusing the exact same domainXxxToSNIDs/uuidsToSysids
+// conversions the top-level filters use.
+func buildSNCaseFilterGroups(groups []domain.CaseFilterGroup) []snCaseFilterGroup {
+	if len(groups) == 0 {
+		return nil
+	}
+	result := make([]snCaseFilterGroup, 0, len(groups))
+	for _, g := range groups {
+		result = append(result, snCaseFilterGroup{
+			CaseTypes:          domainTypeKeysToSN(g.Types),
+			StateKeys:          domainStatesToSNIDs(g.States),
+			SeverityKeys:       domainSeveritiesToSNIDs(g.Severities),
+			IssueTypeKeys:      domainIssueTypesToSNIDs(g.IssueTypes),
+			EngagementTypeKeys: domainEngagementTypesToSNIDs(g.EngagementTypes),
+			WorkStateKeys:      domainWorkStatesToSNIDs(g.WorkStates),
+			ProjectIDs:         uuidsToSysids(g.ProjectIDs),
+			DeploymentIDs:      uuidsToSysids(g.DeploymentIDs),
+			AssignedUserIDs:    uuidsToSysids(g.AssignedUserIDs),
+			EscalationLevels:   g.EscalationLevels,
+		})
+	}
+	return result
+}
+
 // buildSNCaseFilters maps a domain.ParsedCaseFilters (already translated from
 // the generic filters array by ParseCaseFieldFilters) into the exact same
 // snCaseFilters payload SearchCases has always sent to the backing service --
@@ -1968,6 +2056,7 @@ func buildSNCaseFilters(parsed domain.ParsedCaseFilters, searchQuery string) snC
 		TaskSLAFilter:             buildSNTaskSLAFilter(parsed.TaskSLAFilter),
 		EscalationLevels:          parsed.EscalationLevels,
 		IsEscalated:               parsed.HasActiveEscalation,
+		OrGroups:                  buildSNCaseFilterGroups(parsed.OrGroups),
 	}
 }
 
@@ -1987,6 +2076,12 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		return domain.SearchCasesResponse{}, err
 	}
 	req.Parsed = parsed
+
+	orGroups, err := ParseCaseFieldFilterGroups(req.Filters.OrGroups)
+	if err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+	req.Parsed.OrGroups = orGroups
 
 	if req.Parsed.ClosedEndDate != nil && req.Parsed.ClosedStartDate != nil &&
 		req.Parsed.ClosedEndDate.Before(*req.Parsed.ClosedStartDate) {
@@ -2069,6 +2164,11 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 	for _, lvl := range req.Parsed.EscalationLevels {
 		if !validEscalationLevel[lvl] {
 			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "escalationLevel contains invalid value: " + lvl}
+		}
+	}
+	for i, group := range req.Parsed.OrGroups {
+		if err := validateOrGroupEnums(i, group); err != nil {
+			return domain.SearchCasesResponse{}, err
 		}
 	}
 

@@ -547,6 +547,76 @@ func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string,
 	return p, nil
 }
 
+// ParseCaseFieldFilterGroups translates SearchCasesFilters.OrGroups (each an
+// independent CaseFieldFilter array) into domain.CaseFilterGroup entries,
+// reusing ParseCaseFieldFilters's per-field parsing/validation for every
+// group. Only fields with a direct, non-subquery ServiceNow mapping are
+// allowed inside a branch (see domain.CaseFilterGroup doc comment) -- a group
+// containing any other field is rejected with a validation error naming the
+// unsupported field, rather than silently dropping it.
+func ParseCaseFieldFilterGroups(groups [][]domain.CaseFieldFilter) ([]domain.CaseFilterGroup, error) {
+	result := make([]domain.CaseFilterGroup, 0, len(groups))
+	for _, group := range groups {
+		parsed, err := ParseCaseFieldFilters(group, "", nil)
+		if err != nil {
+			return nil, err
+		}
+		if err := rejectUnsupportedOrGroupFields(parsed); err != nil {
+			return nil, err
+		}
+		result = append(result, domain.CaseFilterGroup{
+			Types:            parsed.Types,
+			States:           parsed.States,
+			Severities:       parsed.Severities,
+			EngagementTypes:  parsed.EngagementTypes,
+			IssueTypes:       parsed.IssueTypes,
+			WorkStates:       parsed.WorkStates,
+			ProjectIDs:       parsed.ProjectIDs,
+			DeploymentIDs:    parsed.DeploymentIDs,
+			AssignedUserIDs:  parsed.AssignedUserIDs,
+			EscalationLevels: parsed.EscalationLevels,
+		})
+	}
+	return result, nil
+}
+
+// rejectUnsupportedOrGroupFields errors if parsed carries any field
+// CaseFilterGroup does not model -- these remain usable only via the
+// top-level (AND-only) Filters array, not inside an OR branch.
+func rejectUnsupportedOrGroupFields(parsed domain.ParsedCaseFilters) error {
+	switch {
+	case len(parsed.Tags) > 0 || len(parsed.ExcludeTags) > 0:
+		return &apierror.ValidationError{Msg: "orGroups: field \"tag\" is not supported inside an OR group"}
+	case parsed.ParentID != nil:
+		return &apierror.ValidationError{Msg: "orGroups: field \"parentId\" is not supported inside an OR group"}
+	case len(parsed.CreatedBy) > 0 || parsed.CreatedByMe:
+		return &apierror.ValidationError{Msg: "orGroups: field \"createdBy\" is not supported inside an OR group"}
+	case parsed.ClosedStartDate != nil || parsed.ClosedEndDate != nil:
+		return &apierror.ValidationError{Msg: "orGroups: field \"closedOn\" is not supported inside an OR group"}
+	case parsed.StartCreatedDate != nil || parsed.EndCreatedDate != nil:
+		return &apierror.ValidationError{Msg: "orGroups: field \"createdOn\" is not supported inside an OR group"}
+	case parsed.StartUpdatedDate != nil || parsed.EndUpdatedDate != nil:
+		return &apierror.ValidationError{Msg: "orGroups: field \"updatedOn\" is not supported inside an OR group"}
+	case len(parsed.ProductNames) > 0:
+		return &apierror.ValidationError{Msg: "orGroups: field \"product\" is not supported inside an OR group"}
+	case len(parsed.ProjectOnboardingStatuses) > 0:
+		return &apierror.ValidationError{Msg: "orGroups: field \"projectOnboardingStatus\" is not supported inside an OR group"}
+	case len(parsed.ProjectTypeIDs) > 0:
+		return &apierror.ValidationError{Msg: "orGroups: field \"projectType\" is not supported inside an OR group"}
+	case len(parsed.IntegrationCsTeamIDs) > 0:
+		return &apierror.ValidationError{Msg: "orGroups: field \"integrationCsTeam\" is not supported inside an OR group"}
+	case parsed.Unassigned:
+		return &apierror.ValidationError{Msg: "orGroups: field \"assignedUserId\" (isEmpty) is not supported inside an OR group"}
+	case parsed.ResolutionNotesEmpty:
+		return &apierror.ValidationError{Msg: "orGroups: field \"resolutionNotes\" is not supported inside an OR group"}
+	case parsed.TaskSLAFilter != nil:
+		return &apierror.ValidationError{Msg: "orGroups: field \"taskSLABusinessElapsedPercent\" is not supported inside an OR group"}
+	case parsed.HasActiveEscalation != nil:
+		return &apierror.ValidationError{Msg: "orGroups: field \"escalation\" is not supported inside an OR group"}
+	}
+	return nil
+}
+
 // parseCaseFilterPercent parses a single filter value into a non-negative
 // integer percentage, for fields like taskSLABusinessElapsedPercent. No upper
 // bound: confirmed live against wso2sndev that a long-overdue, never-resolved

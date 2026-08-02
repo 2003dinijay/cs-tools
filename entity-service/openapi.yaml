@@ -4958,6 +4958,23 @@ components:
           items:
             $ref: '#/components/schemas/CaseFieldFilter'
           description: The generic filter expression array -- see CaseFieldFilter.
+        orGroups:
+          type: array
+          items:
+            type: array
+            items:
+              $ref: '#/components/schemas/CaseFieldFilter'
+          description: >-
+            Cross-field OR: each inner array is a set of CaseFieldFilter
+            predicates ANDed together (a "branch"); the branches themselves
+            are OR'd against each other, and the whole orGroups result is
+            ANDed with filters (if both are present). Only fields with a
+            direct, non-subquery ServiceNow mapping are supported inside a
+            branch: type, state, severity, engagementType, issueType,
+            workState, projectId, deploymentId, assignedUserId,
+            escalationLevel. A branch containing any other field (e.g. tag,
+            taskSLABusinessElapsedPercent, createdOn) is rejected with a
+            validation error. Requires ServiceNow data source.
 
     SearchCasesRequest:
       type: object
