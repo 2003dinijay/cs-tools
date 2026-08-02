@@ -150,7 +150,7 @@ func TestParseCaseFieldFilters_NamedFieldTranslations(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p, err := ParseCaseFieldFilters(tc.in, callerEmail, callerErr)
+			p, err := ParseCaseFieldFilters(tc.in, callerEmail, callerErr, time.Now().UTC())
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -176,7 +176,7 @@ func TestParseCaseFieldFilters_Rejections(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseCaseFieldFilters(tc.in, "caller@example.com", nil)
+			_, err := ParseCaseFieldFilters(tc.in, "caller@example.com", nil, time.Now().UTC())
 			if err == nil {
 				t.Fatalf("expected an error, got nil")
 			}
@@ -193,7 +193,7 @@ func TestParseCaseFieldFilters_DateOnlyLteBoundIncludesWholeDay(t *testing.T) {
 		{Field: "createdOn", Op: "lte", Values: []string{"2026-01-31"}},
 	}
 
-	p, err := ParseCaseFieldFilters(filters, "caller@example.com", nil)
+	p, err := ParseCaseFieldFilters(filters, "caller@example.com", nil, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -215,14 +215,128 @@ func TestParseCaseFieldFilters_DateOnlyLteBoundIncludesWholeDay(t *testing.T) {
 func TestParseCaseFieldFilters_CreatedByCurrentUser_RequiresCallerEmail(t *testing.T) {
 	filters := []domain.CaseFieldFilter{{Field: "createdBy", Op: "eq", Values: []string{currentUserFilterPlaceholder}}}
 
-	if _, err := ParseCaseFieldFilters(filters, "", nil); err == nil {
+	if _, err := ParseCaseFieldFilters(filters, "", nil, time.Now().UTC()); err == nil {
 		t.Fatalf("expected an error when no caller email is available")
 	} else if _, ok := err.(*apierror.UnauthorizedError); !ok {
 		t.Fatalf("expected *apierror.UnauthorizedError, got %T: %v", err, err)
 	}
 
 	forwardedErr := &apierror.ValidationError{Msg: "x-user-id-token: malformed"}
-	if _, err := ParseCaseFieldFilters(filters, "", forwardedErr); err != forwardedErr {
+	if _, err := ParseCaseFieldFilters(filters, "", forwardedErr, time.Now().UTC()); err != forwardedErr {
 		t.Fatalf("expected the resolver's own error to be forwarded, got %v", err)
+	}
+}
+
+// fixedNow is a fixed reference instant (a Saturday, no significance beyond
+// being unambiguous) every resolveRelativeDate test below resolves against,
+// so the expected outputs are exact rather than moving-target "relative to
+// whenever this test happens to run."
+var fixedNow = time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC)
+
+func TestResolveRelativeDate_Resolutions(t *testing.T) {
+	cases := []struct {
+		name     string
+		value    string
+		expected string
+	}{
+		{"today", "__today__", "2026-08-15"},
+		{"daysAgo 0", "__daysAgo:0__", "2026-08-15"},
+		{"daysAgo 2", "__daysAgo:2__", "2026-08-13"},
+		{"daysAgo 30 crosses month boundary", "__daysAgo:30__", "2026-07-16"},
+		{"startOfMonth 0 (this month)", "__startOfMonth:0__", "2026-08-01"},
+		{"startOfMonth -1 (last month)", "__startOfMonth:-1__", "2026-07-01"},
+		{"startOfMonth -2 (month before last)", "__startOfMonth:-2__", "2026-06-01"},
+		{"startOfMonth 1 (next month)", "__startOfMonth:1__", "2026-09-01"},
+		{"endOfMonth 0 (this month, 31 days)", "__endOfMonth:0__", "2026-08-31"},
+		{"endOfMonth 1 (next month, 30 days)", "__endOfMonth:1__", "2026-09-30"},
+		{"startOfQuarter 0 (Q3: Jul-Sep)", "__startOfQuarter:0__", "2026-07-01"},
+		{"startOfQuarter -1 (Q2: Apr-Jun)", "__startOfQuarter:-1__", "2026-04-01"},
+		{"endOfQuarter 0 (Q3 ends Sep 30)", "__endOfQuarter:0__", "2026-09-30"},
+		{"endOfQuarter 1 (Q4 ends Dec 31)", "__endOfQuarter:1__", "2026-12-31"},
+		{"year rollover: startOfMonth 6 from August", "__startOfMonth:6__", "2027-02-01"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resolved, matched, err := resolveRelativeDate(tc.value, fixedNow)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !matched {
+				t.Fatalf("expected %q to be recognized as a relative-date placeholder", tc.value)
+			}
+			if resolved != tc.expected {
+				t.Fatalf("resolveRelativeDate(%q) = %q, want %q", tc.value, resolved, tc.expected)
+			}
+		})
+	}
+}
+
+func TestResolveRelativeDate_NotAPlaceholder(t *testing.T) {
+	cases := []string{"2026-07-01", "2026-07-01T00:00:00Z", "__current_user_email__", "__bogus__", "__bogus:1__", "not-a-date-at-all"}
+
+	for _, value := range cases {
+		t.Run(value, func(t *testing.T) {
+			resolved, matched, err := resolveRelativeDate(value, fixedNow)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if matched {
+				t.Fatalf("expected %q not to be recognized as a relative-date placeholder, got resolved=%q", value, resolved)
+			}
+		})
+	}
+}
+
+func TestResolveRelativeDate_Rejections(t *testing.T) {
+	cases := []string{
+		"__daysAgo__",       // missing required offset
+		"__daysAgo:abc__",   // non-integer offset
+		"__daysAgo:-1__",    // negative offset not allowed for daysAgo
+		"__today:5__",       // today takes no argument
+		"__startOfMonth__",  // missing required offset
+		"__startOfQuarter__", // missing required offset
+	}
+
+	for _, value := range cases {
+		t.Run(value, func(t *testing.T) {
+			_, _, err := resolveRelativeDate(value, fixedNow)
+			if err == nil {
+				t.Fatalf("expected an error for %q, got nil", value)
+			}
+			var ve *apierror.ValidationError
+			if !asValidationError(err, &ve) {
+				t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestParseCaseFieldFilters_RelativeDatePlaceholders(t *testing.T) {
+	filters := []domain.CaseFieldFilter{
+		{Field: "createdOn", Op: "gte", Values: []string{"__daysAgo:30__"}},
+		{Field: "createdOn", Op: "lte", Values: []string{"__today__"}},
+	}
+
+	p, err := ParseCaseFieldFilters(filters, "caller@example.com", nil, fixedNow)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.StartCreatedDate == nil || p.EndCreatedDate == nil {
+		t.Fatalf("expected both StartCreatedDate and EndCreatedDate set")
+	}
+
+	wantStart := time.Date(2026, time.July, 16, 0, 0, 0, 0, time.UTC)
+	if !p.StartCreatedDate.Equal(wantStart) {
+		t.Fatalf("StartCreatedDate = %v, want %v", p.StartCreatedDate, wantStart)
+	}
+
+	// lte on a relative-date placeholder still gets the same inclusive-of-
+	// whole-day bump a literal YYYY-MM-DD lte value gets (see
+	// TestParseCaseFieldFilters_DateOnlyLteBoundIncludesWholeDay) -- resolution
+	// happens before that logic runs, not around it.
+	wantEnd := time.Date(2026, time.August, 15, 23, 59, 59, 999999999, time.UTC)
+	if !p.EndCreatedDate.Equal(wantEnd) {
+		t.Fatalf("EndCreatedDate = %v, want %v (inclusive of the whole day)", p.EndCreatedDate, wantEnd)
 	}
 }

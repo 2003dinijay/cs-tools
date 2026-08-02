@@ -1924,7 +1924,7 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 
 	token := middleware.UserIDTokenFromContext(ctx)
 	callerEmail, callerEmailErr := resolveCaseFilterCallerEmail(token)
-	parsed, err := ParseCaseFieldFilters(req.Filters.Filters, callerEmail, callerEmailErr)
+	parsed, err := ParseCaseFieldFilters(req.Filters.Filters, callerEmail, callerEmailErr, time.Now().UTC())
 	if err != nil {
 		return domain.SearchCasesResponse{}, err
 	}

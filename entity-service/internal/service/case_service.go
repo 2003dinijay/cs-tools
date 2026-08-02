@@ -20,6 +20,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -362,7 +363,7 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 
 	token := middleware.UserIDTokenFromContext(ctx)
 	callerEmail, callerEmailErr := resolveCaseFilterCallerEmail(token)
-	parsed, err := ParseCaseFieldFilters(req.Filters.Filters, callerEmail, callerEmailErr)
+	parsed, err := ParseCaseFieldFilters(req.Filters.Filters, callerEmail, callerEmailErr, time.Now().UTC())
 	if err != nil {
 		return domain.SearchCasesResponse{}, err
 	}

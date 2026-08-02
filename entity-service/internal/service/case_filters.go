@@ -18,6 +18,8 @@ package service
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -64,11 +66,144 @@ func badCaseFilterCombo(f domain.CaseFieldFilter) error {
 	return &apierror.ValidationError{Msg: fmt.Sprintf("filters: field %q does not support op %q", f.Field, f.Op)}
 }
 
-// parseCaseFilterDate parses a single filter value into a date/time, accepting
-// either a full RFC3339 timestamp or a plain YYYY-MM-DD date (interpreted as
-// UTC midnight), since callers may reasonably send either for a date-range
-// bound.
-func parseCaseFilterDate(f domain.CaseFieldFilter, value string) (*time.Time, error) {
+// relativeDatePlaceholderPattern matches the shape of every relative-date
+// placeholder this package recognizes: __<name>__ (no argument, e.g. __today__)
+// or __<name>:<argument>__ (e.g. __daysAgo:30__, __startOfMonth:-1__,
+// __daysAgo:abc__). The argument capture is deliberately permissive (any
+// run of non-underscore characters, not just digits) so a non-integer
+// argument like "abc" still matches this shape -- letting
+// parseRelativeDateArg reject it with a targeted "non-integer offset" error
+// -- rather than silently falling through as "not a placeholder at all"
+// just because it happened to fail a stricter \d+ match. A string that
+// doesn't match this shape at all is not one of ours -- it falls through to
+// the literal RFC3339/YYYY-MM-DD parse in parseCaseFilterDate, which
+// rejects it with its own generic message. A string that DOES match this
+// shape but names an unrecognized function gets the same fallthrough.
+var relativeDatePlaceholderPattern = regexp.MustCompile(`^__([a-zA-Z]+)(?::([^_]*))?__$`)
+
+// resolveRelativeDate resolves a filter value like "__daysAgo:2__" or
+// "__startOfMonth:-1__" to a concrete "YYYY-MM-DD" string computed against
+// now (always UTC, matching the rest of this pipeline's date handling --
+// see formatSNDateTimeUTC). Returns matched=false, err=nil for a value that
+// isn't one of these placeholders at all (a literal date, or garbage that
+// parseCaseFilterDate's own validation will reject).
+//
+// Supported placeholders (N is a signed integer offset, 0 = current):
+//   - __today__                 today's date
+//   - __daysAgo:N__             today minus N days (N >= 0)
+//   - __startOfMonth:N__        1st of the month N months from now
+//   - __endOfMonth:N__          last day of the month N months from now
+//   - __startOfQuarter:N__      1st of the quarter N quarters from now
+//   - __endOfQuarter:N__        last day of the quarter N quarters from now
+//
+// Each resolves to a plain date (no time component); the caller (parseCaseFilterDate)
+// applies the existing date-only handling -- including the lte
+// inclusive-of-whole-day bump -- identically to a literal "YYYY-MM-DD" value.
+func resolveRelativeDate(value string, now time.Time) (resolved string, matched bool, err error) {
+	m := relativeDatePlaceholderPattern.FindStringSubmatch(value)
+	if m == nil {
+		return "", false, nil
+	}
+	name, argStr := m[1], m[2]
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	switch name {
+	case "today":
+		if argStr != "" {
+			return "", false, &apierror.ValidationError{Msg: fmt.Sprintf("filters: %q does not take an argument", value)}
+		}
+		return today.Format("2006-01-02"), true, nil
+
+	case "daysAgo":
+		n, err := parseRelativeDateArg(value, argStr)
+		if err != nil {
+			return "", false, err
+		}
+		if n < 0 {
+			return "", false, &apierror.ValidationError{Msg: fmt.Sprintf("filters: %q must have a non-negative offset", value)}
+		}
+		return today.AddDate(0, 0, -n).Format("2006-01-02"), true, nil
+
+	case "startOfMonth":
+		n, err := parseRelativeDateArg(value, argStr)
+		if err != nil {
+			return "", false, err
+		}
+		return startOfRelativeMonth(now, n).Format("2006-01-02"), true, nil
+
+	case "endOfMonth":
+		n, err := parseRelativeDateArg(value, argStr)
+		if err != nil {
+			return "", false, err
+		}
+		return startOfRelativeMonth(now, n+1).AddDate(0, 0, -1).Format("2006-01-02"), true, nil
+
+	case "startOfQuarter":
+		n, err := parseRelativeDateArg(value, argStr)
+		if err != nil {
+			return "", false, err
+		}
+		return startOfRelativeQuarter(now, n).Format("2006-01-02"), true, nil
+
+	case "endOfQuarter":
+		n, err := parseRelativeDateArg(value, argStr)
+		if err != nil {
+			return "", false, err
+		}
+		return startOfRelativeQuarter(now, n+1).AddDate(0, 0, -1).Format("2006-01-02"), true, nil
+
+	default:
+		// Shape matches (__name__ or __name:N__) but the name isn't one of
+		// ours -- not a relative-date placeholder at all (e.g. some other
+		// package's __current_x__ token used by mistake on a date field).
+		// Let parseCaseFilterDate's literal-date parse reject it.
+		return "", false, nil
+	}
+}
+
+// parseRelativeDateArg parses a relativeDatePlaceholderPattern match's :N
+// argument, rejecting a missing or non-integer offset with an error naming
+// the full original placeholder value.
+func parseRelativeDateArg(value, argStr string) (int, error) {
+	if argStr == "" {
+		return 0, &apierror.ValidationError{Msg: fmt.Sprintf("filters: %q requires a :N integer offset", value)}
+	}
+	n, err := strconv.Atoi(argStr)
+	if err != nil {
+		return 0, &apierror.ValidationError{Msg: fmt.Sprintf("filters: %q has a non-integer offset", value)}
+	}
+	return n, nil
+}
+
+// startOfRelativeMonth returns the 1st of the month n months from now's
+// month (UTC, midnight), e.g. n=0 this month, n=-1 last month, n=1 next
+// month. Relies on time.AddDate's month normalization for year rollover.
+func startOfRelativeMonth(now time.Time, n int) time.Time {
+	base := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	return base.AddDate(0, n, 0)
+}
+
+// startOfRelativeQuarter returns the 1st of the quarter n quarters from now's
+// quarter (UTC, midnight), e.g. n=0 this quarter, n=-1 last quarter.
+func startOfRelativeQuarter(now time.Time, n int) time.Time {
+	quarterStartMonth := ((int(now.Month())-1)/3)*3 + 1
+	base := time.Date(now.Year(), time.Month(quarterStartMonth), 1, 0, 0, 0, 0, time.UTC)
+	return base.AddDate(0, n*3, 0)
+}
+
+// parseCaseFilterDate parses a single filter value into a date/time. The
+// value may be one of the relative-date placeholders resolveRelativeDate
+// recognizes, a full RFC3339 timestamp, or a plain YYYY-MM-DD date
+// (interpreted as UTC midnight) -- callers may reasonably send any of these
+// for a date-range bound. now is the reference instant relative-date
+// placeholders resolve against (production passes time.Now().UTC(); tests
+// pass a fixed instant).
+func parseCaseFilterDate(f domain.CaseFieldFilter, value string, now time.Time) (*time.Time, error) {
+	if resolved, matched, err := resolveRelativeDate(value, now); err != nil {
+		return nil, err
+	} else if matched {
+		value = resolved
+	}
 	if t, err := time.Parse(time.RFC3339, value); err == nil {
 		return &t, nil
 	}
@@ -79,7 +214,7 @@ func parseCaseFilterDate(f domain.CaseFieldFilter, value string) (*time.Time, er
 		}
 		return &t, nil
 	}
-	return nil, &apierror.ValidationError{Msg: fmt.Sprintf("filters: field %q op %q value %q must be an RFC3339 timestamp or YYYY-MM-DD date", f.Field, f.Op, value)}
+	return nil, &apierror.ValidationError{Msg: fmt.Sprintf("filters: field %q op %q value %q must be an RFC3339 timestamp, YYYY-MM-DD date, or a recognized relative-date placeholder", f.Field, f.Op, value)}
 }
 
 // ParseCaseFieldFilters translates the case-search wire contract's generic
@@ -98,7 +233,11 @@ func parseCaseFilterDate(f domain.CaseFieldFilter, value string) (*time.Time, er
 // didn't. Both are only consulted if the array actually contains a
 // createdBy+eq current-user filter, so callers can resolve them
 // unconditionally without changing behavior for requests that don't need it.
-func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string, callerEmailErr error) (domain.ParsedCaseFilters, error) {
+//
+// now is the reference instant createdOn/updatedOn/closedOn's relative-date
+// placeholders (see resolveRelativeDate) resolve against; production callers
+// pass time.Now().UTC(), tests pass a fixed instant.
+func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string, callerEmailErr error, now time.Time) (domain.ParsedCaseFilters, error) {
 	var p domain.ParsedCaseFilters
 
 	for _, f := range filters {
@@ -255,7 +394,7 @@ func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string,
 			if err := requireCaseFilterValues(f); err != nil {
 				return domain.ParsedCaseFilters{}, err
 			}
-			t, err := parseCaseFilterDate(f, f.Values[0])
+			t, err := parseCaseFilterDate(f, f.Values[0], now)
 			if err != nil {
 				return domain.ParsedCaseFilters{}, err
 			}
@@ -272,7 +411,7 @@ func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string,
 			if err := requireCaseFilterValues(f); err != nil {
 				return domain.ParsedCaseFilters{}, err
 			}
-			t, err := parseCaseFilterDate(f, f.Values[0])
+			t, err := parseCaseFilterDate(f, f.Values[0], now)
 			if err != nil {
 				return domain.ParsedCaseFilters{}, err
 			}
@@ -289,7 +428,7 @@ func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string,
 			if err := requireCaseFilterValues(f); err != nil {
 				return domain.ParsedCaseFilters{}, err
 			}
-			t, err := parseCaseFilterDate(f, f.Values[0])
+			t, err := parseCaseFilterDate(f, f.Values[0], now)
 			if err != nil {
 				return domain.ParsedCaseFilters{}, err
 			}
