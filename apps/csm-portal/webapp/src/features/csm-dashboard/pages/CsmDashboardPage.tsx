@@ -16,74 +16,127 @@
 
 import { Box, Skeleton, Typography } from "@wso2/oxygen-ui";
 import { useCallback, useMemo, type JSX } from "react";
-import { useSearchParams } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import AbtDashboardHeader from "@features/csm-dashboard/components/AbtDashboardHeader";
 import AgentsLandingPagePilot from "@features/csm-dashboard/components/AgentsLandingPagePilot";
 import { useDashboardList } from "@features/csm-dashboard/api/useDashboardList";
+import { useTeams } from "@features/csm-dashboard/api/useTeams";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import type { DashboardKey } from "@features/csm-dashboard/types/abtDashboard";
-
-/** Query param holding the selected dashboard id — kept in the URL so a
- * link to a specific dashboard (and, for team-based ones, a specific team;
- * see `TEAM_PARAM`) is shareable/bookmarkable/refresh-safe, matching the
- * convention in `casesFiltersUrl.ts`. */
-const DASHBOARD_PARAM = "dashboard";
-/** Query param holding the selected team id, only meaningful (and only
- * ever set) while the current dashboard is `isTeamBased`. */
-const TEAM_PARAM = "team";
+import {
+  buildDashboardHash,
+  parseDashboardHash,
+} from "@features/csm-dashboard/utils/dashboardUrlHash";
 
 /**
- * Top-level CSM dashboard. The dashboard list and the default selection are
- * BE-driven: `GET /dashboards` populates the switcher in the header, and the
- * `isDefault` entry is selected on load unless the URL already names a
- * (valid) dashboard. Dashboards are selected purely by dropdown — there is
- * no other per-dashboard scoping control. Every dashboard in the registry
- * has at least one real (config-driven) widget, so this always renders the
- * real widget grid.
+ * Top-level CSM dashboard. The dashboard list is BE-driven (`GET
+ * /dashboards`), and the initial selection depends on the signed-in user's
+ * own ABT team membership (`GET /users/me`'s `team`, via `useCurrentUser`):
+ * a user WITH a resolved team defaults to the first `isTeamBased` dashboard
+ * in the list (with that team auto-selected — see `selectedTeamId` below);
+ * a user with no team defaults to the BE's own `isDefault` entry, same as
+ * before this distinction existed. The URL always wins over both defaults
+ * when it names a (valid) dashboard — see `parseDashboardHash`.
+ *
+ * Dashboards are selected purely by dropdown — there is no other
+ * per-dashboard scoping control. Every dashboard in the registry has at
+ * least one real (config-driven) widget, so this always renders the real
+ * widget grid.
  */
 export default function CsmDashboardPage(): JSX.Element {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   const dashboardList = useDashboardList();
   const list = dashboardList.data;
-  const defaultEntry =
+  const currentUser = useCurrentUser();
+
+  const { dashboardId: hashDashboardId, teamId: hashTeamIdRaw } = useMemo(
+    () => parseDashboardHash(location.hash),
+    [location.hash],
+  );
+
+  const urlEntry = list?.find((d) => d.id === hashDashboardId);
+
+  const beDefaultEntry =
     list && list.length > 0 ? (list.find((d) => d.isDefault) ?? list[0]) : undefined;
+  // The first isTeamBased dashboard in the list — the registry only ever
+  // configures one today, but nothing here assumes exactly one.
+  const teamBasedEntry = list?.find((d) => d.isTeamBased);
+  const userHasTeam = Boolean(currentUser.user?.team);
+  // True only while we genuinely don't know yet whether this user has a
+  // team — a failed profile fetch (isError) must not hang this forever, so
+  // it falls straight through to the BE default below instead.
+  const userProfilePending = currentUser.isLoading && !currentUser.isError;
 
-  const urlDashboardKey = searchParams.get(DASHBOARD_PARAM) as DashboardKey | null;
-  const urlEntry = list?.find((d) => d.id === urlDashboardKey);
-  // Fall back to the BE default whenever the URL doesn't name a dashboard,
-  // or names one that isn't in the loaded list (stale/hand-edited link) —
-  // never crash on an unknown id.
-  const dashboardKey = urlEntry ? urlEntry.id : defaultEntry?.id;
-  const currentEntry = urlEntry ?? defaultEntry;
+  // The URL always wins when it names a dashboard actually in the loaded
+  // list (stale/hand-edited hash falls through to the defaults below,
+  // never crashes). Only when it doesn't do we need to pick a default —
+  // and picking that default depends on the user's own team membership, so
+  // hold off (skeleton) until that's resolved, unless it errored.
+  let currentEntry = urlEntry;
+  if (!currentEntry && list) {
+    if (userProfilePending) {
+      currentEntry = undefined;
+    } else if (userHasTeam && teamBasedEntry) {
+      currentEntry = teamBasedEntry;
+    } else {
+      currentEntry = beDefaultEntry;
+    }
+  }
 
-  const rawTeamId = searchParams.get(TEAM_PARAM) ?? undefined;
-  // Only apply a `team` param when the CURRENT dashboard is team-based — a
-  // stale param left over from a previously selected team-based dashboard
-  // must not leak into a non-team-based one.
-  const selectedTeamId = currentEntry?.isTeamBased ? rawTeamId : undefined;
+  const dashboardKey = currentEntry?.id as DashboardKey | undefined;
+  const isTeamBased = currentEntry?.isTeamBased ?? false;
+
+  // Only apply a hash team id when the CURRENT dashboard is team-based — a
+  // stale suffix left over from a previously selected team-based dashboard
+  // (or a hand-edited URL) must not leak into a non-team-based one.
+  const hashTeamId = isTeamBased ? hashTeamIdRaw : undefined;
+  // Default to the signed-in user's own team once their profile has
+  // resolved, but only ever as a default: the moment the URL itself names a
+  // team (including one written by the user's own pick — see
+  // `handleTeamChange`), that value always wins over this one, so a manual
+  // switch is never fought on re-render.
+  const defaultTeamId =
+    isTeamBased && !hashTeamId && userHasTeam ? currentUser.user?.team?.teamKey : undefined;
+  const selectedTeamId = hashTeamId ?? defaultTeamId;
+
+  // Every team, for resolving the selected team's `groupId` (the
+  // `__current_team__` filter placeholder's real value) — same query
+  // AbtDashboardHeader's own team selector uses; react-query dedupes the
+  // fetch since both share the same query key.
+  const teams = useTeams(isTeamBased);
+  const selectedTeamGroupId = teams.data?.find((t) => t.id === selectedTeamId)?.groupId;
+
+  const writeHash = useCallback(
+    (nextDashboardId: string, nextTeamId: string | undefined) => {
+      navigate(
+        { pathname: location.pathname, search: location.search, hash: buildDashboardHash(nextDashboardId, nextTeamId) },
+        { replace: true },
+      );
+    },
+    [navigate, location.pathname, location.search],
+  );
 
   const handleDashboardChange = useCallback(
     (key: DashboardKey) => {
-      const next = new URLSearchParams(searchParams);
-      next.set(DASHBOARD_PARAM, key);
       const nextEntry = list?.find((d) => d.id === key);
       // Switching to a dashboard that isn't team-based: clear any stale
-      // `team` param rather than leaving an inapplicable one sitting in
-      // the URL.
-      if (!nextEntry?.isTeamBased) next.delete(TEAM_PARAM);
-      setSearchParams(next, { replace: true });
+      // team selection rather than leaving an inapplicable one in the URL.
+      // Switching between two team-based dashboards keeps the current
+      // selection instead of resetting it.
+      const nextTeamId = nextEntry?.isTeamBased ? selectedTeamId : undefined;
+      writeHash(key, nextTeamId);
     },
-    [searchParams, setSearchParams, list],
+    [list, selectedTeamId, writeHash],
   );
 
   const handleTeamChange = useCallback(
     (teamId: string | undefined) => {
-      const next = new URLSearchParams(searchParams);
-      if (teamId) next.set(TEAM_PARAM, teamId);
-      else next.delete(TEAM_PARAM);
-      setSearchParams(next, { replace: true });
+      if (!dashboardKey) return;
+      writeHash(dashboardKey, teamId);
     },
-    [searchParams, setSearchParams],
+    [dashboardKey, writeHash],
   );
 
   const dashboardListData = useMemo(() => dashboardList.data ?? [], [dashboardList.data]);
@@ -117,7 +170,10 @@ export default function CsmDashboardPage(): JSX.Element {
         selectedTeamId={selectedTeamId}
         onTeamChange={handleTeamChange}
       />
-      <AgentsLandingPagePilot dashboardId={dashboardKey} />
+      <AgentsLandingPagePilot
+        dashboardId={dashboardKey}
+        selectedTeamGroupId={selectedTeamGroupId}
+      />
     </Box>
   );
 }

@@ -20,6 +20,7 @@ import { useBackendApi } from "@api/backend/client";
 import type { BeDashboardPieSlice, BeWidgetResourceType } from "@api/backend/types";
 import { WIDGET_RESOURCE_CONFIG } from "@features/csm-dashboard/config/widgetResourceConfig";
 import { mergeWidgetFilters } from "@features/csm-dashboard/utils/widgetFilterMerge";
+import { resolveTeamPlaceholder } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
 
 export interface PieSliceResult extends BeDashboardPieSlice {
   value: number;
@@ -45,13 +46,21 @@ export function useWidgetPieData(
   resourceType: BeWidgetResourceType,
   baseFilters: Record<string, unknown>,
   slices: BeDashboardPieSlice[],
+  /** The currently selected team's own `groupId`, for resolving a
+   * `__current_team__` filter placeholder (see `teamFilterPlaceholder.ts`)
+   * — applied AFTER `mergeWidgetFilters`, since a slice's own `filters` may
+   * carry the placeholder too, not just the widget's base `filters`. */
+  selectedTeamGroupId?: string,
 ): WidgetPieData {
   const api = useBackendApi();
   const config = WIDGET_RESOURCE_CONFIG[resourceType];
 
   const queries = useQueries({
     queries: slices.map((slice) => {
-      const filters = mergeWidgetFilters(baseFilters, slice.filters);
+      const filters = resolveTeamPlaceholder(
+        mergeWidgetFilters(baseFilters, slice.filters),
+        selectedTeamGroupId,
+      );
       return {
         queryKey: [
           ApiQueryKeys.CSM_DASHBOARD_WIDGET_DATA,

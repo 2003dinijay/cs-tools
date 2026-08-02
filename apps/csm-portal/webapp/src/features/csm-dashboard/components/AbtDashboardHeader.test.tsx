@@ -94,7 +94,9 @@ describe("AbtDashboardHeader", () => {
       await within(listbox).findByText("CS Team Leads"),
     ).toBeInTheDocument();
     expect(within(listbox).getByText("CS Operations")).toBeInTheDocument();
-    expect(within(listbox).getByText("All teams")).toBeInTheDocument();
+    // No "All teams" option any more — every team-based dashboard view must
+    // have a real team selected.
+    expect(within(listbox).queryByText("All teams")).not.toBeInTheDocument();
   });
 
   it("calls onTeamChange when a team is picked", async () => {

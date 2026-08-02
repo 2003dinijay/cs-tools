@@ -26,6 +26,7 @@ import { WIDGET_RESOURCE_CONFIG } from "@features/csm-dashboard/config/widgetRes
 import { WIDGET_LIST_RENDERERS } from "@features/csm-dashboard/config/widgetListConfig";
 import { buildWidgetPreviewHref } from "@features/csm-dashboard/utils/widgetPreviewUrl";
 import { mergeWidgetFilters } from "@features/csm-dashboard/utils/widgetFilterMerge";
+import { resolveTeamPlaceholder } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
 import DashboardPieChart from "@features/csm-dashboard/components/DashboardPieChart";
 import DashboardBarChart from "@features/csm-dashboard/components/DashboardBarChart";
 
@@ -46,6 +47,14 @@ interface DashboardWidgetTileProps {
    * `useWidgetPieData`). Empty/absent renders an empty chart rather than
    * crashing. */
   slices?: BeDashboardPieSlice[];
+  /** The currently selected team's own `groupId` (see `BeTeam.groupId`),
+   * threaded down from `CsmDashboardPage` for resolving this widget's own
+   * `__current_team__` filter placeholder (see `teamFilterPlaceholder.ts`)
+   * — never the team registry key. `undefined` for a non-team-based
+   * dashboard, or while the team isn't resolved yet (any `integrationCsTeam`
+   * filter entry carrying the placeholder is then dropped, not sent
+   * literally). */
+  selectedTeamGroupId?: string;
 }
 
 /**
@@ -73,6 +82,7 @@ export default function DashboardWidgetTile({
   filters,
   listLimit,
   slices,
+  selectedTeamGroupId,
 }: DashboardWidgetTileProps): JSX.Element {
   const theme = useTheme();
   const navigate = useNavigate();
@@ -89,11 +99,13 @@ export default function DashboardWidgetTile({
     listLimit,
     0,
     shape !== "pie" && shape !== "bar",
+    selectedTeamGroupId,
   );
   const pieData = useWidgetPieData(
     resourceType,
     filters,
     shape === "pie" || shape === "bar" ? (slices ?? []) : [],
+    selectedTeamGroupId,
   );
   const config = WIDGET_RESOURCE_CONFIG[resourceType];
 
@@ -113,7 +125,11 @@ export default function DashboardWidgetTile({
     );
   }
 
-  const href = config.buildHref(filters);
+  // The count-shape tile's own click-through href — resolved so a "View
+  // all" link never carries the literal `__current_team__` placeholder
+  // into the destination resource's own filters (see
+  // `teamFilterPlaceholder.ts`).
+  const href = config.buildHref(resolveTeamPlaceholder(filters, selectedTeamGroupId));
   const Icon = config.icon;
   const isListShape = shape === "list";
 
@@ -235,7 +251,14 @@ export default function DashboardWidgetTile({
             isLoading={pieData.isLoading}
             isError={pieData.isError}
             onSliceClick={(slice: PieSliceResult) =>
-              navigate(config.buildHref(mergeWidgetFilters(filters, slice.filters)))
+              navigate(
+                config.buildHref(
+                  resolveTeamPlaceholder(
+                    mergeWidgetFilters(filters, slice.filters),
+                    selectedTeamGroupId,
+                  ),
+                ),
+              )
             }
           />
         </Box>

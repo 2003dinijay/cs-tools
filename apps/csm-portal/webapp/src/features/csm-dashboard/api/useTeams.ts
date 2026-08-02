@@ -30,9 +30,9 @@ interface TeamsSearchResponse {
 /**
  * Every team from `POST /teams/search`, for the team selector a team-based
  * dashboard shows alongside the dashboard switcher (see
- * `AbtDashboardHeader`). Selecting a team is UI state only today — it does
- * not yet scope any widget's data (see `Dashboard.isTeamBased` on the
- * backend).
+ * `AbtDashboardHeader`), and for `CsmDashboardPage` to resolve the selected
+ * team's own `groupId` — the value substituted for the `__current_team__`
+ * filter placeholder (see `teamFilterPlaceholder.ts`).
  */
 export function useTeams(enabled: boolean): UseQueryResult<BeTeam[], Error> {
   const api = useBackendApi();
