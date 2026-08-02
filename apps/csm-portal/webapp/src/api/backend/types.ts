@@ -2801,7 +2801,8 @@ export interface BeDashboardWidget {
    * its own.
    */
   filters: Record<string, unknown>;
-  /** Only meaningful for shape pie/bar; the field to group counts by. */
+  /** Present on the wire; unused today — `slices` is what actually drives
+   * pie/bar grouping. */
   groupBy?: string;
   /** Only meaningful for shapes "pie"/"bar": one search per slice, each
    * read via its own `total`. */
