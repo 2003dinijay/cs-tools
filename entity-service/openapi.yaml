@@ -3280,6 +3280,13 @@ components:
         family:
           type: string
           description: Team family, when classified.
+        groupId:
+          type: string
+          description: >
+            The backing group's id, suitable for the case search integrationCsTeamIds
+            filter. Present only when the deployment's team registry configured a
+            backing group id for this team; a team without one is still listed, just
+            not filter-scopable.
 
     SearchTeamsRequest:
       type: object

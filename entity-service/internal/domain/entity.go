@@ -246,6 +246,11 @@ type Team struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Family string `json:"family,omitempty"`
+	// GroupID is the backing group's id, converted to this platform's UUID
+	// format, suitable for the case-search integrationCsTeamIds filter.
+	// Omitted when the team registry did not configure a backing group id
+	// for this team -- the team is still listed, just not filter-scopable.
+	GroupID string `json:"groupId,omitempty"`
 }
 
 // SearchTeamsRequest is the input for POST /teams/search.

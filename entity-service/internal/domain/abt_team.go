@@ -48,6 +48,13 @@ type AbtTeam struct {
 	DisplayName string
 	// Family may be empty -- not every team has a family assigned.
 	Family AbtFamily
+	// GroupSysID is the backing data source's sys_user_group sysid for this
+	// team, distinct from DisplayName: DisplayName is matched verbatim for
+	// membership resolution (resolveAbtTeam), while GroupSysID is the id that
+	// backs case-search's integrationCsTeamIds filter. It is optional -- a
+	// team with no configured id simply cannot be used to scope that filter,
+	// which degrades gracefully rather than erroring.
+	GroupSysID string
 }
 
 var (
@@ -126,12 +133,18 @@ func FindAbtTeamByGroupName(groupName string) (team AbtTeam, ok bool) {
 // ParseAbtTeamRegistry parses the team registry from its flat, single-line
 // configuration form:
 //
-//	teamKey|Display Name|FAMILY,teamKey|Display Name,...
+//	teamKey|Display Name|FAMILY|groupSysID,teamKey|Display Name,...
 //
-// Rows are separated by ",", fields within a row by "|". A row carries either
-// two fields (key and display name) or three (plus the family). Whitespace
-// around every field is trimmed, so a value pasted into a web form survives.
-// A wholly blank row is skipped, which tolerates a trailing comma.
+// Rows are separated by ",", fields within a row by "|". A row carries two
+// fields (key and display name), three (plus the family), or four (plus the
+// backing group's sysid, used only to scope the integrationCsTeamIds case
+// filter). family is a real optional middle field, not a slot that can be
+// skipped: a groupSysID cannot be supplied without a family alongside it, so
+// a 2-field-plus-id shape is not accepted -- pad the family field (even
+// empty, e.g. "key|Name||sysid") if a team needs an id but no family.
+// Whitespace around every field is trimmed, so a value pasted into a web
+// form survives. A wholly blank row is skipped, which tolerates a trailing
+// comma.
 //
 // The single-line shape is deliberate: the deployment platform's configuration
 // UI is one-dimensional and stringifies nested collections, so a structured
@@ -150,9 +163,9 @@ func ParseAbtTeamRegistry(raw string) ([]AbtTeam, error) {
 		}
 
 		fields := strings.Split(row, "|")
-		if len(fields) < 2 || len(fields) > 3 {
+		if len(fields) < 2 || len(fields) > 4 {
 			return nil, fmt.Errorf(
-				"team registry row %d (%q): expected 2 or 3 %q-separated fields (teamKey|displayName[|family]), got %d",
+				"team registry row %d (%q): expected 2, 3, or 4 %q-separated fields (teamKey|displayName[|family[|groupSysID]]), got %d",
 				i+1, strings.TrimSpace(row), "|", len(fields))
 		}
 		for j := range fields {
@@ -170,8 +183,11 @@ func ParseAbtTeamRegistry(raw string) ([]AbtTeam, error) {
 		}
 
 		team := AbtTeam{TeamKey: fields[0], DisplayName: fields[1]}
-		if len(fields) == 3 {
+		if len(fields) >= 3 {
 			team.Family = normalizeAbtFamily(fields[2])
+		}
+		if len(fields) == 4 {
+			team.GroupSysID = fields[3]
 		}
 		teams = append(teams, team)
 	}

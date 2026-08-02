@@ -54,10 +54,13 @@ type Config struct {
 	ServiceNowIntegrationServiceClientSecret string
 	ServiceNowIntegrationServiceScopes       string
 	// TeamRegistry is the raw CSM_TEAM_REGISTRY value: the curated ABT team
-	// registry as "teamKey|Display Name|FAMILY,..." rows. Parsed and installed
-	// at startup by domain.ParseAbtTeamRegistry / domain.SetAbtTeams. Empty
-	// means no teams are configured; there is deliberately no default, because
-	// team names are organisation vocabulary that must not be committed here.
+	// registry as "teamKey|Display Name|FAMILY|groupSysID,..." rows, where
+	// FAMILY and groupSysID are both optional (groupSysID requires FAMILY's
+	// field to be present, even empty, since it cannot be supplied without
+	// it). Parsed and installed at startup by domain.ParseAbtTeamRegistry /
+	// domain.SetAbtTeams. Empty means no teams are configured; there is
+	// deliberately no default, because team names are organisation
+	// vocabulary that must not be committed here.
 	TeamRegistry string
 	// UserRoles is the raw CSM_USER_ROLES value: a comma-separated
 	// assignable-role allow-list. Parsed and installed at startup by
