@@ -125,7 +125,7 @@ describe("ProjectContactsTab", () => {
   it("renders an error state when the query fails", () => {
     mockQueryResult({ isError: true, error: new Error("boom") });
     renderTab();
-    expect(screen.getByText(/Failed to load project contacts/i)).toBeInTheDocument();
+    expect(screen.getByText("boom")).toBeInTheDocument();
   });
 
   it("renders an empty state rather than an empty table when the project has no contacts", () => {

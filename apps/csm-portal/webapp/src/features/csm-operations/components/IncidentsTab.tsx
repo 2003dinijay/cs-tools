@@ -227,7 +227,7 @@ export default function IncidentsTab(): JSX.Element {
                 <TableRow>
                   <TableCell colSpan={7} align="center">
                     <QueryErrorState
-                      message={`Failed to load incidents: ${error instanceof Error ? error.message : "unknown error"}`}
+                      message={error instanceof Error ? error.message : "Failed to load incidents."}
                       error={error}
                     />
                   </TableCell>

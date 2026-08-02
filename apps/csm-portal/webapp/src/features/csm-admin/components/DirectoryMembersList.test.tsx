@@ -217,6 +217,6 @@ describe("DirectoryMembersList", () => {
     } as unknown as Response);
     renderList();
 
-    expect(await screen.findByText(/Failed to load members/i)).toBeInTheDocument();
+    expect(await screen.findByText("Internal Server Error")).toBeInTheDocument();
   });
 });

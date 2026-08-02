@@ -156,7 +156,7 @@ describe("UserProfilePage", () => {
   it("renders an error state when the query fails", () => {
     mockQueryResult({ isError: true, error: new Error("boom") });
     renderPage();
-    expect(screen.getByText(/Failed to load user/i)).toBeInTheDocument();
+    expect(screen.getByText("boom")).toBeInTheDocument();
   });
 
   it("renders a not-found state when the user is null", () => {

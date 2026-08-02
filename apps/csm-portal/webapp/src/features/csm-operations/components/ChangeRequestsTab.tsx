@@ -244,7 +244,7 @@ export default function ChangeRequestsTab(): JSX.Element {
                 <TableRow>
                   <TableCell colSpan={7} align="center">
                     <QueryErrorState
-                      message={`Failed to load change requests: ${error instanceof Error ? error.message : "unknown error"}`}
+                      message={error instanceof Error ? error.message : "Failed to load change requests."}
                       error={error}
                     />
                   </TableCell>
