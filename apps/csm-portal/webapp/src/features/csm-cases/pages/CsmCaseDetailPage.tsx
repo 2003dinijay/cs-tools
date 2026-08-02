@@ -296,6 +296,30 @@ const TAB_DEFS: Array<{
   { id: "tasks", label: "Tasks", icon: <CheckSquare size={16} />, hidden: true },
 ];
 
+/**
+ * Whether `from` (the router-state origin path, e.g. from `CasesList`'s row
+ * link) actually points at `backPath`'s own list — as opposed to some other
+ * origin (a dashboard widget's "View more"/row link, say) that merely also
+ * sets `state.from` so the back button still returns there. Compares the
+ * pathname exactly and, when `backPath` carries query params of its own
+ * (e.g. "/operations?tab=service_requests"), requires `from` to carry the
+ * same values for those — extra params `from` has on top (filters, search)
+ * don't disqualify a match.
+ */
+function pathMatchesBackPath(from: string | undefined, backPath: string): boolean {
+  if (!from) return true;
+  const [fromPath, fromQuery] = from.split("?");
+  const [expectedPath, expectedQuery] = backPath.split("?");
+  if (fromPath !== expectedPath) return false;
+  if (!expectedQuery) return true;
+  const fromParams = new URLSearchParams(fromQuery ?? "");
+  const expectedParams = new URLSearchParams(expectedQuery);
+  for (const [key, value] of expectedParams) {
+    if (fromParams.get(key) !== value) return false;
+  }
+  return true;
+}
+
 export default function CsmCaseDetailPage(): JSX.Element {
   const { caseId } = useParams<{ caseId: string }>();
   const navigate = useNavTransition();
@@ -315,15 +339,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
         : isSecurityReportRoute
           ? "/security-center?tab=security_reports"
           : "/cases";
-  const backLabel = isEngagementRoute
-    ? "Back to engagements"
-    : isServiceRequestRoute
-      ? "Back to service requests"
-      : isAnnouncementRoute
-        ? "Back to announcements"
-        : isSecurityReportRoute
-          ? "Back to security reports"
-          : "Back to cases";
   const detailPath = isEngagementRoute
     ? `/engagements/${caseId}`
     : isServiceRequestRoute
@@ -340,6 +355,23 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // detail page, which never got the state set.
   const fromListState = location.state as { from?: string } | undefined;
   const resolvedBackPath = fromListState?.from ?? backPath;
+  // A "Back to <type>" label is only accurate when the caller actually came
+  // from that type's own list — e.g. a dashboard widget's "My Cases" tile
+  // also sets `state.from` (so the button still returns to the dashboard,
+  // not a bare /cases), but it isn't the cases list, so labelling it "Back
+  // to cases" would be wrong. Generic "Back" covers every other origin.
+  const cameFromOwnList = pathMatchesBackPath(fromListState?.from, backPath);
+  const backLabel = !cameFromOwnList
+    ? "Back"
+    : isEngagementRoute
+      ? "Back to engagements"
+      : isServiceRequestRoute
+        ? "Back to service requests"
+        : isAnnouncementRoute
+          ? "Back to announcements"
+          : isSecurityReportRoute
+            ? "Back to security reports"
+            : "Back to cases";
   const { data, isLoading, isError, error } = useGetCsmCaseDetail(caseId);
   // The route alone isn't a reliable signal once data has loaded: a "Related
   // case" link always points at /cases/:id regardless of the target's actual

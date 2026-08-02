@@ -85,17 +85,21 @@ export default function DashboardWidgetTile({
   const Icon = config.icon;
   const isListShape = shape === "list";
 
-  const infoIcon = (
-    // Tooltip copy is intentionally empty until the per-widget messages are
-    // finalized — the icon renders now so the layout/interaction is in place
-    // ahead of that content.
+  // Count tiles only — a list-shape tile's real table already has its own
+  // header row and border right where this would otherwise sit, so it just
+  // overlapped rather than adding anything.
+  //
+  // Tooltip copy is intentionally empty until the per-widget messages are
+  // finalized — the icon renders now so the layout/interaction is in place
+  // ahead of that content.
+  const infoIcon = shape === "count" && (
     <Tooltip title="">
       <Box
         component="span"
         sx={{
           position: "absolute",
-          top: 8,
-          right: 8,
+          top: 12,
+          right: 12,
           zIndex: 1,
           display: "inline-flex",
           color: "text.secondary",
@@ -133,7 +137,6 @@ export default function DashboardWidgetTile({
     const ListRenderer = WIDGET_LIST_RENDERERS[resourceType];
     return (
       <Card variant="outlined" sx={{ position: "relative", p: 1.75, height: "100%" }}>
-        {infoIcon}
         {header}
         {isLoading ? (
           <Skeleton variant="rounded" height={28 * (listLimit ?? 5) + 40} sx={{ mt: 1 }} />
