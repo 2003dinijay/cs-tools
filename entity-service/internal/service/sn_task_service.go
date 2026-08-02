@@ -329,11 +329,11 @@ type snTasksSearchPayload struct {
 
 // snTasksSearchFilters mirrors the filters sent to Choreo.
 type snTasksSearchFilters struct {
-	States          []string `json:"states"`
-	Types           []string `json:"types"`
-	AssignedUserIDs []string `json:"assignedUserIds"`
-	DueDateStart    *string  `json:"dueDateStart"`
-	DueDateEnd      *string  `json:"dueDateEnd"`
+	States          []string `json:"states,omitempty"`
+	Types           []string `json:"types,omitempty"`
+	AssignedUserIDs []string `json:"assignedUserIds,omitempty"`
+	DueDateStart    *string  `json:"dueDateStart,omitempty"`
+	DueDateEnd      *string  `json:"dueDateEnd,omitempty"`
 }
 
 // snTaskSort specifies sort field and order for Choreo.
