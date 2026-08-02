@@ -300,7 +300,10 @@ export const WIDGET_RESOURCE_CONFIG: Record<
       asString(item.cveId) ?? asString(item.vulnerabilityId) ?? "—",
     secondaryLabel: (item) =>
       asString(item.priority) ?? asString(item.productName),
-    buildHref: () => "/security-center",
+    // The tab default is "security_reports" (see csmNavItems.ts), so the
+    // vulnerabilities tab needs its own `?tab=` — omitting it, as this did
+    // before, silently lands the click on the wrong tab.
+    buildHref: () => "/security-center?tab=vulnerabilities",
     icon: ShieldAlert,
     iconColor: "error",
   },

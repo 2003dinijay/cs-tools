@@ -26,6 +26,12 @@ const postMock = vi.fn();
 vi.mock("@api/backend/client", () => ({
   useBackendApi: () => ({ post: postMock }),
 }));
+// A `shape: "list"` tile now renders through widgetListConfig.tsx, which
+// pulls in useTimeSheets.ts (time_card's mapper) — that module reads
+// `window.config` at load via `@config/apiConfig`, unavailable under vitest.
+vi.mock("@config/apiConfig", () => ({
+  apiConfig: { backendUrl: "https://example.test" },
+}));
 
 import DashboardWidgetTile from "@features/csm-dashboard/components/DashboardWidgetTile";
 
@@ -98,12 +104,17 @@ describe("DashboardWidgetTile", () => {
     );
   });
 
-  it("renders a compact row list for shape: list, capped at listLimit", async () => {
+  it("renders the same table the Cases tab uses for shape: list, capped at listLimit", async () => {
     postMock.mockResolvedValue({
       total: 2,
       cases: [
-        { number: "CS-1", subject: "Disk full", state: "open" },
-        { number: "CS-2", subject: "Auth failing", state: "work_in_progress" },
+        { id: "11111111-1111-1111-1111-111111111111", number: "CS-1", subject: "Disk full", state: "open" },
+        {
+          id: "22222222-2222-2222-2222-222222222222",
+          number: "CS-2",
+          subject: "Auth failing",
+          state: "work_in_progress",
+        },
       ],
       limit: 5,
       offset: 0,
@@ -121,14 +132,60 @@ describe("DashboardWidgetTile", () => {
       />,
     );
 
-    await waitFor(() =>
-      expect(screen.getByText("CS-1 — Disk full")).toBeInTheDocument(),
-    );
-    expect(screen.getByText("CS-2 — Auth failing")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("CS-1")).toBeInTheDocument());
+    expect(screen.getByText("Disk full")).toBeInTheDocument();
+    expect(screen.getByText("CS-2")).toBeInTheDocument();
+    expect(screen.getByText("Auth failing")).toBeInTheDocument();
     expect(postMock).toHaveBeenCalledWith("/cases/search", {
       filters: {},
       pagination: { offset: 0, limit: 5 },
     });
+  });
+
+  it("shows a 'View more' link through to the full tab only when more records exist than shown", async () => {
+    postMock.mockResolvedValue({
+      total: 1,
+      cases: [{ id: "11111111-1111-1111-1111-111111111111", number: "CS-1", subject: "Disk full", state: "open" }],
+      limit: 5,
+      offset: 0,
+      hasMore: false,
+    });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="my_critical_open"
+        displayName="My Critical & High Cases"
+        resourceType="case"
+        shape="list"
+        filters={{}}
+        listLimit={5}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("CS-1")).toBeInTheDocument());
+    expect(screen.queryByRole("link", { name: /view more/i })).not.toBeInTheDocument();
+
+    postMock.mockResolvedValue({
+      total: 6,
+      cases: [{ id: "11111111-1111-1111-1111-111111111111", number: "CS-1", subject: "Disk full", state: "open" }],
+      limit: 5,
+      offset: 0,
+      hasMore: true,
+    });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="my_critical_open_2"
+        displayName="My Critical & High Cases"
+        resourceType="case"
+        shape="list"
+        filters={{}}
+        listLimit={5}
+      />,
+    );
+
+    const viewMoreLink = await screen.findByRole("link", { name: /view more/i });
+    expect(viewMoreLink.getAttribute("href")).toMatch(/^\/cases/);
   });
 
   it("navigates to /cases with translated filters when a case-resource tile is clicked", async () => {

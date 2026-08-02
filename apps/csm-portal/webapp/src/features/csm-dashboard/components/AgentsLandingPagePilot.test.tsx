@@ -27,6 +27,12 @@ const postMock = vi.fn();
 vi.mock("@api/backend/client", () => ({
   useBackendApi: () => ({ get: getMock, post: postMock }),
 }));
+// A `shape: "list"` tile renders through widgetListConfig.tsx, which pulls in
+// useTimeSheets.ts (time_card's mapper) — that module reads `window.config`
+// at load via `@config/apiConfig`, unavailable under vitest.
+vi.mock("@config/apiConfig", () => ({
+  apiConfig: { backendUrl: "https://example.test" },
+}));
 
 import AgentsLandingPagePilot from "@features/csm-dashboard/components/AgentsLandingPagePilot";
 
