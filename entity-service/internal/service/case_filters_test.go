@@ -201,9 +201,9 @@ func TestParseCaseFieldFilters_DateOnlyLteBoundIncludesWholeDay(t *testing.T) {
 		t.Fatalf("expected EndCreatedDate to be set")
 	}
 
-	endOfDay := time.Date(2026, 1, 31, 23, 59, 59, 0, time.UTC)
-	if p.EndCreatedDate.Before(endOfDay) {
-		t.Fatalf("expected EndCreatedDate %v to include 23:59:59 of the named day", p.EndCreatedDate)
+	endOfDay := time.Date(2026, 1, 31, 23, 59, 59, 999999999, time.UTC)
+	if !p.EndCreatedDate.Equal(endOfDay) {
+		t.Fatalf("expected EndCreatedDate %v to equal the exact inclusive boundary %v", p.EndCreatedDate, endOfDay)
 	}
 
 	startOfNextDay := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
