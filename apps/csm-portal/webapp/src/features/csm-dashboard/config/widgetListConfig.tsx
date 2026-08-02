@@ -24,6 +24,7 @@ import type {
   BeChangeRequestSearchView,
   BeProblemSearchView,
   BeTimeCardView,
+  BeTaskSummary,
   BeWidgetResourceType,
 } from "@api/backend/types";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
@@ -45,6 +46,7 @@ import {
   changeRequestStateLabel,
 } from "@features/csm-operations/utils/changeRequests";
 import { problemStateColor, problemStateLabel } from "@features/csm-operations/utils/problems";
+import { taskStateColor, taskStateLabel } from "@features/csm-cases/utils/taskState";
 import { resolveAccountTier, type Account } from "@features/csm-accounts/types/csmAccounts";
 import type { Project } from "@features/csm-projects/types/csmProjects";
 import ClosureStateChip from "@features/csm-projects/components/ClosureStateChip";
@@ -395,6 +397,52 @@ function ProductVulnerabilityWidgetList({ items, isLoading }: WidgetListRenderer
   );
 }
 
+/** Task: no standalone list page exists yet (tasks are only ever shown
+ * inside a case's own Tasks tab), so rows have no `href` -- unlike every
+ * other resourceType's list renderer here. */
+function TaskWidgetList({ items, isLoading }: WidgetListRendererProps): JSX.Element {
+  const tasks = items as unknown as BeTaskSummary[];
+  return (
+    <DashboardMiniTable
+      isLoading={isLoading}
+      emptyMessage="No tasks match this widget's filters."
+      columns={[
+        { label: "Subject", width: "minmax(160px, 2fr)" },
+        { label: "State", width: "minmax(90px, 1fr)" },
+        { label: "Assigned to", width: "minmax(100px, 1fr)" },
+        { label: "Updated", width: "minmax(90px, 1fr)" },
+      ]}
+      rows={tasks.map((task, i) => ({
+        key: task.id ?? `task-${i}`,
+        cells: [
+          <Typography key="subject" variant="body2" noWrap title={task.subject ?? undefined}>
+            {task.subject || "—"}
+          </Typography>,
+          task.state ? (
+            <Chip
+              key="state"
+              size="small"
+              variant="outlined"
+              color={taskStateColor(task.state)}
+              label={taskStateLabel(task.state)}
+            />
+          ) : (
+            <Typography key="state" variant="body2">
+              —
+            </Typography>
+          ),
+          <Typography key="assignedTo" variant="body2" noWrap>
+            {task.assignedTo?.name || "—"}
+          </Typography>,
+          <Typography key="updated" variant="caption" color="text.secondary" noWrap>
+            {formatDate(task.updatedOn)}
+          </Typography>,
+        ],
+      }))}
+    />
+  );
+}
+
 /** Per-resourceType renderer for a `shape: "list"` dashboard widget. Every
  * resource type is covered — `WIDGET_RESOURCE_CONFIG` (in
  * `widgetResourceConfig.ts`) is keyed the same way, so a missing entry here
@@ -412,4 +460,5 @@ export const WIDGET_LIST_RENDERERS: Record<
   user: UserWidgetList,
   time_card: TimeCardWidgetList,
   product_vulnerability: ProductVulnerabilityWidgetList,
+  task: TaskWidgetList,
 };

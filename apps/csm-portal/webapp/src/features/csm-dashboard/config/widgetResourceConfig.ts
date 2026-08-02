@@ -24,6 +24,7 @@ import {
   GitPullRequest,
   ShieldAlert,
   Users,
+  ListChecks,
   type LucideIcon,
 } from "@wso2/oxygen-ui-icons-react";
 import type { BeWidgetResourceType } from "@api/backend/types";
@@ -41,6 +42,8 @@ import {
   type ChangeRequestFilters,
 } from "@features/csm-operations/utils/changeRequests";
 import { writeChangeRequestFiltersToUrl } from "@features/csm-operations/utils/changeRequestsFiltersUrl";
+import { taskStateLabel } from "@features/csm-cases/utils/taskState";
+import type { BeTaskState } from "@api/backend/types";
 
 /** A resolved search-result row, typed loosely since its real shape depends
  * on `resourceType` — the label extractors below narrow what they read. */
@@ -354,6 +357,23 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     icon: ShieldAlert,
     iconColor: "error",
     previewSlug: "vulnerabilities",
+  },
+  task: {
+    searchEndpoint: "/tasks/search",
+    itemsKey: "tasks",
+    primaryLabel: (item) => asString(item.subject) ?? "—",
+    secondaryLabel: (item) => {
+      const state = asString(item.state);
+      return state ? taskStateLabel(state as BeTaskState) : undefined;
+    },
+    // Tasks have no standalone list page today (they're only ever shown
+    // inside a case's own Tasks tab) -- clicking a task widget's tile stays
+    // on the dashboard rather than 404ing. Revisit once/if a dedicated tasks
+    // list page exists.
+    buildHref: () => "/dashboard",
+    icon: ListChecks,
+    iconColor: "warning",
+    previewSlug: "tasks",
   },
 };
 
