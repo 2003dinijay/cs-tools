@@ -236,6 +236,7 @@ func snTaskDetailToDomain(t snTaskDetail) domain.TaskDetail {
 // is already wired and ready. A var (not const) so tests can flip it locally
 // to exercise that send logic ahead of the downstream endpoints existing.
 var taskWritesUnavailable = true
+
 const taskWritesUnavailableMsg = "task creation/update is not yet available: the downstream ServiceNow integration for this operation has not been deployed"
 
 // snCreateTaskPayload is the request body for the (not yet existing) Choreo

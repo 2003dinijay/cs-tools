@@ -74,14 +74,14 @@ type Config struct {
 // validate required fields (e.g. DBUser, DBPassword, DBName) before use.
 func Load() *Config {
 	return &Config{
-		DBHost:     getEnvOrDefault("DB_HOST", "localhost"),
-		DBPort:     getEnvOrDefault("DB_PORT", "5432"),
-		DBUser:     os.Getenv("DB_USER"),
-		DBPassword: os.Getenv("DB_PASSWORD"),
-		DBName:     os.Getenv("DB_NAME"),
-		DBSSLMode:  os.Getenv("DB_SSLMODE"),
-		ServerPort: getEnvOrDefault("SERVER_PORT", "8080"),
-		DataSource:             DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
+		DBHost:                                   getEnvOrDefault("DB_HOST", "localhost"),
+		DBPort:                                   getEnvOrDefault("DB_PORT", "5432"),
+		DBUser:                                   os.Getenv("DB_USER"),
+		DBPassword:                               os.Getenv("DB_PASSWORD"),
+		DBName:                                   os.Getenv("DB_NAME"),
+		DBSSLMode:                                os.Getenv("DB_SSLMODE"),
+		ServerPort:                               getEnvOrDefault("SERVER_PORT", "8080"),
+		DataSource:                               DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
 		ServiceNowIntegrationServiceBaseURL:      os.Getenv("SERVICENOW_INTEGRATION_SERVICE_BASE_URL"),
 		ServiceNowIntegrationServiceTokenURL:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL"),
 		ServiceNowIntegrationServiceClientID:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID"),

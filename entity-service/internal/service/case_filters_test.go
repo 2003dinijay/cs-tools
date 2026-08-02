@@ -290,11 +290,11 @@ func TestResolveRelativeDate_NotAPlaceholder(t *testing.T) {
 
 func TestResolveRelativeDate_Rejections(t *testing.T) {
 	cases := []string{
-		"__daysAgo__",       // missing required offset
-		"__daysAgo:abc__",   // non-integer offset
-		"__daysAgo:-1__",    // negative offset not allowed for daysAgo
-		"__today:5__",       // today takes no argument
-		"__startOfMonth__",  // missing required offset
+		"__daysAgo__",        // missing required offset
+		"__daysAgo:abc__",    // non-integer offset
+		"__daysAgo:-1__",     // negative offset not allowed for daysAgo
+		"__today:5__",        // today takes no argument
+		"__startOfMonth__",   // missing required offset
 		"__startOfQuarter__", // missing required offset
 	}
 
