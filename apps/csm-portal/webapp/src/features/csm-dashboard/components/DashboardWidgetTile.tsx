@@ -275,12 +275,12 @@ export default function DashboardWidgetTile({
             {displayName}
           </Typography>
           <Typography
-            variant="h3"
             noWrap
             sx={{
               mt: 0.5,
-              lineHeight: 1.15,
+              lineHeight: 1.1,
               fontWeight: 700,
+              fontSize: "4rem",
               overflow: "hidden",
               textOverflow: "ellipsis",
             }}
