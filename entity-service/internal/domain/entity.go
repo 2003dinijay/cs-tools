@@ -1447,6 +1447,19 @@ type SearchCasesRequest struct {
 	Parsed     ParsedCaseFilters `json:"-"`
 	SortBy     CaseSort          `json:"sortBy"`
 	Pagination Pagination        `json:"pagination"`
+	// GroupBy, when set, returns aggregated counts per value of the named field
+	// instead of a case list (see Groups on SearchCasesResponse). Only fields
+	// backed by a small fixed enum are groupable; see the ServiceNow adapter's
+	// caseGroupByFieldValues for the supported set. Requires ServiceNow data
+	// source.
+	GroupBy string `json:"groupBy,omitempty"`
+}
+
+// CaseGroup is one bucket in a grouped case-search result: Key is the group's
+// field value (e.g. a CaseState string), Count is the number of matching cases.
+type CaseGroup struct {
+	Key   string `json:"key"`
+	Count int    `json:"count"`
 }
 
 // SearchCaseView is the unified case representation returned in search results.
@@ -1487,9 +1500,12 @@ type SearchCaseView struct {
 	Conversation         *EntityRef     `json:"conversation"`
 }
 
-// SearchCasesResponse is the paginated result of a case search.
+// SearchCasesResponse is the paginated result of a case search. When the
+// request set GroupBy, Groups is populated instead of Cases (Cases is nil);
+// Total still reflects the total matching record count either way.
 type SearchCasesResponse struct {
 	Cases  []SearchCaseView `json:"cases"`
+	Groups []CaseGroup      `json:"groups,omitempty"`
 	Total  int              `json:"total"`
 	Offset int              `json:"offset"`
 	Limit  int              `json:"limit"`

@@ -4966,6 +4966,15 @@ components:
               description: Sort direction. Defaults to desc.
         pagination:
           $ref: '#/components/schemas/Pagination'
+        groupBy:
+          type: string
+          enum: [state, severity, type, engagementType, issueType, workState]
+          description: >
+            When set, the response returns aggregated per-value counts (see
+            SearchCasesResponse.groups) instead of a case list. Only fields
+            backed by a small fixed enum are groupable. Implemented as a
+            fan-out of per-value count queries against the ServiceNow data
+            source; not supported by the Postgres data source.
 
     UserRef:
       type: object
@@ -5399,12 +5408,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CaseSearchView'
+          description: Populated when the request did not set groupBy.
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseGroup'
+          description: Populated instead of cases when the request set groupBy.
         total:
           type: integer
         offset:
           type: integer
         limit:
           type: integer
+
+    CaseGroup:
+      type: object
+      required: [key, count]
+      properties:
+        key:
+          type: string
+          description: The group's field value (e.g. a case state).
+        count:
+          type: integer
+          description: Number of matching cases in this group.
 
     AddCaseTagRequest:
       type: object

@@ -276,6 +276,24 @@ var snSortFieldMap = map[domain.CaseSortField]string{
 	domain.CaseSortFieldState:     "state",
 }
 
+// caseGroupByFieldValues enumerates the case-search fields SearchCases can
+// group results by, each backed by a small fixed enum, and every value in
+// that enum (in stable display order). Grouping is implemented as a fan-out
+// of one limit=1 SearchCases call per value (cheap: SN computes the matching
+// total regardless of page size) rather than a ServiceNow-side aggregate
+// query, so no SN/Ballerina change is needed -- see
+// case-search-filter-dsl-migration for why this stays a Go-entity-service-only
+// capability. Free-text fields (e.g. tag) have no fixed value set and are not
+// groupable.
+var caseGroupByFieldValues = map[string][]string{
+	"state":          {"open", "work_in_progress", "waiting_on_wso2", "awaiting_info", "reopened", "solution_proposed", "closed"},
+	"severity":       {"catastrophic", "critical", "high", "medium", "low"},
+	"type":           {"case", "service_request", "security_report_analysis", "engagement"},
+	"engagementType": {"migration", "consultancy", "new_feature_improvement", "follow_up", "onboarding"},
+	"issueType":      {"error", "partial_outage", "performance_degradation", "question", "security_or_compliance", "total_outage"},
+	"workState":      {"ongoing", "paused"},
+}
+
 type snCaseFilters struct {
 	CaseTypes          []string `json:"caseTypes"`
 	SearchQuery        string   `json:"searchQuery,omitempty"`
@@ -2036,6 +2054,29 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		}
 	}
 
+	if req.GroupBy != "" {
+		values, ok := caseGroupByFieldValues[req.GroupBy]
+		if !ok {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "groupBy must be one of: state, severity, type, engagementType, issueType, workState"}
+		}
+		groups := make([]domain.CaseGroup, 0, len(values))
+		total := 0
+		for _, v := range values {
+			count, err := s.searchCasesGroupCount(ctx, token, req.GroupBy, v, req.Parsed, req.Filters.SearchQuery)
+			if err != nil {
+				return domain.SearchCasesResponse{}, err
+			}
+			groups = append(groups, domain.CaseGroup{Key: v, Count: count})
+			total += count
+		}
+		return domain.SearchCasesResponse{
+			Groups: groups,
+			Total:  total,
+			Limit:  req.Pagination.Limit,
+			Offset: req.Pagination.Offset,
+		}, nil
+	}
+
 	snFilters := buildSNCaseFilters(req.Parsed, req.Filters.SearchQuery)
 
 	payload := snCaseSearchPayload{
@@ -2145,6 +2186,44 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		Limit:  req.Pagination.Limit,
 		Offset: req.Pagination.Offset,
 	}, nil
+}
+
+// searchCasesGroupCount returns the total matching-record count for one
+// groupBy bucket: parsed's existing filters, with any prior filter on
+// groupByField replaced by exactly value (a groupBy request describes the
+// whole breakdown of that field, not a further-narrowed slice of it). Only
+// limit=1 is requested since the count comes from SN's totalRecords
+// regardless of page size -- used by SearchCases's groupBy fan-out.
+func (s *snCaseService) searchCasesGroupCount(ctx context.Context, token, groupByField, value string, parsed domain.ParsedCaseFilters, searchQuery string) (int, error) {
+	switch groupByField {
+	case "state":
+		parsed.States = []domain.CaseState{domain.CaseState(value)}
+	case "severity":
+		parsed.Severities = []domain.CaseSeverity{domain.CaseSeverity(value)}
+	case "type":
+		parsed.Types = []string{value}
+	case "engagementType":
+		parsed.EngagementTypes = []domain.EngagementType{domain.EngagementType(value)}
+	case "issueType":
+		parsed.IssueTypes = []domain.CaseIssueType{domain.CaseIssueType(value)}
+	case "workState":
+		parsed.WorkStates = []domain.CaseWorkState{domain.CaseWorkState(value)}
+	}
+
+	snFilters := buildSNCaseFilters(parsed, searchQuery)
+	payload := snCaseSearchPayload{
+		Filters:    snFilters,
+		Pagination: snProjectPagination{Limit: 1, Offset: 0},
+	}
+	raw, err := s.client.Post(ctx, "/cases/search", token, payload)
+	if err != nil {
+		return 0, err
+	}
+	var snResp snCasesResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return 0, fmt.Errorf("sn cases: parse grouped response: %w", err)
+	}
+	return snResp.TotalRecords, nil
 }
 
 // snSeverityLabelStr returns the raw SN severity label string, or nil if absent.
