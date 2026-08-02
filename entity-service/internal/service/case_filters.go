@@ -557,7 +557,10 @@ func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string,
 func ParseCaseFieldFilterGroups(groups [][]domain.CaseFieldFilter) ([]domain.CaseFilterGroup, error) {
 	result := make([]domain.CaseFilterGroup, 0, len(groups))
 	for _, group := range groups {
-		parsed, err := ParseCaseFieldFilters(group, "", nil)
+		// now is irrelevant here: rejectUnsupportedOrGroupFields below rejects any
+		// date-range field (createdOn/updatedOn/closedOn) inside an OR-group branch,
+		// so this call never actually resolves a relative-date placeholder.
+		parsed, err := ParseCaseFieldFilters(group, "", nil, time.Now().UTC())
 		if err != nil {
 			return nil, err
 		}
