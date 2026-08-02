@@ -320,6 +320,176 @@ type snUpdateTaskResponse struct {
 	Task    snTaskDetail `json:"task"`
 }
 
+// snTasksSearchPayload is the request body for Choreo POST /tasks/search.
+type snTasksSearchPayload struct {
+	Filters    snTasksSearchFilters `json:"filters"`
+	SortBy     snTaskSort           `json:"sortBy"`
+	Pagination snProjectPagination  `json:"pagination"`
+}
+
+// snTasksSearchFilters mirrors the filters sent to Choreo.
+type snTasksSearchFilters struct {
+	States          []string `json:"states"`
+	Types           []string `json:"types"`
+	AssignedUserIDs []string `json:"assignedUserIds"`
+	DueDateStart    *string  `json:"dueDateStart"`
+	DueDateEnd      *string  `json:"dueDateEnd"`
+}
+
+// snTaskSort specifies sort field and order for Choreo.
+type snTaskSort struct {
+	Field string `json:"field"`
+	Order string `json:"order"`
+}
+
+// snTasksResponse mirrors the Choreo POST /tasks/search response.
+type snTasksResponse struct {
+	Tasks  []snTask `json:"tasks"`
+	Total  int      `json:"total"`
+	Offset int      `json:"offset"`
+	Limit  int      `json:"limit"`
+}
+
+var validTaskState = map[domain.TaskState]bool{
+	domain.TaskStateOpen:   true,
+	domain.TaskStateClosed: true,
+	domain.TaskStateOther:  true,
+}
+
+var validTaskSortField = map[domain.TaskSortField]bool{
+	domain.TaskSortFieldCreatedOn: true,
+	domain.TaskSortFieldUpdatedOn: true,
+}
+
+var validTaskSortOrder = map[domain.TaskSortOrder]bool{
+	domain.TaskSortOrderAsc:  true,
+	domain.TaskSortOrderDesc: true,
+}
+
+// tasksStatesToStrings converts a slice of TaskState enums to strings.
+func tasksStatesToStrings(states []domain.TaskState) []string {
+	result := make([]string, 0, len(states))
+	for _, s := range states {
+		result = append(result, string(s))
+	}
+	return result
+}
+
+// SearchTasks implements TaskService by calling the Choreo POST /tasks/search endpoint.
+func (s *snTaskService) SearchTasks(ctx context.Context, req domain.SearchTasksRequest) (domain.SearchTasksResponse, error) {
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchTasksResponse{}, err
+	}
+
+	if req.Pagination.Limit > 50 {
+		return domain.SearchTasksResponse{}, &apierror.ValidationError{Msg: "limit cannot exceed 50"}
+	}
+
+	// Validate states
+	for _, state := range req.Filters.States {
+		if !validTaskState[state] {
+			return domain.SearchTasksResponse{}, &apierror.ValidationError{Msg: "filters.states contains invalid value: " + string(state)}
+		}
+	}
+
+	// Validate assigned user IDs (UUIDs)
+	if err := validateUUIDs("filters.assignedUserIds", req.Filters.AssignedUserIDs); err != nil {
+		return domain.SearchTasksResponse{}, err
+	}
+
+	// Validate date range
+	if req.Filters.DueDateEnd != nil && req.Filters.DueDateStart != nil &&
+		req.Filters.DueDateEnd.Before(*req.Filters.DueDateStart) {
+		return domain.SearchTasksResponse{}, &apierror.ValidationError{Msg: "filters.dueDateEnd must not be before filters.dueDateStart"}
+	}
+
+	// Validate sort field and order
+	if req.SortBy.Field == "" {
+		req.SortBy.Field = domain.TaskSortFieldUpdatedOn
+	} else if !validTaskSortField[req.SortBy.Field] {
+		return domain.SearchTasksResponse{}, &apierror.ValidationError{Msg: "sortBy.field must be one of: createdOn, updatedOn"}
+	}
+	if req.SortBy.Order == "" {
+		req.SortBy.Order = domain.TaskSortOrderDesc
+	} else if !validTaskSortOrder[req.SortBy.Order] {
+		return domain.SearchTasksResponse{}, &apierror.ValidationError{Msg: "sortBy.order must be one of: asc, desc"}
+	}
+
+	// Convert assigned user UUIDs to sysids for Ballerina
+	assignedUserSysids := uuidsToSysids(req.Filters.AssignedUserIDs)
+
+	// Format dates for ServiceNow (using space-separated layout, not UTC ISO-8601)
+	var dueDateStart *string
+	var dueDateEnd *string
+	if req.Filters.DueDateStart != nil {
+		formatted := formatSNDate(req.Filters.DueDateStart)
+		dueDateStart = &formatted
+	}
+	if req.Filters.DueDateEnd != nil {
+		formatted := formatSNDate(req.Filters.DueDateEnd)
+		dueDateEnd = &formatted
+	}
+
+	// Build payload
+	payload := snTasksSearchPayload{
+		Filters: snTasksSearchFilters{
+			States:          tasksStatesToStrings(req.Filters.States),
+			Types:           req.Filters.Types,
+			AssignedUserIDs: assignedUserSysids,
+			DueDateStart:    dueDateStart,
+			DueDateEnd:      dueDateEnd,
+		},
+		SortBy: snTaskSort{
+			Field: string(req.SortBy.Field),
+			Order: string(req.SortBy.Order),
+		},
+		Pagination: snProjectPagination{
+			Limit:  req.Pagination.Limit,
+			Offset: req.Pagination.Offset,
+		},
+	}
+
+	raw, err := s.client.Post(ctx, "/tasks/search", token, payload)
+	if err != nil {
+		return domain.SearchTasksResponse{}, err
+	}
+
+	var snResp snTasksResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.SearchTasksResponse{}, fmt.Errorf("sn tasks search: parse response: %w", err)
+	}
+
+	tasks := make([]domain.TaskSummary, 0, len(snResp.Tasks))
+	for _, t := range snResp.Tasks {
+		subject := ""
+		if t.Subject != nil {
+			subject = *t.Subject
+		}
+		updatedOn := ""
+		if t.UpdatedOn != nil {
+			updatedOn = *t.UpdatedOn
+		}
+		task := domain.TaskSummary{
+			ID:         sysidToUUID(t.ID),
+			Subject:    subject,
+			State:      t.State,
+			DueDate:    t.DueDate,
+			AssignedTo: snAssignedToToEntityRef(t.AssignedTo),
+			UpdatedOn:  updatedOn,
+		}
+		tasks = append(tasks, task)
+	}
+
+	return domain.SearchTasksResponse{
+		Tasks:  tasks,
+		Total:  snResp.Total,
+		Offset: snResp.Offset,
+		Limit:  snResp.Limit,
+	}, nil
+}
+
 // UpdateTask updates exactly one of state, assignedToEmail, or dueDate on the
 // task identified by taskID.
 //

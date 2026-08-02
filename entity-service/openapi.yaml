@@ -2489,6 +2489,46 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /tasks/search:
+    post:
+      summary: Search tasks with optional filters, sort, and pagination.
+      description: >
+        Returns a paginated list of tasks (ServiceNow data source only). Each task carries
+        its state, due date, and assigned user. Tasks are inherently case-related; this
+        endpoint provides independent search and filtering capabilities.
+      operationId: searchTasks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchTasksRequest'
+      responses:
+        "200":
+          description: Tasks matching the supplied filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchTasksResponse'
+        "400":
+          description: Bad request — invalid filter value or pagination limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Tasks are only supported for the ServiceNow data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /tasks/{id}:
     get:
       summary: Get a task by ID (ServiceNow data source only).
@@ -7448,6 +7488,78 @@ components:
 
     SearchCaseTasksResponse:
       type: object
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskSummary'
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
+
+    TaskSearchFilters:
+      type: object
+      additionalProperties: false
+      properties:
+        states:
+          type: array
+          items:
+            type: string
+          description: >
+            Filter by task states. Known values: OPEN, CLOSED, OTHER
+            (fallback for any unmapped raw ServiceNow value).
+        types:
+          type: array
+          items:
+            type: string
+          description: >
+            Filter by task types (ServiceNow choice-list keys). The set of
+            valid values is configuration-dependent.
+        assignedUserIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Filter by assigned user UUIDs.
+        dueDateStart:
+          type: string
+          format: date-time
+          description: "Return tasks with dueDate on or after this UTC timestamp (YYYY-MM-DDTHH:MM:SSZ)."
+        dueDateEnd:
+          type: string
+          format: date-time
+          description: "Return tasks with dueDate on or before this UTC timestamp (YYYY-MM-DDTHH:MM:SSZ)."
+
+    TaskSort:
+      type: object
+      additionalProperties: false
+      properties:
+        field:
+          type: string
+          enum: [createdOn, updatedOn]
+          description: Field to sort by.
+        order:
+          type: string
+          enum: [asc, desc]
+          description: Sort direction.
+
+    SearchTasksRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        filters:
+          $ref: '#/components/schemas/TaskSearchFilters'
+        sortBy:
+          $ref: '#/components/schemas/TaskSort'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    SearchTasksResponse:
+      type: object
+      required: [tasks, total, offset, limit]
       properties:
         tasks:
           type: array

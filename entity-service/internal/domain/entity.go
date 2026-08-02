@@ -3069,6 +3069,61 @@ type UpdateTaskRequest struct {
 	DueDate         *time.Time `json:"dueDate"`
 }
 
+// TaskState represents the state of a task.
+type TaskState string
+
+const (
+	TaskStateOpen   TaskState = "OPEN"
+	TaskStateClosed TaskState = "CLOSED"
+	TaskStateOther  TaskState = "OTHER"
+)
+
+// TaskSortField enumerates the columns available for sorting task search results.
+type TaskSortField string
+
+const (
+	TaskSortFieldCreatedOn TaskSortField = "createdOn"
+	TaskSortFieldUpdatedOn TaskSortField = "updatedOn"
+)
+
+// TaskSortOrder controls the sort direction for task search.
+type TaskSortOrder string
+
+const (
+	TaskSortOrderAsc  TaskSortOrder = "asc"
+	TaskSortOrderDesc TaskSortOrder = "desc"
+)
+
+// TaskSort specifies the sort field and direction for task search results.
+type TaskSort struct {
+	Field TaskSortField `json:"field"`
+	Order TaskSortOrder `json:"order"`
+}
+
+// SearchTasksFilters holds all optional filter criteria for a task search.
+type SearchTasksFilters struct {
+	States          []TaskState `json:"states"`
+	Types           []string    `json:"types"`
+	AssignedUserIDs []string    `json:"assignedUserIds"`
+	DueDateStart    *time.Time  `json:"dueDateStart"`
+	DueDateEnd      *time.Time  `json:"dueDateEnd"`
+}
+
+// SearchTasksRequest is the input for POST /tasks/search.
+type SearchTasksRequest struct {
+	Filters    SearchTasksFilters `json:"filters"`
+	SortBy     TaskSort           `json:"sortBy"`
+	Pagination Pagination         `json:"pagination"`
+}
+
+// SearchTasksResponse is the paginated result of a task search.
+type SearchTasksResponse struct {
+	Tasks  []TaskSummary `json:"tasks"`
+	Total  int           `json:"total"`
+	Offset int           `json:"offset"`
+	Limit  int           `json:"limit"`
+}
+
 // IncidentPriority represents the priority level of an incident.
 type IncidentPriority string
 
