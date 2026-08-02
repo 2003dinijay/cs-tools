@@ -42,6 +42,7 @@ var caseFilterFieldSet = map[string]bool{
 	"createdOn": true, "updatedOn": true, "closedOn": true, "product": true,
 	"projectOnboardingStatus": true, "projectType": true, "integrationCsTeam": true,
 	"resolutionNotes": true, "parentId": true, "taskSLABusinessElapsedPercent": true,
+	"escalationLevel": true, "escalation": true,
 }
 
 // caseFilterOpSet is the exact set of CaseFieldFilter.Op values accepted by
@@ -516,6 +517,27 @@ func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string,
 				p.TaskSLAFilter.MinBusinessElapsedPercent = &pct
 			case "lte":
 				p.TaskSLAFilter.MaxBusinessElapsedPercent = &pct
+			default:
+				return domain.ParsedCaseFilters{}, badCaseFilterCombo(f)
+			}
+
+		case "escalationLevel":
+			if f.Op != "in" {
+				return domain.ParsedCaseFilters{}, badCaseFilterCombo(f)
+			}
+			if err := requireCaseFilterValues(f); err != nil {
+				return domain.ParsedCaseFilters{}, err
+			}
+			p.EscalationLevels = append(p.EscalationLevels, f.Values...)
+
+		case "escalation":
+			switch f.Op {
+			case "isEmpty":
+				noEscalation := false
+				p.HasActiveEscalation = &noEscalation
+			case "isNotEmpty":
+				hasEscalation := true
+				p.HasActiveEscalation = &hasEscalation
 			default:
 				return domain.ParsedCaseFilters{}, badCaseFilterCombo(f)
 			}

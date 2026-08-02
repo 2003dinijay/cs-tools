@@ -1426,6 +1426,13 @@ type ParsedCaseFilters struct {
 	// Requires ServiceNow data source (not available via PostgreSQL-only path).
 	// Filtering logic is confined to the SN adapter per vendor-neutral boundary.
 	TaskSLAFilter *TaskSLAFilter
+	// EscalationLevels filters cases to one of these escalation level ids ("0"-"5"),
+	// from the "escalationLevel" filter field's in values (optional).
+	EscalationLevels []string
+	// HasActiveEscalation filters cases by whether they carry an active
+	// escalation, from the "escalation" filter field's isEmpty/isNotEmpty op
+	// (optional; nil means no filter on this field).
+	HasActiveEscalation *bool
 }
 
 // TaskSLAFilter specifies a range of business-elapsed-percent values for Task SLA

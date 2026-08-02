@@ -4855,6 +4855,8 @@ components:
             - resolutionNotes
             - parentId
             - taskSLABusinessElapsedPercent
+            - escalationLevel
+            - escalation
         op:
           type: string
           enum: [eq, in, notIn, isEmpty, isNotEmpty, gte, lte]
@@ -4938,6 +4940,12 @@ components:
           "breached", not "the maximum possible value". Only applied by the
           ServiceNow data source (a Task SLA table join); filtering logic is
           confined to the SN adapter.
+        - **escalationLevel** (in): one or more escalation level ids, "0"
+          (EL0, not escalated) through "5" (EL5, CEO). Matches cases whose
+          current escalation level is any of the given ids.
+        - **escalation** (isEmpty / isNotEmpty): values ignored; isEmpty
+          matches cases with no active escalation, isNotEmpty matches cases
+          with an active escalation.
 
     SearchCasesFilters:
       type: object

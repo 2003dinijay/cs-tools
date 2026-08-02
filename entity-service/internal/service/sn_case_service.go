@@ -269,6 +269,12 @@ func domainTypeKeysToSN(typeKeys []string) []string {
 }
 
 // snSortFieldMap maps domain CaseSortField values to SN field names.
+// validEscalationLevel is the set of real escalation level ids confirmed live
+// against wso2sndev (EL0 "not escalated" through EL5 "CEO").
+var validEscalationLevel = map[string]bool{
+	"0": true, "1": true, "2": true, "3": true, "4": true, "5": true,
+}
+
 var snSortFieldMap = map[domain.CaseSortField]string{
 	domain.CaseSortFieldCreatedOn: "createdOn",
 	domain.CaseSortFieldUpdatedOn: "updatedOn",
@@ -333,6 +339,11 @@ type snCaseFilters struct {
 	// range. Confined to SN adapter per vendor-neutral boundary; see
 	// domain.TaskSLAFilter doc comment.
 	TaskSLAFilter *snTaskSLAFilter `json:"taskSLAFilter,omitempty"`
+	// EscalationLevels: see domain.SearchCasesFilters.EscalationLevels doc comment.
+	EscalationLevels []string `json:"escalationLevel,omitempty"`
+	// IsEscalated: a *bool (not bool) so that an explicit false is still sent on
+	// the wire -- omitempty on a pointer only drops a nil, not a false value.
+	IsEscalated *bool `json:"isEscalated,omitempty"`
 }
 
 // snTaskSLAFilter represents the Task SLA filter for SN's POST /cases/search request.
@@ -1955,6 +1966,8 @@ func buildSNCaseFilters(parsed domain.ParsedCaseFilters, searchQuery string) snC
 		Unassigned:                parsed.Unassigned,
 		ResolutionNotesEmpty:      parsed.ResolutionNotesEmpty,
 		TaskSLAFilter:             buildSNTaskSLAFilter(parsed.TaskSLAFilter),
+		EscalationLevels:          parsed.EscalationLevels,
+		IsEscalated:               parsed.HasActiveEscalation,
 	}
 }
 
@@ -2051,6 +2064,11 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 	for _, et := range req.Parsed.EngagementTypes {
 		if !validEngagementType[et] {
 			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "engagementType contains invalid value: " + string(et)}
+		}
+	}
+	for _, lvl := range req.Parsed.EscalationLevels {
+		if !validEscalationLevel[lvl] {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "escalationLevel contains invalid value: " + lvl}
 		}
 	}
 
