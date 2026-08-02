@@ -1677,7 +1677,7 @@ paths:
       parameters:
         - name: dashboardId
           in: path
-          description: ID of the dashboard (e.g. "agents_pilot")
+          description: ID of the dashboard (e.g. "sample-dashboard")
           required: true
           schema:
             type: string
