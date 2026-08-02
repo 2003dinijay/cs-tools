@@ -40,35 +40,58 @@ import (
 // in-process instead of via the environment.
 const testDashboardsConfigJSON = `[
   {"id":"agents_pilot","displayName":"Engineer overview","isDefault":true,"targetTeam":"cs_engineers","widgets":[
-    {"id":"my_patches","displayName":"My Patches","resourceType":"case","shape":"count","gridWidth":3,"filters":{"assignedUserIds":["__current_user__"],"tags":["patch"],"states":["open","work_in_progress","waiting_on_wso2","reopened","awaiting_info"]}},
-    {"id":"my_reminders","displayName":"My Reminders","resourceType":"case","shape":"count","gridWidth":3,"filters":{"assignedUserIds":["__current_user__"],"states":["awaiting_info","solution_proposed"]}},
-    {"id":"open_incident_team","displayName":"Open Incident (Team)","resourceType":"case","shape":"count","gridWidth":3,"filters":{"tags":["s_dip"],"states":["work_in_progress","open","waiting_on_wso2","reopened"]}},
-    {"id":"my_critical_open","displayName":"My Critical & High Cases","resourceType":"case","shape":"list","gridWidth":3,"listLimit":5,"filters":{"assignedUserIds":["__current_user__"],"severities":["catastrophic","critical"],"states":["open","work_in_progress"]}}
+    {"id":"my_patches","displayName":"My Patches","resourceType":"case","shape":"count","gridWidth":3,"filters":{"filters":[{"field":"assignedUserId","op":"in","values":["__current_user__"]},{"field":"tag","op":"in","values":["patch"]},{"field":"state","op":"in","values":["open","work_in_progress","waiting_on_wso2","reopened","awaiting_info"]}]}},
+    {"id":"my_reminders","displayName":"My Reminders","resourceType":"case","shape":"count","gridWidth":3,"filters":{"filters":[{"field":"assignedUserId","op":"in","values":["__current_user__"]},{"field":"state","op":"in","values":["awaiting_info","solution_proposed"]}]}},
+    {"id":"open_incident_team","displayName":"Open Incident (Team)","resourceType":"case","shape":"count","gridWidth":3,"filters":{"filters":[{"field":"tag","op":"in","values":["s_dip"]},{"field":"state","op":"in","values":["work_in_progress","open","waiting_on_wso2","reopened"]}]}},
+    {"id":"my_critical_open","displayName":"My Critical & High Cases","resourceType":"case","shape":"list","gridWidth":3,"listLimit":5,"filters":{"filters":[{"field":"assignedUserId","op":"in","values":["__current_user__"]},{"field":"severity","op":"in","values":["catastrophic","critical"]},{"field":"state","op":"in","values":["open","work_in_progress"]}]}}
   ]},
   {"id":"operations","displayName":"Operations","targetTeam":"cs_operations","widgets":[
-    {"id":"p0_p1_open","displayName":"P0/P1 Open","resourceType":"case","shape":"count","gridWidth":4,"filters":{"severities":["catastrophic","critical"],"states":["open","work_in_progress"]}},
+    {"id":"p0_p1_open","displayName":"P0/P1 Open","resourceType":"case","shape":"count","gridWidth":4,"filters":{"filters":[{"field":"severity","op":"in","values":["catastrophic","critical"]},{"field":"state","op":"in","values":["open","work_in_progress"]}]}},
     {"id":"open_critical_incidents","displayName":"Open Critical Incidents","resourceType":"incident","shape":"count","gridWidth":4,"filters":{"priorities":["CRITICAL","HIGH"]}},
     {"id":"crs_awaiting_approval","displayName":"CRs Awaiting Approval","resourceType":"change_request","shape":"count","gridWidth":4,"filters":{"states":["customer_approval"]}}
   ]},
   {"id":"iam","displayName":"IAM CS","targetTeam":"iam_cs","widgets":[
-    {"id":"iam_open_cases","displayName":"IAM Open Cases","resourceType":"case","shape":"count","gridWidth":6,"filters":{"tags":["iam"],"states":["open","work_in_progress","awaiting_info"]}},
-    {"id":"asgardeo_open_cases","displayName":"Asgardeo Open Cases","resourceType":"case","shape":"count","gridWidth":6,"filters":{"tags":["asgardeo"],"states":["open","work_in_progress","awaiting_info"]}}
+    {"id":"iam_open_cases","displayName":"IAM Open Cases","resourceType":"case","shape":"count","gridWidth":6,"filters":{"filters":[{"field":"tag","op":"in","values":["iam"]},{"field":"state","op":"in","values":["open","work_in_progress","awaiting_info"]}]}},
+    {"id":"asgardeo_open_cases","displayName":"Asgardeo Open Cases","resourceType":"case","shape":"count","gridWidth":6,"filters":{"filters":[{"field":"tag","op":"in","values":["asgardeo"]},{"field":"state","op":"in","values":["open","work_in_progress","awaiting_info"]}]}}
   ]},
   {"id":"security","displayName":"Security center","targetTeam":"security","widgets":[
     {"id":"critical_vulns","displayName":"Critical Vulnerabilities","resourceType":"product_vulnerability","shape":"count","gridWidth":4,"filters":{"priority":"critical"}},
     {"id":"high_vulns","displayName":"High Vulnerabilities","resourceType":"product_vulnerability","shape":"count","gridWidth":4,"filters":{"priority":"high"}},
-    {"id":"sra_cases_open","displayName":"Open SRAs","resourceType":"case","shape":"count","gridWidth":4,"filters":{"types":["security_report_analysis"],"states":["open","work_in_progress","awaiting_info"]}}
+    {"id":"sra_cases_open","displayName":"Open SRAs","resourceType":"case","shape":"count","gridWidth":4,"filters":{"filters":[{"field":"type","op":"in","values":["security_report_analysis"]},{"field":"state","op":"in","values":["open","work_in_progress","awaiting_info"]}]}}
   ]},
   {"id":"team_performance","displayName":"Team performance","targetTeam":"cs_team_leads","isTeamBased":true,"widgets":[
     {"id":"time_cards_pending_approval","displayName":"Time Cards Pending Approval","resourceType":"time_card","shape":"count","gridWidth":6,"filters":{"states":["pending"]}},
-    {"id":"team_open_cases","displayName":"Team Open P0/P1","resourceType":"case","shape":"count","gridWidth":6,"filters":{"severities":["catastrophic","critical"],"states":["open","work_in_progress"]}},
-    {"id":"cases_by_severity","displayName":"Cases by severity","description":"Share of active cases at each severity level.","resourceType":"case","shape":"pie","gridWidth":6,"filters":{"states":["open","work_in_progress"]},"slices":[
-      {"label":"Critical","color":"error","filters":{"severities":["critical"]}},
-      {"label":"Mine","filters":{"assignedUserIds":["__current_user__"]}}
+    {"id":"team_open_cases","displayName":"Team Open P0/P1","resourceType":"case","shape":"count","gridWidth":6,"filters":{"filters":[{"field":"severity","op":"in","values":["catastrophic","critical"]},{"field":"state","op":"in","values":["open","work_in_progress"]}]}},
+    {"id":"cases_by_severity","displayName":"Cases by severity","description":"Share of active cases at each severity level.","resourceType":"case","shape":"pie","gridWidth":6,"filters":{"filters":[{"field":"state","op":"in","values":["open","work_in_progress"]}]},"slices":[
+      {"label":"Critical","color":"error","filters":{"filters":[{"field":"severity","op":"in","values":["critical"]}]}},
+      {"label":"Mine","filters":{"filters":[{"field":"assignedUserId","op":"in","values":["__current_user__"]}]}}
     ]},
     {"id":"incident_wow","displayName":"Incident WOW","section":"SLA Violation","resourceType":"incident","shape":"count","gridWidth":6,"filters":{}}
   ]}
 ]`
+
+// filterValuesByField finds the "values" array of the first entry in a case
+// widget's resolved filters (the {"filters":[{"field","op","values"}, ...]}
+// shape, see .env.example's DASHBOARDS_CONFIG) whose "field" matches, and
+// reports whether one was found.
+func filterValuesByField(filters map[string]any, field string) ([]any, bool) {
+	arr, ok := filters["filters"].([]any)
+	if !ok {
+		return nil, false
+	}
+	for _, entry := range arr {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if m["field"] != field {
+			continue
+		}
+		values, ok := m["values"].([]any)
+		return values, ok
+	}
+	return nil, false
+}
 
 // TestMain seeds dashboard.Dashboards before any test in this package runs.
 // In production it is populated once at process startup by cmd/server/main.go
@@ -367,49 +390,45 @@ func TestGetDashboardDetail(t *testing.T) {
 				t.Fatalf("missing widget %q in response", id)
 			}
 			filters := result.Widgets[idx].Filters
-			assignedRaw, present := filters["assignedUserIds"]
+			assigned, present := filterValuesByField(filters, "assignedUserId")
 			if !present {
-				t.Fatalf("widget %s filters has no assignedUserIds key", id)
-			}
-			assigned, ok := assignedRaw.([]any)
-			if !ok {
-				t.Fatalf("widget %s assignedUserIds is %T, want []any", id, assignedRaw)
+				t.Fatalf("widget %s filters has no assignedUserId field entry", id)
 			}
 			if len(assigned) != 1 || assigned[0] != resolvedCurrentUserID {
-				t.Errorf("widget %s assignedUserIds = %v, want [%q]", id, assigned, resolvedCurrentUserID)
+				t.Errorf("widget %s assignedUserId values = %v, want [%q]", id, assigned, resolvedCurrentUserID)
 			}
 			for _, uid := range assigned {
 				if uid == "__current_user__" {
-					t.Errorf("widget %s assignedUserIds leaked the unresolved placeholder", id)
+					t.Errorf("widget %s assignedUserId values leaked the unresolved placeholder", id)
 				}
 			}
 		}
 
-		// open_incident_team has no assignedUserIds field in its template and
-		// must not gain one during substitution: substituteCurrentUser only
-		// rewrites values already present, it never adds keys.
+		// open_incident_team has no assignedUserId filter entry in its
+		// template and must not gain one during substitution:
+		// substituteCurrentUser only rewrites values already present, it
+		// never adds entries.
 		teamIdx, ok := byID["open_incident_team"]
 		if !ok {
 			t.Fatalf("missing widget %q in response", "open_incident_team")
 		}
 		teamFilters := result.Widgets[teamIdx].Filters
-		if v, present := teamFilters["assignedUserIds"]; present {
-			t.Errorf("widget open_incident_team filters unexpectedly has an assignedUserIds key: %v", v)
+		if v, present := filterValuesByField(teamFilters, "assignedUserId"); present {
+			t.Errorf("widget open_incident_team filters unexpectedly has an assignedUserId field entry: %v", v)
 		}
 
-		// my_critical_open DOES carry assignedUserIds (the current user's
-		// critical/high cases) — verify it resolved cleanly.
+		// my_critical_open DOES carry an assignedUserId filter (the current
+		// user's critical/high cases) — verify it resolved cleanly.
 		criticalIdx, ok := byID["my_critical_open"]
 		if !ok {
 			t.Fatalf("missing widget %q in response", "my_critical_open")
 		}
-		assignedRaw, present := result.Widgets[criticalIdx].Filters["assignedUserIds"]
+		assigned, present := filterValuesByField(result.Widgets[criticalIdx].Filters, "assignedUserId")
 		if !present {
-			t.Fatalf("widget my_critical_open filters has no assignedUserIds key")
+			t.Fatalf("widget my_critical_open filters has no assignedUserId field entry")
 		}
-		assigned, ok := assignedRaw.([]any)
-		if !ok || len(assigned) != 1 || assigned[0] != resolvedCurrentUserID {
-			t.Errorf("widget my_critical_open assignedUserIds = %v, want [%q]", assignedRaw, resolvedCurrentUserID)
+		if len(assigned) != 1 || assigned[0] != resolvedCurrentUserID {
+			t.Errorf("widget my_critical_open assignedUserId values = %v, want [%q]", assigned, resolvedCurrentUserID)
 		}
 	})
 
@@ -558,16 +577,16 @@ func TestGetDashboardDetail(t *testing.T) {
 		if critical.Color != "error" {
 			t.Errorf("Critical slice Color = %q, want %q", critical.Color, "error")
 		}
-		if _, present := critical.Filters["states"]; present {
+		if _, present := filterValuesByField(critical.Filters, "state"); present {
 			t.Errorf("Critical slice Filters must not carry the widget's own base filters, got %v", critical.Filters)
 		}
 
 		if mine == nil {
 			t.Fatalf("missing the %q slice in cases_by_severity.Slices", "Mine")
 		}
-		assigned, ok := mine.Filters["assignedUserIds"].([]any)
+		assigned, ok := filterValuesByField(mine.Filters, "assignedUserId")
 		if !ok || len(assigned) != 1 || assigned[0] != resolvedCurrentUserID {
-			t.Errorf("Mine slice assignedUserIds = %v, want [%q] (resolved, not the raw placeholder)", mine.Filters["assignedUserIds"], resolvedCurrentUserID)
+			t.Errorf("Mine slice assignedUserId = %v, want [%q] (resolved, not the raw placeholder)", assigned, resolvedCurrentUserID)
 		}
 
 		// Confirm the wire keys match the updated openapi.yaml schema.
@@ -677,12 +696,12 @@ func TestResolveCurrentUserID_UsesEntityUsersMeNotJWTClaim(t *testing.T) {
 		byID[wd.WidgetID] = wd
 	}
 
-	assigned, ok := byID["my_patches"].Filters["assignedUserIds"].([]any)
+	assigned, ok := filterValuesByField(byID["my_patches"].Filters, "assignedUserId")
 	if !ok || len(assigned) != 1 {
-		t.Fatalf("my_patches assignedUserIds = %v, want a 1-element array", byID["my_patches"].Filters["assignedUserIds"])
+		t.Fatalf("my_patches assignedUserId values = %v, want a 1-element array", assigned)
 	}
 	if assigned[0] != entityResolvedID {
-		t.Errorf("my_patches assignedUserIds[0] = %v, want the entity-resolved id %q (not the JWT claim %q)",
+		t.Errorf("my_patches assignedUserId values[0] = %v, want the entity-resolved id %q (not the JWT claim %q)",
 			assigned[0], entityResolvedID, testUser.UserID)
 	}
 }
@@ -711,8 +730,8 @@ func TestResolveCurrentUserID_FallsBackToJWTClaimOnEntityError(t *testing.T) {
 	for _, wd := range result.Widgets {
 		byID[wd.WidgetID] = wd
 	}
-	assigned, ok := byID["my_patches"].Filters["assignedUserIds"].([]any)
+	assigned, ok := filterValuesByField(byID["my_patches"].Filters, "assignedUserId")
 	if !ok || len(assigned) != 1 || assigned[0] != testUser.UserID {
-		t.Errorf("my_patches assignedUserIds = %v, want the JWT-claim fallback [%q]", byID["my_patches"].Filters["assignedUserIds"], testUser.UserID)
+		t.Errorf("my_patches assignedUserId values = %v, want the JWT-claim fallback [%q]", assigned, testUser.UserID)
 	}
 }
