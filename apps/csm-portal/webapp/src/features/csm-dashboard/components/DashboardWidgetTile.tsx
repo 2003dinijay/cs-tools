@@ -280,7 +280,7 @@ export default function DashboardWidgetTile({
               mt: 0.5,
               lineHeight: 1.1,
               fontWeight: 700,
-              fontSize: "4rem",
+              fontSize: "3.25rem",
               overflow: "hidden",
               textOverflow: "ellipsis",
             }}
