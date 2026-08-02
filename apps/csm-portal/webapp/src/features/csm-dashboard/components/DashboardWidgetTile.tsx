@@ -275,9 +275,15 @@ export default function DashboardWidgetTile({
             {displayName}
           </Typography>
           <Typography
-            variant="h4"
+            variant="h3"
             noWrap
-            sx={{ mt: 0.5, lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis" }}
+            sx={{
+              mt: 0.5,
+              lineHeight: 1.15,
+              fontWeight: 700,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
           >
             {data?.total ?? 0}
           </Typography>
