@@ -72,7 +72,7 @@ func TestGetProject(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to retrieve project.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to retrieve project.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityProjectClient{
@@ -150,7 +150,7 @@ func TestSearchProjects(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to search projects.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to search projects.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityProjectClient{
@@ -261,7 +261,7 @@ func TestSearchProjectContacts(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to search project contacts.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to search project contacts.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityProjectClient{

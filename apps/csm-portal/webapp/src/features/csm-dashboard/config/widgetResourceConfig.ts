@@ -14,6 +14,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import {
+  AlertOctagon,
+  AlertTriangle,
+  Briefcase,
+  Building2,
+  Clock,
+  FolderKanban,
+  GitPullRequest,
+  ShieldAlert,
+  Users,
+  type LucideIcon,
+} from "@wso2/oxygen-ui-icons-react";
 import type { BeWidgetResourceType } from "@api/backend/types";
 import { humanizeState } from "@features/csm-dashboard/utils/abtDashboard";
 import { casesHref } from "@features/csm-cases/utils/casesFiltersUrl";
@@ -51,6 +63,12 @@ export interface WidgetResourceConfig {
   /** Where a click on this widget's tile navigates, given its (opaque,
    * already current-user-resolved) filters. */
   buildHref: (filters: Record<string, unknown>) => string;
+  /** Icon shown on the tile, one per resource type (not per individual
+   * widget — the backend registry doesn't carry per-widget icon metadata). */
+  icon: LucideIcon;
+  /** Theme palette key the icon (and nothing else — see DashboardWidgetTile's
+   * hover treatment) is colored with. */
+  iconColor: "primary" | "secondary" | "success" | "error" | "info" | "warning";
 }
 
 function asString(v: unknown): string | undefined {
@@ -181,6 +199,8 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     primaryLabel: numberSubjectLabel,
     secondaryLabel: stateSecondaryLabel,
     buildHref: (filters) => casesHref(translateCaseDashboardFilters(filters)),
+    icon: Briefcase,
+    iconColor: "primary",
   },
   incident: {
     searchEndpoint: "/incidents/search",
@@ -195,6 +215,8 @@ export const WIDGET_RESOURCE_CONFIG: Record<
           ...translateIncidentDashboardFilters(filters),
         }),
       ),
+    icon: AlertTriangle,
+    iconColor: "warning",
   },
   change_request: {
     searchEndpoint: "/change-requests/search",
@@ -209,6 +231,8 @@ export const WIDGET_RESOURCE_CONFIG: Record<
           ...translateChangeRequestDashboardFilters(filters),
         }),
       ),
+    icon: GitPullRequest,
+    iconColor: "info",
   },
   problem: {
     searchEndpoint: "/problems/search",
@@ -218,6 +242,8 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     // No dashboard widget filters problems today; the tab has no URL filter
     // scheme of its own yet either, so this is unfiltered.
     buildHref: () => operationsHref("problems"),
+    icon: AlertOctagon,
+    iconColor: "error",
   },
   account: {
     searchEndpoint: "/accounts/search",
@@ -225,6 +251,8 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     primaryLabel: (item) => asString(item.name) ?? "—",
     secondaryLabel: (item) => asString(item.tier),
     buildHref: () => "/customers/accounts",
+    icon: Building2,
+    iconColor: "secondary",
   },
   project: {
     searchEndpoint: "/projects/search",
@@ -232,6 +260,8 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     primaryLabel: (item) => asString(item.name) ?? asString(item.projectKey) ?? "—",
     secondaryLabel: (item) => asString(item.subscriptionType),
     buildHref: () => "/customers/projects",
+    icon: FolderKanban,
+    iconColor: "secondary",
   },
   user: {
     searchEndpoint: "/users/search",
@@ -244,6 +274,8 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     },
     secondaryLabel: (item) => asString(item.email),
     buildHref: () => "/admin/users",
+    icon: Users,
+    iconColor: "info",
   },
   time_card: {
     searchEndpoint: "/time-cards/search",
@@ -258,6 +290,8 @@ export const WIDGET_RESOURCE_CONFIG: Record<
       return state ? humanizeState(state) : undefined;
     },
     buildHref: () => "/time-cards",
+    icon: Clock,
+    iconColor: "warning",
   },
   product_vulnerability: {
     searchEndpoint: "/products/vulnerabilities/search",
@@ -267,6 +301,8 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     secondaryLabel: (item) =>
       asString(item.priority) ?? asString(item.productName),
     buildHref: () => "/security-center",
+    icon: ShieldAlert,
+    iconColor: "error",
   },
 };
 

@@ -72,6 +72,14 @@ function formatDateOnly(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+/** Today's UTC calendar date, as a local-midnight Date (see `parseDateOnly`)
+ * — the upper bound for both created-date fields, since incidents can't be
+ * created in the future. */
+function todayUTCDateOnly(): Date {
+  const now = new Date();
+  return new Date(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+}
+
 interface IncidentsFilterBarProps {
   filters: IncidentFilters;
   onChange: (next: IncidentFilters) => void;
@@ -81,8 +89,8 @@ interface IncidentsFilterBarProps {
 }
 
 /**
- * Search + filters bar for the Incidents tab: priority, SLA-violated, created
- * date range, and product (see `IncidentSearchPayload.filters` in
+ * Search + filters bar for the Incidents tab: priority, product,
+ * SLA-violated, and created date range (see `IncidentSearchPayload.filters` in
  * openapi.yaml — there's still no server-side state/category filter to build
  * a control for). The created-date bounds are inclusive and interpreted in
  * UTC by the backend, so both date fields are labelled "(UTC)" rather than
@@ -99,6 +107,11 @@ export default function IncidentsFilterBar({
 }: IncidentsFilterBarProps): JSX.Element {
   const activeCount = countActiveIncidentFilters(filters);
   const hasActive = activeCount > 0;
+
+  const today = useMemo(() => todayUTCDateOnly(), []);
+  const createdEndDate = parseDateOnly(filters.createdEndDate);
+  const createdStartDate = parseDateOnly(filters.createdStartDate);
+  const fromMaxDate = createdEndDate && createdEndDate < today ? createdEndDate : today;
 
   const priorityOptions = useMemo(
     () =>
@@ -178,7 +191,7 @@ export default function IncidentsFilterBar({
         <>
           <Divider />
           <Grid container spacing={2}>
-            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
               <FormControl fullWidth size="small">
                 <InputLabel id="incident-filter-priority-label">Priority</InputLabel>
                 <Select
@@ -208,7 +221,17 @@ export default function IncidentsFilterBar({
               </FormControl>
             </Grid>
 
-            <Grid size={{ xs: 12, sm: 6, md: 3 }} sx={{ display: "flex", alignItems: "center" }}>
+            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+              <IncidentProductMultiSelect
+                values={filters.products}
+                onChange={(next) => onChange({ ...filters, products: next })}
+              />
+            </Grid>
+
+            <Grid
+              size={{ xs: 12, sm: 6, md: 4 }}
+              sx={{ display: "flex", alignItems: "center", height: 40 }}
+            >
               <FormControlLabel
                 control={
                   <Checkbox
@@ -226,8 +249,8 @@ export default function IncidentsFilterBar({
               <LocalizationProvider dateAdapter={AdapterDateFns}>
                 <DatePicker
                   label="Created from (UTC)"
-                  value={parseDateOnly(filters.createdStartDate)}
-                  maxDate={parseDateOnly(filters.createdEndDate) ?? undefined}
+                  value={createdStartDate}
+                  maxDate={fromMaxDate}
                   onChange={(date) =>
                     onChange({
                       ...filters,
@@ -249,8 +272,9 @@ export default function IncidentsFilterBar({
               <LocalizationProvider dateAdapter={AdapterDateFns}>
                 <DatePicker
                   label="Created to (UTC)"
-                  value={parseDateOnly(filters.createdEndDate)}
-                  minDate={parseDateOnly(filters.createdStartDate) ?? undefined}
+                  value={createdEndDate}
+                  minDate={createdStartDate ?? undefined}
+                  maxDate={today}
                   onChange={(date) =>
                     onChange({
                       ...filters,
@@ -266,13 +290,6 @@ export default function IncidentsFilterBar({
                   }}
                 />
               </LocalizationProvider>
-            </Grid>
-
-            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-              <IncidentProductMultiSelect
-                values={filters.products}
-                onChange={(next) => onChange({ ...filters, products: next })}
-              />
             </Grid>
           </Grid>
           {activeCount > 0 && (
