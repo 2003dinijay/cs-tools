@@ -21,11 +21,11 @@ import {
   Card,
   Chip,
   Skeleton,
-  Stack,
   Table,
   TableBody,
   TableCell,
   TableContainer,
+  TableHead,
   TableRow,
   Typography,
 } from "@wso2/oxygen-ui";
@@ -105,92 +105,39 @@ function isInternalUser(user: NormalizedUserDetail): boolean {
   );
 }
 
+type ChipColor = "success" | "warning" | "error" | "default";
+
+interface ProjectAccessStatus {
+  label: string;
+  color: ChipColor;
+  reason?: string;
+}
+
 /**
- * Human-readable reasons a project-access row doesn't grant case access.
- * `grantsCaseAccess` is the verdict the backend already computed; these are
- * the "why" a support engineer is looking for. Order matters: the missing
- * contact record is the more fundamental failure, so it's listed first when
- * both are true.
+ * A project row's access status, folding case-access and registration state
+ * into the single "Access" column a support engineer scans: a project with no
+ * linked contact record is the fundamental failure ("No access", with the
+ * reason called out inline); one that's linked but hasn't completed
+ * registration yet reads "Invited" rather than "Has access", since the
+ * person hasn't actually logged in to see it.
  */
-function blockedReasons(pa: UserProjectAccess): string[] {
-  const reasons: string[] = [];
-  if (!pa.contactRecordPresent) {
-    reasons.push("No contact record is linked to this project for this user.");
-  } else if (!pa.emailMatchesLogin) {
-    reasons.push(
-      pa.contactRecordEmail
-        ? `Contact record email (${pa.contactRecordEmail}) doesn't match the login email (${pa.contactEmail}).`
-        : "The linked contact record's email doesn't match the login email.",
-    );
+function deriveProjectAccessStatus(pa: UserProjectAccess): ProjectAccessStatus {
+  if (!pa.grantsCaseAccess) {
+    return {
+      label: "No access",
+      color: "error",
+      reason: "No contact record is linked to this project for this user.",
+    };
   }
-  return reasons;
+  if ((pa.registrationState ?? "").toLowerCase() === "invited") {
+    return { label: "Invited", color: "warning" };
+  }
+  return { label: "Has access", color: "success" };
 }
 
-/** One row of an external user's per-project access, with the reason surfaced when blocked. */
-function ProjectAccessRow({ pa }: { pa: UserProjectAccess }): JSX.Element {
-  const reasons = blockedReasons(pa);
-  return (
-    <Box
-      sx={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 0.75,
-        p: 1.5,
-        border: 1,
-        borderColor: "divider",
-        borderRadius: 1,
-      }}
-    >
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-        <Typography
-          component={RouterLink}
-          to={`/customers/projects/${pa.projectId}`}
-          variant="body2"
-          sx={(t) => ({
-            fontWeight: 600,
-            textDecoration: "none",
-            color: t.palette.primary.dark,
-            ...t.applyStyles("dark", { color: t.palette.primary.main }),
-            "&:hover": { textDecoration: "underline" },
-          })}
-        >
-          {pa.projectName}
-        </Typography>
-        <Chip
-          size="small"
-          label={pa.grantsCaseAccess ? "Has case access" : "Blocked"}
-          color={pa.grantsCaseAccess ? "success" : "error"}
-          variant="outlined"
-        />
-        {pa.registrationState && (
-          <Chip size="small" label={pa.registrationState} variant="outlined" />
-        )}
-        {pa.roles?.map((r) => (
-          <Chip key={r} size="small" label={r} variant="outlined" />
-        ))}
-      </Box>
-
-      {!pa.grantsCaseAccess && reasons.length > 0 && (
-        <Stack spacing={0.25}>
-          {reasons.map((reason) => (
-            <Typography key={reason} variant="caption" color="error.main">
-              {reason}
-            </Typography>
-          ))}
-        </Stack>
-      )}
-
-      <Typography variant="caption" color="text.secondary">
-        Contact email: {pa.contactEmail}
-        {pa.notificationsEnabled !== undefined &&
-          ` · Notifications ${pa.notificationsEnabled ? "on" : "off"}`}
-      </Typography>
-    </Box>
-  );
-}
-
-/** One row a {@link MembershipTable} renders: a role, group, or team the
- * profile's user belongs to, plus enough to link it to its directory page. */
+/** One row of {@link MembershipRow} rendered as a chip cluster: a role, group,
+ * or team the profile's user belongs to, plus enough to link it to its
+ * directory page (see `DirectoryEntityChip`). */
 interface MembershipRow {
   key: string;
   id: string;
@@ -200,22 +147,16 @@ interface MembershipRow {
 }
 
 /**
- * A single-column table of role/group/team memberships, one row per entry,
- * each name a link to that entity's directory page (see
- * `DirectoryEntityChip`). Rendered even when `rows` is empty — "no
- * memberships" is itself an answer worth showing rather than hiding the
- * section, per {@link emptyMessage}.
- *
- * Deliberately no header row naming the column ("Role"/"Group"/"Team") —
- * the enclosing card's own title already says that, and repeating it inside
- * read as "Groups" containing a table headed "Group".
+ * An inline, wrapping cluster of membership chips — deliberately not a
+ * bordered table-in-a-card: each chip already reads as a distinct item, so a
+ * per-row box around it added visual weight without adding information.
+ * Rendered even when `rows` is empty — "no memberships" is itself an answer
+ * worth showing rather than hiding the section.
  */
-function MembershipTable({
-  ariaLabel,
+function ChipCluster({
   rows,
   emptyMessage,
 }: {
-  ariaLabel: string;
   rows: MembershipRow[];
   emptyMessage: string;
 }): JSX.Element {
@@ -227,83 +168,24 @@ function MembershipTable({
     );
   }
   return (
-    <TableContainer sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}>
-      <Table size="small" aria-label={ariaLabel}>
-        <TableBody>
-          {rows.map((row) => (
-            <TableRow key={row.key}>
-              <TableCell>
-                <DirectoryEntityChip
-                  id={row.id}
-                  name={row.label}
-                  routeBase={row.routeBase}
-                  color={row.color}
-                />
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </TableContainer>
+    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+      {rows.map((row) => (
+        <DirectoryEntityChip
+          key={row.key}
+          id={row.id}
+          name={row.label}
+          routeBase={row.routeBase}
+          color={row.color}
+        />
+      ))}
+    </Box>
   );
 }
 
-/**
- * Roles/groups/teams as three cards in a row (wrapping to stacked on narrow
- * viewports), so the three membership kinds read as siblings rather than a
- * single long vertical list. Each card's title is the only place its kind is
- * named — the table inside carries no repeated column header.
- */
-function MembershipCard({
-  title,
-  rows,
-  emptyMessage,
-}: {
-  title: string;
-  rows: MembershipRow[];
-  emptyMessage: string;
-}): JSX.Element {
-  return (
-    <Card sx={{ p: 2.5, flex: "1 1 260px", minWidth: 220, display: "flex", flexDirection: "column", gap: 2 }}>
-      <Typography variant="subtitle2">{title}</Typography>
-      <MembershipTable ariaLabel={`${title} memberships`} rows={rows} emptyMessage={emptyMessage} />
-    </Card>
-  );
-}
-
-/** This user's assigned roles (all user types). Labels resolve through the
- * same role catalogue the users list uses, so a role reads "Agent" here too,
- * not the raw key "agent". */
-function RolesSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
-  const { data: rolesData } = useSearchRoles({ pagination: { limit: BE_MAX_PAGE_LIMIT } });
-  const roleNameById = useMemo(
-    () => new Map((rolesData?.roles ?? []).map((r) => [r.id, r.name])),
-    [rolesData],
-  );
-
-  const rows: MembershipRow[] = (user.roles ?? []).map((r) => ({
-    key: r,
-    id: r,
-    label: roleNameById.get(r) ?? r,
-    routeBase: "/admin/roles",
-    color: (INTERNAL_USER_ROLES as string[]).includes(r) ? "primary" : "default",
-  }));
-  return <MembershipCard title="Roles" rows={rows} emptyMessage="No roles assigned." />;
-}
-
-/** An internal user's group memberships. */
-function GroupsSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
-  const rows: MembershipRow[] = (user.groups ?? []).map((g) => ({
-    key: g.id,
-    id: g.id,
-    label: g.name,
-    routeBase: "/admin/groups",
-  }));
-  return <MembershipCard title="Groups" rows={rows} emptyMessage="No group memberships." />;
-}
-
-/** An internal user's CRE/SRE team assignments. */
-function TeamsSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
+/** This user's team chips, rendered inline in the Overview card — most users
+ * belong to at most one team, so a full card of its own was mostly dead
+ * space; here it reads as a normal profile attribute. */
+function TeamMetaCell({ user }: { user: NormalizedUserDetail }): JSX.Element {
   const rows: MembershipRow[] = (user.teams ?? []).map((t) => ({
     key: t.id,
     id: t.id,
@@ -311,21 +193,80 @@ function TeamsSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
     routeBase: "/admin/teams",
     color: "primary",
   }));
-  return <MembershipCard title="Teams" rows={rows} emptyMessage="No team assignments." />;
+  return (
+    <MetaCell label="Team">
+      <ChipCluster rows={rows} emptyMessage="Unassigned" />
+    </MetaCell>
+  );
 }
 
 /**
- * An external user's per-project access, with the reason called out whenever
- * a project doesn't grant case access — this card exists to answer "why
- * can't this customer see their cases?" at a glance.
+ * Roles and (for internal users) groups as two side-by-side chip clusters in
+ * one card, rather than three separate cards — a user rarely has enough
+ * groups to justify a card of its own, and putting roles and groups next to
+ * each other reads as "what can this person do" at a glance.
  */
-function ProjectAccessSection({ user }: { user: NormalizedUserDetail }): JSX.Element {
+function PermissionsCard({ user }: { user: NormalizedUserDetail }): JSX.Element {
+  const { data: rolesData } = useSearchRoles({ pagination: { limit: BE_MAX_PAGE_LIMIT } });
+  const roleNameById = useMemo(
+    () => new Map((rolesData?.roles ?? []).map((r) => [r.id, r.name])),
+    [rolesData],
+  );
+
+  const roleRows: MembershipRow[] = (user.roles ?? []).map((r) => ({
+    key: r,
+    id: r,
+    label: roleNameById.get(r) ?? r,
+    routeBase: "/admin/roles",
+    color: (INTERNAL_USER_ROLES as string[]).includes(r) ? "primary" : "default",
+  }));
+
+  const internal = isInternalUser(user);
+  const groupRows: MembershipRow[] = (user.groups ?? []).map((g) => ({
+    key: g.id,
+    id: g.id,
+    label: g.name,
+    routeBase: "/admin/groups",
+  }));
+
+  return (
+    <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+      <Typography variant="subtitle2">Permissions & assignments</Typography>
+      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+        <Box sx={{ flex: "1 1 260px", minWidth: 220, display: "flex", flexDirection: "column", gap: 1 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            Platform roles ({roleRows.length})
+          </Typography>
+          <ChipCluster rows={roleRows} emptyMessage="No roles assigned." />
+        </Box>
+        {internal && (
+          <Box sx={{ flex: "1 1 260px", minWidth: 220, display: "flex", flexDirection: "column", gap: 1 }}>
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+              User groups ({groupRows.length})
+            </Typography>
+            <ChipCluster rows={groupRows} emptyMessage="No group memberships." />
+          </Box>
+        )}
+      </Box>
+    </Card>
+  );
+}
+
+/**
+ * An external user's per-project access, as a data table matching the
+ * platform's other project tables (see `ProjectContactsTab`): project name
+ * linked to its detail page, the project's short key, the roles this contact
+ * carries on it, and a single Access column that's the verdict a support
+ * engineer is looking for — with the reason called out inline whenever a
+ * project doesn't grant case access.
+ */
+function AccessibleProjectsCard({ user }: { user: NormalizedUserDetail }): JSX.Element {
   const access = user.projectAccess ?? [];
   const blockedCount = access.filter((pa) => !pa.grantsCaseAccess).length;
 
   return (
-    <Card sx={{ p: 2.5, flex: "2 1 400px", display: "flex", flexDirection: "column", gap: 2 }}>
-      <Typography variant="subtitle2">Project access</Typography>
+    <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+      <Typography variant="subtitle2">Accessible projects</Typography>
 
       {user.active === false && (
         <Alert severity="error" variant="outlined">
@@ -346,11 +287,88 @@ function ProjectAccessSection({ user }: { user: NormalizedUserDetail }): JSX.Ele
               {access.length === 1 ? "" : "s"} — see the reason under each row below.
             </Alert>
           )}
-          <Stack spacing={1.5}>
-            {access.map((pa) => (
-              <ProjectAccessRow key={pa.projectId} pa={pa} />
-            ))}
-          </Stack>
+          <TableContainer sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Project name</TableCell>
+                  <TableCell>Project key</TableCell>
+                  <TableCell>Project roles</TableCell>
+                  <TableCell>Access</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {access.map((pa) => {
+                  const status = deriveProjectAccessStatus(pa);
+                  return (
+                    <TableRow key={pa.projectId} hover>
+                      <TableCell>
+                        <Typography
+                          component={RouterLink}
+                          to={`/customers/projects/${pa.projectId}`}
+                          variant="body2"
+                          sx={(t) => ({
+                            fontWeight: 600,
+                            textDecoration: "none",
+                            color: t.palette.primary.dark,
+                            ...t.applyStyles("dark", { color: t.palette.primary.main }),
+                            "&:hover": { textDecoration: "underline" },
+                          })}
+                        >
+                          {pa.projectName}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        {pa.projectKey ? (
+                          <Typography
+                            component="code"
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{
+                              px: 0.75,
+                              py: 0.25,
+                              bgcolor: "action.hover",
+                              borderRadius: 0.5,
+                            }}
+                          >
+                            {pa.projectKey}
+                          </Typography>
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {pa.roles && pa.roles.length > 0
+                          ? pa.roles.map((r) => (
+                              <Chip
+                                key={r}
+                                size="small"
+                                label={r}
+                                variant="outlined"
+                                sx={{ mr: 0.5, mb: 0.5 }}
+                              />
+                            ))
+                          : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <Chip size="small" label={status.label} color={status.color} variant="outlined" />
+                        {status.reason && (
+                          <Typography
+                            variant="caption"
+                            color="error.main"
+                            component="div"
+                            sx={{ mt: 0.25 }}
+                          >
+                            {status.reason}
+                          </Typography>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </TableContainer>
         </>
       )}
     </Card>
@@ -365,10 +383,10 @@ function ProjectAccessSection({ user }: { user: NormalizedUserDetail }): JSX.Ele
  * id through a cached lookup before the link ever appears).
  *
  * Renders everything `GET /users/{id}` returns: name, email, timezone, phone,
- * roles, created/updated times, plus — split by `userType` — an internal
- * user's group/team memberships or an external user's per-project access
- * (with the reason surfaced whenever a project doesn't grant case access, per
- * `UserProjectAccess.grantsCaseAccess`).
+ * team (internal users only), roles, created/updated times, plus — split by
+ * `userType` — an internal user's group memberships or an external user's
+ * per-project access (with the reason surfaced whenever a project doesn't
+ * grant case access, per `UserProjectAccess.grantsCaseAccess`).
  */
 export default function UserProfilePage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
@@ -459,6 +477,7 @@ export default function UserProfilePage(): JSX.Element {
               {user.email}
             </Typography>
           </MetaCell>
+          {internal && <TeamMetaCell user={user} />}
           <MetaCell label="Timezone">
             <Typography variant="body2">{user.timezone ?? "Not set"}</Typography>
           </MetaCell>
@@ -476,17 +495,9 @@ export default function UserProfilePage(): JSX.Element {
         </Box>
       </Card>
 
-      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2.5 }}>
-        <RolesSection user={user} />
-        {internal ? (
-          <>
-            <GroupsSection user={user} />
-            <TeamsSection user={user} />
-          </>
-        ) : (
-          <ProjectAccessSection user={user} />
-        )}
-      </Box>
+      <PermissionsCard user={user} />
+
+      {!internal && <AccessibleProjectsCard user={user} />}
     </Box>
   );
 }

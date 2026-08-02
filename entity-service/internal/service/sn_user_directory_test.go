@@ -210,8 +210,8 @@ func TestSNUserService_GetUser_ExternalProjectAccess(t *testing.T) {
 	})
 	mux.HandleFunc("/project-contacts/search", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"contacts":[{"projectId":"` + projectSysid + `","projectName":"Proj A",` +
-			`"contactEmail":"jane@example.com","customerContactPresent":false,"customerContactEmail":null,` +
-			`"emailMatchesLogin":true,"registrationState":"INVITED","notificationsEnabled":false,` +
+			`"projectKey":"PROJA","contactEmail":"jane@example.com","customerContactPresent":false,` +
+			`"customerContactEmail":null,"registrationState":"INVITED","notificationsEnabled":false,` +
 			`"roles":[],"grantsCaseAccess":false}],"totalRecords":1}`))
 	})
 
@@ -233,6 +233,9 @@ func TestSNUserService_GetUser_ExternalProjectAccess(t *testing.T) {
 	}
 	if row.ProjectID != sysidToUUID(projectSysid) {
 		t.Fatalf("projectId = %q, want the converted id", row.ProjectID)
+	}
+	if row.ProjectKey != "PROJA" {
+		t.Fatalf("projectKey = %q, want %q", row.ProjectKey, "PROJA")
 	}
 }
 
