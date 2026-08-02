@@ -107,34 +107,68 @@ const DASHBOARD_SEVERITY_TO_S_CODE: Record<string, Severity> = {
 };
 
 /**
- * Translate a dashboard widget's opaque case filters into the cases list's
- * own `CasesFilters` shape. `tags` has no equivalent in `CasesFilters` today
- * (the case-list tag filter was pulled out of the filter bar/URL — see the
- * note on `CasesFilters.tags` in `casesFiltersUrl.ts`) and is dropped rather
- * than invented. `assignedUserIds` carries the current user's own UUID
- * (every widget that sets it does so via the current-user placeholder), and
+ * One entry of the case-search generic filter DSL (`BeCaseFieldFilter`),
+ * structurally typed here (not imported from `types.ts`) since this reads a
+ * caller-opaque `Record<string, unknown>`, not a typed request body.
+ */
+interface CaseDashboardFieldFilter {
+  field: string;
+  op: string;
+  values?: string[];
+}
+
+function asCaseFieldFilters(v: unknown): CaseDashboardFieldFilter[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v.every(
+    (e): e is CaseDashboardFieldFilter =>
+      !!e && typeof e === "object" && typeof (e as Record<string, unknown>).field === "string",
+  )
+    ? v
+    : undefined;
+}
+
+/** Reads the `values` of the first entry matching `field` in a case widget's
+ * `filters.filters` array, or `undefined` if that field isn't present. */
+function caseFilterValues(
+  fieldFilters: CaseDashboardFieldFilter[] | undefined,
+  field: string,
+): string[] | undefined {
+  return fieldFilters?.find((f) => f.field === field)?.values;
+}
+
+/**
+ * Translate a dashboard widget's opaque case filters (the `POST
+ * /cases/search`-shaped `{ filters: BeCaseFieldFilter[] }` body — see
+ * `BeCaseSearchFilters`) into the cases list's own `CasesFilters` shape.
+ * `tag` has no equivalent in `CasesFilters` today (the case-list tag filter
+ * was pulled out of the filter bar/URL — see the note on `CasesFilters.tags`
+ * in `casesFiltersUrl.ts`) and is dropped rather than invented.
+ * `assignedUserId` carries the current user's own UUID (every widget that
+ * sets it does so via the current-user placeholder), and
  * `CasesFilters.assignees` is email/`@me`-based with no UUID lookup
  * available here — since these widgets only ever filter "assigned to me",
- * any non-empty `assignedUserIds` maps to the `@me` sentinel rather than an
+ * any non-empty `assignedUserId` maps to the `@me` sentinel rather than an
  * (unresolvable) literal UUID.
  */
 function translateCaseDashboardFilters(
   filters: Record<string, unknown>,
 ): Partial<CasesFilters> {
   const out: Partial<CasesFilters> = {};
-  const states = asStringArray(filters.states);
+  const fieldFilters = asCaseFieldFilters(filters.filters);
+
+  const states = caseFilterValues(fieldFilters, "state");
   if (states) out.states = states as CasesFilters["states"];
-  const severities = asStringArray(filters.severities);
+  const severities = caseFilterValues(fieldFilters, "severity");
   if (severities) {
     out.severities = severities
       .map((s) => DASHBOARD_SEVERITY_TO_S_CODE[s])
       .filter((s): s is Severity => Boolean(s));
   }
-  const types = asStringArray(filters.types);
+  const types = caseFilterValues(fieldFilters, "type");
   if (types) out.caseTypes = types as CasesFilters["caseTypes"];
-  const productNames = asStringArray(filters.productNames);
+  const productNames = caseFilterValues(fieldFilters, "product");
   if (productNames) out.productNames = productNames;
-  const assignedUserIds = asStringArray(filters.assignedUserIds);
+  const assignedUserIds = caseFilterValues(fieldFilters, "assignedUserId");
   if (assignedUserIds && assignedUserIds.length > 0) out.assignees = ["@me"];
   return out;
 }

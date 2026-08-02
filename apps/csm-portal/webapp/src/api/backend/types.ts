@@ -747,53 +747,87 @@ export type BeEngagementType =
   | "follow_up"
   | "onboarding";
 
-/** Request body for `POST /cases/search` (the flat, cross-project search). */
-/** Filter block for `POST /cases/search`; all fields are optional. */
+/**
+ * `field` enum accepted by {@link BeCaseFieldFilter}. Mirrors the
+ * entity-service's `caseFilterFieldSet` (see `case_filters.go`) exactly —
+ * anything else is rejected by the backend.
+ */
+export type BeCaseFieldFilterField =
+  | "type"
+  | "state"
+  | "severity"
+  | "engagementType"
+  | "issueType"
+  | "workState"
+  | "tag"
+  | "projectId"
+  | "deploymentId"
+  | "assignedUserId"
+  | "createdBy"
+  | "createdOn"
+  | "updatedOn"
+  | "closedOn"
+  | "product"
+  | "projectOnboardingStatus"
+  | "projectType"
+  | "integrationCsTeam"
+  | "resolutionNotes"
+  | "parentId";
+
+/**
+ * `op` enum accepted by {@link BeCaseFieldFilter}, independent of `field` —
+ * which ops a given field actually supports is enforced only on the backend
+ * (see `ParseCaseFieldFilters` in `case_filters.go`), not narrowed here.
+ */
+export type BeCaseFieldFilterOp =
+  | "eq"
+  | "in"
+  | "notIn"
+  | "isEmpty"
+  | "isNotEmpty"
+  | "gte"
+  | "lte";
+
+/**
+ * One entry in `POST /cases/search`'s generic filter DSL — replaces the old
+ * ~20 named filter fields (`states`, `severities`, `assignedUserIds`, ...)
+ * with a single typed array. `values` is required by every op except
+ * `isEmpty`/`isNotEmpty` (the backend rejects a missing/empty array
+ * otherwise — see `requireCaseFilterValues`).
+ *
+ * Date-range bounds (`createdOn`/`updatedOn`/`closedOn`) are two separate
+ * entries — one `gte`, one `lte` — instead of the old paired
+ * `start`/`end` named fields; each `values` is a single RFC3339 timestamp or
+ * `YYYY-MM-DD` date string.
+ *
+ * The old `createdByMe: true` boolean is now
+ * `{ field: "createdBy", op: "eq", values: ["__current_user_email__"] }` —
+ * see {@link BE_CURRENT_USER_FILTER_PLACEHOLDER}.
+ */
+export interface BeCaseFieldFilter {
+  field: BeCaseFieldFilterField;
+  op: BeCaseFieldFilterOp;
+  values?: string[];
+}
+
+/**
+ * The literal `values` entry a `createdBy`+`eq` filter must carry to mean
+ * "the authenticated caller" — mirrors the old `createdByMe: true` request
+ * field. See `currentUserFilterPlaceholder` in `case_filters.go`.
+ */
+export const BE_CURRENT_USER_FILTER_PLACEHOLDER = "__current_user_email__";
+
+/**
+ * Filter block for `POST /cases/search`; both fields are optional. Replaces
+ * the old ~20 named filter fields with the generic `filters` array — see
+ * {@link BeCaseFieldFilter}.
+ */
 export interface BeCaseSearchFilters {
   /** Searches across subject, number, and wso2Id (case-insensitive). */
   searchQuery?: string;
-  /** Optional project filter; omit for a cross-project search. */
-  projectIds?: string[];
-  deploymentIds?: string[];
-  types?: BeCaseType[];
-  states?: BeCaseState[];
-  severities?: BeCaseSeverity[];
-  issueTypes?: BeCaseIssueType[];
-  /** Filter by engagement type; only applies when `types` includes `"engagement"`. */
-  engagementTypes?: BeEngagementType[];
-  /** Filter to cases created by these emails. */
-  createdBy?: string[];
-  /** When true, the caller's email (from the JWT) is appended to `createdBy`. */
-  createdByMe?: boolean;
-  /**
-   * Work sub-state filter (ServiceNow: `ongoing` → 1, `paused` → 2). Only
-   * meaningful when `states` includes `work_in_progress`.
-   */
-  workStates?: BeCaseWorkState[];
-  /**
-   * Filter by assigned-engineer user UUIDs. The cases-list assignee picker is
-   * email/`@me`-based; `useGetCsmCases` resolves the selection to UUIDs (named
-   * engineers via `/users/search`, `@me` via the app-wide current-user context
-   * backed by `/users/me`). `@me` needs the caller's `id`, which `/users/me`
-   * omits only when the entity service is unavailable — in that case an
-   * `@me`-only selection resolves to nothing and the filter is omitted.
-   */
-  assignedUserIds?: string[];
-  /**
-   * Filter by product family name (e.g. `"API Manager"`, `"Asgardeo"`). Matches
-   * every version of each named product (ServiceNow matches `product.name`).
-   * SN data source only.
-   */
-  productNames?: string[];
-  /**
-   * Filter to child cases of this case UUID (the hierarchical
-   * major-case/child-case relationship set via the PATCH `parentId` field).
-   * Used to list a case's children via this same search endpoint rather than
-   * a dedicated one.
-   */
-  parentId?: string;
-  /** Filter to cases carrying any of these free-text tag labels (optional). */
-  tags?: string[];
+  /** The generic field/op/values filter array. Omit (or send `[]`) for an
+   * unfiltered cross-project search. */
+  filters?: BeCaseFieldFilter[];
 }
 
 export interface BeCaseSearchPayload {

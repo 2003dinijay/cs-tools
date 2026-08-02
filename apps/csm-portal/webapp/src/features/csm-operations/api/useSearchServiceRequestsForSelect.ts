@@ -48,7 +48,10 @@ export function useSearchServiceRequestsForSelect(
       const res = await api.post<BeCaseSearchPayload, BeCaseSearchResponse>(
         "/cases/search",
         {
-          filters: { searchQuery: q, types: ["service_request"] },
+          filters: {
+            searchQuery: q,
+            filters: [{ field: "type", op: "in", values: ["service_request"] }],
+          },
           pagination: { offset: 0, limit: SERVICE_REQUEST_SEARCH_LIMIT },
         },
       );

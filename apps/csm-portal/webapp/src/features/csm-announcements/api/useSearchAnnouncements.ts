@@ -23,6 +23,7 @@ import { useBackendApi } from "@api/backend/client";
 import { ApiQueryKeys } from "@constants/apiConstants";
 import { beStateFromUi, uiStateFromBe } from "@api/backend/mappers";
 import type {
+  BeCaseFieldFilter,
   BeCaseSearchPayload,
   BeCaseSearchResponse,
 } from "@api/backend/types";
@@ -70,20 +71,31 @@ export function useSearchAnnouncements(
       pageSize,
     ],
     queryFn: async (): Promise<CsmAnnouncementsListResponse> => {
+      const fieldFilters: BeCaseFieldFilter[] = [
+        { field: "type", op: "in", values: ["announcement"] },
+      ];
+      if (filters.states.length > 0) {
+        fieldFilters.push({
+          field: "state",
+          op: "in",
+          values: filters.states.map(beStateFromUi),
+        });
+      }
+      if (filters.projectIds.length > 0) {
+        fieldFilters.push({
+          field: "projectId",
+          op: "in",
+          values: filters.projectIds,
+        });
+      }
       const res = await api.post<BeCaseSearchPayload, BeCaseSearchResponse>(
         "/cases/search",
         {
           pagination: { offset, limit: pageSize },
           sortBy: { field: "updatedOn", order: "desc" },
           filters: {
-            types: ["announcement"],
+            filters: fieldFilters,
             ...(q.length > 0 && { searchQuery: q }),
-            ...(filters.states.length > 0 && {
-              states: filters.states.map(beStateFromUi),
-            }),
-            ...(filters.projectIds.length > 0 && {
-              projectIds: filters.projectIds,
-            }),
           },
         },
       );

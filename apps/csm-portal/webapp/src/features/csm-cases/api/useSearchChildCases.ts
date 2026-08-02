@@ -56,7 +56,11 @@ export function useSearchChildCases(
         "/cases/search",
         {
           pagination: { offset: 0, limit: CHILD_CASES_LIMIT },
-          filters: { parentId: parentCaseId },
+          filters: {
+            filters: [
+              { field: "parentId", op: "eq", values: [parentCaseId as string] },
+            ],
+          },
         },
       );
       return {

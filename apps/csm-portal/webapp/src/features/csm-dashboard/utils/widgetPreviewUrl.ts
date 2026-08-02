@@ -14,7 +14,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-const RESERVED_PARAMS = new Set(["w", "n"]);
+/** Marker param set only when the filters object being encoded/decoded uses
+ * the case-search generic field/op/values DSL (see
+ * `isCaseFieldFilterArray`) — so `parseWidgetPreviewFilters` knows to
+ * reconstruct `{ filters: [...] }` rather than a flat key→values record. */
+const CASE_FILTER_MARKER = "_cf";
+
+const RESERVED_PARAMS = new Set(["w", "n", CASE_FILTER_MARKER]);
 
 /** Placeholder swapped in for the signed-in user's own id wherever a
  * widget's (opaque, backend-resolved) filters carry it — e.g. "My Cases"
@@ -24,6 +30,42 @@ const CURRENT_USER_SENTINEL = "@me";
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === "string");
+}
+
+/**
+ * One entry of the case-search generic filter DSL (`BeCaseFieldFilter`),
+ * structurally typed here (not imported from `types.ts`) since this file
+ * works with every resourceType's opaque `Record<string, unknown>` filters,
+ * not just case's.
+ */
+interface WidgetCaseFieldFilterLike {
+  field: string;
+  op: string;
+  values?: string[];
+}
+
+/**
+ * True when `value` is the `filters` array of a case widget's filters object
+ * (`{ filters: BeCaseFieldFilter[] }` — see `BeCaseSearchFilters`), detected
+ * structurally so this file never needs to know the resourceType. Every
+ * dashboard case-filter widget today uses `op: "in"` only (see
+ * `.env.example`'s `DASHBOARDS_CONFIG`); a non-`"in"` op still round-trips
+ * through the URL (its `values` are preserved), but always decodes back with
+ * `op: "in"` — a lossy simplification acceptable only because op isn't
+ * configurable from this preview UI yet.
+ */
+function isCaseFieldFilterArray(value: unknown): value is WidgetCaseFieldFilterLike[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (e) =>
+        e !== null &&
+        typeof e === "object" &&
+        typeof (e as Record<string, unknown>).field === "string" &&
+        typeof (e as Record<string, unknown>).op === "string",
+    )
+  );
 }
 
 /**
@@ -50,8 +92,26 @@ export function buildWidgetPreviewHref(params: {
   const q = new URLSearchParams();
   q.set("w", params.widgetId);
   q.set("n", params.displayName);
+  let usesCaseFieldFilterShape = false;
   for (const [key, value] of Object.entries(params.filters)) {
     if (RESERVED_PARAMS.has(key)) continue;
+    if (key === "filters" && isCaseFieldFilterArray(value)) {
+      // Case widgets carry the generic field/op/values DSL nested under
+      // `filters.filters` (see `BeCaseSearchFilters`/`isCaseFieldFilterArray`)
+      // — flatten each entry to its own readable `field=values` query param
+      // (e.g. `severity=critical,high`), matching the flat encoding below,
+      // instead of surfacing one opaque JSON blob.
+      usesCaseFieldFilterShape = true;
+      for (const entry of value) {
+        const values = entry.values ?? [];
+        if (values.length === 0) continue;
+        const masked = values.map((v) =>
+          v === params.currentUserId ? CURRENT_USER_SENTINEL : v,
+        );
+        q.set(entry.field, masked.join(","));
+      }
+      continue;
+    }
     if (isStringArray(value)) {
       if (value.length === 0) continue;
       const masked = value.map((v) =>
@@ -62,6 +122,7 @@ export function buildWidgetPreviewHref(params: {
       q.set(key, value === params.currentUserId ? CURRENT_USER_SENTINEL : value);
     }
   }
+  if (usesCaseFieldFilterShape) q.set(CASE_FILTER_MARKER, "1");
   return `/dashboard/${params.previewSlug}?${q.toString()}`;
 }
 
@@ -80,9 +141,22 @@ export interface ParsedWidgetPreviewFilters {
 export function parseWidgetPreviewFilters(
   searchParams: URLSearchParams,
 ): ParsedWidgetPreviewFilters {
-  const filters: Record<string, unknown> = {};
   let needsCurrentUser = false;
 
+  if (searchParams.get(CASE_FILTER_MARKER) === "1") {
+    const fieldFilters: WidgetCaseFieldFilterLike[] = [];
+    for (const [key, raw] of searchParams.entries()) {
+      if (RESERVED_PARAMS.has(key)) continue;
+      const values = raw.split(",");
+      if (values.includes(CURRENT_USER_SENTINEL)) needsCurrentUser = true;
+      // Every dashboard case-filter widget today uses `op: "in"` only — see
+      // `isCaseFieldFilterArray`'s doc comment.
+      fieldFilters.push({ field: key, op: "in", values });
+    }
+    return { filters: { filters: fieldFilters }, needsCurrentUser };
+  }
+
+  const filters: Record<string, unknown> = {};
   for (const [key, raw] of searchParams.entries()) {
     if (RESERVED_PARAMS.has(key)) continue;
 
@@ -105,6 +179,15 @@ export function resolveCurrentUserSentinels(
   if (!currentUserId) return filters;
   const resolved: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(filters)) {
+    if (key === "filters" && isCaseFieldFilterArray(value)) {
+      resolved[key] = value.map((entry) => ({
+        ...entry,
+        values: entry.values?.map((v) =>
+          v === CURRENT_USER_SENTINEL ? currentUserId : v,
+        ),
+      }));
+      continue;
+    }
     resolved[key] = Array.isArray(value)
       ? value.map((v) => (v === CURRENT_USER_SENTINEL ? currentUserId : v))
       : value === CURRENT_USER_SENTINEL

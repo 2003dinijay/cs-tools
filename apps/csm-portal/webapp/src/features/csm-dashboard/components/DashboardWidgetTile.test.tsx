@@ -299,8 +299,18 @@ describe("DashboardWidgetTile", () => {
         shape="list"
         // "11111111-aaaa-bbbb-cccc-000000000001" is the mocked signed-in
         // user's own id (see the CurrentUserContext mock above) — it must
-        // never appear verbatim in the resulting URL.
-        filters={{ assignedUserIds: ["11111111-aaaa-bbbb-cccc-000000000001"] }}
+        // never appear verbatim in the resulting URL. Matches the real
+        // DASHBOARDS_CONFIG shape: the widget's opaque case filters are the
+        // generic field/op/values DSL nested under `filters.filters`.
+        filters={{
+          filters: [
+            {
+              field: "assignedUserId",
+              op: "in",
+              values: ["11111111-aaaa-bbbb-cccc-000000000001"],
+            },
+          ],
+        }}
         listLimit={5}
       />,
     );
@@ -309,7 +319,7 @@ describe("DashboardWidgetTile", () => {
     const href = viewMoreLink.getAttribute("href") ?? "";
     expect(href).not.toContain("11111111-aaaa-bbbb-cccc-000000000001");
     const params = new URLSearchParams(href.split("?")[1]);
-    expect(params.get("assignedUserIds")).toBe("@me");
+    expect(params.get("assignedUserId")).toBe("@me");
   });
 
   it("navigates to /cases with translated filters when a case-resource tile is clicked", async () => {
@@ -321,7 +331,12 @@ describe("DashboardWidgetTile", () => {
         displayName="My Patches"
         resourceType="case"
         shape="count"
-        filters={{ severities: ["critical"], states: ["open"] }}
+        filters={{
+          filters: [
+            { field: "severity", op: "in", values: ["critical"] },
+            { field: "state", op: "in", values: ["open"] },
+          ],
+        }}
       />,
     );
 
