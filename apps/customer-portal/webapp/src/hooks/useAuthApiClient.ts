@@ -32,6 +32,30 @@ const isTokenExpiredError = (error: unknown): boolean =>
   "code" in error &&
   (error as { code: string }).code === ASGARDEO_UNAUTHENTICATED_CODE;
 
+// 503/504 come from a gateway/proxy in front of the backend, not the backend
+// itself, so the body and statusText are often raw infra text (e.g. an HTML
+// error page, or a reason phrase like "upstream timeout") rather than
+// anything fit to show a user. Substitute a clean, consistent message here —
+// the one place every API call passes through — so every hook and display
+// site downstream shows the same friendly text regardless of how it extracts
+// its error message.
+const UNAVAILABLE_MESSAGES: Record<number, string> = {
+  503: "The service is temporarily unavailable. Please try again in a few moments.",
+  504: "The request timed out. Please try again in a few moments.",
+};
+
+const withFriendlyUnavailableMessage = (response: Response): Response => {
+  const message = UNAVAILABLE_MESSAGES[response.status];
+  if (!message) {
+    return response;
+  }
+  return new Response(JSON.stringify({ message }), {
+    status: response.status,
+    statusText: response.status === 503 ? "Service Unavailable" : "Gateway Timeout",
+    headers: { "Content-Type": "application/json" },
+  });
+};
+
 // A custom hook that automatically fetches a fresh ID Token from Asgardeo.
 export function useAuthApiClient() {
   const { getIdToken, signIn } = useAsgardeo();
@@ -83,10 +107,11 @@ export function useAuthApiClient() {
     if (!token) {
       throw new Error("Unable to retrieve ID token");
     }
-    return fetch(input, {
+    const response = await fetch(input, {
       ...options,
       headers: buildRequestHeaders(options, token),
     });
+    return withFriendlyUnavailableMessage(response);
   };
 
   // Redirect to a full sign-in, single-flighted so concurrent auth failures
