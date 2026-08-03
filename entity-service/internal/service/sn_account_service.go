@@ -62,11 +62,17 @@ type snAccount struct {
 	// "accountManager" (see snAccountCommonFields / snAccountToDomain).
 	Owner                 *snPersonRef `json:"owner"`
 	RenewalAccountManager *snPersonRef `json:"renewalAccountManager"`
-	HasAgent              bool         `json:"hasAgent"`
-	HasKbReferences       bool         `json:"hasKbReferences"`
-	CreatedOn             string       `json:"createdOn"`
-	CreatedBy             *string      `json:"createdBy"`
-	UpdatedOn             string       `json:"updatedOn"`
+	// CreTeam and SreTeam resolve the account's CRE/SRE group refs. Per the project
+	// owner's resolution, SN's u_integration_cs_team maps to CreTeam and u_sre_team maps
+	// to SreTeam -- both refs to sys_user_group. Same mapping as the case service's
+	// snCaseAccount.CreTeam/SreTeam.
+	CreTeam         *snCaseEntityRef `json:"creTeam"`
+	SreTeam         *snCaseEntityRef `json:"sreTeam"`
+	HasAgent        bool             `json:"hasAgent"`
+	HasKbReferences bool             `json:"hasKbReferences"`
+	CreatedOn       string           `json:"createdOn"`
+	CreatedBy       *string          `json:"createdBy"`
+	UpdatedOn       string           `json:"updatedOn"`
 }
 
 // snAccountSearchPayload is the Choreo POST /accounts/search request body.
@@ -162,7 +168,7 @@ func nilIfEmpty(s *string) *string {
 	return s
 }
 
-func snAccountCommonFields(a snAccount) (deactivationDate *string, technicalOwner, accountManager, renewalAccountManager *domain.PersonRef) {
+func snAccountCommonFields(a snAccount) (deactivationDate *string, technicalOwner, accountManager, renewalAccountManager *domain.PersonRef, creTeam, sreTeam *domain.EntityRef) {
 	deactivationDate = nilIfEmpty(a.DeactivationDate)
 	if a.TechnicalOwner != nil && a.TechnicalOwner.ID != "" {
 		technicalOwner = &domain.PersonRef{ID: sysidToUUID(a.TechnicalOwner.ID), Name: a.TechnicalOwner.Name, Email: nilIfEmpty(a.TechnicalOwner.Email)}
@@ -173,11 +179,23 @@ func snAccountCommonFields(a snAccount) (deactivationDate *string, technicalOwne
 	if a.RenewalAccountManager != nil && a.RenewalAccountManager.ID != "" {
 		renewalAccountManager = &domain.PersonRef{ID: sysidToUUID(a.RenewalAccountManager.ID), Name: a.RenewalAccountManager.Name, Email: nilIfEmpty(a.RenewalAccountManager.Email)}
 	}
+	// CreTeam/SreTeam (see snAccount.CreTeam/SreTeam doc comment) pass through once
+	// non-empty, same as the case service's account-embedded team refs.
+	if a.CreTeam != nil {
+		if id := sysidToUUID(a.CreTeam.ID); id != "" {
+			creTeam = &domain.EntityRef{ID: id, Name: a.CreTeam.Name}
+		}
+	}
+	if a.SreTeam != nil {
+		if id := sysidToUUID(a.SreTeam.ID); id != "" {
+			sreTeam = &domain.EntityRef{ID: id, Name: a.SreTeam.Name}
+		}
+	}
 	return
 }
 
 func snAccountToDomain(a snAccount) domain.SNAccountView {
-	deactivationDate, technicalOwner, accountManager, renewalAccountManager := snAccountCommonFields(a)
+	deactivationDate, technicalOwner, accountManager, renewalAccountManager, creTeam, sreTeam := snAccountCommonFields(a)
 
 	var supportTier *string
 	if a.SupportTier != nil && a.SupportTier.Label != "" {
@@ -196,6 +214,8 @@ func snAccountToDomain(a snAccount) domain.SNAccountView {
 		TechnicalOwner:        technicalOwner,
 		AccountManager:        accountManager,
 		RenewalAccountManager: renewalAccountManager,
+		CreTeam:               creTeam,
+		SreTeam:               sreTeam,
 		ActivationDate:        a.ActivationDate,
 		DeactivationDate:      deactivationDate,
 		HasAgent:              a.HasAgent,
@@ -207,7 +227,7 @@ func snAccountToDomain(a snAccount) domain.SNAccountView {
 }
 
 func snAccountToDetail(a snAccount) domain.SNAccountDetail {
-	deactivationDate, technicalOwner, accountManager, renewalAccountManager := snAccountCommonFields(a)
+	deactivationDate, technicalOwner, accountManager, renewalAccountManager, creTeam, sreTeam := snAccountCommonFields(a)
 
 	var supportTier *domain.SNSupportTierRef
 	if a.SupportTier != nil && a.SupportTier.ID != "" {
@@ -229,6 +249,8 @@ func snAccountToDetail(a snAccount) domain.SNAccountDetail {
 		TechnicalOwner:        technicalOwner,
 		AccountManager:        accountManager,
 		RenewalAccountManager: renewalAccountManager,
+		CreTeam:               creTeam,
+		SreTeam:               sreTeam,
 		ActivationDate:        a.ActivationDate,
 		DeactivationDate:      deactivationDate,
 		HasAgent:              a.HasAgent,

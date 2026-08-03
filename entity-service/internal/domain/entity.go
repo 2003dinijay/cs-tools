@@ -387,13 +387,19 @@ type SNAccountView struct {
 	TechnicalOwner        *PersonRef `json:"technicalOwner"`
 	AccountManager        *PersonRef `json:"accountManager"`
 	RenewalAccountManager *PersonRef `json:"renewalAccountManager"`
-	ActivationDate        string     `json:"activationDate"`
-	DeactivationDate      *string    `json:"deactivationDate"`
-	HasAgent              bool       `json:"hasAgent"`
-	HasKbReferences       bool       `json:"hasKbReferences"`
-	CreatedOn             string     `json:"createdOn"`
-	CreatedBy             *string    `json:"createdBy"`
-	UpdatedOn             string     `json:"updatedOn"`
+	// CreTeam is the account's CRE (customer relationship engineering) team, resolved to a
+	// named group reference (ServiceNow data source only). Mirrors AccountRef.CreTeam.
+	CreTeam *EntityRef `json:"creTeam,omitempty"`
+	// SreTeam is the account's SRE team, resolved to a named group reference (ServiceNow
+	// data source only). Mirrors AccountRef.SreTeam.
+	SreTeam          *EntityRef `json:"sreTeam,omitempty"`
+	ActivationDate   string     `json:"activationDate"`
+	DeactivationDate *string    `json:"deactivationDate"`
+	HasAgent         bool       `json:"hasAgent"`
+	HasKbReferences  bool       `json:"hasKbReferences"`
+	CreatedOn        string     `json:"createdOn"`
+	CreatedBy        *string    `json:"createdBy"`
+	UpdatedOn        string     `json:"updatedOn"`
 }
 
 // SearchSNAccountsResponse is the paginated result of a ServiceNow account search.
@@ -425,13 +431,19 @@ type SNAccountDetail struct {
 	TechnicalOwner        *PersonRef        `json:"technicalOwner"`
 	AccountManager        *PersonRef        `json:"accountManager"`
 	RenewalAccountManager *PersonRef        `json:"renewalAccountManager"`
-	ActivationDate        string            `json:"activationDate"`
-	DeactivationDate      *string           `json:"deactivationDate"`
-	HasAgent              bool              `json:"hasAgent"`
-	HasKbReferences       bool              `json:"hasKbReferences"`
-	CreatedOn             string            `json:"createdOn"`
-	CreatedBy             *string           `json:"createdBy"`
-	UpdatedOn             string            `json:"updatedOn"`
+	// CreTeam is the account's CRE (customer relationship engineering) team, resolved to a
+	// named group reference (ServiceNow data source only). Mirrors AccountRef.CreTeam.
+	CreTeam *EntityRef `json:"creTeam,omitempty"`
+	// SreTeam is the account's SRE team, resolved to a named group reference (ServiceNow
+	// data source only). Mirrors AccountRef.SreTeam.
+	SreTeam          *EntityRef `json:"sreTeam,omitempty"`
+	ActivationDate   string     `json:"activationDate"`
+	DeactivationDate *string    `json:"deactivationDate"`
+	HasAgent         bool       `json:"hasAgent"`
+	HasKbReferences  bool       `json:"hasKbReferences"`
+	CreatedOn        string     `json:"createdOn"`
+	CreatedBy        *string    `json:"createdBy"`
+	UpdatedOn        string     `json:"updatedOn"`
 }
 
 // SubscriptionType classifies the subscription type of a project.

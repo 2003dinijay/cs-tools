@@ -2015,6 +2015,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             ctx={c.customerContext}
             project={caseProject}
             isLoadingProject={isCaseProjectLoading}
+            accountId={c.accountId}
           />
           <ProductContextWidget
             ctx={c.productContext}

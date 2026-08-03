@@ -6480,6 +6480,16 @@ components:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/PersonRef'
+        creTeam:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
+          description: The account's assigned CRE (customer reliability engineering) team. null when not set.
+        sreTeam:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
+          description: The account's assigned SRE (site reliability engineering) team. null when not set.
         activationDate:
           type: string
         deactivationDate:
@@ -6542,6 +6552,16 @@ components:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/PersonRef'
+        creTeam:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
+          description: The account's assigned CRE (customer reliability engineering) team. null when not set.
+        sreTeam:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
+          description: The account's assigned SRE (site reliability engineering) team. null when not set.
         activationDate:
           type: string
         deactivationDate:
