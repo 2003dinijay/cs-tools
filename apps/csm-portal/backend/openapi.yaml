@@ -5588,12 +5588,25 @@ components:
 
     DeployedProductRef:
       type: object
+      description: >-
+        A deployed product instance, together with the product catalogue entry it
+        was deployed from. The two are different records with different ids; they
+        often read alike because a catalogue name usually already embeds its
+        version. id and displayName are null when the case names a catalogue
+        product but no deployed instance of it.
       properties:
         id:
           type: string
           format: uuid
+          nullable: true
         displayName:
           type: string
+          nullable: true
+          description: Product name combined with version (e.g. "API Manager 4.3.0").
+        product:
+          nullable: true
+          $ref: '#/components/schemas/EntityRef'
+          description: Product catalogue entry this instance was deployed from.
 
     CaseView:
       type: object
@@ -5663,8 +5676,6 @@ components:
           nullable: true
           description: Timestamp when the case was closed. null if not yet closed.
         createdBy:
-          $ref: '#/components/schemas/UserRef'
-        createdByUser:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/UserReference'
@@ -5678,10 +5689,11 @@ components:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/DeployedProductRef'
-        product:
-          nullable: true
-          allOf:
-            - $ref: '#/components/schemas/EntityRef'
+          description: |
+            Deployed product instance named by the case, together with the product
+            catalogue entry it was deployed from. A case can name a catalogue product
+            without naming a deployed instance of it, in which case this object is still
+            returned with id and displayName null and product populated.
         catalog:
           nullable: true
           allOf:
@@ -5699,11 +5711,10 @@ components:
           allOf:
             - $ref: '#/components/schemas/EntityRef'
         assignedEngineer:
-          $ref: '#/components/schemas/AssignedEngineerRef'
-        assignedEngineerUser:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/UserReference'
+          description: Engineer assigned to the case, or null when unassigned.
         acknowledgedBy:
           nullable: true
           allOf:
@@ -5895,8 +5906,6 @@ components:
           nullable: true
           description: Timestamp when the case was closed. null if not yet closed.
         createdBy:
-          $ref: '#/components/schemas/UserIDEmailRef'
-        createdByUser:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/UserReference'
@@ -5915,11 +5924,10 @@ components:
           allOf:
             - $ref: '#/components/schemas/EntityRef'
         assignedEngineer:
-          $ref: '#/components/schemas/AssignedEngineerRef'
-        assignedEngineerUser:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/UserReference'
+          description: Engineer assigned to the case, or null when unassigned.
         parentCase:
           $ref: '#/components/schemas/CaseNumberRef'
         relatedCase:
@@ -7423,8 +7431,6 @@ components:
         content:
           type: string
         createdBy:
-          type: string
-        createdByUser:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/UserReference'
@@ -7492,8 +7498,6 @@ components:
         type:
           type: string
         createdBy:
-          type: string
-        createdByUser:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/UserReference'
@@ -7674,8 +7678,6 @@ components:
           type: string
           nullable: true
         createdBy:
-          type: string
-        createdByUser:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/UserReference'
@@ -8700,22 +8702,10 @@ components:
           format: date-time
           description: Timestamp when the message was created.
         createdBy:
-          type: object
-          description: Author of the message.
-          properties:
-            id:
-              type: string
-              description: User identifier (email).
-            firstName:
-              type: string
-            lastName:
-              type: string
-            fullName:
-              type: string
-        createdByUser:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/UserReference'
+          description: Author of the message.
 
     ConversationMessagesResponse:
       type: object
