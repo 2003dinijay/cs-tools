@@ -290,3 +290,21 @@ func TestSearchTeams_PageDoesNotAliasTheSnapshot(t *testing.T) {
 		t.Fatal("mutating a returned page changed the startup snapshot")
 	}
 }
+
+// Regression: sourceIDToUUID preserved the configured id's case, but canonical
+// UUID text is lowercase and this value is compared against ids the entity
+// service renders -- an uppercase configured id produced a groupId that matched
+// nothing on the integrationCsTeam filter, with no error anywhere.
+func TestSourceIDToUUID_LowercasesTheConvertedID(t *testing.T) {
+	const upper = "760E87B247C13910A0A29CD3846D4301"
+	const lower = "760e87b247c13910a0a29cd3846d4301"
+
+	got := sourceIDToUUID(upper)
+	want := sourceIDToUUID(lower)
+	if got != want {
+		t.Fatalf("uppercase id converted to %q, want %q (same as its lowercase form)", got, want)
+	}
+	if got != "760e87b2-47c1-3910-a0a2-9cd3846d4301" {
+		t.Fatalf("got %q, want canonical lowercase UUID text", got)
+	}
+}

@@ -161,12 +161,36 @@ func ParseTeamRegistry(raw string) ([]Team, error) {
 			team.Family = family
 		}
 		if len(fields) == 4 {
+			// Validate a supplied group id for the same reason the fields above
+			// are validated: sourceIDToUUID passes anything that is not exactly
+			// 32 hex characters through unchanged, so a typo (a 31-character id,
+			// a stray character) yields a malformed value that matches nothing
+			// on the integrationCsTeam filter without erroring anywhere. An
+			// absent id stays legal -- that team just cannot scope the filter.
+			if err := validateGroupID(fields[3]); err != nil {
+				return nil, fmt.Errorf("team registry row %d (%q): %w", i+1, strings.TrimSpace(row), err)
+			}
 			team.GroupID = fields[3]
 		}
 		teams = append(teams, team)
 	}
 
 	return teams, nil
+}
+
+// validateGroupID rejects a configured group id that is not the backing data
+// source's compact 32-hex-character form. An empty value is legal: the id is
+// optional, and a team without one is still listed, it just cannot scope the
+// case-search integrationCsTeam filter.
+func validateGroupID(id string) error {
+	if id == "" {
+		return nil
+	}
+	if len(id) != 32 || !isHex(id) {
+		return fmt.Errorf(
+			"groupId %q is not a 32-character hexadecimal id (got %d character(s))", id, len(id))
+	}
+	return nil
 }
 
 // parseFamily normalizes a configured family value (in any case, e.g.

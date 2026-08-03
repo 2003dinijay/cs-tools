@@ -19,6 +19,7 @@ package directory
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // Directory is the resolved, immutable reference catalogue a running process
@@ -141,6 +142,12 @@ func sourceIDToUUID(id string) string {
 	if len(id) != 32 || !isHex(id) {
 		return id
 	}
+	// Lowercase the result: isHex accepts uppercase digits, but canonical UUID
+	// text is lowercase, and this value is compared against ids the entity
+	// service renders. An uppercase configured id would otherwise produce an
+	// uppercase groupId that silently matches nothing on the case-search
+	// integrationCsTeam filter -- no error, just an empty team-scoped result.
+	id = strings.ToLower(id)
 	return id[0:8] + "-" + id[8:12] + "-" + id[12:16] + "-" + id[16:20] + "-" + id[20:32]
 }
 
