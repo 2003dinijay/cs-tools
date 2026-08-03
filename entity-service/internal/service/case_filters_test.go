@@ -19,6 +19,7 @@ package service
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -338,5 +339,74 @@ func TestParseCaseFieldFilters_RelativeDatePlaceholders(t *testing.T) {
 	wantEnd := time.Date(2026, time.August, 15, 23, 59, 59, 999999999, time.UTC)
 	if !p.EndCreatedDate.Equal(wantEnd) {
 		t.Fatalf("EndCreatedDate = %v, want %v (inclusive of the whole day)", p.EndCreatedDate, wantEnd)
+	}
+}
+
+// An OR-group branch containing createdBy must fail with the "not supported
+// inside an OR group" validation error (400). Before the caller-email sentinel
+// was introduced, ParseCaseFieldFilterGroups passed an empty callerEmail, so
+// the createdBy current-user filter short-circuited with an UnauthorizedError
+// and an authenticated caller saw a misleading 401 for a merely-invalid request.
+func TestParseCaseFieldFilterGroups_CreatedByRejectedAsValidationError(t *testing.T) {
+	cases := []struct {
+		name  string
+		group []domain.CaseFieldFilter
+	}{
+		{
+			name:  "createdBy eq current-user placeholder",
+			group: []domain.CaseFieldFilter{{Field: "createdBy", Op: "eq", Values: []string{currentUserFilterPlaceholder}}},
+		},
+		{
+			name:  "createdBy in literal emails",
+			group: []domain.CaseFieldFilter{{Field: "createdBy", Op: "in", Values: []string{"someone@example.com"}}},
+		},
+		{
+			name: "createdBy alongside a supported field",
+			group: []domain.CaseFieldFilter{
+				{Field: "state", Op: "in", Values: []string{"open"}},
+				{Field: "createdBy", Op: "eq", Values: []string{currentUserFilterPlaceholder}},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseCaseFieldFilterGroups([][]domain.CaseFieldFilter{tc.group})
+			if err == nil {
+				t.Fatalf("expected an error, got nil")
+			}
+			var ue *apierror.UnauthorizedError
+			if errors.As(err, &ue) {
+				t.Fatalf("got *apierror.UnauthorizedError (401) %q, want a 400 validation error", ue.Msg)
+			}
+			var ve *apierror.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
+			}
+			const want = `orGroups: field "createdBy" is not supported inside an OR group`
+			if ve.Msg != want {
+				t.Errorf("Msg = %q, want %q", ve.Msg, want)
+			}
+		})
+	}
+}
+
+// The sentinel caller email must never leak into a parsed group.
+func TestParseCaseFieldFilterGroups_SupportedFieldsParse(t *testing.T) {
+	groups, err := ParseCaseFieldFilterGroups([][]domain.CaseFieldFilter{
+		{{Field: "state", Op: "in", Values: []string{"open", "closed"}}},
+		{{Field: "severity", Op: "in", Values: []string{"high"}}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("len(groups) = %d, want 2", len(groups))
+	}
+	if len(groups[0].States) != 2 || groups[0].States[0] != domain.CaseState("open") {
+		t.Errorf("groups[0].States = %v, want [open closed]", groups[0].States)
+	}
+	if len(groups[1].Severities) != 1 || groups[1].Severities[0] != domain.CaseSeverity("high") {
+		t.Errorf("groups[1].Severities = %v, want [high]", groups[1].Severities)
 	}
 }

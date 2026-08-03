@@ -547,6 +547,13 @@ func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string,
 	return p, nil
 }
 
+// orGroupCallerEmailSentinel is the placeholder caller email
+// ParseCaseFieldFilterGroups passes into ParseCaseFieldFilters. It exists only
+// to keep the parse from failing early on the createdBy current-user filter, a
+// field that is rejected for OR groups regardless; it never reaches a query or
+// the wire. Not a routable address.
+const orGroupCallerEmailSentinel = "or-group-validation@invalid"
+
 // ParseCaseFieldFilterGroups translates SearchCasesFilters.OrGroups (each an
 // independent CaseFieldFilter array) into domain.CaseFilterGroup entries,
 // reusing ParseCaseFieldFilters's per-field parsing/validation for every
@@ -560,7 +567,15 @@ func ParseCaseFieldFilterGroups(groups [][]domain.CaseFieldFilter) ([]domain.Cas
 		// now is irrelevant here: rejectUnsupportedOrGroupFields below rejects any
 		// date-range field (createdOn/updatedOn/closedOn) inside an OR-group branch,
 		// so this call never actually resolves a relative-date placeholder.
-		parsed, err := ParseCaseFieldFilters(group, "", nil, time.Now().UTC())
+		//
+		// orGroupCallerEmailSentinel stands in for the caller's email so the
+		// createdBy-eq-current-user branch parses instead of short-circuiting with
+		// a 401: createdBy is not permitted inside an OR group at all, and the
+		// caller deserves that 400 validation error, not a misleading
+		// "not authenticated". The sentinel is never read -- parsing only sets
+		// ParsedCaseFilters.CreatedByMe, which rejectUnsupportedOrGroupFields then
+		// rejects, and CreatedBy/CreatedByMe are not copied into CaseFilterGroup.
+		parsed, err := ParseCaseFieldFilters(group, orGroupCallerEmailSentinel, nil, time.Now().UTC())
 		if err != nil {
 			return nil, err
 		}
