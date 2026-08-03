@@ -17,9 +17,11 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -554,6 +556,29 @@ func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string,
 // the wire. Not a routable address.
 const orGroupCallerEmailSentinel = "or-group-validation@invalid"
 
+// branchFilterErrorPrefix is the JSON path ParseCaseFieldFilters roots every
+// validation message at. Inside an OR branch that path is wrong: the filter
+// array lives at anyOf[i].filters, not at the top-level filters, and the
+// public contract reports the location a client actually has to edit.
+const branchFilterErrorPrefix = "filters:"
+
+// relocateBranchFilterError rewrites a ParseCaseFieldFilters validation error
+// raised while parsing branch index i so its path names the branch --
+// "filters: unsupported field: x" becomes
+// "anyOf[0].filters: unsupported field: x". The ValidationError type is
+// preserved so the error still maps to a 400; an error that is not one of
+// ours, or that is not rooted at "filters:", is returned untouched rather than
+// having a path glued onto a message that never carried one.
+func relocateBranchFilterError(err error, i int) error {
+	var v *apierror.ValidationError
+	if !errors.As(err, &v) || !strings.HasPrefix(v.Msg, branchFilterErrorPrefix) {
+		return err
+	}
+	return &apierror.ValidationError{
+		Msg: fmt.Sprintf("anyOf[%d].%s", i, v.Msg),
+	}
+}
+
 // ParseCaseFieldFilterGroups translates SearchCasesFilters.AnyOf (each branch
 // carrying its own independent CaseFieldFilter array) into
 // domain.CaseFilterGroup entries, reusing ParseCaseFieldFilters's per-field
@@ -564,7 +589,7 @@ const orGroupCallerEmailSentinel = "or-group-validation@invalid"
 // than silently dropping it.
 func ParseCaseFieldFilterGroups(branches []domain.CaseFilterBranch) ([]domain.CaseFilterGroup, error) {
 	result := make([]domain.CaseFilterGroup, 0, len(branches))
-	for _, branch := range branches {
+	for i, branch := range branches {
 		group := branch.Filters
 		// now is irrelevant here: rejectUnsupportedOrGroupFields below rejects any
 		// date-range field (createdOn/updatedOn/closedOn) inside an OR-group branch,
@@ -579,7 +604,7 @@ func ParseCaseFieldFilterGroups(branches []domain.CaseFilterBranch) ([]domain.Ca
 		// rejects, and CreatedBy/CreatedByMe are not copied into CaseFilterGroup.
 		parsed, err := ParseCaseFieldFilters(group, orGroupCallerEmailSentinel, nil, time.Now().UTC())
 		if err != nil {
-			return nil, err
+			return nil, relocateBranchFilterError(err, i)
 		}
 		if err := rejectUnsupportedOrGroupFields(parsed); err != nil {
 			return nil, err

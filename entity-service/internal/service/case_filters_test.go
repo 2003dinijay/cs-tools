@@ -391,6 +391,71 @@ func TestParseCaseFieldFilterGroups_CreatedByRejectedAsValidationError(t *testin
 	}
 }
 
+// A branch is parsed by ParseCaseFieldFilters, which roots every message it
+// raises at the top-level "filters" path. Returned unchanged, that path is a
+// lie inside an OR group: the array the client has to fix lives at
+// anyOf[i].filters, and the public contract says so. The index has to be the
+// offending branch's, not always zero.
+func TestParseCaseFieldFilterGroups_BranchErrorsCarryTheAnyOfPath(t *testing.T) {
+	valid := domain.CaseFilterBranch{
+		Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open"}}},
+	}
+
+	cases := []struct {
+		name     string
+		branches []domain.CaseFilterBranch
+		want     string
+	}{
+		{
+			name: "invalid field in the first branch",
+			branches: []domain.CaseFilterBranch{
+				{Filters: []domain.CaseFieldFilter{{Field: "notAField", Op: "in", Values: []string{"x"}}}},
+			},
+			want: "anyOf[0].filters: unsupported field: notAField",
+		},
+		{
+			name: "invalid op in the first branch",
+			branches: []domain.CaseFilterBranch{
+				{Filters: []domain.CaseFieldFilter{{Field: "state", Op: "notAnOp", Values: []string{"open"}}}},
+			},
+			want: "anyOf[0].filters: unsupported op: notAnOp",
+		},
+		{
+			name: "field/op combination the field does not support",
+			branches: []domain.CaseFilterBranch{
+				{Filters: []domain.CaseFieldFilter{{Field: "state", Op: "eq", Values: []string{"open"}}}},
+			},
+			want: `anyOf[0].filters: field "state" does not support op "eq"`,
+		},
+		{
+			name:     "invalid field in a later branch reports that branch's index",
+			branches: []domain.CaseFilterBranch{valid, valid, {Filters: []domain.CaseFieldFilter{{Field: "notAField", Op: "in", Values: []string{"x"}}}}},
+			want:     "anyOf[2].filters: unsupported field: notAField",
+		},
+		{
+			name:     "invalid op in a later branch reports that branch's index",
+			branches: []domain.CaseFilterBranch{valid, {Filters: []domain.CaseFieldFilter{{Field: "severity", Op: "notAnOp", Values: []string{"high"}}}}},
+			want:     "anyOf[1].filters: unsupported op: notAnOp",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseCaseFieldFilterGroups(tc.branches)
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			var ve *apierror.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
+			}
+			if ve.Msg != tc.want {
+				t.Errorf("Msg = %q, want %q", ve.Msg, tc.want)
+			}
+		})
+	}
+}
+
 // The sentinel caller email must never leak into a parsed group.
 func TestParseCaseFieldFilterGroups_SupportedFieldsParse(t *testing.T) {
 	groups, err := ParseCaseFieldFilterGroups([]domain.CaseFilterBranch{
