@@ -86,7 +86,6 @@ export default function UserRefLink({
           "underline";
       }}
       onMouseLeave={(e) => {
-        if (!underlineOnHover) return;
         (e.currentTarget as HTMLAnchorElement).style.textDecoration = "none";
       }}
     >

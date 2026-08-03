@@ -15,7 +15,7 @@
 // under the License.
 
 import { Box, Link, Sidebar, Tooltip, Typography } from "@wso2/oxygen-ui";
-import { useRef, type JSX } from "react";
+import { useEffect, useRef, type JSX } from "react";
 import { Link as NavigateLink, useLocation } from "react-router";
 import { navNodePath, navSectionForPath } from "@config/csmNavItems";
 import { featureState, visibleNavSections } from "@config/featureFlags";
@@ -56,7 +56,9 @@ export default function CsmSideBar({
   const location = useLocation();
   const lastSectionId = useRef("dashboard");
   const activeItem = pickActiveId(location.pathname, lastSectionId.current);
-  lastSectionId.current = activeItem;
+  useEffect(() => {
+    lastSectionId.current = activeItem;
+  }, [activeItem]);
 
   return (
     <Sidebar

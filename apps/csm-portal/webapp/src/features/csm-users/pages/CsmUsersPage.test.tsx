@@ -148,6 +148,24 @@ describe("CsmUsersPage", () => {
     const body = JSON.parse(requestInit.body as string);
     expect(body.filters).toEqual({});
   });
+
+  it("clears selected role and team filters from their controls", async () => {
+    renderPage("/admin/users?roles=agent&teams=alpha");
+    await waitFor(() => expect(authFetchMock).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear roles filter" }));
+    await waitFor(() => {
+      const body = JSON.parse(authFetchMock.mock.calls.at(-1)?.[1].body as string);
+      expect(body.filters.roleIds).toBeUndefined();
+      expect(body.filters.teamIds).toEqual(["alpha"]);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear teams filter" }));
+    await waitFor(() => {
+      const body = JSON.parse(authFetchMock.mock.calls.at(-1)?.[1].body as string);
+      expect(body.filters.teamIds).toBeUndefined();
+    });
+  });
 });
 
 describe("CsmUsersPage — role truncation and row navigation", () => {
@@ -210,37 +228,40 @@ describe("CsmUsersPage — role truncation and row navigation", () => {
     renderPage("/admin/users");
 
     // Wait until the role-name catalogue has resolved the raw keys before asserting.
-    await waitFor(() => expect(screen.getByText("Agent")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("Agent").length).toBeGreaterThan(0));
 
     const janeRow = screen.getByText("Jane Doe").closest("tr") as HTMLElement;
     const johnRow = screen.getByText("John Smith").closest("tr") as HTMLElement;
+    const janeRoles = within(janeRow).getByTestId("role-measure").previousElementSibling as HTMLElement;
+    const johnRoles = within(johnRow).getByTestId("role-measure").previousElementSibling as HTMLElement;
 
     // jsdom has no layout width, so the responsive list uses its safe
     // one-chip fallback and exposes the remainder through a legible chip.
-    expect(within(janeRow).getByText("Agent")).toBeInTheDocument();
-    expect(within(janeRow).getByText("+4 more")).toBeInTheDocument();
-    expect(within(janeRow).queryByText("Admin")).not.toBeInTheDocument();
-    expect(within(janeRow).queryByText("Commenter")).not.toBeInTheDocument();
-    expect(within(janeRow).queryByText("Partner")).not.toBeInTheDocument();
-    expect(within(janeRow).queryByText("Customer Admin")).not.toBeInTheDocument();
+    expect(within(janeRoles).getByText("Agent")).toBeInTheDocument();
+    expect(within(janeRoles).getByText("+4 more")).toBeInTheDocument();
+    expect(within(janeRoles).queryByText("Admin")).not.toBeInTheDocument();
+    expect(within(janeRoles).queryByText("Commenter")).not.toBeInTheDocument();
+    expect(within(janeRoles).queryByText("Partner")).not.toBeInTheDocument();
+    expect(within(janeRoles).queryByText("Customer Admin")).not.toBeInTheDocument();
 
     // The same fallback remains a single line for a shorter role list.
     // Fully-qualified ServiceNow keys resolve through the same short-key
     // catalogue used by the role filter.
-    expect(within(johnRow).getByText("Internal")).toBeInTheDocument();
-    expect(within(johnRow).queryByText("Admin")).not.toBeInTheDocument();
-    expect(within(johnRow).getByText("+1 more")).toBeInTheDocument();
+    expect(within(johnRoles).getByText("Internal")).toBeInTheDocument();
+    expect(within(johnRoles).queryByText("Admin")).not.toBeInTheDocument();
+    expect(within(johnRoles).getByText("+1 more")).toBeInTheDocument();
   });
 
   it("treats role chips as row content and navigates their row to the user profile", async () => {
     renderPageWithDestinations("/admin/users");
 
-    await waitFor(() => expect(screen.getByText("Agent")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("Agent").length).toBeGreaterThan(0));
     const janeRow = screen.getByText("Jane Doe").closest("tr") as HTMLElement;
+    const janeRoles = within(janeRow).getByTestId("role-measure").previousElementSibling as HTMLElement;
 
     // Role chips are informational in this table; clicking one follows the
     // containing row to the user rather than opening the role directory.
-    fireEvent.click(within(janeRow).getByText("Agent"));
+    fireEvent.click(within(janeRoles).getByText("Agent"));
     expect(await screen.findByText("User profile page")).toBeInTheDocument();
     expect(screen.queryByText("Role members page")).not.toBeInTheDocument();
   });

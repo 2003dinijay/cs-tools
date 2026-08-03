@@ -32,19 +32,15 @@ import QueryErrorState from "@components/QueryErrorState";
 import UserRefLink from "@components/UserRefLink";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
 import { useSearchRoles } from "@features/csm-admin/api/useSearchRoles";
-import ResponsiveRoleChips from "@features/csm-users/components/ResponsiveRoleChips";
+import ResponsiveRoleChips from "@components/ResponsiveRoleChips";
 import type { SearchUsersRequest } from "@features/csm-users/types/csmUsers";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useNavTransition } from "@hooks/useNavTransition";
+import { displayUserTimezone } from "@utils/userDirectoryDisplay";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
 const COLUMN_COUNT = 4;
-
-function displayTimezone(timezone: string | null | undefined): string {
-  const value = timezone?.trim();
-  return !value || /^-*none-*$/i.test(value) ? "—" : value;
-}
 
 /** Which `UserSearchFilters` key membership in this entity narrows on. */
 export type DirectoryMemberFilterKey = "roleIds" | "groupIds" | "teamIds";
@@ -117,8 +113,8 @@ export default function DirectoryMembersList({
               <TableCell sx={{ width: "12%" }}>Timezone</TableCell>
             </TableRow>
           </TableHead>
-          <TableBody>
-            {isLoading || isFetching ? (
+          <TableBody sx={isFetching && !isLoading ? { opacity: 0.6 } : undefined}>
+            {isLoading ? (
               Array.from({ length: rowsPerPage }).map((_, i) => (
                 <TableRow key={i}>
                   {Array.from({ length: COLUMN_COUNT }).map((__, c) => (
@@ -231,7 +227,7 @@ export default function DirectoryMembersList({
                         </Stack>
                       )}
                     </TableCell>
-                    <TableCell>{displayTimezone(u.timezone)}</TableCell>
+                    <TableCell>{displayUserTimezone(u.timezone)}</TableCell>
                   </TableRow>
                 );
               })

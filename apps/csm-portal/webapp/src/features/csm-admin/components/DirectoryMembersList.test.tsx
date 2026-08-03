@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import type { ComponentProps } from "react";
@@ -184,6 +184,18 @@ describe("DirectoryMembersList", () => {
     expect(await screen.findByText("User profile page")).toBeInTheDocument();
   });
 
+  it("navigates a focused member row to the user profile with Enter", async () => {
+    authFetchMock.mockResolvedValueOnce(
+      jsonResponse({ users: [MEMBER], total: 1, limit: 20, offset: 0 }),
+    );
+    renderList();
+
+    const row = (await screen.findByText("Jane Doe")).closest("tr");
+    expect(row).not.toBeNull();
+    fireEvent.keyDown(row as HTMLElement, { key: "Enter" });
+    expect(await screen.findByText("User profile page")).toBeInTheDocument();
+  });
+
   it("renders an empty state (not an error) when the filter matches nobody", async () => {
     authFetchMock.mockResolvedValueOnce(
       jsonResponse({ users: [], total: 0, limit: 20, offset: 0 }),
@@ -206,14 +218,17 @@ describe("DirectoryMembersList", () => {
 
     // Names come from the roles catalogue lookup, proving it's wired, not
     // just raw ids threaded through unchanged.
-    expect(await screen.findByText("Agent")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("Agent").length).toBeGreaterThan(0));
+    const row = screen.getByText("Jane Doe").closest("tr") as HTMLElement;
+    const visibleRoles = within(row).getByTestId("role-measure").previousElementSibling as HTMLElement;
+    expect(within(visibleRoles).getByText("Agent")).toBeInTheDocument();
     // jsdom has no layout width, so the responsive component uses its safe
     // one-chip fallback. Browsers expand this up to the actual column width.
-    expect(screen.queryByText("Admin")).not.toBeInTheDocument();
-    expect(screen.queryByText("Commenter")).not.toBeInTheDocument();
-    expect(screen.queryByText("Customer")).not.toBeInTheDocument();
-    expect(screen.queryByText("Partner")).not.toBeInTheDocument();
-    expect(screen.getByText("+4 more")).toBeInTheDocument();
+    expect(within(visibleRoles).queryByText("Admin")).not.toBeInTheDocument();
+    expect(within(visibleRoles).queryByText("Commenter")).not.toBeInTheDocument();
+    expect(within(visibleRoles).queryByText("Customer")).not.toBeInTheDocument();
+    expect(within(visibleRoles).queryByText("Partner")).not.toBeInTheDocument();
+    expect(within(visibleRoles).getByText("+4 more")).toBeInTheDocument();
   });
 
   it("does not show a '+N more' chip at 3 roles or fewer", async () => {
@@ -222,8 +237,11 @@ describe("DirectoryMembersList", () => {
     );
     renderList();
 
-    expect(await screen.findByText("Agent")).toBeInTheDocument();
-    expect(screen.queryByText(/more$/)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("Agent").length).toBeGreaterThan(0));
+    const row = screen.getByText("Jane Doe").closest("tr") as HTMLElement;
+    const visibleRoles = within(row).getByTestId("role-measure").previousElementSibling as HTMLElement;
+    expect(within(visibleRoles).getByText("Agent")).toBeInTheDocument();
+    expect(within(visibleRoles).queryByText(/more$/)).not.toBeInTheDocument();
   });
 
   it("renders an error state when the search fails", async () => {

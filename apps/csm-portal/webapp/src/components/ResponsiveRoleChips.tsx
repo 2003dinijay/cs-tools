@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Chip, Stack } from "@wso2/oxygen-ui";
+import { Box, Chip, Stack, useTheme } from "@wso2/oxygen-ui";
 import {
   useCallback,
   useLayoutEffect,
@@ -67,6 +67,7 @@ export default function ResponsiveRoleChips({
   userLabel,
   onViewAll,
 }: ResponsiveRoleChipsProps): JSX.Element {
+  const theme = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const chipMeasureRefs = useRef<Array<HTMLDivElement | null>>([]);
   const moreMeasureRef = useRef<HTMLDivElement>(null);
@@ -83,7 +84,7 @@ export default function ResponsiveRoleChips({
       (_, index) => chipMeasureRefs.current[index]?.offsetWidth ?? 0,
     );
     const moreWidth = moreMeasureRef.current?.offsetWidth ?? 0;
-    const gap = 4;
+    const gap = Number.parseFloat(theme.spacing(0.5));
     const allRolesWidth = chipWidths.reduce(
       (total, width, index) => total + width + (index === 0 ? 0 : gap),
       0,
@@ -101,8 +102,8 @@ export default function ResponsiveRoleChips({
       usedWidth += widthBeforeRole + chipWidths[i];
       nextVisibleCount += 1;
     }
-    setVisibleCount(nextVisibleCount);
-  }, [roleIds]);
+    setVisibleCount(Math.max(nextVisibleCount, Math.min(chipWidths.length, 1)));
+  }, [roleIds, theme]);
 
   useLayoutEffect(() => {
     calculateVisibleCount();
@@ -124,7 +125,10 @@ export default function ResponsiveRoleChips({
             label={labels[index]}
             variant="outlined"
             color={(INTERNAL_USER_ROLES as string[]).includes(role) ? "primary" : "default"}
-            sx={{ flexShrink: 0 }}
+            sx={{
+              minWidth: 0,
+              flexShrink: index === visibleCount - 1 && hiddenRoleCount > 0 ? 1 : 0,
+            }}
           />
         ))}
         {hiddenRoleCount > 0 && (
@@ -147,6 +151,7 @@ export default function ResponsiveRoleChips({
       </Stack>
       <Stack
         aria-hidden
+        data-testid="role-measure"
         direction="row"
         spacing={0.5}
         sx={{ position: "absolute", visibility: "hidden", pointerEvents: "none" }}

@@ -27,10 +27,10 @@ import {
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
-import { type ChangeEvent, type JSX, type KeyboardEvent } from "react";
+import { type ChangeEvent, type JSX } from "react";
+import { Link as RouterLink } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
-import { useNavTransition } from "@hooks/useNavTransition";
 
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
 
@@ -84,7 +84,6 @@ export default function DirectoryEntityTable({
   rowsPerPage,
   onRowsPerPageChange,
 }: DirectoryEntityTableProps): JSX.Element {
-  const navigate = useNavTransition();
   const entityLabel =
     entityNounPlural.charAt(0).toUpperCase() +
     entityNounPlural.slice(1, entityNounPlural.endsWith("s") ? -1 : undefined);
@@ -120,8 +119,8 @@ export default function DirectoryEntityTable({
                 <TableCell>{entityLabel}</TableCell>
               </TableRow>
             </TableHead>
-            <TableBody>
-              {isLoading || isFetching ? (
+            <TableBody sx={isFetching && !isLoading ? { opacity: 0.6 } : undefined}>
+              {isLoading ? (
                 Array.from({ length: rowsPerPage }).map((_, i) => (
                   <TableRow key={i}>
                     <TableCell>
@@ -153,35 +152,37 @@ export default function DirectoryEntityTable({
               ) : (
                 rows.map((row) => {
                   const destination = `${memberBasePath}/${encodeURIComponent(row.id)}`;
-                  const openMembers = (): void => {
-                    navigate(destination, { state: { name: row.name } });
-                  };
-                  const handleRowKeyDown = (e: KeyboardEvent<HTMLTableRowElement>): void => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      openMembers();
-                    }
-                  };
 
                   return (
                     <TableRow
                       key={row.id}
                       hover
-                      tabIndex={0}
-                      onClick={openMembers}
-                      onKeyDown={handleRowKeyDown}
-                      aria-label={`View members of ${row.name}`}
-                      sx={{
-                        cursor: "pointer",
-                        "&:focus-visible": {
-                          outline: "2px solid",
-                          outlineColor: "primary.main",
-                          outlineOffset: -2,
-                        },
-                      }}
+                      sx={{ position: "relative", cursor: "pointer" }}
                     >
-                      <TableCell sx={{ minWidth: 0 }}>
-                        <Typography variant="body2" noWrap title={row.name}>
+                      <TableCell sx={{ minWidth: 0, position: "relative" }}>
+                        <Box
+                          component={RouterLink}
+                          to={destination}
+                          state={{ name: row.name }}
+                          aria-label={`View members of ${row.name}`}
+                          sx={{
+                            position: "absolute",
+                            inset: 0,
+                            color: "inherit",
+                            textDecoration: "none",
+                            "&:focus-visible": {
+                              outline: "2px solid",
+                              outlineColor: "primary.main",
+                              outlineOffset: -2,
+                            },
+                          }}
+                        />
+                        <Typography
+                          variant="body2"
+                          noWrap
+                          title={row.name}
+                          sx={{ position: "relative", pointerEvents: "none" }}
+                        >
                           {row.name}
                         </Typography>
                         {row.family && (
@@ -189,7 +190,7 @@ export default function DirectoryEntityTable({
                             variant="caption"
                             color="text.secondary"
                             noWrap
-                            sx={{ display: "block" }}
+                            sx={{ display: "block", position: "relative", pointerEvents: "none" }}
                           >
                             {row.family.toUpperCase()} team
                           </Typography>

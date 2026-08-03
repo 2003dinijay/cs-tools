@@ -18,6 +18,8 @@ import {
   Box,
   Checkbox,
   FormControl,
+  IconButton,
+  InputAdornment,
   InputLabel,
   ListItemText,
   MenuItem,
@@ -36,6 +38,7 @@ import {
   Typography,
   type SelectChangeEvent,
 } from "@wso2/oxygen-ui";
+import { X } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type ChangeEvent, type JSX, type KeyboardEvent } from "react";
 import { useSearchParams } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
@@ -47,7 +50,7 @@ import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
 import { useSearchRoles } from "@features/csm-admin/api/useSearchRoles";
 import { useSearchTeams } from "@features/csm-admin/api/useSearchTeams";
-import ResponsiveRoleChips from "@features/csm-users/components/ResponsiveRoleChips";
+import ResponsiveRoleChips from "@components/ResponsiveRoleChips";
 import type { SearchUsersRequest } from "@features/csm-users/types/csmUsers";
 import {
   readUsersFiltersFromUrl,
@@ -56,16 +59,11 @@ import {
 } from "@features/csm-users/utils/usersFiltersUrl";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import type { BeGroup } from "@api/backend/types";
+import { displayUserTimezone } from "@utils/userDirectoryDisplay";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 // Top option is the backend's max page limit; larger requests are rejected.
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
-/** Normalise the different empty timezone values emitted by user sources. */
-function displayTimezone(timezone: string | null | undefined): string {
-  const value = timezone?.trim();
-  return !value || /^-*none-*$/i.test(value) ? "—" : value;
-}
-
 /**
  * The users list, with filters reflected in the URL (`search`, `roles`,
  * `groups`, `teams`, `active`) so a filtered link is shareable and survives a
@@ -179,7 +177,28 @@ export default function CsmUsersPage(): JSX.Element {
             multiple
             value={filters.roleIds}
             onChange={handleRoleChange}
-            input={<OutlinedInput label="Roles" />}
+            input={
+              <OutlinedInput
+                label="Roles"
+                endAdornment={
+                  filters.roleIds.length > 0 ? (
+                    <InputAdornment position="end" sx={{ mr: 1.5 }}>
+                      <IconButton
+                        size="small"
+                        aria-label="Clear roles filter"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFilters({ ...filters, roleIds: [] });
+                        }}
+                      >
+                        <X size={14} />
+                      </IconButton>
+                    </InputAdornment>
+                  ) : undefined
+                }
+              />
+            }
             MenuProps={{
               anchorOrigin: { vertical: "bottom", horizontal: "left" },
               transformOrigin: { vertical: "top", horizontal: "left" },
@@ -229,7 +248,28 @@ export default function CsmUsersPage(): JSX.Element {
             multiple
             value={filters.teamIds}
             onChange={handleTeamChange}
-            input={<OutlinedInput label="Teams" />}
+            input={
+              <OutlinedInput
+                label="Teams"
+                endAdornment={
+                  filters.teamIds.length > 0 ? (
+                    <InputAdornment position="end" sx={{ mr: 1.5 }}>
+                      <IconButton
+                        size="small"
+                        aria-label="Clear teams filter"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFilters({ ...filters, teamIds: [] });
+                        }}
+                      >
+                        <X size={14} />
+                      </IconButton>
+                    </InputAdornment>
+                  ) : undefined
+                }
+              />
+            }
             MenuProps={{
               anchorOrigin: { vertical: "bottom", horizontal: "left" },
               transformOrigin: { vertical: "top", horizontal: "left" },
@@ -292,8 +332,8 @@ export default function CsmUsersPage(): JSX.Element {
                 <TableCell sx={{ width: "12%" }}>Timezone</TableCell>
               </TableRow>
             </TableHead>
-            <TableBody>
-              {isLoading || isFetching ? (
+            <TableBody sx={isFetching && !isLoading ? { opacity: 0.6 } : undefined}>
+              {isLoading ? (
                 Array.from({ length: rowsPerPage }).map((_, i) => (
                   <TableRow key={i}>
                     <TableCell>
@@ -408,7 +448,7 @@ export default function CsmUsersPage(): JSX.Element {
                           </Stack>
                         )}
                       </TableCell>
-                      <TableCell>{displayTimezone(u.timezone)}</TableCell>
+                      <TableCell>{displayUserTimezone(u.timezone)}</TableCell>
                     </TableRow>
                   );
                 })
