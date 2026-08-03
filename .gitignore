@@ -28,3 +28,6 @@ replay_pid*
 target
 Config.toml
 .env
+
+# Local session handoff documents — never committed/pushed
+handoffs/
