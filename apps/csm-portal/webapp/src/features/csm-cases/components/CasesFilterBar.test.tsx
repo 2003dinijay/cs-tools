@@ -30,6 +30,10 @@ vi.mock("@api/backend/client", () => ({
   useBackendApi: () => ({ post: postMock, get: vi.fn() }),
 }));
 
+vi.mock("@config/apiConfig", () => ({
+  apiConfig: { backendUrl: "https://example.test" },
+}));
+
 function renderBar(
   filters: CasesFilters,
   onChange = vi.fn(),
@@ -98,6 +102,23 @@ describe("CasesFilterBar — active-filter chips for URL-only fields", () => {
         createdOnGte: "2026-07-27",
       }),
     );
+  });
+
+  it("renders a date-only bound as the same local calendar date, not shifted by UTC parsing", () => {
+    renderBar({
+      ...DEFAULT_CASES_FILTERS,
+      createdOnGte: "2026-07-27",
+    });
+
+    // A bare YYYY-MM-DD bound must render as that same calendar date
+    // regardless of the runner's local timezone offset from UTC — pinning
+    // this to a fixed local Date (not `new Date("2026-07-27")`, which is
+    // parsed as UTC midnight and can roll back a day) is what makes this
+    // assertion timezone-safe.
+    const expected = new Date(2026, 6, 27).toLocaleDateString();
+    expect(
+      screen.getByText(`Created after ${expected}`),
+    ).toBeInTheDocument();
   });
 
   it("clearing one onboarding-status chip removes only that value, keeping siblings", () => {

@@ -223,7 +223,11 @@ function humanizeToken(raw: string): string {
  * locale date when parseable, the raw string otherwise (never throws on a
  * malformed value; this is a display fallback, not validation). */
 function formatDateBound(raw: string): string {
-  const d = new Date(raw);
+  // A bare `YYYY-MM-DD` is parsed as UTC midnight by `Date`, which renders as
+  // the previous day for any locale behind UTC — pin it to local midnight.
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+    ? new Date(`${raw}T00:00:00`)
+    : new Date(raw);
   return Number.isNaN(d.getTime()) ? raw : d.toLocaleDateString();
 }
 
