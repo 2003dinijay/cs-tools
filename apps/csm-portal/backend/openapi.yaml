@@ -974,8 +974,10 @@ paths:
       summary: Search the role catalogue.
       description: >
         The platform's curated set of assignable role keys — the same values the user search
-        accepts in roleIds. The body is optional; omitting it returns the first page
-        unfiltered.
+        accepts in roleIds, from the same configured allow-list, so the dropdown and the
+        filter can never disagree. The list is deployment configuration resolved once at
+        startup and served from memory, so this endpoint makes no upstream call. The body
+        is optional; omitting it returns the first page unfiltered.
       operationId: postRolesSearch
       requestBody:
         description: Role search payload
@@ -1021,7 +1023,9 @@ paths:
       summary: Search the team registry.
       description: >
         A team's id is its registry key, which is stable across environments — unlike the
-        backing group's id. The body is optional.
+        backing group's id. The registry is deployment configuration resolved once at
+        startup, including each team's family and the UUID form of its backing group id,
+        and served from memory: this endpoint makes no upstream call. The body is optional.
       operationId: postTeamsSearch
       requestBody:
         description: Team search payload
@@ -6282,9 +6286,14 @@ components:
           description: Restrict to members of these groups. ServiceNow data source only.
         teamIds:
           type: array
+          maxItems: 50
           items:
             type: string
-          description: Restrict to members of these teams, by team key. ServiceNow data source only.
+          description: >
+            Restrict to members of these teams, by team key, as returned by POST
+            /teams/search. Each key is resolved to its group name from the startup-resolved
+            registry before the membership query runs; a key that is not in the registry is
+            a 400, not an empty result. ServiceNow data source only.
         userNames:
           type: array
           maxItems: 50

@@ -126,71 +126,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /roles/search:
-    post:
-      summary: Search the role catalogue.
-      description: >
-        The platform's curated set of assignable role keys — the same values the user
-        search accepts in roleIds.
-      operationId: searchRoles
-      tags: [Users]
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SearchRolesRequest'
-      responses:
-        '200':
-          description: Matching roles.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SearchRolesResponse'
-        '400':
-          description: Bad request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /teams/search:
-    post:
-      summary: Search the team registry.
-      operationId: searchTeams
-      tags: [Users]
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SearchTeamsRequest'
-      responses:
-        '200':
-          description: Matching teams.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SearchTeamsResponse'
-        '400':
-          description: Bad request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
   /users/search:
     post:
       summary: Search users with optional filters, sort, and pagination.
@@ -3013,30 +2948,6 @@ components:
           type: integer
           description: Zero-based offset into the result set.
 
-    UserTeam:
-      type: object
-      description: >
-        An account-based team (ABT), as published by the team registry.
-      required: [teamKey, teamName]
-      properties:
-        teamKey:
-          type: string
-          description: Registry team key. Stable across environments.
-        teamName:
-          type: string
-          description: The team's display name.
-        family:
-          type: string
-          description: >
-            Team family, lowercased, when the team is classified. Absent or empty for the
-            teams the registry leaves unclassified. The classified values are a closed
-            set — `cre-abt`, `cre`, `sre-abt`, `sre` — validated when the registry is
-            parsed at startup, so an unrecognised family fails the deploy rather than
-            reaching this response. The `-abt` variants are account-based teams; the bare
-            variants are members of the same discipline who are not on an account-based
-            team. Widening the set is a coordinated change to the registry parser and
-            this contract together.
-
     GetUserMeResponse:
       type: object
       required: [id, email, lastName, roles]
@@ -3056,14 +2967,17 @@ components:
           type: array
           items:
             type: string
-        team:
-          allOf:
-            - $ref: '#/components/schemas/UserTeam'
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserGroupRef'
           description: >
-            The caller's resolved account-based team, derived from their group membership on
-            each call. Absent when no membership resolves to a known team, or when the
-            best-effort resolution failed -- resolution never fails the identity response,
-            so callers must treat an absent team as "unknown", not as an error.
+            Every group the caller belongs to, derived from live membership on each call.
+            Which of them is a team is deliberately not decided here: the team registry
+            that names teams is the caller's own configuration, so the caller maps these
+            names to a team. Empty when the best-effort membership lookup failed --
+            it never fails the identity response, so callers must treat an empty list as
+            "unknown", not as an error.
 
     PatchUserMeRequest:
       type: object
@@ -3130,7 +3044,7 @@ components:
           type: array
           maxItems: 20
           items:
-            $ref: '#/components/schemas/RoleId'
+            type: string
           description: Filter by one or more roles. ServiceNow data source only.
         userNames:
           type: array
@@ -3164,13 +3078,17 @@ components:
             Restrict to members of these groups. Resolved to a user-id set before the
             upstream call, because the data source cannot join users against group
             membership in one query. ServiceNow data source only.
-        teamIds:
+        groupNames:
           type: array
           maxItems: 50
           items:
             type: string
           description: >
-            Restrict to members of these teams, by team key. ServiceNow data source only.
+            Restrict to members of the groups with these exact display names, resolved to a
+            user-id set exactly as groupIds is. It exists alongside groupIds because a
+            caller's team registry is keyed by group name: group ids differ between
+            environments while the names do not, and a configured team may carry no id at
+            all. ServiceNow data source only.
         active:
           type: boolean
           nullable: true
@@ -3261,118 +3179,6 @@ components:
         Callers branching on staff-vs-not must treat customer and external alike.
       enum: [internal, external, customer, system]
 
-    RoleId:
-      type: string
-      description: A platform role key, as returned by POST /roles/search.
-      enum: [internal, agent, admin, commenter, external, customer, customer_admin, partner, partner_admin, timecard_approver]
-
-    Role:
-      type: object
-      required: [id, name]
-      properties:
-        id:
-          $ref: '#/components/schemas/RoleId'
-        name:
-          type: string
-          description: Human-readable label.
-
-    CatalogPagination:
-      type: object
-      description: >
-        Pagination for the small in-memory catalogue endpoints (roles, teams). These serve a
-        fixed reference list rather than a query, so the page size defaults high enough to
-        return the whole catalogue in one call, and an over-large limit is clamped rather
-        than rejected.
-      properties:
-        limit:
-          type: integer
-          minimum: 1
-          maximum: 200
-          default: 50
-          description: Number of results per page. Defaults to 50, clamped at 200.
-        offset:
-          type: integer
-          minimum: 0
-          default: 0
-          description: Zero-based offset into the result set.
-
-    SearchRolesRequest:
-      type: object
-      properties:
-        filters:
-          type: object
-          properties:
-            searchQuery:
-              type: string
-        pagination:
-          $ref: '#/components/schemas/CatalogPagination'
-
-    SearchRolesResponse:
-      type: object
-      required: [roles, total, offset, limit]
-      properties:
-        roles:
-          type: array
-          items:
-            $ref: '#/components/schemas/Role'
-        total:
-          type: integer
-        offset:
-          type: integer
-        limit:
-          type: integer
-
-    Team:
-      type: object
-      required: [id, name]
-      properties:
-        id:
-          type: string
-          description: >
-            Registry team key. Stable across environments, unlike the backing group's id.
-        name:
-          type: string
-        family:
-          type: string
-          description: >
-            Team family, when classified: one of `cre-abt`, `cre`, `sre-abt`, `sre`.
-            Omitted for a team the registry leaves unclassified. A team picker scoped to
-            one discipline filters on this — e.g. an SRE-scoped dashboard offers only
-            `sre-abt` teams.
-        groupId:
-          type: string
-          description: >
-            The backing group's id, suitable for the case search integrationCsTeamIds
-            filter. Present only when the deployment's team registry configured a
-            backing group id for this team; a team without one is still listed, just
-            not filter-scopable.
-
-    SearchTeamsRequest:
-      type: object
-      properties:
-        filters:
-          type: object
-          properties:
-            searchQuery:
-              type: string
-        pagination:
-          $ref: '#/components/schemas/CatalogPagination'
-
-    SearchTeamsResponse:
-      type: object
-      required: [teams, total, offset, limit]
-      properties:
-        teams:
-          type: array
-          items:
-            $ref: '#/components/schemas/Team'
-        total:
-          type: integer
-        offset:
-          type: integer
-        limit:
-          type: integer
-
     UserGroupRef:
       type: object
       required: [id, name]
@@ -3382,20 +3188,6 @@ components:
           format: uuid
         name:
           type: string
-
-    UserTeamRef:
-      type: object
-      required: [id, name]
-      properties:
-        id:
-          type: string
-          description: Registry team key.
-        name:
-          type: string
-        family:
-          type: string
-          description: >
-            Team family, when classified: one of `cre-abt`, `cre`, `sre-abt`, `sre`.
 
     UserProjectAccess:
       type: object
@@ -3449,11 +3241,6 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/UserGroupRef'
-            teams:
-              type: array
-              description: The subset of groups that are registry teams.
-              items:
-                $ref: '#/components/schemas/UserTeamRef'
             projectAccess:
               type: array
               description: Present for external contacts only.

@@ -59,11 +59,10 @@ func itoa(n int) string {
 	return digits
 }
 
-// A team filter that resolves to no members must return an empty page. Falling through
-// would send no id filter upstream and return every user, which reads as "everyone
+// A group-name filter that resolves to no members must return an empty page. Falling
+// through would send no id filter upstream and return every user, which reads as "everyone
 // matched" — the opposite of the truth.
-func TestSNUserService_SearchUsers_TeamFilterNoMembers(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
+func TestSNUserService_SearchUsers_GroupNameFilterNoMembers(t *testing.T) {
 
 	searchCalled := false
 
@@ -80,7 +79,7 @@ func TestSNUserService_SearchUsers_TeamFilterNoMembers(t *testing.T) {
 
 	got, err := svc.SearchUsers(contextWithUserIDToken("token"), domain.SearchUsersRequest{
 		Pagination: domain.Pagination{Limit: 20},
-		Filters:    domain.SearchUsersFilters{TeamIDs: []string{"alpha"}},
+		Filters:    domain.SearchUsersFilters{GroupNames: []string{"Alpha Team"}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -93,9 +92,8 @@ func TestSNUserService_SearchUsers_TeamFilterNoMembers(t *testing.T) {
 	}
 }
 
-// A team filter that does resolve must send the members' ids upstream.
-func TestSNUserService_SearchUsers_TeamFilterSendsUserIDs(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
+// A group-name filter that does resolve must send the members' ids upstream.
+func TestSNUserService_SearchUsers_GroupNameFilterSendsUserIDs(t *testing.T) {
 
 	memberSysid := sysid32('a')
 	var captured []byte
@@ -113,7 +111,7 @@ func TestSNUserService_SearchUsers_TeamFilterSendsUserIDs(t *testing.T) {
 
 	got, err := svc.SearchUsers(contextWithUserIDToken("token"), domain.SearchUsersRequest{
 		Pagination: domain.Pagination{Limit: 20},
-		Filters:    domain.SearchUsersFilters{TeamIDs: []string{"alpha"}},
+		Filters:    domain.SearchUsersFilters{GroupNames: []string{"Alpha Team"}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -141,27 +139,9 @@ func TestSNUserService_SearchUsers_TeamFilterSendsUserIDs(t *testing.T) {
 	}
 }
 
-// An unknown team key is a client error, not a silent empty result.
-func TestSNUserService_SearchUsers_UnknownTeamKey(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
-
-	mux := http.NewServeMux()
-
-	svc := NewServiceNowUserService(newTestSNClient(t, mux))
-
-	_, err := svc.SearchUsers(contextWithUserIDToken("token"), domain.SearchUsersRequest{
-		Pagination: domain.Pagination{Limit: 20},
-		Filters:    domain.SearchUsersFilters{TeamIDs: []string{"no-such-team"}},
-	})
-	var verr *apierror.ValidationError
-	if !asValidationError(err, &verr) {
-		t.Fatalf("err = %v, want a ValidationError", err)
-	}
-}
-
-// GetUser enriches the row with every group the user is in, and marks registry teams.
-func TestSNUserService_GetUser_GroupsAndTeams(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
+// GetUser enriches the row with every group the user is in. Which of them are teams is
+// the caller's determination, so no team block is produced here.
+func TestSNUserService_GetUser_Groups(t *testing.T) {
 
 	userSysid := sysid32('b')
 
@@ -185,9 +165,6 @@ func TestSNUserService_GetUser_GroupsAndTeams(t *testing.T) {
 	if len(got.Groups) != 2 {
 		t.Fatalf("got %d groups, want 2", len(got.Groups))
 	}
-	if len(got.Teams) != 1 || got.Teams[0].ID != "alpha" {
-		t.Fatalf("teams = %+v, want just alpha", got.Teams)
-	}
 	// Staff get no project-access block.
 	if got.ProjectAccess != nil {
 		t.Fatalf("projectAccess = %+v, want nil for an internal user", got.ProjectAccess)
@@ -196,7 +173,6 @@ func TestSNUserService_GetUser_GroupsAndTeams(t *testing.T) {
 
 // An external contact gets project access, including rows that grant nothing.
 func TestSNUserService_GetUser_ExternalProjectAccess(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
 
 	userSysid := sysid32('e')
 	projectSysid := sysid32('f')
@@ -241,7 +217,6 @@ func TestSNUserService_GetUser_ExternalProjectAccess(t *testing.T) {
 
 // A failing enrichment must not fail the whole profile.
 func TestSNUserService_GetUser_EnrichmentDegrades(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
 
 	userSysid := sysid32('1')
 
@@ -262,14 +237,13 @@ func TestSNUserService_GetUser_EnrichmentDegrades(t *testing.T) {
 	if got.Email != "staff@wso2.com" {
 		t.Fatalf("email = %q, want the user row to still be returned", got.Email)
 	}
-	if len(got.Groups) != 0 || len(got.Teams) != 0 {
-		t.Fatalf("groups/teams = %+v/%+v, want both empty", got.Groups, got.Teams)
+	if len(got.Groups) != 0 {
+		t.Fatalf("groups = %+v, want empty", got.Groups)
 	}
 }
 
 // An id with no match is a 404, not an empty struct.
 func TestSNUserService_GetUser_NotFound(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/users/search", func(w http.ResponseWriter, _ *http.Request) {
@@ -305,7 +279,6 @@ func asNotFoundError(err error, target **apierror.NotFoundError) bool {
 // through unchanged, so without this check a bogus id reaches upstream, which answers with
 // an opaque error or an empty page that reads like a legitimate "no such user".
 func TestSNUserService_SearchUsers_RejectsMalformedFilterIDs(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/users/search", func(_ http.ResponseWriter, _ *http.Request) {
@@ -325,7 +298,7 @@ func TestSNUserService_SearchUsers_RejectsMalformedFilterIDs(t *testing.T) {
 		{"malformed groupIds", domain.SearchUsersFilters{GroupIDs: []string{"not-a-uuid"}}},
 		{"too many userIds", domain.SearchUsersFilters{UserIDs: repeatUUID(snUserIDFilterLimit + 1)}},
 		{"too many groupIds", domain.SearchUsersFilters{GroupIDs: repeatUUID(snGroupIDFilterLimit + 1)}},
-		{"too many teamIds", domain.SearchUsersFilters{TeamIDs: repeatKey(snTeamIDFilterLimit + 1)}},
+		{"too many groupNames", domain.SearchUsersFilters{GroupNames: repeatKey(snGroupNameFilterLimit + 1)}},
 	}
 
 	for _, tc := range tests {
@@ -345,7 +318,6 @@ func TestSNUserService_SearchUsers_RejectsMalformedFilterIDs(t *testing.T) {
 // GetUser must not report a malformed id as a missing one: "id is required" sends the caller
 // looking for a parameter they did supply.
 func TestSNUserService_GetUser_DistinguishesEmptyFromMalformedID(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/users/search", func(_ http.ResponseWriter, _ *http.Request) {
@@ -390,7 +362,7 @@ func repeatUUID(n int) []string {
 func repeatKey(n int) []string {
 	out := make([]string, n)
 	for i := range out {
-		out[i] = fmt.Sprintf("team-%d", i)
+		out[i] = fmt.Sprintf("Group %d", i)
 	}
 	return out
 }

@@ -17,57 +17,59 @@
 package handler
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
-// entityReferenceClient abstracts the entity service reference-data operations: the role
-// catalogue and the team registry, both of which back the user-directory filters.
-type entityReferenceClient interface {
-	SearchRoles(ctx context.Context, body []byte) ([]byte, error)
-	SearchTeams(ctx context.Context, body []byte) ([]byte, error)
-}
-
-// ReferenceHandler handles HTTP requests for the role catalogue and team registry.
+// ReferenceHandler serves the role catalogue and the team registry, both of
+// which back the user-directory filters and the dashboard team picker.
+//
+// Both are deployment configuration this service resolves once at startup (see
+// package directory), so neither endpoint makes an upstream call: they are
+// memory reads, on the first request and on every request after it.
 type ReferenceHandler struct {
-	entity entityReferenceClient
+	dir *directory.Directory
 }
 
-// NewReferenceHandler creates a ReferenceHandler backed by the given entity client.
-func NewReferenceHandler(entity entityReferenceClient) *ReferenceHandler {
-	return &ReferenceHandler{entity: entity}
+// NewReferenceHandler creates a ReferenceHandler backed by the startup-resolved
+// directory.
+func NewReferenceHandler(dir *directory.Directory) *ReferenceHandler {
+	return &ReferenceHandler{dir: dir}
 }
 
 // SearchRoles handles POST /roles/search.
 func (h *ReferenceHandler) SearchRoles(w http.ResponseWriter, r *http.Request) {
-	h.forward(w, r, "SearchRoles", "Failed to search roles.", h.entity.SearchRoles)
+	req, ok := h.decodeSearch(w, r)
+	if !ok {
+		return
+	}
+	writeJSONValue(w, http.StatusOK, h.dir.SearchRoles(req))
 }
 
 // SearchTeams handles POST /teams/search.
 func (h *ReferenceHandler) SearchTeams(w http.ResponseWriter, r *http.Request) {
-	h.forward(w, r, "SearchTeams", "Failed to search teams.", h.entity.SearchTeams)
+	req, ok := h.decodeSearch(w, r)
+	if !ok {
+		return
+	}
+	writeJSONValue(w, http.StatusOK, h.dir.SearchTeams(req))
 }
 
-// forward carries the shared read-body / validate / passthrough sequence for both search
-// endpoints. They differ only in which client call they make and what they are called in
-// logs, so the sequence lives in one place rather than being duplicated per endpoint.
-func (h *ReferenceHandler) forward(
-	w http.ResponseWriter,
-	r *http.Request,
-	op string,
-	failureMsg string,
-	call func(ctx context.Context, body []byte) ([]byte, error),
-) {
+// decodeSearch carries the shared auth / read-body / decode sequence for both
+// catalogue endpoints. It writes the error response itself and reports false
+// when the caller should stop.
+func (h *ReferenceHandler) decodeSearch(w http.ResponseWriter, r *http.Request) (directory.SearchRequest, bool) {
+	var req directory.SearchRequest
+
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
-		return
+		return req, false
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
@@ -76,25 +78,20 @@ func (h *ReferenceHandler) forward(
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
-			return
+			return req, false
 		}
 		writeError(w, http.StatusBadRequest, errMsgReadBody)
-		return
+		return req, false
 	}
 
-	// Both endpoints accept an absent body, meaning "no filters, default page". Only a
-	// non-empty body has to be valid JSON.
-	if len(body) > 0 && !json.Valid(body) {
+	// Both endpoints accept an absent body, meaning "no filters, default page".
+	// Only a non-empty body has to be valid JSON.
+	if len(body) == 0 {
+		return req, true
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-		return
+		return directory.SearchRequest{}, false
 	}
-
-	result, err := call(r.Context(), body)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "entity "+op+" failed", "userID", user.UserID, "err", err)
-		mapUpstreamErrorGeneric(w, err, failureMsg)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, result)
+	return req, true
 }

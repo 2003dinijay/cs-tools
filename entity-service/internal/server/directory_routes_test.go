@@ -24,14 +24,11 @@ import (
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
 
 // newDirectoryRouter builds the real router against a stubbed upstream, so the
-// three directory searches are exercised over HTTP exactly as a caller hits
-// them. teamRegistry and userRoles are the raw configuration values.
-func newDirectoryRouter(t *testing.T, teamRegistry, userRoles string) http.Handler {
+// directory searches are exercised over HTTP exactly as a caller hits them.
+func newDirectoryRouter(t *testing.T) http.Handler {
 	t.Helper()
 
 	upstream := http.NewServeMux()
@@ -39,8 +36,9 @@ func newDirectoryRouter(t *testing.T, teamRegistry, userRoles string) http.Handl
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "test-token", "expires_in": 3600})
 	})
-	// Groups are a live query against the backing data source, unchanged by the
-	// move of the curated vocabularies into configuration.
+	// Groups are a live query against the backing data source. This is the
+	// membership half of team resolution, and the half that stayed here when
+	// the team registry moved out to the caller.
 	upstream.HandleFunc("/groups/search", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"groups":[{"id":"11111111111111111111111111111111","name":"Some Group","active":true,"parent":null}],` +
@@ -48,23 +46,6 @@ func newDirectoryRouter(t *testing.T, teamRegistry, userRoles string) http.Handl
 	})
 	srv := httptest.NewServer(upstream)
 	t.Cleanup(srv.Close)
-
-	teams, err := domain.ParseAbtTeamRegistry(teamRegistry)
-	if err != nil {
-		t.Fatalf("ParseAbtTeamRegistry(%q): %v", teamRegistry, err)
-	}
-	domain.SetAbtTeams(teams)
-	t.Cleanup(func() { domain.SetAbtTeams(nil) })
-
-	roles, err := service.ParseUserRoles(userRoles)
-	if err != nil {
-		t.Fatalf("ParseUserRoles(%q): %v", userRoles, err)
-	}
-	service.SetUserRoles(roles)
-	t.Cleanup(func() {
-		defaults, _ := service.ParseUserRoles("")
-		service.SetUserRoles(defaults)
-	})
 
 	return NewRouter(nil, &config.Config{
 		DataSource:                               config.DataSourceServiceNow,
@@ -75,98 +56,37 @@ func newDirectoryRouter(t *testing.T, teamRegistry, userRoles string) http.Handl
 	})
 }
 
-func postJSON(t *testing.T, router http.Handler, path, body string) *httptest.ResponseRecorder {
+func postDirectory(t *testing.T, router http.Handler, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST %s = %d, want 200: %s", path, rec.Code, rec.Body.String())
-	}
 	return rec
 }
 
-// TestDirectorySearches_AllThreeStillWork covers the whole surface this change
-// touches: teams and roles now come from configuration, groups are still a
-// live query against the backing data source.
-func TestDirectorySearches_AllThreeStillWork(t *testing.T) {
-	router := newDirectoryRouter(t, "alpha|Alpha Team|CRE,beta|Beta Team|SRE", "agent,timecard_approver")
-
-	t.Run("teams reflect the configured registry", func(t *testing.T) {
-		rec := postJSON(t, router, "/teams/search", `{"pagination":{"limit":20}}`)
-		var got struct {
-			Teams []struct {
-				ID     string `json:"id"`
-				Name   string `json:"name"`
-				Family string `json:"family"`
-			} `json:"teams"`
-			Total int `json:"total"`
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-			t.Fatalf("decode response: %v (%s)", err, rec.Body.String())
-		}
-		if got.Total != 2 {
-			t.Fatalf("total = %d, want 2: %s", got.Total, rec.Body.String())
-		}
-		if got.Teams[0].ID != "alpha" || got.Teams[0].Name != "Alpha Team" || got.Teams[0].Family != "cre" {
-			t.Fatalf("teams[0] = %+v, want the configured alpha row", got.Teams[0])
-		}
-		if got.Teams[1].ID != "beta" || got.Teams[1].Family != "sre" {
-			t.Fatalf("teams[1] = %+v, want the configured beta row", got.Teams[1])
-		}
-	})
-
-	t.Run("roles reflect the configured allow-list", func(t *testing.T) {
-		rec := postJSON(t, router, "/roles/search", `{"pagination":{"limit":20}}`)
-		var got struct {
-			Roles []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"roles"`
-			Total int `json:"total"`
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-			t.Fatalf("decode response: %v (%s)", err, rec.Body.String())
-		}
-		if got.Total != 2 {
-			t.Fatalf("total = %d, want the 2 configured roles: %s", got.Total, rec.Body.String())
-		}
-		if got.Roles[0].ID != "agent" || got.Roles[1].ID != "timecard_approver" {
-			t.Fatalf("roles = %+v, want [agent timecard_approver]", got.Roles)
-		}
-	})
-
-	t.Run("groups are still a live upstream query", func(t *testing.T) {
-		rec := postJSON(t, router, "/groups/search", `{"pagination":{"limit":20}}`)
-		if !strings.Contains(rec.Body.String(), "Some Group") {
-			t.Fatalf("groups response = %s, want the upstream row", rec.Body.String())
-		}
-	})
+// TestGroupsSearch_IsStillALiveQuery: group membership is live state and cannot
+// be answered from configuration, so it stayed here.
+func TestGroupsSearch_IsStillALiveQuery(t *testing.T) {
+	rec := postDirectory(t, newDirectoryRouter(t), "/groups/search", `{"pagination":{"limit":20}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /groups/search = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Some Group") {
+		t.Fatalf("groups response = %s, want the upstream row", rec.Body.String())
+	}
 }
 
-// TestRolesSearch_UnconfiguredUsesDefaults: a deployment that sets nothing
-// still serves the committed default catalogue.
-func TestRolesSearch_UnconfiguredUsesDefaults(t *testing.T) {
-	router := newDirectoryRouter(t, "", "")
-
-	rec := postJSON(t, router, "/roles/search", `{"pagination":{"limit":20}}`)
-	var got struct {
-		Total int `json:"total"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode response: %v (%s)", err, rec.Body.String())
-	}
-	if got.Total != 10 {
-		t.Fatalf("total = %d, want the 10 default roles: %s", got.Total, rec.Body.String())
-	}
-
-	// An unconfigured team registry is an empty catalogue, not an error.
-	rec = postJSON(t, router, "/teams/search", `{"pagination":{"limit":20}}`)
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode response: %v (%s)", err, rec.Body.String())
-	}
-	if got.Total != 0 {
-		t.Fatalf("total = %d, want an empty team catalogue: %s", got.Total, rec.Body.String())
+// TestCuratedCataloguesAreNoLongerServedHere locks in the move: the team
+// registry and the role allow-list are the caller's configuration now, and this
+// service no longer reads either. If someone reinstates a route here, the
+// registry has two owners again and they will silently disagree.
+func TestCuratedCataloguesAreNoLongerServedHere(t *testing.T) {
+	router := newDirectoryRouter(t)
+	for _, path := range []string{"/teams/search", "/roles/search"} {
+		rec := postDirectory(t, router, path, `{}`)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("POST %s = %d, want 404 (the catalogue moved to the portal backend)", path, rec.Code)
+		}
 	}
 }

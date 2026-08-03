@@ -111,10 +111,13 @@ type SearchUsersFilters struct {
 	// set before the upstream call, since the data source cannot join users against
 	// group membership in one query.
 	GroupIDs []string `json:"groupIds"`
-	// TeamIDs restricts the search to members of these teams, by team key. Teams are
-	// resolved to their group names via the registry, then to a user-ID set.
-	TeamIDs []string `json:"teamIds"`
-	Active  *bool    `json:"active"`
+	// GroupNames restricts the search to members of the groups with these exact display
+	// names, resolved to a user-ID set the same way GroupIDs is. It exists alongside
+	// GroupIDs because the caller's team registry is keyed by group name: group ids
+	// differ between environments while the names do not, and not every configured team
+	// carries an id at all.
+	GroupNames []string `json:"groupNames"`
+	Active     *bool    `json:"active"`
 }
 
 // UserSortBy specifies the sort field and direction for a user search.
@@ -166,10 +169,9 @@ type SNUser struct {
 // upstream lookup fails, so a partial profile still renders instead of erroring.
 type SNUserDetail struct {
 	SNUser
-	// Groups is every group the user belongs to.
+	// Groups is every group the user belongs to. Which of them are teams is the
+	// caller's determination, since the team registry is the caller's configuration.
 	Groups []UserGroupRef `json:"groups"`
-	// Teams is the subset of Groups that are registry teams.
-	Teams []UserTeamRef `json:"teams"`
 	// ProjectAccess is populated for external contacts only; it is nil for staff.
 	ProjectAccess []UserProjectAccess `json:"projectAccess,omitempty"`
 }
@@ -178,14 +180,6 @@ type SNUserDetail struct {
 type UserGroupRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-}
-
-// UserTeamRef is a team the user is a member of. ID is the registry team key, which is
-// stable across environments -- unlike the underlying group id.
-type UserTeamRef struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Family string `json:"family,omitempty"`
 }
 
 // UserProjectAccess is one project-contact row for a user, reported as stored rather than
@@ -215,77 +209,12 @@ type UserProjectAccess struct {
 	GrantsCaseAccess     bool     `json:"grantsCaseAccess"`
 }
 
-// Role is an assignable platform role.
-type Role struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-// SearchRolesRequest is the input for POST /roles/search.
-type SearchRolesRequest struct {
-	Filters    SearchRolesFilters `json:"filters"`
-	Pagination Pagination         `json:"pagination"`
-}
-
-// SearchRolesFilters holds optional filter criteria for role searches.
-type SearchRolesFilters struct {
-	SearchQuery string `json:"searchQuery,omitempty"`
-}
-
-// SearchRolesResponse is the paginated result of a role search.
-type SearchRolesResponse struct {
-	Roles  []Role `json:"roles"`
-	Total  int    `json:"total"`
-	Offset int    `json:"offset"`
-	Limit  int    `json:"limit"`
-}
-
-// Team is one of the organisation's teams. ID is the registry key, stable across
-// environments; the backing group's id is not.
-type Team struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Family string `json:"family,omitempty"`
-	// GroupID is the backing group's id, converted to this platform's UUID
-	// format, suitable for the case-search integrationCsTeamIds filter.
-	// Omitted when the team registry did not configure a backing group id
-	// for this team -- the team is still listed, just not filter-scopable.
-	GroupID string `json:"groupId,omitempty"`
-}
-
-// SearchTeamsRequest is the input for POST /teams/search.
-type SearchTeamsRequest struct {
-	Filters    SearchTeamsFilters `json:"filters"`
-	Pagination Pagination         `json:"pagination"`
-}
-
-// SearchTeamsFilters holds optional filter criteria for team searches.
-type SearchTeamsFilters struct {
-	SearchQuery string `json:"searchQuery,omitempty"`
-}
-
-// SearchTeamsResponse is the paginated result of a team search.
-type SearchTeamsResponse struct {
-	Teams  []Team `json:"teams"`
-	Total  int    `json:"total"`
-	Offset int    `json:"offset"`
-	Limit  int    `json:"limit"`
-}
-
 // SearchSNUsersResponse is the paginated result of a ServiceNow user search.
 type SearchSNUsersResponse struct {
 	Users  []SNUser `json:"users"`
 	Total  int      `json:"total"`
 	Limit  int      `json:"limit"`
 	Offset int      `json:"offset"`
-}
-
-// UserTeam identifies the caller's resolved ABT (Account-Based Team),
-// derived live from ServiceNow group membership on every GET /users/me call.
-type UserTeam struct {
-	TeamKey  string `json:"teamKey"`
-	TeamName string `json:"teamName"`
-	Family   string `json:"family"` // "cre" | "sre"
 }
 
 // GetUserMeResponse is the response for GET /users/me from the ServiceNow data source.
@@ -296,10 +225,11 @@ type GetUserMeResponse struct {
 	LastName  string   `json:"lastName"`
 	TimeZone  *string  `json:"timeZone,omitempty"`
 	Roles     []string `json:"roles"`
-	// Team is nil when the caller has no resolvable ABT team membership, or
-	// when team resolution failed — team resolution is best-effort and never
-	// fails the identity response.
-	Team *UserTeam `json:"team,omitempty"`
+	// Groups is every group the caller belongs to, which is what a caller
+	// holding the team registry needs to resolve their team. Empty when the
+	// membership lookup failed — it is best-effort and never fails the
+	// identity response.
+	Groups []UserGroupRef `json:"groups"`
 }
 
 // PatchUserMeRequest is the request body for PATCH /users/me.

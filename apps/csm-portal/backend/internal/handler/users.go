@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/scim"
 )
@@ -47,11 +48,18 @@ type entityUserClient interface {
 type UsersHandler struct {
 	scim   scimClient
 	entity entityUserClient
+	// dir is the startup-resolved team registry and role allow-list. Every
+	// team key <-> group name translation on this handler's paths is a lookup
+	// in it, never an upstream call: the entity service does not hold the
+	// registry, so it can only answer membership questions when this layer
+	// hands it the group names to ask about.
+	dir *directory.Directory
 }
 
-// NewUsersHandler creates a UsersHandler backed by the given SCIM and entity clients.
-func NewUsersHandler(scim scimClient, entity entityUserClient) *UsersHandler {
-	return &UsersHandler{scim: scim, entity: entity}
+// NewUsersHandler creates a UsersHandler backed by the given SCIM and entity
+// clients and the startup-resolved directory.
+func NewUsersHandler(scim scimClient, entity entityUserClient, dir *directory.Directory) *UsersHandler {
+	return &UsersHandler{scim: scim, entity: entity, dir: dir}
 }
 
 // userMeResponse is the GET /users/me response shape.
@@ -66,15 +74,23 @@ type userMeResponse struct {
 	Team        *userTeamResponse `json:"team,omitempty"`
 }
 
-// userTeamResponse is the caller's resolved ABT (Account-Based Team), passed
-// through from the entity service's GET /users/me as-is. Nil when the caller
-// has no resolvable ABT team membership, or when team resolution failed
-// upstream (best-effort, never fails the identity response).
+// userTeamResponse is the caller's resolved ABT (Account-Based Team). Nil when
+// the caller belongs to no group in the team registry, or when the upstream
+// membership lookup failed (best-effort, never fails the identity response).
 type userTeamResponse struct {
 	TeamKey  string `json:"teamKey"`
 	TeamName string `json:"teamName"`
 	// Family may be empty: not every ABT team is classified into a family.
 	Family string `json:"family"`
+}
+
+// entityGroupRef is one group the entity service reports the caller as a member
+// of. Membership is live state, so it is the one part of team resolution that
+// still costs an upstream call -- the registry that turns a group name into a
+// team is resolved here at startup.
+type entityGroupRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // entityUserMeResponse is the subset of the entity GET /users/me response we care about.
@@ -85,9 +101,10 @@ type entityUserMeResponse struct {
 	LastName  string   `json:"lastName"`
 	TimeZone  *string  `json:"timeZone"`
 	Roles     []string `json:"roles"`
-	// Team is absent (or null) from the entity response when the caller has
-	// no resolvable ABT team membership, or when resolution failed upstream.
-	Team *userTeamResponse `json:"team"`
+	// Groups is every group the caller belongs to, or absent when the upstream
+	// membership lookup failed. The team is derived from it here rather than
+	// upstream, since the registry lives in this service.
+	Groups []entityGroupRef `json:"groups"`
 }
 
 // userUpdateRequest is the PATCH /users/me request shape.
@@ -129,7 +146,7 @@ func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 			if entityResp.Roles != nil {
 				resp.Roles = entityResp.Roles
 			}
-			resp.Team = entityResp.Team
+			resp.Team = h.teamForGroups(entityResp.Groups)
 		}
 	}
 
@@ -234,6 +251,14 @@ func (h *UsersHandler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The registry lives here, so the teamIds filter is resolved here: the
+	// entity service is handed group names it can run a membership query with.
+	body, err = h.resolveUserSearchFilters(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	result, err := h.entity.SearchUsers(r.Context(), body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchUsers failed", "userID", user.UserID, "err", err)
@@ -269,5 +294,17 @@ func (h *UsersHandler) GetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, result)
+	// The upstream response carries the user's groups; which of those are
+	// registry teams is this service's knowledge, so the teams block is added
+	// here. Best-effort, matching every other enrichment on this profile: a
+	// response we cannot re-shape is still worth returning as-is.
+	enriched, err := h.withUserTeams(result)
+	if err != nil {
+		slog.WarnContext(r.Context(), "entity GetUser: could not derive team membership",
+			"userID", user.UserID, "err", err)
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, enriched)
 }

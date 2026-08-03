@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/dashboard"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/handler"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
@@ -45,6 +46,13 @@ func main() {
 	middleware.ConfigureLogger()
 
 	dashboard.SetActive(loadDashboards())
+
+	// Reference data is resolved once, here, and then only ever read from
+	// memory: the team registry (key <-> display name <-> backing group id <->
+	// platform UUID) and the assignable-role allow-list are both derivable from
+	// configuration alone, so nothing about them needs an upstream call on the
+	// request path.
+	dir := loadDirectory()
 
 	// All upstream service clients (entity, updates, SCIM, and future notification
 	// channels) authenticate as the same OAuth2 client-credentials app; only the
@@ -73,7 +81,7 @@ func main() {
 	itServiceHandler := handler.NewITServiceHandler(customerEntityClient)
 	serviceOfferingHandler := handler.NewServiceOfferingHandler(customerEntityClient)
 	groupHandler := handler.NewGroupHandler(customerEntityClient)
-	referenceHandler := handler.NewReferenceHandler(customerEntityClient)
+	referenceHandler := handler.NewReferenceHandler(dir)
 	configurationItemHandler := handler.NewConfigurationItemHandler(customerEntityClient)
 	catalogHandler := handler.NewCatalogHandler(customerEntityClient)
 	timeCardHandler := handler.NewTimeCardHandler(customerEntityClient)
@@ -111,7 +119,7 @@ func main() {
 		Scopes:       splitComma(os.Getenv("SCIM_SCOPES")),
 	}
 	scimClient := scim.NewClient(scimCfg)
-	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient)
+	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient, dir)
 
 	authCfg := middleware.Config{
 		JWKSEndpoint:          mustEnv("AUTH_JWKS_ENDPOINT"),
@@ -297,6 +305,50 @@ func loadDashboards() *dashboard.Registry {
 	}
 	slog.Info("loaded dashboard definitions", "dir", dir, "count", len(registry.Dashboards()), "hotReload", hotReload)
 	return registry
+}
+
+// loadDirectory resolves the reference catalogues from environment
+// configuration, once, at startup:
+//
+//	CSM_TEAM_REGISTRY  the team registry as "teamKey|Display Name|FAMILY|groupId"
+//	                   rows separated by commas, where FAMILY is one of cre-abt,
+//	                   cre, sre-abt or sre (case insensitive) and FAMILY and
+//	                   groupId are both optional. Unset means no teams are
+//	                   configured; there is deliberately no default, because
+//	                   team names are organisation vocabulary that must not be
+//	                   committed here.
+//	CSM_USER_ROLES     the assignable-role allow-list, comma separated. Unset
+//	                   falls back to the committed default list.
+//
+// A malformed row is fatal and names the offending row. It has to be: a team
+// silently dropped from the registry does not error anywhere -- it just removes
+// that team from every picker and resolves its members to no team at all, which
+// surfaces days later as "why is my dashboard wrong". An empty registry is
+// legal and only warned about, so a deployment that has not configured one yet
+// still starts and serves every other endpoint.
+func loadDirectory() *directory.Directory {
+	teams, err := directory.ParseTeamRegistry(os.Getenv("CSM_TEAM_REGISTRY"))
+	if err != nil {
+		slog.Error("invalid CSM_TEAM_REGISTRY", "err", err)
+		os.Exit(1)
+	}
+	roles, err := directory.ParseRoles(os.Getenv("CSM_USER_ROLES"))
+	if err != nil {
+		slog.Error("invalid CSM_USER_ROLES", "err", err)
+		os.Exit(1)
+	}
+
+	dir, err := directory.New(teams, roles)
+	if err != nil {
+		slog.Error("invalid reference configuration", "err", err)
+		os.Exit(1)
+	}
+
+	if dir.TeamCount() == 0 {
+		slog.Warn("team registry is empty: the team catalogue and every team filter will return nothing")
+	}
+	slog.Info("resolved reference catalogues", "teams", dir.TeamCount(), "roles", dir.RoleCount())
+	return dir
 }
 
 func mustEnv(key string) string {
