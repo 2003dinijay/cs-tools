@@ -1414,12 +1414,16 @@ type ParsedCaseFilters struct {
 	WorkStates      []CaseWorkState
 	AssignedUserIDs []string
 	ProductNames    []string
-	// Tags filters cases by attached free-text label. Not yet available in the
-	// backing service: same gap as CaseView.Tags — no Ballerina search-filter
-	// support exists yet, so this filter is accepted here but has no effect until
-	// Ballerina wires it through.
+	// Tags filters cases by attached free-text label. Works end-to-end: ServiceNow's
+	// CaseUtils.searchCases honors filters.tags, and Ballerina's CaseSearchFilters
+	// forwards it.
 	Tags []string
-	// ExcludeTags filters to cases NOT carrying any of these free-text tag labels (optional).
+	// ExcludeTags filters to cases NOT carrying any of these free-text tag labels
+	// (optional). The backing ServiceNow script honors filters.excludeTags, but the
+	// Ballerina layer's CaseSearchFilters is a closed record that does not yet declare
+	// this field, so populating it is expected to fail payload binding and error the
+	// whole search rather than merely being ignored. Do not set it until Ballerina
+	// declares excludeTags.
 	ExcludeTags []string
 	// ParentID filters to child cases of this case (the hierarchical major-case/
 	// child-case relationship set via the case PATCH parentId field). Not yet

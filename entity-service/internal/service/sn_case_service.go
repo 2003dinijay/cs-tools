@@ -330,12 +330,13 @@ type snCaseFilters struct {
 	WorkStateKeys      []int    `json:"workStateKeys,omitempty"`
 	AssignedUserIDs    []string `json:"assignedUserIds,omitempty"`
 	ProductNames       []string `json:"productNames,omitempty"`
-	// Tags: not yet available in the backing service, see the
-	// domain.SearchCasesFilters.Tags doc comment.
-	// Forwarded to Choreo so filtering starts working the moment Ballerina adds
-	// support, but the current POST /cases/search contract ignores this field.
+	// Tags: filters cases by attached free-text label. Works end-to-end now
+	// (ServiceNow's CaseUtils.searchCases honors filters.tags; Ballerina's
+	// CaseSearchFilters forwards it).
 	Tags []string `json:"tags,omitempty"`
-	// ExcludeTags: see domain.SearchCasesFilters.ExcludeTags doc comment.
+	// ExcludeTags: honored by ServiceNow, but NOT yet declared on Ballerina's closed
+	// CaseSearchFilters record -- sending it is expected to fail payload binding and
+	// error the entire search. See domain.ParsedCaseFilters.ExcludeTags.
 	ExcludeTags []string `json:"excludeTags,omitempty"`
 	// ParentID: see domain.SearchCasesFilters.ParentID doc comment.
 	ParentID                  string   `json:"parentId,omitempty"`
