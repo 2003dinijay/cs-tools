@@ -75,10 +75,12 @@ import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProject
 import MultiSelectField from "@components/MultiSelectField";
 import AsyncAssigneeMultiSelect from "@features/csm-cases/components/AsyncAssigneeMultiSelect";
 import ProductNameMultiSelect from "@features/csm-cases/components/ProductNameMultiSelect";
-// TagsMultiSelect (case-list tag filter) is deliberately not wired in here for
-// now — see the removal note on `CasesFilters.tags` in casesFiltersUrl.ts.
-// The component itself stays in place; it may come back once tag filtering
-// is revisited.
+// TagsMultiSelect (case-list tag filter) is deliberately not wired in here
+// yet even though `CasesFilters.tags`/`excludeTags` are real fields again
+// (reinstated in the type/URL codec/search payload so dashboard tag-filter
+// widgets click through losslessly — see casesFiltersUrl.ts) — only the
+// filter-bar *control* is still pending. The component itself stays in
+// place and is unaffected by this.
 
 
 /**
@@ -104,6 +106,42 @@ export interface CasesFilters {
   engagementTypes: BeEngagementType[];
   /** Product family names (e.g. "API Manager"); matches all versions of each. */
   productNames: string[];
+  /** CS team group ids (`integrationCsTeam` op:in) the case's project is scoped to. */
+  csTeams: string[];
+  /** Tags the case must carry (`tag` op:in). Independent of `excludeTags` —
+   * both may be set at once (the backend ANDs them). */
+  tags: string[];
+  /** Tags the case must NOT carry (`tag` op:notIn). Not the inverse of
+   * `tags` — a distinct field so `in` and `notIn` can never be conflated on
+   * the round trip (see `casesFiltersUrl.ts`'s codec doc comment). */
+  excludeTags: string[];
+  /** Project onboarding status values (`projectOnboardingStatus` op:in). */
+  onboardingStatuses: string[];
+  /** Inclusive lower bound on the case's active task's SLA business-elapsed
+   * percent (`taskSLABusinessElapsedPercent` op:gte). `null` = unset. */
+  slaElapsedPctGte: number | null;
+  /** Inclusive upper bound, same field, op:lte. `null` = unset. */
+  slaElapsedPctLte: number | null;
+  /** Escalation presence (`escalation` field): `true` = has an active
+   * escalation (op:isNotEmpty), `false` = has none (op:isEmpty), `null` =
+   * unfiltered. Deliberately not string-typed on the ops themselves — the
+   * value-less op IS the whole predicate here, so a tri-state is the
+   * accurate shape rather than an op name a caller could typo. */
+  hasEscalation: boolean | null;
+  /** Escalation level values (`escalationLevel` op:in). */
+  escalationLevels: string[];
+  /** Project-type ids (`projectType` op:in). */
+  projectTypes: string[];
+  /** `createdOn` range bounds (op:gte / op:lte respectively); RFC3339 or
+   * `YYYY-MM-DD`. `null` = unbounded on that side. */
+  createdOnGte: string | null;
+  createdOnLte: string | null;
+  /** `updatedOn` range bounds — same shape as `createdOnGte`/`createdOnLte`. */
+  updatedOnGte: string | null;
+  updatedOnLte: string | null;
+  /** `closedOn` range bounds — same shape as `createdOnGte`/`createdOnLte`. */
+  closedOnGte: string | null;
+  closedOnLte: string | null;
 }
 
 /**

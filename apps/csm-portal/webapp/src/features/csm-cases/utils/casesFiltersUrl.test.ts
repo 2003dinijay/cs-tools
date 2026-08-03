@@ -35,11 +35,11 @@ describe("readCasesFiltersFromUrl", () => {
       "search=timeout&severities=S0,S2&states=open,work_in_progress,closed&types=case,engagement&assignees=alice@example.com,@me&workStates=ongoing,paused&projects=apim&products=API%20Manager,Asgardeo",
     );
     expect(readCasesFiltersFromUrl(params)).toEqual({
+      ...DEFAULT_CASES_FILTERS,
       search: "timeout",
       severities: ["S0", "S2"],
       states: ["open", "work_in_progress", "closed"],
       caseTypes: ["case", "engagement"],
-      engagementTypes: [],
       assignees: ["alice@example.com", "@me"],
       workStates: ["ongoing", "paused"],
       projects: ["apim"],
@@ -47,9 +47,12 @@ describe("readCasesFiltersFromUrl", () => {
     });
   });
 
-  it("ignores a stale `tags` param (case-list tag filter removed for now)", () => {
+  it("parses `tags` — a live param again, not the stale no-op it used to be", () => {
     const params = new URLSearchParams("tags=micro-gw,ws-policy");
-    expect(readCasesFiltersFromUrl(params)).toEqual(DEFAULT_CASES_FILTERS);
+    expect(readCasesFiltersFromUrl(params)).toEqual({
+      ...DEFAULT_CASES_FILTERS,
+      tags: ["micro-gw", "ws-policy"],
+    });
   });
 
   it("drops values outside the allowed enums", () => {
@@ -89,6 +92,7 @@ describe("writeCasesFiltersToUrl", () => {
 
   it("round-trips a non-default filter set", () => {
     const filters: CasesFilters = {
+      ...DEFAULT_CASES_FILTERS,
       search: "disk full",
       severities: ["S1"],
       states: ["work_in_progress"],
@@ -96,11 +100,83 @@ describe("writeCasesFiltersToUrl", () => {
       assignees: ["carol@example.com"],
       workStates: ["paused"],
       projects: ["streaming"],
-      engagementTypes: [],
       productNames: ["Identity Server", "Asgardeo"],
     };
     const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
     expect(round).toEqual(filters);
+  });
+});
+
+/**
+ * Regression coverage for the exact bug class `widgetPreviewUrl.ts` shipped
+ * (see `6a9059789`): an op silently decoding back as a different op, or a
+ * value-less op being dropped for having no `values` to serialize. This
+ * codec avoids the `field~op` mechanism that bug required fixing (see
+ * `writeCasesFiltersToUrl`'s doc comment) by giving every op its own named
+ * field — these tests exist to prove that actually holds, not just to
+ * restate the design.
+ */
+describe("op-awareness (regression: the widgetPreviewUrl field~op bug)", () => {
+  it("`tags` (op:in) and `excludeTags` (op:notIn) never conflate on a round trip", () => {
+    const filters: CasesFilters = {
+      ...DEFAULT_CASES_FILTERS,
+      excludeTags: ["s_dip"],
+    };
+    const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
+    // The bug this guards against: `tag notIn [s_dip]` decoding back as
+    // `tag in [s_dip]` — an EXCLUSION becoming a FILTER. Assert both halves:
+    // the exclusion survived, and it did NOT leak into `tags` (inclusion).
+    expect(round.excludeTags).toEqual(["s_dip"]);
+    expect(round.tags).toEqual([]);
+  });
+
+  it("`tags` and `excludeTags` survive together, independently, when both are set", () => {
+    const filters: CasesFilters = {
+      ...DEFAULT_CASES_FILTERS,
+      tags: ["patch"],
+      excludeTags: ["s_dip"],
+    };
+    const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
+    expect(round.tags).toEqual(["patch"]);
+    expect(round.excludeTags).toEqual(["s_dip"]);
+  });
+
+  it("a value-less op (`hasEscalation` / escalation isNotEmpty) survives rather than being dropped", () => {
+    const filters: CasesFilters = { ...DEFAULT_CASES_FILTERS, hasEscalation: true };
+    const href = writeCasesFiltersToUrl(filters);
+    // Assert the param is actually present, not just that the round trip
+    // happens to produce the right value some other way.
+    expect(href.get("escalation")).toBe("yes");
+    expect(readCasesFiltersFromUrl(href).hasEscalation).toBe(true);
+  });
+
+  it("the other value-less state (`hasEscalation: false` / isEmpty) also survives", () => {
+    const filters: CasesFilters = { ...DEFAULT_CASES_FILTERS, hasEscalation: false };
+    const href = writeCasesFiltersToUrl(filters);
+    expect(href.get("escalation")).toBe("no");
+    expect(readCasesFiltersFromUrl(href).hasEscalation).toBe(false);
+  });
+
+  it("a gte+lte range on one field round-trips with both bounds intact", () => {
+    const filters: CasesFilters = {
+      ...DEFAULT_CASES_FILTERS,
+      slaElapsedPctGte: 50,
+      slaElapsedPctLte: 100,
+      createdOnGte: "2026-01-01",
+      createdOnLte: "2026-03-31",
+    };
+    const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
+    expect(round.slaElapsedPctGte).toBe(50);
+    expect(round.slaElapsedPctLte).toBe(100);
+    expect(round.createdOnGte).toBe("2026-01-01");
+    expect(round.createdOnLte).toBe("2026-03-31");
+  });
+
+  it("a one-sided range only sets the bound that was given", () => {
+    const filters: CasesFilters = { ...DEFAULT_CASES_FILTERS, slaElapsedPctGte: 90 };
+    const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
+    expect(round.slaElapsedPctGte).toBe(90);
+    expect(round.slaElapsedPctLte).toBeNull();
   });
 });
 

@@ -772,7 +772,10 @@ export type BeCaseFieldFilterField =
   | "projectType"
   | "integrationCsTeam"
   | "resolutionNotes"
-  | "parentId";
+  | "parentId"
+  | "taskSLABusinessElapsedPercent"
+  | "escalationLevel"
+  | "escalation";
 
 /**
  * `op` enum accepted by {@link BeCaseFieldFilter}, independent of `field` —

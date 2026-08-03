@@ -24,6 +24,7 @@
 
 import { describe, expect, it } from "vitest";
 import { WIDGET_RESOURCE_CONFIG } from "@features/csm-dashboard/config/widgetResourceConfig";
+import { readCasesFiltersFromUrl } from "@features/csm-cases/utils/casesFiltersUrl";
 
 function hrefParams(href: string): URLSearchParams {
   const [, qs] = href.split("?");
@@ -95,5 +96,78 @@ describe("WIDGET_RESOURCE_CONFIG.case.buildHref", () => {
     const params = hrefParams(href);
     expect(params.has("engagementTypes")).toBe(false);
     expect(params.has("workStates")).toBe(false);
+  });
+});
+
+/**
+ * Regression: the motivating bug for this whole feature. A widget filtering
+ * `integrationCsTeam in [<team>]` + `tag notIn [s_dip]` + `state in [...]`
+ * clicked through to `/cases?states=...` with the team and tag conditions
+ * silently dropped — a tile reading 2 landed on a list of 30 (the org-wide
+ * figure). Confirmed live three times before this fix. This suite proves the
+ * full round trip end to end: `translateCaseDashboardFilters` ->
+ * `casesHref` -> `readCasesFiltersFromUrl` — not just that the href contains
+ * the right substring.
+ */
+describe("WIDGET_RESOURCE_CONFIG.case — previously-dropped fields", () => {
+  it("carries integrationCsTeam, tag notIn, projectOnboardingStatus, escalation, escalationLevel, projectType, and SLA%/date ranges through to the href", () => {
+    const href = WIDGET_RESOURCE_CONFIG.case.buildHref({
+      filters: [
+        { field: "integrationCsTeam", op: "in", values: ["team-abt"] },
+        { field: "tag", op: "notIn", values: ["s_dip"] },
+        { field: "projectOnboardingStatus", op: "in", values: ["in_progress"] },
+        { field: "escalation", op: "isNotEmpty" },
+        { field: "escalationLevel", op: "in", values: ["L1"] },
+        { field: "projectType", op: "in", values: ["enterprise"] },
+        { field: "taskSLABusinessElapsedPercent", op: "gte", values: ["80"] },
+        { field: "createdOn", op: "gte", values: ["2026-01-01"] },
+      ],
+    });
+    const parsed = readCasesFiltersFromUrl(hrefParams(href));
+
+    expect(parsed.csTeams).toEqual(["team-abt"]);
+    expect(parsed.excludeTags).toEqual(["s_dip"]);
+    expect(parsed.tags).toEqual([]); // must NOT be inverted into an inclusion
+    expect(parsed.onboardingStatuses).toEqual(["in_progress"]);
+    expect(parsed.hasEscalation).toBe(true);
+    expect(parsed.escalationLevels).toEqual(["L1"]);
+    expect(parsed.projectTypes).toEqual(["enterprise"]);
+    expect(parsed.slaElapsedPctGte).toBe(80);
+    expect(parsed.createdOnGte).toBe("2026-01-01");
+  });
+
+  it("the org-wide-figure regression: team + tag-exclusion + state survive together, unchanged, end to end", () => {
+    const href = WIDGET_RESOURCE_CONFIG.case.buildHref({
+      filters: [
+        { field: "integrationCsTeam", op: "in", values: ["team-abt"] },
+        { field: "tag", op: "notIn", values: ["s_dip"] },
+        { field: "state", op: "in", values: ["open", "work_in_progress"] },
+      ],
+    });
+    const parsed = readCasesFiltersFromUrl(hrefParams(href));
+
+    expect(parsed.csTeams).toEqual(["team-abt"]);
+    expect(parsed.excludeTags).toEqual(["s_dip"]);
+    expect(parsed.states).toEqual(["open", "work_in_progress"]);
+  });
+
+  it("hasEscalation:false (isEmpty) round-trips distinctly from isNotEmpty", () => {
+    const href = WIDGET_RESOURCE_CONFIG.case.buildHref({
+      filters: [{ field: "escalation", op: "isEmpty" }],
+    });
+    const parsed = readCasesFiltersFromUrl(hrefParams(href));
+    expect(parsed.hasEscalation).toBe(false);
+  });
+
+  it("gte and lte on the same date field both survive independently", () => {
+    const href = WIDGET_RESOURCE_CONFIG.case.buildHref({
+      filters: [
+        { field: "updatedOn", op: "gte", values: ["2026-01-01"] },
+        { field: "updatedOn", op: "lte", values: ["2026-06-30"] },
+      ],
+    });
+    const parsed = readCasesFiltersFromUrl(hrefParams(href));
+    expect(parsed.updatedOnGte).toBe("2026-01-01");
+    expect(parsed.updatedOnLte).toBe("2026-06-30");
   });
 });
