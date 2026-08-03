@@ -458,6 +458,29 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "resolutionNotes" is not supported by this data source`}
 	}
 
+	// Task-SLA and escalation predicates, OR groups, and grouped counts are
+	// implemented only in the ServiceNow case service (snCaseService.SearchCases);
+	// caseRepo.SearchCases models none of them. ParseCaseFieldFilters accepts them
+	// because it is shared by both data sources, so without these guards a
+	// Postgres deployment would drop the predicate and answer 200 with a wider
+	// result set than the caller asked for. These stay ServiceNow-only by design:
+	// reject loudly rather than implement them here.
+	if parsed.TaskSLAFilter != nil {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "taskSLABusinessElapsedPercent" is not supported by this data source`}
+	}
+	if len(parsed.EscalationLevels) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "escalationLevel" is not supported by this data source`}
+	}
+	if parsed.HasActiveEscalation != nil {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "escalation" is not supported by this data source`}
+	}
+	if len(req.Filters.OrGroups) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "orGroups is not supported by this data source"}
+	}
+	if req.GroupBy != "" {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "groupBy is not supported by this data source"}
+	}
+
 	req.Parsed = parsed
 
 	if req.SortBy.Field == "" {
