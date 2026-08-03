@@ -95,11 +95,12 @@ export default function DirectoryMembersList({
 
   return (
     <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
-      <TableContainer>
+      <TableContainer sx={{ overflow: "visible" }}>
         <Table
           size="small"
           aria-label={`${entityNoun} members`}
           sx={{
+            width: "100%",
             tableLayout: "fixed",
             "& .MuiTableCell-root": { borderColor: "divider" },
           }}
