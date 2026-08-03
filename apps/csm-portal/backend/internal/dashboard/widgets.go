@@ -221,9 +221,9 @@ func ParseDashboardsConfig(raw string) ([]Dashboard, error) {
 	return finalize(loaded, false)
 }
 
-// migrateLegacyWidgetKeys upgrades a pre-rename DASHBOARDS_CONFIG in place,
-// logging one deprecation warning per widget (or slice) it had to touch so a
-// deployment still on the old shape is visible in the logs rather than
+// migrateLegacyWidgetKeys upgrades one pre-rename dashboard definition in
+// place, logging one deprecation warning per widget (or slice) it had to touch
+// so a deployment still on the old shape is visible in the logs rather than
 // silently working forever:
 //
 //   - widget/slice "filters"       -> "query"
@@ -231,28 +231,30 @@ func ParseDashboardsConfig(raw string) ([]Dashboard, error) {
 //
 // The new key always wins when both are present. Nothing here interprets
 // filter contents beyond these two renames.
-func migrateLegacyWidgetKeys(dashboards []Dashboard) {
-	for di := range dashboards {
-		d := &dashboards[di]
-		for wi := range d.Widgets {
-			w := &d.Widgets[wi]
-			if w.Query == nil && w.legacyFilters != nil {
-				slog.Warn(`DASHBOARDS_CONFIG: widget key "filters" is deprecated, rename it to "query"`,
-					"dashboardId", d.ID, "widgetId", w.ID)
-				w.Query = w.legacyFilters
+//
+// Both loaders run this, so no warning names a configuration mechanism: source
+// is the sourced.source of the definition being migrated -- a DASHBOARDS_DIR
+// file path or a DASHBOARDS_CONFIG[i] index -- and it is logged so an operator
+// is pointed at the file they actually have to edit.
+func migrateLegacyWidgetKeys(d *Dashboard, source string) {
+	for wi := range d.Widgets {
+		w := &d.Widgets[wi]
+		if w.Query == nil && w.legacyFilters != nil {
+			slog.Warn(`dashboard definitions: widget key "filters" is deprecated, rename it to "query"`,
+				"source", source, "dashboardId", d.ID, "widgetId", w.ID)
+			w.Query = w.legacyFilters
+		}
+		w.legacyFilters = nil
+		migrateLegacyCriteriaKeys(w.Query, source, d.ID, w.ID, "")
+		for si := range w.Slices {
+			s := &w.Slices[si]
+			if s.Query == nil && s.legacyFilters != nil {
+				slog.Warn(`dashboard definitions: slice key "filters" is deprecated, rename it to "query"`,
+					"source", source, "dashboardId", d.ID, "widgetId", w.ID, "slice", s.Label)
+				s.Query = s.legacyFilters
 			}
-			w.legacyFilters = nil
-			migrateLegacyCriteriaKeys(w.Query, d.ID, w.ID, "")
-			for si := range w.Slices {
-				s := &w.Slices[si]
-				if s.Query == nil && s.legacyFilters != nil {
-					slog.Warn(`DASHBOARDS_CONFIG: slice key "filters" is deprecated, rename it to "query"`,
-						"dashboardId", d.ID, "widgetId", w.ID, "slice", s.Label)
-					s.Query = s.legacyFilters
-				}
-				s.legacyFilters = nil
-				migrateLegacyCriteriaKeys(s.Query, d.ID, w.ID, s.Label)
-			}
+			s.legacyFilters = nil
+			migrateLegacyCriteriaKeys(s.Query, source, d.ID, w.ID, s.Label)
 		}
 	}
 }
@@ -263,7 +265,7 @@ func migrateLegacyWidgetKeys(dashboards []Dashboard) {
 // semantics; each current branch is an object carrying its own "filters"
 // array. A branch that is already an object is passed through untouched, so
 // a half-migrated config is not corrupted.
-func migrateLegacyCriteriaKeys(query map[string]any, dashboardID, widgetID, slice string) {
+func migrateLegacyCriteriaKeys(query map[string]any, source, dashboardID, widgetID, slice string) {
 	if query == nil {
 		return
 	}
@@ -272,18 +274,26 @@ func migrateLegacyCriteriaKeys(query map[string]any, dashboardID, widgetID, slic
 		return
 	}
 	delete(query, "orGroups")
+
+	attrs := []any{"source", source, "dashboardId", dashboardID, "widgetId", widgetID}
+	if slice != "" {
+		attrs = append(attrs, "slice", slice)
+	}
+
+	// Both drops below are silent data loss otherwise: the caller wrote a key
+	// this loader recognizes and then never sees it again, with nothing in the
+	// logs saying why.
 	if _, exists := query["anyOf"]; exists {
+		slog.Warn(`dashboard definitions: deprecated criteria key "orGroups" dropped because "anyOf" is already set`, attrs...)
 		return
 	}
 	branches, ok := legacy.([]any)
 	if !ok {
+		slog.Warn(`dashboard definitions: deprecated criteria key "orGroups" is not an array; dropped`, attrs...)
 		return
 	}
-	attrs := []any{"dashboardId", dashboardID, "widgetId", widgetID}
-	if slice != "" {
-		attrs = append(attrs, "slice", slice)
-	}
-	slog.Warn(`DASHBOARDS_CONFIG: criteria key "orGroups" is deprecated, rename it to "anyOf" and wrap each branch as {"filters": [...]}`, attrs...)
+
+	slog.Warn(`dashboard definitions: criteria key "orGroups" is deprecated, rename it to "anyOf" and wrap each branch as {"filters": [...]}`, attrs...)
 	migrated := make([]any, 0, len(branches))
 	for _, branch := range branches {
 		if arr, isArray := branch.([]any); isArray {

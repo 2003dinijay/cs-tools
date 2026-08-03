@@ -17,6 +17,8 @@
 package dashboard
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -359,6 +361,42 @@ func TestLoadDir_MigratesLegacyWidgetKeys(t *testing.T) {
 	}
 }
 
+// TestLoadDir_MigrationWarningsNameTheFile: both loaders run the migration, so
+// a deprecation warning must not name DASHBOARDS_CONFIG at an operator whose
+// deployment uses DASHBOARDS_DIR, and must carry the file they have to edit.
+func TestLoadDir_MigrationWarningsNameTheFile(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dir := t.TempDir()
+	writeDefinition(t, dir, "legacy.json", `{
+	  "id": "legacy", "displayName": "Legacy", "type": "cs",
+	  "widgets": [
+	    {"id": "w", "displayName": "W", "resourceType": "case", "shape": "count", "gridWidth": 3,
+	     "filters": {"orGroups": [[{"field": "state", "op": "in", "values": ["open"]}]]}}
+	  ]
+	}`)
+
+	if _, err := LoadDir(dir); err != nil {
+		t.Fatalf("LoadDir returned error: %v", err)
+	}
+
+	logged := buf.String()
+	if strings.Contains(logged, "DASHBOARDS_CONFIG") {
+		t.Errorf("migration warnings name DASHBOARDS_CONFIG on the directory path:\n%s", logged)
+	}
+	if !strings.Contains(logged, filepath.Join(dir, "legacy.json")) {
+		t.Errorf("migration warnings do not name the offending file:\n%s", logged)
+	}
+	for _, want := range []string{`widget key \"filters\" is deprecated`, `criteria key \"orGroups\" is deprecated`} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("migration warnings do not contain %q:\n%s", want, logged)
+		}
+	}
+}
+
 // TestRegistry_DefaultModeReadsDiskExactlyOnce is the whole point of the
 // default mode: the startup read is the only read, no matter how many
 // requests come in.
@@ -506,6 +544,43 @@ func TestParseDashboardsConfig_ToleratesMissingType(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Type != "" {
 		t.Fatalf("ParseDashboardsConfig = %+v, want one dashboard with no type", got)
+	}
+}
+
+// TestParseDashboardsConfig_RejectsTwoUntypedDefaults covers the one path that
+// can produce untyped definitions at all: the deprecated single-variable one,
+// which tolerates a missing type. Tolerating it must not also exempt those
+// definitions from the one-default rule -- two untyped isDefault dashboards
+// make automatic selection depend on the order they happen to appear in the
+// variable, which is exactly what the rule exists to prevent.
+func TestParseDashboardsConfig_RejectsTwoUntypedDefaults(t *testing.T) {
+	_, err := ParseDashboardsConfig(`[
+		{"id":"a","displayName":"A","isDefault":true,"widgets":[]},
+		{"id":"b","displayName":"B","isDefault":true,"widgets":[]}
+	]`)
+	if err == nil {
+		t.Fatal("ParseDashboardsConfig returned no error, want a rejection")
+	}
+	for _, want := range []string{"isDefault", `id "b"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// TestParseDashboardsConfig_OneUntypedDefaultIsFine is the counterpart: a
+// single untyped default is the already-deployed arrangement the deprecated
+// path exists to keep working, and must not be swept up by the rule above.
+func TestParseDashboardsConfig_OneUntypedDefaultIsFine(t *testing.T) {
+	got, err := ParseDashboardsConfig(`[
+		{"id":"a","displayName":"A","isDefault":true,"widgets":[]},
+		{"id":"b","displayName":"B","widgets":[]}
+	]`)
+	if err != nil {
+		t.Fatalf("ParseDashboardsConfig returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ParseDashboardsConfig returned %d dashboards, want 2", len(got))
 	}
 }
 

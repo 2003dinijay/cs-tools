@@ -235,17 +235,17 @@ func LoadDir(dir string) ([]Dashboard, error) {
 // deprecated DASHBOARDS_CONFIG path, whose already-deployed values predate
 // the type field entirely.
 func finalize(loaded []sourced, requireType bool) ([]Dashboard, error) {
-	dashboards := make([]Dashboard, 0, len(loaded))
-	for _, l := range loaded {
-		dashboards = append(dashboards, l.dashboard)
-	}
-	migrateLegacyWidgetKeys(dashboards)
 	for i := range loaded {
-		loaded[i].dashboard = dashboards[i]
+		migrateLegacyWidgetKeys(&loaded[i].dashboard, loaded[i].source)
 	}
 
 	if err := validate(loaded, requireType); err != nil {
 		return nil, err
+	}
+
+	dashboards := make([]Dashboard, 0, len(loaded))
+	for _, l := range loaded {
+		dashboards = append(dashboards, l.dashboard)
 	}
 	return dashboards, nil
 }
@@ -288,6 +288,19 @@ func validate(loaded []sourced, requireType bool) error {
 			return fmt.Errorf("dashboard definitions: %s (id %q): \"displayName\" is empty", l.source, d.ID)
 		}
 
+		// Before the type branch below, which skips the rest of the loop for an
+		// untyped definition: untyped dashboards share the empty type key, so
+		// keying defaultByType on "" still groups them, and two untyped
+		// isDefault definitions on the deprecated DASHBOARDS_CONFIG path are
+		// caught rather than left to file ordering.
+		if d.IsDefault {
+			if prev, dup := defaultByType[d.Type]; dup {
+				return fmt.Errorf("dashboard definitions: %s (id %q): a second \"isDefault\" dashboard of type %q; %s already claims it, and automatic selection needs exactly one",
+					l.source, d.ID, d.Type, prev)
+			}
+			defaultByType[d.Type] = l.source
+		}
+
 		if d.Type == "" {
 			if requireType {
 				return fmt.Errorf("dashboard definitions: %s (id %q): \"type\" is required; expected one of %q, %q, %q",
@@ -309,14 +322,6 @@ func validate(loaded []sourced, requireType bool) error {
 		case d.Type == TypeCS && d.IsTeamBased:
 			return fmt.Errorf("dashboard definitions: %s (id %q): contradictory configuration: \"type\": %q is organisation-wide but \"isTeamBased\" is true; set isTeamBased false or change the type to %q or %q",
 				l.source, d.ID, d.Type, TypeCRE, TypeSRE)
-		}
-
-		if d.IsDefault {
-			if prev, dup := defaultByType[d.Type]; dup {
-				return fmt.Errorf("dashboard definitions: %s (id %q): a second \"isDefault\" dashboard of type %q; %s already claims it, and automatic selection needs exactly one",
-					l.source, d.ID, d.Type, prev)
-			}
-			defaultByType[d.Type] = l.source
 		}
 	}
 
