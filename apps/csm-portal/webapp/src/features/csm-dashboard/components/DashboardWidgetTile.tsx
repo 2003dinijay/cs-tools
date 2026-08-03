@@ -14,9 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Button, Card, Skeleton, Tooltip, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
-import { ArrowRight, Info } from "@wso2/oxygen-ui-icons-react";
-import type { JSX, ReactNode } from "react";
+import { Box, Button, Card, IconButton, Skeleton, Tooltip, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
+import { ArrowRight, RefreshCw } from "@wso2/oxygen-ui-icons-react";
+import type { JSX, MouseEvent, ReactNode } from "react";
 import { Link as RouterLink, useNavigate } from "react-router";
 import type { BeDashboardPieSlice, BeWidgetResourceType, BeWidgetShape } from "@api/backend/types";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
@@ -91,7 +91,7 @@ export default function DashboardWidgetTile({
   // slice) — skip this one's own network call rather than wasting it, but
   // still call the hook unconditionally (rules of hooks; a widget's shape
   // never changes across this component's lifetime).
-  const { data, isLoading, isError } = useWidgetData(
+  const { data, isLoading, isError, refetch } = useWidgetData(
     widgetId,
     resourceType,
     filters,
@@ -133,28 +133,43 @@ export default function DashboardWidgetTile({
   const Icon = config.icon;
   const isListShape = shape === "list";
 
-  // Count tiles only — a list-shape tile's real table already has its own
-  // header row and border right where this would otherwise sit, so it just
-  // overlapped rather than adding anything.
-  //
-  // Tooltip copy is intentionally empty until the per-widget messages are
-  // finalized — the icon renders now so the layout/interaction is in place
-  // ahead of that content.
-  const infoIcon = shape === "count" && (
-    <Tooltip title="">
-      <Box
-        component="span"
+  // Refetches just this tile's own data — the count/list query (disabled for
+  // pie/bar, see the useWidgetData call above) and the pie/bar per-slice
+  // queries (empty for count/list, see useWidgetPieData above) are both
+  // called unconditionally rather than branching on `shape`: whichever one
+  // this tile doesn't actually use is already disabled/empty, so refetching
+  // it is a no-op, not a wasted request.
+  const handleRefresh = (e: MouseEvent): void => {
+    // Count tiles render their whole Card as a router Link (see the `href`
+    // return below) — without stopping propagation, clicking refresh would
+    // also navigate to the tile's click-through destination.
+    e.preventDefault();
+    e.stopPropagation();
+    void refetch();
+    pieData.refetch();
+  };
+
+  // The skeleton (loading) state already occupies this same top-right corner
+  // in every shape's markup below, so showing the refresh button at the same
+  // time visually collides with it — only render it once this tile has
+  // settled into either real data or an error.
+  const isTileLoading = shape === "pie" || shape === "bar" ? pieData.isLoading : isLoading;
+  const refreshButton = !isTileLoading && (
+    <Tooltip title="Refresh this widget">
+      <IconButton
+        size="small"
+        onClick={handleRefresh}
+        aria-label={`Refresh ${displayName}`}
         sx={{
           position: "absolute",
-          top: 12,
-          right: 12,
+          top: 8,
+          right: 8,
           zIndex: 1,
-          display: "inline-flex",
           color: "text.secondary",
         }}
       >
-        <Info size={14} />
-      </Box>
+        <RefreshCw size={13} />
+      </IconButton>
     </Tooltip>
   );
 
@@ -185,6 +200,7 @@ export default function DashboardWidgetTile({
     const ListRenderer = WIDGET_LIST_RENDERERS[resourceType];
     return (
       <Card variant="outlined" sx={{ position: "relative", p: 1.75, height: "100%" }}>
+        {refreshButton}
         {header}
         {isLoading ? (
           <Skeleton variant="rounded" height={28 * (listLimit ?? 4) + 40} sx={{ mt: 1 }} />
@@ -233,7 +249,8 @@ export default function DashboardWidgetTile({
     // targets.
     const ChartComponent = shape === "pie" ? DashboardPieChart : DashboardBarChart;
     return (
-      <Card variant="outlined" sx={{ p: 1.75, height: "100%" }}>
+      <Card variant="outlined" sx={{ position: "relative", p: 1.75, height: "100%" }}>
+        {refreshButton}
         {/* The header's own bottom padding — not just a top margin on the
             chart below it — so the chart's top edge (and, at the size this
             chart renders at, its tooltip) never sits flush against/behind
@@ -336,7 +353,7 @@ export default function DashboardWidgetTile({
         "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: -2 },
       }}
     >
-      {infoIcon}
+      {refreshButton}
       {body}
     </Card>
   );

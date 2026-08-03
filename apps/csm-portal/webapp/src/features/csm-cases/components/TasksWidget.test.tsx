@@ -17,6 +17,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
+import { MemoryRouter } from "react-router";
 import { TasksWidget } from "@features/csm-cases/components/TasksWidget";
 import type { BeListCaseTasksResponse, BeTaskDetail } from "@api/backend/types";
 import { useSearchCaseTasks } from "@features/csm-cases/api/useSearchCaseTasks";
@@ -96,21 +97,33 @@ describe("TasksWidget", () => {
 
   it("renders a loading skeleton while the query is in flight", () => {
     mockListResult({ isLoading: true });
-    render(<TasksWidget caseId="case-1" />);
+    render(
+      <MemoryRouter>
+        <TasksWidget caseId="case-1" />
+      </MemoryRouter>,
+    );
     expect(screen.getByText("Tasks")).toBeInTheDocument();
   });
 
   it("renders an empty state when there are no tasks", () => {
     const empty: BeListCaseTasksResponse = { tasks: [], total: 0, offset: 0, limit: 20 };
     mockListResult({ data: empty });
-    render(<TasksWidget caseId="case-1" />);
+    render(
+      <MemoryRouter>
+        <TasksWidget caseId="case-1" />
+      </MemoryRouter>,
+    );
     expect(screen.getByText("No tasks on this case.")).toBeInTheDocument();
   });
 
   it("renders an error state with a retry action that refetches", () => {
     const refetch = vi.fn();
     mockListResult({ isError: true, refetch });
-    render(<TasksWidget caseId="case-1" />);
+    render(
+      <MemoryRouter>
+        <TasksWidget caseId="case-1" />
+      </MemoryRouter>,
+    );
     expect(screen.getByText("Could not load tasks for this case.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /retry/i }));
     expect(refetch).toHaveBeenCalled();
@@ -124,7 +137,11 @@ describe("TasksWidget", () => {
       limit: 20,
     };
     mockListResult({ data: list });
-    render(<TasksWidget caseId="case-1" />);
+    render(
+      <MemoryRouter>
+        <TasksWidget caseId="case-1" />
+      </MemoryRouter>,
+    );
     expect(screen.getByText("Extract logs for CS0440062")).toBeInTheDocument();
     expect(screen.getByText("Open")).toBeInTheDocument();
     expect(screen.getByText("Jane Doe")).toBeInTheDocument();
@@ -143,7 +160,11 @@ describe("TasksWidget", () => {
       limit: 20,
     };
     mockListResult({ data: list });
-    render(<TasksWidget caseId="case-1" />);
+    render(
+      <MemoryRouter>
+        <TasksWidget caseId="case-1" />
+      </MemoryRouter>,
+    );
     expect(screen.getByText("Other")).toBeInTheDocument();
     // A null state falls back to the "—" label rather than crashing or
     // showing "undefined".
@@ -176,7 +197,11 @@ describe("TasksWidget", () => {
     };
     mockDetailResult({ data: detail });
 
-    render(<TasksWidget caseId="case-1" />);
+    render(
+      <MemoryRouter>
+        <TasksWidget caseId="case-1" />
+      </MemoryRouter>,
+    );
     fireEvent.click(screen.getByRole("button", { name: /view task/i }));
 
     expect(screen.getByText("Task details")).toBeInTheDocument();
@@ -211,7 +236,11 @@ describe("TasksWidget", () => {
     };
     mockDetailResult({ data: detail });
 
-    render(<TasksWidget caseId="case-1" />);
+    render(
+      <MemoryRouter>
+        <TasksWidget caseId="case-1" />
+      </MemoryRouter>,
+    );
     fireEvent.click(screen.getByRole("button", { name: /view task/i }));
 
     expect(screen.getByText("Task details")).toBeInTheDocument();

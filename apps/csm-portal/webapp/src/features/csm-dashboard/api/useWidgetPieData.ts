@@ -31,6 +31,9 @@ export interface WidgetPieData {
   total: number;
   isLoading: boolean;
   isError: boolean;
+  /** Refetches every slice's own query (there's one per slice, not one for
+   * the whole widget — see the module doc comment). */
+  refetch: () => void;
 }
 
 /**
@@ -93,6 +96,11 @@ export function useWidgetPieData(
     value: queries[i]?.data ?? 0,
   }));
   const total = results.reduce((sum, s) => sum + s.value, 0);
+  const refetch = (): void => {
+    queries.forEach((q) => {
+      void q.refetch();
+    });
+  };
 
-  return { slices: results, total, isLoading, isError };
+  return { slices: results, total, isLoading, isError, refetch };
 }

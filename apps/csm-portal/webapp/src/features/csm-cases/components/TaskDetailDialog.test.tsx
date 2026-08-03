@@ -17,6 +17,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
+import { MemoryRouter } from "react-router";
 import { TaskDetailDialog } from "@features/csm-cases/components/TaskDetailDialog";
 import type { BeTaskDetail } from "@api/backend/types";
 import { useGetTask } from "@features/csm-cases/api/useGetTask";
@@ -96,14 +97,22 @@ describe("TaskDetailDialog — inline state/assignee edits", () => {
   });
 
   it("changes the task state via the inline select", () => {
-    render(<TaskDetailDialog taskId="task-1" caseId="case-1" onClose={() => {}} />);
+    render(
+      <MemoryRouter>
+        <TaskDetailDialog taskId="task-1" caseId="case-1" onClose={() => {}} />
+      </MemoryRouter>,
+    );
     fireEvent.mouseDown(screen.getByRole("combobox"));
     fireEvent.click(screen.getByRole("option", { name: "Closed" }));
     expect(mutate).toHaveBeenCalledWith({ state: "CLOSED" });
   });
 
   it("reassigns the task by picking an engineer from the inline search", () => {
-    render(<TaskDetailDialog taskId="task-1" caseId="case-1" onClose={() => {}} />);
+    render(
+      <MemoryRouter>
+        <TaskDetailDialog taskId="task-1" caseId="case-1" onClose={() => {}} />
+      </MemoryRouter>,
+    );
     fireEvent.click(screen.getByRole("button", { name: /change assignee/i }));
     fireEvent.change(screen.getByPlaceholderText(/search engineers/i), {
       target: { value: "jane" },

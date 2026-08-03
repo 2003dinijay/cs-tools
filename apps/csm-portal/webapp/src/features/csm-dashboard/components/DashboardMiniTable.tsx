@@ -15,7 +15,7 @@
 // under the License.
 
 import { Box, Skeleton, Typography, useTheme } from "@wso2/oxygen-ui";
-import type { JSX, ReactNode } from "react";
+import type { JSX, KeyboardEvent, ReactNode } from "react";
 import { Link as RouterLink } from "react-router";
 
 export interface DashboardMiniTableColumn {
@@ -30,8 +30,14 @@ export interface DashboardMiniTableRow {
    * same rationale as `CasesList`: supports cmd/middle-click and exposes a
    * copyable URL. Omit when the row's id is unknown (e.g. a nullable `id`
    * field on the search response) — the row then renders inert rather than
-   * linking to a broken `/…/undefined` URL. */
+   * linking to a broken `/…/undefined` URL. Mutually exclusive with `onClick`
+   * — a row with no standalone detail *page* (e.g. a task, only ever shown
+   * in a dialog) uses `onClick` instead. */
   href?: string;
+  /** Opens something in place (a dialog) rather than navigating — for a
+   * resource with no standalone detail route. See `href`'s doc comment for
+   * when to use which. */
+  onClick?: () => void;
   cells: ReactNode[];
 }
 
@@ -122,40 +128,57 @@ export default function DashboardMiniTable({
       )}
 
       {!isLoading &&
-        rows.map((row) => (
-          <Box
-            key={row.key}
-            {...(row.href ? { component: RouterLink, to: row.href } : {})}
-            sx={{
-              gridColumn: "1 / -1",
-              display: "grid",
-              gridTemplateColumns: "subgrid",
-              columnGap: 2,
-              alignItems: "center",
-              px: 1.5,
-              py: 1,
-              borderBottom: 1,
-              borderColor: "divider",
-              color: "inherit",
-              textDecoration: "none",
-              "&:last-of-type": { borderBottom: 0 },
-              ...(row.href && {
-                cursor: "pointer",
-                "&:hover": { bgcolor: "action.hover" },
-                "&:focus-visible": {
-                  outline: `2px solid ${theme.palette.primary.main}`,
-                  outlineOffset: -2,
-                },
-              }),
-            }}
-          >
-            {row.cells.map((cell, i) => (
-              <Box key={i} sx={{ minWidth: 0 }}>
-                {cell}
-              </Box>
-            ))}
-          </Box>
-        ))}
+        rows.map((row) => {
+          const isInteractive = Boolean(row.href) || Boolean(row.onClick);
+          return (
+            <Box
+              key={row.key}
+              {...(row.href
+                ? { component: RouterLink, to: row.href }
+                : row.onClick
+                  ? { onClick: row.onClick, role: "button", tabIndex: 0 }
+                  : {})}
+              onKeyDown={
+                row.onClick
+                  ? (e: KeyboardEvent) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        row.onClick?.();
+                      }
+                    }
+                  : undefined
+              }
+              sx={{
+                gridColumn: "1 / -1",
+                display: "grid",
+                gridTemplateColumns: "subgrid",
+                columnGap: 2,
+                alignItems: "center",
+                px: 1.5,
+                py: 1,
+                borderBottom: 1,
+                borderColor: "divider",
+                color: "inherit",
+                textDecoration: "none",
+                "&:last-of-type": { borderBottom: 0 },
+                ...(isInteractive && {
+                  cursor: "pointer",
+                  "&:hover": { bgcolor: "action.hover" },
+                  "&:focus-visible": {
+                    outline: `2px solid ${theme.palette.primary.main}`,
+                    outlineOffset: -2,
+                  },
+                }),
+              }}
+            >
+              {row.cells.map((cell, i) => (
+                <Box key={i} sx={{ minWidth: 0 }}>
+                  {cell}
+                </Box>
+              ))}
+            </Box>
+          );
+        })}
     </Box>
   );
 }

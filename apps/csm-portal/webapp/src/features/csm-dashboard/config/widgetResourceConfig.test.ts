@@ -67,4 +67,33 @@ describe("WIDGET_RESOURCE_CONFIG.case.buildHref", () => {
     // aren't this fix's concern).
     expect(params.has("severities")).toBe(true);
   });
+
+  it("carries engagementType and workState through to the cases list (previously dropped)", () => {
+    // Regression: a case widget filtering by engagementType (e.g. "Engagements
+    // In Progress") clicked through to an unfiltered cases list, because this
+    // mapping didn't exist at all -- not a translation bug, a missing one.
+    const href = WIDGET_RESOURCE_CONFIG.case.buildHref({
+      filters: [
+        { field: "engagementType", op: "in", values: ["migration", "onboarding"] },
+        { field: "workState", op: "in", values: ["paused"] },
+      ],
+    });
+
+    const params = hrefParams(href);
+    expect(params.get("engagementTypes")).toBe("migration,onboarding");
+    expect(params.get("workStates")).toBe("paused");
+  });
+
+  it("omits engagementTypes/workStates when the DSL entry's values are empty", () => {
+    const href = WIDGET_RESOURCE_CONFIG.case.buildHref({
+      filters: [
+        { field: "engagementType", op: "in", values: [] },
+        { field: "workState", op: "in", values: [] },
+      ],
+    });
+
+    const params = hrefParams(href);
+    expect(params.has("engagementTypes")).toBe(false);
+    expect(params.has("workStates")).toBe(false);
+  });
 });

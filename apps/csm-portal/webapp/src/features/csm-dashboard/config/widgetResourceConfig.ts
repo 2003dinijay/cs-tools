@@ -152,6 +152,16 @@ function caseFilterValues(
  * available here — since these widgets only ever filter "assigned to me",
  * any non-empty `assignedUserId` maps to the `@me` sentinel rather than an
  * (unresolvable) literal UUID.
+ *
+ * The remaining case-search DSL fields genuinely have no home in
+ * `CasesFilters`/`CasesFilterBar` today and are dropped, not silently
+ * mistranslated: `taskSLABusinessElapsedPercent`, `escalationLevel`/
+ * `escalation`, `integrationCsTeam`, `projectOnboardingStatus`, `projectType`,
+ * `createdOn`/`updatedOn`/`closedOn` date ranges, `orGroups`, `parentId`,
+ * `resolutionNotes`. A widget using any of these click-throughs to an
+ * unfiltered (or partially-filtered) cases list rather than erroring — adding
+ * real support for each is its own case-list-page feature, not a dashboard
+ * change.
  */
 function translateCaseDashboardFilters(
   filters: Record<string, unknown>,
@@ -173,6 +183,14 @@ function translateCaseDashboardFilters(
   if (productNames && productNames.length > 0) out.productNames = productNames;
   const assignedUserIds = caseFilterValues(fieldFilters, "assignedUserId");
   if (assignedUserIds && assignedUserIds.length > 0) out.assignees = ["@me"];
+  const engagementTypes = caseFilterValues(fieldFilters, "engagementType");
+  if (engagementTypes && engagementTypes.length > 0) {
+    out.engagementTypes = engagementTypes as CasesFilters["engagementTypes"];
+  }
+  const workStates = caseFilterValues(fieldFilters, "workState");
+  if (workStates && workStates.length > 0) {
+    out.workStates = workStates as CasesFilters["workStates"];
+  }
   return out;
 }
 

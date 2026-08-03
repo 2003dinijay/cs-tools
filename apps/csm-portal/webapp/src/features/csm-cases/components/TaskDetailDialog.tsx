@@ -34,6 +34,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { Pencil, RefreshCw, Search, X } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type JSX } from "react";
+import { Link as RouterLink } from "react-router";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useGetTask } from "@features/csm-cases/api/useGetTask";
 import { useUpdateTask } from "@features/csm-cases/api/useUpdateTask";
@@ -226,9 +227,20 @@ export function TaskDetailDialog({
               }}
             >
               <DetailCell label="Parent case">
-                <Typography variant="body2">
-                  {task.parentCase?.number ?? task.parentCase?.id ?? "—"}
-                </Typography>
+                {task.parentCase?.id ? (
+                  <Typography
+                    component={RouterLink}
+                    to={`/cases/${task.parentCase.id}`}
+                    onClick={onClose}
+                    variant="body2"
+                    color="primary"
+                    sx={{ textDecoration: "none", "&:hover": { textDecoration: "underline" } }}
+                  >
+                    {task.parentCase.number ?? task.parentCase.id}
+                  </Typography>
+                ) : (
+                  <Typography variant="body2">—</Typography>
+                )}
               </DetailCell>
               <DetailCell label="Assigned to">
                 {editingAssignee ? (
