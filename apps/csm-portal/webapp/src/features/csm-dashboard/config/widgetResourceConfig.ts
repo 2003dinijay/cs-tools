@@ -139,13 +139,35 @@ function caseFilterValues(
   return fieldFilters?.find((f) => f.field === field)?.values;
 }
 
+/** Reads the first entry matching `field` AND `op` in a case widget's
+ * `filters.filters` array, or `undefined` if no such combination is present
+ * — used for fields where the op itself carries meaning (`tag` in vs.
+ * notIn, `escalation`'s value-less isEmpty vs. isNotEmpty, and each
+ * gte/lte range bound), so the wrong op is never silently matched. */
+function caseFilterEntry(
+  fieldFilters: CaseDashboardFieldFilter[] | undefined,
+  field: string,
+  op: string,
+): CaseDashboardFieldFilter | undefined {
+  return fieldFilters?.find((f) => f.field === field && f.op === op);
+}
+
 /**
  * Translate a dashboard widget's opaque case filters (the `POST
  * /cases/search`-shaped `{ filters: BeCaseFieldFilter[] }` body — see
  * `BeCaseSearchFilters`) into the cases list's own `CasesFilters` shape.
- * `tag` has no equivalent in `CasesFilters` today (the case-list tag filter
- * was pulled out of the filter bar/URL — see the note on `CasesFilters.tags`
- * in `casesFiltersUrl.ts`) and is dropped rather than invented.
+ * Every field the case-search DSL supports (see `caseFilterFieldSet` in
+ * `case_filters.go`) now has a home in `CasesFilters` and is passed through
+ * — this used to drop `taskSLABusinessElapsedPercent`, `escalationLevel`/
+ * `escalation`, `integrationCsTeam`, `tag`, `projectOnboardingStatus`,
+ * `projectType`, and the `createdOn`/`updatedOn`/`closedOn` date ranges,
+ * which was the root cause of the click-through data-loss bug this function
+ * exists to fix (a tile reading a filtered count landed on the org-wide
+ * cases list because its filters had nowhere to go). Only `orGroups`,
+ * `parentId`, and `resolutionNotes` remain genuinely dropped: no dashboard
+ * widget uses them today, and `CasesFilters` has no equivalent to invent one
+ * for without guessing at a UI treatment.
+ *
  * `assignedUserId` carries the current user's own UUID (every widget that
  * sets it does so via the current-user placeholder), and
  * `CasesFilters.assignees` is email/`@me`-based with no UUID lookup
@@ -153,15 +175,14 @@ function caseFilterValues(
  * any non-empty `assignedUserId` maps to the `@me` sentinel rather than an
  * (unresolvable) literal UUID.
  *
- * The remaining case-search DSL fields genuinely have no home in
- * `CasesFilters`/`CasesFilterBar` today and are dropped, not silently
- * mistranslated: `taskSLABusinessElapsedPercent`, `escalationLevel`/
- * `escalation`, `integrationCsTeam`, `projectOnboardingStatus`, `projectType`,
- * `createdOn`/`updatedOn`/`closedOn` date ranges, `orGroups`, `parentId`,
- * `resolutionNotes`. A widget using any of these click-throughs to an
- * unfiltered (or partially-filtered) cases list rather than erroring — adding
- * real support for each is its own case-list-page feature, not a dashboard
- * change.
+ * `tag`'s two ops (`in`/`notIn`) map to the two distinct `CasesFilters`
+ * fields `tags`/`excludeTags` — never a single field plus an inferred op —
+ * so a `notIn` widget filter can never decode as `tags` (an inclusion) the
+ * way the equivalent bug shipped once in the dashboard preview URL (see
+ * `casesFiltersUrl.ts`'s `writeCasesFiltersToUrl` doc comment for the full
+ * story). Likewise `escalation`'s value-less `isEmpty`/`isNotEmpty` map to
+ * the explicit tri-state `hasEscalation` (`false`/`true`), never silently
+ * defaulted when absent (`undefined`, i.e. not touched in `out`).
  */
 function translateCaseDashboardFilters(
   filters: Record<string, unknown>,
@@ -191,6 +212,62 @@ function translateCaseDashboardFilters(
   if (workStates && workStates.length > 0) {
     out.workStates = workStates as CasesFilters["workStates"];
   }
+
+  const csTeams = caseFilterValues(fieldFilters, "integrationCsTeam");
+  if (csTeams && csTeams.length > 0) out.csTeams = csTeams;
+
+  // `tag` in vs. notIn -> two distinct CasesFilters fields, matched by
+  // field+op together so one can never be mistaken for the other.
+  const tags = caseFilterEntry(fieldFilters, "tag", "in")?.values;
+  if (tags && tags.length > 0) out.tags = tags;
+  const excludeTags = caseFilterEntry(fieldFilters, "tag", "notIn")?.values;
+  if (excludeTags && excludeTags.length > 0) out.excludeTags = excludeTags;
+
+  const onboardingStatuses = caseFilterValues(fieldFilters, "projectOnboardingStatus");
+  if (onboardingStatuses && onboardingStatuses.length > 0) {
+    out.onboardingStatuses = onboardingStatuses;
+  }
+
+  const slaGte = caseFilterEntry(fieldFilters, "taskSLABusinessElapsedPercent", "gte")
+    ?.values?.[0];
+  if (slaGte !== undefined) {
+    const n = Number(slaGte);
+    if (Number.isInteger(n) && n >= 0) out.slaElapsedPctGte = n;
+  }
+  const slaLte = caseFilterEntry(fieldFilters, "taskSLABusinessElapsedPercent", "lte")
+    ?.values?.[0];
+  if (slaLte !== undefined) {
+    const n = Number(slaLte);
+    if (Number.isInteger(n) && n >= 0) out.slaElapsedPctLte = n;
+  }
+
+  // Value-less predicate: presence of the entry (matched by op alone, no
+  // `values` to read) is the whole filter -- must not be skipped for
+  // "having nothing to read", the exact failure mode `writeWidgetPreviewHref`
+  // shipped once for `isEmpty`/`isNotEmpty` entries generally.
+  if (caseFilterEntry(fieldFilters, "escalation", "isNotEmpty")) out.hasEscalation = true;
+  else if (caseFilterEntry(fieldFilters, "escalation", "isEmpty")) out.hasEscalation = false;
+
+  const escalationLevels = caseFilterValues(fieldFilters, "escalationLevel");
+  if (escalationLevels && escalationLevels.length > 0) {
+    out.escalationLevels = escalationLevels;
+  }
+
+  const projectTypes = caseFilterValues(fieldFilters, "projectType");
+  if (projectTypes && projectTypes.length > 0) out.projectTypes = projectTypes;
+
+  const dateRangeFields: [string, keyof CasesFilters, keyof CasesFilters][] = [
+    ["createdOn", "createdOnGte", "createdOnLte"],
+    ["updatedOn", "updatedOnGte", "updatedOnLte"],
+    ["closedOn", "closedOnGte", "closedOnLte"],
+  ];
+  for (const [beField, gteKey, lteKey] of dateRangeFields) {
+    const gte = caseFilterEntry(fieldFilters, beField, "gte")?.values?.[0];
+    if (gte !== undefined) (out as Record<string, unknown>)[gteKey] = gte;
+    const lte = caseFilterEntry(fieldFilters, beField, "lte")?.values?.[0];
+    if (lte !== undefined) (out as Record<string, unknown>)[lteKey] = lte;
+  }
+
   return out;
 }
 

@@ -656,7 +656,11 @@ func (h *CaseHandler) SearchTags(w http.ResponseWriter, r *http.Request) {
 }
 
 // PatchCase handles PATCH /cases/{id}.
-// Accepts state, severity, workState, watchList, or assigneeEmail and forwards to the entity service.
+// Accepts state, severity, workState, watchList, assigneeEmail, or acknowledge and forwards
+// to the entity service. The body is forwarded verbatim, so fields with no local guard (like
+// acknowledge, whose first-write-wins semantics and role gate both live upstream) need no
+// handling here — only state and workState are pre-validated, because their guards depend on
+// the case's current state.
 func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {

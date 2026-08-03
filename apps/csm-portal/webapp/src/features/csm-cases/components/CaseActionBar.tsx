@@ -30,6 +30,7 @@ import {
   ChevronDown,
   Clock,
   Copy,
+  Eye,
   Gauge,
   GitBranch,
   Inbox,
@@ -46,7 +47,7 @@ import type {
   CaseLifecycleAction,
   CsmCaseDetail,
 } from "@features/csm-cases/types/csmCases";
-import type { CaseState } from "@features/csm-dashboard/types/abtDashboard";
+import type { CaseState, Severity } from "@features/csm-dashboard/types/abtDashboard";
 import { stateLabel } from "@features/csm-dashboard/utils/abtDashboard";
 
 /**
@@ -387,6 +388,34 @@ interface CaseActionBarProps {
    * so a click has visible feedback even before the resulting toast/state
    * change lands. */
   isPending?: boolean;
+  /**
+   * Acknowledge the case as the signed-in engineer. When omitted, the
+   * acknowledge button is never rendered — so a caller that has no acknowledge
+   * mutation wired up cannot show a dead button.
+   */
+  onAcknowledge?: () => void | Promise<unknown>;
+  /** True while the acknowledge PATCH is in flight. */
+  isAcknowledging?: boolean;
+}
+
+/**
+ * Severities whose cases are worth acknowledging. S4 is excluded deliberately:
+ * it mirrors which cases the out-of-band acknowledgement notifications are
+ * raised for, so the button appears on exactly the cases an engineer could
+ * already have acknowledged from a notification, and on no others.
+ */
+const ACKNOWLEDGEABLE_SEVERITIES = new Set<Severity>(["S0", "S1", "S2", "S3"]);
+
+/**
+ * Whether the acknowledge action applies to this case: nobody has claimed it
+ * yet and it is severe enough to be worth claiming. Acknowledgement is
+ * first-write-wins, so once `acknowledgedBy` is set there is nothing left to
+ * do and the button disappears rather than turning into a no-op.
+ */
+function canAcknowledge(caseDetail: CsmCaseDetail): boolean {
+  return (
+    !caseDetail.acknowledgedBy && ACKNOWLEDGEABLE_SEVERITIES.has(caseDetail.severity)
+  );
 }
 
 /**
@@ -401,6 +430,8 @@ export default function CaseActionBar({
   onAction,
   closeBlockedReason,
   isPending = false,
+  onAcknowledge,
+  isAcknowledging = false,
 }: CaseActionBarProps): JSX.Element {
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [stateMenuAnchor, setStateMenuAnchor] = useState<HTMLElement | null>(null);
@@ -431,6 +462,27 @@ export default function CaseActionBar({
         justifyContent: { xs: "flex-start", md: "flex-end" },
       }}
     >
+      {!!onAcknowledge && canAcknowledge(caseDetail) && (
+        // Sits to the left of the state control and stays outlined: claiming a
+        // case is a lighter act than moving it through its lifecycle, so it must
+        // not out-shout the primary transition.
+        <Button
+          size="small"
+          variant="outlined"
+          color="primary"
+          startIcon={
+            isAcknowledging ? (
+              <CircularProgress size={14} color="inherit" />
+            ) : (
+              <Eye size={16} />
+            )
+          }
+          disabled={isAcknowledging || isPending}
+          onClick={() => void onAcknowledge()}
+        >
+          Acknowledge
+        </Button>
+      )}
       {primary.length === 1 && (
         // A single reachable state needs no menu — show the transition
         // itself as one click rather than "Change state" → pick the only item.

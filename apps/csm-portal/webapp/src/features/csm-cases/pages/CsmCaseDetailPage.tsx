@@ -465,6 +465,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // state adjustments below both need it: the per-case reset and the
   // per-fragment Activities-tab force.
   const permalinkFragment = location.hash?.replace(/^#/, "") ?? "";
+  // Tracked separately from patchCase.isPending: that flag is shared with the
+  // lifecycle transitions, and reusing it would spin the state button whenever
+  // someone acknowledges (and vice versa).
+  const [isAcknowledging, setIsAcknowledging] = useState(false);
   const [metaCollapsed, setMetaCollapsed] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
@@ -682,6 +686,35 @@ export default function CsmCaseDetailPage(): JSX.Element {
     },
     [patchCase, showError],
   );
+
+  // Acknowledge: claim the case as the signed-in engineer. First-write-wins
+  // upstream, so a race with the out-of-band acknowledgement link (or another
+  // engineer clicking at the same moment) resolves to whoever landed first and
+  // is reported as such rather than surfacing as an error. The refetch that
+  // usePatchCsmCase triggers is what removes the button, so nothing here has to
+  // reconcile local state.
+  const onAcknowledge = useCallback(async (): Promise<void> => {
+    setIsAcknowledging(true);
+    try {
+      const result = await patchCase.mutateAsync({ acknowledge: true });
+      const holder = result.case?.acknowledgedBy?.name?.trim();
+      setFeedback(
+        result.case?.alreadyAcknowledged
+          ? {
+              message: holder
+                ? `This case was already acknowledged by ${holder}.`
+                : "This case was already acknowledged.",
+              severity: "info",
+              sticky: true,
+            }
+          : { message: "Case acknowledged.", severity: "success", sticky: true },
+      );
+    } catch (err) {
+      showError("Could not acknowledge the case. Please try again.", err);
+    } finally {
+      setIsAcknowledging(false);
+    }
+  }, [patchCase, showError]);
 
   // Starting work: enforce the single-active-case rule.
   // 1) look up the engineer's other ongoing cases (abort on failure — we
@@ -1684,7 +1717,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
               caseDetail={c}
               onAction={onAction}
               closeBlockedReason={closeBlockedReason}
-              isPending={patchCase.isPending}
+              isPending={patchCase.isPending && !isAcknowledging}
+              onAcknowledge={onAcknowledge}
+              isAcknowledging={isAcknowledging}
             />
           </Box>
         )}

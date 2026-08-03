@@ -52,11 +52,15 @@ vi.mock("@wso2/oxygen-ui-charts-react", () => ({
     onClick,
   }: {
     data: { name: string; value: number }[];
-    onClick?: (item: unknown, index: number) => void;
+    onClick?: (item: unknown, index: number, event?: unknown) => void;
   }) => (
     <div>
       {data.map((item, i) => (
-        <button key={item.name} type="button" onClick={() => onClick?.(item, i)}>
+        // Forwards the real click event as recharts' own `Pie.onClick`
+        // does (data, index, event) — DashboardPieChart's wedge onClick
+        // relies on that third argument to stop the click from also
+        // bubbling to the tile-level click-through.
+        <button key={item.name} type="button" onClick={(e) => onClick?.(item, i, e)}>
           slice:{item.name}:{item.value}
         </button>
       ))}
@@ -85,11 +89,13 @@ vi.mock("@wso2/oxygen-ui-charts-react", () => ({
     onClick,
   }: {
     data?: { name: string; value: number }[];
-    onClick?: (item: unknown, index: number) => void;
+    onClick?: (item: unknown, index: number, event?: unknown) => void;
   }) => (
     <div>
       {(data ?? []).map((item, i) => (
-        <button key={item.name} type="button" onClick={() => onClick?.(item, i)}>
+        // Forwards the real click event, same rationale as the Pie mock
+        // above.
+        <button key={item.name} type="button" onClick={(e) => onClick?.(item, i, e)}>
           bar:{item.name}:{item.value}
         </button>
       ))}
@@ -613,6 +619,236 @@ describe("DashboardWidgetTile", () => {
     await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
     const probeText = screen.getByTestId("location-probe").textContent ?? "";
     expect(new URLSearchParams(probeText.split("?")[1]).get("severities")).toBe("S1");
+  });
+
+  it("shape pie: clicking the tile itself (not a slice/legend row) navigates to the widget's own base filters", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:Critical:2")).toBeInTheDocument());
+    // The accessible tile-level click target (role="button", not a slice or
+    // legend row) — its own aria-label names the widget.
+    fireEvent.click(screen.getByRole("button", { name: "View all cases for Cases by severity" }));
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    expect(probeText.startsWith("/cases?")).toBe(true);
+    const params = new URLSearchParams(probeText.split("?")[1]);
+    // The tile's own base filters (state:open), NOT the slice's severity —
+    // that's what distinguishes this from a slice/legend click.
+    expect(params.get("states")).toBe("open");
+    expect(params.get("severities")).toBeNull();
+  });
+
+  it("shape pie: Enter on the focused tile activates the same tile-level click-through as a click", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:Critical:2")).toBeInTheDocument());
+    const tile = screen.getByRole("button", { name: "View all cases for Cases by severity" });
+    tile.focus();
+    fireEvent.keyDown(tile, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    expect(new URLSearchParams(probeText.split("?")[1]).get("states")).toBe("open");
+  });
+
+  it("shape pie: Space on the focused tile activates the same tile-level click-through as a click", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:Critical:2")).toBeInTheDocument());
+    const tile = screen.getByRole("button", { name: "View all cases for Cases by severity" });
+    tile.focus();
+    fireEvent.keyDown(tile, { key: " " });
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    // Same destination filters as a click — states:open (tile-level), not
+    // the slice's own severity.
+    const params = new URLSearchParams(probeText.split("?")[1]);
+    expect(params.get("states")).toBe("open");
+    expect(params.get("severities")).toBeNull();
+  });
+
+  it("shape pie: the tile-level click target is a sibling of the refresh button and legend rows, not their ancestor", async () => {
+    // Regression guard for the ancestor role="button" issue: a role="button"
+    // (or role="link") ancestor makes its descendants' own roles
+    // presentational to assistive tech, so the refresh IconButton and the
+    // legend's own role="button" rows must never be nested inside the
+    // tile-level click target — only ever a sibling of it.
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("Critical")).toBeInTheDocument());
+    const tile = screen.getByRole("button", { name: "View all cases for Cases by severity" });
+    const refreshButton = screen.getByRole("button", { name: /Refresh/i });
+    const legendRow = screen.getByRole("button", { name: /Critical: 2 cases/ });
+
+    expect(tile.contains(refreshButton)).toBe(false);
+    expect(tile.contains(legendRow)).toBe(false);
+  });
+
+  it("shape pie: clicking a slice does NOT also trigger the tile-level click-through (no double-navigation)", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:Critical:2")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("slice:Critical:2"));
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    const params = new URLSearchParams(probeText.split("?")[1]);
+    // Slice's own severity survives — if the tile-level handler had also
+    // fired (bubbling not stopped), this would have been overwritten by the
+    // base-filters-only navigation and severities would be absent.
+    expect(params.get("severities")).toBe("S1");
+    expect(params.get("states")).toBe("open");
+  });
+
+  it("shape pie: legend row is keyboard-activatable (Enter) the same as a click, and doesn't also trigger the tile-level click-through", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("Critical")).toBeInTheDocument());
+    const legendRow = screen.getByRole("button", { name: /Critical: 2 cases/ });
+    legendRow.focus();
+    fireEvent.keyDown(legendRow, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    const params = new URLSearchParams(probeText.split("?")[1]);
+    expect(params.get("severities")).toBe("S1");
+    expect(params.get("states")).toBe("open");
+  });
+
+  it("shape pie: legend row is keyboard-activatable (Space) the same as a click, and doesn't also trigger the tile-level click-through", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("Critical")).toBeInTheDocument());
+    const legendRow = screen.getByRole("button", { name: /Critical: 2 cases/ });
+    legendRow.focus();
+    fireEvent.keyDown(legendRow, { key: " " });
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    const params = new URLSearchParams(probeText.split("?")[1]);
+    expect(params.get("severities")).toBe("S1");
+    expect(params.get("states")).toBe("open");
   });
 
   it("shape pie: renders an empty state (no slices, zero total) rather than crashing when a widget has no slices configured yet", async () => {
