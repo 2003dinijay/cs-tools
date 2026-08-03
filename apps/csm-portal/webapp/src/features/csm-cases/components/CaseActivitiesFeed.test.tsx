@@ -33,9 +33,11 @@ vi.mock("@api/backend/client", () => ({
 
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
 import { formatAbsoluteForUser } from "@utils/dateTime";
+import type { BeCallRequestView } from "@api/backend/types";
 import type {
   CaseAttachment,
   CaseAuditEntry,
+  CsmCaseComment,
 } from "@features/csm-cases/types/csmCases";
 
 // `UserRefLink` (used for the attachment uploader and the comment/lifecycle
@@ -323,6 +325,69 @@ describe("CaseActivitiesFeed", () => {
     );
 
     expect(screen.getByText("Case moved to In Progress")).toBeInTheDocument();
+  });
+});
+
+describe("CaseActivitiesFeed — call-request link in a comment", () => {
+  const SYSID = "7a43e2d43b2a4b5091404c6aa5e45a41";
+  const UUID = "7a43e2d4-3b2a-4b50-9140-4c6aa5e45a41";
+
+  function makeComment(bodyHtml: string): CsmCaseComment {
+    return {
+      id: "c-1",
+      caseId: "case-1",
+      authorName: "Jane Doe",
+      authorRole: "customer",
+      bodyHtml,
+      createdAt: "2026-07-01T00:00:00Z",
+    };
+  }
+
+  const CALL_REQUEST: BeCallRequestView = {
+    id: UUID,
+    number: "CR-1001",
+    reason: "Discuss upgrade path",
+  };
+
+  it("opens CallRequestDetailModal with the matching call request on marker click", () => {
+    renderWithRouter(
+      <CaseActivitiesFeed
+        comments={[
+          makeComment(
+            `See https://sn-dev.example.com/sn_customerservice_customer_call.do?sys_id=${SYSID}`,
+          ),
+        ]}
+        audit={[]}
+        attachments={[]}
+        callRequests={[CALL_REQUEST]}
+      />,
+    );
+
+    const marker = screen.getByRole("button", { name: "View call request" });
+    fireEvent.click(marker);
+
+    expect(screen.getByText("Call request · CR-1001")).toBeInTheDocument();
+    expect(screen.getByText("Discuss upgrade path")).toBeInTheDocument();
+  });
+
+  it("does nothing when the referenced call request is not in the fetched list", () => {
+    renderWithRouter(
+      <CaseActivitiesFeed
+        comments={[
+          makeComment(
+            `See https://sn-dev.example.com/sn_customerservice_customer_call.do?sys_id=${SYSID}`,
+          ),
+        ]}
+        audit={[]}
+        attachments={[]}
+        callRequests={[]}
+      />,
+    );
+
+    const marker = screen.getByRole("button", { name: "View call request" });
+    fireEvent.click(marker);
+
+    expect(screen.queryByText(/^Call request/)).not.toBeInTheDocument();
   });
 });
 

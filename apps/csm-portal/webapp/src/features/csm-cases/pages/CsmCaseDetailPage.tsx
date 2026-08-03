@@ -1924,6 +1924,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   comments={safeComments}
                   audit={activityAudit ?? []}
                   attachments={attachmentList}
+                  callRequests={callRequests ?? []}
                   onDownloadAttachment={onDownloadAttachment}
                   preview={{
                     onGetPreviewContent: getAttachmentPreviewContent,
