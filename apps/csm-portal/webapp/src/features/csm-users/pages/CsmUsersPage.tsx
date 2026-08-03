@@ -203,6 +203,7 @@ export default function CsmUsersPage(): JSX.Element {
             useSearch={useSearchGroups}
             getId={(g) => g.id}
             getLabel={(g) => g.name}
+            compactSelectedValues
           />
         </Box>
 
