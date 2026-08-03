@@ -8020,7 +8020,6 @@ components:
 
     CaseTaskSearchPayload:
       type: object
-      nullable: true
       description: >
         Payload for paginating the tasks of a case. The case ID is taken from
         the URL path. The payload is forwarded to the integration service as-is.

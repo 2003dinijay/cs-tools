@@ -33,7 +33,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { Pencil, RefreshCw, Search, X } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, useState, type JSX } from "react";
+import { useMemo, useState, type JSX, type MouseEvent as ReactMouseEvent } from "react";
 import { Link as RouterLink } from "react-router";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useGetTask } from "@features/csm-cases/api/useGetTask";
@@ -231,7 +231,14 @@ export function TaskDetailDialog({
                   <Typography
                     component={RouterLink}
                     to={`/cases/${task.parentCase.id}`}
-                    onClick={onClose}
+                    // Only close on a plain left-click. Ctrl/Cmd/Shift-click and
+                    // middle-click open the case in a new tab, so the dialog must
+                    // stay put in this one.
+                    onClick={(e: ReactMouseEvent) => {
+                      if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+                        onClose();
+                      }
+                    }}
                     variant="body2"
                     color="primary"
                     sx={{ textDecoration: "none", "&:hover": { textDecoration: "underline" } }}
