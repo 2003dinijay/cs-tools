@@ -167,7 +167,7 @@ describe("CsmUsersPage — role truncation and row navigation", () => {
     name: "John Smith",
     email: "john.smith@example.com",
     active: true,
-    roles: ["agent", "admin"],
+    roles: ["snc_internal", "admin"],
     createdOn: "2025-01-01T00:00:00Z",
     updatedOn: "2025-06-01T00:00:00Z",
   };
@@ -184,6 +184,7 @@ describe("CsmUsersPage — role truncation and row navigation", () => {
             { id: "commenter", name: "Commenter" },
             { id: "partner", name: "Partner" },
             { id: "customer_admin", name: "Customer Admin" },
+            { id: "internal", name: "Internal" },
           ],
           total: 5,
           limit: 50,
@@ -205,42 +206,43 @@ describe("CsmUsersPage — role truncation and row navigation", () => {
     );
   });
 
-  it("shows a legible overflow chip beyond 3 roles, and no overflow chip at 3 or fewer", async () => {
+  it("keeps roles on one line and provides a more chip for roles that do not fit", async () => {
     renderPage("/admin/users");
 
-    // Both rows carry "Agent"/"Admin" — wait until the role-name catalogue
-    // has resolved them from the raw keys ("agent"/"admin") before asserting.
-    await waitFor(() => expect(screen.getAllByText("Agent")).toHaveLength(2));
+    // Wait until the role-name catalogue has resolved the raw keys before asserting.
+    await waitFor(() => expect(screen.getByText("Agent")).toBeInTheDocument());
 
     const janeRow = screen.getByText("Jane Doe").closest("tr") as HTMLElement;
     const johnRow = screen.getByText("John Smith").closest("tr") as HTMLElement;
 
-    // 5 roles: 3 visible + a legible "+2 more" overflow chip, the other 2 roles hidden.
+    // jsdom has no layout width, so the responsive list uses its safe
+    // one-chip fallback and exposes the remainder through a legible chip.
     expect(within(janeRow).getByText("Agent")).toBeInTheDocument();
-    expect(within(janeRow).getByText("Admin")).toBeInTheDocument();
-    expect(within(janeRow).getByText("Commenter")).toBeInTheDocument();
-    expect(within(janeRow).getByText("+2 more")).toBeInTheDocument();
+    expect(within(janeRow).getByText("+4 more")).toBeInTheDocument();
+    expect(within(janeRow).queryByText("Admin")).not.toBeInTheDocument();
+    expect(within(janeRow).queryByText("Commenter")).not.toBeInTheDocument();
     expect(within(janeRow).queryByText("Partner")).not.toBeInTheDocument();
     expect(within(janeRow).queryByText("Customer Admin")).not.toBeInTheDocument();
 
-    // 2 roles: both visible, no overflow chip for this row.
-    expect(within(johnRow).getByText("Agent")).toBeInTheDocument();
-    expect(within(johnRow).getByText("Admin")).toBeInTheDocument();
-    expect(within(johnRow).queryByText(/more$/)).not.toBeInTheDocument();
+    // The same fallback remains a single line for a shorter role list.
+    // Fully-qualified ServiceNow keys resolve through the same short-key
+    // catalogue used by the role filter.
+    expect(within(johnRow).getByText("Internal")).toBeInTheDocument();
+    expect(within(johnRow).queryByText("Admin")).not.toBeInTheDocument();
+    expect(within(johnRow).getByText("+1 more")).toBeInTheDocument();
   });
 
-  it("navigates a row click to that user's profile, but a nested role chip click to the role page instead", async () => {
+  it("treats role chips as row content and navigates their row to the user profile", async () => {
     renderPageWithDestinations("/admin/users");
 
-    await waitFor(() => expect(screen.getAllByText("Agent")).toHaveLength(2));
+    await waitFor(() => expect(screen.getByText("Agent")).toBeInTheDocument());
     const janeRow = screen.getByText("Jane Doe").closest("tr") as HTMLElement;
 
-    // Clicking the role chip must land on the role page, not the profile —
-    // the row itself is also clickable, so this only holds if the chip stops
-    // the click from bubbling up to the row's own handler.
+    // Role chips are informational in this table; clicking one follows the
+    // containing row to the user rather than opening the role directory.
     fireEvent.click(within(janeRow).getByText("Agent"));
-    expect(await screen.findByText("Role members page")).toBeInTheDocument();
-    expect(screen.queryByText("User profile page")).not.toBeInTheDocument();
+    expect(await screen.findByText("User profile page")).toBeInTheDocument();
+    expect(screen.queryByText("Role members page")).not.toBeInTheDocument();
   });
 
   it("navigates a whole-row click (outside any nested chip/link) to the user's profile", async () => {

@@ -40,6 +40,14 @@ interface UserRefLinkProps {
   userId?: string | null;
   /** Optional className passthrough for layout tweaks. */
   className?: string;
+  /**
+   * Set to `false` to skip the hover-underline treatment — for callers whose
+   * container already signals clickability on its own (e.g. a table row
+   * that's itself clickable with its own hover background), where the
+   * underline would just be redundant. Defaults to `true`, since in most
+   * usages this link is the only clickability signal on the name.
+   */
+  underlineOnHover?: boolean;
 }
 
 /**
@@ -55,6 +63,7 @@ export default function UserRefLink({
   email,
   userId,
   className,
+  underlineOnHover = true,
 }: UserRefLinkProps): JSX.Element {
   const resolvedId = useResolvedUserId(email, userId);
 
@@ -72,10 +81,12 @@ export default function UserRefLink({
         cursor: "pointer",
       }}
       onMouseEnter={(e) => {
+        if (!underlineOnHover) return;
         (e.currentTarget as HTMLAnchorElement).style.textDecoration =
           "underline";
       }}
       onMouseLeave={(e) => {
+        if (!underlineOnHover) return;
         (e.currentTarget as HTMLAnchorElement).style.textDecoration = "none";
       }}
     >

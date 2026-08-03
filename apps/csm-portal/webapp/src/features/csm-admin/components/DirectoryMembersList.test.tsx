@@ -14,11 +14,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import type { ComponentProps } from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const authFetchMock = vi.fn();
@@ -70,12 +70,20 @@ function renderList(
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <DirectoryMembersList
-          filterKey="roleIds"
-          entityId="agent"
-          entityNoun="role"
-          {...props}
-        />
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <DirectoryMembersList
+                filterKey="roleIds"
+                entityId="agent"
+                entityNoun="role"
+                {...props}
+              />
+            }
+          />
+          <Route path="/people/:id" element={<div>User profile page</div>} />
+        </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -154,14 +162,26 @@ describe("DirectoryMembersList", () => {
     expect(body.filters).toEqual({ teamIds: ["alpha"] });
   });
 
-  it("renders a member row linking to the person's profile via UserRefLink", async () => {
+  it("renders the member identity linking to the person's profile", async () => {
     authFetchMock.mockResolvedValueOnce(
       jsonResponse({ users: [MEMBER], total: 1, limit: 20, offset: 0 }),
     );
     renderList();
 
-    const link = await screen.findByRole("link", { name: "jane.doe" });
+    const link = await screen.findByRole("link", { name: "Jane Doe" });
     expect(link).toHaveAttribute("href", `/people/${MEMBER.id}`);
+  });
+
+  it("navigates the whole member row to the same user profile page as the users table", async () => {
+    authFetchMock.mockResolvedValueOnce(
+      jsonResponse({ users: [MEMBER], total: 1, limit: 20, offset: 0 }),
+    );
+    renderList();
+
+    const row = (await screen.findByText("Jane Doe")).closest("tr");
+    expect(row).not.toBeNull();
+    fireEvent.click(row as HTMLElement);
+    expect(await screen.findByText("User profile page")).toBeInTheDocument();
   });
 
   it("renders an empty state (not an error) when the filter matches nobody", async () => {
@@ -174,11 +194,7 @@ describe("DirectoryMembersList", () => {
     expect(screen.queryByText(/Failed to load members/i)).not.toBeInTheDocument();
   });
 
-  it("truncates a member's roles beyond 3 with a '+N more' chip, same as the user list", async () => {
-    // Regression test: role truncation was implemented directly in
-    // CsmUsersPage's own row rendering, not as a shared component, so every
-    // role/group/team member-list page rendered every role uncapped despite
-    // the user list itself being fixed.
+  it("uses the same responsive single-line role summary as the users table", async () => {
     const memberWithManyRoles = {
       ...MEMBER,
       roles: ["agent", "admin", "commenter", "customer", "partner"],
@@ -191,11 +207,13 @@ describe("DirectoryMembersList", () => {
     // Names come from the roles catalogue lookup, proving it's wired, not
     // just raw ids threaded through unchanged.
     expect(await screen.findByText("Agent")).toBeInTheDocument();
-    expect(screen.getByText("Admin")).toBeInTheDocument();
-    expect(screen.getByText("Commenter")).toBeInTheDocument();
+    // jsdom has no layout width, so the responsive component uses its safe
+    // one-chip fallback. Browsers expand this up to the actual column width.
+    expect(screen.queryByText("Admin")).not.toBeInTheDocument();
+    expect(screen.queryByText("Commenter")).not.toBeInTheDocument();
     expect(screen.queryByText("Customer")).not.toBeInTheDocument();
     expect(screen.queryByText("Partner")).not.toBeInTheDocument();
-    expect(screen.getByText("+2 more")).toBeInTheDocument();
+    expect(screen.getByText("+4 more")).toBeInTheDocument();
   });
 
   it("does not show a '+N more' chip at 3 roles or fewer", async () => {

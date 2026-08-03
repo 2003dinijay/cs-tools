@@ -27,10 +27,10 @@ import {
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
-import { type ChangeEvent, type JSX } from "react";
-import { Link as RouterLink } from "react-router";
+import { type ChangeEvent, type JSX, type KeyboardEvent } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
+import { useNavTransition } from "@hooks/useNavTransition";
 
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
 
@@ -84,6 +84,11 @@ export default function DirectoryEntityTable({
   rowsPerPage,
   onRowsPerPageChange,
 }: DirectoryEntityTableProps): JSX.Element {
+  const navigate = useNavTransition();
+  const entityLabel =
+    entityNounPlural.charAt(0).toUpperCase() +
+    entityNounPlural.slice(1, entityNounPlural.endsWith("s") ? -1 : undefined);
+
   const handleSearchChange = (e: ChangeEvent<HTMLInputElement>): void => {
     onSearchChange(e.target.value);
   };
@@ -112,13 +117,11 @@ export default function DirectoryEntityTable({
           >
             <TableHead>
               <TableRow sx={{ bgcolor: "action.hover" }}>
-                <TableCell>Name</TableCell>
+                <TableCell>{entityLabel}</TableCell>
               </TableRow>
             </TableHead>
-            <TableBody
-              sx={isFetching ? { opacity: 0.6, transition: "opacity 0.15s" } : undefined}
-            >
-              {isLoading ? (
+            <TableBody>
+              {isLoading || isFetching ? (
                 Array.from({ length: rowsPerPage }).map((_, i) => (
                   <TableRow key={i}>
                     <TableCell>
@@ -148,27 +151,53 @@ export default function DirectoryEntityTable({
                   </TableCell>
                 </TableRow>
               ) : (
-                rows.map((row) => (
-                  <TableRow key={row.id} hover>
-                    <TableCell>
-                      <Typography
-                        component={RouterLink}
-                        to={`${memberBasePath}/${encodeURIComponent(row.id)}`}
-                        state={{ name: row.name }}
-                        variant="body2"
-                        sx={(t) => ({
-                          fontWeight: 600,
-                          textDecoration: "none",
-                          color: t.palette.primary.dark,
-                          ...t.applyStyles("dark", { color: t.palette.primary.main }),
-                          "&:hover": { textDecoration: "underline" },
-                        })}
-                      >
-                        {row.family ? `${row.name} (${row.family})` : row.name}
-                      </Typography>
-                    </TableCell>
-                  </TableRow>
-                ))
+                rows.map((row) => {
+                  const destination = `${memberBasePath}/${encodeURIComponent(row.id)}`;
+                  const openMembers = (): void => {
+                    navigate(destination, { state: { name: row.name } });
+                  };
+                  const handleRowKeyDown = (e: KeyboardEvent<HTMLTableRowElement>): void => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openMembers();
+                    }
+                  };
+
+                  return (
+                    <TableRow
+                      key={row.id}
+                      hover
+                      tabIndex={0}
+                      onClick={openMembers}
+                      onKeyDown={handleRowKeyDown}
+                      aria-label={`View members of ${row.name}`}
+                      sx={{
+                        cursor: "pointer",
+                        "&:focus-visible": {
+                          outline: "2px solid",
+                          outlineColor: "primary.main",
+                          outlineOffset: -2,
+                        },
+                      }}
+                    >
+                      <TableCell sx={{ minWidth: 0 }}>
+                        <Typography variant="body2" noWrap title={row.name}>
+                          {row.name}
+                        </Typography>
+                        {row.family && (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            noWrap
+                            sx={{ display: "block" }}
+                          >
+                            {row.family.toUpperCase()} team
+                          </Typography>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>

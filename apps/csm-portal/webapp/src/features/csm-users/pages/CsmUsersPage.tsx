@@ -17,7 +17,6 @@
 import {
   Box,
   Checkbox,
-  Chip,
   FormControl,
   InputLabel,
   ListItemText,
@@ -33,7 +32,6 @@ import {
   TableHead,
   TablePagination,
   TableRow,
-  TableSortLabel,
   TextField,
   Typography,
   type SelectChangeEvent,
@@ -49,13 +47,8 @@ import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
 import { useSearchRoles } from "@features/csm-admin/api/useSearchRoles";
 import { useSearchTeams } from "@features/csm-admin/api/useSearchTeams";
-import DirectoryEntityChip from "@features/csm-admin/components/DirectoryEntityChip";
-import {
-  INTERNAL_USER_ROLES,
-  type SearchUsersRequest,
-  type UserSortField,
-  type UserSortOrder,
-} from "@features/csm-users/types/csmUsers";
+import ResponsiveRoleChips from "@features/csm-users/components/ResponsiveRoleChips";
+import type { SearchUsersRequest } from "@features/csm-users/types/csmUsers";
 import {
   readUsersFiltersFromUrl,
   writeUsersFiltersToUrl,
@@ -67,10 +60,11 @@ import type { BeGroup } from "@api/backend/types";
 const DEFAULT_ROWS_PER_PAGE = 20;
 // Top option is the backend's max page limit; larger requests are rejected.
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
-// Roles beyond this many collapse into a single "+N more" chip that links to
-// the user's profile — a table cell isn't the place to enumerate every role a
-// user carries.
-const MAX_VISIBLE_ROLES = 3;
+/** Normalise the different empty timezone values emitted by user sources. */
+function displayTimezone(timezone: string | null | undefined): string {
+  const value = timezone?.trim();
+  return !value || /^-*none-*$/i.test(value) ? "—" : value;
+}
 
 /**
  * The users list, with filters reflected in the URL (`search`, `roles`,
@@ -92,8 +86,6 @@ export default function CsmUsersPage(): JSX.Element {
 
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
-  const [sortField, setSortField] = useState<UserSortField>("name");
-  const [sortOrder, setSortOrder] = useState<UserSortOrder>("asc");
 
   const setFilters = (next: UsersFilters): void => {
     setPage(0);
@@ -129,9 +121,9 @@ export default function CsmUsersPage(): JSX.Element {
         ...(filters.teamIds.length > 0 && { teamIds: filters.teamIds }),
         ...(filters.active !== "all" && { active: filters.active === "active" }),
       },
-      sortBy: { field: sortField, order: sortOrder },
+      sortBy: { field: "name", order: "asc" },
     }),
-    [debouncedSearch, page, rowsPerPage, filters, sortField, sortOrder],
+    [debouncedSearch, page, rowsPerPage, filters],
   );
 
   const { data, isLoading, isFetching, isError, error } = useSearchUsers(request);
@@ -157,16 +149,6 @@ export default function CsmUsersPage(): JSX.Element {
 
   const handleActiveChange = (e: SelectChangeEvent) => {
     setFilters({ ...filters, active: e.target.value as UsersFilters["active"] });
-  };
-
-  const handleSort = (field: UserSortField) => {
-    if (sortField === field) {
-      setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
-    } else {
-      setSortField(field);
-      setSortOrder("asc");
-    }
-    setPage(0);
   };
 
   const users = data?.users ?? [];
@@ -262,40 +244,39 @@ export default function CsmUsersPage(): JSX.Element {
 
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
         <TableContainer>
-          <Table size="small" aria-label="Users search results" sx={{ "& .MuiTableCell-root": { borderColor: "divider" } }}>
+          <Table
+            size="small"
+            aria-label="Users search results"
+            sx={{
+              minWidth: 900,
+              tableLayout: "fixed",
+              "& .MuiTableCell-root": { borderColor: "divider" },
+            }}
+          >
             <TableHead>
               <TableRow sx={{ bgcolor: "action.hover" }}>
-                <TableCell>Username</TableCell>
-                <TableCell sortDirection={sortField === "name" ? sortOrder : false}>
-                  <TableSortLabel
-                    active={sortField === "name"}
-                    direction={sortField === "name" ? sortOrder : "asc"}
-                    onClick={() => handleSort("name")}
-                  >
-                    Name
-                  </TableSortLabel>
-                </TableCell>
-                <TableCell>Email</TableCell>
-                <TableCell>Roles</TableCell>
-                <TableCell>Status</TableCell>
-                <TableCell>Timezone</TableCell>
+                <TableCell sx={{ width: "32%" }}>User</TableCell>
+                <TableCell sx={{ width: "44%" }}>Roles</TableCell>
+                <TableCell sx={{ width: "12%" }}>Status</TableCell>
+                <TableCell sx={{ width: "12%" }}>Timezone</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {isLoading || isFetching ? (
                 Array.from({ length: rowsPerPage }).map((_, i) => (
                   <TableRow key={i}>
-                    <TableCell><Skeleton variant="rounded" width="70%" height={18} /></TableCell>
-                    <TableCell><Skeleton variant="rounded" width="75%" height={18} /></TableCell>
-                    <TableCell><Skeleton variant="rounded" width="85%" height={18} /></TableCell>
+                    <TableCell>
+                      <Skeleton variant="rounded" width="65%" height={18} />
+                      <Skeleton variant="rounded" width="85%" height={14} sx={{ mt: 0.75 }} />
+                    </TableCell>
                     <TableCell><Skeleton variant="rounded" width={64} height={22} /></TableCell>
-                    <TableCell><Skeleton variant="rounded" width={60} height={22} /></TableCell>
+                    <TableCell><Skeleton variant="rounded" width={64} height={18} /></TableCell>
                     <TableCell><Skeleton variant="rounded" width="55%" height={18} /></TableCell>
                   </TableRow>
                 ))
               ) : isError ? (
                 <TableRow>
-                  <TableCell colSpan={6} align="center">
+                  <TableCell colSpan={4} align="center">
                     <QueryErrorState
                       message={error instanceof Error && error.message.trim() ? error.message : "Failed to load users."}
                       error={error}
@@ -304,7 +285,7 @@ export default function CsmUsersPage(): JSX.Element {
                 </TableRow>
               ) : users.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
+                  <TableCell colSpan={4} align="center" sx={{ py: 4 }}>
                     <Typography variant="body2" color="text.secondary">
                       No users found.
                     </Typography>
@@ -320,8 +301,12 @@ export default function CsmUsersPage(): JSX.Element {
                       goToProfile();
                     }
                   };
-                  const visibleRoles = u.roles?.slice(0, MAX_VISIBLE_ROLES) ?? [];
-                  const hiddenRoleCount = Math.max((u.roles?.length ?? 0) - MAX_VISIBLE_ROLES, 0);
+                  const displayName = u.name?.trim();
+                  const primaryIdentity = displayName || u.userName;
+                  const secondaryIdentity = [
+                    u.userName !== primaryIdentity ? u.userName : undefined,
+                    u.email !== primaryIdentity && u.email !== u.userName ? u.email : undefined,
+                  ].filter((value): value is string => Boolean(value));
 
                   return (
                     <TableRow
@@ -331,70 +316,68 @@ export default function CsmUsersPage(): JSX.Element {
                       onKeyDown={handleRowKeyDown}
                       tabIndex={0}
                       aria-label={`View profile for ${u.name || u.userName}`}
-                      sx={{ cursor: "pointer" }}
+                      sx={{
+                        cursor: "pointer",
+                        "&:focus-visible": {
+                          outline: "2px solid",
+                          outlineColor: "primary.main",
+                          outlineOffset: -2,
+                        },
+                      }}
                     >
-                      <TableCell>
-                        <UserRefLink name={u.userName} email={u.email} userId={u.id} />
+                      <TableCell sx={{ minWidth: 0 }}>
+                        <UserRefLink
+                          name={primaryIdentity}
+                          email={u.email}
+                          userId={u.id}
+                          underlineOnHover={false}
+                        />
+                        {secondaryIdentity.length > 0 && (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            noWrap
+                            title={secondaryIdentity.join(" · ")}
+                            sx={{ display: "block" }}
+                          >
+                            {secondaryIdentity.join(" · ")}
+                          </Typography>
+                        )}
                       </TableCell>
-                      <TableCell>{u.name || "—"}</TableCell>
-                      <TableCell>{u.email}</TableCell>
                       <TableCell>
-                        <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5 }}>
-                          {u.roles && u.roles.length > 0 ? (
-                            <>
-                              {visibleRoles.map((r) => (
-                                <DirectoryEntityChip
-                                  key={r}
-                                  id={r}
-                                  name={roleNameById.get(r) ?? r}
-                                  routeBase="/admin/roles"
-                                  color={(INTERNAL_USER_ROLES as string[]).includes(r) ? "primary" : "default"}
-                                />
-                              ))}
-                              {hiddenRoleCount > 0 && (
-                                <Chip
-                                  size="small"
-                                  variant="outlined"
-                                  label={`+${hiddenRoleCount} more`}
-                                  clickable
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    goToProfile();
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter" || e.key === " ") {
-                                      e.stopPropagation();
-                                    }
-                                  }}
-                                  aria-label={`View all ${u.roles.length} roles for ${u.name || u.userName}`}
-                                />
-                              )}
-                            </>
-                          ) : u.userType ? (
-                            <Chip
-                              size="small"
-                              label={u.userType}
-                              color={u.userType === "internal" ? "primary" : "default"}
-                              variant="outlined"
-                            />
-                          ) : (
-                            "—"
-                          )}
-                        </Stack>
+                        {u.roles && u.roles.length > 0 ? (
+                          <ResponsiveRoleChips
+                            roleIds={u.roles}
+                            roleNameById={roleNameById}
+                            userLabel={u.name || u.userName}
+                            onViewAll={goToProfile}
+                          />
+                        ) : (
+                          "—"
+                        )}
                       </TableCell>
                       <TableCell>
                         {u.active === undefined ? (
                           "—"
                         ) : (
-                          <Chip
-                            size="small"
-                            label={u.active ? "Active" : "Inactive"}
-                            color={u.active ? "success" : "default"}
-                            variant="outlined"
-                          />
+                          <Stack direction="row" spacing={0.75} alignItems="center">
+                            <Box
+                              aria-hidden
+                              sx={{
+                                width: 7,
+                                height: 7,
+                                flexShrink: 0,
+                                borderRadius: "50%",
+                                bgcolor: u.active ? "success.main" : "text.disabled",
+                              }}
+                            />
+                            <Typography variant="body2">
+                              {u.active ? "Active" : "Inactive"}
+                            </Typography>
+                          </Stack>
                         )}
                       </TableCell>
-                      <TableCell>{u.timezone ?? "—"}</TableCell>
+                      <TableCell>{displayTimezone(u.timezone)}</TableCell>
                     </TableRow>
                   );
                 })
