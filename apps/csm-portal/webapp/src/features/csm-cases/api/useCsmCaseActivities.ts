@@ -28,16 +28,16 @@ import type { CaseAuditEntry } from "@features/csm-cases/types/csmCases";
 /** Page size used when loading the field-change lane. Capped by the BE; see BE_MAX_PAGE_LIMIT. */
 const ACTIVITIES_PAGE_LIMIT = BE_MAX_PAGE_LIMIT;
 
-/** Best display name off an activity entry's flat author fields. */
+/** Best display name off an activity entry's author fields. */
 function activityAuthorName(entry: BeCaseActivityEntry): string {
-  const full = entry.createdByFullName?.trim();
+  const full = entry.createdBy?.name?.trim();
   if (full) return full;
   const composed = [entry.createdByFirstName, entry.createdByLastName]
     .filter((p) => p && p.trim())
     .join(" ")
     .trim();
   if (composed) return composed;
-  return entry.createdBy?.trim() || "Unknown";
+  return entry.createdBy?.email?.trim() || "Unknown";
 }
 
 /** Map one backend `field_change` activity entry onto a {@link CaseAuditEntry}. */
@@ -48,7 +48,7 @@ export function auditEntryFromBeActivity(
     id: entry.id,
     kind: "field_change",
     actor: activityAuthorName(entry),
-    actorUser: userReferenceFromBe(entry.createdByUser),
+    actorUser: userReferenceFromBe(entry.createdBy),
     createdAt: entry.createdOn,
     changes: (entry.changes ?? []).map((c) => ({
       field: c.field,

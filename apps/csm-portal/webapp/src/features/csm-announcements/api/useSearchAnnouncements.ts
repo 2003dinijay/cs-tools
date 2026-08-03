@@ -109,7 +109,7 @@ export function useSearchAnnouncements(
         // to the canonical lowercase UI state so StateChip picks the right
         // label/colour (matches the cases list — see useGetCsmCases).
         state: c.state ? uiStateFromBe(c.state) : undefined,
-        createdBy: c.createdBy,
+        createdBy: c.createdBy?.name?.trim() || c.createdBy?.email || undefined,
         createdAt: c.createdOn ?? "",
         updatedAt: c.updatedOn ?? c.createdOn ?? "",
       }));
