@@ -172,7 +172,7 @@ export default function CsmUsersPage(): JSX.Element {
           sx={{ minWidth: 280, flex: 1 }}
         />
 
-        <FormControl size="small" sx={{ minWidth: 200 }}>
+        <FormControl size="small" sx={{ width: 200, flexShrink: 0 }}>
           <InputLabel id="user-roles-label">Roles</InputLabel>
           <Select
             labelId="user-roles-label"
@@ -180,9 +180,24 @@ export default function CsmUsersPage(): JSX.Element {
             value={filters.roleIds}
             onChange={handleRoleChange}
             input={<OutlinedInput label="Roles" />}
-            renderValue={(selected) =>
-              (selected as string[]).map((id) => roleNameById.get(id) ?? id).join(", ")
-            }
+            MenuProps={{
+              anchorOrigin: { vertical: "bottom", horizontal: "left" },
+              transformOrigin: { vertical: "top", horizontal: "left" },
+              slotProps: { paper: { sx: { maxHeight: 320 } } },
+            }}
+            renderValue={(selected) => {
+              const label = (selected as string[])
+                .map((id) => roleNameById.get(id) ?? id)
+                .join(", ");
+              return <Box component="span" title={label}>{label}</Box>;
+            }}
+            sx={{
+              "& .MuiSelect-select": {
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              },
+            }}
           >
             {roles.map((role) => (
               <MenuItem key={role.id} value={role.id}>
@@ -207,7 +222,7 @@ export default function CsmUsersPage(): JSX.Element {
           />
         </Box>
 
-        <FormControl size="small" sx={{ minWidth: 200 }}>
+        <FormControl size="small" sx={{ width: 200, flexShrink: 0 }}>
           <InputLabel id="user-teams-label">Teams</InputLabel>
           <Select
             labelId="user-teams-label"
@@ -215,9 +230,24 @@ export default function CsmUsersPage(): JSX.Element {
             value={filters.teamIds}
             onChange={handleTeamChange}
             input={<OutlinedInput label="Teams" />}
-            renderValue={(selected) =>
-              (selected as string[]).map((id) => teamNameById.get(id) ?? id).join(", ")
-            }
+            MenuProps={{
+              anchorOrigin: { vertical: "bottom", horizontal: "left" },
+              transformOrigin: { vertical: "top", horizontal: "left" },
+              slotProps: { paper: { sx: { maxHeight: 320 } } },
+            }}
+            renderValue={(selected) => {
+              const label = (selected as string[])
+                .map((id) => teamNameById.get(id) ?? id)
+                .join(", ");
+              return <Box component="span" title={label}>{label}</Box>;
+            }}
+            sx={{
+              "& .MuiSelect-select": {
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              },
+            }}
           >
             {teams.map((team) => (
               <MenuItem key={team.id} value={team.id}>
