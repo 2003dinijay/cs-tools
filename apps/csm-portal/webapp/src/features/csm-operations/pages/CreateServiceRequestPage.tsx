@@ -277,7 +277,7 @@ export default function CreateServiceRequestPage(): JSX.Element {
             }}
           >
             <Typography variant="body2" color="error.main">
-              Some dropdown options failed to load — see the affected field below for which one.
+              Some dropdown options failed to load. See the failed fields below for details.
             </Typography>
             <Button size="small" variant="outlined" onClick={retryOptions}>
               Retry all
