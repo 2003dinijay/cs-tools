@@ -67,6 +67,7 @@ type snCase struct {
 	AssignedTeam          *snCaseEntityRef            `json:"assignedTeam"`
 	Conversation          *snCaseEntityRef            `json:"conversation"`
 	AssignedEngineer      *snAssignedEngineerRef      `json:"assignedEngineer"`
+	AcknowledgedBy        *snAssignedEngineerRef      `json:"acknowledgedBy"`
 	ParentCase            *snCaseRef                  `json:"parentCase"`
 	RelatedCase           *snCaseRef                  `json:"relatedCase"`
 	Account               *snCaseAccount              `json:"account"`
@@ -804,6 +805,9 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
 		cv.AssignedEngineerUser = domain.NewUserReference(cv.AssignedEngineer.ID, snStr(c.AssignedEngineer.Email), c.AssignedEngineer.Name)
 	}
+	if c.AcknowledgedBy != nil {
+		cv.AcknowledgedBy = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AcknowledgedBy.ID), Name: c.AcknowledgedBy.Name, Email: c.AcknowledgedBy.Email}
+	}
 	if c.ParentCase != nil {
 		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number, Type: snParentCaseTypeToDomain(c.ParentCase.Type)}
 	}
@@ -1095,14 +1099,18 @@ func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.Searc
 }
 
 type snUpdateCasePayload struct {
-	StateKey       *int     `json:"stateKey,omitempty"`
-	SeverityKey    *int     `json:"severityKey,omitempty"`
-	WorkStateKey   *int     `json:"workStateKey,omitempty"`
-	WatchList      []string `json:"watchList,omitempty"`
-	AssigneeEmail  *string  `json:"assigneeEmail,omitempty"`
-	ResolutionCode *int     `json:"resolutionCode,omitempty"`
-	Cause          *string  `json:"cause,omitempty"`
-	CloseNotes     *string  `json:"closeNotes,omitempty"`
+	StateKey      *int     `json:"stateKey,omitempty"`
+	SeverityKey   *int     `json:"severityKey,omitempty"`
+	WorkStateKey  *int     `json:"workStateKey,omitempty"`
+	WatchList     []string `json:"watchList,omitempty"`
+	AssigneeEmail *string  `json:"assigneeEmail,omitempty"`
+	// Acknowledge claims the case for the calling engineer, first-write-wins. Only
+	// true is ever sent -- there is no unacknowledge -- and the backing service keeps
+	// it mutually exclusive with every other field in this payload.
+	Acknowledge    *bool   `json:"acknowledge,omitempty"`
+	ResolutionCode *int    `json:"resolutionCode,omitempty"`
+	Cause          *string `json:"cause,omitempty"`
+	CloseNotes     *string `json:"closeNotes,omitempty"`
 	// ParentID writes the native task.parent field. Confirmed already supported by the
 	// backing service's case-update payload and its validation, which already accept it
 	// as an exactly-one-field option -- fully wired.
@@ -1273,6 +1281,11 @@ type snUpdateCaseResponse struct {
 		BestCaseFixEta   *string `json:"bestCaseFixEta"`
 		MostLikelyFixEta *string `json:"mostLikelyFixEta"`
 		WorstCaseFixEta  *string `json:"worstCaseFixEta"`
+		// Number/AlreadyAcknowledged/AcknowledgedBy come back only on the
+		// acknowledge path -- see snUpdateCasePayload.Acknowledge.
+		Number              string                 `json:"number"`
+		AlreadyAcknowledged *bool                  `json:"alreadyAcknowledged"`
+		AcknowledgedBy      *snAssignedEngineerRef `json:"acknowledgedBy"`
 	} `json:"case"`
 }
 
@@ -1305,6 +1318,9 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	if req.ParentID != nil {
 		exclusiveCount++
 	}
+	if req.Acknowledge != nil {
+		exclusiveCount++
+	}
 	// combinableCount covers plain field writes with no cross-field side
 	// effects -- SN now accepts any subset of these together in one PATCH.
 	combinableCount := 0
@@ -1335,14 +1351,14 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	if req.WorstCaseFixEta != nil {
 		combinableCount++
 	}
-	const fieldList = "state, severity, workState, watchList, assigneeEmail, parentId, relatedCaseId, " +
-		"autocloseHoldUntil, subject, description, deploymentId, deployedProductId, " +
+	const fieldList = "state, severity, workState, watchList, assigneeEmail, parentId, acknowledge, " +
+		"relatedCaseId, autocloseHoldUntil, subject, description, deploymentId, deployedProductId, " +
 		"bestCaseFixEta, mostLikelyFixEta, or worstCaseFixEta"
 	if exclusiveCount == 0 && combinableCount == 0 {
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "at least one of " + fieldList + " must be provided"}
 	}
 	if exclusiveCount > 1 || (exclusiveCount == 1 && combinableCount > 0) {
-		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "state, severity, workState, watchList, assigneeEmail, and parentId cannot be combined with each other or with any other field in the same request"}
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "state, severity, workState, watchList, assigneeEmail, parentId, and acknowledge cannot be combined with each other or with any other field in the same request"}
 	}
 	if hasResolutionFields && req.State == nil {
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are only allowed when state is also provided"}
@@ -1405,6 +1421,15 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	}
 	if req.AssigneeEmail != nil {
 		payload.AssigneeEmail = req.AssigneeEmail
+	}
+	if req.Acknowledge != nil {
+		// Reject false here rather than forwarding it: acknowledgement is
+		// first-write-wins with no unacknowledge path, so false has no meaning, and a
+		// caller sending it is asking for something this API cannot do.
+		if !*req.Acknowledge {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "acknowledge must be true; unacknowledging a case is not supported"}
+		}
+		payload.Acknowledge = req.Acknowledge
 	}
 	if req.ParentID != nil {
 		if err := validateUUIDs("parentId", []string{*req.ParentID}); err != nil {
@@ -1526,6 +1551,21 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 			Name: snResp.Case.AssignedTo.Name,
 		}
 		resp.Case.AssignedToUser = domain.NewUserReference(resp.Case.AssignedTo.ID, "", resp.Case.AssignedTo.Name)
+	}
+	if req.Acknowledge != nil {
+		// Number and alreadyAcknowledged are only meaningful on the acknowledge path,
+		// so they are echoed only when this request was one. alreadyAcknowledged is
+		// copied verbatim rather than defaulted: if the backing service omits it, the
+		// caller sees an absent field instead of a fabricated false.
+		resp.Case.Number = snResp.Case.Number
+		resp.Case.AlreadyAcknowledged = snResp.Case.AlreadyAcknowledged
+		if snResp.Case.AcknowledgedBy != nil {
+			resp.Case.AcknowledgedBy = &domain.AssignedEngineerRef{
+				ID:    sysidToUUID(snResp.Case.AcknowledgedBy.ID),
+				Name:  snResp.Case.AcknowledgedBy.Name,
+				Email: snResp.Case.AcknowledgedBy.Email,
+			}
+		}
 	}
 	if len(snResp.Case.WatchList) > 0 {
 		wl := make([]domain.WatchListUser, 0, len(snResp.Case.WatchList))

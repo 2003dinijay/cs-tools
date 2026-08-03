@@ -786,8 +786,8 @@ paths:
       summary: Update a support case.
       description: |
         Updates exactly one field of the case. Provide exactly one of: `state`, `severity`,
-        `workState`, `watchList`, `assigneeEmail`, `bestCaseFixEta`, `mostLikelyFixEta`,
-        or `worstCaseFixEta`. `watchList`, `assigneeEmail`, `bestCaseFixEta`,
+        `workState`, `watchList`, `assigneeEmail`, `acknowledge`, `bestCaseFixEta`,
+        `mostLikelyFixEta`, or `worstCaseFixEta`. `watchList`, `assigneeEmail`, `bestCaseFixEta`,
         `mostLikelyFixEta`, and `worstCaseFixEta` are supported only when the ServiceNow data
         source is active.
       operationId: patchCase
@@ -4458,7 +4458,8 @@ components:
       type: object
       description: |
         Exactly one of `state`, `severity`, `workState`, `watchList`, `assigneeEmail`,
-        `bestCaseFixEta`, `mostLikelyFixEta`, or `worstCaseFixEta` must be provided.
+        `acknowledge`, `bestCaseFixEta`, `mostLikelyFixEta`, or `worstCaseFixEta` must be
+        provided.
         `watchList`, `assigneeEmail`, `bestCaseFixEta`, `mostLikelyFixEta`, and
         `worstCaseFixEta` are supported only for the ServiceNow data source.
         `resolutionCode`, `cause`, and `closeNotes` are optional and may only be provided alongside
@@ -4469,6 +4470,7 @@ components:
         - required: [workState]
         - required: [watchList]
         - required: [assigneeEmail]
+        - required: [acknowledge]
         - required: [bestCaseFixEta]
         - required: [mostLikelyFixEta]
         - required: [worstCaseFixEta]
@@ -4495,6 +4497,17 @@ components:
           type: string
           format: email
           description: Email of the engineer to assign to this case (ServiceNow only).
+        acknowledge:
+          type: boolean
+          enum: [true]
+          description: |
+            Acknowledge the case as the calling engineer: a first-write-wins claim that
+            someone has seen it and picked it up, which is distinct from assignment.
+            Succeeds without changing anything if the case is already acknowledged, in
+            which case the response carries `alreadyAcknowledged: true`. Only `true` is
+            accepted; there is no way to remove an acknowledgement. Requires an elevated
+            support role, and is supported only by data sources that record
+            acknowledgement.
         resolutionCode:
           type: string
           enum:
@@ -4611,6 +4624,21 @@ components:
         assignedToUser:
           nullable: true
           $ref: '#/components/schemas/UserReference'
+        number:
+          type: string
+          description: Human-readable case number. Returned only when the update acknowledged the case.
+        alreadyAcknowledged:
+          type: boolean
+          description: |
+            True when the case already had an acknowledger, so the request changed nothing
+            and `acknowledgedBy` names whoever claimed it first. Returned only when the
+            update set `acknowledge`.
+        acknowledgedBy:
+          nullable: true
+          $ref: '#/components/schemas/AssignedEngineerRef'
+          description: |
+            Engineer who now holds the acknowledgement, whether this request set it or
+            found it already set. Returned only when the update set `acknowledge`.
         resolutionCode:
           type: string
           nullable: true
@@ -5293,6 +5321,13 @@ components:
         assignedEngineerUser:
           nullable: true
           $ref: '#/components/schemas/UserReference'
+        acknowledgedBy:
+          nullable: true
+          $ref: '#/components/schemas/AssignedEngineerRef'
+          description: |
+            Engineer who acknowledged the case, or null if nobody has. Cleared by the
+            backing data source when the case's type or severity changes or it is
+            reopened, so a materially changed case has to be acknowledged again.
         parentCase:
           nullable: true
           $ref: '#/components/schemas/CaseNumberRef'

@@ -1298,9 +1298,15 @@ type CaseView struct {
 	// assignee's own id already arrives with the response, so no extra lookup
 	// is involved. Null when the case is unassigned.
 	AssignedEngineerUser *UserReference `json:"assignedEngineerUser"`
-	ParentCase           *CaseNumberRef `json:"parentCase"`
-	RelatedCase          *CaseNumberRef `json:"relatedCase"`
-	AccountDetails       *AccountRef    `json:"account"`
+	// AcknowledgedBy is the support engineer who acknowledged the case: a
+	// first-write-wins claim that someone has seen it and picked it up, distinct
+	// from assignment. Null until someone acknowledges, and cleared again by the
+	// backing data source when the case's type or severity changes or it is
+	// reopened, so that a materially changed case has to be re-acknowledged.
+	AcknowledgedBy *AssignedEngineerRef `json:"acknowledgedBy"`
+	ParentCase     *CaseNumberRef       `json:"parentCase"`
+	RelatedCase    *CaseNumberRef       `json:"relatedCase"`
+	AccountDetails *AccountRef          `json:"account"`
 	// LinkedServiceRequests lists any service-request cases whose parent points to this
 	// case. Populated on every case detail response, not just high-severity cases.
 	LinkedServiceRequests []LinkedServiceRequestRef `json:"linkedServiceRequests"`
@@ -1646,6 +1652,13 @@ type UpdateCaseRequest struct {
 	// issue) echoed into the public comment. Required by ServiceNow when
 	// AddPublicComment is true (ServiceNow data source only).
 	PublicTicket *string `json:"publicTicket"`
+	// Acknowledge, when true, claims the case for the calling engineer: it records
+	// them as the acknowledger if nobody has acknowledged it yet, and otherwise
+	// succeeds without changing anything (the response then carries
+	// AlreadyAcknowledged). Only true is accepted — there is no unacknowledge — and
+	// it cannot be combined with any other field in the same request. Requires an
+	// elevated support role (ServiceNow data source only).
+	Acknowledge *bool `json:"acknowledge"`
 }
 
 // UpdateCaseResponse is the response for PATCH /cases/{id}.
@@ -1693,6 +1706,17 @@ type UpdatedCase struct {
 	// as a date-only "YYYY-MM-DD" string. Present only when the update set
 	// worstCaseFixEta.
 	WorstCaseFixEta *string `json:"worstCaseFixEta,omitempty"`
+	// Number echoes the case's human-readable number. Present only when the update
+	// acknowledged the case, whose confirmation message names the case by number.
+	Number string `json:"number,omitempty"`
+	// AlreadyAcknowledged reports that the case already had an acknowledger, so the
+	// request changed nothing and AcknowledgedBy names whoever claimed it first.
+	// Present only when the update set acknowledge.
+	AlreadyAcknowledged *bool `json:"alreadyAcknowledged,omitempty"`
+	// AcknowledgedBy is the engineer who now holds the acknowledgement, whether this
+	// request set it or found it already set. Present only when the update set
+	// acknowledge.
+	AcknowledgedBy *AssignedEngineerRef `json:"acknowledgedBy,omitempty"`
 }
 
 // WatchListUser is a compact user reference within the watch list.
