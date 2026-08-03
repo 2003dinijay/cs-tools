@@ -390,6 +390,65 @@ describe("DashboardWidgetTile", () => {
     });
   });
 
+  it("re-fetches with the new team's own filters when selectedTeamGroupId changes (team switch must not reuse a stale cached query)", async () => {
+    // Regression guard: this widget's react-query queryKey must include the
+    // RESOLVED filters (placeholder already substituted with the selected
+    // team's groupId), not the raw `filters` prop (which still carries the
+    // literal __current_team__ placeholder, identical for every team). A
+    // queryKey built from the raw prop would hash the same regardless of
+    // which team is selected, so switching teams would keep serving the
+    // first team's cached response — the exact bug this guards against.
+    const filters = {
+      filters: [{ field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] }],
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    postMock.mockResolvedValueOnce({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    const { rerender } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <DashboardWidgetTile
+            widgetId="team_open_cases"
+            displayName="Team Open Cases"
+            resourceType="case"
+            shape="count"
+            filters={filters}
+            selectedTeamGroupId="team-a-group-id"
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(postMock).toHaveBeenLastCalledWith("/cases/search", {
+      filters: { filters: [{ field: "integrationCsTeam", op: "in", values: ["team-a-group-id"] }] },
+      pagination: { offset: 0, limit: 1 },
+    });
+
+    postMock.mockResolvedValueOnce({ total: 9, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <DashboardWidgetTile
+            widgetId="team_open_cases"
+            displayName="Team Open Cases"
+            resourceType="case"
+            shape="count"
+            filters={filters}
+            selectedTeamGroupId="team-b-group-id"
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText("9")).toBeInTheDocument());
+    expect(postMock).toHaveBeenLastCalledWith("/cases/search", {
+      filters: { filters: [{ field: "integrationCsTeam", op: "in", values: ["team-b-group-id"] }] },
+      pagination: { offset: 0, limit: 1 },
+    });
+  });
+
   it("drops the integrationCsTeam filter (request and href) rather than sending the literal placeholder when no team groupId is selected", async () => {
     postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
 
@@ -431,7 +490,7 @@ describe("DashboardWidgetTile", () => {
         slices={[
           {
             label: "My team",
-            filters: {
+            query: {
               filters: [
                 { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
               ],
@@ -472,12 +531,12 @@ describe("DashboardWidgetTile", () => {
           {
             label: "S1 · Critical",
             color: "error",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
           {
             label: "S2 · High",
             color: "warning",
-            filters: { filters: [{ field: "severity", op: "in", values: ["high"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["high"] }] },
           },
         ]}
       />,
@@ -526,12 +585,12 @@ describe("DashboardWidgetTile", () => {
           {
             label: "S1 · Critical",
             color: "error",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
           {
             label: "S2 · High",
             color: "warning",
-            filters: { filters: [{ field: "severity", op: "in", values: ["high"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["high"] }] },
           },
         ]}
       />,
@@ -575,7 +634,7 @@ describe("DashboardWidgetTile", () => {
         slices={[
           {
             label: "Critical",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
         ]}
       />,
@@ -606,7 +665,7 @@ describe("DashboardWidgetTile", () => {
         slices={[
           {
             label: "Critical",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
         ]}
       />,
@@ -634,7 +693,7 @@ describe("DashboardWidgetTile", () => {
         slices={[
           {
             label: "Critical",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
         ]}
       />,
@@ -669,7 +728,7 @@ describe("DashboardWidgetTile", () => {
         slices={[
           {
             label: "Critical",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
         ]}
       />,
@@ -699,7 +758,7 @@ describe("DashboardWidgetTile", () => {
         slices={[
           {
             label: "Critical",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
         ]}
       />,
@@ -720,12 +779,12 @@ describe("DashboardWidgetTile", () => {
     expect(params.get("severities")).toBeNull();
   });
 
-  it("shape pie: the tile-level click target is a sibling of the refresh button and legend rows, not their ancestor", async () => {
+  it("shape pie: the tile-level click target is a sibling of the legend rows, not their ancestor", async () => {
     // Regression guard for the ancestor role="button" issue: a role="button"
     // (or role="link") ancestor makes its descendants' own roles
-    // presentational to assistive tech, so the refresh IconButton and the
-    // legend's own role="button" rows must never be nested inside the
-    // tile-level click target — only ever a sibling of it.
+    // presentational to assistive tech, so the legend's own role="button"
+    // rows must never be nested inside the tile-level click target — only
+    // ever a sibling of it.
     postMock.mockResolvedValue({ total: 2 });
 
     renderWithRoutes(
@@ -738,7 +797,7 @@ describe("DashboardWidgetTile", () => {
         slices={[
           {
             label: "Critical",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
         ]}
       />,
@@ -747,11 +806,81 @@ describe("DashboardWidgetTile", () => {
 
     await waitFor(() => expect(screen.getByText("Critical")).toBeInTheDocument());
     const tile = screen.getByRole("button", { name: "View all cases for Cases by severity" });
-    const refreshButton = screen.getByRole("button", { name: /Refresh/i });
     const legendRow = screen.getByRole("button", { name: /Critical: 2 cases/ });
 
-    expect(tile.contains(refreshButton)).toBe(false);
     expect(tile.contains(legendRow)).toBe(false);
+  });
+
+  it("does not render a per-widget refresh button on any shape", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="my_patches"
+        displayName="My Patches"
+        resourceType="case"
+        shape="count"
+        filters={{}}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /Refresh/i })).not.toBeInTheDocument();
+  });
+
+  it("shape count: shows an info icon with the widget's description in an accessible tooltip, only when a description is set", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    const { rerender } = renderWithClient(
+      <DashboardWidgetTile
+        widgetId="my_patches"
+        displayName="My Patches"
+        description="Cases assigned to you that carry an open patch."
+        resourceType="case"
+        shape="count"
+        filters={{}}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    const infoButton = screen.getByRole("button", { name: "About My Patches" });
+    expect(infoButton).toBeInTheDocument();
+
+    // The button existing proves nothing on its own — the tooltip could render
+    // empty and still pass. Open it and assert it actually surfaces the
+    // description text.
+    fireEvent.mouseOver(infoButton);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent("Cases assigned to you that carry an open patch.");
+
+    // It closes again on mouse-out, so the assertion above is about this
+    // tooltip and not some permanently-mounted node.
+    // (The keyboard path is not asserted here: the Tooltip opens on
+    // :focus-visible, which fireEvent.focus does not produce and which needs
+    // @testing-library/user-event — not a dependency of this app.)
+    fireEvent.mouseOut(infoButton);
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+
+    // Only `description` changes across the rerender — `widgetId` stays
+    // `my_patches`, so the disappearing icon can only be attributed to the
+    // missing description and not to a different widget being rendered.
+    rerender(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter>
+          <DashboardWidgetTile
+            widgetId="my_patches"
+            displayName="My Patches"
+            resourceType="case"
+            shape="count"
+            filters={{}}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "About My Patches" })).not.toBeInTheDocument(),
+    );
   });
 
   it("shape pie: clicking a slice does NOT also trigger the tile-level click-through (no double-navigation)", async () => {
@@ -767,7 +896,7 @@ describe("DashboardWidgetTile", () => {
         slices={[
           {
             label: "Critical",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
         ]}
       />,
@@ -800,7 +929,7 @@ describe("DashboardWidgetTile", () => {
         slices={[
           {
             label: "Critical",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
         ]}
       />,
@@ -832,7 +961,7 @@ describe("DashboardWidgetTile", () => {
         slices={[
           {
             label: "Critical",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
         ]}
       />,

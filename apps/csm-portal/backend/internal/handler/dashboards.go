@@ -26,19 +26,19 @@ import (
 )
 
 // dashboardPieSliceView is one wedge of a Shape "pie" widget — see
-// dashboard.PieSlice. Filters is this slice's own criteria only (already
+// dashboard.PieSlice. Query is this slice's own criteria only (already
 // __current_user__-resolved), meant to be merged under the parent widget's
-// own (also resolved) Filters by the caller.
+// own (also resolved) Query by the caller.
 type dashboardPieSliceView struct {
-	Label   string         `json:"label"`
-	Color   string         `json:"color,omitempty"`
-	Filters map[string]any `json:"filters"`
+	Label string         `json:"label"`
+	Color string         `json:"color,omitempty"`
+	Query map[string]any `json:"query"`
 }
 
 // dashboardWidgetView is a single widget's filter criteria and display
 // metadata, returned as part of GET /dashboards/{dashboardId}. The caller
 // resolves each widget's own data by issuing its own POST /{resourceType}s/search
-// request (see ResourceType) with Filters.
+// request (see ResourceType), passing Query as that request's filters.
 type dashboardWidgetView struct {
 	WidgetID     string                  `json:"widgetId"`
 	DisplayName  string                  `json:"displayName"`
@@ -46,7 +46,7 @@ type dashboardWidgetView struct {
 	ResourceType dashboard.ResourceType  `json:"resourceType"`
 	Shape        dashboard.Shape         `json:"shape"`
 	GridWidth    int                     `json:"gridWidth"`
-	Filters      map[string]any          `json:"filters"`
+	Query        map[string]any          `json:"query"`
 	GroupBy      string                  `json:"groupBy,omitempty"`
 	ListLimit    int                     `json:"listLimit,omitempty"`
 	Slices       []dashboardPieSliceView `json:"slices,omitempty"`
@@ -60,8 +60,14 @@ type dashboardWidgetView struct {
 type dashboardListItemView struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
-	IsDefault   bool   `json:"isDefault"`
-	IsTeamBased bool   `json:"isTeamBased"`
+	// Type classifies the dashboard's audience ("cre", "sre", "cs"). The
+	// frontend picks the dashboard to open from it plus the caller's own
+	// team family, so it has to be on the list view: the choice is made
+	// before any detail fetch. Omitted for a definition that predates the
+	// field (only possible via the deprecated DASHBOARDS_CONFIG).
+	Type        dashboard.Type `json:"type,omitempty"`
+	IsDefault   bool           `json:"isDefault"`
+	IsTeamBased bool           `json:"isTeamBased"`
 }
 
 // dashboardDetailView is a dashboard's full metadata plus its resolved
@@ -69,6 +75,7 @@ type dashboardListItemView struct {
 type dashboardDetailView struct {
 	ID          string                `json:"id"`
 	DisplayName string                `json:"displayName"`
+	Type        dashboard.Type        `json:"type,omitempty"`
 	IsDefault   bool                  `json:"isDefault"`
 	TargetTeam  string                `json:"targetTeam"`
 	IsTeamBased bool                  `json:"isTeamBased"`
@@ -131,11 +138,13 @@ func (h *DashboardHandler) GetDashboards(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	views := make([]dashboardListItemView, 0, len(dashboard.Dashboards))
-	for _, d := range dashboard.Dashboards {
+	dashboards := dashboard.All()
+	views := make([]dashboardListItemView, 0, len(dashboards))
+	for _, d := range dashboards {
 		views = append(views, dashboardListItemView{
 			ID:          d.ID,
 			DisplayName: d.DisplayName,
+			Type:        d.Type,
 			IsDefault:   d.IsDefault,
 			IsTeamBased: d.IsTeamBased,
 		})
@@ -153,7 +162,7 @@ func (h *DashboardHandler) GetDashboardDetail(w http.ResponseWriter, r *http.Req
 	}
 
 	dashboardID := r.PathValue("dashboardId")
-	d, ok := dashboard.DashboardByID(dashboardID)
+	d, ok := dashboard.ByID(dashboardID)
 	if !ok {
 		writeError(w, http.StatusNotFound, ErrMsgNotFound)
 		return
@@ -168,9 +177,9 @@ func (h *DashboardHandler) GetDashboardDetail(w http.ResponseWriter, r *http.Req
 			slices = make([]dashboardPieSliceView, 0, len(tpl.Slices))
 			for _, slice := range tpl.Slices {
 				slices = append(slices, dashboardPieSliceView{
-					Label:   slice.Label,
-					Color:   slice.Color,
-					Filters: dashboard.ResolveSliceFilters(slice, currentUserID),
+					Label: slice.Label,
+					Color: slice.Color,
+					Query: dashboard.ResolveSliceFilters(slice, currentUserID),
 				})
 			}
 		}
@@ -181,7 +190,7 @@ func (h *DashboardHandler) GetDashboardDetail(w http.ResponseWriter, r *http.Req
 			ResourceType: tpl.ResourceType,
 			Shape:        tpl.Shape,
 			GridWidth:    tpl.GridWidth,
-			Filters:      dashboard.ResolveFilters(tpl, currentUserID),
+			Query:        dashboard.ResolveFilters(tpl, currentUserID),
 			GroupBy:      tpl.GroupBy,
 			ListLimit:    tpl.ListLimit,
 			Slices:       slices,
@@ -192,6 +201,7 @@ func (h *DashboardHandler) GetDashboardDetail(w http.ResponseWriter, r *http.Req
 	writeJSONValue(w, http.StatusOK, dashboardDetailView{
 		ID:          d.ID,
 		DisplayName: d.DisplayName,
+		Type:        d.Type,
 		IsDefault:   d.IsDefault,
 		TargetTeam:  d.TargetTeam,
 		IsTeamBased: d.IsTeamBased,

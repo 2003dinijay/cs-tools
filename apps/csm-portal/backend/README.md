@@ -161,6 +161,54 @@ Backs `entity.EngineeringEntityClient.CreateGitIssue` (a separate internal engin
 | `NOTIFICATIONS_GOOGLE_CHAT_SPACES` | JSON array of `{"product","webhookUrl"}` objects, one per Google Chat space — e.g. `[{"product":"api-manager","webhookUrl":"https://chat.googleapis.com/..."}]`. Optional — left unset, malformed, Google Chat alerts are unavailable but startup and every other endpoint work normally |
 | `CSM_PORTAL_WEB_BASE_URL` | Base URL of the CSM portal webapp, used to build the "Open in CSM Portal" link at `/operations/incidents/{caseId}` (e.g. `http://localhost:3001` for local dev). Optional — only needed alongside `NOTIFICATIONS_GOOGLE_CHAT_SPACES` above |
 
+### Dashboards
+
+Dashboard definitions are files, one JSON file per dashboard, read once at startup and held in
+memory. The filename is irrelevant — `id`, `displayName` and `type` come from the file's own
+content. A malformed, unreadable or duplicate-`id` file **fails startup naming the file** rather
+than being skipped: a silently dropped dashboard is invisible. See `dashboards.example/` for the
+schema.
+
+| Variable | Description |
+|---|---|
+| `DASHBOARDS_DIR` | Directory holding one `*.json` file per dashboard. `.env.example` ships `./dashboards.example` so a fresh clone starts; for a real set, `cp -r dashboards.example dashboards` (`./dashboards` is gitignored) and point this at it. A missing directory is fatal |
+| `DASHBOARDS_HOT_RELOAD` | Re-read `DASHBOARDS_DIR` on every request instead of serving the startup snapshot. Parsed with `strconv.ParseBool`, so `1`/`t`/`true`/`yes`-style values are not interchangeable — `1`, `t`, `T`, `TRUE`, `true`, `True` are true, and an unparseable non-empty value logs a warning and is treated as false. **Local development only**; default false |
+| `DASHBOARDS_CONFIG` | **Deprecated.** The whole registry crammed into one JSON array variable. Honoured only when `DASHBOARDS_DIR` is unset, and warns when used. Malformed content is fatal |
+
+### Directory vocabularies
+
+Two curated lists are supplied as configuration rather than code, so adding a team or a role is a
+config change and a restart, not a release. Both are parsed at startup: **a malformed value is
+fatal**, so a typo stops a deploy instead of silently emptying a page. They previously lived in
+`entity-service`; that service no longer reads them.
+
+| Variable | Description |
+|---|---|
+| `CSM_TEAM_REGISTRY` | Team catalogue. `teamKey\|Display Name\|FAMILY\|groupId` rows separated by `,`; `FAMILY` and `groupId` are optional. Optional overall — unset means no teams (startup warns) |
+| `CSM_USER_ROLES` | Assignable-role allow-list, comma-separated. Optional; unset uses the built-in list |
+
+```bash
+# FAMILY is one of CRE-ABT, CRE, SRE-ABT, SRE (case insensitive). Any other
+# family value — or a duplicate team key or display name — fails startup
+# naming the offending row.
+# The names below are placeholders — supply the real ones per environment.
+CSM_TEAM_REGISTRY="alpha|Alpha Team|CRE-ABT,beta|Beta Team|SRE-ABT,gamma|Gamma Team"
+
+CSM_USER_ROLES="agent,admin,commenter,customer,customer_admin,partner,partner_admin,internal,external,timecard_approver"
+```
+
+`CSM_TEAM_REGISTRY` has **no default, by design**. Team names are organisation vocabulary and are
+deliberately not committed to this repository — only placeholders appear here and in
+`.env.example`. Unset, the registry is empty and team lookups return nothing, with a warning
+logged. `Display Name` is matched verbatim against the backing data source's group name when
+resolving members, so a wrong or blank one resolves **zero members silently**; that is why an empty
+field is rejected outright. The registry is resolved into an in-memory index at startup, so
+`POST /teams/search` makes no upstream call at all.
+
+`CSM_USER_ROLES` does have a default, because role names are generic platform vocabulary rather
+than organisation-specific. It drives both the `roleIds` filter validation and the catalogue that
+`POST /roles/search` serves, so the picker and the filter cannot disagree.
+
 ### Auth
 
 | Variable | Description |

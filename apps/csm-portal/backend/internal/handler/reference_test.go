@@ -27,90 +27,130 @@ import (
 
 func TestReferenceHandler_SearchRoles(t *testing.T) {
 	t.Run("rejects an unauthenticated caller", func(t *testing.T) {
-		h := NewReferenceHandler(&mockEntityReferenceClient{})
+		h := NewReferenceHandler(testDirectory(t))
 		w := httptest.NewRecorder()
 		h.SearchRoles(w, httptest.NewRequest(http.MethodPost, "/roles/search", strings.NewReader(`{}`)))
 		assertStatus(t, w, http.StatusUnauthorized)
 		assertErrorMessage(t, w, ErrMsgUnauthorized)
 	})
 
-	t.Run("forwards the body verbatim", func(t *testing.T) {
-		var got string
-		h := NewReferenceHandler(&mockEntityReferenceClient{
-			searchRolesFn: func(_ context.Context, body []byte) ([]byte, error) {
-				got = string(body)
-				return []byte(`{"roles":[{"id":"agent","name":"Agent"}],"total":1,"offset":0,"limit":50}`), nil
-			},
-		})
-		body := `{"filters":{"searchQuery":"age"}}`
+	t.Run("serves the configured catalogue and applies the search filter", func(t *testing.T) {
+		h := NewReferenceHandler(testDirectory(t))
 		w := httptest.NewRecorder()
-		h.SearchRoles(w, withUser(httptest.NewRequest(http.MethodPost, "/roles/search", strings.NewReader(body))))
+		h.SearchRoles(w, withUser(httptest.NewRequest(http.MethodPost, "/roles/search",
+			strings.NewReader(`{"filters":{"searchQuery":"appro"}}`))))
 
 		assertStatus(t, w, http.StatusOK)
 		assertContentType(t, w, "application/json")
-		if got != body {
-			t.Errorf("forwarded body = %q, want %q", got, body)
+		got := decodeJSON[struct {
+			Roles []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"roles"`
+			Total int `json:"total"`
+		}](t, w)
+		if got.Total != 1 || got.Roles[0].ID != "timecard_approver" {
+			t.Fatalf("roles = %+v, want just timecard_approver", got.Roles)
+		}
+		if got.Roles[0].Name != "Timecard Approver" {
+			t.Errorf("name = %q, want a humanised display name", got.Roles[0].Name)
 		}
 	})
 
 	// An absent body means "no filters, default page" — it must not be a 400.
 	t.Run("accepts an empty body", func(t *testing.T) {
-		h := NewReferenceHandler(&mockEntityReferenceClient{})
+		h := NewReferenceHandler(testDirectory(t))
 		w := httptest.NewRecorder()
 		h.SearchRoles(w, withUser(httptest.NewRequest(http.MethodPost, "/roles/search", nil)))
 		assertStatus(t, w, http.StatusOK)
 	})
 
 	t.Run("rejects a malformed body", func(t *testing.T) {
-		h := NewReferenceHandler(&mockEntityReferenceClient{})
+		h := NewReferenceHandler(testDirectory(t))
 		w := httptest.NewRecorder()
 		h.SearchRoles(w, withUser(httptest.NewRequest(http.MethodPost, "/roles/search", strings.NewReader(`{`))))
 		assertStatus(t, w, http.StatusBadRequest)
 	})
-
-	t.Run("maps an upstream failure", func(t *testing.T) {
-		h := NewReferenceHandler(&mockEntityReferenceClient{
-			searchRolesFn: func(_ context.Context, _ []byte) ([]byte, error) {
-				return nil, errors.New("entity down")
-			},
-		})
-		w := httptest.NewRecorder()
-		h.SearchRoles(w, withUser(httptest.NewRequest(http.MethodPost, "/roles/search", strings.NewReader(`{}`))))
-		if w.Code == http.StatusOK {
-			t.Fatal("status = 200, want an error status")
-		}
-	})
 }
 
 func TestReferenceHandler_SearchTeams(t *testing.T) {
-	t.Run("forwards to the teams call, not the roles call", func(t *testing.T) {
-		rolesCalled := false
-		teamsCalled := false
-		h := NewReferenceHandler(&mockEntityReferenceClient{
-			searchRolesFn: func(_ context.Context, _ []byte) ([]byte, error) {
-				rolesCalled = true
-				return []byte(`{}`), nil
-			},
-			searchTeamsFn: func(_ context.Context, _ []byte) ([]byte, error) {
-				teamsCalled = true
-				return []byte(`{"teams":[],"total":0,"offset":0,"limit":50}`), nil
-			},
-		})
+	t.Run("serves the registry, family and all, from memory", func(t *testing.T) {
+		h := NewReferenceHandler(testDirectory(t))
 		w := httptest.NewRecorder()
 		h.SearchTeams(w, withUser(httptest.NewRequest(http.MethodPost, "/teams/search", strings.NewReader(`{}`))))
 
 		assertStatus(t, w, http.StatusOK)
-		if rolesCalled || !teamsCalled {
-			t.Fatalf("rolesCalled=%v teamsCalled=%v, want false/true", rolesCalled, teamsCalled)
+		got := decodeJSON[struct {
+			Teams []struct {
+				ID      string `json:"id"`
+				Name    string `json:"name"`
+				Family  string `json:"family"`
+				GroupID string `json:"groupId"`
+			} `json:"teams"`
+			Total  int `json:"total"`
+			Limit  int `json:"limit"`
+			Offset int `json:"offset"`
+		}](t, w)
+
+		if got.Total != 3 {
+			t.Fatalf("total = %d, want the 3 configured teams", got.Total)
+		}
+		// Sorted by display name: ABT One, ABT Two, Beta Team.
+		if got.Teams[0].ID != "abt-1" || got.Teams[0].Family != "cre-abt" {
+			t.Fatalf("teams[0] = %+v, want the abt-1 row with its family", got.Teams[0])
+		}
+		// The frontend filters the team picker on family, so it must survive.
+		if got.Teams[2].Family != "sre-abt" {
+			t.Errorf("teams[2].family = %q, want sre-abt", got.Teams[2].Family)
+		}
+		// The backing group id is resolved to UUID form at startup...
+		if got.Teams[0].GroupID != "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" {
+			t.Errorf("groupId = %q, want the UUID form of the configured id", got.Teams[0].GroupID)
+		}
+		// ...and a row that configured none is still listed, just without one.
+		if got.Teams[1].GroupID != "" {
+			t.Errorf("groupId = %q, want it omitted for a team with no configured id", got.Teams[1].GroupID)
 		}
 	})
+
+	t.Run("rejects an unauthenticated caller", func(t *testing.T) {
+		h := NewReferenceHandler(testDirectory(t))
+		w := httptest.NewRecorder()
+		h.SearchTeams(w, httptest.NewRequest(http.MethodPost, "/teams/search", strings.NewReader(`{}`)))
+		assertStatus(t, w, http.StatusUnauthorized)
+	})
+}
+
+// TestReferenceHandler_NoUpstreamCallsEverAfterStartup is the requirement this
+// move exists for: the team/role mapping is resolved once, at startup, and no
+// number of catalogue requests re-fetches it.
+//
+// It is asserted by construction rather than by counting: the handler holds no
+// upstream client at all, so there is nothing it could call. What is worth
+// proving is that repeated requests stay correct and identical without one.
+func TestReferenceHandler_NoUpstreamCallsEverAfterStartup(t *testing.T) {
+	h := NewReferenceHandler(testDirectory(t))
+
+	var first string
+	for i := 0; i < 25; i++ {
+		w := httptest.NewRecorder()
+		h.SearchTeams(w, withUser(httptest.NewRequest(http.MethodPost, "/teams/search", strings.NewReader(`{}`))))
+		assertStatus(t, w, http.StatusOK)
+		if i == 0 {
+			first = w.Body.String()
+			continue
+		}
+		if w.Body.String() != first {
+			t.Fatalf("request %d returned a different body than the first; the catalogue is not a stable snapshot", i)
+		}
+	}
 }
 
 func TestUsersHandler_GetUser(t *testing.T) {
 	const testUserID = "11111111-1111-1111-1111-111111111111"
 
 	t.Run("rejects an unauthenticated caller", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{})
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t))
 		w := httptest.NewRecorder()
 		h.GetUser(w, httptest.NewRequest(http.MethodGet, "/users/abc", nil))
 		assertStatus(t, w, http.StatusUnauthorized)
@@ -123,7 +163,7 @@ func TestUsersHandler_GetUser(t *testing.T) {
 				gotID = id
 				return []byte(`{"id":"` + id + `","userType":"internal","groups":[],"teams":[]}`), nil
 			},
-		})
+		}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodGet, "/users/"+testUserID, nil))
 		r.SetPathValue("id", testUserID)
 		w := httptest.NewRecorder()
@@ -136,7 +176,7 @@ func TestUsersHandler_GetUser(t *testing.T) {
 	})
 
 	t.Run("rejects a missing id", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{})
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t))
 		w := httptest.NewRecorder()
 		h.GetUser(w, withUser(httptest.NewRequest(http.MethodGet, "/users/", nil)))
 		assertStatus(t, w, http.StatusBadRequest)
@@ -152,7 +192,7 @@ func TestUsersHandler_GetUser(t *testing.T) {
 				called = true
 				return []byte(`{}`), nil
 			},
-		})
+		}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodGet, "/users/not-a-uuid", nil))
 		r.SetPathValue("id", "not-a-uuid")
 		w := httptest.NewRecorder()
@@ -170,7 +210,7 @@ func TestUsersHandler_GetUser(t *testing.T) {
 			getUserFn: func(_ context.Context, _ string) ([]byte, error) {
 				return nil, errors.New("not found")
 			},
-		})
+		}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodGet, "/users/"+testUserID, nil))
 		r.SetPathValue("id", testUserID)
 		w := httptest.NewRecorder()

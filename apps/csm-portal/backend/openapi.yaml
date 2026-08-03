@@ -974,8 +974,10 @@ paths:
       summary: Search the role catalogue.
       description: >
         The platform's curated set of assignable role keys — the same values the user search
-        accepts in roleIds. The body is optional; omitting it returns the first page
-        unfiltered.
+        accepts in roleIds, from the same configured allow-list, so the dropdown and the
+        filter can never disagree. The list is deployment configuration resolved once at
+        startup and served from memory, so this endpoint makes no upstream call. The body
+        is optional; omitting it returns the first page unfiltered.
       operationId: postRolesSearch
       requestBody:
         description: Role search payload
@@ -1021,7 +1023,9 @@ paths:
       summary: Search the team registry.
       description: >
         A team's id is its registry key, which is stable across environments — unlike the
-        backing group's id. The body is optional.
+        backing group's id. The registry is deployment configuration resolved once at
+        startup, including each team's family and the UUID form of its backing group id,
+        and served from memory: this endpoint makes no upstream call. The body is optional.
       operationId: postTeamsSearch
       requestBody:
         description: Team search payload
@@ -1630,8 +1634,9 @@ paths:
       description: >
         Returns every dashboard registered in the config-driven pilot: its
         id, display name, and whether it is the default dashboard. This is a
-        registry loaded from the DASHBOARDS_CONFIG environment variable at
-        startup, not user-configurable at runtime.
+        registry loaded at startup from a directory of per-dashboard JSON
+        files (one file per dashboard, its filename irrelevant), held in
+        memory; not user-configurable at runtime.
       operationId: getDashboards
       responses:
         "200":
@@ -1671,8 +1676,9 @@ paths:
         endpoint (POST /{resourceType}s/search). The caller resolves each
         widget's own data by issuing that search itself; this endpoint does
         not read any resource data. This is a config-driven pilot: widget
-        templates are a registry loaded from the DASHBOARDS_CONFIG
-        environment variable at startup, not user-configurable at runtime.
+        templates are a registry loaded at startup from a directory of
+        per-dashboard JSON files, held in memory; not user-configurable at
+        runtime.
       operationId: getDashboardDetail
       parameters:
         - name: dashboardId
@@ -5340,16 +5346,16 @@ components:
           minimum: 1
           maximum: 12
           description: CSS grid columns out of 12 this widget should occupy
-        filters:
+        query:
           type: object
           additionalProperties: true
           description: >
-            Filter criteria for this widget, with any current-user
+            Search criteria for this widget, with any current-user
             placeholder already substituted. Pass this directly as the
             filters of that resourceType's own POST /{resourceType}s/search
             request to resolve the widget's data. For shapes "pie"/"bar"
             this is a shared base merged under every slices entry's own
-            filters (caller-side; slices entry keys win on conflict) rather
+            query (caller-side; slices entry keys win on conflict) rather
             than queried on its own.
         groupBy:
           type: string
@@ -5362,8 +5368,8 @@ components:
           description: >
             Only meaningful for shapes "pie"/"bar": one search per entry,
             each resolved via its own total, the same mechanism shape
-            "count" uses. Merge each entry's filters under this widget's
-            own filters (entry keys win on conflict) before searching.
+            "count" uses. Merge each entry's query under this widget's
+            own query (entry keys win on conflict) before searching.
           items:
             type: object
             properties:
@@ -5376,13 +5382,13 @@ components:
                   uses elsewhere in this system; not validated here, forwarded
                   verbatim. Falls back to a fixed rotation over the same
                   palette on the frontend if omitted.
-              filters:
+              query:
                 type: object
                 additionalProperties: true
                 description: >
                   This slice's own criteria only, with any current-user
                   placeholder already substituted — merge under the parent
-                  widget's own filters to resolve this slice's total.
+                  widget's own query to resolve this slice's total.
         section:
           type: string
           description: >
@@ -5400,9 +5406,29 @@ components:
           description: Static id of the dashboard
         displayName:
           type: string
+        type:
+          type: string
+          enum: [cre, sre, cs]
+          description: >
+            Who the dashboard is built for. This is the field automatic
+            dashboard selection is intended to key off: a caller whose team
+            family is `cre-abt`/`cre` would land on the default `cre`
+            dashboard, `sre-abt`/`sre` on the default `sre` one, and a caller
+            with no team on the default `cs` one. That selection is NOT
+            implemented yet: the frontend still picks on isDefault plus
+            isTeamBased, and the loader correspondingly permits only one
+            isDefault dashboard in total.
+            `cre` and `sre` are team-scoped and always carry
+            isTeamBased true; `cs` is organisation-wide and always carries it
+            false — the loader rejects any other combination at startup.
+            Omitted only for a definition that predates the field, which is
+            possible solely via the deprecated single-variable configuration.
         isDefault:
           type: boolean
-          description: Whether this is the default dashboard to show first
+          description: >
+            Whether this is the default dashboard to show first. At most one
+            dashboard in the registry may set it: the loader rejects a second
+            at startup, of any type, until selection becomes type-aware.
         isTeamBased:
           type: boolean
           description: >
@@ -5419,9 +5445,29 @@ components:
           description: Static id of the dashboard
         displayName:
           type: string
+        type:
+          type: string
+          enum: [cre, sre, cs]
+          description: >
+            Who the dashboard is built for. This is the field automatic
+            dashboard selection is intended to key off: a caller whose team
+            family is `cre-abt`/`cre` would land on the default `cre`
+            dashboard, `sre-abt`/`sre` on the default `sre` one, and a caller
+            with no team on the default `cs` one. That selection is NOT
+            implemented yet: the frontend still picks on isDefault plus
+            isTeamBased, and the loader correspondingly permits only one
+            isDefault dashboard in total.
+            `cre` and `sre` are team-scoped and always carry
+            isTeamBased true; `cs` is organisation-wide and always carries it
+            false — the loader rejects any other combination at startup.
+            Omitted only for a definition that predates the field, which is
+            possible solely via the deprecated single-variable configuration.
         isDefault:
           type: boolean
-          description: Whether this is the default dashboard to show first
+          description: >
+            Whether this is the default dashboard to show first. At most one
+            dashboard in the registry may set it: the loader rejects a second
+            at startup, of any type, until selection becomes type-aware.
         targetTeam:
           type: string
           description: >
@@ -5985,9 +6031,15 @@ components:
           type: string
         family:
           type: string
+          enum: [cre-abt, cre, sre-abt, sre]
           description: >
-            Team family classification. May be empty: not every team is
-            classified into a family.
+            Team family classification. The `-abt` variants are account-based teams; the
+            bare variants classify a member of the same discipline who is not on an
+            account-based team. Omitted when the team is not classified into a family:
+            not every team is. This is the field a discipline-scoped team picker *can*
+            filter on: it is what would let an SRE-scoped dashboard offer only
+            `sre-abt` teams. Nothing does so yet. Today's picker renders every team
+            this endpoint returns, and the scoping is a follow-up.
 
     UserUpdatePayload:
       type: object
@@ -6093,6 +6145,15 @@ components:
           type: string
         family:
           type: string
+          enum: [cre-abt, cre, sre-abt, sre]
+          description: >
+            Team family classification. The `-abt` variants are account-based teams; the
+            bare variants classify a member of the same discipline who is not on an
+            account-based team. Omitted when the team is not classified into a family:
+            not every team is. This is the field a discipline-scoped team picker *can*
+            filter on: it is what would let an SRE-scoped dashboard offer only
+            `sre-abt` teams. Nothing does so yet. Today's picker renders every team
+            this endpoint returns, and the scoping is a follow-up.
         groupId:
           type: string
           description: >
@@ -6147,6 +6208,15 @@ components:
           type: string
         family:
           type: string
+          enum: [cre-abt, cre, sre-abt, sre]
+          description: >
+            Team family classification. The `-abt` variants are account-based teams; the
+            bare variants classify a member of the same discipline who is not on an
+            account-based team. Omitted when the team is not classified into a family:
+            not every team is. This is the field a discipline-scoped team picker *can*
+            filter on: it is what would let an SRE-scoped dashboard offer only
+            `sre-abt` teams. Nothing does so yet. Today's picker renders every team
+            this endpoint returns, and the scoping is a follow-up.
 
     UserProjectAccess:
       type: object
@@ -6236,9 +6306,14 @@ components:
           description: Restrict to members of these groups. ServiceNow data source only.
         teamIds:
           type: array
+          maxItems: 50
           items:
             type: string
-          description: Restrict to members of these teams, by team key. ServiceNow data source only.
+          description: >
+            Restrict to members of these teams, by team key, as returned by POST
+            /teams/search. Each key is resolved to its group name from the startup-resolved
+            registry before the membership query runs; a key that is not in the registry is
+            a 400, not an empty result. ServiceNow data source only.
         userNames:
           type: array
           maxItems: 50

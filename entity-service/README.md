@@ -111,35 +111,16 @@ HTTP Request
 
 > `.env` file is loaded automatically if present. Absent `.env` is silently ignored; a malformed one causes a fatal startup error.
 
-### Directory vocabularies
+### Directory vocabularies — moved
 
-Two curated lists are supplied as configuration rather than code, so adding a team or a role is a
-config change and a restart, not a release. Both are parsed at startup: **a malformed value is
-fatal**, so a typo stops a deploy instead of silently emptying a page.
+`CSM_TEAM_REGISTRY` and `CSM_USER_ROLES` are **no longer read by this service**. The team registry
+and the assignable-role allow-list are organisation vocabulary; they now live in the CSM portal
+backend, which resolves them once at startup and serves `POST /teams/search` and
+`POST /roles/search` from memory. This service holds no organisation vocabulary at all.
 
-| Variable            | Required | Default                | Description                                                          |
-| ------------------- | -------- | ---------------------- | -------------------------------------------------------------------- |
-| CSM_TEAM_REGISTRY   | No       | — (empty registry)     | Team catalogue. Rows separated by `,`, fields within a row by `\|`.    |
-| CSM_USER_ROLES      | No       | the built-in role list | Assignable-role allow-list, comma-separated.                          |
-
-```bash
-# Rows are `teamKey|Display Name` or `teamKey|Display Name|FAMILY`.
-# The names below are placeholders — supply the real ones per environment.
-CSM_TEAM_REGISTRY="alpha|Alpha Team|CRE,beta|Beta Team|SRE,gamma|Gamma Team"
-
-CSM_USER_ROLES="agent,admin,commenter,customer,customer_admin,partner,partner_admin,internal,external,timecard_approver"
-```
-
-`CSM_TEAM_REGISTRY` has **no default, by design**. Team names are organisation vocabulary and are
-deliberately not committed to this repository — only placeholders appear here and in
-`.env.example`. Unset, the registry is empty and team lookups return nothing, with a warning
-logged. `displayName` is matched verbatim against the backing data source's group name when
-resolving members, so a wrong or blank one resolves **zero members silently**; that is why an empty
-field is rejected outright.
-
-`CSM_USER_ROLES` does have a default, because role names are generic platform vocabulary rather
-than organisation-specific. It drives both the `roleIds` filter validation and the catalogue that
-`POST /roles/search` serves, so the picker and the filter cannot disagree.
+Configure them in `apps/csm-portal/backend/.env` — see that module's
+[README](../apps/csm-portal/backend/README.md#directory-vocabularies). Setting them here has no
+effect.
 
 ## Security Scanning
 
