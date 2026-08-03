@@ -112,12 +112,14 @@ export function useGetMyAssignedOpenCases(
           pagination: { offset, limit: pageSize },
           sortBy: { field: "updatedOn", order: "desc" },
           filters: {
-            assignedUserIds: [userId as string],
-            states: NON_CLOSED_STATES,
-            // The "View all" link deep-links into the cases list, which is
-            // locked to plain cases — pin the widget to the same type so its
-            // count/rows match what that destination shows.
-            types: ["case"],
+            filters: [
+              { field: "assignedUserId", op: "in", values: [userId as string] },
+              { field: "state", op: "in", values: NON_CLOSED_STATES },
+              // The "View all" link deep-links into the cases list, which is
+              // locked to plain cases — pin the widget to the same type so
+              // its count/rows match what that destination shows.
+              { field: "type", op: "in", values: ["case"] },
+            ],
           },
         },
       );
@@ -153,7 +155,6 @@ export function useGetMyAssignedOpenCases(
           hasSla: false,
           createdAt: c.createdOn ?? "",
           updatedAt: c.updatedOn ?? c.createdOn ?? "",
-          updatedAtIsCreatedFallback: !c.updatedOn && !!c.createdOn,
         };
       });
 

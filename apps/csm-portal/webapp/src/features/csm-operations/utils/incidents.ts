@@ -14,7 +14,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import type { BeIncidentPriority, BeIncidentState } from "@api/backend/types";
+import type {
+  BeIncidentPriority,
+  BeIncidentSearchPayload,
+  BeIncidentState,
+} from "@api/backend/types";
 
 type ChipColor = "default" | "info" | "warning" | "success" | "error";
 
@@ -124,22 +128,81 @@ export function incidentPriorityColor(priority?: string | null): ChipColor {
 }
 
 /**
- * Filters for the incidents list. Deliberately just search + priority — the
- * backend's `IncidentSearchPayload.filters` only supports `searchQuery`,
- * `priorities`, and `parentIds` (see openapi.yaml); there's no server-side
- * state/category filter to build a control for.
+ * Filters for the incidents list. The backend's `IncidentSearchPayload.filters`
+ * supports `searchQuery`, `priorities`, `parentIds`, `slaViolated`,
+ * `startCreatedDate`/`endCreatedDate`, and `productNames` (see openapi.yaml);
+ * there's no server-side state/category filter to build a control for.
  */
 export interface IncidentFilters {
   search: string;
   priorities: BeIncidentPriority[];
+  /** At least one breached SLA record. See `buildIncidentSearchFilters` —
+   * `false` is never sent, only omitted. */
+  slaViolated: boolean;
+  /** `YYYY-MM-DD`, interpreted as a UTC calendar date, or empty. */
+  createdStartDate: string;
+  /** `YYYY-MM-DD`, interpreted as a UTC calendar date, or empty. */
+  createdEndDate: string;
+  /** Selected service/product names — see `productNames`' coverage caveat
+   * at the API (`BeIncidentSearchPayload`). */
+  products: string[];
 }
 
 export const DEFAULT_INCIDENT_FILTERS: IncidentFilters = {
   search: "",
   priorities: [],
+  slaViolated: false,
+  createdStartDate: "",
+  createdEndDate: "",
+  products: [],
 };
 
 /** Count non-search active filters (used for the badge on the Filters button). */
 export function countActiveIncidentFilters(filters: IncidentFilters): number {
-  return filters.priorities.length > 0 ? 1 : 0;
+  return (
+    (filters.priorities.length > 0 ? 1 : 0) +
+    (filters.slaViolated ? 1 : 0) +
+    (filters.createdStartDate ? 1 : 0) +
+    (filters.createdEndDate ? 1 : 0) +
+    (filters.products.length > 0 ? 1 : 0)
+  );
+}
+
+/** `YYYY-MM-DD` (interpreted as a UTC calendar date) to the inclusive
+ * start-of-day UTC instant the backend expects. */
+export function incidentDateOnlyToUTCStart(dateOnly: string): string {
+  return `${dateOnly}T00:00:00Z`;
+}
+
+/** `YYYY-MM-DD` (interpreted as a UTC calendar date) to the inclusive
+ * end-of-day UTC instant the backend expects. Deliberately `T23:59:59Z`, not
+ * `T00:00:00Z` of the next day — the backend truncates a date-time bound to
+ * date-only without erroring, so an off-by-one here silently drops the last
+ * day of the range instead of failing loudly. */
+export function incidentDateOnlyToUTCEnd(dateOnly: string): string {
+  return `${dateOnly}T23:59:59Z`;
+}
+
+/**
+ * Build `IncidentSearchPayload.filters` from the UI's {@link IncidentFilters}
+ * plus the (separately debounced) search text. `slaViolated` is included only
+ * when the toggle is on — the backend treats `false` and "absent" as the same
+ * thing, so sending `false` would be meaningless and misleading to read back.
+ */
+export function buildIncidentSearchFilters(
+  filters: IncidentFilters,
+  debouncedSearch: string,
+): NonNullable<BeIncidentSearchPayload["filters"]> {
+  return {
+    ...(debouncedSearch.length > 0 && { searchQuery: debouncedSearch }),
+    ...(filters.priorities.length > 0 && { priorities: filters.priorities }),
+    ...(filters.slaViolated && { slaViolated: true }),
+    ...(filters.createdStartDate && {
+      startCreatedDate: incidentDateOnlyToUTCStart(filters.createdStartDate),
+    }),
+    ...(filters.createdEndDate && {
+      endCreatedDate: incidentDateOnlyToUTCEnd(filters.createdEndDate),
+    }),
+    ...(filters.products.length > 0 && { productNames: filters.products }),
+  };
 }

@@ -103,10 +103,12 @@ import AddTagDialog from "@features/csm-cases/components/AddTagDialog";
 import { useCreateCaseTask } from "@features/csm-cases/api/useCreateCaseTask";
 import { useAddCaseTag, useRemoveCaseTag } from "@features/csm-cases/api/useCaseTags";
 import { ChildCasesWidget } from "@features/csm-cases/components/ChildCasesWidget";
+import { LinkedChangeRequestsWidget } from "@features/csm-cases/components/LinkedChangeRequestsWidget";
 import { CreateGithubIssueDialog } from "@features/csm-cases/components/CreateGithubIssueDialog";
 import { isCloudSupportSubscription } from "@features/csm-projects/utils/subscriptionType";
 import { usePostCaseGithubIssue } from "@features/csm-cases/api/useCsmCaseGithubIssue";
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
+import { scrollToFragmentWithRetry } from "@features/csm-cases/utils/permalinkScroll";
 import CaseMetaBand from "@features/csm-cases/components/CaseMetaBand";
 import {
   AttachmentsWidget,
@@ -127,6 +129,7 @@ import CaseTimeCardsPanel from "@features/csm-timecards/components/CaseTimeCards
 import LogTimeCardDialog from "@features/csm-timecards/components/LogTimeCardDialog";
 import { usePostTimeCard } from "@features/csm-timecards/api/useTimeCards";
 import { caseIdLabel } from "@features/csm-cases/utils/caseIdentity";
+import { parentRecordPath } from "@features/csm-cases/utils/parentRecordRoute";
 import { formatAbsoluteForUser } from "@utils/dateTime";
 import {
   isBlankHtml,
@@ -268,48 +271,6 @@ type CaseTabId =
   | "call-requests"
   | "tasks";
 
-/**
- * Walk the parent chain to find the nearest vertically-scrollable element.
- * Falls back to the document scrolling element if none is found.
- */
-function findVerticalScrollAncestor(el: HTMLElement): HTMLElement {
-  let cur: HTMLElement | null = el.parentElement;
-  while (cur && cur !== document.body) {
-    const style = window.getComputedStyle(cur);
-    const overflowY = style.overflowY;
-    if (
-      (overflowY === "auto" || overflowY === "scroll") &&
-      cur.scrollHeight > cur.clientHeight
-    ) {
-      return cur;
-    }
-    cur = cur.parentElement;
-  }
-  return (document.scrollingElement as HTMLElement | null) ?? document.documentElement;
-}
-
-/**
- * Route for a case's parentCase chip. A case's parent can be any task-derived
- * record (case, incident, change request, or problem), so this can't always
- * assume `/cases/{id}` -- `type` is undefined/null only for older data the
- * backend can't resolve a type for, which predates cross-table parents ever
- * being possible, so "case" is the correct fallback.
- */
-function parentCasePath(
-  parentCase: { id: string; type?: string | null } | undefined,
-): string {
-  if (!parentCase) return "/cases";
-  switch (parentCase.type) {
-    case "incident":
-      return `/operations/incidents/${parentCase.id}`;
-    case "change_request":
-      return `/operations/change-requests/${parentCase.id}`;
-    case "problem":
-      return `/operations/problems/${parentCase.id}`;
-    default:
-      return `/cases/${parentCase.id}`;
-  }
-}
 
 const TAB_DEFS: Array<{
   id: CaseTabId;
@@ -354,15 +315,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
         : isSecurityReportRoute
           ? "/security-center?tab=security_reports"
           : "/cases";
-  const backLabel = isEngagementRoute
-    ? "Back to engagements"
-    : isServiceRequestRoute
-      ? "Back to service requests"
-      : isAnnouncementRoute
-        ? "Back to announcements"
-        : isSecurityReportRoute
-          ? "Back to security reports"
-          : "Back to cases";
   const detailPath = isEngagementRoute
     ? `/engagements/${caseId}`
     : isServiceRequestRoute
@@ -508,6 +460,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const isDarkMode = useDarkMode();
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [activeTab, setActiveTab] = useState<CaseTabId>("activities");
+  // Permalink fragment (`/cases/:id#<entry-id>`), consumed by the scroll and
+  // highlight effect further down. Hoisted up here because two render-time
+  // state adjustments below both need it: the per-case reset and the
+  // per-fragment Activities-tab force.
+  const permalinkFragment = location.hash?.replace(/^#/, "") ?? "";
   const [metaCollapsed, setMetaCollapsed] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
@@ -581,6 +538,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
     setCreateTaskOpen(false);
     setFixEtaOpen(false);
     setAddTagOpen(false);
+    // Following a permalink from one case to another keeps this page mounted and
+    // can carry the *same* fragment (e.g. #description → #description), so the
+    // fragment-keyed force below won't fire. Force it here instead, otherwise
+    // the new case would open on whatever tab the previous one was left on.
+    if (permalinkFragment) setActiveTab("activities");
   }
 
   // isAnnouncement can only be confirmed once `data` loads (see its
@@ -601,67 +563,57 @@ export default function CsmCaseDetailPage(): JSX.Element {
   }
 
   // Twitter-style permalinks: when the URL has a fragment matching an entry id,
-  // jump to the Activities tab, scroll the entry into view vertically, and
-  // flash it. The browser's default hash-anchor `scrollIntoView` also drags
-  // ancestors horizontally if any of them is wider than the viewport (e.g.
-  // when a comment contains a wide `<pre>` block). We zero `scrollLeft` on
-  // every ancestor to undo that horizontal shift while keeping vertical
-  // scroll in place.
+  // jump to the Activities tab and hand off to `scrollToFragmentWithRetry`,
+  // which scrolls the entry into view and flashes it once it actually exists
+  // in the DOM.
+  //
+  // The target only exists once every activity-feed source has loaded:
+  // comments, the linked chat transcript, and the audit trail (see the
+  // `isCommentsLoading || isChatLoading || isActivityLoading` skeleton gate
+  // below). A brand-new tab starts all three of those requests cold and they
+  // don't resolve in a fixed order, so gate the whole permalink attempt on
+  // every one of them finishing rather than retrying only when `comments`
+  // itself changes — otherwise a case where chat/audit resolve after comments
+  // retries once, too early, and never gets another chance. On an
+  // already-open tab this race has usually already settled by the time a
+  // fragment link is followed, which is why the bug reads as "new tab only."
+  const activitiesFeedReady =
+    !isCommentsLoading && !isChatLoading && !isActivityLoading;
+  // Forcing the Activities tab is a state adjustment, done during render like
+  // the prevCaseId reset above — not in the effect below. It has to be keyed on
+  // the fragment *changing*: the effect's other dependency
+  // (`activitiesFeedReady`) flips false → true as the three feed sources
+  // settle, so a setActiveTab living inside the effect re-ran on that flip and
+  // dragged a user who had switched tabs while the feed loaded back to
+  // Activities. Keyed on the fragment, the tab is forced once per link.
+  //
+  // No adjustment is needed on first mount: `activeTab` already starts at
+  // "activities", so initialising prevFragment to the current fragment is
+  // correct rather than a missed force. Following a permalink to a *different*
+  // case with the same fragment is handled by the prevCaseId block above,
+  // since the fragment itself does not change there.
+  const [prevFragment, setPrevFragment] = useState(permalinkFragment);
+  if (permalinkFragment !== prevFragment) {
+    setPrevFragment(permalinkFragment);
+    if (permalinkFragment) setActiveTab("activities");
+  }
   useEffect(() => {
-    const hash = location.hash?.replace(/^#/, "");
-    if (!hash) return;
-    // Permalink: a URL fragment forces the Activities tab. Effect-driven so it
-    // also fires when the hash changes while already on the page.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs active tab to URL hash
-    setActiveTab("activities");
-    // Track every timer (outer + both nested resets) so the cleanup can cancel
-    // all of them on unmount / hash change — the inner resets were previously
-    // leaked.
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    const timer = setTimeout(() => {
-      const target = document.getElementById(hash);
-      if (!target) return;
+    // Wait for the feed to actually be able to render the target before
+    // attempting to find it — see the comment above.
+    if (!permalinkFragment || !activitiesFeedReady) return;
 
-      // Undo any horizontal scroll the browser introduced on ancestors.
-      let cur: HTMLElement | null = target.parentElement;
-      while (cur && cur !== document.body) {
-        if (cur.scrollLeft !== 0) cur.scrollLeft = 0;
-        cur = cur.parentElement;
-      }
-      if (document.documentElement.scrollLeft !== 0) {
-        document.documentElement.scrollLeft = 0;
-      }
-      if (document.body.scrollLeft !== 0) document.body.scrollLeft = 0;
-
-      const container = findVerticalScrollAncestor(target);
-      const containerTop = container === document.documentElement
-        ? 0
-        : container.getBoundingClientRect().top;
-      const targetTop = target.getBoundingClientRect().top;
-      const offset = 96;
-      const delta = targetTop - containerTop - offset;
-      container.scrollTo({
-        top: container.scrollTop + delta,
-        behavior: "smooth",
-      });
-
-      const prevTransition = target.style.transition;
-      const prevBg = target.style.backgroundColor;
-      target.style.transition = "background-color 200ms ease-out";
-      target.style.backgroundColor = "rgba(255, 213, 79, 0.35)";
-      const reset = setTimeout(() => {
-        target.style.backgroundColor = prevBg;
-        timers.push(
-          setTimeout(() => {
-            target.style.transition = prevTransition;
-          }, 350),
+    return scrollToFragmentWithRetry(permalinkFragment, {
+      onNotFound: () => {
+        // Every source has loaded and the id still isn't in the DOM — it's
+        // not a timing problem. Say so rather than leaving the page silently
+        // scrolled to the top as if the link were malformed (e.g. a deleted
+        // comment, or one the viewer isn't permitted to see).
+        showError(
+          "Could not find the linked entry — it may have been removed, or you may not have permission to view it.",
         );
-      }, 1500);
-      timers.push(reset);
-    }, 250);
-    timers.push(timer);
-    return () => timers.forEach(clearTimeout);
-  }, [location.hash, data, comments]);
+      },
+    });
+  }, [permalinkFragment, activitiesFeedReady, showError]);
 
   useEffect(() => {
     // State-transition feedback is sticky (persists until dismissed) so it
@@ -1490,10 +1442,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
           onClick={() => navigate(resolvedBackPath)}
           sx={{ alignSelf: "flex-start" }}
         >
-          {backLabel}
+          Back
         </Button>
         <QueryErrorState
-          message={`Could not load this case: ${error instanceof Error ? error.message : "unknown error"}`}
+          message={error instanceof Error && error.message.trim() ? error.message : "Could not load this case."}
           error={error}
         />
       </Box>
@@ -1510,7 +1462,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           onClick={() => navigate(resolvedBackPath)}
           sx={{ alignSelf: "flex-start" }}
         >
-          {backLabel}
+          Back
         </Button>
         <Typography variant="h5">Case not found</Typography>
         <Typography variant="body2" color="text.secondary">
@@ -1561,7 +1513,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
         onClick={() => navigate(resolvedBackPath)}
         sx={{ alignSelf: "flex-start" }}
       >
-        {backLabel}
+        Back
       </Button>
 
       <Box
@@ -1653,21 +1605,38 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 sx={{ fontWeight: 600 }}
               />
             )}
-            {!isAnnouncement && c.parentCase && (
-              <Chip
-                size="small"
-                variant="outlined"
-                clickable
-                icon={<LinkIcon size={14} />}
-                label={`Parent: ${c.parentCase.caseNumber ?? c.parentCase.id}`}
-                onClick={() =>
-                  navigate(parentCasePath(c.parentCase), {
-                    state: { from: resolvedBackPath },
-                  })
-                }
-                sx={{ fontWeight: 600 }}
-              />
-            )}
+            {!isAnnouncement &&
+              c.parentCase &&
+              (() => {
+                const parentPath = parentRecordPath(c.parentCase);
+                return (
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    clickable={parentPath !== null}
+                    icon={<LinkIcon size={14} />}
+                    label={`Parent: ${c.parentCase.caseNumber ?? c.parentCase.id}`}
+                    // Carries the "back to list" target forward the same way
+                    // the related-case chip does, so the parent record's own
+                    // back button returns to the filtered list this case was
+                    // opened from.
+                    onClick={
+                      parentPath === null
+                        ? undefined
+                        : () =>
+                            navigate(parentPath, {
+                              state: { from: resolvedBackPath },
+                            })
+                    }
+                    title={
+                      parentPath === null
+                        ? "This parent record's type could not be resolved, so it cannot be opened from here."
+                        : undefined
+                    }
+                    sx={{ fontWeight: 600 }}
+                  />
+                );
+              })()}
             {!isAnnouncement &&
               c.autoclosureStep &&
               c.autoclosureStep !== "DEFAULT" && (
@@ -1715,6 +1684,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               caseDetail={c}
               onAction={onAction}
               closeBlockedReason={closeBlockedReason}
+              isPending={patchCase.isPending}
             />
           </Box>
         )}
@@ -2075,6 +2045,13 @@ export default function CsmCaseDetailPage(): JSX.Element {
           }}
         >
           <ChildCasesWidget caseId={c.id} />
+          {/* Content-relevance, not a data-source gate: shown whenever this is
+              a service request (the only case type that carries the link) or
+              the list already has entries — never checks the record's data
+              source. */}
+          {(isServiceRequest || (c.linkedChangeRequests?.length ?? 0) > 0) && (
+            <LinkedChangeRequestsWidget changeRequests={c.linkedChangeRequests} />
+          )}
           <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
             <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, flexWrap: "wrap" }}>
               <Typography variant="subtitle2">Linked service requests</Typography>

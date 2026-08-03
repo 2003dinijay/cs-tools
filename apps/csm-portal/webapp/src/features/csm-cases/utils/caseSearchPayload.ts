@@ -24,6 +24,7 @@ import {
 import { ASSIGNEE_ME_TOKEN } from "@features/csm-cases/utils/assignee";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import type {
+  BeCaseFieldFilter,
   BeCaseSearchFilters,
   BeCaseSearchView,
   BeUserSearchResponse,
@@ -40,38 +41,68 @@ import type { CsmCaseRow } from "@features/csm-cases/types/csmCases";
  *
  * `assignedUserIds` must already be resolved (see
  * {@link resolveAssignedUserIds}) — this function does no async work.
+ *
+ * Emits the generic `field`/`op`/`values` filter array (see
+ * `BeCaseFieldFilter`) rather than the old named fields.
  */
 export function buildCaseSearchFilters(
   filters: CasesFilters,
   search: string,
   assignedUserIds: string[] | undefined,
 ): BeCaseSearchFilters {
+  const fieldFilters: BeCaseFieldFilter[] = [];
+  if (filters.severities.length > 0) {
+    fieldFilters.push({
+      field: "severity",
+      op: "in",
+      values: filters.severities.map(priorityFromSeverity),
+    });
+  }
+  if (filters.states.length > 0) {
+    fieldFilters.push({
+      field: "state",
+      op: "in",
+      values: filters.states.map(beStateFromUi),
+    });
+  }
+  if (filters.caseTypes.length > 0) {
+    fieldFilters.push({ field: "type", op: "in", values: filters.caseTypes });
+  }
+  if (filters.workStates.length > 0) {
+    fieldFilters.push({
+      field: "workState",
+      op: "in",
+      values: filters.workStates,
+    });
+  }
+  if (filters.engagementTypes.length > 0) {
+    fieldFilters.push({
+      field: "engagementType",
+      op: "in",
+      values: filters.engagementTypes,
+    });
+  }
+  if (filters.projects.length > 0) {
+    fieldFilters.push({ field: "projectId", op: "in", values: filters.projects });
+  }
+  if (assignedUserIds && assignedUserIds.length > 0) {
+    fieldFilters.push({
+      field: "assignedUserId",
+      op: "in",
+      values: assignedUserIds,
+    });
+  }
+  if (filters.productNames.length > 0) {
+    fieldFilters.push({
+      field: "product",
+      op: "in",
+      values: filters.productNames,
+    });
+  }
+
   return {
     ...(search.length > 0 && { searchQuery: search }),
-    ...(filters.severities.length > 0 && {
-      severities: filters.severities.map(priorityFromSeverity),
-    }),
-    ...(filters.states.length > 0 && {
-      states: filters.states.map(beStateFromUi),
-    }),
-    ...(filters.caseTypes.length > 0 && {
-      types: filters.caseTypes,
-    }),
-    ...(filters.workStates.length > 0 && {
-      workStates: filters.workStates,
-    }),
-    ...(filters.engagementTypes.length > 0 && {
-      engagementTypes: filters.engagementTypes,
-    }),
-    ...(filters.projects.length > 0 && {
-      projectIds: filters.projects,
-    }),
-    ...(assignedUserIds && assignedUserIds.length > 0 && {
-      assignedUserIds,
-    }),
-    ...(filters.productNames.length > 0 && {
-      productNames: filters.productNames,
-    }),
+    ...(fieldFilters.length > 0 && { filters: fieldFilters }),
   };
 }
 
@@ -154,6 +185,5 @@ export function mapCaseSearchViewToRow(
     hasSla: false,
     createdAt: c.createdOn ?? "",
     updatedAt: c.updatedOn ?? c.createdOn ?? "",
-    updatedAtIsCreatedFallback: !c.updatedOn && !!c.createdOn,
   };
 }

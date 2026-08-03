@@ -57,7 +57,7 @@ describe("useQuickCaseSearch", () => {
       expect.objectContaining({
         filters: expect.objectContaining({
           searchQuery: "ABC-123",
-          types: ALL_CASE_TYPES,
+          filters: [{ field: "type", op: "in", values: ALL_CASE_TYPES }],
         }),
       }),
     );

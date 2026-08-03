@@ -16,7 +16,6 @@
 
 import {
   Box,
-  Chip,
   Skeleton,
   Table,
   TableBody,
@@ -33,6 +32,7 @@ import { Link as RouterLink } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useSearchProjects } from "@features/csm-projects/api/useSearchProjects";
+import ClosureStateChip from "@features/csm-projects/components/ClosureStateChip";
 import type { SearchProjectsRequest } from "@features/csm-projects/types/csmProjects";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 
@@ -50,10 +50,6 @@ function formatDate(value?: string | null): string {
         month: "short",
         day: "numeric",
       });
-}
-
-function formatSubscriptionType(value: string): string {
-  return value.replace(/_/g, " ");
 }
 
 export default function CsmProjectsPage(): JSX.Element {
@@ -109,7 +105,7 @@ export default function CsmProjectsPage(): JSX.Element {
               <TableRow sx={{ bgcolor: "action.hover" }}>
                 <TableCell>Name</TableCell>
                 <TableCell>Project key</TableCell>
-                <TableCell>Subscription</TableCell>
+                <TableCell>State</TableCell>
                 <TableCell>Start</TableCell>
                 <TableCell>End</TableCell>
               </TableRow>
@@ -129,7 +125,7 @@ export default function CsmProjectsPage(): JSX.Element {
                 <TableRow>
                   <TableCell colSpan={5} align="center">
                     <QueryErrorState
-                      message={`Failed to load projects: ${error instanceof Error ? error.message : "unknown error"}`}
+                      message={error instanceof Error && error.message.trim() ? error.message : "Failed to load projects."}
                       error={error}
                     />
                   </TableCell>
@@ -162,10 +158,9 @@ export default function CsmProjectsPage(): JSX.Element {
                     </TableCell>
                     <TableCell>{p.key}</TableCell>
                     <TableCell>
-                      <Chip
-                        size="small"
-                        label={formatSubscriptionType(p.subscriptionType)}
-                        variant="outlined"
+                      <ClosureStateChip
+                        closureState={p.closureState}
+                        emptyFallback="—"
                       />
                     </TableCell>
                     <TableCell>{formatDate(p.startDate)}</TableCell>

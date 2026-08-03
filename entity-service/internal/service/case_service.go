@@ -356,77 +356,108 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
-	if req.Pagination.Limit > 50 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "limit cannot exceed 50"}
-	}
 	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
-	if err := validateUUIDs("projectIds", req.Filters.ProjectIDs); err != nil {
-		return domain.SearchCasesResponse{}, err
-	}
-	if err := validateUUIDs("deploymentIds", req.Filters.DeploymentIDs); err != nil {
+
+	token := middleware.UserIDTokenFromContext(ctx)
+	callerEmail, callerEmailErr := resolveCaseFilterCallerEmail(token)
+	parsed, err := ParseCaseFieldFilters(req.Filters.Filters, callerEmail, callerEmailErr)
+	if err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
 
-	for _, t := range req.Filters.Types {
+	if err := validateUUIDs("projectId", parsed.ProjectIDs); err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+	if err := validateUUIDs("deploymentId", parsed.DeploymentIDs); err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+
+	for _, t := range parsed.Types {
 		if !validCaseType[t] {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "types contains invalid value: " + t}
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "type contains invalid value: " + t}
 		}
 	}
-	for _, s := range req.Filters.States {
-		if !validCaseState[s] {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "states contains invalid value: " + string(s)}
+	for _, st := range parsed.States {
+		if !validCaseState[st] {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "state contains invalid value: " + string(st)}
 		}
 	}
-	for _, s := range req.Filters.Severities {
-		if !validCaseSeverity[s] {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "severities contains invalid value: " + string(s)}
+	for _, sv := range parsed.Severities {
+		if !validCaseSeverity[sv] {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "severity contains invalid value: " + string(sv)}
 		}
 	}
-	for _, it := range req.Filters.IssueTypes {
+	for _, it := range parsed.IssueTypes {
 		if !validCaseIssueType[it] {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "issueTypes contains invalid value: " + string(it)}
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "issueType contains invalid value: " + string(it)}
 		}
 	}
-	for _, et := range req.Filters.EngagementTypes {
+	for _, et := range parsed.EngagementTypes {
 		if !validEngagementType[et] {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "engagementTypes contains invalid value: " + string(et)}
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "engagementType contains invalid value: " + string(et)}
 		}
 	}
-	for _, ws := range req.Filters.WorkStates {
+	for _, ws := range parsed.WorkStates {
 		if !validCaseWorkState[ws] {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "workStates contains invalid value: " + string(ws)}
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "workState contains invalid value: " + string(ws)}
 		}
 	}
-	if err := validateUUIDs("assignedUserIds", req.Filters.AssignedUserIDs); err != nil {
+	if err := validateUUIDs("assignedUserId", parsed.AssignedUserIDs); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
 
-	if req.Filters.CreatedByMe {
-		token := middleware.UserIDTokenFromContext(ctx)
-		if token == "" {
-			return domain.SearchCasesResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required for createdByMe filter"}
-		}
-		email, err := emailFromJWT(token)
-		if err != nil {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
-		}
-		req.Filters.CreatedBy = append(req.Filters.CreatedBy, email)
+	if parsed.CreatedByMe {
+		parsed.CreatedBy = append(parsed.CreatedBy, callerEmail)
 	}
 
-	if req.Filters.ClosedEndDate != nil && req.Filters.ClosedStartDate != nil &&
-		req.Filters.ClosedEndDate.Before(*req.Filters.ClosedStartDate) {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "closedEndDate must not be before closedStartDate"}
+	if parsed.ClosedEndDate != nil && parsed.ClosedStartDate != nil &&
+		parsed.ClosedEndDate.Before(*parsed.ClosedStartDate) {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "closedOn: lte value must not be before gte value"}
 	}
-	if req.Filters.EndCreatedDate != nil && req.Filters.StartCreatedDate != nil &&
-		req.Filters.EndCreatedDate.Before(*req.Filters.StartCreatedDate) {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "endCreatedDate must not be before startCreatedDate"}
+	if parsed.EndCreatedDate != nil && parsed.StartCreatedDate != nil &&
+		parsed.EndCreatedDate.Before(*parsed.StartCreatedDate) {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "createdOn: lte value must not be before gte value"}
 	}
-	if req.Filters.EndUpdatedDate != nil && req.Filters.StartUpdatedDate != nil &&
-		req.Filters.EndUpdatedDate.Before(*req.Filters.StartUpdatedDate) {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "endUpdatedDate must not be before startUpdatedDate"}
+	if parsed.EndUpdatedDate != nil && parsed.StartUpdatedDate != nil &&
+		parsed.EndUpdatedDate.Before(*parsed.StartUpdatedDate) {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "updatedOn: lte value must not be before gte value"}
 	}
+
+	// These fields dot-walk into ServiceNow-specific concepts (tags,
+	// project-onboarding-status, integration-CS-team, etc.) that have no
+	// equivalent in the Postgres schema and no repository query support today.
+	// Reject rather than silently drop the predicate and widen the result set.
+	if len(parsed.Tags) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "tag" is not supported by this data source`}
+	}
+	if len(parsed.ExcludeTags) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "tag" (notIn) is not supported by this data source`}
+	}
+	if parsed.ParentID != nil {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "parentId" is not supported by this data source`}
+	}
+	if len(parsed.ProductNames) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "product" is not supported by this data source`}
+	}
+	if len(parsed.ProjectOnboardingStatuses) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "projectOnboardingStatus" is not supported by this data source`}
+	}
+	if len(parsed.ProjectTypeIDs) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "projectType" is not supported by this data source`}
+	}
+	if len(parsed.IntegrationCsTeamIDs) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "integrationCsTeam" is not supported by this data source`}
+	}
+	if parsed.Unassigned {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "assignedUserId" (isEmpty) is not supported by this data source`}
+	}
+	if parsed.ResolutionNotesEmpty {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "resolutionNotes" is not supported by this data source`}
+	}
+
+	req.Parsed = parsed
 
 	if req.SortBy.Field == "" {
 		req.SortBy.Field = domain.CaseSortFieldCreatedOn

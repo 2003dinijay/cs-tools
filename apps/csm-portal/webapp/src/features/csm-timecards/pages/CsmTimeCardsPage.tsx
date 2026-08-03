@@ -528,7 +528,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 cards={allFilteredCards}
                 isLoading={allCards.isLoading}
                 groupBy={groupBy}
-                showCaseEngineerColumns
+                showEngineerColumn
                 roleFor={allRoleFor}
                 onCardAction={handleCardAction}
                 emptyText={anyFilterActive ? "No time cards match the current filters." : "No time logged yet."}
@@ -597,7 +597,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 cards={approvalsFilteredCards}
                 isLoading={queue.isLoading}
                 groupBy={groupBy}
-                showCaseEngineerColumns
+                showEngineerColumn
                 showActionsColumn
                 roleFor={approvalsRole}
                 onCardAction={handleCardAction}
@@ -715,7 +715,7 @@ function FilterBar({
    * there — hide it instead of showing a filter that silently does nothing. */
   hideStateFilter?: boolean;
 }): JSX.Element {
-  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(true);
 
   // filterState counts here even when this tab hides its own State control
   // (hideStateFilter) — it's shared across tabs, so a value set elsewhere

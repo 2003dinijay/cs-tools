@@ -41,8 +41,12 @@ func validateUUIDs(field string, ids []string) error {
 }
 
 const (
-	defaultLimit      = 20
-	maxLimit          = 100
+	defaultLimit = 20
+	// maxLimit is 50 because the backing data source rejects anything above 50 with
+	// an opaque validation error. Capping here, at the single choke point every
+	// search normalizes through, means a new search cannot silently reintroduce the
+	// mismatch: it gets a named error naming the limit instead of a downstream 400.
+	maxLimit          = 50
 	maxSearchQueryLen = 200
 
 	defaultUserLimit = 10
@@ -56,7 +60,7 @@ func normalizePagination(p *domain.Pagination) error {
 		p.Limit = defaultLimit
 	}
 	if p.Limit > maxLimit {
-		return &apierror.ValidationError{Msg: "limit cannot exceed 100"}
+		return &apierror.ValidationError{Msg: fmt.Sprintf("limit cannot exceed %d", maxLimit)}
 	}
 	if p.Offset < 0 {
 		p.Offset = 0
@@ -103,8 +107,12 @@ func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersReq
 	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchUsersResponse{}, err
 	}
-	if len(req.Filters.Roles) > 0 {
-		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "roles filter is only supported for the ServiceNow data source"}
+	if len(req.Filters.RoleIDs) > 0 {
+		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "roleIds filter is only supported for the ServiceNow data source"}
+	}
+	if len(req.Filters.UserIDs) > 0 || len(req.Filters.GroupIDs) > 0 || len(req.Filters.TeamIDs) > 0 {
+		return domain.SearchUsersResponse{}, &apierror.ValidationError{
+			Msg: "userIds, groupIds and teamIds filters are only supported for the ServiceNow data source"}
 	}
 	if req.Filters.Active != nil {
 		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "active filter is only supported for the ServiceNow data source"}

@@ -86,9 +86,9 @@ func timePtr(t time.Time) *time.Time { return &t }
 // TestSNCaseService_GetCaseByID_MapsWatchListAutoclosureAndTeams verifies the
 // additive read-side wire-up for items 2 (watchers), 6 (autoclosureStep/autoclosureStateTime),
 // and 10 (CRE/SRE team on account). AutoclosureStep/AutoclosureStateTime/CreTeam/SreTeam are
-// Ballerina-blocked today (digiops-cs does not send them), but this test simulates a future
-// response carrying them to prove the entity-service mapping code is ready once Ballerina adds
-// the fields.
+// Ballerina-blocked today (the backing service does not send them), but this test simulates a
+// future response carrying them to prove the entity-service mapping code is ready once
+// Ballerina adds the fields.
 func TestSNCaseService_GetCaseByID_MapsWatchListAutoclosureAndTeams(t *testing.T) {
 	body := `{
 		"id": "` + testWLCaseSysid + `",
@@ -166,10 +166,10 @@ func TestSNCaseService_GetCaseByID_MapsWatchListAutoclosureAndTeams(t *testing.T
 	}
 }
 
-// TestSnParentCaseTypeToDomain covers digiops-cs#2568's follow-up: a parent/related
-// case reference's raw ServiceNow type maps to the public enum for every known
-// sys_class_name-derived value, and an unmapped or absent raw value stays nil rather
-// than leaking an unrecognised string onto the API surface.
+// TestSnParentCaseTypeToDomain covers the parent/related-case follow-up (tracked
+// separately): a parent/related case reference's raw ServiceNow type maps to the
+// public enum for every known sys_class_name-derived value, and an unmapped or absent
+// raw value stays nil rather than leaking an unrecognised string onto the API surface.
 func TestSnParentCaseTypeToDomain(t *testing.T) {
 	tests := []struct {
 		name string
@@ -197,10 +197,11 @@ func TestSnParentCaseTypeToDomain(t *testing.T) {
 	}
 }
 
-// TestSNCaseService_GetCaseByID_MapsParentCaseType verifies digiops-cs#2568's follow-up
-// end to end: a GetCaseByID response carrying parentCase.type resolves to the matching
-// domain.CaseNumberRef.Type for a known value, and stays nil for an unrecognised one --
-// never passing the raw ServiceNow string through unmapped.
+// TestSNCaseService_GetCaseByID_MapsParentCaseType verifies the parent/related-case
+// follow-up (tracked separately) end to end: a GetCaseByID response carrying
+// parentCase.type resolves to the matching domain.CaseNumberRef.Type for a known
+// value, and stays nil for an unrecognised one -- never passing the raw ServiceNow
+// string through unmapped.
 func TestSNCaseService_GetCaseByID_MapsParentCaseType(t *testing.T) {
 	newBody := func(parentType string) string {
 		return `{
@@ -260,7 +261,7 @@ func TestSNCaseService_GetCaseByID_MapsParentCaseType(t *testing.T) {
 }
 
 // TestSNCaseService_GetCaseByID_BallerinaBlockedFieldsAbsent documents current reality:
-// against a real (unmodified) digiops-cs response with none of the blocked fields present,
+// against a real, unmodified backing-service response with none of the blocked fields present,
 // AutoclosureStep/AutoclosureStateTime/CreTeam/SreTeam all stay nil rather than zero-valuing.
 func TestSNCaseService_GetCaseByID_BallerinaBlockedFieldsAbsent(t *testing.T) {
 	body := `{
@@ -941,6 +942,217 @@ func TestSNCaseService_SearchCases_EmptyTypesFilterSendsNoTypeRestriction(t *tes
 	}
 }
 
+// TestSNCaseService_SearchCases_GenericFiltersTranslateToSNPayload proves the
+// generic filters array (the new public contract) still produces the exact
+// same named-field Ballerina payload SearchCases has always sent, just fed by
+// ParseCaseFieldFilters + buildSNCaseFilters instead of directly by named
+// request struct fields.
+func TestSNCaseService_SearchCases_GenericFiltersTranslateToSNPayload(t *testing.T) {
+	var gotBody snCaseSearchPayload
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cases/search", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"cases": []map[string]any{}, "total": 0, "offset": 0, "limit": 20})
+	})
+
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowCaseService(client, nil)
+
+	req := domain.SearchCasesRequest{
+		Filters: domain.SearchCasesFilters{
+			Filters: []domain.CaseFieldFilter{
+				{Field: "tag", Op: "in", Values: []string{"patch"}},
+				{Field: "tag", Op: "notIn", Values: []string{"beta"}},
+				{Field: "assignedUserId", Op: "isEmpty"},
+				{Field: "resolutionNotes", Op: "isEmpty"},
+				{Field: "createdBy", Op: "eq", Values: []string{currentUserFilterPlaceholder}},
+			},
+		},
+	}
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	if _, err := svc.SearchCases(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(gotBody.Filters.Tags) != 1 || gotBody.Filters.Tags[0] != "patch" {
+		t.Fatalf("Tags = %v", gotBody.Filters.Tags)
+	}
+	if len(gotBody.Filters.ExcludeTags) != 1 || gotBody.Filters.ExcludeTags[0] != "beta" {
+		t.Fatalf("ExcludeTags = %v", gotBody.Filters.ExcludeTags)
+	}
+	if !gotBody.Filters.Unassigned {
+		t.Fatalf("expected Unassigned = true")
+	}
+	if !gotBody.Filters.ResolutionNotesEmpty {
+		t.Fatalf("expected ResolutionNotesEmpty = true")
+	}
+	if !gotBody.Filters.CreatedByMe {
+		t.Fatalf("expected CreatedByMe = true (forwarded as a flag, not resolved into CreatedBy)")
+	}
+	if len(gotBody.Filters.CreatedBy) != 0 {
+		t.Fatalf("expected CreatedBy to stay empty for the current-user placeholder, got %v", gotBody.Filters.CreatedBy)
+	}
+}
+
+// TestSNCaseService_SearchCases_RejectsBadFilterFieldAndCombo proves invalid
+// field names and invalid field/op combinations are rejected before ever
+// reaching the backing service, not silently ignored or forwarded.
+func TestSNCaseService_SearchCases_RejectsBadFilterFieldAndCombo(t *testing.T) {
+	client := newTestSNClient(t, http.NewServeMux())
+	svc := NewServiceNowCaseService(client, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	t.Run("bad field name", func(t *testing.T) {
+		req := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+			Filters: []domain.CaseFieldFilter{{Field: "bogusField", Op: "in", Values: []string{"x"}}},
+		}}
+		_, err := svc.SearchCases(ctx, req)
+		if _, ok := err.(*apierror.ValidationError); !ok {
+			t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("bad field+op combo", func(t *testing.T) {
+		req := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+			Filters: []domain.CaseFieldFilter{{Field: "type", Op: "gte", Values: []string{"case"}}},
+		}}
+		_, err := svc.SearchCases(ctx, req)
+		if _, ok := err.(*apierror.ValidationError); !ok {
+			t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+		}
+	})
+}
+
+// TestSNCaseService_SearchCases_RejectsUnrecognizedEnumValues proves that
+// State/Severity/IssueType/EngagementType filter values not present in the
+// domain's validXxx maps are rejected outright, rather than being silently
+// dropped by domainStatesToSNIDs/domainSeveritiesToSNIDs/domainIssueTypesToSNIDs/
+// domainEngagementTypesToSNIDs (which skip unrecognized values, producing an
+// empty key slice that omitempty then drops from the SN payload entirely --
+// previously this widened the result set instead of erroring).
+func TestSNCaseService_SearchCases_RejectsUnrecognizedEnumValues(t *testing.T) {
+	client := newTestSNClient(t, http.NewServeMux())
+	svc := NewServiceNowCaseService(client, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	cases := []struct {
+		name   string
+		filter domain.CaseFieldFilter
+	}{
+		{name: "state", filter: domain.CaseFieldFilter{Field: "state", Op: "in", Values: []string{"bogus_state"}}},
+		{name: "severity", filter: domain.CaseFieldFilter{Field: "severity", Op: "in", Values: []string{"bogus_severity"}}},
+		{name: "issueType", filter: domain.CaseFieldFilter{Field: "issueType", Op: "in", Values: []string{"bogus_issue_type"}}},
+		{name: "engagementType", filter: domain.CaseFieldFilter{Field: "engagementType", Op: "in", Values: []string{"bogus_engagement_type"}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+				Filters: []domain.CaseFieldFilter{tc.filter},
+			}}
+			_, err := svc.SearchCases(ctx, req)
+			if _, ok := err.(*apierror.ValidationError); !ok {
+				t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+// TestSNCaseService_SearchCases_AcceptsAllPreviouslyValidEnumValues proves the
+// new enum validation added alongside TestSNCaseService_SearchCases_RejectsUnrecognizedEnumValues
+// does not newly reject any value that was previously forwarded to SN, for
+// each of State/Severity/IssueType/EngagementType.
+func TestSNCaseService_SearchCases_AcceptsAllPreviouslyValidEnumValues(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cases/search", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"cases": []map[string]any{}, "total": 0, "offset": 0, "limit": 20})
+	})
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowCaseService(client, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	allStates := make([]string, 0, len(validCaseState))
+	for s := range validCaseState {
+		allStates = append(allStates, string(s))
+	}
+	allSeverities := make([]string, 0, len(validCaseSeverity))
+	for s := range validCaseSeverity {
+		allSeverities = append(allSeverities, string(s))
+	}
+	allIssueTypes := make([]string, 0, len(validCaseIssueType))
+	for s := range validCaseIssueType {
+		allIssueTypes = append(allIssueTypes, string(s))
+	}
+	allEngagementTypes := make([]string, 0, len(validEngagementType))
+	for s := range validEngagementType {
+		allEngagementTypes = append(allEngagementTypes, string(s))
+	}
+
+	req := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+		Filters: []domain.CaseFieldFilter{
+			{Field: "state", Op: "in", Values: allStates},
+			{Field: "severity", Op: "in", Values: allSeverities},
+			{Field: "issueType", Op: "in", Values: allIssueTypes},
+			{Field: "engagementType", Op: "in", Values: allEngagementTypes},
+		},
+	}}
+	if _, err := svc.SearchCases(ctx, req); err != nil {
+		t.Fatalf("unexpected error for previously-valid enum values: %v", err)
+	}
+}
+
+// TestSNCaseService_SearchCases_PopulatesUpdatedOn proves SearchCases carries
+// a real, non-empty updatedOn distinct from createdOn when the SN response
+// supplies one, fixing the case-list "Updated" column always showing the
+// created date.
+func TestSNCaseService_SearchCases_PopulatesUpdatedOn(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cases/search", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"cases": []map[string]any{
+				{
+					"id":         "case-sys-id",
+					"internalId": "INT-1",
+					"number":     "CS0001",
+					"title":      "t",
+					"description": "d",
+					"createdOn":  "2026-01-01 00:00:00",
+					"updatedOn":  "2026-01-15 12:30:00",
+					"createdBy":  "jane.doe@example.com",
+					"project":    map[string]any{"id": "proj-sys-id", "name": "Proj"},
+					"deployment": map[string]any{"id": "", "name": ""},
+					"deployedProduct": map[string]any{"id": "", "name": "", "product": map[string]any{"id": "", "name": ""}},
+				},
+			},
+			"total": 1, "offset": 0, "limit": 20,
+		})
+	})
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowCaseService(client, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	resp, err := svc.SearchCases(ctx, domain.SearchCasesRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Cases) != 1 {
+		t.Fatalf("expected 1 case, got %d", len(resp.Cases))
+	}
+	got := resp.Cases[0]
+	if got.UpdatedOn == "" {
+		t.Fatalf("expected non-empty UpdatedOn")
+	}
+	if got.UpdatedOn == got.CreatedOn {
+		t.Fatalf("expected UpdatedOn %q to differ from CreatedOn %q", got.UpdatedOn, got.CreatedOn)
+	}
+	if got.UpdatedOn != "2026-01-15 12:30:00" {
+		t.Fatalf("UpdatedOn = %q, want the SN updatedOn field value", got.UpdatedOn)
+	}
+}
+
 func TestSNCaseService_SearchTags_Success(t *testing.T) {
 	var gotQuery string
 	mux := http.NewServeMux()
@@ -1025,4 +1237,91 @@ func TestCaseService_SearchTags_ServiceUnavailable(t *testing.T) {
 	} else if _, ok := err.(*apierror.ServiceUnavailableError); !ok {
 		t.Fatalf("expected *apierror.ServiceUnavailableError, got %T: %v", err, err)
 	}
+}
+
+// TestSNCaseService_GetCaseByID_MapsLinkedChangeRequests covers the reverse side of the
+// service-request <-> change-request link. Upstream sends the list under `changeRequests`
+// with 32-hex ids; the domain exposes it as `linkedChangeRequests` with canonical UUIDs.
+//
+// The cardinality cases matter: a service request can have several change requests (one per
+// environment the change is promoted to), so a single-value mapping would look correct
+// against a record that happens to have exactly one and be wrong in production.
+func TestSNCaseService_GetCaseByID_MapsLinkedChangeRequests(t *testing.T) {
+	crSysidA := sysid32('1')
+	crSysidB := sysid32('2')
+
+	newBody := func(changeRequests string) string {
+		return `{
+			"id": "` + testWLCaseSysid + `",
+			"internalId": "WSO2-001",
+			"number": "CS0001001",
+			"title": "Case subject",
+			"description": "Case description",
+			"createdOn": "2026-01-01 10:00:00",
+			"updatedOn": "2026-01-02 10:00:00",
+			"createdBy": "reporter@example.com",
+			"project": {"id": "` + testProjectSysid + `", "name": "Project A"},
+			"deployment": {"id": "", "name": ""},
+			"deployedProduct": {"id": "", "name": "", "version": ""},
+			"state": {"id": 1, "label": "Open"},
+			"changeRequests": ` + changeRequests + `
+		}`
+	}
+
+	get := func(t *testing.T, changeRequests string) domain.CaseView {
+		t.Helper()
+		client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(newBody(changeRequests)))
+		})
+		svc := NewServiceNowCaseService(client, nil)
+
+		cv, err := svc.GetCaseByID(contextWithUserIDToken("token"), sysidToUUID(testWLCaseSysid))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return cv
+	}
+
+	t.Run("null stays empty", func(t *testing.T) {
+		cv := get(t, "null")
+		if len(cv.LinkedChangeRequests) != 0 {
+			t.Fatalf("expected no linked change requests, got %+v", cv.LinkedChangeRequests)
+		}
+	})
+
+	t.Run("single entry maps with a canonical UUID", func(t *testing.T) {
+		cv := get(t, `[{"id": "`+crSysidA+`", "number": "CHG0000001", "name": "Promote to dev"}]`)
+		if len(cv.LinkedChangeRequests) != 1 {
+			t.Fatalf("expected 1 linked change request, got %d", len(cv.LinkedChangeRequests))
+		}
+		got := cv.LinkedChangeRequests[0]
+		if got.ID != sysidToUUID(crSysidA) {
+			t.Fatalf("expected id %q, got %q", sysidToUUID(crSysidA), got.ID)
+		}
+		if got.Number != "CHG0000001" || got.Name == nil || *got.Name != "Promote to dev" {
+			t.Fatalf("unexpected mapping: %+v", got)
+		}
+	})
+
+	t.Run("several entries all map, order preserved", func(t *testing.T) {
+		cv := get(t, `[
+			{"id": "`+crSysidA+`", "number": "CHG0000001", "name": "Promote to dev"},
+			{"id": "`+crSysidB+`", "number": "CHG0000002", "name": ""}
+		]`)
+		if len(cv.LinkedChangeRequests) != 2 {
+			t.Fatalf("expected 2 linked change requests, got %d", len(cv.LinkedChangeRequests))
+		}
+		if cv.LinkedChangeRequests[0].Number != "CHG0000001" || cv.LinkedChangeRequests[1].Number != "CHG0000002" {
+			t.Fatalf("order not preserved: %+v", cv.LinkedChangeRequests)
+		}
+		if cv.LinkedChangeRequests[1].ID != sysidToUUID(crSysidB) {
+			t.Fatalf("expected id %q, got %q", sysidToUUID(crSysidB), cv.LinkedChangeRequests[1].ID)
+		}
+		// An absent upstream subject must surface as nil, not "": the two are
+		// otherwise indistinguishable to a caller.
+		if cv.LinkedChangeRequests[1].Name != nil {
+			t.Fatalf("expected an empty upstream name to map to nil, got %q", *cv.LinkedChangeRequests[1].Name)
+		}
+	})
 }

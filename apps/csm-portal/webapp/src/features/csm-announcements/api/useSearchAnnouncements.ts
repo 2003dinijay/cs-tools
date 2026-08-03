@@ -23,6 +23,7 @@ import { useBackendApi } from "@api/backend/client";
 import { ApiQueryKeys } from "@constants/apiConstants";
 import { beStateFromUi, uiStateFromBe } from "@api/backend/mappers";
 import type {
+  BeCaseFieldFilter,
   BeCaseSearchPayload,
   BeCaseSearchResponse,
 } from "@api/backend/types";
@@ -46,7 +47,7 @@ import type {
  * (No severity filter — announcements don't carry a severity of their own.)
  *
  * Creating / targeting / unpublishing announcements is not covered here — it
- * needs the dedicated announcement backend (digiops-cs#2053), which isn't
+ * needs the dedicated announcement backend, tracked separately, which isn't
  * built yet. `page` is zero-based (MUI `TablePagination`); `pageSize` is the
  * row limit.
  */
@@ -70,20 +71,31 @@ export function useSearchAnnouncements(
       pageSize,
     ],
     queryFn: async (): Promise<CsmAnnouncementsListResponse> => {
+      const fieldFilters: BeCaseFieldFilter[] = [
+        { field: "type", op: "in", values: ["announcement"] },
+      ];
+      if (filters.states.length > 0) {
+        fieldFilters.push({
+          field: "state",
+          op: "in",
+          values: filters.states.map(beStateFromUi),
+        });
+      }
+      if (filters.projectIds.length > 0) {
+        fieldFilters.push({
+          field: "projectId",
+          op: "in",
+          values: filters.projectIds,
+        });
+      }
       const res = await api.post<BeCaseSearchPayload, BeCaseSearchResponse>(
         "/cases/search",
         {
           pagination: { offset, limit: pageSize },
           sortBy: { field: "updatedOn", order: "desc" },
           filters: {
-            types: ["announcement"],
+            filters: fieldFilters,
             ...(q.length > 0 && { searchQuery: q }),
-            ...(filters.states.length > 0 && {
-              states: filters.states.map(beStateFromUi),
-            }),
-            ...(filters.projectIds.length > 0 && {
-              projectIds: filters.projectIds,
-            }),
           },
         },
       );

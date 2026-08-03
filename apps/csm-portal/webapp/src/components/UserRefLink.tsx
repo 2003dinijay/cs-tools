@@ -16,35 +16,55 @@
 
 import type { JSX } from "react";
 import { Link as RouterLink } from "react-router";
+import { useResolvedUserId } from "@features/csm-users/api/useResolvedUserId";
 
 interface UserRefLinkProps {
-  /** Display name shown as the link text (or plain text when there's no email). */
+  /** Display name shown as the link text (or plain text when there's no id
+   * to link to). */
   name: string;
-  /** The user's email, used to build the `/people/:email` link. Absent/empty
-   * renders plain text — a user with no email on file can't be looked up. */
+  /**
+   * The user's email. Used to resolve a user id when {@link userId} is
+   * absent/null (see `useResolvedUserId`) — the profile route keys on the id,
+   * not the email, so a person with no id available yet can't be linked
+   * until resolution succeeds (or ever, if the email doesn't resolve).
+   */
   email?: string;
+  /**
+   * The user's id, when already known (e.g. a `UserReference.id` the backend
+   * populated directly, such as a comment author or the case assignee).
+   * `null`/`undefined` both mean "not known here" and fall through to
+   * resolving it from {@link email} instead of failing closed — this is also
+   * what makes the component backward compatible with a backend that
+   * predates `UserReference` and only ever sent a bare email.
+   */
+  userId?: string | null;
   /** Optional className passthrough for layout tweaks. */
   className?: string;
 }
 
 /**
- * Renders a person's name as a link to their profile page (`/people/:email`)
- * when an email is available, with the same hover-underline treatment
- * {@link RelativeTime} uses for its permalink anchor. Falls back to plain text
- * when there's no email to look the user up by.
+ * Renders a person's name as a link to their profile page (`/people/:id`)
+ * once an id is available — either passed directly via `userId` or resolved
+ * from `email` through the cached email-to-id lookup — with the same
+ * hover-underline treatment {@link RelativeTime} uses for its permalink
+ * anchor. Falls back to plain text immediately (never a spinner) when there's
+ * no id and none can be resolved.
  */
 export default function UserRefLink({
   name,
   email,
+  userId,
   className,
 }: UserRefLinkProps): JSX.Element {
-  if (!email || !email.trim()) {
+  const resolvedId = useResolvedUserId(email, userId);
+
+  if (!resolvedId) {
     return <span className={className}>{name}</span>;
   }
 
   return (
     <RouterLink
-      to={`/people/${encodeURIComponent(email)}`}
+      to={`/people/${encodeURIComponent(resolvedId)}`}
       className={className}
       style={{
         color: "inherit",

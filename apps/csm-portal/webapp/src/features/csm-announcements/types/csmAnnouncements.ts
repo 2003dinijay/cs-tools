@@ -40,7 +40,7 @@ export const DEFAULT_ANNOUNCEMENT_FILTERS: AnnouncementFilters = {
  * `type: "announcement"` and read back through `POST /cases/search`, so the row
  * is a trimmed projection of the case search view — only the fields the
  * read-only list renders. (Targeting/audience metadata isn't available until
- * the dedicated announcement backend lands — see digiops-cs#2053.)
+ * the dedicated announcement backend lands — tracked separately.)
  */
 export interface CsmAnnouncementRow {
   id: string;

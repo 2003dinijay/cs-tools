@@ -17,35 +17,41 @@
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { ApiQueryKeys, BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
-import type { BeProductSearchPayload, BeProductSearchResponse } from "@api/backend/types";
+import type {
+  BeItServiceSearchPayload,
+  BeItServiceSearchResponse,
+} from "@api/backend/types";
 
 const PAGE_LIMIT = BE_MAX_PAGE_LIMIT;
 
 /**
- * Distinct product **family names** for the cases product filter.
+ * Distinct service names for the incidents "Product" filter.
  *
- * `POST /products/search` returns one row per product model/version (hundreds
- * of rows, the same short `name` repeated many times, e.g. dozens of "API
- * Manager" variants). The case product filter matches on the family name
- * (`filters.productNames` → ServiceNow `product.name IN ...`, all versions), so
- * this hook fetches the full (bounded) catalogue once and reduces it to the set
- * of distinct, non-empty names, sorted for a stable dropdown order.
+ * Incidents have no product dimension of their own — `productNames` matches
+ * against the name of the *service* the incident relates to (see
+ * `BeIncidentSearchPayload`), which is only ~43% populated and mixes real
+ * products with customer names and service categories. There is no endpoint
+ * that enumerates just the names actually used on incidents, so this reuses
+ * the same `/services/search` catalogue already backing the create-incident
+ * form's "Service" picker ({@link useSearchItServices}) and fetches it in full
+ * (bounded, same approach as the cases list's `useProductNameOptions`) rather
+ * than requiring the user to already know a name to type-ahead against.
  */
-export function useProductNameOptions(): UseQueryResult<string[], Error> {
+export function useIncidentProductNameOptions(): UseQueryResult<string[], Error> {
   const api = useBackendApi();
 
   return useQuery<string[], Error>({
-    queryKey: [ApiQueryKeys.PRODUCTS, "family-names"],
+    queryKey: [ApiQueryKeys.IT_SERVICE_NAMES],
     queryFn: async (): Promise<string[]> => {
       const names = new Set<string>();
       for (let offset = 0; ; offset += PAGE_LIMIT) {
-        const res = await api.post<BeProductSearchPayload, BeProductSearchResponse>(
-          "/products/search",
+        const res = await api.post<BeItServiceSearchPayload, BeItServiceSearchResponse>(
+          "/services/search",
           { pagination: { offset, limit: PAGE_LIMIT } },
         );
-        const page = res.products ?? [];
-        for (const p of page) {
-          const name = p.name?.trim();
+        const page = res.services ?? [];
+        for (const s of page) {
+          const name = s.name?.trim();
           if (name) names.add(name);
         }
         if (page.length < PAGE_LIMIT) break;

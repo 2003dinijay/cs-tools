@@ -31,6 +31,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// parentRefTypeCase is the CaseNumberRef.Type value for a parent that is itself a case.
+// Addressable because CaseNumberRef.Type is an optional (pointer) field.
+var parentRefTypeCase = "case"
 
 // CaseRepository defines the persistence operations for the cases table.
 type CaseRepository interface {
@@ -170,11 +173,18 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		ws := domain.CaseWorkState(*workState)
 		cv.WorkState = &ws
 	}
+	cv.CreatedByUser = domain.NewUserReference(
+		cv.CreatedByDetails.ID, cv.CreatedByDetails.Email, cv.CreatedByDetails.Name)
 	if aeID != nil {
 		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: *aeID, Name: *aeName}
+		// This data source stores no email on the assignee join, only id and name.
+		cv.AssignedEngineerUser = domain.NewUserReference(*aeID, "", *aeName)
 	}
 	if pcID != nil {
-		cv.ParentCase = &domain.CaseNumberRef{ID: *pcID, Number: *pcNum}
+		// cases.parent_case_id is a foreign key into cases, so a parent resolved from
+		// this data source is always another case -- state that explicitly rather than
+		// leaving Type nil, which means "kind unknown" and must not be routed as a case.
+		cv.ParentCase = &domain.CaseNumberRef{ID: *pcID, Number: *pcNum, Type: &parentRefTypeCase}
 	}
 	if rcID != nil {
 		cv.RelatedCase = &domain.CaseNumberRef{ID: *rcID, Number: *rcNum}
@@ -336,27 +346,27 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 
 	where := "WHERE 1=1"
 
-	if len(req.Filters.Types) > 0 {
+	if len(req.Parsed.Types) > 0 {
 		where += fmt.Sprintf(" AND c.type = ANY($%d::case_type_enum[])", argIdx)
-		filterArgs = append(filterArgs, req.Filters.Types)
+		filterArgs = append(filterArgs, req.Parsed.Types)
 		argIdx++
 	}
 
-	if len(req.Filters.ProjectIDs) > 0 {
+	if len(req.Parsed.ProjectIDs) > 0 {
 		where += fmt.Sprintf(" AND c.project_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Filters.ProjectIDs)
+		filterArgs = append(filterArgs, req.Parsed.ProjectIDs)
 		argIdx++
 	}
 
-	if len(req.Filters.DeploymentIDs) > 0 {
+	if len(req.Parsed.DeploymentIDs) > 0 {
 		where += fmt.Sprintf(" AND c.deployment_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Filters.DeploymentIDs)
+		filterArgs = append(filterArgs, req.Parsed.DeploymentIDs)
 		argIdx++
 	}
 
-	if len(req.Filters.States) > 0 {
-		stateStrings := make([]string, len(req.Filters.States))
-		for i, s := range req.Filters.States {
+	if len(req.Parsed.States) > 0 {
+		stateStrings := make([]string, len(req.Parsed.States))
+		for i, s := range req.Parsed.States {
 			stateStrings[i] = string(s)
 		}
 		where += fmt.Sprintf(" AND c.state = ANY($%d::case_state_enum[])", argIdx)
@@ -364,9 +374,9 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.Filters.Severities) > 0 {
-		severityStrings := make([]string, len(req.Filters.Severities))
-		for i, s := range req.Filters.Severities {
+	if len(req.Parsed.Severities) > 0 {
+		severityStrings := make([]string, len(req.Parsed.Severities))
+		for i, s := range req.Parsed.Severities {
 			severityStrings[i] = string(s)
 		}
 		where += fmt.Sprintf(" AND c.severity = ANY($%d::case_severity_enum[])", argIdx)
@@ -374,9 +384,9 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.Filters.IssueTypes) > 0 {
-		issueTypeStrings := make([]string, len(req.Filters.IssueTypes))
-		for i, it := range req.Filters.IssueTypes {
+	if len(req.Parsed.IssueTypes) > 0 {
+		issueTypeStrings := make([]string, len(req.Parsed.IssueTypes))
+		for i, it := range req.Parsed.IssueTypes {
 			issueTypeStrings[i] = string(it)
 		}
 		where += fmt.Sprintf(" AND c.issue_type = ANY($%d::case_issue_type_enum[])", argIdx)
@@ -384,9 +394,9 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.Filters.EngagementTypes) > 0 {
-		engTypeStrings := make([]string, len(req.Filters.EngagementTypes))
-		for i, et := range req.Filters.EngagementTypes {
+	if len(req.Parsed.EngagementTypes) > 0 {
+		engTypeStrings := make([]string, len(req.Parsed.EngagementTypes))
+		for i, et := range req.Parsed.EngagementTypes {
 			engTypeStrings[i] = string(et)
 		}
 		where += fmt.Sprintf(" AND c.engagement_type = ANY($%d::engagement_type_enum[])", argIdx)
@@ -394,15 +404,15 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.Filters.CreatedBy) > 0 {
+	if len(req.Parsed.CreatedBy) > 0 {
 		where += fmt.Sprintf(" AND u.email = ANY($%d)", argIdx)
-		filterArgs = append(filterArgs, req.Filters.CreatedBy)
+		filterArgs = append(filterArgs, req.Parsed.CreatedBy)
 		argIdx++
 	}
 
-	if len(req.Filters.WorkStates) > 0 {
-		workStateStrings := make([]string, len(req.Filters.WorkStates))
-		for i, ws := range req.Filters.WorkStates {
+	if len(req.Parsed.WorkStates) > 0 {
+		workStateStrings := make([]string, len(req.Parsed.WorkStates))
+		for i, ws := range req.Parsed.WorkStates {
 			workStateStrings[i] = string(ws)
 		}
 		where += fmt.Sprintf(" AND c.work_state = ANY($%d::case_work_state_enum[])", argIdx)
@@ -410,40 +420,40 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.Filters.AssignedUserIDs) > 0 {
+	if len(req.Parsed.AssignedUserIDs) > 0 {
 		where += fmt.Sprintf(" AND c.assigned_engineer = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Filters.AssignedUserIDs)
+		filterArgs = append(filterArgs, req.Parsed.AssignedUserIDs)
 		argIdx++
 	}
 
-	if req.Filters.ClosedStartDate != nil {
+	if req.Parsed.ClosedStartDate != nil {
 		where += fmt.Sprintf(" AND c.closed_at >= $%d", argIdx)
-		filterArgs = append(filterArgs, req.Filters.ClosedStartDate)
+		filterArgs = append(filterArgs, req.Parsed.ClosedStartDate)
 		argIdx++
 	}
-	if req.Filters.ClosedEndDate != nil {
+	if req.Parsed.ClosedEndDate != nil {
 		where += fmt.Sprintf(" AND c.closed_at <= $%d", argIdx)
-		filterArgs = append(filterArgs, req.Filters.ClosedEndDate)
+		filterArgs = append(filterArgs, req.Parsed.ClosedEndDate)
 		argIdx++
 	}
-	if req.Filters.StartCreatedDate != nil {
+	if req.Parsed.StartCreatedDate != nil {
 		where += fmt.Sprintf(" AND c.created_at >= $%d", argIdx)
-		filterArgs = append(filterArgs, req.Filters.StartCreatedDate)
+		filterArgs = append(filterArgs, req.Parsed.StartCreatedDate)
 		argIdx++
 	}
-	if req.Filters.EndCreatedDate != nil {
+	if req.Parsed.EndCreatedDate != nil {
 		where += fmt.Sprintf(" AND c.created_at <= $%d", argIdx)
-		filterArgs = append(filterArgs, req.Filters.EndCreatedDate)
+		filterArgs = append(filterArgs, req.Parsed.EndCreatedDate)
 		argIdx++
 	}
-	if req.Filters.StartUpdatedDate != nil {
+	if req.Parsed.StartUpdatedDate != nil {
 		where += fmt.Sprintf(" AND c.updated_at >= $%d", argIdx)
-		filterArgs = append(filterArgs, req.Filters.StartUpdatedDate)
+		filterArgs = append(filterArgs, req.Parsed.StartUpdatedDate)
 		argIdx++
 	}
-	if req.Filters.EndUpdatedDate != nil {
+	if req.Parsed.EndUpdatedDate != nil {
 		where += fmt.Sprintf(" AND c.updated_at <= $%d", argIdx)
-		filterArgs = append(filterArgs, req.Filters.EndUpdatedDate)
+		filterArgs = append(filterArgs, req.Parsed.EndUpdatedDate)
 		argIdx++
 	}
 
@@ -473,7 +483,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	dataQuery := fmt.Sprintf(
 		`SELECT c.id, c.number, c.internal_id,
 		        c.type, c.subject, c.description, c.severity, c.issue_type, c.state,
-		        c.engagement_type, c.work_state, c.created_at,
+		        c.engagement_type, c.work_state, c.created_at, c.updated_at,
 		        u.email,
 		        p.id, p.name,
 		        d.id, d.name,
@@ -513,7 +523,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			var cv domain.SearchCaseView
 			var caseType, subject, description string
 			var severity, issueType, engagementType, workState *string
-			var createdAt time.Time
+			var createdAt, updatedAt time.Time
 			var aeID, aeName *string
 			var pcID, pcNumber *string
 			var rcID, rcNumber *string
@@ -523,7 +533,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			if err := rows.Scan(
 				&cv.ID, &cv.Number, &cv.InternalID,
 				&caseType, &subject, &description, &severity, &issueType, &cv.State,
-				&engagementType, &workState, &createdAt,
+				&engagementType, &workState, &createdAt, &updatedAt,
 				&cv.CreatedBy,
 				&cv.Project.ID, &cv.Project.Name,
 				&depID, &depName,
@@ -545,9 +555,14 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			cv.EngagementType = engagementType
 			cv.WorkState = workState
 			cv.CreatedOn = createdAt.UTC().Format(time.RFC3339)
+			cv.UpdatedOn = updatedAt.UTC().Format(time.RFC3339)
 			cv.Product = &domain.EntityRef{ID: prodID, Name: prodName}
+			// The search projection carries only the creator's email, no id or
+			// display name, so the canonical reference keeps a null id.
+			cv.CreatedByUser = domain.NewUserReference("", cv.CreatedBy, "")
 			if aeID != nil {
 				cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: *aeID, Name: *aeName}
+				cv.AssignedEngineerUser = domain.NewUserReference(*aeID, "", *aeName)
 			}
 			if pcID != nil {
 				cv.ParentCase = &domain.EntityRef{ID: *pcID, Name: *pcNumber}

@@ -35,14 +35,19 @@ interface TimeCardsTableProps {
   skeletonCount?: number;
   emptyText: string;
   /** Which field rows are clustered by — cards for the same case (or the same
-   * engineer) sort adjacent to each other; both Case and Engineer stay
-   * visible as their own columns regardless (see `showCaseEngineerColumns`),
-   * this only controls ordering. */
+   * engineer) sort adjacent to each other; whether that grouping key has its
+   * own visible column is a separate decision (see `showCaseColumn` /
+   * `showEngineerColumn` below), this prop only controls ordering. */
   groupBy: TimeCardGroupBy;
-  /** Show the Case and Engineer columns. Off on "My time sheets", where every
-   * card already belongs to the signed-in user — an Engineer column would be
-   * redundant, and there's no cross-case grouping to distinguish either. */
-  showCaseEngineerColumns?: boolean;
+  /** Show the Case column. On for all three tabs, including "My time
+   * sheets" — a personal sheet still spans every case the engineer worked
+   * on, so the case number is the most useful column on the row, not the
+   * least. Defaults to on; only tests turn it off. */
+  showCaseColumn?: boolean;
+  /** Show the Engineer column. Off on "My time sheets", where every card
+   * already belongs to the signed-in user and an Engineer column would be
+   * redundant; on for "All" and "Approvals", which span multiple engineers. */
+  showEngineerColumn?: boolean;
   /** Show the Approve/Reject buttons alongside the view-details eye icon in
    * the Actions column. Off outside the Approvals tab, where `roleFor`
    * already makes `cardActions` return none per row anyway — this just
@@ -75,7 +80,8 @@ export default function TimeCardsTable({
   skeletonCount = 6,
   emptyText,
   groupBy,
-  showCaseEngineerColumns = false,
+  showCaseColumn = true,
+  showEngineerColumn = false,
   showActionsColumn = false,
   roleFor,
   onCardAction,
@@ -86,7 +92,8 @@ export default function TimeCardsTable({
   const [detailCard, setDetailCard] = useState<CsmTimeCard | null>(null);
 
   const headerCells = [
-    ...(showCaseEngineerColumns ? ["Case", "Engineer"] : []),
+    ...(showCaseColumn ? ["Case"] : []),
+    ...(showEngineerColumn ? ["Engineer"] : []),
     "Project",
     "Date",
     "Minutes",
@@ -94,7 +101,8 @@ export default function TimeCardsTable({
     "Actions",
   ];
   const grid = [
-    ...(showCaseEngineerColumns ? ["minmax(120px, 0.9fr)", "minmax(140px, 1fr)"] : []),
+    ...(showCaseColumn ? ["minmax(120px, 0.9fr)"] : []),
+    ...(showEngineerColumn ? ["minmax(140px, 1fr)"] : []),
     "minmax(160px, 1.4fr)",
     "minmax(90px, 0.6fr)",
     "minmax(90px, 0.6fr)",
@@ -201,15 +209,15 @@ export default function TimeCardsTable({
                   borderColor: "divider",
                 }}
               >
-                {showCaseEngineerColumns && (
-                  <>
-                    <Typography role="cell" variant="body2" noWrap title={c.caseNumber}>
-                      {c.caseNumber}
-                    </Typography>
-                    <Typography role="cell" variant="body2" noWrap title={c.userName}>
-                      {c.userName}
-                    </Typography>
-                  </>
+                {showCaseColumn && (
+                  <Typography role="cell" variant="body2" noWrap title={c.caseNumber}>
+                    {c.caseNumber}
+                  </Typography>
+                )}
+                {showEngineerColumn && (
+                  <Typography role="cell" variant="body2" noWrap title={c.userName}>
+                    {c.userName}
+                  </Typography>
                 )}
                 <Tooltip title={c.projectName}>
                   <Typography role="cell" variant="body2" noWrap>

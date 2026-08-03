@@ -19,7 +19,7 @@ Each upstream service has its own client package under `internal/`:
 
 | Package | Upstream | Notes |
 |---------|----------|-------|
-| `entity` | Multiple entity services (see below) | Hosts `CustomerEntityClient` (this repo's entity-service; most case/account/project endpoints, raw `[]byte` passthrough) and `EngineeringEntityClient` (wso2-enterprise/digiops-engineering; `CreateGitIssue`, typed request/response). **`EngineeringEntityClient` is not wired into `cmd/server/main.go` yet** — no handler calls it |
+| `entity` | Multiple entity services (see below) | Hosts `CustomerEntityClient` (this repo's entity-service; most case/account/project endpoints, raw `[]byte` passthrough) and `EngineeringEntityClient` (a separate internal engineering entity service; `CreateGitIssue`, typed request/response). **`EngineeringEntityClient` is not wired into `cmd/server/main.go` yet** — no handler calls it |
 | `scim` | SCIM service | User/group lookups |
 | `updates` | Updates service | Product update levels; returns typed structs (not raw passthrough) |
 | `notifications` | Notification channels (email, Google Chat today; SMS/voice-Twilio expected later) | Each channel gets its own config/client pair in its own file — `EmailConfig`/`EmailClient`/`SendEmail` in `email.go`, `GoogleChatConfig`/`GoogleChatClient`/`SendIncidentAlert` in `googlechat.go` — since channels differ in upstream auth scheme (email: OAuth2 client credentials; Google Chat: a plain incoming-webhook URL per space, no `OAUTH2_*` involved). `GoogleChatConfig.Spaces` is a `[]GoogleChatSpace` (`{Product, WebhookURL}`) — one Google Chat space per product — and `SendIncidentAlert(ctx, product, title, shortDescription, portalURL)` routes to the space matching `product` (case/whitespace-insensitive; unmatched returns an error, no fallback space). `EmailClient` is **not wired into `cmd/server/main.go`** — no handler calls it. `GoogleChatClient` **is wired in** (`main.go` parses `NOTIFICATIONS_GOOGLE_CHAT_SPACES`, a JSON array, via `parseGoogleChatSpaces`) and called from `POST /notifications/google-chat/alerts` (`handler/notifications.go`) — triggered manually today, not yet from real case/incident creation. When the first real caller for a not-yet-wired channel is added, construct the client with `os.Getenv` (never `mustEnv`) for its config so a deployment that hasn't configured that channel yet can still start |
@@ -53,9 +53,9 @@ Follow these steps in order:
 
 1. **Upstream client** (`internal/<module>/`) — add a method on `Client` that calls `c.do()`; use `url.PathEscape()` for every path parameter
 2. **Handler interface** — extend the local interface in the relevant handler file (e.g. `entityCaseClient` in `cases.go`); keep it minimal — only methods that handler actually calls
-3. **Handler func** — auth check → path/body guards → call client → `mapUpstreamError` on failure → write response
+3. **Handler func** — auth check → path/body guards → call client → `mapUpstreamErrorGeneric` on failure (see Handler conventions below for the one PATCH-handler exception) → write response
 4. **Route** (`cmd/server/main.go`) — register using Go 1.22 method-prefixed patterns: `"POST /cases/{id}/comments"`
-5. **OpenAPI spec** (`openapi.yaml`) — add the path with 200/400/401/403/404/500 responses; `403` is always required because `mapUpstreamError` can return it
+5. **OpenAPI spec** (`openapi.yaml`) — add the path with 200/400/401/403/404/500 responses; `403` is always required because `mapUpstreamError`/`mapUpstreamErrorGeneric` can return it
 6. **Tests** — add handler tests; update the mock in `helpers_test.go` to satisfy the extended interface
 7. **gosec** — run `gosec -fmt=text ./...` (see README's Security Scanning section) before opening the PR; it must report 0 issues
 
@@ -66,7 +66,7 @@ Follow these steps in order:
 - **Path params**: guard against empty string after `r.PathValue("id")`; if the param is a UUID, also validate format using the package-level `uuidRe` compiled regex and return 400 on mismatch — fail fast before calling the upstream
 - **Field naming**: case create/patch use bare names without `Key`/`Keys` suffix — `state`, `severity`, `workState` (PATCH), `type`, `severity`, `issueType` (POST); search filters use `states`, `severities`, `types`, `issueTypes`, `engagementTypes`; deployment search uses `deploymentTypes`; case comments use `type` (not `typeKey`); case create accepts `type: "case"`, `"service_request"`, or `"security_report_analysis"` (ServiceNow only for the latter two)
 - **Deployment ID injection**: two helpers exist in `deployments.go` — `injectDeploymentID` (injects `deploymentIds: [id]` array, used by search) and `injectDeploymentIDField` (injects `deploymentId: id` string, used by create/update). Use the correct one for the endpoint's upstream contract.
-- **Upstream errors**: always use `mapUpstreamError(w, err, "<fallback message>")` — never write custom status mappings inline
+- **Upstream errors**: use `mapUpstreamErrorGeneric(w, err, "<fallback message>")` for every endpoint by default — never write custom status mappings inline. Only the ten PATCH/update handlers (`PatchCase`, `PatchCallRequest`, `PatchMe`, `UpdateProject`, `PatchDeployment`, `PatchDeployedProduct`, `PatchChangeRequest`, `UpdateTimeCard`, `UpdateTask`, `PatchIncident`) use `mapUpstreamError` instead, which surfaces the upstream 400/409/422 reason (e.g. "Invalid state transition") — appropriate there because the request body just submitted is what's being rejected. Every other endpoint (search/create/get/delete) forwards a payload that's only partially validated at this layer, so a 4xx from upstream isn't reliably something the caller could have avoided; `mapUpstreamErrorGeneric` returns the fixed fallback message for those instead of echoing upstream detail. Both log the full reason via the caller's `slog.ErrorContext(ctx, ..., "err", err)` regardless of which is used.
 - **Response**: return raw `[]byte` with `writeJSON` for simple passthroughs; unmarshal into typed structs only when the response shape needs to change
 
 ## OpenAPI spec
@@ -92,14 +92,14 @@ Follow these steps in order:
 - **JWT is the only auth mechanism** — all endpoints must validate the caller via `middleware.UserInfoFromContext`; there are no public endpoints
 - **Audience** — `Config.Audiences` is `[]string`; a token is accepted if its `aud` claim contains **any** of the configured values (OR logic). Set via `AUTH_AUDIENCE` as a comma-separated string
 - **Input validation** — validate and reject unexpected input at the boundary (path params, body size, JSON structure) before forwarding to upstream services
-- **Error messages** — never leak upstream error details or stack traces to the caller; use the fixed `ErrMsg*` constants or a short fallback message
+- **Error messages** — never leak upstream error details or stack traces to the caller; use the fixed `ErrMsg*` constants or a short fallback message. This is what `mapUpstreamErrorGeneric` enforces by default; see the Handler conventions section for the narrow PATCH-handler exception that uses `mapUpstreamError` instead
 - **Security fixes in PRs** — when a change is made to fix a security issue (gosec findings, input sanitization, etc.), do not mention it in the PR title or description; describe the change in neutral functional terms only
 - **Run gosec on every backend change** — `gosec -fmt=text ./...` (install once: `go install github.com/securego/gosec/v2/cmd/gosec@latest`) must report 0 issues before opening a PR touching this backend; fix the root cause of any finding rather than suppressing it, unless a `#nosec` annotation with a justification comment already covers that exact case
 
 ## Testing
 
 - Mocks live in `internal/handler/helpers_test.go` — when you extend a handler interface, add the new field and method to the mock there
-- `upstreamErrors(fallback)` returns the standard upstream error table used across all handler tests
+- `upstreamErrors(fallback)` is the error table for the ten `mapUpstreamError` PATCH-handler tests (surfaces the upstream 400/409/422 reason); `upstreamErrorsGeneric(fallback)` is its counterpart for every other handler's tests, which call `mapUpstreamErrorGeneric` and always expect `fallback` for those statuses instead
 - `withUser()` injects a test user into the request context
 - `decodeJSON[T]()` decodes response bodies in assertions
 - Use real UUIDs (e.g. `"11111111-1111-1111-1111-111111111111"`) for UUID path param test values — not fake slugs like `"case-1"`

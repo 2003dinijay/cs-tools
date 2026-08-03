@@ -14,47 +14,49 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import {
-  Box,
-  Button,
-  FormControl,
-  MenuItem,
-  Select,
-  Tooltip,
-  Typography,
-} from "@wso2/oxygen-ui";
-import type { JSX } from "react";
-import {
-  DASHBOARD_OPTIONS,
-  type DashboardKey,
-  type DashboardScope,
-} from "@features/csm-dashboard/types/abtDashboard";
-
-// ABT (Account-Based Team) scoping is not implemented yet, so the My ABT / All
-// customers toggle is disabled and the dashboard is locked to "all customers".
-// Flip this to re-enable the toggle once ABT membership data is available.
-const ABT_SCOPING_ENABLED = false;
-
-// Only the Engineer dashboard is live; the others are mock placeholders, so the
-// switcher is disabled and locked to Engineer. Flip this to re-enable the
-// dropdown once the other dashboards are real.
-const DASHBOARD_SWITCHER_ENABLED = false;
+import { Box, FormControl, MenuItem, Select, Typography } from "@wso2/oxygen-ui";
+import { type JSX } from "react";
+import type { BeDashboardListItem } from "@api/backend/types";
+import type { DashboardKey } from "@features/csm-dashboard/types/abtDashboard";
+import { useTeams } from "@features/csm-dashboard/api/useTeams";
 
 interface AbtDashboardHeaderProps {
-  scope: DashboardScope;
-  onScopeChange: (scope: DashboardScope) => void;
   dashboardKey: DashboardKey;
   onDashboardChange: (key: DashboardKey) => void;
+  /** Every dashboard in the BE registry (GET /dashboards), for the switcher. */
+  dashboardList: BeDashboardListItem[];
+  /** The currently selected team, controlled by the parent (URL-synced) —
+   * `undefined` when no team is selected, or when the current dashboard
+   * isn't `isTeamBased` (the parent never passes a stale team id through in
+   * that case). */
+  selectedTeamId: string | undefined;
+  onTeamChange: (teamId: string | undefined) => void;
 }
 
+/**
+ * Dashboard header: title, the dashboard switcher, and (for a dashboard
+ * flagged `isTeamBased`) a team selector sourced from `POST /teams/search`.
+ * Both the selected dashboard and the selected team are owned by the parent
+ * (`CsmDashboardPage`), which keeps them in sync with the URL so a specific
+ * dashboard/team view is shareable. Team selection is UI state only today —
+ * it does not yet scope any widget's data (see `Dashboard.isTeamBased` on
+ * the backend); wiring a selected team into widget filters is a later
+ * increment. The earlier My ABT / All customers toggle was removed
+ * entirely — ABT scoping was never implemented and dashboards carry no
+ * other special behavior beyond which one (and, for team-based ones, which
+ * team) is selected.
+ */
 export default function AbtDashboardHeader({
-  scope,
-  onScopeChange,
   dashboardKey,
   onDashboardChange,
+  dashboardList,
+  selectedTeamId,
+  onTeamChange,
 }: AbtDashboardHeaderProps): JSX.Element {
-  const currentOption = DASHBOARD_OPTIONS.find((o) => o.key === dashboardKey);
-  const showScopeButtons = currentOption?.scopeBased ?? false;
+  const currentOption = dashboardList.find((o) => o.id === dashboardKey);
+  const isTeamBased = currentOption?.isTeamBased ?? false;
+
+  const teams = useTeams(isTeamBased);
 
   return (
     <Box
@@ -69,64 +71,43 @@ export default function AbtDashboardHeader({
       <Box>
         <Typography variant="h5">Dashboard</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          Engineer overview
+          {currentOption?.displayName ?? ""}
         </Typography>
       </Box>
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
-        {showScopeButtons && (
-          <Tooltip
-            title={
-              ABT_SCOPING_ENABLED
-                ? ""
-                : "ABT scoping is not available yet — showing all customers."
-            }
-          >
-            <Box sx={{ display: "flex", gap: 1 }}>
-              <Button
-                size="small"
-                variant={scope === "my_abt" ? "contained" : "outlined"}
-                color="primary"
-                disabled={!ABT_SCOPING_ENABLED}
-                onClick={() => onScopeChange("my_abt")}
-              >
-                My ABT
-              </Button>
-              <Button
-                size="small"
-                variant={scope === "all_customers" ? "contained" : "outlined"}
-                color="primary"
-                disabled={!ABT_SCOPING_ENABLED}
-                onClick={() => onScopeChange("all_customers")}
-              >
-                All customers
-              </Button>
-            </Box>
-          </Tooltip>
-        )}
-        <Tooltip
-          title={
-            DASHBOARD_SWITCHER_ENABLED
-              ? ""
-              : "Other dashboards are not available yet — showing the Engineer dashboard."
-          }
-        >
-          <FormControl size="small" sx={{ minWidth: 200 }}>
+        {isTeamBased && (
+          <FormControl size="small" sx={{ minWidth: 180 }}>
             <Select
-              value={dashboardKey}
-              onChange={(e) =>
-                onDashboardChange(e.target.value as DashboardKey)
-              }
-              disabled={!DASHBOARD_SWITCHER_ENABLED}
+              value={selectedTeamId ?? ""}
+              onChange={(e) => onTeamChange(e.target.value || undefined)}
               displayEmpty
+              aria-label="Select team"
             >
-              {DASHBOARD_OPTIONS.map((o) => (
-                <MenuItem key={o.key} value={o.key}>
-                  {o.name}
+              <MenuItem value="">
+                <em>All teams</em>
+              </MenuItem>
+              {(teams.data ?? []).map((t) => (
+                <MenuItem key={t.id} value={t.id}>
+                  {t.name}
                 </MenuItem>
               ))}
             </Select>
           </FormControl>
-        </Tooltip>
+        )}
+        <FormControl size="small" sx={{ minWidth: 200 }}>
+          <Select
+            value={dashboardKey}
+            onChange={(e) => onDashboardChange(e.target.value as DashboardKey)}
+            displayEmpty
+            aria-label="Select dashboard"
+          >
+            {dashboardList.map((o) => (
+              <MenuItem key={o.id} value={o.id}>
+                {o.displayName}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
       </Box>
     </Box>
   );

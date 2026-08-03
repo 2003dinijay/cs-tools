@@ -15,10 +15,22 @@
 // under the License.
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ComponentProps, type JSX, type ReactElement } from "react";
 import { MemoryRouter } from "react-router";
 import "@testing-library/jest-dom/vitest";
+
+// The real client reads runtime config at module load, which isn't present
+// under vitest (same approach as useQuickCaseSearch.test.tsx). `UserRefLink`
+// (used for the attachment uploader) resolves an unknown id through
+// `useResolvedUserId`, which calls this client — the attachments in this file
+// carry no `uploadedByUser`, so it never actually fires, but the mock keeps
+// the hook's `useBackendApi()` call from throwing on missing runtime config.
+vi.mock("@api/backend/client", () => ({
+  useBackendApi: () => ({ post: vi.fn().mockResolvedValue({ users: [] }) }),
+}));
+
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
 import { formatAbsoluteForUser } from "@utils/dateTime";
 import type {
@@ -27,10 +39,18 @@ import type {
 } from "@features/csm-cases/types/csmCases";
 
 // `UserRefLink` (used for the attachment uploader and the comment/lifecycle
-// actor) renders a `react-router` `Link`, so every render needs a Router
-// context even outside a full app render.
+// actor) renders a `react-router` `Link` and resolves its id through
+// react-query, so every render needs both a Router and a QueryClient context
+// even outside a full app render.
 function renderWithRouter(ui: ReactElement): ReturnType<typeof render> {
-  return render(<MemoryRouter>{ui}</MemoryRouter>);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 // `previewTarget`/`onPreviewTargetChange` (part of the feed's `preview`
@@ -77,7 +97,7 @@ describe("CaseActivitiesFeed", () => {
       ],
     };
 
-    const { container } = render(
+    const { container } = renderWithRouter(
       <CaseActivitiesFeed comments={[]} audit={[entry]} attachments={[]} />,
     );
 
@@ -112,7 +132,7 @@ describe("CaseActivitiesFeed", () => {
       ],
     };
 
-    render(
+    renderWithRouter(
       <CaseActivitiesFeed comments={[]} audit={[entry]} attachments={[]} />,
     );
 
@@ -139,7 +159,7 @@ describe("CaseActivitiesFeed", () => {
       ],
     };
 
-    render(
+    renderWithRouter(
       <CaseActivitiesFeed comments={[]} audit={[entry]} attachments={[]} />,
     );
 
@@ -163,7 +183,7 @@ describe("CaseActivitiesFeed", () => {
       ],
     };
 
-    render(
+    renderWithRouter(
       <CaseActivitiesFeed comments={[]} audit={[entry]} attachments={[]} />,
     );
 
@@ -172,6 +192,60 @@ describe("CaseActivitiesFeed", () => {
     // The time is a permalink anchor to the entry, same pattern comments use.
     const permalink = document.querySelector(`a[href="#${entry.id}"]`);
     expect(permalink).not.toBeNull();
+  });
+
+  it("links the actor to their profile when actorUser carries a resolvable id", () => {
+    const entry: CaseAuditEntry = {
+      id: "fc-8",
+      kind: "field_change",
+      actor: "Jane Doe",
+      actorUser: { id: "user-1", email: "jane.doe@example.com", name: "Jane Doe" },
+      createdAt: "2026-07-01T00:00:00Z",
+      changes: [
+        {
+          field: "state",
+          fieldLabel: "State",
+          previousValue: "In Progress",
+          newValue: "Resolved",
+        },
+      ],
+    };
+
+    renderWithRouter(
+      <CaseActivitiesFeed comments={[]} audit={[entry]} attachments={[]} />,
+    );
+
+    const link = screen.getByRole("link", { name: "Jane Doe" });
+    expect(link).toHaveAttribute("href", "/people/user-1");
+  });
+
+  it("renders the actor as plain text (no link) when the activity's email field is really a username, not an address", () => {
+    // Real backend shape: activity entries never resolve `id`, and `email`
+    // sometimes holds an automation account name (e.g. "system"/"guest")
+    // rather than an address — `isPlausibleEmail` correctly refuses to
+    // resolve it, and no id-lookup request should ever fire for it.
+    const entry: CaseAuditEntry = {
+      id: "fc-9",
+      kind: "field_change",
+      actor: "System",
+      actorUser: { id: null, email: "system", name: "System" },
+      createdAt: "2026-07-01T00:00:00Z",
+      changes: [
+        {
+          field: "state",
+          fieldLabel: "State",
+          previousValue: "In Progress",
+          newValue: "Resolved",
+        },
+      ],
+    };
+
+    renderWithRouter(
+      <CaseActivitiesFeed comments={[]} audit={[entry]} attachments={[]} />,
+    );
+
+    expect(screen.getByText("System")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "System" })).not.toBeInTheDocument();
   });
 
   it("renders every backend-provided change line, even one matching the entry's own timestamp", () => {
@@ -198,7 +272,7 @@ describe("CaseActivitiesFeed", () => {
       ],
     };
 
-    render(
+    renderWithRouter(
       <CaseActivitiesFeed comments={[]} audit={[entry]} attachments={[]} />,
     );
 
@@ -222,7 +296,7 @@ describe("CaseActivitiesFeed", () => {
       ],
     };
 
-    const { container } = render(
+    const { container } = renderWithRouter(
       <CaseActivitiesFeed comments={[]} audit={[entry]} attachments={[]} />,
     );
 
@@ -244,7 +318,7 @@ describe("CaseActivitiesFeed", () => {
       createdAt: "2026-07-01T00:00:00Z",
     };
 
-    render(
+    renderWithRouter(
       <CaseActivitiesFeed comments={[]} audit={[entry]} attachments={[]} />,
     );
 

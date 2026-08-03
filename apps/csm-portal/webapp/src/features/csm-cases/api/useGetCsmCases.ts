@@ -25,6 +25,7 @@ import {
   mapCaseSearchViewToRow,
   resolveAssignedUserIds,
 } from "@features/csm-cases/utils/caseSearchPayload";
+import { ASSIGNEE_ME_TOKEN } from "@features/csm-cases/utils/assignee";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import type { BeCaseSearchPayload, BeCaseSearchResponse } from "@api/backend/types";
 import type { CasesFilters } from "@features/csm-cases/components/CasesFilterBar";
@@ -71,12 +72,20 @@ export function useGetCsmCases(
   const logger = useLogger();
   const api = useBackendApi();
   // Signed-in email, to resolve `assigneeIsMe` per row against the assigned
-  // engineer's email. In the key so a late-arriving claim recomputes.
+  // engineer's email. In the key so a late-arriving claim recomputes — this
+  // applies to every row regardless of the assignee filter, so it stays
+  // unconditional.
   const currentUserEmail = useIdTokenClaims()?.email;
-  // The caller's platform UUID, fetched once app-wide (CurrentUserProvider) and
-  // used to resolve the `@me` assignee filter. In the key so a late-arriving id
-  // re-resolves an `@me` selection.
+  // The caller's platform UUID, fetched once app-wide (CurrentUserProvider)
+  // and used only to resolve an `@me` assignee filter (see
+  // `resolveAssignedUserIds`) — nothing else reads it. Only fold it into the
+  // key when `@me` is actually selected: `/users/me` is a real network call
+  // that resolves after the id starts as `undefined`, and keying on it
+  // unconditionally meant every page load re-fetched the exact same
+  // unfiltered search a second time the moment it arrived, for every user,
+  // regardless of whether any assignee filter was active at all.
   const currentUserId = useCurrentUser().user?.id;
+  const wantsMe = filters.assignees.includes(ASSIGNEE_ME_TOKEN);
 
   const offset = page * pageSize;
   const search = filters.search.trim();
@@ -99,7 +108,7 @@ export function useGetCsmCases(
       [...filters.engagementTypes].sort(),
       [...filters.productNames].sort(),
       currentUserEmail ?? "",
-      currentUserId ?? "",
+      wantsMe ? (currentUserId ?? "") : "",
       page,
       pageSize,
       sortOrder,

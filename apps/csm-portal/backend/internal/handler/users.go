@@ -40,6 +40,7 @@ type entityUserClient interface {
 	GetUserMe(ctx context.Context) ([]byte, error)
 	PatchUserMe(ctx context.Context, body []byte) ([]byte, error)
 	SearchUsers(ctx context.Context, body []byte) ([]byte, error)
+	GetUser(ctx context.Context, id string) ([]byte, error)
 }
 
 // UsersHandler handles HTTP requests for user-related operations.
@@ -55,13 +56,25 @@ func NewUsersHandler(scim scimClient, entity entityUserClient) *UsersHandler {
 
 // userMeResponse is the GET /users/me response shape.
 type userMeResponse struct {
-	ID          *string  `json:"id,omitempty"`
-	Email       string   `json:"email"`
-	FirstName   *string  `json:"firstName,omitempty"`
-	LastName    *string  `json:"lastName,omitempty"`
-	TimeZone    *string  `json:"timeZone,omitempty"`
-	Roles       []string `json:"roles,omitempty"`
-	PhoneNumber *string  `json:"phoneNumber,omitempty"`
+	ID          *string           `json:"id,omitempty"`
+	Email       string            `json:"email"`
+	FirstName   *string           `json:"firstName,omitempty"`
+	LastName    *string           `json:"lastName,omitempty"`
+	TimeZone    *string           `json:"timeZone,omitempty"`
+	Roles       []string          `json:"roles,omitempty"`
+	PhoneNumber *string           `json:"phoneNumber,omitempty"`
+	Team        *userTeamResponse `json:"team,omitempty"`
+}
+
+// userTeamResponse is the caller's resolved ABT (Account-Based Team), passed
+// through from the entity service's GET /users/me as-is. Nil when the caller
+// has no resolvable ABT team membership, or when team resolution failed
+// upstream (best-effort, never fails the identity response).
+type userTeamResponse struct {
+	TeamKey  string `json:"teamKey"`
+	TeamName string `json:"teamName"`
+	// Family may be empty: not every ABT team is classified into a family.
+	Family string `json:"family"`
 }
 
 // entityUserMeResponse is the subset of the entity GET /users/me response we care about.
@@ -72,6 +85,9 @@ type entityUserMeResponse struct {
 	LastName  string   `json:"lastName"`
 	TimeZone  *string  `json:"timeZone"`
 	Roles     []string `json:"roles"`
+	// Team is absent (or null) from the entity response when the caller has
+	// no resolvable ABT team membership, or when resolution failed upstream.
+	Team *userTeamResponse `json:"team"`
 }
 
 // userUpdateRequest is the PATCH /users/me request shape.
@@ -113,6 +129,7 @@ func (h *UsersHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 			if entityResp.Roles != nil {
 				resp.Roles = entityResp.Roles
 			}
+			resp.Team = entityResp.Team
 		}
 	}
 
@@ -220,7 +237,35 @@ func (h *UsersHandler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 	result, err := h.entity.SearchUsers(r.Context(), body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchUsers failed", "userID", user.UserID, "err", err)
-		mapUpstreamError(w, err, "Failed to search users.")
+		mapUpstreamErrorGeneric(w, err, "Failed to search users.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// GetUser handles GET /users/{id}.
+//
+// Returns one user's profile including their group and team membership, and for external
+// contacts their per-project access. Registered after /users/me, which is the more specific
+// pattern and therefore still wins for that exact path.
+func (h *UsersHandler) GetUser(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	result, err := h.entity.GetUser(r.Context(), id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity GetUser failed", "userID", user.UserID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to fetch the user.")
 		return
 	}
 

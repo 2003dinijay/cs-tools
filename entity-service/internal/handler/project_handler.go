@@ -115,3 +115,14 @@ func (h *ProjectContactHandler) SearchProjectContacts(w http.ResponseWriter, r *
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// GetProjectContact handles GET /projects/{id}/contacts/{contactId}.
+func (h *ProjectContactHandler) GetProjectContact(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.GetProjectContact(r.Context(), r.PathValue("id"), r.PathValue("contactId"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}

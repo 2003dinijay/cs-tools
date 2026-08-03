@@ -24,6 +24,16 @@ export interface SupportTierRef {
   label: string;
 }
 
+// A named person reference as returned on the alternate response shape's
+// account manager / technical owner / renewal account manager fields. `id`
+// is null when the backing data source hasn't resolved this person to a
+// canonical user record; `email` may be null when genuinely unset.
+export interface PersonRef {
+  id: string | null;
+  name: string;
+  email?: string | null;
+}
+
 export interface Account {
   id: string;
   sfId: string;
@@ -38,8 +48,14 @@ export interface Account {
   region?: string | null;
   activationDate: string;
   deactivationDate?: string | null;
+  // Postgres-backed accounts carry `ownerId`/`technicalOwnerId` as bare id
+  // strings. Accounts sourced from the alternate response shape instead
+  // carry the named people below — same dual-shape situation as `tier` above.
   ownerId: string;
   technicalOwnerId?: string | null;
+  accountManager?: PersonRef | null;
+  renewalAccountManager?: PersonRef | null;
+  technicalOwner?: PersonRef | null;
   agentEnabled: boolean;
   kbReferencesEnabled: boolean;
   createdOn: string;
@@ -57,6 +73,24 @@ export function resolveAccountTier(
   if (account.tier) return account.tier;
   if (typeof account.supportTier === "string") return account.supportTier;
   return account.supportTier?.label ?? undefined;
+}
+
+export type DeactivationState = "none" | "past" | "future";
+
+/**
+ * Classifies an account's deactivation date relative to `now` (defaults to
+ * the real clock, injectable for tests). Used to keep the header chip and
+ * the Overview card's label/tense in agreement: an unparseable date cannot
+ * be asserted as past or future, so it is treated the same as "none".
+ */
+export function getDeactivationState(
+  deactivationDate: string | null | undefined,
+  now: Date = new Date(),
+): DeactivationState {
+  if (!deactivationDate) return "none";
+  const d = new Date(deactivationDate);
+  if (Number.isNaN(d.getTime())) return "none";
+  return d.getTime() < now.getTime() ? "past" : "future";
 }
 
 export interface SearchAccountsRequest {

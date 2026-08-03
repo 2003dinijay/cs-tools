@@ -293,10 +293,22 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   // Data-driven, like CaseActionBar's nextStates handling: only "assess" is
   // ever modeled today (New -> Assess), but this checks membership rather
   // than hardcoding `cr.state === "new"` so a backend-added transition needs
-  // no FE change to show up.
+  // no FE change to show up. This is the state gate: the button renders at
+  // all only when the record's *current* state (as reflected by this list)
+  // legally transitions to "assess" — it is not offered from any other
+  // state. `usePatchChangeRequest` refetches this detail after every patch
+  // attempt, success or error, precisely so this list can't go stale after
+  // an ambiguous outcome (a write that commits upstream but is reported as
+  // a failure here) and re-offer an action that has already happened.
+  //
   // The state machine alone isn't sufficient: the backing data source also
   // enforces that an assigned team is set before this transition is allowed,
   // so require `assignedTeam` too or the request round-trips and fails there.
+  // (A `plannedStartOn` requirement was proposed for this same gate, but the
+  // only confirmed rejection for this transition is the state-transition
+  // error below, and the contract for `requestApproval` documents only the
+  // state transition, not a planned-start dependency — so no gate is added
+  // for it here without stronger evidence.)
   const stateAllowsRequestApproval = !!cr.legalNextStates?.includes("assess");
   const requestApprovalBlockedReason = stateAllowsRequestApproval && !cr.assignedTeam
     ? "Set an assigned team before requesting approval"
@@ -401,7 +413,13 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
             variant="outlined"
             size="small"
             startIcon={<Pencil size={14} />}
-            onClick={() => setEditOpen(true)}
+            onClick={() => {
+              // Clear any error left over from a previous save (or from the
+              // Request approval button, which shares this mutation) so a
+              // stale rejection doesn't appear to belong to this edit.
+              patchCr.reset();
+              setEditOpen(true);
+            }}
             sx={{ flexShrink: 0 }}
           >
             Edit
@@ -624,6 +642,14 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         <EditChangeRequestDialog
           cr={cr}
           isSaving={patchCr.isPending}
+          saveError={
+            patchCr.isError
+              ? backendErrorMessage(
+                  patchCr.error,
+                  "Could not update the change request.",
+                )
+              : null
+          }
           onClose={() => {
             if (!patchCr.isPending) setEditOpen(false);
           }}

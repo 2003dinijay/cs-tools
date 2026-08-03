@@ -33,7 +33,10 @@ import { type JSX, type ReactNode } from "react";
 import { Link as RouterLink, useParams } from "react-router";
 import { useAccountProjects } from "@features/csm-accounts/api/useAccountProjects";
 import { useGetAccount } from "@features/csm-accounts/api/useGetAccount";
-import { resolveAccountTier } from "@features/csm-accounts/types/csmAccounts";
+import {
+  getDeactivationState,
+  resolveAccountTier,
+} from "@features/csm-accounts/types/csmAccounts";
 import QueryErrorState from "@components/QueryErrorState";
 import { useNavTransition } from "@hooks/useNavTransition";
 
@@ -131,7 +134,7 @@ function ProjectsSection({ accountId }: { accountId: string }): JSX.Element {
               <TableRow>
                 <TableCell colSpan={4} align="center">
                   <QueryErrorState
-                    message={`Failed to load projects: ${error instanceof Error ? error.message : "unknown error"}`}
+                    message={error instanceof Error && error.message.trim() ? error.message : "Failed to load projects."}
                     error={error}
                   />
                 </TableCell>
@@ -220,29 +223,25 @@ export default function CsmAccountDetailPage(): JSX.Element {
 
   const a = data;
   const tier = resolveAccountTier(a);
+  const deactivationState = getDeactivationState(a.deactivationDate);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
       <BackButton onClick={() => navigate("/customers/accounts")} />
 
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
-          <Typography variant="h5">{a.name}</Typography>
-          {tier && (
-            <Chip
-              size="small"
-              label={tier}
-              color={tier === "enterprise" ? "primary" : "default"}
-              variant="outlined"
-            />
-          )}
-          {a.deactivationDate && (
-            <Chip size="small" label="Deactivated" color="default" variant="outlined" />
-          )}
-        </Box>
-        <Typography variant="body2" color="text.secondary" sx={{ fontFamily: "monospace" }}>
-          {a.sfId}
-        </Typography>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
+        <Typography variant="h5">{a.name}</Typography>
+        {tier && (
+          <Chip
+            size="small"
+            label={tier}
+            color={tier === "enterprise" ? "primary" : "default"}
+            variant="outlined"
+          />
+        )}
+        {deactivationState === "past" && (
+          <Chip size="small" label="Deactivated" color="default" variant="outlined" />
+        )}
       </Box>
 
       <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
@@ -269,13 +268,24 @@ export default function CsmAccountDetailPage(): JSX.Element {
           <MetaCell label="Salesforce ID">
             <Mono>{a.sfId || "—"}</Mono>
           </MetaCell>
-          <MetaCell label="Activated">
+          <MetaCell label="Account Manager">
+            <Typography variant="body2">{a.accountManager?.name ?? "—"}</Typography>
+          </MetaCell>
+          <MetaCell label="Renewal Account Manager">
+            <Typography variant="body2">{a.renewalAccountManager?.name ?? "—"}</Typography>
+          </MetaCell>
+          <MetaCell label="Technical Owner">
+            <Typography variant="body2">{a.technicalOwner?.name ?? "—"}</Typography>
+          </MetaCell>
+          <MetaCell label="Activated on">
             <Typography variant="body2">{formatDate(a.activationDate)}</Typography>
           </MetaCell>
-          <MetaCell label="Deactivated">
-            <Typography variant="body2">{formatDate(a.deactivationDate)}</Typography>
-          </MetaCell>
-          <MetaCell label="AI agent">
+          {deactivationState !== "none" && (
+            <MetaCell label={deactivationState === "future" ? "Deactivates on" : "Deactivated on"}>
+              <Typography variant="body2">{formatDate(a.deactivationDate)}</Typography>
+            </MetaCell>
+          )}
+          <MetaCell label="AI Chat Assistant (Novera)">
             <Chip
               size="small"
               variant="outlined"
@@ -283,7 +293,7 @@ export default function CsmAccountDetailPage(): JSX.Element {
               label={a.agentEnabled ? "Enabled" : "Disabled"}
             />
           </MetaCell>
-          <MetaCell label="KB references">
+          <MetaCell label="Smart KB Suggestions">
             <Chip
               size="small"
               variant="outlined"
@@ -291,20 +301,11 @@ export default function CsmAccountDetailPage(): JSX.Element {
               label={a.kbReferencesEnabled ? "Enabled" : "Disabled"}
             />
           </MetaCell>
-          <MetaCell label="Owner ID">
-            <Mono>{a.ownerId || "—"}</Mono>
-          </MetaCell>
-          <MetaCell label="Technical owner ID">
-            <Mono>{a.technicalOwnerId || "—"}</Mono>
-          </MetaCell>
-          <MetaCell label="Created">
+          <MetaCell label="Created on">
             <Typography variant="body2">{formatDate(a.createdOn)}</Typography>
           </MetaCell>
-          <MetaCell label="Last updated">
+          <MetaCell label="Updated on">
             <Typography variant="body2">{formatDate(a.updatedOn)}</Typography>
-          </MetaCell>
-          <MetaCell label="Account ID">
-            <Mono>{a.id}</Mono>
           </MetaCell>
         </Box>
       </Card>

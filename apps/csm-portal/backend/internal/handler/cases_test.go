@@ -29,8 +29,10 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 )
 
-// upstreamErrorCases is the table used by every handler that calls mapUpstreamError.
-// It covers all four explicit apierror mappings plus an unmapped code and a plain error.
+// upstreamErrorCases is the table used by every PATCH/update handler — the
+// ones that call mapUpstreamError (see upstreamErrorsGeneric for every other
+// handler, which calls mapUpstreamErrorGeneric instead). It covers all four
+// explicit apierror mappings plus an unmapped code and a plain error.
 type upstreamErrorCase struct {
 	name         string
 	err          error
@@ -56,6 +58,42 @@ func upstreamErrors(fallback string) []upstreamErrorCase {
 		{"apierror 503", &apierror.Error{StatusCode: http.StatusServiceUnavailable}, http.StatusServiceUnavailable, fallback},
 		{"apierror 504", &apierror.Error{StatusCode: http.StatusGatewayTimeout}, http.StatusServiceUnavailable, fallback},
 		{"apierror unmapped (418)", &apierror.Error{StatusCode: http.StatusTeapot}, http.StatusInternalServerError, fallback},
+		// The default branch never surfaces the upstream body, whatever its shape: a
+		// 5xx or unmapped upstream failure is not caller-actionable, and this branch
+		// is the error path for several clients (the identity provider's among them),
+		// so a well-formed envelope proves shape, not that the content is safe to
+		// show a portal client. Caller-actionable reasons come through the 4xx
+		// branches above.
+		{"apierror 500 JSON envelope body is not echoed", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: `{"code":500,"message":"Invalid state transition: the change request is not in a state that allows this action."}`}, http.StatusInternalServerError, fallback},
+		{"apierror 500 empty body falls back", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: ""}, http.StatusInternalServerError, fallback},
+		{"apierror 500 foreign body is not echoed", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: `{"schemas":["urn:ietf:params:scim:api:messages:2.0:Error"],"detail":"internal identity provider detail","status":"500"}`}, http.StatusInternalServerError, fallback},
+		{"apierror 500 malformed JSON body is not echoed", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: `{not valid json`}, http.StatusInternalServerError, fallback},
+		{"apierror 500 plain text body is not echoed", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: `goroutine 1 [running]: internal stack detail`}, http.StatusInternalServerError, fallback},
+		{"apierror unmapped (418) with envelope body is not echoed", &apierror.Error{StatusCode: http.StatusTeapot, Body: `{"code":418,"message":"upstream reason"}`}, http.StatusInternalServerError, fallback},
+		{"non-apierror error", errors.New("upstream connection refused"), http.StatusInternalServerError, fallback},
+	}
+}
+
+// upstreamErrorsGeneric is upstreamErrors' counterpart for every non-PATCH
+// handler (the vast majority), which calls mapUpstreamErrorGeneric: every
+// 4xx case falls back to fallback instead of surfacing the upstream body,
+// since those endpoints forward a request that's only partially validated at
+// this layer, so a 4xx from upstream isn't necessarily something the caller
+// could have avoided.
+func upstreamErrorsGeneric(fallback string) []upstreamErrorCase {
+	return []upstreamErrorCase{
+		{"apierror 401", &apierror.Error{StatusCode: http.StatusUnauthorized}, http.StatusUnauthorized, ErrMsgUnauthorized},
+		{"apierror 403", &apierror.Error{StatusCode: http.StatusForbidden}, http.StatusForbidden, ErrMsgForbidden},
+		{"apierror 404", &apierror.Error{StatusCode: http.StatusNotFound}, http.StatusNotFound, ErrMsgNotFound},
+		{"apierror 400 JSON envelope body is not echoed", &apierror.Error{StatusCode: http.StatusBadRequest, Body: `{"code":400,"message":"invalid type \"bogus\""}`}, http.StatusBadRequest, fallback},
+		{"apierror 400 empty body falls back", &apierror.Error{StatusCode: http.StatusBadRequest, Body: ""}, http.StatusBadRequest, fallback},
+		{"apierror 409 plain text body is not echoed", &apierror.Error{StatusCode: http.StatusConflict, Body: "conflict upstream message"}, http.StatusConflict, fallback},
+		{"apierror 422 plain text body is not echoed", &apierror.Error{StatusCode: http.StatusUnprocessableEntity, Body: "invalid state transition"}, http.StatusUnprocessableEntity, fallback},
+		{"apierror 502", &apierror.Error{StatusCode: http.StatusBadGateway}, http.StatusServiceUnavailable, fallback},
+		{"apierror 503", &apierror.Error{StatusCode: http.StatusServiceUnavailable}, http.StatusServiceUnavailable, fallback},
+		{"apierror 504", &apierror.Error{StatusCode: http.StatusGatewayTimeout}, http.StatusServiceUnavailable, fallback},
+		{"apierror unmapped (418)", &apierror.Error{StatusCode: http.StatusTeapot}, http.StatusInternalServerError, fallback},
+		{"apierror 500 JSON envelope body is not echoed", &apierror.Error{StatusCode: http.StatusInternalServerError, Body: `{"code":500,"message":"internal detail"}`}, http.StatusInternalServerError, fallback},
 		{"non-apierror error", errors.New("upstream connection refused"), http.StatusInternalServerError, fallback},
 	}
 }
@@ -151,7 +189,7 @@ func TestCreateCase(t *testing.T) {
 	})
 
 	t.Run("upstream errors on create are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to create case.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to create case.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -347,7 +385,7 @@ func TestCreateCaseComment(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to create case comment.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to create case comment.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -453,7 +491,7 @@ func TestSearchCaseComments(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to search case comments.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to search case comments.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -554,7 +592,7 @@ func TestSearchCaseActivities(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to search case activities.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to search case activities.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -761,7 +799,7 @@ func TestSearchCases(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to search cases.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to search cases.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -1111,7 +1149,7 @@ func TestPatchCase(t *testing.T) {
 	})
 
 	t.Run("GetCase failure during state validation is mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to retrieve current case state.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to retrieve current case state.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -1436,7 +1474,7 @@ func TestGetCase(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to retrieve case details.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to retrieve case details.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -1509,7 +1547,7 @@ func TestCreateCaseAttachment(t *testing.T) {
 	})
 
 	t.Run("maps upstream errors", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to create case attachment.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to create case attachment.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -1592,7 +1630,7 @@ func TestSearchCaseAttachments(t *testing.T) {
 	})
 
 	t.Run("maps upstream errors", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to search case attachments.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to search case attachments.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -1682,7 +1720,7 @@ func TestGetCaseAttachmentContent(t *testing.T) {
 	})
 
 	t.Run("maps upstream errors", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to retrieve attachment content.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to retrieve attachment content.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -1788,7 +1826,7 @@ func TestCreateCaseGithubIssue(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to create GitHub issue.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to create GitHub issue.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -1884,7 +1922,7 @@ func TestAddCaseTag(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to add case tag.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to add case tag.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -1974,7 +2012,7 @@ func TestRemoveCaseTag(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to remove case tag.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to remove case tag.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{
@@ -2376,7 +2414,7 @@ func TestSearchTags(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrors("Failed to search tags.") {
+		for _, tc := range upstreamErrorsGeneric("Failed to search tags.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityCaseClient{

@@ -279,6 +279,34 @@ type mockEntityUserClient struct {
 	getUserMeFn   func(ctx context.Context) ([]byte, error)
 	patchUserMeFn func(ctx context.Context, body []byte) ([]byte, error)
 	searchUsersFn func(ctx context.Context, body []byte) ([]byte, error)
+	getUserFn     func(ctx context.Context, id string) ([]byte, error)
+}
+
+func (m *mockEntityUserClient) GetUser(ctx context.Context, id string) ([]byte, error) {
+	if m.getUserFn != nil {
+		return m.getUserFn(ctx, id)
+	}
+	return []byte(`{"id":"` + id + `","email":"","roles":[],"groups":[],"teams":[]}`), nil
+}
+
+// mockEntityReferenceClient stubs the role-catalogue and team-registry calls.
+type mockEntityReferenceClient struct {
+	searchRolesFn func(ctx context.Context, body []byte) ([]byte, error)
+	searchTeamsFn func(ctx context.Context, body []byte) ([]byte, error)
+}
+
+func (m *mockEntityReferenceClient) SearchRoles(ctx context.Context, body []byte) ([]byte, error) {
+	if m.searchRolesFn != nil {
+		return m.searchRolesFn(ctx, body)
+	}
+	return []byte(`{"roles":[],"total":0,"offset":0,"limit":50}`), nil
+}
+
+func (m *mockEntityReferenceClient) SearchTeams(ctx context.Context, body []byte) ([]byte, error) {
+	if m.searchTeamsFn != nil {
+		return m.searchTeamsFn(ctx, body)
+	}
+	return []byte(`{"teams":[],"total":0,"offset":0,"limit":50}`), nil
 }
 
 func (m *mockEntityUserClient) GetUserMe(ctx context.Context) ([]byte, error) {
@@ -337,7 +365,15 @@ type mockEntityProjectClient struct {
 	getProjectFn            func(ctx context.Context, id string) ([]byte, error)
 	searchProjectsFn        func(ctx context.Context, body []byte) ([]byte, error)
 	searchProjectContactsFn func(ctx context.Context, projectID string, body []byte) ([]byte, error)
+	getProjectContactFn     func(ctx context.Context, projectID, contactID string) ([]byte, error)
 	updateProjectFn         func(ctx context.Context, id string, body []byte) ([]byte, error)
+}
+
+func (m *mockEntityProjectClient) GetProjectContact(ctx context.Context, projectID, contactID string) ([]byte, error) {
+	if m.getProjectContactFn != nil {
+		return m.getProjectContactFn(ctx, projectID, contactID)
+	}
+	return []byte(`{"id":"` + contactID + `","name":"","email":"","registrationState":"","notificationsEnabled":false,"roles":[]}`), nil
 }
 
 func (m *mockEntityProjectClient) GetProject(ctx context.Context, id string) ([]byte, error) {

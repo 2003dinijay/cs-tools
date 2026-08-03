@@ -27,12 +27,14 @@ import type {
   BeCreatableCommentType,
   BeCaseSeverity,
   BeCaseState,
+  BeUserReference,
 } from "@api/backend/types";
 import type {
   CaseAttachment,
   CsmCaseComment,
   CsmCommentAuthorRole,
 } from "@features/csm-cases/types/csmCases";
+import type { UserReference } from "@/types/userReference";
 import type {
   CaseState,
   Severity,
@@ -101,6 +103,17 @@ export function uiStateFromBe(state: string | undefined): CaseState {
 
 export function beStateFromUi(state: CaseState): BeCaseState {
   return state;
+}
+
+/**
+ * Passthrough from the wire `UserReference` shape to the UI's — both are
+ * `{ id, email, name }` — normalizing `null`/absent to `undefined` so UI code
+ * can use plain optional-chaining instead of null checks.
+ */
+export function userReferenceFromBe(
+  ref: BeUserReference | null | undefined,
+): UserReference | undefined {
+  return ref ?? undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +215,7 @@ export function uiCommentFromBe(
     caseId: comment.referenceId ?? "",
     authorName: commentAuthorName(comment),
     authorEmail: commentAuthorEmail(comment),
+    authorUser: userReferenceFromBe(comment.createdByUser),
     // For a chatbot the body is Markdown; the bubble renders it as Markdown.
     // Otherwise it is rich-text HTML, sanitised on render.
     bodyHtml: comment.content ?? "",
@@ -224,6 +238,7 @@ export function uiAttachmentFromBe(att: BeAttachment): CaseAttachment {
     contentType: att.type,
     uploadedBy: att.createdBy.name?.trim() || att.createdBy.email?.trim() || "Unknown",
     uploadedByEmail: att.createdBy.email || undefined,
+    uploadedByUser: userReferenceFromBe(att.createdByUser),
     uploadedAt: att.createdOn,
   };
 }

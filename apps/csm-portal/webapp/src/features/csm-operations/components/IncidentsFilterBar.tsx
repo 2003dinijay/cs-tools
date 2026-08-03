@@ -15,11 +15,14 @@
 // under the License.
 
 import {
+  AdapterDateFns,
   Box,
   Button,
   Checkbox,
+  DatePickers,
   Divider,
   FormControl,
+  FormControlLabel,
   Grid,
   IconButton,
   InputAdornment,
@@ -29,6 +32,7 @@ import {
   Paper,
   Select,
   TextField,
+  Typography,
 } from "@wso2/oxygen-ui";
 import type { SelectChangeEvent } from "@wso2/oxygen-ui";
 import { ChevronDown, ChevronUp, ListFilter, Search, X } from "@wso2/oxygen-ui-icons-react";
@@ -40,6 +44,41 @@ import {
   INCIDENT_PRIORITIES,
   type IncidentFilters,
 } from "@features/csm-operations/utils/incidents";
+import IncidentProductMultiSelect from "@features/csm-operations/components/IncidentProductMultiSelect";
+
+const { DatePicker, LocalizationProvider } = DatePickers;
+
+/**
+ * "YYYY-MM-DD" to a local-midnight Date (avoids the UTC-parse day-shift
+ * `new Date(dateString)` can cause depending on the viewer's timezone) —
+ * this is purely how the calendar widget itself displays the picked day; the
+ * picked day is then interpreted as a UTC calendar date on the wire (see
+ * the "(UTC)" field labels below and `incidentDateOnlyToUTCStart`/`-End`),
+ * matching how the change-requests tab's date pickers already work.
+ */
+function parseDateOnly(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** Local-midnight Date back to "YYYY-MM-DD", matching IncidentFilters'
+ * createdStartDate/createdEndDate wire format. */
+function formatDateOnly(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/** Today's UTC calendar date, as a local-midnight Date (see `parseDateOnly`)
+ * — the upper bound for both created-date fields, since incidents can't be
+ * created in the future. */
+function todayUTCDateOnly(): Date {
+  const now = new Date();
+  return new Date(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+}
 
 interface IncidentsFilterBarProps {
   filters: IncidentFilters;
@@ -50,9 +89,14 @@ interface IncidentsFilterBarProps {
 }
 
 /**
- * Search + Priority filter bar for the Incidents tab. Priority is the only
- * filterable field beyond free text — `IncidentSearchPayload.filters` has no
- * state/category filter to build a control for (see openapi.yaml).
+ * Search + filters bar for the Incidents tab: priority, product,
+ * SLA-violated, and created date range (see `IncidentSearchPayload.filters` in
+ * openapi.yaml — there's still no server-side state/category filter to build
+ * a control for). The created-date bounds are inclusive and interpreted in
+ * UTC by the backend, so both date fields are labelled "(UTC)" rather than
+ * silently letting a viewer in another timezone assume their own — picking
+ * "1 May" here means the UTC calendar day, not midnight in the viewer's
+ * timezone.
  */
 export default function IncidentsFilterBar({
   filters,
@@ -63,6 +107,14 @@ export default function IncidentsFilterBar({
 }: IncidentsFilterBarProps): JSX.Element {
   const activeCount = countActiveIncidentFilters(filters);
   const hasActive = activeCount > 0;
+
+  // Recomputed every render (not memoized) — a `useMemo(..., [])` would
+  // freeze this at the component's mount date and stop matching "today" for
+  // any session left open across a UTC midnight.
+  const today = todayUTCDateOnly();
+  const createdEndDate = parseDateOnly(filters.createdEndDate);
+  const createdStartDate = parseDateOnly(filters.createdStartDate);
+  const fromMaxDate = createdEndDate && createdEndDate < today ? createdEndDate : today;
 
   const priorityOptions = useMemo(
     () =>
@@ -79,6 +131,31 @@ export default function IncidentsFilterBar({
       ...filters,
       priorities: (Array.isArray(val) ? val : [val]) as BeIncidentPriority[],
     });
+  };
+
+  /**
+   * `minDate`/`maxDate` only constrain the calendar popup — MUI's DatePicker
+   * still fires `onChange` for an out-of-range value typed directly into the
+   * field, so each handler re-checks the same bound here before accepting it,
+   * rather than trusting the picker's UI-only validation.
+   */
+  const handleCreatedStartChange = (date: unknown): void => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+      onChange({ ...filters, createdStartDate: "" });
+      return;
+    }
+    if (date > fromMaxDate) return;
+    onChange({ ...filters, createdStartDate: formatDateOnly(date) });
+  };
+
+  const handleCreatedEndChange = (date: unknown): void => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+      onChange({ ...filters, createdEndDate: "" });
+      return;
+    }
+    if (date > today) return;
+    if (createdStartDate && date < createdStartDate) return;
+    onChange({ ...filters, createdEndDate: formatDateOnly(date) });
   };
 
   return (
@@ -142,7 +219,7 @@ export default function IncidentsFilterBar({
         <>
           <Divider />
           <Grid container spacing={2}>
-            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
               <FormControl fullWidth size="small">
                 <InputLabel id="incident-filter-priority-label">Priority</InputLabel>
                 <Select
@@ -171,7 +248,69 @@ export default function IncidentsFilterBar({
                 </Select>
               </FormControl>
             </Grid>
+
+            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+              <IncidentProductMultiSelect
+                values={filters.products}
+                onChange={(next) => onChange({ ...filters, products: next })}
+              />
+            </Grid>
+
+            <Grid
+              size={{ xs: 12, sm: 6, md: 4 }}
+              sx={{ display: "flex", alignItems: "center", height: 40 }}
+            >
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    id="incident-filter-sla-violated"
+                    size="small"
+                    checked={filters.slaViolated}
+                    onChange={(e) => onChange({ ...filters, slaViolated: e.target.checked })}
+                  />
+                }
+                label="SLA violated"
+              />
+            </Grid>
+
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <LocalizationProvider dateAdapter={AdapterDateFns}>
+                <DatePicker
+                  label="Created from (UTC)"
+                  value={createdStartDate}
+                  maxDate={fromMaxDate}
+                  onChange={handleCreatedStartChange}
+                  slotProps={{
+                    textField: { size: "small", fullWidth: true },
+                    field: { clearable: true },
+                  }}
+                />
+              </LocalizationProvider>
+            </Grid>
+
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <LocalizationProvider dateAdapter={AdapterDateFns}>
+                <DatePicker
+                  label="Created to (UTC)"
+                  value={createdEndDate}
+                  minDate={createdStartDate ?? undefined}
+                  maxDate={today}
+                  onChange={handleCreatedEndChange}
+                  slotProps={{
+                    textField: { size: "small", fullWidth: true },
+                    field: { clearable: true },
+                  }}
+                />
+              </LocalizationProvider>
+            </Grid>
           </Grid>
+          {activeCount > 0 && (
+            <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+              <Typography variant="caption" color="text.secondary">
+                {activeCount} {activeCount === 1 ? "filter" : "filters"} active
+              </Typography>
+            </Box>
+          )}
         </>
       )}
     </Paper>

@@ -44,6 +44,10 @@ type SNUserService interface {
 	GetMe(ctx context.Context) (domain.GetUserMeResponse, error)
 	// PatchMe updates mutable fields on the currently authenticated user in ServiceNow.
 	PatchMe(ctx context.Context, req domain.PatchUserMeRequest) (domain.PatchUserMeResponse, error)
+	// GetUser returns one user's full profile: the user row plus group and team
+	// membership, and for external contacts their per-project access. A NotFoundError
+	// is returned when no user has that id.
+	GetUser(ctx context.Context, id string) (domain.SNUserDetail, error)
 }
 
 // AccountService defines the operations available on the account entity.
@@ -93,6 +97,10 @@ type ProjectContactService interface {
 	// SearchProjectContacts returns a paginated list of contacts associated with
 	// the project identified by projectID.
 	SearchProjectContacts(ctx context.Context, projectID string, req domain.SearchProjectContactsRequest) (domain.SearchProjectContactsResponse, error)
+	// GetProjectContact returns one contact's attributes for a single project: their
+	// roles on it, their registration state and their notification preference. A
+	// NotFoundError is returned when that contact is not a contact on that project.
+	GetProjectContact(ctx context.Context, projectID, contactID string) (domain.ProjectContact, error)
 }
 
 // AccountContactService defines the operations available on account contacts.
@@ -210,17 +218,17 @@ type CaseService interface {
 	DeleteCaseAttachment(ctx context.Context, req domain.DeleteAttachmentRequest) (domain.DeleteAttachmentResponse, error)
 	// AddCaseTag attaches a free-text label to the case identified by caseID.
 	// A ValidationError is returned for invalid input (e.g. malformed UUID, empty label).
-	// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina adapter exists yet for ServiceNow's generic
-	// label/label_entry mechanism; see AddCaseTagRequest doc comment.
+	// Not yet available in the backing service: no Ballerina adapter exists yet for
+	// ServiceNow's generic label/label_entry mechanism; see AddCaseTagRequest doc comment.
 	AddCaseTag(ctx context.Context, caseID, label string) (domain.Tag, error)
 	// RemoveCaseTag removes the tag identified by tagID from the case identified by caseID.
 	// A NotFoundError is returned if the tag does not exist on the case.
-	// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): same gap as AddCaseTag above.
+	// Not yet available in the backing service: same gap as AddCaseTag above.
 	RemoveCaseTag(ctx context.Context, caseID, tagID string) error
 	// SearchTags returns the tags (not scoped to any single case) whose label matches query,
 	// for FE autocomplete when attaching a tag to a case. An empty query returns all known tags.
 	// limit caps the number of results (<=0 means use the downstream default).
-	// Ballerina support added on ballerina-tasks-fixeta-tags (not yet merged to digiops-cs main): no Ballerina/Choreo endpoint exists yet for a
+	// Not yet available in the backing service: no Ballerina/Choreo endpoint exists yet for a
 	// case-agnostic tag search; see SearchTags in sn_case_service.go for the requested contract.
 	SearchTags(ctx context.Context, query string, limit int) ([]domain.Tag, error)
 }
@@ -360,8 +368,8 @@ type TaskService interface {
 	GetTask(ctx context.Context, id string) (domain.TaskDetail, error)
 	// CreateCaseTask creates a new task on the case identified by caseID.
 	// A ValidationError is returned for invalid input (e.g. malformed UUID, empty subject).
-	// Returns a ServiceUnavailableError until the downstream ballerina-tasks-fixeta-tags
-	// endpoint (not yet merged to digiops-cs main) ships; see CreateCaseTaskRequest doc comment.
+	// Returns a ServiceUnavailableError until the downstream endpoint ships (not yet
+	// available in the backing service); see CreateCaseTaskRequest doc comment.
 	CreateCaseTask(ctx context.Context, caseID string, req domain.CreateCaseTaskRequest) (domain.TaskDetail, error)
 	// UpdateTask updates exactly one of state, assignedToEmail, or dueDate on the task
 	// identified by taskID. A ValidationError is returned for invalid values, a malformed
@@ -424,4 +432,16 @@ type ConversationService interface {
 	// project IDs, states, search query, and createdByMe. A ValidationError is returned
 	// for invalid input.
 	SearchConversations(ctx context.Context, req domain.SearchConversationsRequest) (domain.SearchConversationsResponse, error)
+}
+
+// RoleService serves the platform's assignable-role catalogue.
+type RoleService interface {
+	// SearchRoles returns a paginated slice of the role catalogue.
+	SearchRoles(ctx context.Context, req domain.SearchRolesRequest) (domain.SearchRolesResponse, error)
+}
+
+// TeamService serves the team registry.
+type TeamService interface {
+	// SearchTeams returns a paginated slice of the team registry.
+	SearchTeams(ctx context.Context, req domain.SearchTeamsRequest) (domain.SearchTeamsResponse, error)
 }

@@ -52,7 +52,10 @@ export function useSearchCasesForSelect(
       const res = await api.post<BeCaseSearchPayload, BeCaseSearchResponse>(
         "/cases/search",
         {
-          filters: { searchQuery: q, types: ["case"] },
+          filters: {
+            searchQuery: q,
+            filters: [{ field: "type", op: "in", values: ["case"] }],
+          },
           pagination: { offset: 0, limit: CASE_SEARCH_LIMIT },
         },
       );
