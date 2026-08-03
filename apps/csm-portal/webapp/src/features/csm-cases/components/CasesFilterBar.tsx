@@ -17,6 +17,7 @@
 import {
   Box,
   Button,
+  Chip,
   Dialog,
   DialogActions,
   DialogContent,
@@ -75,12 +76,8 @@ import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProject
 import MultiSelectField from "@components/MultiSelectField";
 import AsyncAssigneeMultiSelect from "@features/csm-cases/components/AsyncAssigneeMultiSelect";
 import ProductNameMultiSelect from "@features/csm-cases/components/ProductNameMultiSelect";
-// TagsMultiSelect (case-list tag filter) is deliberately not wired in here
-// yet even though `CasesFilters.tags`/`excludeTags` are real fields again
-// (reinstated in the type/URL codec/search payload so dashboard tag-filter
-// widgets click through losslessly — see casesFiltersUrl.ts) — only the
-// filter-bar *control* is still pending. The component itself stays in
-// place and is unaffected by this.
+import TagsMultiSelect from "@features/csm-cases/components/TagsMultiSelect";
+import { useTeams } from "@features/csm-dashboard/api/useTeams";
 
 
 /**
@@ -209,6 +206,137 @@ const PRIMARY_STATES: CaseState[] = [
   "closed",
 ];
 
+/**
+ * Turns a raw backend token (`snake_case`, `PascalCase`, or a mix — the
+ * onboarding-status/escalation-level vocabularies aren't normalized to one
+ * casing) into a readable label: `"in_progress"` / `"OnHold"` both become
+ * `"In progress"` / `"On hold"`. Falls back to the raw token unchanged when
+ * it's empty.
+ */
+function humanizeToken(raw: string): string {
+  if (!raw) return raw;
+  const spaced = raw.replace(/_/g, " ").replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  const lower = spaced.toLowerCase();
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+
+/** Formats a `createdOn`/`updatedOn`/`closedOn` bound for a chip label — a
+ * locale date when parseable, the raw string otherwise (never throws on a
+ * malformed value; this is a display fallback, not validation). */
+function formatDateBound(raw: string): string {
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? raw : d.toLocaleDateString();
+}
+
+/** One removable "active filter" chip. */
+interface ActiveFilterChip {
+  key: string;
+  label: string;
+  onRemove: (filters: CasesFilters) => CasesFilters;
+}
+
+/**
+ * Fields extended onto `CasesFilters` for lossless dashboard click-through
+ * (onboarding status, SLA %, escalation, project type, the three date
+ * ranges) get no dedicated bar control of their own — ten new fields would
+ * overwhelm the bar, and most of them only ever get set by a widget
+ * click-through, not hand-picked in the bar. They must still be visible and
+ * individually removable, though, or a user landing on a dashboard-filtered
+ * cases list has no way to see (or undo) *why* it's filtered — hence one
+ * chip per active value here, shown regardless of whether the filter grid
+ * itself is expanded. `csTeams`/`tags`/`excludeTags` are deliberately
+ * excluded: they have real bar controls (below) that already show their own
+ * selection.
+ */
+function buildActiveFilterChips(filters: CasesFilters): ActiveFilterChip[] {
+  const chips: ActiveFilterChip[] = [];
+
+  filters.onboardingStatuses.forEach((status) => {
+    chips.push({
+      key: `onboarding-${status}`,
+      label: `Onboarding: ${humanizeToken(status)}`,
+      onRemove: (f) => ({
+        ...f,
+        onboardingStatuses: f.onboardingStatuses.filter((s) => s !== status),
+      }),
+    });
+  });
+
+  if (filters.slaElapsedPctGte !== null) {
+    chips.push({
+      key: "sla-gte",
+      label: `SLA ≥ ${filters.slaElapsedPctGte}%`,
+      onRemove: (f) => ({ ...f, slaElapsedPctGte: null }),
+    });
+  }
+  if (filters.slaElapsedPctLte !== null) {
+    chips.push({
+      key: "sla-lte",
+      label: `SLA ≤ ${filters.slaElapsedPctLte}%`,
+      onRemove: (f) => ({ ...f, slaElapsedPctLte: null }),
+    });
+  }
+
+  if (filters.hasEscalation !== null) {
+    chips.push({
+      key: "escalation",
+      label: filters.hasEscalation ? "Escalated" : "No escalation",
+      onRemove: (f) => ({ ...f, hasEscalation: null }),
+    });
+  }
+
+  filters.escalationLevels.forEach((level) => {
+    chips.push({
+      key: `escalation-level-${level}`,
+      label: `Escalation level: ${level}`,
+      onRemove: (f) => ({
+        ...f,
+        escalationLevels: f.escalationLevels.filter((l) => l !== level),
+      }),
+    });
+  });
+
+  filters.projectTypes.forEach((projectType) => {
+    chips.push({
+      key: `project-type-${projectType}`,
+      // No project-type name lookup exists in the frontend yet (the backend
+      // filter is keyed by an opaque id, not a slug) — shows the raw id
+      // rather than guessing at a label.
+      label: `Project type: ${projectType}`,
+      onRemove: (f) => ({
+        ...f,
+        projectTypes: f.projectTypes.filter((t) => t !== projectType),
+      }),
+    });
+  });
+
+  const dateRanges: [string, keyof CasesFilters, keyof CasesFilters][] = [
+    ["Created", "createdOnGte", "createdOnLte"],
+    ["Updated", "updatedOnGte", "updatedOnLte"],
+    ["Closed", "closedOnGte", "closedOnLte"],
+  ];
+  for (const [labelPrefix, gteKey, lteKey] of dateRanges) {
+    const gte = filters[gteKey] as string | null;
+    if (gte !== null) {
+      chips.push({
+        key: `${gteKey}`,
+        label: `${labelPrefix} after ${formatDateBound(gte)}`,
+        onRemove: (f) => ({ ...f, [gteKey]: null }),
+      });
+    }
+    const lte = filters[lteKey] as string | null;
+    if (lte !== null) {
+      chips.push({
+        key: `${lteKey}`,
+        label: `${labelPrefix} before ${formatDateBound(lte)}`,
+        onRemove: (f) => ({ ...f, [lteKey]: null }),
+      });
+    }
+  }
+
+  return chips;
+}
+
 export default function CasesFilterBar({
   filters,
   onChange,
@@ -224,6 +352,23 @@ export default function CasesFilterBar({
 }: CasesFilterBarProps): JSX.Element {
   const activeCount = countActiveFilters(filters);
   const hasActive = activeCount > 0;
+
+  // CS team is a fixed, small enough list to fetch in full (same endpoint/
+  // hook the team-based dashboards use — see AbtDashboardHeader) rather than
+  // a type-to-search async picker; `groupId` (not the registry `id`) is what
+  // `integrationCsTeam` filters on, and only teams with one configured are
+  // selectable here (an id-less team has nothing an `integrationCsTeam`
+  // filter entry could hold).
+  const { data: teams } = useTeams(true);
+  const teamOptions = useMemo(
+    () =>
+      (teams ?? [])
+        .filter((t): t is typeof t & { groupId: string } => Boolean(t.groupId))
+        .map((t) => ({ value: t.groupId, label: t.name })),
+    [teams],
+  );
+
+  const activeFilterChips = useMemo(() => buildActiveFilterChips(filters), [filters]);
 
   // ── Saved views ──────────────────────────────────────────────────────────
   // A saved view is just a name pointing at a serialized filter query string;
@@ -430,6 +575,23 @@ export default function CasesFilterBar({
         </Button>
       </Box>
 
+      {/* Fields with no bar control of their own (see `buildActiveFilterChips`'s
+          doc comment) — shown regardless of `isFiltersOpen` so a
+          dashboard-filtered arrival is self-explanatory even with the filter
+          grid collapsed, and each is individually removable right here. */}
+      {activeFilterChips.length > 0 && (
+        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+          {activeFilterChips.map((chip) => (
+            <Chip
+              key={chip.key}
+              size="small"
+              label={chip.label}
+              onDelete={() => onChange(chip.onRemove(filters))}
+            />
+          ))}
+        </Box>
+      )}
+
       <Dialog
         open={saveDialogOpen}
         onClose={() => setSaveDialogOpen(false)}
@@ -580,8 +742,46 @@ export default function CasesFilterBar({
                 onChange={(next) => onChange({ ...filters, productNames: next })}
               />
             </Grid>
-            {/* Tag filter deliberately omitted for now — see the removal note
-                in casesFiltersUrl.ts. `TagsMultiSelect` itself is untouched. */}
+            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
+              {/* CS team the case's project is scoped to (`integrationCsTeam`)
+                  — one of the two broadly-useful new fields that get a real
+                  bar control (see `buildActiveFilterChips`'s doc comment for
+                  why the rest don't). Options are `groupId`s (what the filter
+                  actually matches on); labels are team display names, never
+                  the raw group-id UUID. */}
+              <MultiSelectField
+                id="cases-filter-cs-team"
+                label="CS team"
+                values={filters.csTeams}
+                options={teamOptions}
+                onChange={(next) => onChange({ ...filters, csTeams: next })}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
+              {/* Tags the case MUST carry. Two separate controls (this one
+                  plus "Exclude tags" below), not one control with an
+                  include/exclude toggle: `tags` and `excludeTags` are
+                  independent and both may be set at once (the backend ANDs
+                  them, see `CasesFilters.excludeTags`'s doc comment) — a
+                  single toggle would force picking one mode at a time and
+                  couldn't represent "has tag A, but not tag B" in one control.
+                  Reuses `TagsMultiSelect` unchanged (still the case-detail
+                  "Add tag" picker's own freeSolo input). */}
+              <TagsMultiSelect
+                id="cases-filter-tags"
+                label="Tags"
+                values={filters.tags}
+                onChange={(next) => onChange({ ...filters, tags: next })}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
+              <TagsMultiSelect
+                id="cases-filter-exclude-tags"
+                label="Exclude tags"
+                values={filters.excludeTags}
+                onChange={(next) => onChange({ ...filters, excludeTags: next })}
+              />
+            </Grid>
           </Grid>
           {activeCount > 0 && (
             <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
