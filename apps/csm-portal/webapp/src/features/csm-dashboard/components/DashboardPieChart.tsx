@@ -150,8 +150,17 @@ export default function DashboardPieChart({
             180x180 box, making the top of the donut look pushed toward /
             cut off by this tile's own header above it. */}
         <PieChart
-          width="100%"
-          height="100%"
+          // Explicit pixel size, not "100%": the parent Box just above is
+          // already a fixed CHART_SIZE_PX square, not a responsive/percentage
+          // container, so there's nothing for a percentage width/height to
+          // measure against except an internal ResizeObserver callback --
+          // that callback fires one tick after first paint, so the chart's
+          // very first render sees width/height as -1 (a real, harmless but
+          // noisy console warning: "The width(-1) and height(-1) of chart
+          // should be greater than 0"). Passing the known constant directly
+          // sizes it synchronously on the first render, no observer race.
+          width={CHART_SIZE_PX}
+          height={CHART_SIZE_PX}
           legend={{ show: false }}
           margin={{ top: 0, right: 0, bottom: 0, left: 0 }}
           tooltip={{ show: true, wrapperStyle: { zIndex: 1000 } }}
