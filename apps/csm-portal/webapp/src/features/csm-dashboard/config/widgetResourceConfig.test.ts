@@ -170,4 +170,40 @@ describe("WIDGET_RESOURCE_CONFIG.case — previously-dropped fields", () => {
     expect(parsed.updatedOnGte).toBe("2026-01-01");
     expect(parsed.updatedOnLte).toBe("2026-06-30");
   });
+
+  it("`abt_sla_at_risk` (>=80% elapsed) and `abt_sla_violations` (>=100% elapsed) now produce distinct hrefs, each carrying its own threshold", () => {
+    // Mirrors the two real widgets' `filters` verbatim (reference/dashboard-config.json,
+    // team placeholder already resolved to a concrete groupId — the same
+    // shape `DashboardWidgetTile` passes to `buildHref` after
+    // `resolveTeamPlaceholder`). Before the data-layer commit these two
+    // hrefs were byte-identical because `taskSLABusinessElapsedPercent` was
+    // dropped entirely — see the cases-list-advanced-filters task record.
+    const teamFilters = [
+      { field: "integrationCsTeam", op: "in", values: ["22222222-2222-2222-2222-222222222222"] },
+      { field: "state", op: "in", values: ["open", "work_in_progress", "waiting_on_wso2"] },
+    ];
+    const atRiskHref = WIDGET_RESOURCE_CONFIG.case.buildHref({
+      filters: [
+        ...teamFilters,
+        { field: "taskSLABusinessElapsedPercent", op: "gte", values: ["80"] },
+      ],
+    });
+    const violationsHref = WIDGET_RESOURCE_CONFIG.case.buildHref({
+      filters: [
+        ...teamFilters,
+        { field: "taskSLABusinessElapsedPercent", op: "gte", values: ["100"] },
+      ],
+    });
+
+    expect(atRiskHref).not.toBe(violationsHref);
+
+    const atRiskParsed = readCasesFiltersFromUrl(hrefParams(atRiskHref));
+    const violationsParsed = readCasesFiltersFromUrl(hrefParams(violationsHref));
+    expect(atRiskParsed.slaElapsedPctGte).toBe(80);
+    expect(violationsParsed.slaElapsedPctGte).toBe(100);
+    // Both still carry the shared team/state constraints — only the
+    // threshold differs.
+    expect(atRiskParsed.csTeams).toEqual(violationsParsed.csTeams);
+    expect(atRiskParsed.states).toEqual(violationsParsed.states);
+  });
 });

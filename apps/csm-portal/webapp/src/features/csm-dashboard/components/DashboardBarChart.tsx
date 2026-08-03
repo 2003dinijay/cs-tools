@@ -17,7 +17,7 @@
 import { Box, Skeleton, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
 import { Inbox } from "@wso2/oxygen-ui-icons-react";
 import { Bar, BarChart, Cell } from "@wso2/oxygen-ui-charts-react";
-import { useState, type JSX } from "react";
+import { useState, type JSX, type SyntheticEvent } from "react";
 import type { BeWidgetPaletteColor } from "@api/backend/types";
 import type { PieSliceResult } from "@features/csm-dashboard/api/useWidgetPieData";
 import { useDarkMode } from "@utils/useDarkMode";
@@ -151,7 +151,12 @@ export default function DashboardBarChart({
           }}
           onMouseEnter={(_data: unknown, i: number) => setActiveIndex(i)}
           onMouseLeave={() => setActiveIndex(undefined)}
-          onClick={(_data: unknown, i: number) => {
+          // Stops the click from also bubbling up to the tile-level
+          // click-through `DashboardWidgetTile` attaches to the whole card
+          // for shape "pie"/"bar" — see `DashboardPieChart`'s wedge onClick
+          // for the same fix and full rationale.
+          onClick={(_data: unknown, i: number, event?: SyntheticEvent) => {
+            event?.stopPropagation();
             const slice = slices[i];
             if (slice) onSliceClick(slice);
           }}

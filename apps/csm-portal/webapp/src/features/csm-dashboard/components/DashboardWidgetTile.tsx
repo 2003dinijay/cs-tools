@@ -16,7 +16,7 @@
 
 import { Box, Button, Card, IconButton, Skeleton, Tooltip, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
 import { ArrowRight, RefreshCw } from "@wso2/oxygen-ui-icons-react";
-import type { JSX, MouseEvent, ReactNode } from "react";
+import type { JSX, KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { Link as RouterLink, useNavigate } from "react-router";
 import type { BeDashboardPieSlice, BeWidgetResourceType, BeWidgetShape } from "@api/backend/types";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
@@ -243,13 +243,48 @@ export default function DashboardWidgetTile({
   }
 
   if (shape === "pie" || shape === "bar") {
-    // Each slice/legend row (or bar) navigates independently, so — same
-    // rationale as shape "list" — this can't be one big link the way shape
-    // "count" is; it's a plain, non-link Card with its own nested click
-    // targets.
+    // Each slice/legend row (or bar) navigates independently to that
+    // slice's OWN filtered list, so — same rationale as shape "list" — this
+    // can't be one big link the way shape "count" is; it's a plain,
+    // non-link Card. It's still a click-through target in its own right,
+    // though: clicking the tile anywhere OTHER than a slice/legend row (the
+    // header, the padding, the empty state) goes to the widget's own base
+    // filters, the same destination a "count" tile with those filters would
+    // produce. Every nested interactive element (slice wedge, legend row,
+    // the refresh button) stops propagation on click, so this tile-level
+    // handler only ever fires for a genuine background click.
     const ChartComponent = shape === "pie" ? DashboardPieChart : DashboardBarChart;
+    const tileHref = config.buildHref(resolveTeamPlaceholder(filters, selectedTeamGroupId));
+    const handleTileClick = (): void => {
+      void navigate(tileHref);
+    };
+    const handleTileKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handleTileClick();
+      }
+    };
     return (
-      <Card variant="outlined" sx={{ position: "relative", p: 1.75, height: "100%" }}>
+      <Card
+        variant="outlined"
+        role="button"
+        tabIndex={0}
+        aria-label={`View all cases for ${displayName}`}
+        onClick={handleTileClick}
+        onKeyDown={handleTileKeyDown}
+        sx={{
+          position: "relative",
+          p: 1.75,
+          height: "100%",
+          cursor: "pointer",
+          "&:hover": { bgcolor: "action.hover" },
+          "&:focus-visible": {
+            outline: "2px solid",
+            outlineColor: "primary.main",
+            outlineOffset: -2,
+          },
+        }}
+      >
         {refreshButton}
         {/* The header's own bottom padding — not just a top margin on the
             chart below it — so the chart's top edge (and, at the size this

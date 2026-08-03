@@ -17,7 +17,7 @@
 import { Box, Skeleton, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
 import { Inbox } from "@wso2/oxygen-ui-icons-react";
 import { Cell, Pie, PieChart } from "@wso2/oxygen-ui-charts-react";
-import { useState, type JSX } from "react";
+import { useState, type JSX, type KeyboardEvent, type SyntheticEvent } from "react";
 import type { BeWidgetPaletteColor } from "@api/backend/types";
 import type { PieSliceResult } from "@features/csm-dashboard/api/useWidgetPieData";
 import { useDarkMode } from "@utils/useDarkMode";
@@ -180,7 +180,14 @@ export default function DashboardPieChart({
             labelLine={false}
             onMouseEnter={(_data: unknown, i: number) => setActiveIndex(i)}
             onMouseLeave={() => setActiveIndex(undefined)}
-            onClick={(_data: unknown, i: number) => {
+            // Stops the click from also bubbling up to the tile-level
+            // click-through `DashboardWidgetTile` attaches to the whole
+            // card for `shape: "pie"`/`"bar"` — without this, clicking a
+            // wedge would navigate to the slice's own filtered list AND
+            // then (via bubbling) immediately re-navigate to the tile's
+            // base-filtered list.
+            onClick={(_data: unknown, i: number, event?: SyntheticEvent) => {
+              event?.stopPropagation();
               const slice = slices[i];
               if (slice) onSliceClick(slice);
             }}
@@ -219,7 +226,24 @@ export default function DashboardPieChart({
           return (
             <Box
               key={slice.label}
-              onClick={() => onSliceClick(slice)}
+              role="button"
+              tabIndex={0}
+              aria-label={`${slice.label}: ${slice.value} cases (${pct}%)`}
+              // stopPropagation for the same reason as the wedge's own
+              // onClick above — this row sits inside the tile-level
+              // click-through `DashboardWidgetTile` attaches for
+              // shape "pie"/"bar".
+              onClick={(event) => {
+                event.stopPropagation();
+                onSliceClick(slice);
+              }}
+              onKeyDown={(event: KeyboardEvent) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onSliceClick(slice);
+                }
+              }}
               sx={{
                 display: "flex",
                 alignItems: "center",
@@ -229,6 +253,10 @@ export default function DashboardPieChart({
                 borderRadius: 1,
                 cursor: "pointer",
                 "&:hover": { bgcolor: "action.hover" },
+                "&:focus-visible": {
+                  outline: `2px solid ${theme.palette.primary.main}`,
+                  outlineOffset: -2,
+                },
               }}
             >
               <Box
