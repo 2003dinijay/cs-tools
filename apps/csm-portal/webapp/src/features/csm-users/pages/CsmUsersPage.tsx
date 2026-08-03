@@ -319,7 +319,6 @@ export default function CsmUsersPage(): JSX.Element {
             size="small"
             aria-label="Users search results"
             sx={{
-              minWidth: 900,
               tableLayout: "fixed",
               "& .MuiTableCell-root": { borderColor: "divider" },
             }}

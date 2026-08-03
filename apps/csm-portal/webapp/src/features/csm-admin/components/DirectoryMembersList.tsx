@@ -100,7 +100,6 @@ export default function DirectoryMembersList({
           size="small"
           aria-label={`${entityNoun} members`}
           sx={{
-            minWidth: 900,
             tableLayout: "fixed",
             "& .MuiTableCell-root": { borderColor: "divider" },
           }}
