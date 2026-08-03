@@ -40,6 +40,11 @@ import { isCaseFieldFilterArray, type WidgetCaseFieldFilterLike } from "./widget
  * just the open/in-progress ones the base widget itself is scoped to. This
  * function detects that shape and merges the two arrays by `field`, keeping
  * every base entry whose field the slice doesn't itself specify.
+ *
+ * The criteria object's `anyOf` (cross-field OR: an array of
+ * `{filters: [...]}` branches, OR'd against each other) gets the same
+ * treatment for the same reason, distributed rather than concatenated since
+ * ANDing two OR sets is a cross product. See the comment at the merge itself.
  */
 /** Same shape check as `isCaseFieldFilterArray`, but also accepts a
  * genuinely empty array — a slice or base widget legitimately carrying zero
@@ -51,20 +56,75 @@ function isCaseFieldFilterArrayOrEmpty(value: unknown): value is WidgetCaseField
   return (Array.isArray(value) && value.length === 0) || isCaseFieldFilterArray(value);
 }
 
+/** One `anyOf` branch: its own predicate array, ANDed within the branch. The
+ * branches are OR'd against each other. */
+interface WidgetFilterBranch {
+  filters: WidgetCaseFieldFilterLike[];
+}
+
+/** Structural check for the `anyOf` branch array, matching the backend's
+ * `CaseFilterBranch` (`{filters: [...]}`, at least one predicate each). */
+function isBranchArray(value: unknown): value is WidgetFilterBranch[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (b) =>
+        typeof b === "object" &&
+        b !== null &&
+        isCaseFieldFilterArrayOrEmpty((b as { filters?: unknown }).filters),
+    )
+  );
+}
+
+/** Merges two predicate arrays by `field`: every base entry whose field the
+ * slice does not itself specify survives, and the slice wins on conflict. */
+function mergeFilterArrays(
+  baseArr: WidgetCaseFieldFilterLike[],
+  sliceArr: WidgetCaseFieldFilterLike[],
+): WidgetCaseFieldFilterLike[] {
+  const sliceFields = new Set(sliceArr.map((f) => f.field));
+  return [...baseArr.filter((f) => !sliceFields.has(f.field)), ...sliceArr];
+}
+
 export function mergeWidgetFilters(
   base: Record<string, unknown>,
   slice: Record<string, unknown>,
 ): Record<string, unknown> {
   const merged = { ...base, ...slice };
+
   const baseArr = base.filters;
   const sliceArr = slice.filters;
   if (isCaseFieldFilterArrayOrEmpty(baseArr) && isCaseFieldFilterArrayOrEmpty(sliceArr)) {
-    const sliceFields = new Set(sliceArr.map((f) => f.field));
-    const combined: WidgetCaseFieldFilterLike[] = [
-      ...baseArr.filter((f) => !sliceFields.has(f.field)),
-      ...sliceArr,
-    ];
-    merged.filters = combined;
+    merged.filters = mergeFilterArrays(baseArr, sliceArr);
   }
+
+  // `anyOf` has exactly the same problem the inner `filters` array had, and
+  // it is not hypothetical: the backend loader actively PRODUCES `anyOf` by
+  // migrating the legacy `orGroups` key, so a migrated widget carrying an OR
+  // group plus a slice that also uses one would, under a plain spread, lose
+  // every base branch — silently widening that slice's count rather than
+  // narrowing it, exactly the failure the inner-array merge above exists to
+  // prevent.
+  //
+  // The branches are OR'd, so ANDing the slice's set under the base's is a
+  // distribution, not a concatenation: (B1 | B2) AND (S1 | S2) becomes the
+  // four pairwise-merged branches (B1∧S1 | B1∧S2 | B2∧S1 | B2∧S2), each pair
+  // merged by `field` on the same "slice wins" rule as the flat array. Both
+  // sides are single-digit in practice, so the product stays small.
+  //
+  // Only relevant when BOTH sides set it: a plain spread already does the
+  // right thing when just one does (the base's survives, or the slice's is
+  // adopted). Anything not matching the branch shape falls through to the
+  // spread's last-writer-wins rather than being mangled into a query that
+  // would be accepted but mean something else.
+  const baseBranches = base.anyOf;
+  const sliceBranches = slice.anyOf;
+  if (isBranchArray(baseBranches) && isBranchArray(sliceBranches)) {
+    merged.anyOf = baseBranches.flatMap((b) =>
+      sliceBranches.map((s) => ({ ...b, ...s, filters: mergeFilterArrays(b.filters, s.filters) })),
+    );
+  }
+
   return merged;
 }

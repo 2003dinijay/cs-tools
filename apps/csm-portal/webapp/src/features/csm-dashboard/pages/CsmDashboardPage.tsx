@@ -65,6 +65,14 @@ export default function CsmDashboardPage(): JSX.Element {
   // The preferred predicate per the user's own team membership: BOTH
   // isDefault and isTeamBased must match (not isTeamBased alone, and not
   // isDefault alone) — see the module doc comment above.
+  //
+  // Deliberately type-blind: `type` is not on `BeDashboardListItem` at all
+  // yet, so this cannot key off it. The backend loader is held to ONE
+  // isDefault dashboard in total to match — without that, a second typed
+  // default would be perfectly valid config and which one a user landed on
+  // would come down to the backend's filename ordering. Making this
+  // type-aware and loosening the loader to one default per type are the same
+  // change; do not do either alone.
   const preferredEntry = userHasTeam
     ? list?.find((d) => d.isDefault && d.isTeamBased)
     : list?.find((d) => d.isDefault && !d.isTeamBased);

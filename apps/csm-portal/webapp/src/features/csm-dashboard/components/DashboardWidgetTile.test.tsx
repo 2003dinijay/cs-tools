@@ -846,11 +846,29 @@ describe("DashboardWidgetTile", () => {
     const infoButton = screen.getByRole("button", { name: "About My Patches" });
     expect(infoButton).toBeInTheDocument();
 
+    // The button existing proves nothing on its own — the tooltip could render
+    // empty and still pass. Open it and assert it actually surfaces the
+    // description text.
+    fireEvent.mouseOver(infoButton);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent("Cases assigned to you that carry an open patch.");
+
+    // It closes again on mouse-out, so the assertion above is about this
+    // tooltip and not some permanently-mounted node.
+    // (The keyboard path is not asserted here: the Tooltip opens on
+    // :focus-visible, which fireEvent.focus does not produce and which needs
+    // @testing-library/user-event — not a dependency of this app.)
+    fireEvent.mouseOut(infoButton);
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+
+    // Only `description` changes across the rerender — `widgetId` stays
+    // `my_patches`, so the disappearing icon can only be attributed to the
+    // missing description and not to a different widget being rendered.
     rerender(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
         <MemoryRouter>
           <DashboardWidgetTile
-            widgetId="my_patches_no_desc"
+            widgetId="my_patches"
             displayName="My Patches"
             resourceType="case"
             shape="count"
