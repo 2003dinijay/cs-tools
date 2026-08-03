@@ -123,18 +123,18 @@ const maxAttachmentBodyBytes = 15 << 20
 // text/html). All responses also carry Content-Disposition: attachment and
 // X-Content-Type-Options: nosniff regardless of type.
 var safeAttachmentTypes = map[string]bool{
-	"image/png":  true,
-	"image/jpeg": true,
-	"image/gif":  true,
-	"image/webp": true,
-	"application/pdf":          true,
-	"text/plain":               true,
-	"application/zip":          true,
+	"image/png":                    true,
+	"image/jpeg":                   true,
+	"image/gif":                    true,
+	"image/webp":                   true,
+	"application/pdf":              true,
+	"text/plain":                   true,
+	"application/zip":              true,
 	"application/x-zip-compressed": true,
-	"application/msword":       true,
+	"application/msword":           true,
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": true,
 	"application/vnd.ms-excel": true,
-	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":       true,
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": true,
 }
 
 // CreateCase handles POST /cases.
