@@ -566,3 +566,73 @@ describe("CaseActionBar — Change severity is blocked on a closed case", () => 
     expect(onAction).toHaveBeenCalledWith({ secondary: "change_severity" });
   });
 });
+
+describe("acknowledge action", () => {
+  const renderBar = (
+    overrides: Partial<CsmCaseDetail>,
+    props: { onAcknowledge?: () => void; isAcknowledging?: boolean } = {},
+  ): void => {
+    render(
+      <CaseActionBar
+        caseDetail={{ ...BASE_CASE, ...overrides }}
+        onAction={vi.fn()}
+        onAcknowledge={props.onAcknowledge ?? vi.fn()}
+        isAcknowledging={props.isAcknowledging}
+      />,
+    );
+  };
+
+  it("offers acknowledge on an unacknowledged S0-S3 case", () => {
+    for (const severity of ["S0", "S1", "S2", "S3"] as const) {
+      const { unmount } = render(
+        <CaseActionBar
+          caseDetail={{ ...BASE_CASE, severity, acknowledgedBy: undefined }}
+          onAction={vi.fn()}
+          onAcknowledge={vi.fn()}
+        />,
+      );
+      expect(
+        screen.getByRole("button", { name: /acknowledge/i }),
+        `expected the acknowledge button on a ${severity} case`,
+      ).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("hides acknowledge on S4 — those cases raise no acknowledgement notification", () => {
+    renderBar({ severity: "S4", acknowledgedBy: undefined });
+    expect(screen.queryByRole("button", { name: /acknowledge/i })).not.toBeInTheDocument();
+  });
+
+  it("hides acknowledge once the case is acknowledged — it is first-write-wins, so there is nothing left to do", () => {
+    renderBar({ severity: "S1", acknowledgedBy: { name: "Jane Doe" } });
+    expect(screen.queryByRole("button", { name: /acknowledge/i })).not.toBeInTheDocument();
+  });
+
+  it("renders no acknowledge button when the caller wires no handler, rather than a dead control", () => {
+    render(
+      <CaseActionBar
+        caseDetail={{ ...BASE_CASE, severity: "S1", acknowledgedBy: undefined }}
+        onAction={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /acknowledge/i })).not.toBeInTheDocument();
+  });
+
+  it("invokes the handler on click and disables the button while in flight", () => {
+    const onAcknowledge = vi.fn();
+    const { unmount } = render(
+      <CaseActionBar
+        caseDetail={{ ...BASE_CASE, severity: "S1", acknowledgedBy: undefined }}
+        onAction={vi.fn()}
+        onAcknowledge={onAcknowledge}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /acknowledge/i }));
+    expect(onAcknowledge).toHaveBeenCalledTimes(1);
+    unmount();
+
+    renderBar({ severity: "S1", acknowledgedBy: undefined }, { isAcknowledging: true });
+    expect(screen.getByRole("button", { name: /acknowledge/i })).toBeDisabled();
+  });
+});

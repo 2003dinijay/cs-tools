@@ -323,6 +323,14 @@ export interface BeCaseView {
   /** Canonical reference to the assigned engineer, `id` populated. See
    * {@link BeUserReference}. */
   assignedEngineerUser?: BeUserReference | null;
+  /**
+   * The CS engineer who acknowledged the case — a first-write-wins claim that
+   * someone has seen it and picked it up, which is **not** the same as being
+   * assigned to it. `null` until someone acknowledges. The backing data source
+   * clears it again when the case's type or severity changes or it is reopened,
+   * so a materially changed case has to be acknowledged afresh.
+   */
+  acknowledgedBy?: BeAssignedEngineerRef | null;
   account?: BeCaseAccountRef;
   project?: BeEntityRef;
   /** Nullable: ServiceNow-sourced cases may have no deployment / product. */
@@ -618,6 +626,7 @@ interface BeCaseUpdateNever {
   addPublicComment?: never;
   product?: never;
   publicTicket?: never;
+  acknowledge?: never;
 }
 
 /**
@@ -664,6 +673,14 @@ export type BeCaseUpdatePayload =
   | (Omit<BeCaseUpdateNever, "deployedProductId"> & { deployedProductId: string })
   /** UUID of another case to cross-link to this one as a related case (looser than `parentId`; ServiceNow only). */
   | (Omit<BeCaseUpdateNever, "relatedCaseId"> & { relatedCaseId: string })
+  /**
+   * Acknowledge the case as the signed-in engineer. Typed as the literal `true`
+   * because that is the only accepted value: acknowledgement is first-write-wins
+   * and there is no way to remove one. Acknowledging an already-acknowledged
+   * case succeeds and changes nothing, and the response then carries
+   * `alreadyAcknowledged: true` with whoever claimed it first.
+   */
+  | (Omit<BeCaseUpdateNever, "acknowledge"> & { acknowledge: true })
   /**
    * Places the case on hold in the backing data source's staged auto-closure
    * sequence until this ISO date-time (ServiceNow only). The raw
@@ -732,6 +749,16 @@ export interface BeUpdatedCase {
   mostLikelyFixEta?: string | null;
   /** Echoes the updated internal-only worst-case fix estimate. Present when the update set `worstCaseFixEta`. */
   worstCaseFixEta?: string | null;
+  /** Human-readable case number. Present when the update set `acknowledge`. */
+  number?: string;
+  /**
+   * True when the case already had an acknowledger, so the request changed
+   * nothing and `acknowledgedBy` names whoever claimed it first. Present when
+   * the update set `acknowledge`.
+   */
+  alreadyAcknowledged?: boolean;
+  /** Whoever now holds the acknowledgement. Present when the update set `acknowledge`. */
+  acknowledgedBy?: BeAssignedEngineerRef | null;
 }
 
 /** `PATCH /cases/{id}` response: a message plus the mutated case fields. */

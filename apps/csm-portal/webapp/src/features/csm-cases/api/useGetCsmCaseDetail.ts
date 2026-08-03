@@ -92,6 +92,14 @@ function detailFromBeCase(
     linkedChangeRequests: c.linkedChangeRequests ?? undefined,
     autoclosureStep: c.autoclosureStep ?? undefined,
     autoclosureStateTime: c.autoclosureStateTime ?? undefined,
+    acknowledgedBy: c.acknowledgedBy
+      ? {
+          // Fall back to the email when the data source returns a blank display
+          // name, so the UI never renders "Acknowledged by" with nothing after it.
+          name: c.acknowledgedBy.name?.trim() || (c.acknowledgedBy.email ?? "—"),
+          email: c.acknowledgedBy.email ?? undefined,
+        }
+      : undefined,
     assignee,
     assigneeName,
     assigneeEmail,
