@@ -15,7 +15,7 @@
 // under the License.
 
 import { Box, Link, Sidebar, Tooltip, Typography } from "@wso2/oxygen-ui";
-import { type JSX } from "react";
+import { useEffect, useRef, type JSX } from "react";
 import { Link as NavigateLink, useLocation } from "react-router";
 import { navNodePath, navSectionForPath } from "@config/csmNavItems";
 import { featureState, visibleNavSections } from "@config/featureFlags";
@@ -37,11 +37,14 @@ interface CsmSideBarProps {
   onToggleExpand?: (id: string) => void;
 }
 
-function pickActiveId(pathname: string): string {
+function pickActiveId(pathname: string, lastSectionId: string): string {
   if (pathname === "/" || pathname === "") return "dashboard";
   // Highlight the owning *section* — a second-level tab has no rail entry of
   // its own, so `/operations/incidents/42` still lights up Operations.
-  return navSectionForPath(pathname)?.id ?? "dashboard";
+  // Routes with no owning section (e.g. `/people/:id`, linked from all over
+  // the app, not just Settings > Users) fall back to whichever section was
+  // last active instead of hard-jumping to Dashboard.
+  return navSectionForPath(pathname)?.id ?? lastSectionId;
 }
 
 export default function CsmSideBar({
@@ -51,7 +54,11 @@ export default function CsmSideBar({
   onToggleExpand,
 }: CsmSideBarProps): JSX.Element {
   const location = useLocation();
-  const activeItem = pickActiveId(location.pathname);
+  const lastSectionId = useRef("dashboard");
+  const activeItem = pickActiveId(location.pathname, lastSectionId.current);
+  useEffect(() => {
+    lastSectionId.current = activeItem;
+  }, [activeItem]);
 
   return (
     <Sidebar

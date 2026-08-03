@@ -16,7 +16,6 @@
 
 import {
   Box,
-  Chip,
   Skeleton,
   Table,
   TableBody,
@@ -25,20 +24,23 @@ import {
   TableHead,
   TablePagination,
   TableRow,
+  Stack,
   Typography,
 } from "@wso2/oxygen-ui";
-import { useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useMemo, useState, type ChangeEvent, type JSX, type KeyboardEvent } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import UserRefLink from "@components/UserRefLink";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
 import { useSearchRoles } from "@features/csm-admin/api/useSearchRoles";
-import RoleChipList from "@features/csm-admin/components/RoleChipList";
+import ResponsiveRoleChips from "@components/ResponsiveRoleChips";
 import type { SearchUsersRequest } from "@features/csm-users/types/csmUsers";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
+import { useNavTransition } from "@hooks/useNavTransition";
+import { displayUserTimezone } from "@utils/userDirectoryDisplay";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
-const COLUMN_COUNT = 5;
+const COLUMN_COUNT = 4;
 
 /** Which `UserSearchFilters` key membership in this entity narrows on. */
 export type DirectoryMemberFilterKey = "roleIds" | "groupIds" | "teamIds";
@@ -67,6 +69,7 @@ export default function DirectoryMembersList({
   entityId,
   entityNoun,
 }: DirectoryMembersListProps): JSX.Element {
+  const navigate = useNavTransition();
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
 
@@ -93,18 +96,24 @@ export default function DirectoryMembersList({
   return (
     <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
       <TableContainer>
-        <Table size="small" aria-label={`${entityNoun} members`} sx={{ "& .MuiTableCell-root": { borderColor: "divider" } }}>
+        <Table
+          size="small"
+          aria-label={`${entityNoun} members`}
+          sx={{
+            tableLayout: "fixed",
+            "& .MuiTableCell-root": { borderColor: "divider" },
+          }}
+        >
           <TableHead>
             <TableRow sx={{ bgcolor: "action.hover" }}>
-              <TableCell>Username</TableCell>
-              <TableCell>Name</TableCell>
-              <TableCell>Email</TableCell>
-              <TableCell>Roles</TableCell>
-              <TableCell>Status</TableCell>
+              <TableCell sx={{ width: "32%" }}>User</TableCell>
+              <TableCell sx={{ width: "44%" }}>Roles</TableCell>
+              <TableCell sx={{ width: "12%" }}>Status</TableCell>
+              <TableCell sx={{ width: "12%" }}>Timezone</TableCell>
             </TableRow>
           </TableHead>
-          <TableBody>
-            {isLoading || isFetching ? (
+          <TableBody sx={isFetching && !isLoading ? { opacity: 0.6 } : undefined}>
+            {isLoading ? (
               Array.from({ length: rowsPerPage }).map((_, i) => (
                 <TableRow key={i}>
                   {Array.from({ length: COLUMN_COUNT }).map((__, c) => (
@@ -132,35 +141,95 @@ export default function DirectoryMembersList({
                 </TableCell>
               </TableRow>
             ) : (
-              users.map((u) => (
-                <TableRow key={u.id} hover>
-                  <TableCell>
-                    <UserRefLink name={u.userName} email={u.email} userId={u.id} />
-                  </TableCell>
-                  <TableCell>{u.name || "—"}</TableCell>
-                  <TableCell sx={{ wordBreak: "break-all" }}>{u.email}</TableCell>
-                  <TableCell>
-                    <RoleChipList
-                      roleIds={u.roles ?? []}
-                      roleNameById={roleNameById}
-                      userId={u.id}
-                      userLabel={u.name || u.userName}
-                    />
-                  </TableCell>
-                  <TableCell>
-                    {u.active === undefined ? (
-                      "—"
-                    ) : (
-                      <Chip
-                        size="small"
-                        label={u.active ? "Active" : "Inactive"}
-                        color={u.active ? "success" : "default"}
-                        variant="outlined"
+              users.map((u) => {
+                const profilePath = `/people/${encodeURIComponent(u.id)}`;
+                const goToProfile = (): void => navigate(profilePath);
+                const handleRowKeyDown = (e: KeyboardEvent<HTMLTableRowElement>): void => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    goToProfile();
+                  }
+                };
+                const displayName = u.name?.trim();
+                const primaryIdentity = displayName || u.userName;
+                const secondaryIdentity = [
+                  u.userName !== primaryIdentity ? u.userName : undefined,
+                  u.email !== primaryIdentity && u.email !== u.userName ? u.email : undefined,
+                ].filter((value): value is string => Boolean(value));
+
+                return (
+                  <TableRow
+                    key={u.id}
+                    hover
+                    tabIndex={0}
+                    onClick={goToProfile}
+                    onKeyDown={handleRowKeyDown}
+                    aria-label={`View profile for ${u.name || u.userName}`}
+                    sx={{
+                      cursor: "pointer",
+                      "&:focus-visible": {
+                        outline: "2px solid",
+                        outlineColor: "primary.main",
+                        outlineOffset: -2,
+                      },
+                    }}
+                  >
+                    <TableCell sx={{ minWidth: 0 }}>
+                      <UserRefLink
+                        name={primaryIdentity}
+                        email={u.email}
+                        userId={u.id}
+                        underlineOnHover={false}
                       />
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))
+                      {secondaryIdentity.length > 0 && (
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          noWrap
+                          title={secondaryIdentity.join(" · ")}
+                          sx={{ display: "block" }}
+                        >
+                          {secondaryIdentity.join(" · ")}
+                        </Typography>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {u.roles && u.roles.length > 0 ? (
+                        <ResponsiveRoleChips
+                          roleIds={u.roles}
+                          roleNameById={roleNameById}
+                          userLabel={u.name || u.userName}
+                          onViewAll={goToProfile}
+                        />
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {u.active === undefined ? (
+                        "—"
+                      ) : (
+                        <Stack direction="row" spacing={0.75} alignItems="center">
+                          <Box
+                            aria-hidden
+                            sx={{
+                              width: 7,
+                              height: 7,
+                              flexShrink: 0,
+                              borderRadius: "50%",
+                              bgcolor: u.active ? "success.main" : "text.disabled",
+                            }}
+                          />
+                          <Typography variant="body2">
+                            {u.active ? "Active" : "Inactive"}
+                          </Typography>
+                        </Stack>
+                      )}
+                    </TableCell>
+                    <TableCell>{displayUserTimezone(u.timezone)}</TableCell>
+                  </TableRow>
+                );
+              })
             )}
           </TableBody>
         </Table>
