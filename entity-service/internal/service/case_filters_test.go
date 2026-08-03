@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -473,5 +474,54 @@ func TestParseCaseFieldFilterGroups_SupportedFieldsParse(t *testing.T) {
 	}
 	if len(groups[1].Severities) != 1 || groups[1].Severities[0] != domain.CaseSeverity("high") {
 		t.Errorf("groups[1].Severities = %v, want [high]", groups[1].Severities)
+	}
+}
+
+// An OR branch carrying no predicates constrains nothing, and because the
+// branches are OR'd against each other one such branch widens the ENTIRE
+// result set: every case matches, silently, with a 200 and no error anywhere.
+// It has to be rejected at parse time. `"anyOf": [{}]` is valid JSON against
+// the schema's own shape, so nothing upstream catches it either.
+func TestParseCaseFieldFilterGroups_RejectsEmptyBranch(t *testing.T) {
+	valid := domain.CaseFilterBranch{
+		Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open"}}},
+	}
+
+	cases := []struct {
+		name     string
+		branches []domain.CaseFilterBranch
+		want     string
+	}{
+		{
+			name:     `"anyOf": [{}] -- filters key absent entirely`,
+			branches: []domain.CaseFilterBranch{{}},
+			want:     "anyOf[0].filters: an OR branch must carry at least one filter predicate",
+		},
+		{
+			name:     `"anyOf": [{"filters": []}] -- present but empty`,
+			branches: []domain.CaseFilterBranch{{Filters: []domain.CaseFieldFilter{}}},
+			want:     "anyOf[0].filters: an OR branch must carry at least one filter predicate",
+		},
+		{
+			name:     "an empty branch alongside valid ones still reports its own index",
+			branches: []domain.CaseFilterBranch{valid, valid, {}},
+			want:     "anyOf[2].filters: an OR branch must carry at least one filter predicate",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			groups, err := ParseCaseFieldFilterGroups(tc.branches)
+			if err == nil {
+				t.Fatalf("expected an error, got nil and %d group(s) -- an unconstrained branch was forwarded", len(groups))
+			}
+			var ve *apierror.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("err = %v (%T), want *apierror.ValidationError (400)", err, err)
+			}
+			if !strings.HasPrefix(ve.Msg, tc.want) {
+				t.Errorf("Msg = %q, want prefix %q", ve.Msg, tc.want)
+			}
+		})
 	}
 }

@@ -4793,11 +4793,15 @@ components:
       properties:
         filters:
           type: array
+          minItems: 1
           items:
             $ref: '#/components/schemas/CaseFieldFilter'
           description: >-
             The predicates ANDed together within this branch -- see
-            CaseFieldFilter.
+            CaseFieldFilter. At least one is required: a branch with no
+            predicates constrains nothing, and since the branches are OR'd
+            against each other it would widen the entire result set to every
+            case rather than narrowing it. Rejected with a 400.
       required: [filters]
 
     SearchCasesFilters:

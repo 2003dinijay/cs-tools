@@ -591,6 +591,17 @@ func ParseCaseFieldFilterGroups(branches []domain.CaseFilterBranch) ([]domain.Ca
 	result := make([]domain.CaseFilterGroup, 0, len(branches))
 	for i, branch := range branches {
 		group := branch.Filters
+		// A branch with no predicates constrains nothing, and the branches are
+		// OR'd against each other -- so a single empty one widens the WHOLE
+		// result set to every case, with a 200 and nothing in any log to show
+		// for it. `"anyOf": [{}]` decodes cleanly into this, so the schema does
+		// not catch it either (openapi.yaml now carries minItems: 1 for the
+		// clients that do validate, but the server cannot rely on that).
+		if len(group) == 0 {
+			return nil, &apierror.ValidationError{
+				Msg: fmt.Sprintf("anyOf[%d].filters: an OR branch must carry at least one filter predicate; an empty branch matches everything and would silently widen the whole result set", i),
+			}
+		}
 		// now is irrelevant here: rejectUnsupportedOrGroupFields below rejects any
 		// date-range field (createdOn/updatedOn/closedOn) inside an OR-group branch,
 		// so this call never actually resolves a relative-date placeholder.
