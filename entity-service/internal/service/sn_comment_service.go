@@ -94,13 +94,7 @@ func (s *snCommentSearchService) SearchComments(ctx context.Context, req domain.
 			Content:     c.Content,
 			Type:        commentType,
 			CreatedOn:   createdAt,
-			CreatedBy: domain.CommentUserRef{
-				ID:        c.CreatedBy,
-				FirstName: c.CreatedByFirstName,
-				LastName:  c.CreatedByLastName,
-				FullName:  c.CreatedByFullName,
-			},
-			CreatedByUser: snUserReference(c.CreatedByUser, c.CreatedBy, c.CreatedByFullName),
+			CreatedBy:   snUserReference(c.CreatedByUser, c.CreatedBy, c.CreatedByFullName),
 		})
 	}
 

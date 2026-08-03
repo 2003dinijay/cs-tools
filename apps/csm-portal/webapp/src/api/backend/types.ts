@@ -173,14 +173,6 @@ export interface BeCase {
   closedOn?: string;
 }
 
-/** A referenced user, as embedded in case views (not just an id string). */
-export interface BeUserRef {
-  id: string;
-  name?: string;
-  userId?: string;
-  email?: string;
-}
-
 /**
  * Canonical reference to a person: id, email and display name, nothing else.
  * Emitted as a sibling of whatever actor field a response already carried
@@ -261,10 +253,19 @@ export interface BeAssignedEngineerRef {
   email?: string | null;
 }
 
-/** A referenced deployed product (its display name is the product + version). */
+/**
+ * A deployed product instance, together with the product catalogue entry it
+ * was deployed from. The two are different records with different ids: `id`/
+ * `displayName` describe the deployed instance (`displayName` is the product
+ * name combined with its version), while `product` is the catalogue entry.
+ * `id` and `displayName` are `null` when the case names a catalogue product
+ * but no deployed instance of it — `product` is then the only populated
+ * field.
+ */
 export interface BeDeployedProductRef {
-  id: string;
-  displayName: string;
+  id: string | null;
+  displayName: string | null;
+  product?: BeEntityRef | null;
 }
 
 /**
@@ -313,16 +314,13 @@ export interface BeCaseView {
   nextStates?: BeCaseState[];
   /** The case this one was created as related to, when any. */
   relatedCase?: BeCaseNumberRef | null;
-  createdBy?: BeUserRef;
   /** Canonical reference to the case creator. `id` is always null here — the
    * data source doesn't resolve the reporter to a user record on this view.
    * See {@link BeUserReference}. */
-  createdByUser?: BeUserReference | null;
-  /** The CS engineer the case is assigned to; null when unassigned. */
-  assignedEngineer?: BeAssignedEngineerRef | null;
-  /** Canonical reference to the assigned engineer, `id` populated. See
+  createdBy?: BeUserReference | null;
+  /** The CS engineer the case is assigned to, or null when unassigned. See
    * {@link BeUserReference}. */
-  assignedEngineerUser?: BeUserReference | null;
+  assignedEngineer?: BeUserReference | null;
   /**
    * The CS engineer who acknowledged the case — a first-write-wins claim that
    * someone has seen it and picked it up, which is **not** the same as being
@@ -335,13 +333,14 @@ export interface BeCaseView {
   project?: BeEntityRef;
   /** Nullable: ServiceNow-sourced cases may have no deployment / product. */
   deployment?: BeEntityRef | null;
-  deployedProduct?: BeDeployedProductRef | null;
   /**
-   * The product itself (distinct from {@link deployedProduct}, the
-   * deployment-scoped instance). Populated even when no specific deployed
-   * product is linked, so it's the reliable fallback for the product name.
+   * Deployed product instance named by the case, together with the product
+   * catalogue entry it was deployed from. A case can name a catalogue product
+   * without naming a deployed instance of it, in which case this object is
+   * still returned with `id`/`displayName` null and `product` populated. See
+   * {@link BeDeployedProductRef}.
    */
-  product?: BeEntityRef | null;
+  deployedProduct?: BeDeployedProductRef | null;
   /** SR catalog refs (managed-cloud); null for non-catalog cases. */
   catalog?: BeEntityRef | null;
   catalogItem?: BeEntityRef | null;
@@ -895,19 +894,15 @@ export interface BeCaseSearchView {
   state?: BeCaseState;
   /** Work sub-state; only meaningful while `state` is `work_in_progress`. */
   workState?: BeCaseWorkState | null;
-  /** The CS engineer the case is assigned to; null when unassigned. */
-  assignedEngineer?: BeAssignedEngineerRef | null;
-  /** Canonical reference to the assigned engineer, `id` populated. See
+  /** The CS engineer the case is assigned to, or null when unassigned. See
    * {@link BeUserReference}. */
-  assignedEngineerUser?: BeUserReference | null;
+  assignedEngineer?: BeUserReference | null;
   createdOn?: string;
   /** Often absent on the search view (unlike the GET view); tolerate it missing. */
   updatedOn?: string;
-  /** Created-by is a bare email string here (not a UserRef like the GET view). */
-  createdBy?: string;
   /** Canonical reference to the case creator. `id` is always null here. See
    * {@link BeUserReference}. */
-  createdByUser?: BeUserReference | null;
+  createdBy?: BeUserReference | null;
   project?: BeEntityRef;
   /** Nullable: ServiceNow-sourced cases may have no deployment / product. */
   deployment?: BeEntityRef | null;
@@ -971,9 +966,8 @@ export interface BeCaseCommentSearchResponse extends BeSearchResponseBase {
  * conversation id) rather than `caseId`; the backend normalizes `type` to the
  * `BeCaseCommentType` enum (unknown SN types default to `comment`).
  *
- * `createdBy` is typed `BeCaseCommentAuthor | string`: search/messages embed the
- * nested author object, while the comment-create ack echoes only a bare string.
- * The mapper handles both.
+ * `createdBy` carries the canonical {@link BeUserReference} shape; `null`
+ * when the comment has no resolvable author.
  */
 export interface BeComment {
   id: string;
@@ -984,11 +978,7 @@ export interface BeComment {
   /** Normalized comment type; `string` (not the enum) to tolerate new values. */
   type: string;
   createdOn: string;
-  createdBy: BeCaseCommentAuthor | string | null;
-  /** Canonical reference to the author, `id` populated. Absent on the
-   * comment-create ack, which echoes only the bare-string `createdBy`. See
-   * {@link BeUserReference}. */
-  createdByUser?: BeUserReference | null;
+  createdBy: BeUserReference | null;
 }
 
 export interface BeCommentSearchResponse extends BeSearchResponseBase {
@@ -1026,13 +1016,13 @@ export interface BeCaseActivityEntry {
   type: BeCaseActivityType;
   content?: string;
   createdOn: string;
-  createdBy?: string;
   createdByFirstName?: string;
   createdByLastName?: string;
-  createdByFullName?: string;
-  /** Canonical reference to the actor. `id` is always null here. See
-   * {@link BeUserReference}. */
-  createdByUser?: BeUserReference | null;
+  /** Canonical reference to the actor, `id` always null here. Its `name`
+   * field is the actor's full display name; `createdByFirstName`/
+   * `createdByLastName` remain separate because a full name cannot be split
+   * back into them reliably. See {@link BeUserReference}. */
+  createdBy?: BeUserReference | null;
   /** Only present on `type === "field_change"` entries. */
   changes?: BeFieldChange[];
 }
@@ -1072,11 +1062,9 @@ export interface BeAttachment {
   type: string;
   sizeBytes: number;
   description?: string | null;
-  /** Uploader, in the same `{ id, name, email }` shape used elsewhere (e.g. case `createdBy`). */
-  createdBy: BeUserRef;
-  /** Canonical reference to the uploader, `id` populated. See
-   * {@link BeUserReference}. */
-  createdByUser?: BeUserReference | null;
+  /** Uploader, in the canonical {@link BeUserReference} shape. Null when the
+   * uploader isn't resolvable. */
+  createdBy: BeUserReference | null;
   createdOn: string;
   downloadUrl?: string | null;
   previewUrl?: string | null;
@@ -2867,6 +2855,12 @@ export interface BeDashboardWidget {
 export interface BeDashboardListItem {
   id: string;
   displayName: string;
+  /** Who the dashboard is built for. Drives which team `family` the team
+   * picker requests (see `abtFamilyForDashboardType` in `useTeams.ts`) —
+   * `cre` teams see only `cre-abt` teams, `sre` only `sre-abt`. Omitted only
+   * for a definition that predates the field (the deprecated single-variable
+   * configuration path). */
+  type?: "cre" | "sre" | "cs";
   isDefault: boolean;
   /** Whether this dashboard should show a team selector (from
    * `POST /teams/search`) alongside the dashboard switcher when selected —

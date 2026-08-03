@@ -762,13 +762,9 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		EngagementType: snLabelStr(c.EngagementType),
 		CreatedOn:      createdOn,
 		UpdatedOn:      updatedOn,
-		CreatedByDetails: domain.UserRef{
-			Name:  c.CreatedByFullName,
-			Email: c.CreatedBy,
-		},
 		// The case read carries no id for the creator, only the email and full
 		// name, so the canonical reference is emitted with a null id.
-		CreatedByUser:  domain.NewUserReference("", c.CreatedBy, c.CreatedByFullName),
+		CreatedBy:      domain.NewUserReference("", c.CreatedBy, c.CreatedByFullName),
 		ProjectDetails: domain.EntityRef{ID: sysidToUUID(c.Project.ID), Name: c.Project.Name},
 	}
 
@@ -776,14 +772,21 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		cv.DeploymentDetails = &domain.EntityRef{ID: depID, Name: c.Deployment.Name}
 	}
 	if dpID := sysidToUUID(c.DeployedProduct.ID); dpID != "" {
+		displayName := strings.TrimSpace(c.DeployedProduct.Name + " " + c.DeployedProduct.Version)
 		cv.DeployedProductDetails = &domain.DeployedProductRef{
-			ID:          dpID,
-			DisplayName: strings.TrimSpace(c.DeployedProduct.Name + " " + c.DeployedProduct.Version),
+			ID:          &dpID,
+			DisplayName: &displayName,
 		}
 	}
 	if c.Product != nil {
 		if id := sysidToUUID(c.Product.ID); id != "" {
-			cv.ProductDetails = &domain.EntityRef{ID: id, Name: c.Product.Name}
+			// The catalogue product hangs off the deployed product. A case can
+			// name one without naming a deployed instance, so emit the
+			// reference with null id/displayName rather than dropping it.
+			if cv.DeployedProductDetails == nil {
+				cv.DeployedProductDetails = &domain.DeployedProductRef{}
+			}
+			cv.DeployedProductDetails.Product = &domain.EntityRef{ID: id, Name: c.Product.Name}
 		}
 	}
 	if c.Catalog != nil {
@@ -807,8 +810,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		}
 	}
 	if c.AssignedEngineer != nil {
-		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
-		cv.AssignedEngineerUser = domain.NewUserReference(cv.AssignedEngineer.ID, snStr(c.AssignedEngineer.Email), c.AssignedEngineer.Name)
+		cv.AssignedEngineer = domain.NewUserReference(sysidToUUID(c.AssignedEngineer.ID), snStr(c.AssignedEngineer.Email), c.AssignedEngineer.Name)
 	}
 	if c.AcknowledgedBy != nil {
 		cv.AcknowledgedBy = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AcknowledgedBy.ID), Name: c.AcknowledgedBy.Name, Email: c.AcknowledgedBy.Email}
@@ -817,7 +819,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number, Type: snParentCaseTypeToDomain(c.ParentCase.Type)}
 	}
 	if c.RelatedCase != nil {
-		cv.RelatedCase = &domain.CaseNumberRef{ID: sysidToUUID(c.RelatedCase.ID), Number: c.RelatedCase.Number}
+		cv.RelatedCase = &domain.CaseNumberRef{ID: sysidToUUID(c.RelatedCase.ID), Number: c.RelatedCase.Number, Type: snParentCaseTypeToDomain(c.RelatedCase.Type)}
 	}
 	if c.Account != nil {
 		cv.AccountDetails = &domain.AccountRef{ID: sysidToUUID(c.Account.ID), Name: c.Account.Name, Type: c.Account.Type}
@@ -1078,18 +1080,12 @@ func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.Searc
 			commentType = domain.CommentTypeComment
 		}
 		comments = append(comments, domain.CaseComment{
-			ID:      sysidToUUID(c.ID),
-			CaseID:  sysidToUUID(c.ReferenceID),
-			Type:    commentType,
-			Content: c.Content,
-			CreatedBy: domain.CommentUserRef{
-				ID:        c.CreatedBy,
-				FirstName: c.CreatedByFirstName,
-				LastName:  c.CreatedByLastName,
-				FullName:  c.CreatedByFullName,
-			},
-			CreatedByUser: snUserReference(c.CreatedByUser, c.CreatedBy, c.CreatedByFullName),
-			CreatedOn:     createdAt,
+			ID:        sysidToUUID(c.ID),
+			CaseID:    sysidToUUID(c.ReferenceID),
+			Type:      commentType,
+			Content:   c.Content,
+			CreatedBy: snUserReference(c.CreatedByUser, c.CreatedBy, c.CreatedByFullName),
+			CreatedOn: createdAt,
 		})
 	}
 
@@ -1813,11 +1809,7 @@ func (s *snCaseService) SearchCaseAttachments(ctx context.Context, req domain.Se
 			Type:          a.Type,
 			SizeBytes:     a.SizeBytes,
 			Description:   a.Description,
-			CreatedBy: domain.UserRef{
-				Name:  a.CreatedByFullName,
-				Email: a.CreatedBy,
-			},
-			CreatedByUser: snUserReference(a.CreatedByUser, a.CreatedBy, a.CreatedByFullName),
+			CreatedBy:     snUserReference(a.CreatedByUser, a.CreatedBy, a.CreatedByFullName),
 			CreatedOn:     createdOn,
 			DownloadURL:   a.DownloadURL,
 			PreviewURL:    a.PreviewURL,
@@ -1907,13 +1899,11 @@ func (s *snCaseService) SearchCaseActivities(ctx context.Context, req domain.Sea
 			Type:               domain.ActivityType(a.Type),
 			Content:            a.Content,
 			CreatedOn:          createdOn,
-			CreatedBy:          a.CreatedBy,
 			CreatedByFirstName: a.CreatedByFirstName,
 			CreatedByLastName:  a.CreatedByLastName,
-			CreatedByFullName:  a.CreatedByFullName,
 			// The activity feed carries no user id for the actor, so the
 			// canonical reference is emitted with a null id.
-			CreatedByUser: domain.NewUserReference("", a.CreatedBy, a.CreatedByFullName),
+			CreatedBy: domain.NewUserReference("", a.CreatedBy, a.CreatedByFullName),
 		}
 		switch domain.ActivityType(a.Type) {
 		case domain.ActivityTypeComment:
@@ -2334,10 +2324,9 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 			InternalID: c.InternalID,
 			CreatedOn:  c.CreatedOn,
 			UpdatedOn:  updatedOn,
-			CreatedBy:  c.CreatedBy,
 			// The case search carries no id for the creator, only the email and
 			// full name, so the canonical reference is emitted with a null id.
-			CreatedByUser:  domain.NewUserReference("", c.CreatedBy, c.CreatedByFullName),
+			CreatedBy:      domain.NewUserReference("", c.CreatedBy, c.CreatedByFullName),
 			Subject:        &title,
 			Description:    &description,
 			IssueType:      issueTypeLabel,
@@ -2378,8 +2367,7 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 			cv.Conversation = &domain.EntityRef{ID: sysidToUUID(c.Conversation.ID), Name: c.Conversation.Name}
 		}
 		if c.AssignedEngineer != nil {
-			cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AssignedEngineer.ID), Name: c.AssignedEngineer.Name, Email: c.AssignedEngineer.Email}
-			cv.AssignedEngineerUser = domain.NewUserReference(cv.AssignedEngineer.ID, snStr(c.AssignedEngineer.Email), c.AssignedEngineer.Name)
+			cv.AssignedEngineer = domain.NewUserReference(sysidToUUID(c.AssignedEngineer.ID), snStr(c.AssignedEngineer.Email), c.AssignedEngineer.Name)
 		}
 		if c.ParentCase != nil {
 			cv.ParentCase = &domain.EntityRef{ID: sysidToUUID(c.ParentCase.ID), Name: c.ParentCase.Number}

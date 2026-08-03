@@ -4859,25 +4859,6 @@ components:
             fan-out of per-value count queries against the ServiceNow data
             source; not supported by the Postgres data source.
 
-    UserRef:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-          nullable: true
-        name:
-          type: string
-          description: firstName + lastName (null for ServiceNow data source)
-          nullable: true
-        userId:
-          type: string
-          description: Username / login identifier (null for ServiceNow data source)
-          nullable: true
-        email:
-          type: string
-          format: email
-
     UserReference:
       type: object
       nullable: true
@@ -5003,13 +4984,25 @@ components:
 
     DeployedProductRef:
       type: object
+      description: >-
+        A deployed product instance, together with the product catalogue entry it
+        was deployed from. The two are different records with different ids; they
+        often read alike because a catalogue name usually already embeds its
+        version. id and displayName are null when the case names a catalogue
+        product but no deployed instance of it.
       properties:
         id:
           type: string
           format: uuid
+          nullable: true
         displayName:
           type: string
+          nullable: true
           description: Product name combined with version (e.g. "API Manager 4.3.0").
+        product:
+          nullable: true
+          $ref: '#/components/schemas/EntityRef'
+          description: Product catalogue entry this instance was deployed from.
 
     Case:
       type: object
@@ -5100,8 +5093,6 @@ components:
           nullable: true
           description: Timestamp when the case was closed. null if not yet closed.
         createdBy:
-          $ref: '#/components/schemas/UserRef'
-        createdByUser:
           nullable: true
           $ref: '#/components/schemas/UserReference'
         project:
@@ -5111,9 +5102,13 @@ components:
           $ref: '#/components/schemas/EntityRef'
           description: Deployment associated with the case. null for ServiceNow cases with no deployment.
         deployedProduct:
+          nullable: true
           $ref: '#/components/schemas/DeployedProductRef'
-        product:
-          $ref: '#/components/schemas/EntityRef'
+          description: |
+            Deployed product instance named by the case, together with the product
+            catalogue entry it was deployed from. A case can name a catalogue product
+            without naming a deployed instance of it, in which case this object is still
+            returned with id and displayName null and product populated.
         catalog:
           nullable: true
           $ref: '#/components/schemas/EntityRef'
@@ -5132,10 +5127,8 @@ components:
           description: Linked conversation. Populated for ServiceNow cases; null for Postgres cases.
         assignedEngineer:
           nullable: true
-          $ref: '#/components/schemas/AssignedEngineerRef'
-        assignedEngineerUser:
-          nullable: true
           $ref: '#/components/schemas/UserReference'
+          description: Engineer assigned to the case, or null when unassigned.
         acknowledgedBy:
           nullable: true
           $ref: '#/components/schemas/AssignedEngineerRef'
@@ -5221,9 +5214,6 @@ components:
           type: string
           description: Last-updated timestamp. RFC3339 for Postgres; raw SN timestamp string for ServiceNow.
         createdBy:
-          type: string
-          format: email
-        createdByUser:
           nullable: true
           $ref: '#/components/schemas/UserReference'
         subject:
@@ -5276,10 +5266,8 @@ components:
           $ref: '#/components/schemas/EntityRef'
         assignedEngineer:
           nullable: true
-          $ref: '#/components/schemas/AssignedEngineerRef'
-        assignedEngineerUser:
-          nullable: true
           $ref: '#/components/schemas/UserReference'
+          description: Engineer assigned to the case, or null when unassigned.
         parentCase:
           nullable: true
           $ref: '#/components/schemas/EntityRef'
@@ -5385,19 +5373,6 @@ components:
         content:
           type: string
 
-    CommentUserRef:
-      type: object
-      properties:
-        id:
-          type: string
-          description: User identifier (email).
-        firstName:
-          type: string
-        lastName:
-          type: string
-        fullName:
-          type: string
-
     CaseComment:
       type: object
       properties:
@@ -5411,8 +5386,6 @@ components:
         content:
           type: string
         createdBy:
-          $ref: '#/components/schemas/CommentUserRef'
-        createdByUser:
           nullable: true
           $ref: '#/components/schemas/UserReference'
         createdOn:
@@ -5485,17 +5458,17 @@ components:
         createdOn:
           type: string
           format: date-time
-        createdBy:
-          type: string
         createdByFirstName:
           type: string
         createdByLastName:
           type: string
-        createdByFullName:
-          type: string
-        createdByUser:
+        createdBy:
           nullable: true
           $ref: '#/components/schemas/UserReference'
+          description: >-
+            Actor behind this entry. Its name field is the actor's full display
+            name; createdByFirstName/createdByLastName remain separate because a
+            full name cannot be split back into them reliably.
         commentType:
           type: string
           enum: [work_note, comment, activity]
@@ -5613,8 +5586,6 @@ components:
           type: string
           nullable: true
         createdBy:
-          $ref: '#/components/schemas/UserRef'
-        createdByUser:
           nullable: true
           $ref: '#/components/schemas/UserReference'
         createdOn:
@@ -7090,8 +7061,6 @@ components:
           format: date-time
           description: Timestamp when the comment was created.
         createdBy:
-          $ref: '#/components/schemas/CommentUserRef'
-        createdByUser:
           nullable: true
           $ref: '#/components/schemas/UserReference'
 

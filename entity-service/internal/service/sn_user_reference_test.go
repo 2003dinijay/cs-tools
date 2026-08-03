@@ -79,19 +79,12 @@ func TestCommentUserReferenceFromUpstreamID(t *testing.T) {
 	if len(resp.Comments) != 1 {
 		t.Fatalf("got %d comments, want 1", len(resp.Comments))
 	}
-	got := resp.Comments[0].CreatedByUser
+	got := resp.Comments[0].CreatedBy
 	if id := userRefID(t, got); id != testAuthorUUID {
-		t.Errorf("createdByUser.id = %q, want the converted UUID %q", id, testAuthorUUID)
+		t.Errorf("createdBy.id = %q, want the converted UUID %q", id, testAuthorUUID)
 	}
 	if got.Email != "jane.doe@example.com" || got.Name != "Jane Doe" {
-		t.Errorf("createdByUser = %+v, want email/name of the author", got)
-	}
-
-	// The incumbent createdBy object must be untouched: its id is the author's
-	// email, and existing consumers read it that way.
-	if incumbent := resp.Comments[0].CreatedBy; incumbent.ID != "jane.doe@example.com" ||
-		incumbent.FirstName != "Jane" || incumbent.LastName != "Doe" || incumbent.FullName != "Jane Doe" {
-		t.Errorf("existing createdBy changed: %+v", incumbent)
+		t.Errorf("createdBy = %+v, want email/name of the author", got)
 	}
 }
 
@@ -171,12 +164,12 @@ func TestCaseCommentUserReferenceUpstreamVariants(t *testing.T) {
 			if len(resp.Comments) != 1 {
 				t.Fatalf("got %d comments, want 1", len(resp.Comments))
 			}
-			got := resp.Comments[0].CreatedByUser
+			got := resp.Comments[0].CreatedBy
 			if id := userRefID(t, got); id != tc.wantID {
-				t.Errorf("createdByUser.id = %q, want %q", id, tc.wantID)
+				t.Errorf("createdBy.id = %q, want %q", id, tc.wantID)
 			}
 			if got.Email != tc.wantEmail || got.Name != tc.wantName {
-				t.Errorf("createdByUser = %+v, want email %q name %q", got, tc.wantEmail, tc.wantName)
+				t.Errorf("createdBy = %+v, want email %q name %q", got, tc.wantEmail, tc.wantName)
 			}
 		})
 	}
@@ -229,17 +222,12 @@ func TestAttachmentUserReference(t *testing.T) {
 			if len(resp.Attachments) != 1 {
 				t.Fatalf("got %d attachments, want 1", len(resp.Attachments))
 			}
-			got := resp.Attachments[0].CreatedByUser
+			got := resp.Attachments[0].CreatedBy
 			if id := userRefID(t, got); id != tc.wantID {
-				t.Errorf("createdByUser.id = %q, want %q", id, tc.wantID)
+				t.Errorf("createdBy.id = %q, want %q", id, tc.wantID)
 			}
 			if got.Email != "jane.doe@example.com" || got.Name != "Jane Doe" {
-				t.Errorf("createdByUser = %+v, want the uploader's email and name", got)
-			}
-			// The incumbent createdBy object is unchanged.
-			if resp.Attachments[0].CreatedBy.Email != "jane.doe@example.com" ||
-				resp.Attachments[0].CreatedBy.Name != "Jane Doe" {
-				t.Errorf("existing createdBy changed: %+v", resp.Attachments[0].CreatedBy)
+				t.Errorf("createdBy = %+v, want the uploader's email and name", got)
 			}
 		})
 	}
@@ -292,24 +280,24 @@ func TestCaseViewUserReferences(t *testing.T) {
 
 	// Case creator: the response carries only an email and a full name, so the
 	// id is null by design and the consumer resolves it from the email.
-	creator := cv.CreatedByUser
+	creator := cv.CreatedBy
 	if creator == nil {
-		t.Fatal("createdByUser is nil, want a reference with a null id")
+		t.Fatal("createdBy is nil, want a reference with a null id")
 	}
 	if creator.ID != nil {
-		t.Errorf("createdByUser.id = %q, want null: there is no upstream user id for the creator", *creator.ID)
+		t.Errorf("createdBy.id = %q, want null: there is no upstream user id for the creator", *creator.ID)
 	}
 	if creator.Email != "jane.doe@example.com" || creator.Name != "Jane Doe" {
-		t.Errorf("createdByUser = %+v, want the creator's email and name", creator)
+		t.Errorf("createdBy = %+v, want the creator's email and name", creator)
 	}
 
 	// Assignee: the assignee's own id already arrives with the response, so it
 	// is populated -- in converted UUID form.
-	if id := userRefID(t, cv.AssignedEngineerUser); id != assigneeUUID {
-		t.Errorf("assignedEngineerUser.id = %q, want %q", id, assigneeUUID)
+	if id := userRefID(t, cv.AssignedEngineer); id != assigneeUUID {
+		t.Errorf("assignedEngineer.id = %q, want %q", id, assigneeUUID)
 	}
-	if cv.AssignedEngineerUser.Email != "john.roe@example.com" || cv.AssignedEngineerUser.Name != "John Roe" {
-		t.Errorf("assignedEngineerUser = %+v, want the assignee's email and name", cv.AssignedEngineerUser)
+	if cv.AssignedEngineer.Email != "john.roe@example.com" || cv.AssignedEngineer.Name != "John Roe" {
+		t.Errorf("assignedEngineer = %+v, want the assignee's email and name", cv.AssignedEngineer)
 	}
 
 	// Watcher: a watch-list entry is not guaranteed to be a user record, so its
@@ -340,11 +328,11 @@ func TestCaseViewUserReferences(t *testing.T) {
 		t.Fatalf("marshal case view: %v", err)
 	}
 	wire := string(encoded)
-	if !strings.Contains(wire, `"createdByUser":{"id":null,"email":"jane.doe@example.com","name":"Jane Doe"}`) {
-		t.Errorf("createdByUser did not serialize with an explicit null id; got:\n%s", wire)
+	if !strings.Contains(wire, `"createdBy":{"id":null,"email":"jane.doe@example.com","name":"Jane Doe"}`) {
+		t.Errorf("createdBy did not serialize with an explicit null id; got:\n%s", wire)
 	}
-	if !strings.Contains(wire, `"assignedEngineerUser":{"id":"`+assigneeUUID+`"`) {
-		t.Errorf("assignedEngineerUser did not serialize with the converted id; got:\n%s", wire)
+	if !strings.Contains(wire, `"assignedEngineer":{"id":"`+assigneeUUID+`"`) {
+		t.Errorf("assignedEngineer did not serialize with the converted id; got:\n%s", wire)
 	}
 	if !strings.Contains(wire, `"user":{"id":null,"email":"jane.doe@example.com","name":"Jane Doe"}`) {
 		t.Errorf("watcher user reference did not serialize with an explicit null id; got:\n%s", wire)
@@ -386,22 +374,21 @@ func TestCaseActivityUserReference(t *testing.T) {
 	if len(resp.Activity) != 1 {
 		t.Fatalf("got %d activity entries, want 1", len(resp.Activity))
 	}
-	got := resp.Activity[0].CreatedByUser
+	got := resp.Activity[0].CreatedBy
 	if got == nil {
-		t.Fatal("createdByUser is nil, want a reference with a null id")
+		t.Fatal("createdBy is nil, want a reference with a null id")
 	}
 	if got.ID != nil {
-		t.Errorf("createdByUser.id = %q, want null: the activity feed carries no user id", *got.ID)
+		t.Errorf("createdBy.id = %q, want null: the activity feed carries no user id", *got.ID)
 	}
 	if got.Email != "jane.doe@example.com" || got.Name != "Jane Doe" {
-		t.Errorf("createdByUser = %+v, want the actor's email and name", got)
+		t.Errorf("createdBy = %+v, want the actor's email and name", got)
 	}
-	// The incumbent flat actor fields are untouched.
-	if resp.Activity[0].CreatedBy != "jane.doe@example.com" ||
-		resp.Activity[0].CreatedByFirstName != "Jane" ||
-		resp.Activity[0].CreatedByLastName != "Doe" ||
-		resp.Activity[0].CreatedByFullName != "Jane Doe" {
-		t.Errorf("existing activity actor fields changed: %+v", resp.Activity[0])
+	// The first/last name components stay as their own fields: a full name
+	// cannot be split back into them reliably.
+	if resp.Activity[0].CreatedByFirstName != "Jane" ||
+		resp.Activity[0].CreatedByLastName != "Doe" {
+		t.Errorf("activity actor name components changed: %+v", resp.Activity[0])
 	}
 }
 
