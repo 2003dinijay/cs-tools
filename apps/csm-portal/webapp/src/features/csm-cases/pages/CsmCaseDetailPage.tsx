@@ -1717,7 +1717,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               caseDetail={c}
               onAction={onAction}
               closeBlockedReason={closeBlockedReason}
-              isPending={patchCase.isPending}
+              isPending={patchCase.isPending && !isAcknowledging}
               onAcknowledge={onAcknowledge}
               isAcknowledging={isAcknowledging}
             />

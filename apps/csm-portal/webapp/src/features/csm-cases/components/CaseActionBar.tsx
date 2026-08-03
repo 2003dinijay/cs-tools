@@ -477,7 +477,7 @@ export default function CaseActionBar({
               <Eye size={16} />
             )
           }
-          disabled={isAcknowledging}
+          disabled={isAcknowledging || isPending}
           onClick={() => void onAcknowledge()}
         >
           Acknowledge

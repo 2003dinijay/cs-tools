@@ -635,4 +635,20 @@ describe("acknowledge action", () => {
     renderBar({ severity: "S1", acknowledgedBy: undefined }, { isAcknowledging: true });
     expect(screen.getByRole("button", { name: /acknowledge/i })).toBeDisabled();
   });
+
+  it("also disables Acknowledge while a different lifecycle action's patchCase mutation is in flight", () => {
+    // Guards against the two actions sharing one mutation's isPending flag:
+    // a lifecycle transition (e.g. Assign to me) in flight must not leave
+    // Acknowledge clickable and racing it.
+    render(
+      <CaseActionBar
+        caseDetail={{ ...BASE_CASE, severity: "S1", acknowledgedBy: undefined }}
+        onAction={vi.fn()}
+        onAcknowledge={vi.fn()}
+        isAcknowledging={false}
+        isPending
+      />,
+    );
+    expect(screen.getByRole("button", { name: /acknowledge/i })).toBeDisabled();
+  });
 });
