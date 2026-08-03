@@ -5410,18 +5410,25 @@ components:
           type: string
           enum: [cre, sre, cs]
           description: >
-            Who the dashboard is built for, and the field the frontend keys
-            automatic dashboard selection off: a caller whose team family is
-            `cre-abt`/`cre` lands on the default `cre` dashboard, `sre-abt`/`sre`
-            on the default `sre` one, and a caller with no team on the default
-            `cs` one. `cre` and `sre` are team-scoped and always carry
+            Who the dashboard is built for. This is the field automatic
+            dashboard selection is intended to key off: a caller whose team
+            family is `cre-abt`/`cre` would land on the default `cre`
+            dashboard, `sre-abt`/`sre` on the default `sre` one, and a caller
+            with no team on the default `cs` one. That selection is NOT
+            implemented yet: the frontend still picks on isDefault plus
+            isTeamBased, and the loader correspondingly permits only one
+            isDefault dashboard in total.
+            `cre` and `sre` are team-scoped and always carry
             isTeamBased true; `cs` is organisation-wide and always carries it
             false — the loader rejects any other combination at startup.
             Omitted only for a definition that predates the field, which is
             possible solely via the deprecated single-variable configuration.
         isDefault:
           type: boolean
-          description: Whether this is the default dashboard to show first
+          description: >
+            Whether this is the default dashboard to show first. At most one
+            dashboard in the registry may set it: the loader rejects a second
+            at startup, of any type, until selection becomes type-aware.
         isTeamBased:
           type: boolean
           description: >
@@ -5442,18 +5449,25 @@ components:
           type: string
           enum: [cre, sre, cs]
           description: >
-            Who the dashboard is built for, and the field the frontend keys
-            automatic dashboard selection off: a caller whose team family is
-            `cre-abt`/`cre` lands on the default `cre` dashboard, `sre-abt`/`sre`
-            on the default `sre` one, and a caller with no team on the default
-            `cs` one. `cre` and `sre` are team-scoped and always carry
+            Who the dashboard is built for. This is the field automatic
+            dashboard selection is intended to key off: a caller whose team
+            family is `cre-abt`/`cre` would land on the default `cre`
+            dashboard, `sre-abt`/`sre` on the default `sre` one, and a caller
+            with no team on the default `cs` one. That selection is NOT
+            implemented yet: the frontend still picks on isDefault plus
+            isTeamBased, and the loader correspondingly permits only one
+            isDefault dashboard in total.
+            `cre` and `sre` are team-scoped and always carry
             isTeamBased true; `cs` is organisation-wide and always carries it
             false — the loader rejects any other combination at startup.
             Omitted only for a definition that predates the field, which is
             possible solely via the deprecated single-variable configuration.
         isDefault:
           type: boolean
-          description: Whether this is the default dashboard to show first
+          description: >
+            Whether this is the default dashboard to show first. At most one
+            dashboard in the registry may set it: the loader rejects a second
+            at startup, of any type, until selection becomes type-aware.
         targetTeam:
           type: string
           description: >
@@ -6022,8 +6036,10 @@ components:
             Team family classification. The `-abt` variants are account-based teams; the
             bare variants classify a member of the same discipline who is not on an
             account-based team. Omitted when the team is not classified into a family:
-            not every team is. A team picker scoped to one discipline filters on this —
-            e.g. an SRE-scoped dashboard offers only `sre-abt` teams.
+            not every team is. This is the field a discipline-scoped team picker *can*
+            filter on: it is what would let an SRE-scoped dashboard offer only
+            `sre-abt` teams. Nothing does so yet. Today's picker renders every team
+            this endpoint returns, and the scoping is a follow-up.
 
     UserUpdatePayload:
       type: object
@@ -6134,8 +6150,10 @@ components:
             Team family classification. The `-abt` variants are account-based teams; the
             bare variants classify a member of the same discipline who is not on an
             account-based team. Omitted when the team is not classified into a family:
-            not every team is. A team picker scoped to one discipline filters on this —
-            e.g. an SRE-scoped dashboard offers only `sre-abt` teams.
+            not every team is. This is the field a discipline-scoped team picker *can*
+            filter on: it is what would let an SRE-scoped dashboard offer only
+            `sre-abt` teams. Nothing does so yet. Today's picker renders every team
+            this endpoint returns, and the scoping is a follow-up.
         groupId:
           type: string
           description: >
@@ -6195,8 +6213,10 @@ components:
             Team family classification. The `-abt` variants are account-based teams; the
             bare variants classify a member of the same discipline who is not on an
             account-based team. Omitted when the team is not classified into a family:
-            not every team is. A team picker scoped to one discipline filters on this —
-            e.g. an SRE-scoped dashboard offers only `sre-abt` teams.
+            not every team is. This is the field a discipline-scoped team picker *can*
+            filter on: it is what would let an SRE-scoped dashboard offer only
+            `sre-abt` teams. Nothing does so yet. Today's picker renders every team
+            this endpoint returns, and the scoping is a follow-up.
 
     UserProjectAccess:
       type: object

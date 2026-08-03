@@ -274,11 +274,13 @@ func main() {
 //	DASHBOARDS_DIR         a directory of per-dashboard *.json files. Preferred.
 //	DASHBOARDS_CONFIG      DEPRECATED single-variable JSON array. Used only
 //	                       when DASHBOARDS_DIR is unset.
-//	DASHBOARDS_HOT_RELOAD  "true" re-reads DASHBOARDS_DIR on every request
+//	DASHBOARDS_HOT_RELOAD  Any strconv.ParseBool-true value (1, t, T, TRUE,
+//	                       true, True) re-reads DASHBOARDS_DIR on every request
 //	                       instead of serving the startup snapshot, so editing
 //	                       a definition needs no restart. Local development
 //	                       only; the default (unset/false) does the startup
-//	                       read once and never touches the disk again.
+//	                       read once and never touches the disk again. A
+//	                       non-empty unparseable value warns and is false.
 //
 // Neither set is legal and yields no dashboards: a deployment that has not
 // configured any must still start and serve every other endpoint.
@@ -293,7 +295,21 @@ func loadDashboards() *dashboard.Registry {
 		return dashboard.NewStaticRegistry(dashboards)
 	}
 
-	hotReload := strings.EqualFold(strings.TrimSpace(os.Getenv("DASHBOARDS_HOT_RELOAD")), "true")
+	// ParseBool rather than a "true" string compare: the latter silently reads
+	// 1, yes and on as OFF, and never reports a typo at all -- the operator
+	// sets the variable, sees no hot reload and no log line, and has nothing to
+	// go on. Unparseable is a warning, not fatal: hot reload is a local-dev
+	// convenience, and refusing to boot over it would be worse than defaulting
+	// to the safe (off) value.
+	hotReload := false
+	if raw := strings.TrimSpace(os.Getenv("DASHBOARDS_HOT_RELOAD")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			slog.Warn("DASHBOARDS_HOT_RELOAD is not a boolean; treating it as false",
+				"value", raw, "expected", "1, t, T, TRUE, true, True, 0, f, F, FALSE, false, False")
+		}
+		hotReload = parsed
+	}
 	registry, err := dashboard.NewDirRegistry(dir, hotReload)
 	if err != nil {
 		slog.Error("invalid dashboard definitions", "dir", dir, "err", err)

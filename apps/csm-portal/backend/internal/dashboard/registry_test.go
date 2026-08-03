@@ -312,13 +312,37 @@ func TestLoadDir_ContradictoryCombinations(t *testing.T) {
 	}
 }
 
-// TestLoadDir_DefaultsOfDifferentTypesCoexist is the counterpart: one default
-// per type is the normal, required arrangement.
-func TestLoadDir_DefaultsOfDifferentTypesCoexist(t *testing.T) {
+// Two defaults of DIFFERENT types are rejected too, for now. One default per
+// type is where this ends up, but only once the frontend selects on "type" --
+// today CsmDashboardPage picks on isDefault + isTeamBased and the
+// dashboard-list response does not even carry "type", so a second typed
+// default would be resolved by nothing but LoadDir's filename ordering.
+// Rejecting is the conservative half of that pair. When the frontend becomes
+// type-aware, this test flips to asserting they coexist.
+func TestLoadDir_RejectsASecondDefaultEvenOfADifferentType(t *testing.T) {
 	dir := t.TempDir()
 	writeDefinition(t, dir, "a.json", `{"id": "a", "displayName": "A", "type": "cs", "isDefault": true, "widgets": []}`)
 	writeDefinition(t, dir, "b.json", `{"id": "b", "displayName": "B", "type": "cre", "isDefault": true, "isTeamBased": true, "widgets": []}`)
-	writeDefinition(t, dir, "c.json", `{"id": "c", "displayName": "C", "type": "sre", "isDefault": true, "isTeamBased": true, "widgets": []}`)
+
+	_, err := LoadDir(dir)
+	if err == nil {
+		t.Fatal("LoadDir accepted two isDefault dashboards of different types; expected an error")
+	}
+	for _, want := range []string{"a.json", "b.json", "isDefault"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+}
+
+// A single default alongside non-default dashboards of other types is of
+// course still fine -- the rule is "at most one isDefault", not "at most one
+// dashboard per type".
+func TestLoadDir_OneDefaultAlongsideOtherTypes(t *testing.T) {
+	dir := t.TempDir()
+	writeDefinition(t, dir, "a.json", `{"id": "a", "displayName": "A", "type": "cs", "isDefault": true, "widgets": []}`)
+	writeDefinition(t, dir, "b.json", `{"id": "b", "displayName": "B", "type": "cre", "isTeamBased": true, "widgets": []}`)
+	writeDefinition(t, dir, "c.json", `{"id": "c", "displayName": "C", "type": "sre", "isTeamBased": true, "widgets": []}`)
 
 	got, err := LoadDir(dir)
 	if err != nil {
@@ -601,5 +625,211 @@ func TestParseDashboardsConfig_RejectsContradictions(t *testing.T) {
 				t.Fatal("ParseDashboardsConfig returned no error, want a rejection")
 			}
 		})
+	}
+}
+
+// TestLoadDir_BothQueryAndLegacyFiltersWarns: when a definition carries BOTH
+// the current "query" key and the deprecated "filters" key, the new one wins
+// and the legacy one is dropped. That drop has to be logged for the same
+// reason the sibling orGroups/anyOf drop is ("silent data loss otherwise"):
+// the operator wrote a key this loader recognises and then never sees it
+// again. The empty-"query" case is the one that actually bites -- an empty
+// {} still wins over a populated "filters", so every widget renders 0 with
+// nothing anywhere saying why.
+func TestLoadDir_BothQueryAndLegacyFiltersWarns(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+	}{
+		{
+			name: "populated query alongside a legacy filters key",
+			json: `{
+			  "id": "both", "displayName": "Both", "type": "cs",
+			  "widgets": [
+			    {"id": "w", "displayName": "W", "resourceType": "case", "shape": "count", "gridWidth": 3,
+			     "query": {"filters": [{"field": "state", "op": "in", "values": ["closed"]}]},
+			     "filters": {"filters": [{"field": "state", "op": "in", "values": ["open"]}]}}
+			  ]
+			}`,
+		},
+		{
+			name: "EMPTY query silently beating a populated legacy filters key",
+			json: `{
+			  "id": "both", "displayName": "Both", "type": "cs",
+			  "widgets": [
+			    {"id": "w", "displayName": "W", "resourceType": "case", "shape": "count", "gridWidth": 3,
+			     "query": {},
+			     "filters": {"filters": [{"field": "state", "op": "in", "values": ["open"]}]}}
+			  ]
+			}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			dir := t.TempDir()
+			writeDefinition(t, dir, "both.json", tc.json)
+
+			if _, err := LoadDir(dir); err != nil {
+				t.Fatalf("LoadDir returned error: %v", err)
+			}
+
+			logged := buf.String()
+			if !strings.Contains(logged, `deprecated widget key \"filters\" dropped`) {
+				t.Errorf("dropping the legacy \"filters\" key logged no warning:\n%s", logged)
+			}
+			if !strings.Contains(logged, filepath.Join(dir, "both.json")) {
+				t.Errorf("the warning does not name the offending file:\n%s", logged)
+			}
+		})
+	}
+}
+
+// The same drop, one level down: a pie slice carrying both keys.
+func TestLoadDir_SliceBothQueryAndLegacyFiltersWarns(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dir := t.TempDir()
+	writeDefinition(t, dir, "slice.json", `{
+	  "id": "slice", "displayName": "Slice", "type": "cs",
+	  "widgets": [
+	    {"id": "w", "displayName": "W", "resourceType": "case", "shape": "pie", "gridWidth": 4,
+	     "query": {"filters": [{"field": "state", "op": "in", "values": ["open"]}]},
+	     "slices": [
+	       {"label": "Critical",
+	        "query": {},
+	        "filters": {"filters": [{"field": "severity", "op": "in", "values": ["critical"]}]}}
+	     ]}
+	  ]
+	}`)
+
+	if _, err := LoadDir(dir); err != nil {
+		t.Fatalf("LoadDir returned error: %v", err)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, `deprecated slice key \"filters\" dropped`) {
+		t.Errorf("dropping a slice's legacy \"filters\" key logged no warning:\n%s", logged)
+	}
+}
+
+// Widget fields get the same fail-loud treatment the dashboard's own fields
+// get. Every one of these used to load successfully and then misbehave only
+// in the browser: an unknown shape renders nothing, a duplicate id collides
+// as a React key and in the click-through URL, and gridWidth is interpolated
+// straight into `grid-column: span N`.
+func TestLoadDir_RejectsInvalidWidgets(t *testing.T) {
+	const widget = `{"id": "w", "displayName": "W", "resourceType": "case", "shape": "count", "gridWidth": 3}`
+
+	cases := []struct {
+		name    string
+		widgets string
+		want    string
+	}{
+		{
+			name:    "empty widget id",
+			widgets: `{"id": "", "displayName": "W", "resourceType": "case", "shape": "count", "gridWidth": 3}`,
+			want:    `widgets[0]: "id" is empty`,
+		},
+		{
+			name:    "duplicate widget id",
+			widgets: widget + "," + widget,
+			want:    `duplicate widget id "w"`,
+		},
+		{
+			name:    "empty widget displayName",
+			widgets: `{"id": "w", "displayName": "", "resourceType": "case", "shape": "count", "gridWidth": 3}`,
+			want:    `widget "w": "displayName" is empty`,
+		},
+		{
+			name:    "typo'd resourceType",
+			widgets: `{"id": "w", "displayName": "W", "resourceType": "cases", "shape": "count", "gridWidth": 3}`,
+			want:    `widget "w": unknown "resourceType" "cases"`,
+		},
+		{
+			name:    "missing resourceType",
+			widgets: `{"id": "w", "displayName": "W", "shape": "count", "gridWidth": 3}`,
+			want:    `widget "w": unknown "resourceType" ""`,
+		},
+		{
+			name:    "typo'd shape",
+			widgets: `{"id": "w", "displayName": "W", "resourceType": "case", "shape": "counter", "gridWidth": 3}`,
+			want:    `widget "w": unknown "shape" "counter"`,
+		},
+		{
+			name:    "gridWidth omitted entirely (zero)",
+			widgets: `{"id": "w", "displayName": "W", "resourceType": "case", "shape": "count"}`,
+			want:    `widget "w": "gridWidth" is 0`,
+		},
+		{
+			name:    "gridWidth above the 12-column grid",
+			widgets: `{"id": "w", "displayName": "W", "resourceType": "case", "shape": "count", "gridWidth": 13}`,
+			want:    `widget "w": "gridWidth" is 13`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeDefinition(t, dir, "d.json", `{
+			  "id": "d", "displayName": "D", "type": "cs",
+			  "widgets": [`+tc.widgets+`]
+			}`)
+
+			_, err := LoadDir(dir)
+			if err == nil {
+				t.Fatal("LoadDir accepted an invalid widget; expected an error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %q, want it to contain %q", err.Error(), tc.want)
+			}
+			if !strings.Contains(err.Error(), filepath.Join(dir, "d.json")) {
+				t.Errorf("err = %q, want it to name the offending file", err.Error())
+			}
+		})
+	}
+}
+
+// The deprecated single-variable path gets the same widget validation: unlike
+// "type", none of these fields is new, so an already-deployed value carrying
+// one is already broken.
+func TestParseDashboardsConfig_RejectsInvalidWidgets(t *testing.T) {
+	_, err := ParseDashboardsConfig(`[{"id":"d","displayName":"D","widgets":[
+	  {"id":"w","displayName":"W","resourceType":"case","shape":"counter","gridWidth":3}
+	]}]`)
+	if err == nil {
+		t.Fatal("ParseDashboardsConfig accepted an unknown shape; expected an error")
+	}
+	if !strings.Contains(err.Error(), `unknown "shape" "counter"`) {
+		t.Errorf("err = %q, want it to name the unknown shape", err.Error())
+	}
+	if !strings.Contains(err.Error(), "DASHBOARDS_CONFIG[0]") {
+		t.Errorf("err = %q, want it to name the offending config index", err.Error())
+	}
+}
+
+// The committed dashboards.example/ directory is what .env.example's
+// DASHBOARDS_DIR points at, so `cp .env.example .env && go run ./cmd/server`
+// works on a fresh clone (./dashboards is gitignored and a missing directory
+// is fatal). That only holds while the example set actually validates, and
+// every validation rule added here can silently invalidate it -- so load it
+// for real rather than trusting that it still parses.
+func TestLoadDir_ShippedExampleDirectoryIsValid(t *testing.T) {
+	const dir = "../../dashboards.example"
+
+	got, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("the committed %s does not load, so a fresh clone cannot start: %v", dir, err)
+	}
+	if len(got) == 0 {
+		t.Fatalf("%s loaded no dashboards", dir)
 	}
 }

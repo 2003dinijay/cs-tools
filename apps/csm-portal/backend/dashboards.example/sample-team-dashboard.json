@@ -2,7 +2,6 @@
   "id": "sample-team-dashboard",
   "displayName": "Sample Team Dashboard",
   "type": "cre",
-  "isDefault": true,
   "targetTeam": "sample-team",
   "isTeamBased": true,
   "widgets": [

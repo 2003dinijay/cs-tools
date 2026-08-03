@@ -27,11 +27,16 @@ import (
 	"sync"
 )
 
-// Type classifies a dashboard by the audience it is built for. The frontend
-// keys its automatic dashboard selection off this: a caller whose team family
-// is cre-abt/cre lands on the default TypeCRE dashboard, sre-abt/sre on the
-// default TypeSRE one, and a caller with no team at all on the default
-// TypeCS one.
+// Type classifies a dashboard by the audience it is built for. It is the
+// field automatic dashboard selection is intended to key off: a caller whose
+// team family is cre-abt/cre would land on the default TypeCRE dashboard,
+// sre-abt/sre on the default TypeSRE one, and a caller with no team at all on
+// the default TypeCS one.
+//
+// That selection is NOT implemented yet. The frontend still picks its landing
+// dashboard on IsDefault plus IsTeamBased and never reads Type, which is why
+// validate below still permits only one IsDefault dashboard in total rather
+// than one per type.
 type Type string
 
 const (
@@ -266,12 +271,18 @@ func finalize(loaded []sourced, requireType bool) ([]Dashboard, error) {
 //   - type cs with isTeamBased true. cs is the organisation-wide dashboard,
 //     and it is what a caller with no team at all falls back to. A team
 //     picker on it contradicts both roles.
-//   - two isDefault dashboards sharing one type. Selection asks for "the
-//     default dashboard of type X"; two answers means the one you get depends
-//     on file ordering.
+//   - more than one isDefault dashboard, of any type. This is deliberately
+//     stricter than the eventual rule. Once the frontend keys default
+//     selection off "type" it will be one default PER type; today it does
+//     not -- CsmDashboardPage picks on isDefault + isTeamBased, and "type"
+//     is not even carried on the dashboard-list response yet -- so a second
+//     typed default would be accepted here and then resolved by nothing more
+//     than LoadDir's filename ordering. Loosen this to one-per-type in the
+//     same change that makes the frontend type-aware, not before.
 func validate(loaded []sourced, requireType bool) error {
 	byID := make(map[string]string, len(loaded))
-	defaultByType := make(map[Type]string, len(loaded))
+	defaultSource := ""
+	defaultType := Type("")
 
 	for _, l := range loaded {
 		d := l.dashboard
@@ -288,17 +299,21 @@ func validate(loaded []sourced, requireType bool) error {
 			return fmt.Errorf("dashboard definitions: %s (id %q): \"displayName\" is empty", l.source, d.ID)
 		}
 
+		if err := validateWidgets(d, l.source); err != nil {
+			return err
+		}
+
 		// Before the type branch below, which skips the rest of the loop for an
-		// untyped definition: untyped dashboards share the empty type key, so
-		// keying defaultByType on "" still groups them, and two untyped
-		// isDefault definitions on the deprecated DASHBOARDS_CONFIG path are
-		// caught rather than left to file ordering.
+		// untyped definition: an untyped isDefault dashboard counts here too,
+		// so two of them on the deprecated DASHBOARDS_CONFIG path are caught
+		// rather than left to file ordering.
 		if d.IsDefault {
-			if prev, dup := defaultByType[d.Type]; dup {
-				return fmt.Errorf("dashboard definitions: %s (id %q): a second \"isDefault\" dashboard of type %q; %s already claims it, and automatic selection needs exactly one",
-					l.source, d.ID, d.Type, prev)
+			if defaultSource != "" {
+				return fmt.Errorf("dashboard definitions: %s (id %q, type %q): a second \"isDefault\" dashboard; %s (type %q) already claims it, and selection needs exactly one. Automatic selection is not type-aware yet, so which of the two you land on would depend only on filename ordering",
+					l.source, d.ID, d.Type, defaultSource, defaultType)
 			}
-			defaultByType[d.Type] = l.source
+			defaultSource = l.source
+			defaultType = d.Type
 		}
 
 		if d.Type == "" {
@@ -322,6 +337,67 @@ func validate(loaded []sourced, requireType bool) error {
 		case d.Type == TypeCS && d.IsTeamBased:
 			return fmt.Errorf("dashboard definitions: %s (id %q): contradictory configuration: \"type\": %q is organisation-wide but \"isTeamBased\" is true; set isTeamBased false or change the type to %q or %q",
 				l.source, d.ID, d.Type, TypeCRE, TypeSRE)
+		}
+	}
+
+	return nil
+}
+
+// validWidgetResourceTypes and validWidgetShapes mirror the enums the public
+// schema declares for WidgetTemplate.resourceType and .shape. A value outside
+// them is not a degraded widget, it is a dead one: the frontend routes on
+// resourceType to pick the search endpoint and switches on shape to pick a
+// renderer, so an unknown value renders nothing at all.
+var validWidgetResourceTypes = map[ResourceType]bool{
+	ResourceCase: true, ResourceIncident: true, ResourceChangeRequest: true,
+	ResourceAccount: true, ResourceProject: true, ResourceUser: true,
+	ResourceTimeCard: true, ResourceProblem: true, ResourceProductVulnerability: true,
+}
+
+var validWidgetShapes = map[Shape]bool{
+	ShapeCount: true, ShapeList: true, ShapePie: true, ShapeBar: true,
+}
+
+// validateWidgets applies the loader's own fail-loud rationale one level down.
+// Dashboard-level fields were already rejected by filename; a widget with a
+// typo'd resourceType or shape, a blank or duplicated id, or a gridWidth
+// outside 1-12 used to load perfectly happily and then misbehave silently in
+// the browser -- an unknown shape renders nothing, a duplicate id collides as
+// a React key and in the click-through URL, and gridWidth is interpolated
+// straight into `grid-column: span N`, so 0 or 13 is broken layout rather
+// than an error.
+//
+// This runs on the deprecated DASHBOARDS_CONFIG path too, unlike the "type"
+// requirement: type is a genuinely new field that already-deployed values
+// predate, whereas every field checked here has always been required for the
+// widget to work at all.
+func validateWidgets(d Dashboard, source string) error {
+	seen := make(map[string]bool, len(d.Widgets))
+
+	for i, w := range d.Widgets {
+		// The widget id is the only handle an error further down has, so it is
+		// checked first and reported positionally when it is missing.
+		if strings.TrimSpace(w.ID) == "" {
+			return fmt.Errorf("dashboard definitions: %s (id %q): widgets[%d]: \"id\" is empty", source, d.ID, i)
+		}
+		if seen[w.ID] {
+			return fmt.Errorf("dashboard definitions: %s (id %q): duplicate widget id %q", source, d.ID, w.ID)
+		}
+		seen[w.ID] = true
+
+		if strings.TrimSpace(w.DisplayName) == "" {
+			return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: \"displayName\" is empty", source, d.ID, w.ID)
+		}
+		if !validWidgetResourceTypes[w.ResourceType] {
+			return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: unknown \"resourceType\" %q", source, d.ID, w.ID, w.ResourceType)
+		}
+		if !validWidgetShapes[w.Shape] {
+			return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: unknown \"shape\" %q; expected one of %q, %q, %q, %q",
+				source, d.ID, w.ID, w.Shape, ShapeCount, ShapeList, ShapePie, ShapeBar)
+		}
+		if w.GridWidth < 1 || w.GridWidth > 12 {
+			return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: \"gridWidth\" is %d; it is a column count out of 12 and must be between 1 and 12",
+				source, d.ID, w.ID, w.GridWidth)
 		}
 	}
 

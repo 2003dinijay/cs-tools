@@ -45,8 +45,10 @@ type SearchRequest struct {
 type TeamResult struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	// Family may be empty: not every team is classified into a family. The
-	// dashboard team picker filters on it.
+	// Family may be empty: not every team is classified into a family. It is
+	// what a discipline-scoped team picker would filter on (an SRE dashboard
+	// offering only sre-abt teams), but nothing filters on it yet -- the
+	// dashboard picker renders every team this endpoint returns.
 	Family string `json:"family,omitempty"`
 	// GroupID is the backing group's id in this platform's UUID form, suitable
 	// for the case-search integrationCsTeam filter. Omitted when the registry

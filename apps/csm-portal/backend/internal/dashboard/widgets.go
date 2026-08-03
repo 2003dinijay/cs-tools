@@ -239,19 +239,32 @@ func ParseDashboardsConfig(raw string) ([]Dashboard, error) {
 func migrateLegacyWidgetKeys(d *Dashboard, source string) {
 	for wi := range d.Widgets {
 		w := &d.Widgets[wi]
-		if w.Query == nil && w.legacyFilters != nil {
+		switch {
+		case w.Query == nil && w.legacyFilters != nil:
 			slog.Warn(`dashboard definitions: widget key "filters" is deprecated, rename it to "query"`,
 				"source", source, "dashboardId", d.ID, "widgetId", w.ID)
 			w.Query = w.legacyFilters
+		case w.Query != nil && w.legacyFilters != nil:
+			// Same reasoning as the orGroups/anyOf drop below: silent data loss
+			// otherwise. Worth warning on even when "query" is populated, and
+			// especially when it is an empty {} -- that still wins here, so a
+			// widget whose real criteria are all in "filters" renders 0 with
+			// nothing in the logs pointing at why.
+			slog.Warn(`dashboard definitions: deprecated widget key "filters" dropped because "query" is also set; delete "filters" and keep everything in "query"`,
+				"source", source, "dashboardId", d.ID, "widgetId", w.ID, "queryIsEmpty", len(w.Query) == 0)
 		}
 		w.legacyFilters = nil
 		migrateLegacyCriteriaKeys(w.Query, source, d.ID, w.ID, "")
 		for si := range w.Slices {
 			s := &w.Slices[si]
-			if s.Query == nil && s.legacyFilters != nil {
+			switch {
+			case s.Query == nil && s.legacyFilters != nil:
 				slog.Warn(`dashboard definitions: slice key "filters" is deprecated, rename it to "query"`,
 					"source", source, "dashboardId", d.ID, "widgetId", w.ID, "slice", s.Label)
 				s.Query = s.legacyFilters
+			case s.Query != nil && s.legacyFilters != nil:
+				slog.Warn(`dashboard definitions: deprecated slice key "filters" dropped because "query" is also set; delete "filters" and keep everything in "query"`,
+					"source", source, "dashboardId", d.ID, "widgetId", w.ID, "slice", s.Label, "queryIsEmpty", len(s.Query) == 0)
 			}
 			s.legacyFilters = nil
 			migrateLegacyCriteriaKeys(s.Query, source, d.ID, w.ID, s.Label)
