@@ -1122,14 +1122,6 @@ type Case struct {
 	ClosedOn          *time.Time     `json:"closedOn"`
 }
 
-// UserRef is a reference to a user with key display fields.
-type UserRef struct {
-	ID     string `json:"id,omitempty"`
-	Name   string `json:"name,omitempty"`
-	UserID string `json:"userId,omitempty"`
-	Email  string `json:"email"`
-}
-
 // AssignedEngineerRef is a compact reference to an assigned support engineer.
 type AssignedEngineerRef struct {
 	ID    string  `json:"id"`
@@ -1213,9 +1205,8 @@ type PersonRef struct {
 
 // UserReference is the canonical reference to a person appearing anywhere in
 // this service's responses: exactly the user's id, email and display name.
-// Every person-valued field carries one as a sibling of whatever
-// actor fields that response already returned, so a consumer has a single
-// shape for "who did this", whichever entity it hangs off.
+// Every person-valued field is one of these, so a consumer has a single shape
+// for "who did this", whichever entity it hangs off.
 //
 // ID is a pointer, serialized as an explicit null and never omitted, and that
 // is deliberate — do not "fix" it.
@@ -1257,47 +1248,56 @@ func NewUserReference(id, email, name string) *UserReference {
 }
 
 // DeployedProductRef is a compact reference to a deployed product with a
-// computed display name combining the product name and version.
+// computed display name combining the product name and version, plus the
+// product catalogue entry that instance was deployed from.
+//
+// Product is a genuinely different record from the deployed product itself,
+// with its own id: the deployed product is one installed instance, Product is
+// the catalogue entry it came from. The two often read alike because a
+// catalogue name usually already embeds its version.
+//
+// ID and DisplayName are pointers because a case can name a catalogue product
+// without naming a deployed instance of it. The reference is still emitted in
+// that situation, carrying Product alone with id and displayName null, so the
+// catalogue entry stays reachable.
 type DeployedProductRef struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"displayName"`
+	ID          *string    `json:"id"`
+	DisplayName *string    `json:"displayName"`
+	Product     *EntityRef `json:"product"`
 }
 
 // CaseView is the enriched read representation of a case.
 type CaseView struct {
-	ID               string         `json:"id"`
-	Number           string         `json:"number"`
-	InternalID       string         `json:"internalId"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	Severity         CaseSeverity   `json:"severity"`
-	IssueType        CaseIssueType  `json:"issueType"`
-	State            CaseState      `json:"state"`
-	WorkState        *CaseWorkState `json:"workState"`
-	Type             *string        `json:"type"`
-	EngagementType   *string        `json:"engagementType"`
-	CreatedOn        time.Time      `json:"createdOn"`
-	UpdatedOn        time.Time      `json:"updatedOn"`
-	ClosedOn         *time.Time     `json:"closedOn"`
-	CreatedByDetails UserRef        `json:"createdBy"`
-	// CreatedByUser is the canonical user reference for the case creator, a
-	// sibling of createdBy. Its id is populated only where the backing data
-	// source already supplies one, and null otherwise: see UserReference.
-	CreatedByUser          *UserReference       `json:"createdByUser"`
-	ProjectDetails         EntityRef            `json:"project"`
-	DeploymentDetails      *EntityRef           `json:"deployment"`
-	DeployedProductDetails *DeployedProductRef  `json:"deployedProduct"`
-	ProductDetails         *EntityRef           `json:"product"`
-	Catalog                *EntityRef           `json:"catalog"`
-	CatalogItem            *EntityRef           `json:"catalogItem"`
-	AssignedTeam           *EntityRef           `json:"assignedTeam"`
-	Conversation           *EntityRef           `json:"conversation"`
-	AssignedEngineer       *AssignedEngineerRef `json:"assignedEngineer"`
-	// AssignedEngineerUser is the canonical user reference for the assigned
-	// engineer, a sibling of assignedEngineer. Its id is populated: the
-	// assignee's own id already arrives with the response, so no extra lookup
-	// is involved. Null when the case is unassigned.
-	AssignedEngineerUser *UserReference `json:"assignedEngineerUser"`
+	ID             string         `json:"id"`
+	Number         string         `json:"number"`
+	InternalID     string         `json:"internalId"`
+	Subject        string         `json:"subject"`
+	Description    string         `json:"description"`
+	Severity       CaseSeverity   `json:"severity"`
+	IssueType      CaseIssueType  `json:"issueType"`
+	State          CaseState      `json:"state"`
+	WorkState      *CaseWorkState `json:"workState"`
+	Type           *string        `json:"type"`
+	EngagementType *string        `json:"engagementType"`
+	CreatedOn      time.Time      `json:"createdOn"`
+	UpdatedOn      time.Time      `json:"updatedOn"`
+	ClosedOn       *time.Time     `json:"closedOn"`
+	// CreatedBy is the canonical user reference for the case creator. Its id is
+	// populated only where the backing data source already supplies one, and
+	// null otherwise: see UserReference.
+	CreatedBy              *UserReference      `json:"createdBy"`
+	ProjectDetails         EntityRef           `json:"project"`
+	DeploymentDetails      *EntityRef          `json:"deployment"`
+	DeployedProductDetails *DeployedProductRef `json:"deployedProduct"`
+	Catalog                *EntityRef          `json:"catalog"`
+	CatalogItem            *EntityRef          `json:"catalogItem"`
+	AssignedTeam           *EntityRef          `json:"assignedTeam"`
+	Conversation           *EntityRef          `json:"conversation"`
+	// AssignedEngineer is the canonical user reference for the assigned
+	// engineer. Its id is populated: the assignee's own id already arrives with
+	// the response, so no extra lookup is involved. Null when the case is
+	// unassigned.
+	AssignedEngineer *UserReference `json:"assignedEngineer"`
 	// AcknowledgedBy is the support engineer who acknowledged the case: a
 	// first-write-wins claim that someone has seen it and picked it up, distinct
 	// from assignment. Null until someone acknowledges, and cleared again by the
@@ -1528,34 +1528,32 @@ type SearchCaseView struct {
 	Number     string `json:"number"`
 	CreatedOn  string `json:"createdOn"`
 	UpdatedOn  string `json:"updatedOn"`
-	CreatedBy  string `json:"createdBy"`
-	// CreatedByUser is the canonical user reference for the case creator, a
-	// sibling of createdBy. Its id is populated only where the backing data
-	// source already supplies one, and null otherwise: see UserReference.
-	CreatedByUser    *UserReference       `json:"createdByUser"`
-	Subject          *string              `json:"subject"`
-	Description      *string              `json:"description"`
-	IssueType        *string              `json:"issueType"`
-	State            string               `json:"state"`
-	Severity         *string              `json:"severity"`
-	Catalog          *EntityRef           `json:"catalog"`
-	CatalogItem      *EntityRef           `json:"catalogItem"`
-	AssignedTeam     *EntityRef           `json:"assignedTeam"`
-	Product          *EntityRef           `json:"product"`
-	EngagementType   *string              `json:"engagementType"`
-	WorkState        *string              `json:"workState"`
-	Type             string               `json:"type"`
-	Project          EntityRef            `json:"project"`
-	Deployment       *EntityRef           `json:"deployment"`
-	DeployedProduct  *EntityRef           `json:"deployedProduct"`
-	AssignedEngineer *AssignedEngineerRef `json:"assignedEngineer"`
-	// AssignedEngineerUser is the canonical user reference for the assigned
-	// engineer, a sibling of assignedEngineer. Its id is populated from the
-	// assignee id the response already carries. Null when unassigned.
-	AssignedEngineerUser *UserReference `json:"assignedEngineerUser"`
-	ParentCase           *EntityRef     `json:"parentCase"`
-	RelatedCase          *EntityRef     `json:"relatedCase"`
-	Conversation         *EntityRef     `json:"conversation"`
+	// CreatedBy is the canonical user reference for the case creator. Its id is
+	// populated only where the backing data source already supplies one, and
+	// null otherwise: see UserReference.
+	CreatedBy       *UserReference `json:"createdBy"`
+	Subject         *string        `json:"subject"`
+	Description     *string        `json:"description"`
+	IssueType       *string        `json:"issueType"`
+	State           string         `json:"state"`
+	Severity        *string        `json:"severity"`
+	Catalog         *EntityRef     `json:"catalog"`
+	CatalogItem     *EntityRef     `json:"catalogItem"`
+	AssignedTeam    *EntityRef     `json:"assignedTeam"`
+	Product         *EntityRef     `json:"product"`
+	EngagementType  *string        `json:"engagementType"`
+	WorkState       *string        `json:"workState"`
+	Type            string         `json:"type"`
+	Project         EntityRef      `json:"project"`
+	Deployment      *EntityRef     `json:"deployment"`
+	DeployedProduct *EntityRef     `json:"deployedProduct"`
+	// AssignedEngineer is the canonical user reference for the assigned
+	// engineer. Its id is populated from the assignee id the response already
+	// carries. Null when unassigned.
+	AssignedEngineer *UserReference `json:"assignedEngineer"`
+	ParentCase       *EntityRef     `json:"parentCase"`
+	RelatedCase      *EntityRef     `json:"relatedCase"`
+	Conversation     *EntityRef     `json:"conversation"`
 }
 
 // SearchCasesResponse is the paginated result of a case search. When the
@@ -1802,28 +1800,18 @@ const (
 	CommentTypeActivity CommentType = "activity"
 )
 
-// CommentUserRef holds user details embedded in a case comment response.
-type CommentUserRef struct {
-	ID        string `json:"id"`
-	FirstName string `json:"firstName"`
-	LastName  string `json:"lastName"`
-	FullName  string `json:"fullName"`
-}
-
 // CaseComment represents a comment on a support case.
 type CaseComment struct {
-	ID        string         `json:"id"`
-	CaseID    string         `json:"caseId"`
-	Type      CommentType    `json:"type"`
-	Content   string         `json:"content"`
-	CreatedBy CommentUserRef `json:"createdBy"`
-	// CreatedByUser is the canonical user reference for the comment author, a
-	// sibling of createdBy (whose id field is the author's email, not an id).
-	// Its id is populated when the backing data source resolved the author to a
-	// real user record, and null otherwise — a comment can be written by an
+	ID      string      `json:"id"`
+	CaseID  string      `json:"caseId"`
+	Type    CommentType `json:"type"`
+	Content string      `json:"content"`
+	// CreatedBy is the canonical user reference for the comment author. Its id
+	// is populated when the backing data source resolved the author to a real
+	// user record, and null otherwise — a comment can be written by an
 	// automation or integration account that is not a user. See UserReference.
-	CreatedByUser *UserReference `json:"createdByUser"`
-	CreatedOn     time.Time      `json:"createdOn"`
+	CreatedBy *UserReference `json:"createdBy"`
+	CreatedOn time.Time      `json:"createdOn"`
 }
 
 // CreateCaseCommentRequest is the input for creating a new case comment.
@@ -1928,14 +1916,14 @@ type CaseActivity struct {
 	Type               ActivityType `json:"type"`
 	Content            string       `json:"content"`
 	CreatedOn          time.Time    `json:"createdOn"`
-	CreatedBy          string       `json:"createdBy"`
 	CreatedByFirstName string       `json:"createdByFirstName"`
 	CreatedByLastName  string       `json:"createdByLastName"`
-	CreatedByFullName  string       `json:"createdByFullName"`
-	// CreatedByUser is the canonical user reference for the actor behind this
-	// activity entry, a sibling of the createdBy* fields. Its id is always
-	// null: the activity feed carries no user id. See UserReference.
-	CreatedByUser *UserReference `json:"createdByUser"`
+	// CreatedBy is the canonical user reference for the actor behind this
+	// activity entry. Its id is always null: the activity feed carries no user
+	// id. See UserReference. The actor's full display name is its name field;
+	// createdByFirstName/createdByLastName remain as separate fields because a
+	// full name cannot be split back into them reliably.
+	CreatedBy *UserReference `json:"createdBy"`
 	// CommentType is set only for Type == ActivityTypeComment.
 	CommentType *CommentType `json:"commentType,omitempty"`
 	// FileName, ContentType, SizeBytes, and DownloadURL are set only for
@@ -1970,17 +1958,15 @@ type SearchCaseActivitiesResponse struct {
 // Comment is a generic comment associated with any reference entity type
 // (case, conversation, change_request, etc.).
 type Comment struct {
-	ID          string         `json:"id"`
-	ReferenceID string         `json:"referenceId"`
-	Content     string         `json:"content"`
-	Type        CommentType    `json:"type"`
-	CreatedOn   time.Time      `json:"createdOn"`
-	CreatedBy   CommentUserRef `json:"createdBy"`
-	// CreatedByUser is the canonical user reference for the comment author, a
-	// sibling of createdBy (whose id field is the author's email, not an id).
-	// Its id is populated when the backing data source resolved the author to a
-	// real user record, and null otherwise. See UserReference.
-	CreatedByUser *UserReference `json:"createdByUser"`
+	ID          string      `json:"id"`
+	ReferenceID string      `json:"referenceId"`
+	Content     string      `json:"content"`
+	Type        CommentType `json:"type"`
+	CreatedOn   time.Time   `json:"createdOn"`
+	// CreatedBy is the canonical user reference for the comment author. Its id
+	// is populated when the backing data source resolved the author to a real
+	// user record, and null otherwise. See UserReference.
+	CreatedBy *UserReference `json:"createdBy"`
 }
 
 // SearchCommentsRequest is the input for POST /comments/search.
@@ -2055,15 +2041,13 @@ type Attachment struct {
 	Type          string        `json:"type"`
 	SizeBytes     int           `json:"sizeBytes"`
 	Description   *string       `json:"description"`
-	CreatedBy     UserRef       `json:"createdBy"`
-	// CreatedByUser is the canonical user reference for whoever uploaded the
-	// attachment, a sibling of createdBy. Its id is populated when the backing
-	// data source resolved the uploader to a real user record, and null
-	// otherwise. See UserReference.
-	CreatedByUser *UserReference `json:"createdByUser"`
-	CreatedOn     time.Time      `json:"createdOn"`
-	DownloadURL   *string        `json:"downloadUrl"`
-	PreviewURL    *string        `json:"previewUrl"`
+	// CreatedBy is the canonical user reference for whoever uploaded the
+	// attachment. Its id is populated when the backing data source resolved the
+	// uploader to a real user record, and null otherwise. See UserReference.
+	CreatedBy   *UserReference `json:"createdBy"`
+	CreatedOn   time.Time      `json:"createdOn"`
+	DownloadURL *string        `json:"downloadUrl"`
+	PreviewURL  *string        `json:"previewUrl"`
 }
 
 // CreateAttachmentRequest is the input for POST /attachments.

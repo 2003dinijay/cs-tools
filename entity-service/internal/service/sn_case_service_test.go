@@ -260,6 +260,118 @@ func TestSNCaseService_GetCaseByID_MapsParentCaseType(t *testing.T) {
 	})
 }
 
+// TestSNCaseService_GetCaseByID_MapsRelatedCaseType pins that relatedCase carries
+// its record kind, exactly as parentCase does. The two references are the same
+// shape and either can point at something other than a case, so a consumer must
+// not be left guessing on one of them.
+func TestSNCaseService_GetCaseByID_MapsRelatedCaseType(t *testing.T) {
+	body := `{
+		"id": "` + testWLCaseSysid + `",
+		"internalId": "WSO2-001",
+		"number": "CS0001001",
+		"title": "Case subject",
+		"description": "Case description",
+		"createdOn": "2026-01-01 10:00:00",
+		"updatedOn": "2026-01-02 10:00:00",
+		"createdBy": "reporter@example.com",
+		"project": {"id": "` + testProjectSysid + `", "name": "Project A"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"state": {"id": 1, "label": "Open"},
+		"relatedCase": {"id": "` + testParentCaseUUID + `", "number": "INC0012345", "type": "incident"}
+	}`
+
+	client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	})
+	svc := NewServiceNowCaseService(client, nil)
+
+	cv, err := svc.GetCaseByID(contextWithUserIDToken("token"), sysidToUUID(testWLCaseSysid))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cv.RelatedCase == nil {
+		t.Fatalf("expected relatedCase to be populated")
+	}
+	if cv.RelatedCase.Type == nil || *cv.RelatedCase.Type != "incident" {
+		t.Fatalf("expected relatedCase.type=incident, got %+v", cv.RelatedCase.Type)
+	}
+	if cv.RelatedCase.Number != "INC0012345" {
+		t.Fatalf("expected relatedCase.number to pass through, got %q", cv.RelatedCase.Number)
+	}
+}
+
+// TestSNCaseService_GetCaseByID_NestsProductUnderDeployedProduct pins that the
+// product catalogue entry hangs off the deployed product, and that a case naming
+// a catalogue product with no deployed instance still returns it.
+func TestSNCaseService_GetCaseByID_NestsProductUnderDeployedProduct(t *testing.T) {
+	const (
+		dpSysid   = "32e4c5e732e4c5e732e4c5e732e4c5e7"
+		prodSysid = "4151bcd84151bcd84151bcd84151bcd8"
+	)
+
+	newBody := func(deployedProduct string) string {
+		return `{
+			"id": "` + testWLCaseSysid + `",
+			"internalId": "WSO2-001",
+			"number": "CS0001001",
+			"title": "Case subject",
+			"description": "Case description",
+			"createdOn": "2026-01-01 10:00:00",
+			"updatedOn": "2026-01-02 10:00:00",
+			"createdBy": "reporter@example.com",
+			"project": {"id": "` + testProjectSysid + `", "name": "Project A"},
+			"deployment": {"id": "", "name": ""},
+			"deployedProduct": ` + deployedProduct + `,
+			"product": {"id": "` + prodSysid + `", "name": "WSO2 API Manager 4.5.0"},
+			"state": {"id": 1, "label": "Open"}
+		}`
+	}
+
+	t.Run("both present", func(t *testing.T) {
+		client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(newBody(`{"id": "` + dpSysid + `", "name": "WSO2 API Manager", "version": "4.5.0"}`)))
+		})
+		cv, err := NewServiceNowCaseService(client, nil).GetCaseByID(contextWithUserIDToken("token"), sysidToUUID(testWLCaseSysid))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		dp := cv.DeployedProductDetails
+		if dp == nil || dp.ID == nil || *dp.ID != sysidToUUID(dpSysid) {
+			t.Fatalf("deployedProduct.id not mapped: %+v", dp)
+		}
+		if dp.DisplayName == nil || *dp.DisplayName != "WSO2 API Manager 4.5.0" {
+			t.Fatalf("deployedProduct.displayName not mapped: %+v", dp)
+		}
+		if dp.Product == nil || dp.Product.ID != sysidToUUID(prodSysid) || dp.Product.Name != "WSO2 API Manager 4.5.0" {
+			t.Fatalf("deployedProduct.product not mapped: %+v", dp.Product)
+		}
+	})
+
+	t.Run("product without a deployed product stays reachable", func(t *testing.T) {
+		client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(newBody(`{"id": "", "name": "", "version": ""}`)))
+		})
+		cv, err := NewServiceNowCaseService(client, nil).GetCaseByID(contextWithUserIDToken("token"), sysidToUUID(testWLCaseSysid))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		dp := cv.DeployedProductDetails
+		if dp == nil {
+			t.Fatal("deployedProduct is nil: the catalogue product would be unreachable")
+		}
+		if dp.ID != nil || dp.DisplayName != nil {
+			t.Errorf("deployedProduct id/displayName should be null with no deployed instance: %+v", dp)
+		}
+		if dp.Product == nil || dp.Product.ID != sysidToUUID(prodSysid) {
+			t.Fatalf("deployedProduct.product not mapped: %+v", dp.Product)
+		}
+	})
+}
+
 // TestSNCaseService_GetCaseByID_BallerinaBlockedFieldsAbsent documents current reality:
 // against a real, unmodified backing-service response with none of the blocked fields present,
 // AutoclosureStep/AutoclosureStateTime/CreTeam/SreTeam all stay nil rather than zero-valuing.
