@@ -126,23 +126,36 @@ describe("useAuthApiClient", () => {
         status === 503 ? "Service Unavailable" : "Gateway Timeout",
       );
       const body = await response.json();
-      expect(body.message).toMatch(/try again/i);
+      expect(body).toEqual({
+        message:
+          status === 503
+            ? "The service is temporarily unavailable. Please try again in a few moments."
+            : "The request timed out. Please try again in a few moments.",
+      });
+      expect(response.headers.get("Content-Type")).toBe("application/json");
     },
   );
 
-  it("passes through other statuses unchanged", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ message: "not found" }), {
-        status: 404,
-        statusText: "Not Found",
-      }),
-    ) as typeof fetch;
+  it.each([
+    [404, "Not Found", "not found"],
+    [500, "Internal Server Error", "internal error"],
+  ] as const)(
+    "passes through other statuses unchanged: %d",
+    async (status, statusText, message) => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ message }), {
+          status,
+          statusText,
+        }),
+      ) as typeof fetch;
 
-    const { result } = renderHook(() => useAuthApiClient());
-    const response = await result.current("https://api.test/resource");
+      const { result } = renderHook(() => useAuthApiClient());
+      const response = await result.current("https://api.test/resource");
 
-    expect(response.status).toBe(404);
-    const body = await response.json();
-    expect(body.message).toBe("not found");
-  });
+      expect(response.status).toBe(status);
+      expect(response.statusText).toBe(statusText);
+      const body = await response.json();
+      expect(body.message).toBe(message);
+    },
+  );
 });
