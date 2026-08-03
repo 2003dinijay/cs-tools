@@ -334,9 +334,9 @@ type snCaseFilters struct {
 	// (ServiceNow's CaseUtils.searchCases honors filters.tags; Ballerina's
 	// CaseSearchFilters forwards it).
 	Tags []string `json:"tags,omitempty"`
-	// ExcludeTags: honored by ServiceNow, but NOT yet declared on Ballerina's closed
-	// CaseSearchFilters record -- sending it is expected to fail payload binding and
-	// error the entire search. See domain.ParsedCaseFilters.ExcludeTags.
+	// ExcludeTags: inverse of Tags, also works end-to-end (ServiceNow's
+	// CaseUtils.searchCases honors filters.excludeTags; Ballerina's CaseSearchFilters
+	// declares it). See domain.ParsedCaseFilters.ExcludeTags.
 	ExcludeTags []string `json:"excludeTags,omitempty"`
 	// ParentID: see domain.SearchCasesFilters.ParentID doc comment.
 	ParentID                  string   `json:"parentId,omitempty"`

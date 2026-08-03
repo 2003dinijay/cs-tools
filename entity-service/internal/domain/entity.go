@@ -1419,11 +1419,8 @@ type ParsedCaseFilters struct {
 	// forwards it.
 	Tags []string
 	// ExcludeTags filters to cases NOT carrying any of these free-text tag labels
-	// (optional). The backing ServiceNow script honors filters.excludeTags, but the
-	// Ballerina layer's CaseSearchFilters is a closed record that does not yet declare
-	// this field, so populating it is expected to fail payload binding and error the
-	// whole search rather than merely being ignored. Do not set it until Ballerina
-	// declares excludeTags.
+	// (optional). Inverse of Tags. Works end-to-end: ServiceNow's CaseUtils.searchCases
+	// honors filters.excludeTags, and Ballerina's CaseSearchFilters declares it.
 	ExcludeTags []string
 	// ParentID filters to child cases of this case (the hierarchical major-case/
 	// child-case relationship set via the case PATCH parentId field). Not yet
