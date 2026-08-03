@@ -28,6 +28,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { GitFork } from "@wso2/oxygen-ui-icons-react";
 import type { JSX } from "react";
+import { Link as RouterLink } from "react-router";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useSearchChildCases } from "@features/csm-cases/api/useSearchChildCases";
 import SeverityChip from "@components/SeverityChip";
@@ -110,26 +111,29 @@ export function ChildCasesWidget({ caseId }: ChildCasesWidgetProps): JSX.Element
               ) : (
                 cases.map((c) => {
                   const caseLabel = `${c.caseNumber ?? c.id} — ${c.subject}`;
+                  const casePath = `/cases/${encodeURIComponent(c.id)}`;
                   return (
                     <TableRow
                       key={c.id}
                       hover
-                      onClick={() =>
-                        navigate(`/cases/${encodeURIComponent(c.id)}`, { state: { from: backPath } })
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          navigate(`/cases/${encodeURIComponent(c.id)}`, { state: { from: backPath } });
-                        }
-                      }}
-                      tabIndex={0}
-                      role="button"
-                      aria-label={`View case ${c.caseNumber ?? c.id}`}
+                      onClick={() => navigate(casePath, { state: { from: backPath } })}
                       sx={{ cursor: "pointer" }}
                     >
                       <TableCell sx={{ maxWidth: 0, width: "40%" }}>
-                        <Typography variant="body2" noWrap title={caseLabel}>
+                        {/* A real link, not a `role="button"` override on the
+                            row — that strips the row's implicit ARIA role,
+                            leaving its cells with no valid parent role. The
+                            row's own onClick above is just a mouse
+                            convenience on top of this. */}
+                        <Typography
+                          component={RouterLink}
+                          to={casePath}
+                          state={{ from: backPath }}
+                          variant="body2"
+                          noWrap
+                          title={caseLabel}
+                          sx={{ color: "inherit", textDecoration: "none", display: "block" }}
+                        >
                           {caseLabel}
                         </Typography>
                       </TableCell>

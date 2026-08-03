@@ -28,6 +28,7 @@ import {
   Skeleton,
   Tab,
   Tabs,
+  Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
 import {
@@ -2037,14 +2038,24 @@ export default function CsmCaseDetailPage(): JSX.Element {
               layout below, rather than floating alone in right-side
               whitespace. */}
           <Box sx={{ display: "flex", justifyContent: "flex-start" }}>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<LinkIcon size={14} />}
-              onClick={() => setLinkCaseOpen(true)}
-            >
-              Link to another case
-            </Button>
+            {/* Same read-only-once-closed rule as the comment composer,
+                attachment upload, and tag add/remove below — a link PATCH
+                on a closed case would otherwise fail server-side and only
+                surface as a generic error banner instead of being disabled
+                up front with a clear reason. */}
+            <Tooltip title={isClosed ? "This case is closed — it's read-only." : ""}>
+              <Box component="span">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<LinkIcon size={14} />}
+                  onClick={() => setLinkCaseOpen(true)}
+                  disabled={isClosed}
+                >
+                  Link to another case
+                </Button>
+              </Box>
+            </Tooltip>
           </Box>
           <Box
             sx={{
@@ -2068,6 +2079,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             <LinkedServiceRequestsWidget
               caseId={c.id}
               linkedServiceRequests={c.linkedServiceRequests}
+              createDisabled={isClosed}
               onCreateServiceRequest={() => {
                 const navState: CreateServiceRequestFromCaseNavState = {
                   projectId: c.projectId,

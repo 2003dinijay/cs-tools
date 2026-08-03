@@ -25,10 +25,12 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
 import { Link as LinkIcon, Plus } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, type JSX } from "react";
+import { Link as RouterLink } from "react-router";
 import { useNavTransition } from "@hooks/useNavTransition";
 import {
   useSearchChildCases,
@@ -54,6 +56,10 @@ interface LinkedServiceRequestsWidgetProps {
    */
   linkedServiceRequests: LinkedServiceRequestRef[] | undefined;
   onCreateServiceRequest: () => void;
+  /** Disables "Create service request" once the case is closed — matches
+   * the read-only rule the rest of the case detail page applies (comment
+   * composer, attachment upload, tag add/remove, "Link to another case"). */
+  createDisabled?: boolean;
 }
 
 /**
@@ -75,6 +81,7 @@ export function LinkedServiceRequestsWidget({
   caseId,
   linkedServiceRequests,
   onCreateServiceRequest,
+  createDisabled = false,
 }: LinkedServiceRequestsWidgetProps): JSX.Element {
   const { data, isLoading, isError } = useSearchChildCases(caseId);
   const navigate = useNavTransition();
@@ -113,14 +120,19 @@ export function LinkedServiceRequestsWidget({
             Linked service requests{refs.length > 0 ? ` (${refs.length})` : ""}
           </Typography>
         </Box>
-        <Button
-          size="small"
-          variant="outlined"
-          startIcon={<Plus size={14} />}
-          onClick={onCreateServiceRequest}
-        >
-          Create service request
-        </Button>
+        <Tooltip title={createDisabled ? "This case is closed — it's read-only." : ""}>
+          <Box component="span">
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<Plus size={14} />}
+              onClick={onCreateServiceRequest}
+              disabled={createDisabled}
+            >
+              Create service request
+            </Button>
+          </Box>
+        </Tooltip>
       </Box>
 
       <TableContainer>
@@ -152,26 +164,29 @@ export function LinkedServiceRequestsWidget({
                 const enriched = enrichedById.get(sr.id);
                 const caseLabel = `${sr.number} — ${sr.name}`;
                 const assigneeLabel = enriched ? enriched.assigneeName ?? "—" : "—";
+                const casePath = `/cases/${encodeURIComponent(sr.id)}`;
                 return (
                   <TableRow
                     key={sr.id}
                     hover
-                    onClick={() =>
-                      navigate(`/cases/${encodeURIComponent(sr.id)}`, { state: { from: backPath } })
-                    }
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        navigate(`/cases/${encodeURIComponent(sr.id)}`, { state: { from: backPath } });
-                      }
-                    }}
-                    tabIndex={0}
-                    role="button"
-                    aria-label={`View case ${sr.number}`}
+                    onClick={() => navigate(casePath, { state: { from: backPath } })}
                     sx={{ cursor: "pointer" }}
                   >
                     <TableCell sx={{ maxWidth: 0, width: "50%" }}>
-                      <Typography variant="body2" noWrap title={caseLabel}>
+                      {/* A real link, not a `role="button"` override on the
+                          row — that strips the row's implicit ARIA role,
+                          leaving its cells with no valid parent role. The
+                          row's own onClick above is just a mouse
+                          convenience on top of this. */}
+                      <Typography
+                        component={RouterLink}
+                        to={casePath}
+                        state={{ from: backPath }}
+                        variant="body2"
+                        noWrap
+                        title={caseLabel}
+                        sx={{ color: "inherit", textDecoration: "none", display: "block" }}
+                      >
                         {caseLabel}
                       </Typography>
                     </TableCell>

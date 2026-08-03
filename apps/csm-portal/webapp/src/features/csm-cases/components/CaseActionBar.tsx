@@ -464,10 +464,11 @@ export default function CaseActionBar({
       }}
     >
       {!!caseDetail.acknowledgedBy && ACKNOWLEDGEABLE_SEVERITIES.has(caseDetail.severity) && (
-        // Leads the bar as context, read before the action buttons — same
-        // slot the Acknowledge button occupies before anyone claims the
-        // case (see below), so there's never a gap where people go looking
-        // for who acknowledged it.
+        // Leads the bar as context, read before the action buttons. Mutually
+        // exclusive with the Acknowledge button below (only one of the two
+        // ever renders, since one implies the case is already claimed and
+        // the other implies it isn't) — they sit in different positions,
+        // not "the same slot": this leads the bar, the button trails it.
         <Typography variant="body2" color="text.secondary" noWrap>
           Acknowledged by{" "}
           <UserRefLink

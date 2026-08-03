@@ -80,6 +80,9 @@ export default function DeploymentDetailsDialog({
     >
       <Paper
         elevation={3}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="deployment-details-dialog-title"
         sx={{
           position: "fixed",
           top: "10vh",
@@ -96,7 +99,9 @@ export default function DeploymentDetailsDialog({
         }}
       >
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap", p: 3, pb: 2 }}>
-          <Typography variant="h6">{deployment.name || "Deployment"}</Typography>
+          <Typography id="deployment-details-dialog-title" variant="h6">
+            {deployment.name || "Deployment"}
+          </Typography>
           {deployment.type && (
             <Chip size="small" variant="outlined" label={deploymentTypeLabel(deployment.type)} />
           )}

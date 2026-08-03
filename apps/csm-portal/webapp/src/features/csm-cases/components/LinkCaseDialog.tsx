@@ -29,7 +29,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { CheckCircle, Search } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import {
   QUICK_CASE_MIN_QUERY_LEN,
@@ -81,6 +81,13 @@ export default function LinkCaseDialog({
   const [selected, setSelected] = useState<QuickCaseHit | null>(null);
   const search = useDebouncedValue(input.trim(), 300);
   const { data, isFetching, isError } = useQuickCaseSearch(search);
+  // MUI Button doesn't forward `autoFocus` to its underlying element, so once
+  // the search list unmounts in favour of the confirm panel, focus would
+  // otherwise drop to the document body. Move it to "Change" explicitly.
+  const changeButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (selected) changeButtonRef.current?.focus();
+  }, [selected]);
 
   const candidates = useMemo(
     () => (data ?? []).filter((c) => c.id !== currentCaseId),
@@ -123,6 +130,9 @@ export default function LinkCaseDialog({
     >
       <Paper
         elevation={3}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="link-case-dialog-title"
         sx={{
           position: "fixed",
           top: "10vh",
@@ -138,7 +148,7 @@ export default function LinkCaseDialog({
           borderColor: "divider",
         }}
       >
-        <Typography variant="h6" sx={{ p: 3, pb: 2 }}>
+        <Typography id="link-case-dialog-title" variant="h6" sx={{ p: 3, pb: 2 }}>
           Link to another case
         </Typography>
         <Divider />
@@ -203,6 +213,7 @@ export default function LinkCaseDialog({
                 </Box>
               </Box>
               <Button
+                ref={changeButtonRef}
                 size="small"
                 variant="text"
                 disabled={isLinking}
