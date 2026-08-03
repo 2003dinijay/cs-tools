@@ -151,3 +151,57 @@ describe("widgetPreviewUrl", () => {
     ]);
   });
 });
+
+/**
+ * Regression: the preview URL used to drop each filter entry's `op`, so every
+ * entry decoded back as `in`. That INVERTED `notIn` (a tag exclusion became a
+ * tag filter) and dropped value-less ops entirely, silently widening
+ * "Unassigned Cases" into "all cases". Found by live click-through testing,
+ * not by any unit test -- hence this one.
+ */
+describe("widget preview URL — filter op round-trip", () => {
+  function roundTrip(filters: { field: string; op: string; values?: string[] }[]) {
+    const href = buildWidgetPreviewHref({
+      previewSlug: "cases",
+      widgetId: "w1",
+      displayName: "W",
+      filters: { filters },
+    });
+    const qs = href.split("?")[1] ?? "";
+    return parseWidgetPreviewFilters(new URLSearchParams(qs));
+  }
+
+  it("preserves notIn instead of inverting it to in", () => {
+    const parsed = roundTrip([{ field: "tag", op: "notIn", values: ["s_dip"] }]);
+    const entries = (parsed.filters as { filters: { field: string; op: string }[] }).filters;
+    expect(entries).toEqual([{ field: "tag", op: "notIn", values: ["s_dip"] }]);
+  });
+
+  it("preserves value-less ops rather than dropping them", () => {
+    const parsed = roundTrip([{ field: "assignedUserId", op: "isEmpty", values: [] }]);
+    const entries = (parsed.filters as { filters: { field: string; op: string }[] }).filters;
+    expect(entries).toEqual([{ field: "assignedUserId", op: "isEmpty", values: [] }]);
+  });
+
+  it("keeps the bare field=values form for the default in op", () => {
+    const href = buildWidgetPreviewHref({
+      previewSlug: "cases",
+      widgetId: "w1",
+      displayName: "W",
+      filters: { filters: [{ field: "state", op: "in", values: ["open"] }] },
+    });
+    expect(href).toContain("state=open");
+    expect(href).not.toContain("~");
+  });
+
+  it("round-trips a mixed filter set faithfully", () => {
+    const input = [
+      { field: "state", op: "in", values: ["open", "reopened"] },
+      { field: "tag", op: "notIn", values: ["s_dip", "patch"] },
+      { field: "escalation", op: "isNotEmpty", values: [] },
+    ];
+    const parsed = roundTrip(input);
+    const entries = (parsed.filters as { filters: unknown[] }).filters;
+    expect(entries).toEqual(input);
+  });
+});
