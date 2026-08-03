@@ -35,6 +35,24 @@ type entityTaskClient interface {
 	UpdateTask(ctx context.Context, id string, body []byte) ([]byte, error)
 }
 
+// isJSONObjectOrEmpty reports whether body is either empty or a syntactically
+// valid JSON *object*. json.Valid alone is not enough for the search endpoints:
+// it also accepts `null`, arrays, strings and numbers, none of which are a
+// search request, and forwarding them upstream turns a caller mistake into an
+// opaque entity-service error.
+func isJSONObjectOrEmpty(body []byte) bool {
+	if len(body) == 0 {
+		return true
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return false
+	}
+	// `null` unmarshals into a nil map without error; every other JSON scalar or
+	// array fails above. Only a real object survives both checks.
+	return obj != nil
+}
+
 // TaskHandler handles HTTP requests for task operations.
 type TaskHandler struct {
 	entity entityTaskClient
@@ -72,7 +90,7 @@ func (h *TaskHandler) SearchCaseTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(body) > 0 && !json.Valid(body) {
+	if !isJSONObjectOrEmpty(body) {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}
@@ -108,7 +126,7 @@ func (h *TaskHandler) SearchTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(body) > 0 && !json.Valid(body) {
+	if !isJSONObjectOrEmpty(body) {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}
