@@ -314,7 +314,7 @@ export default function CsmUsersPage(): JSX.Element {
       </Stack>
 
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
-        <TableContainer>
+        <TableContainer sx={{ overflow: "visible" }}>
           <Table
             size="small"
             aria-label="Users search results"
