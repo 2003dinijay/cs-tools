@@ -245,14 +245,26 @@ export default function DashboardWidgetTile({
   if (shape === "pie" || shape === "bar") {
     // Each slice/legend row (or bar) navigates independently to that
     // slice's OWN filtered list, so — same rationale as shape "list" — this
-    // can't be one big link the way shape "count" is; it's a plain,
-    // non-link Card. It's still a click-through target in its own right,
-    // though: clicking the tile anywhere OTHER than a slice/legend row (the
-    // header, the padding, the empty state) goes to the widget's own base
-    // filters, the same destination a "count" tile with those filters would
-    // produce. Every nested interactive element (slice wedge, legend row,
-    // the refresh button) stops propagation on click, so this tile-level
-    // handler only ever fires for a genuine background click.
+    // can't be one big link the way shape "count" is. It's still a
+    // click-through target in its own right, though: clicking the tile
+    // anywhere OTHER than a slice/legend row (the header, the padding, the
+    // empty state) goes to the widget's own base filters, the same
+    // destination a "count" tile with those filters would produce.
+    //
+    // That tile-level target keeps its role="button"/Enter+Space keyboard
+    // handling (a real <a> only activates on Enter, not Space, and this
+    // control has always supported both) -- but it is now a SIBLING of the
+    // refresh button and the chart, not their ancestor: an element with an
+    // interactive role makes its descendants' own roles presentational to
+    // assistive tech, so nesting the refresh IconButton and the chart's own
+    // role="button" legend rows inside it would hide them from screen
+    // readers even though they're still clickable. The target is absolutely
+    // positioned to fill the card and sits behind (`zIndex: 0`) a
+    // `pointerEvents: "none"` content layer, so it only ever receives clicks
+    // that land on genuine background -- pointer events are switched back on
+    // (`pointerEvents: "auto"`) for the refresh button and the chart
+    // specifically, letting their own click and keyboard handling work
+    // exactly as before.
     const ChartComponent = shape === "pie" ? DashboardPieChart : DashboardBarChart;
     const tileHref = config.buildHref(resolveTeamPlaceholder(filters, selectedTeamGroupId));
     const handleTileClick = (): void => {
@@ -267,52 +279,62 @@ export default function DashboardWidgetTile({
     return (
       <Card
         variant="outlined"
-        role="button"
-        tabIndex={0}
-        aria-label={`View all cases for ${displayName}`}
-        onClick={handleTileClick}
-        onKeyDown={handleTileKeyDown}
         sx={{
           position: "relative",
           p: 1.75,
           height: "100%",
-          cursor: "pointer",
-          "&:hover": { bgcolor: "action.hover" },
-          "&:focus-visible": {
-            outline: "2px solid",
-            outlineColor: "primary.main",
-            outlineOffset: -2,
-          },
         }}
       >
-        {refreshButton}
-        {/* The header's own bottom padding — not just a top margin on the
-            chart below it — so the chart's top edge (and, at the size this
-            chart renders at, its tooltip) never sits flush against/behind
-            the title row above it. */}
-        <Box sx={{ pb: description ? 1 : 2.5 }}>{header}</Box>
-        {description && (
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-            {description}
-          </Typography>
-        )}
-        <Box>
-          <ChartComponent
-            slices={pieData.slices}
-            total={pieData.total}
-            isLoading={pieData.isLoading}
-            isError={pieData.isError}
-            onSliceClick={(slice: PieSliceResult) =>
-              navigate(
-                config.buildHref(
-                  resolveTeamPlaceholder(
-                    mergeWidgetFilters(filters, slice.filters),
-                    selectedTeamGroupId,
+        <Box
+          role="button"
+          tabIndex={0}
+          aria-label={`View all cases for ${displayName}`}
+          onClick={handleTileClick}
+          onKeyDown={handleTileKeyDown}
+          sx={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 0,
+            borderRadius: "inherit",
+            cursor: "pointer",
+            "&:hover": { bgcolor: "action.hover" },
+            "&:focus-visible": {
+              outline: "2px solid",
+              outlineColor: "primary.main",
+              outlineOffset: -2,
+            },
+          }}
+        />
+        <Box sx={{ position: "relative", zIndex: 1, height: "100%", pointerEvents: "none" }}>
+          <Box sx={{ pointerEvents: "auto" }}>{refreshButton}</Box>
+          {/* The header's own bottom padding — not just a top margin on the
+              chart below it — so the chart's top edge (and, at the size this
+              chart renders at, its tooltip) never sits flush against/behind
+              the title row above it. */}
+          <Box sx={{ pb: description ? 1 : 2.5 }}>{header}</Box>
+          {description && (
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+              {description}
+            </Typography>
+          )}
+          <Box sx={{ pointerEvents: "auto" }}>
+            <ChartComponent
+              slices={pieData.slices}
+              total={pieData.total}
+              isLoading={pieData.isLoading}
+              isError={pieData.isError}
+              onSliceClick={(slice: PieSliceResult) =>
+                navigate(
+                  config.buildHref(
+                    resolveTeamPlaceholder(
+                      mergeWidgetFilters(filters, slice.filters),
+                      selectedTeamGroupId,
+                    ),
                   ),
-                ),
-              )
-            }
-          />
+                )
+              }
+            />
+          </Box>
         </Box>
       </Card>
     );
@@ -368,28 +390,49 @@ export default function DashboardWidgetTile({
   }
 
   return (
+    // Same sibling-target restructuring as the pie/bar branch above: the
+    // whole-card click-through used to BE the refresh IconButton's own
+    // ancestor (`Card component={RouterLink}`), which hides a nested
+    // interactive control from assistive tech exactly like a nested
+    // role="button" does. The anchor here is a background sibling instead;
+    // see the pie/bar branch's comment for the pointer-events layering.
     <Card
       variant="outlined"
-      component={RouterLink}
-      to={href}
       sx={{
         position: "relative",
         p: 1.75,
-        display: "block",
         height: "100%",
-        cursor: "pointer",
-        color: "inherit",
-        textDecoration: "none",
-        transition: "box-shadow 0.2s ease, transform 0.15s ease",
-        "&:hover": {
-          boxShadow: `0 0 0 1px ${theme.palette.primary.main}, 0 4px 16px rgba(0,0,0,0.12)`,
-          transform: "translateY(-2px)",
-        },
-        "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: -2 },
       }}
     >
-      {refreshButton}
-      {body}
+      <Box
+        component={RouterLink}
+        to={href}
+        // The visible count + label sit in the pointer-events-none content
+        // layer above this anchor, not inside it as descendant text anymore
+        // (that's the whole point -- see the comment above), so it needs its
+        // own accessible name instead of inheriting one from its content.
+        aria-label={`${displayName}: ${data?.total ?? 0}`}
+        sx={{
+          position: "absolute",
+          inset: 0,
+          zIndex: 0,
+          display: "block",
+          borderRadius: "inherit",
+          cursor: "pointer",
+          color: "inherit",
+          textDecoration: "none",
+          transition: "box-shadow 0.2s ease, transform 0.15s ease",
+          "&:hover": {
+            boxShadow: `0 0 0 1px ${theme.palette.primary.main}, 0 4px 16px rgba(0,0,0,0.12)`,
+            transform: "translateY(-2px)",
+          },
+          "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: -2 },
+        }}
+      />
+      <Box sx={{ position: "relative", zIndex: 1, height: "100%", pointerEvents: "none" }}>
+        <Box sx={{ pointerEvents: "auto" }}>{refreshButton}</Box>
+        {body}
+      </Box>
     </Card>
   );
 }
