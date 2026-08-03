@@ -5151,6 +5151,9 @@ components:
             - integrationCsTeam
             - resolutionNotes
             - parentId
+            - taskSLABusinessElapsedPercent
+            - escalationLevel
+            - escalation
         op:
           type: string
           enum: [eq, in, notIn, isEmpty, isNotEmpty, gte, lte]
@@ -5222,6 +5225,22 @@ components:
           is no distinct "resolution notes present" behavior to express.
         - **parentId** (eq): a single case UUID; matches child cases of that
           case (the hierarchical major-case/child-case relationship).
+        - **taskSLABusinessElapsedPercent** (gte / lte): a non-negative
+          integer. Matches cases with at least one Task SLA record whose
+          businessElapsedPercent falls within the given bound(s) (both bounds
+          may be supplied together to express a range, e.g. gte 75 + lte 100
+          for "at risk or breached"). Not capped at 100: a long-overdue,
+          never-resolved SLA's percentage keeps climbing well past it (values
+          in the tens of thousands are real, observed data), so 100 means
+          "breached", not "the maximum possible value". Only applied by the
+          ServiceNow data source (a Task SLA table join); filtering logic is
+          confined to the SN adapter.
+        - **escalationLevel** (in): one or more escalation level ids, "0"
+          (EL0, not escalated) through "5" (EL5, CEO). Matches cases whose
+          current escalation level is any of the given ids.
+        - **escalation** (isEmpty / isNotEmpty): values ignored; isEmpty
+          matches cases with no active escalation, isNotEmpty matches cases
+          with an active escalation.
 
     CaseSearchFilters:
       type: object
