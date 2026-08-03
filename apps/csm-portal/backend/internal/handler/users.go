@@ -80,8 +80,10 @@ type userMeResponse struct {
 type userTeamResponse struct {
 	TeamKey  string `json:"teamKey"`
 	TeamName string `json:"teamName"`
-	// Family may be empty: not every ABT team is classified into a family.
-	Family string `json:"family"`
+	// Family is omitted, not empty, when the team is unclassified: not every
+	// ABT team is classified into a family, and "" is not one of the four
+	// values the contract's enum permits.
+	Family string `json:"family,omitempty"`
 }
 
 // entityGroupRef is one group the entity service reports the caller as a member

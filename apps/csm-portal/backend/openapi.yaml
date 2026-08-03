@@ -6017,13 +6017,13 @@ components:
           type: string
         family:
           type: string
+          enum: [cre-abt, cre, sre-abt, sre]
           description: >
-            Team family classification: one of `cre-abt`, `cre`, `sre-abt`, `sre`. The
-            `-abt` variants are account-based teams; the bare variants classify a member
-            of the same discipline who is not on an account-based team. May be empty:
-            not every team is classified into a family. A team picker scoped to one
-            discipline filters on this — e.g. an SRE-scoped dashboard offers only
-            `sre-abt` teams.
+            Team family classification. The `-abt` variants are account-based teams; the
+            bare variants classify a member of the same discipline who is not on an
+            account-based team. Omitted when the team is not classified into a family:
+            not every team is. A team picker scoped to one discipline filters on this —
+            e.g. an SRE-scoped dashboard offers only `sre-abt` teams.
 
     UserUpdatePayload:
       type: object
@@ -6129,13 +6129,13 @@ components:
           type: string
         family:
           type: string
+          enum: [cre-abt, cre, sre-abt, sre]
           description: >
-            Team family classification: one of `cre-abt`, `cre`, `sre-abt`, `sre`. The
-            `-abt` variants are account-based teams; the bare variants classify a member
-            of the same discipline who is not on an account-based team. May be empty:
-            not every team is classified into a family. A team picker scoped to one
-            discipline filters on this — e.g. an SRE-scoped dashboard offers only
-            `sre-abt` teams.
+            Team family classification. The `-abt` variants are account-based teams; the
+            bare variants classify a member of the same discipline who is not on an
+            account-based team. Omitted when the team is not classified into a family:
+            not every team is. A team picker scoped to one discipline filters on this —
+            e.g. an SRE-scoped dashboard offers only `sre-abt` teams.
         groupId:
           type: string
           description: >
@@ -6190,13 +6190,13 @@ components:
           type: string
         family:
           type: string
+          enum: [cre-abt, cre, sre-abt, sre]
           description: >
-            Team family classification: one of `cre-abt`, `cre`, `sre-abt`, `sre`. The
-            `-abt` variants are account-based teams; the bare variants classify a member
-            of the same discipline who is not on an account-based team. May be empty:
-            not every team is classified into a family. A team picker scoped to one
-            discipline filters on this — e.g. an SRE-scoped dashboard offers only
-            `sre-abt` teams.
+            Team family classification. The `-abt` variants are account-based teams; the
+            bare variants classify a member of the same discipline who is not on an
+            account-based team. Omitted when the team is not classified into a family:
+            not every team is. A team picker scoped to one discipline filters on this —
+            e.g. an SRE-scoped dashboard offers only `sre-abt` teams.
 
     UserProjectAccess:
       type: object
