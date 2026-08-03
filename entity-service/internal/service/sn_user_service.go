@@ -111,10 +111,11 @@ type snUserSearchPayload struct {
 type snUserFilters struct {
 	SearchQuery string `json:"searchQuery,omitempty"`
 	// RoleNames is sent under the backing data source's open, unconstrained role
-	// filter rather than its closed "roles" enum -- this service's own role catalogue
-	// is itself configuration-driven (CSM_USER_ROLES) and not limited to that closed
-	// set, so a role outside it (e.g. timecard_approver) must not be sent under "roles",
-	// which the upstream layer rejects at request binding for values it doesn't recognize.
+	// filter rather than its closed "roles" enum -- the role catalogue is
+	// configuration-driven in the caller (the portal backend's directory package)
+	// and not limited to that closed set, so a role outside it (e.g.
+	// timecard_approver) must not be sent under "roles", which the upstream layer
+	// rejects at request binding for values it doesn't recognize.
 	RoleNames []string `json:"roleNames,omitempty"`
 	UserNames []string `json:"userNames,omitempty"`
 	Emails    []string `json:"emails,omitempty"`
