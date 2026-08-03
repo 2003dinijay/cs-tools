@@ -1552,8 +1552,16 @@ type SearchCaseView struct {
 }
 
 // SearchCasesResponse is the paginated result of a case search. When the
-// request set GroupBy, Groups is populated instead of Cases (Cases is nil);
-// Total still reflects the total matching record count either way.
+// request set GroupBy, Groups is populated instead of Cases (Cases is nil).
+//
+// Total means different things in the two modes. Ungrouped, it is the total
+// matching record count. Grouped, it is the sum of the returned Groups' counts,
+// which is the number of matching cases whose value of the grouped field is one
+// of the enumerated buckets -- a case carrying a value outside that fixed set
+// (a state or type added in the backing data source but not yet in the
+// service's enum) is counted in no bucket and so is excluded from Total. Do not
+// read a grouped Total as "all cases matching the filters"; issue the same
+// search without GroupBy for that number.
 type SearchCasesResponse struct {
 	Cases  []SearchCaseView `json:"cases"`
 	Groups []CaseGroup      `json:"groups,omitempty"`

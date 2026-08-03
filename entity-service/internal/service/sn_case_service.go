@@ -26,6 +26,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
@@ -291,6 +293,13 @@ var snSortFieldMap = map[domain.CaseSortField]string{
 // case-search-filter-dsl-migration for why this stays a Go-entity-service-only
 // capability. Free-text fields (e.g. tag) have no fixed value set and are not
 // groupable.
+//
+// The enumeration is also the limit of what a grouped response can see: the
+// grouped SearchCasesResponse.Total is the sum of these buckets, so a case
+// whose field value is absent from this map is counted nowhere and does not
+// reach Total. Keep these lists in step with the backing data source's value
+// sets, and see the SearchCasesResponse doc comment for the caller-facing
+// consequence.
 var caseGroupByFieldValues = map[string][]string{
 	"state":          {"open", "work_in_progress", "waiting_on_wso2", "awaiting_info", "reopened", "solution_proposed", "closed"},
 	"severity":       {"catastrophic", "critical", "high", "medium", "low"},
@@ -349,23 +358,31 @@ type snCaseFilters struct {
 }
 
 // snTaskSLAFilter represents the Task SLA filter for SN's POST /cases/search request.
+// snTaskSLAFilter is the SN wire shape of the Task-SLA business-elapsed-percent
+// bounds. The bounds are pointers, not plain ints: 0 is a legitimate bound
+// (`lte 0` means "no elapsed SLA time at all"), and with a plain int the
+// omitempty tag would strip an explicit 0 from the payload, leaving ServiceNow
+// with no bound and silently widening the result set. nil means "no bound".
 type snTaskSLAFilter struct {
-	MinBusinessElapsedPercent int `json:"minBusinessElapsedPercent,omitempty"`
-	MaxBusinessElapsedPercent int `json:"maxBusinessElapsedPercent,omitempty"`
+	MinBusinessElapsedPercent *int `json:"minBusinessElapsedPercent,omitempty"`
+	MaxBusinessElapsedPercent *int `json:"maxBusinessElapsedPercent,omitempty"`
 }
 
 // buildSNTaskSLAFilter converts a domain.TaskSLAFilter into the SN wire shape,
-// or nil if no filter was supplied.
+// or nil if no filter was supplied. Bounds are copied by value into fresh
+// pointers so the payload never aliases the caller's parsed filters.
 func buildSNTaskSLAFilter(f *domain.TaskSLAFilter) *snTaskSLAFilter {
 	if f == nil {
 		return nil
 	}
 	sn := &snTaskSLAFilter{}
 	if f.MinBusinessElapsedPercent != nil {
-		sn.MinBusinessElapsedPercent = *f.MinBusinessElapsedPercent
+		minPct := *f.MinBusinessElapsedPercent
+		sn.MinBusinessElapsedPercent = &minPct
 	}
 	if f.MaxBusinessElapsedPercent != nil {
-		sn.MaxBusinessElapsedPercent = *f.MaxBusinessElapsedPercent
+		maxPct := *f.MaxBusinessElapsedPercent
+		sn.MaxBusinessElapsedPercent = &maxPct
 	}
 	return sn
 }
@@ -2177,15 +2194,44 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		if !ok {
 			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "groupBy must be one of: state, severity, type, engagementType, issueType, workState"}
 		}
-		groups := make([]domain.CaseGroup, 0, len(values))
+		// One limit=1 search per bucket, run concurrently: grouping by state is
+		// seven independent round trips to ServiceNow and serialising them made
+		// the widget wait for the sum of all seven latencies. Results are written
+		// into a pre-sized slice by index, never appended from a goroutine, so the
+		// group order stays the caseGroupByFieldValues display order regardless of
+		// completion order. errgroup's derived context is passed to every bucket
+		// call, so the first failure cancels the rest.
+		//
+		// The limit is 4: the widest group (state) has seven buckets, and this is
+		// a fan-out against a single shared downstream (the ServiceNow integration
+		// service) that other requests also use. Four keeps the worst case to two
+		// waves while bounding the burst a single request can impose on that
+		// downstream; unbounded would let one grouped search open seven concurrent
+		// upstream connections.
+		const groupCountConcurrency = 4
+
+		groups := make([]domain.CaseGroup, len(values))
+		counts := make([]int, len(values))
+		g, gCtx := errgroup.WithContext(ctx)
+		g.SetLimit(groupCountConcurrency)
+		for i, v := range values {
+			i, v := i, v
+			g.Go(func() error {
+				count, err := s.searchCasesGroupCount(gCtx, token, req.GroupBy, v, req.Parsed, req.Filters.SearchQuery)
+				if err != nil {
+					return err
+				}
+				counts[i] = count
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
+			return domain.SearchCasesResponse{}, err
+		}
 		total := 0
-		for _, v := range values {
-			count, err := s.searchCasesGroupCount(ctx, token, req.GroupBy, v, req.Parsed, req.Filters.SearchQuery)
-			if err != nil {
-				return domain.SearchCasesResponse{}, err
-			}
-			groups = append(groups, domain.CaseGroup{Key: v, Count: count})
-			total += count
+		for i, v := range values {
+			groups[i] = domain.CaseGroup{Key: v, Count: counts[i]}
+			total += counts[i]
 		}
 		return domain.SearchCasesResponse{
 			Groups: groups,
