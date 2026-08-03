@@ -57,6 +57,7 @@ import {
   readCasesFiltersFromUrl,
   writeCasesFiltersToUrl,
 } from "@features/csm-cases/utils/casesFiltersUrl";
+import { useTeams } from "@features/csm-dashboard/api/useTeams";
 import {
   deleteFilterView,
   saveFilterView,
@@ -76,8 +77,6 @@ import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProject
 import MultiSelectField from "@components/MultiSelectField";
 import AsyncAssigneeMultiSelect from "@features/csm-cases/components/AsyncAssigneeMultiSelect";
 import ProductNameMultiSelect from "@features/csm-cases/components/ProductNameMultiSelect";
-import TagsMultiSelect from "@features/csm-cases/components/TagsMultiSelect";
-import { useTeams } from "@features/csm-dashboard/api/useTeams";
 
 
 /**
@@ -244,12 +243,45 @@ interface ActiveFilterChip {
  * individually removable, though, or a user landing on a dashboard-filtered
  * cases list has no way to see (or undo) *why* it's filtered — hence one
  * chip per active value here, shown regardless of whether the filter grid
- * itself is expanded. `csTeams`/`tags`/`excludeTags` are deliberately
- * excluded: they have real bar controls (below) that already show their own
- * selection.
+ * itself is expanded. `csTeams`/`tags`/`excludeTags` are included here too:
+ * their bar controls were removed as clutter (they are advanced, rarely
+ * hand-picked, and a better home for advanced filters is still to be
+ * designed), so a chip is now the ONLY way a user can see or clear them
+ * after arriving from a dashboard click-through.
  */
-function buildActiveFilterChips(filters: CasesFilters): ActiveFilterChip[] {
+function buildActiveFilterChips(
+  filters: CasesFilters,
+  /** groupId -> team display name, so a team chip never shows a raw UUID.
+   * Falls back to the id when the lookup has not resolved (or the team is
+   * unknown) rather than hiding the chip — an unlabelled filter the user can
+   * still see and remove beats an invisible one. */
+  teamLabels: Record<string, string> = {},
+): ActiveFilterChip[] {
   const chips: ActiveFilterChip[] = [];
+
+  filters.csTeams.forEach((groupId) => {
+    chips.push({
+      key: `csTeam-${groupId}`,
+      label: `CS team: ${teamLabels[groupId] ?? groupId}`,
+      onRemove: (f) => ({ ...f, csTeams: f.csTeams.filter((t) => t !== groupId) }),
+    });
+  });
+
+  filters.tags.forEach((tag) => {
+    chips.push({
+      key: `tag-${tag}`,
+      label: `Tag: ${tag}`,
+      onRemove: (f) => ({ ...f, tags: f.tags.filter((t) => t !== tag) }),
+    });
+  });
+
+  filters.excludeTags.forEach((tag) => {
+    chips.push({
+      key: `excludeTag-${tag}`,
+      label: `Excluding tag: ${tag}`,
+      onRemove: (f) => ({ ...f, excludeTags: f.excludeTags.filter((t) => t !== tag) }),
+    });
+  });
 
   filters.onboardingStatuses.forEach((status) => {
     chips.push({
@@ -353,22 +385,24 @@ export default function CasesFilterBar({
   const activeCount = countActiveFilters(filters);
   const hasActive = activeCount > 0;
 
-  // CS team is a fixed, small enough list to fetch in full (same endpoint/
-  // hook the team-based dashboards use — see AbtDashboardHeader) rather than
-  // a type-to-search async picker; `groupId` (not the registry `id`) is what
-  // `integrationCsTeam` filters on, and only teams with one configured are
-  // selectable here (an id-less team has nothing an `integrationCsTeam`
-  // filter entry could hold).
-  const { data: teams } = useTeams(true);
-  const teamOptions = useMemo(
+  // Only fetch the team registry when a CS-team filter is actually set -- it
+  // exists solely to label that chip, and the cases page should not pay for it
+  // on every load now that the team bar control is gone.
+  const { data: teams } = useTeams(filters.csTeams.length > 0);
+  const teamLabels = useMemo(
     () =>
-      (teams ?? [])
-        .filter((t): t is typeof t & { groupId: string } => Boolean(t.groupId))
-        .map((t) => ({ value: t.groupId, label: t.name })),
+      Object.fromEntries(
+        (teams ?? [])
+          .filter((t): t is typeof t & { groupId: string } => Boolean(t.groupId))
+          .map((t) => [t.groupId, t.name]),
+      ),
     [teams],
   );
 
-  const activeFilterChips = useMemo(() => buildActiveFilterChips(filters), [filters]);
+  const activeFilterChips = useMemo(
+    () => buildActiveFilterChips(filters, teamLabels),
+    [filters, teamLabels],
+  );
 
   // ── Saved views ──────────────────────────────────────────────────────────
   // A saved view is just a name pointing at a serialized filter query string;
@@ -740,46 +774,6 @@ export default function CasesFilterBar({
               <ProductNameMultiSelect
                 values={filters.productNames}
                 onChange={(next) => onChange({ ...filters, productNames: next })}
-              />
-            </Grid>
-            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
-              {/* CS team the case's project is scoped to (`integrationCsTeam`)
-                  — one of the two broadly-useful new fields that get a real
-                  bar control (see `buildActiveFilterChips`'s doc comment for
-                  why the rest don't). Options are `groupId`s (what the filter
-                  actually matches on); labels are team display names, never
-                  the raw group-id UUID. */}
-              <MultiSelectField
-                id="cases-filter-cs-team"
-                label="CS team"
-                values={filters.csTeams}
-                options={teamOptions}
-                onChange={(next) => onChange({ ...filters, csTeams: next })}
-              />
-            </Grid>
-            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
-              {/* Tags the case MUST carry. Two separate controls (this one
-                  plus "Exclude tags" below), not one control with an
-                  include/exclude toggle: `tags` and `excludeTags` are
-                  independent and both may be set at once (the backend ANDs
-                  them, see `CasesFilters.excludeTags`'s doc comment) — a
-                  single toggle would force picking one mode at a time and
-                  couldn't represent "has tag A, but not tag B" in one control.
-                  Reuses `TagsMultiSelect` unchanged (still the case-detail
-                  "Add tag" picker's own freeSolo input). */}
-              <TagsMultiSelect
-                id="cases-filter-tags"
-                label="Tags"
-                values={filters.tags}
-                onChange={(next) => onChange({ ...filters, tags: next })}
-              />
-            </Grid>
-            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
-              <TagsMultiSelect
-                id="cases-filter-exclude-tags"
-                label="Exclude tags"
-                values={filters.excludeTags}
-                onChange={(next) => onChange({ ...filters, excludeTags: next })}
               />
             </Grid>
           </Grid>

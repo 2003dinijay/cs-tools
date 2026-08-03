@@ -61,12 +61,12 @@ describe("CasesFilterBar — active-filter chips for URL-only fields", () => {
     postMock.mockResolvedValue({ teams: [] });
   });
 
-  it("renders no chips when only bar-controlled fields (or nothing) are active", () => {
-    renderBar({ ...DEFAULT_CASES_FILTERS, csTeams: ["g1"], tags: ["micro-gw"] });
-    // No stray "×"-labeled chip content beyond what the bar's own controls
-    // (team select, tags input) already render.
+  it("renders no chips when nothing is active", () => {
+    renderBar({ ...DEFAULT_CASES_FILTERS });
     expect(screen.queryByText(/SLA/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Escalat/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/CS team:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Tag:/)).not.toBeInTheDocument();
   });
 
   it("renders one chip per URL-only filter and each is independently removable", () => {
@@ -138,59 +138,43 @@ describe("CasesFilterBar — active-filter chips for URL-only fields", () => {
   });
 });
 
-describe("CasesFilterBar — tag include/exclude control", () => {
-  beforeEach(() => {
-    postMock.mockReset();
-    postMock.mockResolvedValue({ teams: [] });
-  });
 
-  it("typing into 'Tags' sets `tags`, typing into 'Exclude tags' sets `excludeTags` — never conflated", () => {
-    const { onChange } = renderBar(DEFAULT_CASES_FILTERS);
-
-    const tagsInput = screen.getByLabelText("Tags");
-    fireEvent.change(tagsInput, { target: { value: "micro-gw" } });
-    fireEvent.keyDown(tagsInput, { key: "Enter" });
-
-    expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ tags: ["micro-gw"], excludeTags: [] }),
-    );
-
-    onChange.mockClear();
-    const excludeInput = screen.getByLabelText("Exclude tags");
-    fireEvent.change(excludeInput, { target: { value: "s_dip" } });
-    fireEvent.keyDown(excludeInput, { key: "Enter" });
-
-    expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ excludeTags: ["s_dip"] }),
-    );
-  });
-
-  it("both tags and excludeTags can be set at once (independent, not mutually exclusive)", () => {
-    renderBar({ ...DEFAULT_CASES_FILTERS, tags: ["micro-gw"], excludeTags: ["s_dip"] });
-    expect(screen.getByLabelText("Tags").closest("form, div")).toBeInTheDocument();
-    expect(screen.getByText("micro-gw")).toBeInTheDocument();
-    expect(screen.getByText("s_dip")).toBeInTheDocument();
-  });
-});
-
-describe("CasesFilterBar — CS team control", () => {
+describe("CasesFilterBar — removed bar controls fall back to chips", () => {
   beforeEach(() => {
     postMock.mockReset();
   });
 
-  it("shows team display names, not group-id UUIDs, and filters by groupId on selection", async () => {
-    postMock.mockResolvedValue({
-      teams: [
-        { id: "alpha", name: "Team Alpha", groupId: "22222222-2222-2222-2222-222222222222" },
-        { id: "beta", name: "Team Beta", groupId: "33333333-3333-3333-3333-333333333333" },
-      ],
+
+  /**
+   * The CS-team and tag bar controls were removed as clutter, so a chip is now
+   * the ONLY way these filters are visible or clearable after a dashboard
+   * click-through. If these break, a user lands on a filtered list with no way
+   * to see or undo why.
+   */
+  it("renders chips for csTeams/tags/excludeTags now that their bar controls are gone", () => {
+    const { onChange } = renderBar({
+      ...DEFAULT_CASES_FILTERS,
+      csTeams: ["g1"],
+      tags: ["micro-gw"],
+      excludeTags: ["s_dip"],
     });
 
-    renderBar(DEFAULT_CASES_FILTERS);
+    expect(screen.getByText("Tag: micro-gw")).toBeInTheDocument();
+    expect(screen.getByText("Excluding tag: s_dip")).toBeInTheDocument();
+    // Team name is unresolved here (no teams fetched), so it falls back to the
+    // id rather than hiding the chip.
+    expect(screen.getByText(/CS team: /)).toBeInTheDocument();
 
-    fireEvent.mouseDown(screen.getByLabelText("CS team"));
-    const option = await screen.findByRole("option", { name: "Team Alpha" });
-    expect(option).toBeInTheDocument();
-    expect(screen.queryByText("22222222-2222-2222-2222-222222222222")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Excluding tag: s_dip").closest(".MuiChip-root")!.querySelector("svg")!);
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ excludeTags: [], tags: ["micro-gw"], csTeams: ["g1"] }),
+    );
+  });
+
+  it("no longer renders the removed CS team / Tags / Exclude tags bar controls", () => {
+    renderBar({ ...DEFAULT_CASES_FILTERS });
+    expect(screen.queryByLabelText(/^CS team$/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Tags$/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Exclude tags$/)).not.toBeInTheDocument();
   });
 });
