@@ -56,6 +56,13 @@ export interface Account {
   accountManager?: PersonRef | null;
   renewalAccountManager?: PersonRef | null;
   technicalOwner?: PersonRef | null;
+  // The account's assigned CRE/SRE team, when the backing data source has
+  // one on record — surfaced as a clickable link to the team directory page
+  // on the account detail view, same shape/precedent as the case detail
+  // page's `CustomerContextWidget` (see `CaseCustomerContext` in
+  // `csmCases.ts`).
+  creTeam?: { id: string; name: string } | null;
+  sreTeam?: { id: string; name: string } | null;
   agentEnabled: boolean;
   kbReferencesEnabled: boolean;
   createdOn: string;

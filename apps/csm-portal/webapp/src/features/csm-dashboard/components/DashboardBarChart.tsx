@@ -118,7 +118,15 @@ export default function DashboardBarChart({
       <BarChart
         data={chartData}
         xAxisDataKey="name"
-        height="100%"
+        // height is a fixed constant (the parent Box's own height, CHART_HEIGHT_PX),
+        // not a percentage -- passing it directly avoids the same first-render
+        // ResizeObserver race as DashboardPieChart's width/height (see that
+        // component's comment). width genuinely must stay "100%": this tile's
+        // rendered width varies with its grid column count, so it still depends
+        // on a ResizeObserver measurement, which is the expected/correct
+        // behavior for a responsive dimension -- only the height half of the
+        // warning is avoidable here.
+        height={CHART_HEIGHT_PX}
         width="100%"
         legend={{ show: false }}
         yAxis={{ show: false }}

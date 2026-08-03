@@ -18,7 +18,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ComponentProps, type JSX, type ReactElement } from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import "@testing-library/jest-dom/vitest";
 
 // The real client reads runtime config at module load, which isn't present
@@ -31,15 +31,18 @@ vi.mock("@api/backend/client", () => ({
 
 import {
   AttachmentsWidget,
+  CustomerContextWidget,
   TagsWidget,
   WatchersWidget,
 } from "@features/csm-cases/components/CaseDetailWidgets";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
 import type {
   CaseAttachment,
+  CaseCustomerContext,
   CaseTag,
   CaseWatcher,
 } from "@features/csm-cases/types/csmCases";
+import type { ProjectDetails } from "@features/csm-projects/types/csmProjects";
 
 // `previewTarget`/`onPreviewTargetChange` (part of the widget's `preview`
 // prop) are lifted to the parent page (see CsmCaseDetailPage) so the preview
@@ -119,6 +122,38 @@ function renderWithRouter(ui: ReactElement): ReturnType<typeof render> {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+// Renders `path`'s current location as plain text, so a test can assert a
+// link actually navigated (not just that a href/route prop is present)
+// without mocking `useNavigate`.
+function LocationProbe(): JSX.Element {
+  const location = useLocation();
+  return <div data-testid="location-probe">{location.pathname}</div>;
+}
+
+// Same intent as `renderWithRouter`, but wires up real routes plus a
+// destination probe so account/project/team links can be asserted by
+// clicking through to the target route, rather than mocking navigation.
+function renderWithRoutes(
+  ui: ReactElement,
+  routes: string[],
+): ReturnType<typeof render> {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/case"]}>
+        <Routes>
+          <Route path="/case" element={ui} />
+          {routes.map((path) => (
+            <Route key={path} path={path} element={<LocationProbe />} />
+          ))}
+        </Routes>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -344,5 +379,100 @@ describe("AttachmentsWidget — preview affordance", () => {
     expect(
       screen.getByRole("button", { name: `Download ${ZIP_ATTACHMENT.filename}` }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("CustomerContextWidget", () => {
+  const CTX: CaseCustomerContext = {
+    accountName: "Acme Corp",
+    tier: "Enterprise",
+    region: "US East",
+    primaryContact: "Jane Doe",
+    primaryContactEmail: "jane.doe@example.com",
+    accountManager: "John Smith",
+    openCases: 2,
+  };
+
+  const PROJECT: ProjectDetails = {
+    id: "proj-1",
+    account: {
+      id: "acct-1",
+      name: "Acme Corp",
+      activationDate: null,
+      tier: "Enterprise",
+      agentEnabled: true,
+      kbReferencesEnabled: true,
+    },
+    sfId: "sf-1",
+    name: "Acme - Managed Cloud",
+    key: "ACME",
+    subscriptionType: "cloud_support",
+    startDate: "2026-01-01",
+    endDate: "2026-12-31",
+    createdOn: "2026-01-01T00:00:00Z",
+    updatedOn: "2026-01-01T00:00:00Z",
+    closureState: null,
+  };
+
+  it("renders the account name as plain text when no accountId is supplied", () => {
+    renderWithRouter(<CustomerContextWidget ctx={CTX} />);
+    expect(screen.getByText("Acme Corp")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Acme Corp" })).not.toBeInTheDocument();
+  });
+
+  it("links the account name to its detail page when accountId is supplied", () => {
+    renderWithRoutes(
+      <CustomerContextWidget ctx={CTX} accountId="acct-1" />,
+      ["/customers/accounts/:id"],
+    );
+    fireEvent.click(screen.getByRole("link", { name: "Acme Corp" }));
+    expect(screen.getByTestId("location-probe")).toHaveTextContent(
+      "/customers/accounts/acct-1",
+    );
+  });
+
+  it("links the project name to its detail page", () => {
+    renderWithRoutes(
+      <CustomerContextWidget ctx={CTX} project={PROJECT} />,
+      ["/customers/projects/:id"],
+    );
+    fireEvent.click(screen.getByRole("link", { name: PROJECT.name }));
+    expect(screen.getByTestId("location-probe")).toHaveTextContent(
+      "/customers/projects/proj-1",
+    );
+  });
+
+  it("renders no CRE/SRE row when neither team is set", () => {
+    renderWithRouter(<CustomerContextWidget ctx={CTX} />);
+    expect(screen.queryByText("CRE / SRE team")).not.toBeInTheDocument();
+  });
+
+  it("renders CRE and SRE team chips as links to the team directory page", () => {
+    renderWithRoutes(
+      <CustomerContextWidget
+        ctx={{
+          ...CTX,
+          creTeam: { id: "team-cre-1", name: "CRE Alpha" },
+          sreTeam: { id: "team-sre-1", name: "SRE Beta" },
+        }}
+      />,
+      ["/admin/teams/:id"],
+    );
+    expect(screen.getByText("CRE / SRE team")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("CRE Alpha"));
+    expect(screen.getByTestId("location-probe")).toHaveTextContent(
+      "/admin/teams/team-cre-1",
+    );
+  });
+
+  it("renders only the SRE chip when only the SRE team is set", () => {
+    renderWithRouter(
+      <CustomerContextWidget
+        ctx={{ ...CTX, sreTeam: { id: "team-sre-1", name: "SRE Beta" } }}
+      />,
+    );
+    expect(screen.getByText("SRE Beta")).toBeInTheDocument();
+    expect(screen.queryByText("CRE Alpha")).not.toBeInTheDocument();
   });
 });

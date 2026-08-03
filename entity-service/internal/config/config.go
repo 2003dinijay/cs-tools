@@ -54,10 +54,13 @@ type Config struct {
 	ServiceNowIntegrationServiceClientSecret string
 	ServiceNowIntegrationServiceScopes       string
 	// TeamRegistry is the raw CSM_TEAM_REGISTRY value: the curated ABT team
-	// registry as "teamKey|Display Name|FAMILY,..." rows. Parsed and installed
-	// at startup by domain.ParseAbtTeamRegistry / domain.SetAbtTeams. Empty
-	// means no teams are configured; there is deliberately no default, because
-	// team names are organisation vocabulary that must not be committed here.
+	// registry as "teamKey|Display Name|FAMILY|groupSysID,..." rows, where
+	// FAMILY and groupSysID are both optional (groupSysID requires FAMILY's
+	// field to be present, even empty, since it cannot be supplied without
+	// it). Parsed and installed at startup by domain.ParseAbtTeamRegistry /
+	// domain.SetAbtTeams. Empty means no teams are configured; there is
+	// deliberately no default, because team names are organisation
+	// vocabulary that must not be committed here.
 	TeamRegistry string
 	// UserRoles is the raw CSM_USER_ROLES value: a comma-separated
 	// assignable-role allow-list. Parsed and installed at startup by
@@ -71,14 +74,14 @@ type Config struct {
 // validate required fields (e.g. DBUser, DBPassword, DBName) before use.
 func Load() *Config {
 	return &Config{
-		DBHost:     getEnvOrDefault("DB_HOST", "localhost"),
-		DBPort:     getEnvOrDefault("DB_PORT", "5432"),
-		DBUser:     os.Getenv("DB_USER"),
-		DBPassword: os.Getenv("DB_PASSWORD"),
-		DBName:     os.Getenv("DB_NAME"),
-		DBSSLMode:  os.Getenv("DB_SSLMODE"),
-		ServerPort: getEnvOrDefault("SERVER_PORT", "8080"),
-		DataSource:             DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
+		DBHost:                                   getEnvOrDefault("DB_HOST", "localhost"),
+		DBPort:                                   getEnvOrDefault("DB_PORT", "5432"),
+		DBUser:                                   os.Getenv("DB_USER"),
+		DBPassword:                               os.Getenv("DB_PASSWORD"),
+		DBName:                                   os.Getenv("DB_NAME"),
+		DBSSLMode:                                os.Getenv("DB_SSLMODE"),
+		ServerPort:                               getEnvOrDefault("SERVER_PORT", "8080"),
+		DataSource:                               DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
 		ServiceNowIntegrationServiceBaseURL:      os.Getenv("SERVICENOW_INTEGRATION_SERVICE_BASE_URL"),
 		ServiceNowIntegrationServiceTokenURL:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL"),
 		ServiceNowIntegrationServiceClientID:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID"),

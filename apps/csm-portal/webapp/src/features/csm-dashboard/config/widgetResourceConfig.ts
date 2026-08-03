@@ -24,6 +24,7 @@ import {
   GitPullRequest,
   ShieldAlert,
   Users,
+  ListChecks,
   type LucideIcon,
 } from "@wso2/oxygen-ui-icons-react";
 import type { BeWidgetResourceType } from "@api/backend/types";
@@ -41,6 +42,8 @@ import {
   type ChangeRequestFilters,
 } from "@features/csm-operations/utils/changeRequests";
 import { writeChangeRequestFiltersToUrl } from "@features/csm-operations/utils/changeRequestsFiltersUrl";
+import { taskStateLabel } from "@features/csm-cases/utils/taskState";
+import type { BeTaskState } from "@api/backend/types";
 
 /** A resolved search-result row, typed loosely since its real shape depends
  * on `resourceType` — the label extractors below narrow what they read. */
@@ -149,6 +152,16 @@ function caseFilterValues(
  * available here — since these widgets only ever filter "assigned to me",
  * any non-empty `assignedUserId` maps to the `@me` sentinel rather than an
  * (unresolvable) literal UUID.
+ *
+ * The remaining case-search DSL fields genuinely have no home in
+ * `CasesFilters`/`CasesFilterBar` today and are dropped, not silently
+ * mistranslated: `taskSLABusinessElapsedPercent`, `escalationLevel`/
+ * `escalation`, `integrationCsTeam`, `projectOnboardingStatus`, `projectType`,
+ * `createdOn`/`updatedOn`/`closedOn` date ranges, `orGroups`, `parentId`,
+ * `resolutionNotes`. A widget using any of these click-throughs to an
+ * unfiltered (or partially-filtered) cases list rather than erroring — adding
+ * real support for each is its own case-list-page feature, not a dashboard
+ * change.
  */
 function translateCaseDashboardFilters(
   filters: Record<string, unknown>,
@@ -170,6 +183,14 @@ function translateCaseDashboardFilters(
   if (productNames && productNames.length > 0) out.productNames = productNames;
   const assignedUserIds = caseFilterValues(fieldFilters, "assignedUserId");
   if (assignedUserIds && assignedUserIds.length > 0) out.assignees = ["@me"];
+  const engagementTypes = caseFilterValues(fieldFilters, "engagementType");
+  if (engagementTypes && engagementTypes.length > 0) {
+    out.engagementTypes = engagementTypes as CasesFilters["engagementTypes"];
+  }
+  const workStates = caseFilterValues(fieldFilters, "workState");
+  if (workStates && workStates.length > 0) {
+    out.workStates = workStates as CasesFilters["workStates"];
+  }
   return out;
 }
 
@@ -354,6 +375,23 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     icon: ShieldAlert,
     iconColor: "error",
     previewSlug: "vulnerabilities",
+  },
+  task: {
+    searchEndpoint: "/tasks/search",
+    itemsKey: "tasks",
+    primaryLabel: (item) => asString(item.subject) ?? "—",
+    secondaryLabel: (item) => {
+      const state = asString(item.state);
+      return state ? taskStateLabel(state as BeTaskState) : undefined;
+    },
+    // Tasks have no standalone list page today (they're only ever shown
+    // inside a case's own Tasks tab) -- clicking a task widget's tile stays
+    // on the dashboard rather than 404ing. Revisit once/if a dedicated tasks
+    // list page exists.
+    buildHref: () => "/dashboard",
+    icon: ListChecks,
+    iconColor: "warning",
+    previewSlug: "tasks",
   },
 };
 

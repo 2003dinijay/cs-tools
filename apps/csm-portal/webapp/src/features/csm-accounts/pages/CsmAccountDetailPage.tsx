@@ -37,6 +37,7 @@ import {
   getDeactivationState,
   resolveAccountTier,
 } from "@features/csm-accounts/types/csmAccounts";
+import DirectoryEntityChip from "@features/csm-admin/components/DirectoryEntityChip";
 import QueryErrorState from "@components/QueryErrorState";
 import { useNavTransition } from "@hooks/useNavTransition";
 
@@ -277,6 +278,26 @@ export default function CsmAccountDetailPage(): JSX.Element {
           <MetaCell label="Technical Owner">
             <Typography variant="body2">{a.technicalOwner?.name ?? "—"}</Typography>
           </MetaCell>
+          {(a.creTeam || a.sreTeam) && (
+            <MetaCell label="CRE / SRE team">
+              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+                {a.creTeam && (
+                  <DirectoryEntityChip
+                    id={a.creTeam.id}
+                    name={a.creTeam.name}
+                    routeBase="/admin/teams"
+                  />
+                )}
+                {a.sreTeam && (
+                  <DirectoryEntityChip
+                    id={a.sreTeam.id}
+                    name={a.sreTeam.name}
+                    routeBase="/admin/teams"
+                  />
+                )}
+              </Box>
+            </MetaCell>
+          )}
           <MetaCell label="Activated on">
             <Typography variant="body2">{formatDate(a.activationDate)}</Typography>
           </MetaCell>

@@ -34,10 +34,10 @@ import (
 // handler, which calls mapUpstreamErrorGeneric instead). It covers all four
 // explicit apierror mappings plus an unmapped code and a plain error.
 type upstreamErrorCase struct {
-	name         string
-	err          error
-	wantCode     int
-	wantMsg      string
+	name     string
+	err      error
+	wantCode int
+	wantMsg  string
 }
 
 func upstreamErrors(fallback string) []upstreamErrorCase {
@@ -1661,7 +1661,7 @@ func TestGetCaseAttachmentContent(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
 		h := NewCaseHandler(&mockEntityCaseClient{})
 		r := httptest.NewRequest(http.MethodGet, "/attachments/"+testAttachmentID+"/content", nil)
-		r.SetPathValue("id",testAttachmentID)
+		r.SetPathValue("id", testAttachmentID)
 		w := httptest.NewRecorder()
 		h.GetCaseAttachmentContent(w, r)
 		assertStatus(t, w, http.StatusUnauthorized)
@@ -1671,7 +1671,7 @@ func TestGetCaseAttachmentContent(t *testing.T) {
 	t.Run("rejects invalid attachment UUID", func(t *testing.T) {
 		h := NewCaseHandler(&mockEntityCaseClient{})
 		r := withUser(httptest.NewRequest(http.MethodGet, "/attachments/not-a-uuid/content", nil))
-		r.SetPathValue("id","not-a-uuid")
+		r.SetPathValue("id", "not-a-uuid")
 		w := httptest.NewRecorder()
 		h.GetCaseAttachmentContent(w, r)
 		assertStatus(t, w, http.StatusBadRequest)
@@ -1690,7 +1690,7 @@ func TestGetCaseAttachmentContent(t *testing.T) {
 		}
 		h := NewCaseHandler(client)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/attachments/"+testAttachmentID+"/content", nil))
-		r.SetPathValue("id",testAttachmentID)
+		r.SetPathValue("id", testAttachmentID)
 		w := httptest.NewRecorder()
 		h.GetCaseAttachmentContent(w, r)
 		assertStatus(t, w, http.StatusOK)
@@ -1712,7 +1712,7 @@ func TestGetCaseAttachmentContent(t *testing.T) {
 		}
 		h := NewCaseHandler(client)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/attachments/"+testAttachmentID+"/content", nil))
-		r.SetPathValue("id",testAttachmentID)
+		r.SetPathValue("id", testAttachmentID)
 		w := httptest.NewRecorder()
 		h.GetCaseAttachmentContent(w, r)
 		assertStatus(t, w, http.StatusOK)
@@ -1730,7 +1730,7 @@ func TestGetCaseAttachmentContent(t *testing.T) {
 				}
 				h := NewCaseHandler(client)
 				r := withUser(httptest.NewRequest(http.MethodGet, "/attachments/"+testAttachmentID+"/content", nil))
-				r.SetPathValue("id",testAttachmentID)
+				r.SetPathValue("id", testAttachmentID)
 				w := httptest.NewRecorder()
 				h.GetCaseAttachmentContent(w, r)
 				assertStatus(t, w, tc.wantCode)

@@ -173,6 +173,60 @@ describe("CsmCaseCommentBubble", () => {
     expect(link).toHaveAttribute("href", "/people/user-42");
   });
 
+  it("turns a bare ServiceNow call-request URL into an in-app clickable marker", () => {
+    const onCallRequestClick = vi.fn();
+    renderWithProviders(
+      <CsmCaseCommentBubble
+        comment={makeComment({
+          bodyHtml:
+            "See https://sn-dev.example.com/sn_customerservice_customer_call.do?sys_id=7a43e2d43b2a4b5091404c6aa5e45a41 for details",
+        })}
+        onCallRequestClick={onCallRequestClick}
+      />,
+    );
+    // Must not fall through to the raw-URL linkifier (only the unrelated
+    // "N ago" permalink anchor from RelativeTime should be present).
+    expect(
+      screen.queryByRole("link", { name: /example\.com|sn_customerservice/i }),
+    ).not.toBeInTheDocument();
+    const marker = screen.getByRole("button", { name: "View call request" });
+    fireEvent.click(marker);
+    expect(onCallRequestClick).toHaveBeenCalledWith(
+      "7a43e2d4-3b2a-4b50-9140-4c6aa5e45a41",
+    );
+  });
+
+  it("invokes onCallRequestClick on Enter/Space keydown for the call-request marker", () => {
+    const onCallRequestClick = vi.fn();
+    renderWithProviders(
+      <CsmCaseCommentBubble
+        comment={makeComment({
+          bodyHtml:
+            "https://sn-dev.example.com/sn_customerservice_customer_call.do?sys_id=7a43e2d43b2a4b5091404c6aa5e45a41",
+        })}
+        onCallRequestClick={onCallRequestClick}
+      />,
+    );
+    const marker = screen.getByRole("button", { name: "View call request" });
+    fireEvent.keyDown(marker, { key: "Enter" });
+    expect(onCallRequestClick).toHaveBeenCalledWith(
+      "7a43e2d4-3b2a-4b50-9140-4c6aa5e45a41",
+    );
+  });
+
+  it("does nothing on click when onCallRequestClick is not provided", () => {
+    renderWithProviders(
+      <CsmCaseCommentBubble
+        comment={makeComment({
+          bodyHtml:
+            "https://sn-dev.example.com/sn_customerservice_customer_call.do?sys_id=7a43e2d43b2a4b5091404c6aa5e45a41",
+        })}
+      />,
+    );
+    const marker = screen.getByRole("button", { name: "View call request" });
+    expect(() => fireEvent.click(marker)).not.toThrow();
+  });
+
   it("renders a system comment as a compact inline row", () => {
     renderWithProviders(
       <CsmCaseCommentBubble

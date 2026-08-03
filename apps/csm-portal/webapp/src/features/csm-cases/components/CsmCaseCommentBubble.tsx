@@ -26,6 +26,7 @@ import { useDarkMode } from "@utils/useDarkMode";
 import { markdownToHtml } from "@utils/renderMarkdown";
 import { initialsOf } from "@utils/userClaims";
 import { useResolvedInlineImageHtml } from "@features/csm-cases/api/useResolvedInlineImageHtml";
+import { replaceCallRequestLinks } from "@features/csm-cases/utils/callRequestLinks";
 import {
   convertCodeTagsToHtml,
   hasDisplayableContent,
@@ -44,6 +45,8 @@ interface CsmCaseCommentBubbleProps {
   comment: CsmCaseComment;
   /** Opens the fullscreen image preview for an inline `<img>` in the comment body. */
   onImageClick?: (src: string, alt?: string) => void;
+  /** Opens the call-request detail popup for a call-request link embedded in the comment body. */
+  onCallRequestClick?: (sysId: string) => void;
 }
 
 const SAFE_PROTOCOLS = ["http:", "https:"];
@@ -78,6 +81,7 @@ const ROLE_COLOR: Record<
 export default function CsmCaseCommentBubble({
   comment,
   onImageClick,
+  onCallRequestClick,
 }: CsmCaseCommentBubbleProps): JSX.Element | null {
   const theme = useTheme();
   const isDarkMode = useDarkMode();
@@ -109,9 +113,15 @@ export default function CsmCaseCommentBubble({
   );
   const { resolvedHtml, isLoading: isImagesLoading } =
     useResolvedInlineImageHtml(safeHtml);
-  // Applied last, on the already-resolved/sanitized HTML — no re-sanitize.
+  // Both run last, on the already-resolved/sanitized HTML — no re-sanitize.
+  // `replaceCallRequestLinks` must run before `linkifyBareUrls`: it swaps the
+  // bare ServiceNow call-request URL for our own `<span data-call-request-…>`
+  // marker, and `linkifyBareUrls` would otherwise linkify that same bare URL
+  // into a plain external `<a>` first. Its output is generated entirely by us
+  // from a regex-validated hex sysid (never raw comment text passed through
+  // unescaped), so running after sanitization is safe.
   const renderHtml = useMemo(
-    () => linkifyBareUrls(resolvedHtml),
+    () => linkifyBareUrls(replaceCallRequestLinks(resolvedHtml)),
     [resolvedHtml],
   );
 
@@ -145,9 +155,18 @@ export default function CsmCaseCommentBubble({
           e.preventDefault();
           onImageClick(src, target.alt || undefined);
         }
+        return;
+      }
+      const callRequestMarker = target.closest?.("[data-call-request-sysid]");
+      if (callRequestMarker && onCallRequestClick) {
+        const sysId = callRequestMarker.getAttribute("data-call-request-sysid");
+        if (sysId) {
+          e.preventDefault();
+          onCallRequestClick(sysId);
+        }
       }
     },
-    [onImageClick],
+    [onImageClick, onCallRequestClick],
   );
 
   const handleKeyDown = useCallback(
@@ -162,9 +181,20 @@ export default function CsmCaseCommentBubble({
           e.preventDefault();
           onImageClick(src, target.alt || undefined);
         }
+        return;
+      }
+      if (e.key === "Enter" || e.key === " ") {
+        const callRequestMarker = target.closest?.("[data-call-request-sysid]");
+        if (callRequestMarker && onCallRequestClick) {
+          const sysId = callRequestMarker.getAttribute("data-call-request-sysid");
+          if (sysId) {
+            e.preventDefault();
+            onCallRequestClick(sysId);
+          }
+        }
       }
     },
-    [onImageClick],
+    [onImageClick, onCallRequestClick],
   );
 
   useEffect(() => {

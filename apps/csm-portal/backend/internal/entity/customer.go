@@ -67,6 +67,13 @@ func (c *CustomerEntityClient) SearchCaseActivities(ctx context.Context, caseID 
 	return c.do(ctx, http.MethodPost, "/cases/"+url.PathEscape(caseID)+"/activities/search", body)
 }
 
+// SearchTasks calls POST /tasks/search on the entity service (standalone task
+// search, not scoped to a parent case). Response is returned as raw JSON;
+// typed response structs are deferred.
+func (c *CustomerEntityClient) SearchTasks(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/tasks/search", body)
+}
+
 // GetUserMe calls GET /users/me on the entity service.
 // Response is returned as raw JSON.
 func (c *CustomerEntityClient) GetUserMe(ctx context.Context) ([]byte, error) {

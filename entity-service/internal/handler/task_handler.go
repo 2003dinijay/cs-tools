@@ -52,6 +52,22 @@ func (h *TaskHandler) SearchCaseTasks(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// SearchTasks handles POST /tasks/search.
+func (h *TaskHandler) SearchTasks(w http.ResponseWriter, r *http.Request) {
+	var req domain.SearchTasksRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+
+	resp, err := h.svc.SearchTasks(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // GetTask handles GET /tasks/{id}.
 func (h *TaskHandler) GetTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

@@ -2032,6 +2032,14 @@ export interface BeTeam {
   id: string;
   name: string;
   family?: string;
+  /** The backing data source's assignment group id, reformatted as this
+   * platform's UUID — present only when the deployment's team registry has
+   * one configured for this team. This is the id an `integrationCsTeam`
+   * case filter entry actually needs (see
+   * `BE_CURRENT_USER_FILTER_PLACEHOLDER`-style team filter substitution in
+   * `teamFilterPlaceholder.ts`) — never `id` above, which is just the
+   * registry key. */
+  groupId?: string;
 }
 
 export interface BeTeamSearchPayload {
@@ -2743,7 +2751,8 @@ export type BeWidgetResourceType =
   | "user"
   | "time_card"
   | "problem"
-  | "product_vulnerability";
+  | "product_vulnerability"
+  | "task";
 
 /**
  * How a widget's resolved data should be rendered. `pie` and `bar` both
@@ -2828,9 +2837,11 @@ export interface BeDashboardListItem {
   displayName: string;
   isDefault: boolean;
   /** Whether this dashboard should show a team selector (from
-   * `POST /teams/search`) alongside the dashboard switcher when selected.
-   * UI skeleton only today — selecting a team doesn't yet scope any
-   * widget's data. */
+   * `POST /teams/search`) alongside the dashboard switcher when selected —
+   * and default that selector to the signed-in user's own team, once
+   * resolved. The selected team scopes widget data client-side via the
+   * `__current_team__` filter placeholder (see `teamFilterPlaceholder.ts`
+   * in the webapp). */
   isTeamBased: boolean;
 }
 

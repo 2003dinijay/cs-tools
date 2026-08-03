@@ -26,6 +26,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
@@ -269,11 +271,42 @@ func domainTypeKeysToSN(typeKeys []string) []string {
 }
 
 // snSortFieldMap maps domain CaseSortField values to SN field names.
+// validEscalationLevel is the set of real escalation level ids confirmed live
+// against wso2sndev (EL0 "not escalated" through EL5 "CEO").
+var validEscalationLevel = map[string]bool{
+	"0": true, "1": true, "2": true, "3": true, "4": true, "5": true,
+}
+
 var snSortFieldMap = map[domain.CaseSortField]string{
 	domain.CaseSortFieldCreatedOn: "createdOn",
 	domain.CaseSortFieldUpdatedOn: "updatedOn",
 	domain.CaseSortFieldSeverity:  "severity",
 	domain.CaseSortFieldState:     "state",
+}
+
+// caseGroupByFieldValues enumerates the case-search fields SearchCases can
+// group results by, each backed by a small fixed enum, and every value in
+// that enum (in stable display order). Grouping is implemented as a fan-out
+// of one limit=1 SearchCases call per value (cheap: SN computes the matching
+// total regardless of page size) rather than a ServiceNow-side aggregate
+// query, so no SN/Ballerina change is needed -- see
+// case-search-filter-dsl-migration for why this stays a Go-entity-service-only
+// capability. Free-text fields (e.g. tag) have no fixed value set and are not
+// groupable.
+//
+// The enumeration is also the limit of what a grouped response can see: the
+// grouped SearchCasesResponse.Total is the sum of these buckets, so a case
+// whose field value is absent from this map is counted nowhere and does not
+// reach Total. Keep these lists in step with the backing data source's value
+// sets, and see the SearchCasesResponse doc comment for the caller-facing
+// consequence.
+var caseGroupByFieldValues = map[string][]string{
+	"state":          {"open", "work_in_progress", "waiting_on_wso2", "awaiting_info", "reopened", "solution_proposed", "closed"},
+	"severity":       {"catastrophic", "critical", "high", "medium", "low"},
+	"type":           {"case", "service_request", "security_report_analysis", "engagement"},
+	"engagementType": {"migration", "consultancy", "new_feature_improvement", "follow_up", "onboarding"},
+	"issueType":      {"error", "partial_outage", "performance_degradation", "question", "security_or_compliance", "total_outage"},
+	"workState":      {"ongoing", "paused"},
 }
 
 type snCaseFilters struct {
@@ -297,12 +330,13 @@ type snCaseFilters struct {
 	WorkStateKeys      []int    `json:"workStateKeys,omitempty"`
 	AssignedUserIDs    []string `json:"assignedUserIds,omitempty"`
 	ProductNames       []string `json:"productNames,omitempty"`
-	// Tags: not yet available in the backing service, see the
-	// domain.SearchCasesFilters.Tags doc comment.
-	// Forwarded to Choreo so filtering starts working the moment Ballerina adds
-	// support, but the current POST /cases/search contract ignores this field.
+	// Tags: filters cases by attached free-text label. Works end-to-end now
+	// (ServiceNow's CaseUtils.searchCases honors filters.tags; Ballerina's
+	// CaseSearchFilters forwards it).
 	Tags []string `json:"tags,omitempty"`
-	// ExcludeTags: see domain.SearchCasesFilters.ExcludeTags doc comment.
+	// ExcludeTags: inverse of Tags, also works end-to-end (ServiceNow's
+	// CaseUtils.searchCases honors filters.excludeTags; Ballerina's CaseSearchFilters
+	// declares it). See domain.ParsedCaseFilters.ExcludeTags.
 	ExcludeTags []string `json:"excludeTags,omitempty"`
 	// ParentID: see domain.SearchCasesFilters.ParentID doc comment.
 	ParentID                  string   `json:"parentId,omitempty"`
@@ -311,6 +345,47 @@ type snCaseFilters struct {
 	IntegrationCsTeamIDs      []string `json:"integrationCsTeamIds,omitempty"`
 	Unassigned                bool     `json:"unassigned,omitempty"`
 	ResolutionNotesEmpty      bool     `json:"resolutionNotesEmpty,omitempty"`
+	// TaskSLAFilter: SN-side join on Task SLA table, filtering by businessElapsedPercent
+	// range. Confined to SN adapter per vendor-neutral boundary; see
+	// domain.TaskSLAFilter doc comment.
+	TaskSLAFilter *snTaskSLAFilter `json:"taskSLAFilter,omitempty"`
+	// EscalationLevels: see domain.SearchCasesFilters.EscalationLevels doc comment.
+	EscalationLevels []string `json:"escalationLevel,omitempty"`
+	// IsEscalated: a *bool (not bool) so that an explicit false is still sent on
+	// the wire -- omitempty on a pointer only drops a nil, not a false value.
+	IsEscalated *bool `json:"isEscalated,omitempty"`
+	// OrGroups: see domain.SearchCasesFilters.OrGroups doc comment.
+	OrGroups []snCaseFilterGroup `json:"orGroups,omitempty"`
+}
+
+// snTaskSLAFilter represents the Task SLA filter for SN's POST /cases/search request.
+// snTaskSLAFilter is the SN wire shape of the Task-SLA business-elapsed-percent
+// bounds. The bounds are pointers, not plain ints: 0 is a legitimate bound
+// (`lte 0` means "no elapsed SLA time at all"), and with a plain int the
+// omitempty tag would strip an explicit 0 from the payload, leaving ServiceNow
+// with no bound and silently widening the result set. nil means "no bound".
+type snTaskSLAFilter struct {
+	MinBusinessElapsedPercent *int `json:"minBusinessElapsedPercent,omitempty"`
+	MaxBusinessElapsedPercent *int `json:"maxBusinessElapsedPercent,omitempty"`
+}
+
+// buildSNTaskSLAFilter converts a domain.TaskSLAFilter into the SN wire shape,
+// or nil if no filter was supplied. Bounds are copied by value into fresh
+// pointers so the payload never aliases the caller's parsed filters.
+func buildSNTaskSLAFilter(f *domain.TaskSLAFilter) *snTaskSLAFilter {
+	if f == nil {
+		return nil
+	}
+	sn := &snTaskSLAFilter{}
+	if f.MinBusinessElapsedPercent != nil {
+		minPct := *f.MinBusinessElapsedPercent
+		sn.MinBusinessElapsedPercent = &minPct
+	}
+	if f.MaxBusinessElapsedPercent != nil {
+		maxPct := *f.MaxBusinessElapsedPercent
+		sn.MaxBusinessElapsedPercent = &maxPct
+	}
+	return sn
 }
 
 // snStateIDMap maps domain CaseState enums to SN numeric state IDs.
@@ -407,6 +482,27 @@ func formatSNDate(t *time.Time) string {
 		return ""
 	}
 	return t.UTC().Format(snCreatedOnLayout)
+}
+
+// snUtcDateTimeLayout is the ISO 8601 UTC wire format ("UtcDateTimeString" in the
+// integration service's OpenAPI contract, e.g. servicenow:CaseSearchFilters'
+// startCreatedDate/endCreatedDate/closedStartDate/closedEndDate) that case- and
+// change-request-search date-range filters must be sent in. Distinct from
+// snCreatedOnLayout (space-separated, "YYYY-MM-DD HH:MM:SS"): that layout is what SN
+// itself returns for a record's own created_on/updated_on/resolved_on fields, not what
+// the integration service's search-filter contract accepts for a caller-supplied date
+// range. Sending the space-separated layout here 400s with a payload-schema pattern
+// validation error.
+const snUtcDateTimeLayout = "2006-01-02T15:04:05Z"
+
+// formatSNDateTimeUTC renders a date-range search-filter bound in the integration
+// service's UtcDateTimeString format. See snUtcDateTimeLayout for why this differs
+// from formatSNDate.
+func formatSNDateTimeUTC(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(snUtcDateTimeLayout)
 }
 
 // snDateOnlyLayout is the date-only wire format the integration service expects for
@@ -1847,6 +1943,92 @@ func (s *snCaseService) DeleteCaseAttachment(ctx context.Context, req domain.Del
 	return domain.DeleteAttachmentResponse{Message: snResp.Message}, nil
 }
 
+// validateOrGroupEnums validates one OrGroups branch's enum-valued fields
+// against the same validXxx maps the top-level (AND-only) filters use,
+// mirroring that validation exactly (unrecognized values would otherwise be
+// silently dropped by domainStatesToSNIDs/etc's omitempty behavior).
+func validateOrGroupEnums(i int, group domain.CaseFilterGroup) error {
+	for _, t := range group.Types {
+		if _, ok := snCaseTypeMap[t]; !ok {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: type contains invalid value: %s", i, t)}
+		}
+	}
+	for _, st := range group.States {
+		if !validCaseState[st] {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: state contains invalid value: %s", i, st)}
+		}
+	}
+	for _, sv := range group.Severities {
+		if !validCaseSeverity[sv] {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: severity contains invalid value: %s", i, sv)}
+		}
+	}
+	for _, it := range group.IssueTypes {
+		if !validCaseIssueType[it] {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: issueType contains invalid value: %s", i, it)}
+		}
+	}
+	for _, et := range group.EngagementTypes {
+		if !validEngagementType[et] {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: engagementType contains invalid value: %s", i, et)}
+		}
+	}
+	for _, ws := range group.WorkStates {
+		if ws != domain.CaseWorkStateOngoing && ws != domain.CaseWorkStatePaused {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: workState contains invalid value: %s", i, ws)}
+		}
+	}
+	for _, lvl := range group.EscalationLevels {
+		if !validEscalationLevel[lvl] {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("orGroups[%d]: escalationLevel contains invalid value: %s", i, lvl)}
+		}
+	}
+	if err := validateUUIDs(fmt.Sprintf("orGroups[%d].assignedUserId", i), group.AssignedUserIDs); err != nil {
+		return err
+	}
+	return nil
+}
+
+// snCaseFilterGroup is one ANDed branch of an snCaseFilters.OrGroups entry --
+// see domain.CaseFilterGroup doc comment for which fields are supported here.
+type snCaseFilterGroup struct {
+	CaseTypes          []string `json:"caseTypes,omitempty"`
+	StateKeys          []int    `json:"stateKeys,omitempty"`
+	SeverityKeys       []int    `json:"severityKeys,omitempty"`
+	IssueTypeKeys      []int    `json:"issueTypeKeys,omitempty"`
+	EngagementTypeKeys []int    `json:"engagementTypeKeys,omitempty"`
+	WorkStateKeys      []int    `json:"workStateKeys,omitempty"`
+	ProjectIDs         []string `json:"projectIds,omitempty"`
+	DeploymentIDs      []string `json:"deploymentIds,omitempty"`
+	AssignedUserIDs    []string `json:"assignedUserIds,omitempty"`
+	EscalationLevels   []string `json:"escalationLevel,omitempty"`
+}
+
+// buildSNCaseFilterGroups maps each domain.CaseFilterGroup branch into its SN
+// wire shape, reusing the exact same domainXxxToSNIDs/uuidsToSysids
+// conversions the top-level filters use.
+func buildSNCaseFilterGroups(groups []domain.CaseFilterGroup) []snCaseFilterGroup {
+	if len(groups) == 0 {
+		return nil
+	}
+	result := make([]snCaseFilterGroup, 0, len(groups))
+	for _, g := range groups {
+		result = append(result, snCaseFilterGroup{
+			CaseTypes:          domainTypeKeysToSN(g.Types),
+			StateKeys:          domainStatesToSNIDs(g.States),
+			SeverityKeys:       domainSeveritiesToSNIDs(g.Severities),
+			IssueTypeKeys:      domainIssueTypesToSNIDs(g.IssueTypes),
+			EngagementTypeKeys: domainEngagementTypesToSNIDs(g.EngagementTypes),
+			WorkStateKeys:      domainWorkStatesToSNIDs(g.WorkStates),
+			ProjectIDs:         uuidsToSysids(g.ProjectIDs),
+			DeploymentIDs:      uuidsToSysids(g.DeploymentIDs),
+			AssignedUserIDs:    uuidsToSysids(g.AssignedUserIDs),
+			EscalationLevels:   g.EscalationLevels,
+		})
+	}
+	return result
+}
+
 // buildSNCaseFilters maps a domain.ParsedCaseFilters (already translated from
 // the generic filters array by ParseCaseFieldFilters) into the exact same
 // snCaseFilters payload SearchCases has always sent to the backing service --
@@ -1870,12 +2052,12 @@ func buildSNCaseFilters(parsed domain.ParsedCaseFilters, searchQuery string) snC
 		SeverityKeys:              domainSeveritiesToSNIDs(parsed.Severities),
 		IssueTypeKeys:             domainIssueTypesToSNIDs(parsed.IssueTypes),
 		EngagementTypeKeys:        domainEngagementTypesToSNIDs(parsed.EngagementTypes),
-		ClosedStartDate:           formatSNDate(parsed.ClosedStartDate),
-		ClosedEndDate:             formatSNDate(parsed.ClosedEndDate),
-		StartCreatedDate:          formatSNDate(parsed.StartCreatedDate),
-		EndCreatedDate:            formatSNDate(parsed.EndCreatedDate),
-		StartUpdatedDate:          formatSNDate(parsed.StartUpdatedDate),
-		EndUpdatedDate:            formatSNDate(parsed.EndUpdatedDate),
+		ClosedStartDate:           formatSNDateTimeUTC(parsed.ClosedStartDate),
+		ClosedEndDate:             formatSNDateTimeUTC(parsed.ClosedEndDate),
+		StartCreatedDate:          formatSNDateTimeUTC(parsed.StartCreatedDate),
+		EndCreatedDate:            formatSNDateTimeUTC(parsed.EndCreatedDate),
+		StartUpdatedDate:          formatSNDateTimeUTC(parsed.StartUpdatedDate),
+		EndUpdatedDate:            formatSNDateTimeUTC(parsed.EndUpdatedDate),
 		CreatedBy:                 parsed.CreatedBy,
 		CreatedByMe:               parsed.CreatedByMe,
 		WorkStateKeys:             domainWorkStatesToSNIDs(parsed.WorkStates),
@@ -1889,6 +2071,10 @@ func buildSNCaseFilters(parsed domain.ParsedCaseFilters, searchQuery string) snC
 		IntegrationCsTeamIDs:      uuidsToSysids(parsed.IntegrationCsTeamIDs),
 		Unassigned:                parsed.Unassigned,
 		ResolutionNotesEmpty:      parsed.ResolutionNotesEmpty,
+		TaskSLAFilter:             buildSNTaskSLAFilter(parsed.TaskSLAFilter),
+		EscalationLevels:          parsed.EscalationLevels,
+		IsEscalated:               parsed.HasActiveEscalation,
+		OrGroups:                  buildSNCaseFilterGroups(parsed.OrGroups),
 	}
 }
 
@@ -1903,11 +2089,17 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 
 	token := middleware.UserIDTokenFromContext(ctx)
 	callerEmail, callerEmailErr := resolveCaseFilterCallerEmail(token)
-	parsed, err := ParseCaseFieldFilters(req.Filters.Filters, callerEmail, callerEmailErr)
+	parsed, err := ParseCaseFieldFilters(req.Filters.Filters, callerEmail, callerEmailErr, time.Now().UTC())
 	if err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
 	req.Parsed = parsed
+
+	orGroups, err := ParseCaseFieldFilterGroups(req.Filters.OrGroups)
+	if err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+	req.Parsed.OrGroups = orGroups
 
 	if req.Parsed.ClosedEndDate != nil && req.Parsed.ClosedStartDate != nil &&
 		req.Parsed.ClosedEndDate.Before(*req.Parsed.ClosedStartDate) {
@@ -1986,6 +2178,68 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		if !validEngagementType[et] {
 			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "engagementType contains invalid value: " + string(et)}
 		}
+	}
+	for _, lvl := range req.Parsed.EscalationLevels {
+		if !validEscalationLevel[lvl] {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "escalationLevel contains invalid value: " + lvl}
+		}
+	}
+	for i, group := range req.Parsed.OrGroups {
+		if err := validateOrGroupEnums(i, group); err != nil {
+			return domain.SearchCasesResponse{}, err
+		}
+	}
+
+	if req.GroupBy != "" {
+		values, ok := caseGroupByFieldValues[req.GroupBy]
+		if !ok {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "groupBy must be one of: state, severity, type, engagementType, issueType, workState"}
+		}
+		// One limit=1 search per bucket, run concurrently: grouping by state is
+		// seven independent round trips to ServiceNow and serialising them made
+		// the widget wait for the sum of all seven latencies. Results are written
+		// into a pre-sized slice by index, never appended from a goroutine, so the
+		// group order stays the caseGroupByFieldValues display order regardless of
+		// completion order. errgroup's derived context is passed to every bucket
+		// call, so the first failure cancels the rest.
+		//
+		// The limit is 4: the widest group (state) has seven buckets, and this is
+		// a fan-out against a single shared downstream (the ServiceNow integration
+		// service) that other requests also use. Four keeps the worst case to two
+		// waves while bounding the burst a single request can impose on that
+		// downstream; unbounded would let one grouped search open seven concurrent
+		// upstream connections.
+		const groupCountConcurrency = 4
+
+		groups := make([]domain.CaseGroup, len(values))
+		counts := make([]int, len(values))
+		g, gCtx := errgroup.WithContext(ctx)
+		g.SetLimit(groupCountConcurrency)
+		for i, v := range values {
+			i, v := i, v
+			g.Go(func() error {
+				count, err := s.searchCasesGroupCount(gCtx, token, req.GroupBy, v, req.Parsed, req.Filters.SearchQuery)
+				if err != nil {
+					return err
+				}
+				counts[i] = count
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
+			return domain.SearchCasesResponse{}, err
+		}
+		total := 0
+		for i, v := range values {
+			groups[i] = domain.CaseGroup{Key: v, Count: counts[i]}
+			total += counts[i]
+		}
+		return domain.SearchCasesResponse{
+			Groups: groups,
+			Total:  total,
+			Limit:  req.Pagination.Limit,
+			Offset: req.Pagination.Offset,
+		}, nil
 	}
 
 	snFilters := buildSNCaseFilters(req.Parsed, req.Filters.SearchQuery)
@@ -2097,6 +2351,44 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		Limit:  req.Pagination.Limit,
 		Offset: req.Pagination.Offset,
 	}, nil
+}
+
+// searchCasesGroupCount returns the total matching-record count for one
+// groupBy bucket: parsed's existing filters, with any prior filter on
+// groupByField replaced by exactly value (a groupBy request describes the
+// whole breakdown of that field, not a further-narrowed slice of it). Only
+// limit=1 is requested since the count comes from SN's totalRecords
+// regardless of page size -- used by SearchCases's groupBy fan-out.
+func (s *snCaseService) searchCasesGroupCount(ctx context.Context, token, groupByField, value string, parsed domain.ParsedCaseFilters, searchQuery string) (int, error) {
+	switch groupByField {
+	case "state":
+		parsed.States = []domain.CaseState{domain.CaseState(value)}
+	case "severity":
+		parsed.Severities = []domain.CaseSeverity{domain.CaseSeverity(value)}
+	case "type":
+		parsed.Types = []string{value}
+	case "engagementType":
+		parsed.EngagementTypes = []domain.EngagementType{domain.EngagementType(value)}
+	case "issueType":
+		parsed.IssueTypes = []domain.CaseIssueType{domain.CaseIssueType(value)}
+	case "workState":
+		parsed.WorkStates = []domain.CaseWorkState{domain.CaseWorkState(value)}
+	}
+
+	snFilters := buildSNCaseFilters(parsed, searchQuery)
+	payload := snCaseSearchPayload{
+		Filters:    snFilters,
+		Pagination: snProjectPagination{Limit: 1, Offset: 0},
+	}
+	raw, err := s.client.Post(ctx, "/cases/search", token, payload)
+	if err != nil {
+		return 0, err
+	}
+	var snResp snCasesResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return 0, fmt.Errorf("sn cases: parse grouped response: %w", err)
+	}
+	return snResp.TotalRecords, nil
 }
 
 // snSeverityLabelStr returns the raw SN severity label string, or nil if absent.

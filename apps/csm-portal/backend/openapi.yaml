@@ -6038,6 +6038,13 @@ components:
           type: string
         family:
           type: string
+        groupId:
+          type: string
+          description: >
+            The backing group's id, suitable for the case search integrationCsTeamIds
+            filter. Present only when the deployment's team registry configured a
+            backing group id for this team; a team without one is still listed, just
+            not filter-scopable.
 
     SearchTeamsRequest:
       type: object
@@ -6473,6 +6480,16 @@ components:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/PersonRef'
+        creTeam:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
+          description: The account's assigned CRE (customer reliability engineering) team. null when not set.
+        sreTeam:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
+          description: The account's assigned SRE (site reliability engineering) team. null when not set.
         activationDate:
           type: string
         deactivationDate:
@@ -6535,6 +6552,16 @@ components:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/PersonRef'
+        creTeam:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
+          description: The account's assigned CRE (customer reliability engineering) team. null when not set.
+        sreTeam:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/EntityRef'
+          description: The account's assigned SRE (site reliability engineering) team. null when not set.
         activationDate:
           type: string
         deactivationDate:
@@ -7993,7 +8020,6 @@ components:
 
     CaseTaskSearchPayload:
       type: object
-      nullable: true
       description: >
         Payload for paginating the tasks of a case. The case ID is taken from
         the URL path. The payload is forwarded to the integration service as-is.

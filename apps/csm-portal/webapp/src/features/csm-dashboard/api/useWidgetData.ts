@@ -19,6 +19,7 @@ import { ApiQueryKeys } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
 import type { BeWidgetResourceType, BeWidgetShape } from "@api/backend/types";
 import { WIDGET_RESOURCE_CONFIG } from "@features/csm-dashboard/config/widgetResourceConfig";
+import { resolveTeamPlaceholder } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
 
 /** Default number of rows fetched for a `shape: "list"` widget when the
  * template doesn't set its own `listLimit`. */
@@ -55,18 +56,26 @@ export function useWidgetData(
    * `widgetPreviewUrl.ts`) into the signed-in user's real id, so a request
    * never goes out with the literal placeholder still in it. */
   enabled = true,
+  /** The currently selected team's own `groupId`, used to resolve a case
+   * widget's `__current_team__` filter placeholder (see
+   * `teamFilterPlaceholder.ts`) before it's sent. `undefined` for a
+   * non-team-based dashboard, or while the team isn't resolved yet — in
+   * which case any `integrationCsTeam` entry carrying that placeholder is
+   * dropped rather than sent literally. */
+  selectedTeamGroupId?: string,
 ): UseQueryResult<WidgetData, Error> {
   const api = useBackendApi();
   const config = WIDGET_RESOURCE_CONFIG[resourceType];
   const limit = shape === "list" ? (listLimit ?? DEFAULT_LIST_LIMIT) : 1;
   const effectiveOffset = shape === "list" ? offset : 0;
+  const resolvedFilters = resolveTeamPlaceholder(filters, selectedTeamGroupId);
 
   return useQuery<WidgetData, Error>({
     queryKey: [
       ApiQueryKeys.CSM_DASHBOARD_WIDGET_DATA,
       widgetId,
       resourceType,
-      filters,
+      resolvedFilters,
       limit,
       effectiveOffset,
     ],
@@ -83,7 +92,7 @@ export function useWidgetData(
         { filters: Record<string, unknown>; pagination: { offset: number; limit: number } },
         Record<string, unknown>
       >(config.searchEndpoint, {
-        filters,
+        filters: resolvedFilters,
         pagination: { offset: effectiveOffset, limit },
       });
       const total = typeof res.total === "number" ? res.total : 0;

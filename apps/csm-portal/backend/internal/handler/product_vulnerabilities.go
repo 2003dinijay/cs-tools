@@ -101,4 +101,3 @@ func (h *ProductVulnerabilityHandler) GetProductVulnerability(w http.ResponseWri
 
 	writeJSON(w, http.StatusOK, result)
 }
-

@@ -83,6 +83,12 @@ function widgetGridColumnSx(widget: BeDashboardWidget) {
 interface AgentsLandingPagePilotProps {
   /** Id of the dashboard to render (e.g. "agents_pilot"). */
   dashboardId: string;
+  /** The currently selected team's own `groupId` (see `BeTeam.groupId`),
+   * only meaningful for an `isTeamBased` dashboard — threaded straight
+   * through to every tile so each can resolve its own `__current_team__`
+   * filter placeholder (see `teamFilterPlaceholder.ts`). `undefined` for a
+   * non-team-based dashboard, or while the team isn't resolved yet. */
+  selectedTeamGroupId?: string;
 }
 
 /**
@@ -97,6 +103,7 @@ interface AgentsLandingPagePilotProps {
  */
 export default function AgentsLandingPagePilot({
   dashboardId,
+  selectedTeamGroupId,
 }: AgentsLandingPagePilotProps): JSX.Element {
   const queryClient = useQueryClient();
   const { data, isLoading, isError, isFetching, refetch } =
@@ -159,6 +166,7 @@ export default function AgentsLandingPagePilot({
                   filters={widget.filters}
                   listLimit={widget.listLimit}
                   slices={widget.slices}
+                  selectedTeamGroupId={selectedTeamGroupId}
                 />
               </Box>
             );

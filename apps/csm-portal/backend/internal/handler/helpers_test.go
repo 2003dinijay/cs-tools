@@ -756,6 +756,7 @@ func (m *mockEntityTaskSlaClient) GetTaskSla(ctx context.Context, id string) ([]
 
 type mockEntityTaskClient struct {
 	searchCaseTasksFn func(ctx context.Context, caseID string, body []byte) ([]byte, error)
+	searchTasksFn     func(ctx context.Context, body []byte) ([]byte, error)
 	getTaskFn         func(ctx context.Context, id string) ([]byte, error)
 	createCaseTaskFn  func(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	updateTaskFn      func(ctx context.Context, id string, body []byte) ([]byte, error)
@@ -764,6 +765,13 @@ type mockEntityTaskClient struct {
 func (m *mockEntityTaskClient) SearchCaseTasks(ctx context.Context, caseID string, body []byte) ([]byte, error) {
 	if m.searchCaseTasksFn != nil {
 		return m.searchCaseTasksFn(ctx, caseID, body)
+	}
+	return []byte(`{"tasks":[],"total":0,"limit":20,"offset":0}`), nil
+}
+
+func (m *mockEntityTaskClient) SearchTasks(ctx context.Context, body []byte) ([]byte, error) {
+	if m.searchTasksFn != nil {
+		return m.searchTasksFn(ctx, body)
 	}
 	return []byte(`{"tasks":[],"total":0,"limit":20,"offset":0}`), nil
 }

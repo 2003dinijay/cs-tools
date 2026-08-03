@@ -82,6 +82,30 @@ func TestSearchCaseTasks(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
+	t.Run("rejects JSON that is not a request object", func(t *testing.T) {
+		for _, body := range []string{`null`, `[]`, `"abc"`, `1`} {
+			t.Run(body, func(t *testing.T) {
+				forwarded := false
+				client := &mockEntityTaskClient{
+					searchCaseTasksFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+						forwarded = true
+						return []byte(`{}`), nil
+					},
+				}
+				h := NewTaskHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodPost, "/cases/"+testTaskCaseID+"/tasks/search", strings.NewReader(body)))
+				r.SetPathValue("caseId", testTaskCaseID)
+				w := httptest.NewRecorder()
+				h.SearchCaseTasks(w, r)
+				assertStatus(t, w, http.StatusBadRequest)
+				assertErrorMessage(t, w, ErrMsgBadRequest)
+				if forwarded {
+					t.Errorf("body %s was forwarded upstream, want rejected", body)
+				}
+			})
+		}
+	})
+
 	t.Run("forwards case id and body verbatim to upstream", func(t *testing.T) {
 		var capturedCaseID string
 		var capturedBody []byte
@@ -128,6 +152,150 @@ func TestSearchCaseTasks(t *testing.T) {
 				r.SetPathValue("caseId", testTaskCaseID)
 				w := httptest.NewRecorder()
 				h.SearchCaseTasks(w, r)
+				assertStatus(t, w, tc.wantCode)
+				assertErrorMessage(t, w, tc.wantMsg)
+				assertContentType(t, w, "application/json")
+			})
+		}
+	})
+}
+
+func TestSearchTasks(t *testing.T) {
+	t.Run("requires authenticated user", func(t *testing.T) {
+		h := NewTaskHandler(&mockEntityTaskClient{})
+		r := httptest.NewRequest(http.MethodPost, "/tasks/search", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		h.SearchTasks(w, r)
+		assertStatus(t, w, http.StatusUnauthorized)
+		assertErrorMessage(t, w, ErrMsgUnauthorized)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects body exceeding 1 MiB", func(t *testing.T) {
+		h := NewTaskHandler(&mockEntityTaskClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/tasks/search", strings.NewReader(strings.Repeat("x", maxRequestBodyBytes+1))))
+		w := httptest.NewRecorder()
+		h.SearchTasks(w, r)
+		assertStatus(t, w, http.StatusRequestEntityTooLarge)
+		assertErrorMessage(t, w, ErrMsgTooLarge)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects invalid JSON body", func(t *testing.T) {
+		h := NewTaskHandler(&mockEntityTaskClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/tasks/search", strings.NewReader(`not-json`)))
+		w := httptest.NewRecorder()
+		h.SearchTasks(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("forwards body verbatim to upstream", func(t *testing.T) {
+		var capturedBody []byte
+		reqBody := `{"filters":{"states":["OPEN"]},"pagination":{"limit":20,"offset":0}}`
+		client := &mockEntityTaskClient{
+			searchTasksFn: func(_ context.Context, body []byte) ([]byte, error) {
+				capturedBody = body
+				return []byte(`{"tasks":[{"id":"` + testTaskID + `"}],"total":1,"limit":20,"offset":0}`), nil
+			},
+		}
+		h := NewTaskHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/tasks/search", strings.NewReader(reqBody)))
+		w := httptest.NewRecorder()
+		h.SearchTasks(w, r)
+
+		assertStatus(t, w, http.StatusOK)
+		assertContentType(t, w, "application/json")
+
+		if string(capturedBody) != reqBody {
+			t.Errorf("upstream body = %q, want verbatim %q", string(capturedBody), reqBody)
+		}
+		resp := decodeJSON[map[string]any](t, w)
+		if resp["total"] != float64(1) {
+			t.Errorf("total = %v, want 1", resp["total"])
+		}
+	})
+
+	// POST /tasks/search takes a request *object*. A bare json.Valid check also
+	// accepts null/arrays/strings/numbers, which used to be forwarded upstream
+	// verbatim; they must be rejected here instead.
+	t.Run("rejects JSON that is not a request object", func(t *testing.T) {
+		rejected := []struct {
+			name string
+			body string
+		}{
+			{"null", `null`},
+			{"array", `[]`},
+			{"populated array", `[{"filters":{}}]`},
+			{"string", `"abc"`},
+			{"number", `1`},
+			{"boolean", `true`},
+		}
+		for _, tc := range rejected {
+			t.Run(tc.name, func(t *testing.T) {
+				forwarded := false
+				client := &mockEntityTaskClient{
+					searchTasksFn: func(_ context.Context, _ []byte) ([]byte, error) {
+						forwarded = true
+						return []byte(`{}`), nil
+					},
+				}
+				h := NewTaskHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodPost, "/tasks/search", strings.NewReader(tc.body)))
+				w := httptest.NewRecorder()
+				h.SearchTasks(w, r)
+				assertStatus(t, w, http.StatusBadRequest)
+				assertErrorMessage(t, w, ErrMsgBadRequest)
+				assertContentType(t, w, "application/json")
+				if forwarded {
+					t.Errorf("body %s was forwarded upstream, want rejected", tc.body)
+				}
+			})
+		}
+
+		accepted := []struct {
+			name string
+			body string
+		}{
+			{"empty body", ``},
+			{"empty object", `{}`},
+			{"populated object", `{"filters":{"states":["OPEN"]},"sortBy":{"field":"dueDate","order":"asc"},"pagination":{"limit":20,"offset":0}}`},
+		}
+		for _, tc := range accepted {
+			t.Run(tc.name, func(t *testing.T) {
+				forwarded := false
+				client := &mockEntityTaskClient{
+					searchTasksFn: func(_ context.Context, _ []byte) ([]byte, error) {
+						forwarded = true
+						return []byte(`{"tasks":[],"total":0,"limit":20,"offset":0}`), nil
+					},
+				}
+				h := NewTaskHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodPost, "/tasks/search", strings.NewReader(tc.body)))
+				w := httptest.NewRecorder()
+				h.SearchTasks(w, r)
+				assertStatus(t, w, http.StatusOK)
+				if !forwarded {
+					t.Errorf("body %q was not forwarded upstream, want accepted", tc.body)
+				}
+			})
+		}
+	})
+
+	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
+		for _, tc := range upstreamErrorsGeneric("Failed to search tasks.") {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				client := &mockEntityTaskClient{
+					searchTasksFn: func(_ context.Context, _ []byte) ([]byte, error) {
+						return nil, tc.err
+					},
+				}
+				h := NewTaskHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodPost, "/tasks/search", strings.NewReader(`{}`)))
+				w := httptest.NewRecorder()
+				h.SearchTasks(w, r)
 				assertStatus(t, w, tc.wantCode)
 				assertErrorMessage(t, w, tc.wantMsg)
 				assertContentType(t, w, "application/json")

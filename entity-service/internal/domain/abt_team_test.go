@@ -151,6 +151,40 @@ func TestParseAbtTeamRegistry_TrimsWhitespace(t *testing.T) {
 	}
 }
 
+// TestParseAbtTeamRegistry_GroupSysID covers the new optional 4th field: the
+// backing group's sysid, used only for the integrationCsTeamIds case filter.
+func TestParseAbtTeamRegistry_GroupSysID(t *testing.T) {
+	resetAbtRegistry(t)
+	mustSetRegistry(t, "alpha|Alpha Team|CRE|d1e42a1234567890abcdef1234567890,beta|Beta Team|SRE,gamma|Gamma Team")
+
+	// Four fields: family and groupSysID both populated.
+	alpha, ok := FindAbtTeamByKey("alpha")
+	if !ok {
+		t.Fatalf("expected to find alpha")
+	}
+	if alpha.Family != AbtFamilyCRE || alpha.GroupSysID != "d1e42a1234567890abcdef1234567890" {
+		t.Fatalf("alpha = %+v, want family=cre groupSysID=d1e42a1234567890abcdef1234567890", alpha)
+	}
+
+	// Three fields: family populated, groupSysID left empty (not configured).
+	beta, ok := FindAbtTeamByKey("beta")
+	if !ok {
+		t.Fatalf("expected to find beta")
+	}
+	if beta.Family != AbtFamilySRE || beta.GroupSysID != "" {
+		t.Fatalf("beta = %+v, want family=sre groupSysID=\"\"", beta)
+	}
+
+	// Two fields: neither family nor groupSysID configured.
+	gamma, ok := FindAbtTeamByKey("gamma")
+	if !ok {
+		t.Fatalf("expected to find gamma")
+	}
+	if gamma.Family != "" || gamma.GroupSysID != "" {
+		t.Fatalf("gamma = %+v, want family=\"\" groupSysID=\"\"", gamma)
+	}
+}
+
 // TestParseAbtTeamRegistry_TrailingCommaTolerated: a blank row is skipped, not
 // rejected -- a trailing comma is not worth failing a deploy over.
 func TestParseAbtTeamRegistry_TrailingCommaTolerated(t *testing.T) {
@@ -177,10 +211,10 @@ func TestParseAbtTeamRegistry_RejectsMalformedRows(t *testing.T) {
 			wantRow: "beta",
 		},
 		{
-			name:    "four fields",
-			raw:     "alpha|Alpha Team|CRE|extra",
+			name:    "five fields",
+			raw:     "alpha|Alpha Team|CRE|d1e42a1234567890abcdef1234567890|extra",
 			wantIn:  "row 1",
-			wantRow: "alpha|Alpha Team|CRE|extra",
+			wantRow: "alpha|Alpha Team|CRE|d1e42a1234567890abcdef1234567890|extra",
 		},
 		{
 			name:    "empty teamKey",

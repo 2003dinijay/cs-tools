@@ -246,6 +246,11 @@ type Team struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Family string `json:"family,omitempty"`
+	// GroupID is the backing group's id, converted to this platform's UUID
+	// format, suitable for the case-search integrationCsTeamIds filter.
+	// Omitted when the team registry did not configure a backing group id
+	// for this team -- the team is still listed, just not filter-scopable.
+	GroupID string `json:"groupId,omitempty"`
 }
 
 // SearchTeamsRequest is the input for POST /teams/search.
@@ -382,13 +387,19 @@ type SNAccountView struct {
 	TechnicalOwner        *PersonRef `json:"technicalOwner"`
 	AccountManager        *PersonRef `json:"accountManager"`
 	RenewalAccountManager *PersonRef `json:"renewalAccountManager"`
-	ActivationDate        string     `json:"activationDate"`
-	DeactivationDate      *string    `json:"deactivationDate"`
-	HasAgent              bool       `json:"hasAgent"`
-	HasKbReferences       bool       `json:"hasKbReferences"`
-	CreatedOn             string     `json:"createdOn"`
-	CreatedBy             *string    `json:"createdBy"`
-	UpdatedOn             string     `json:"updatedOn"`
+	// CreTeam is the account's CRE (customer relationship engineering) team, resolved to a
+	// named group reference (ServiceNow data source only). Mirrors AccountRef.CreTeam.
+	CreTeam *EntityRef `json:"creTeam,omitempty"`
+	// SreTeam is the account's SRE team, resolved to a named group reference (ServiceNow
+	// data source only). Mirrors AccountRef.SreTeam.
+	SreTeam          *EntityRef `json:"sreTeam,omitempty"`
+	ActivationDate   string     `json:"activationDate"`
+	DeactivationDate *string    `json:"deactivationDate"`
+	HasAgent         bool       `json:"hasAgent"`
+	HasKbReferences  bool       `json:"hasKbReferences"`
+	CreatedOn        string     `json:"createdOn"`
+	CreatedBy        *string    `json:"createdBy"`
+	UpdatedOn        string     `json:"updatedOn"`
 }
 
 // SearchSNAccountsResponse is the paginated result of a ServiceNow account search.
@@ -420,13 +431,19 @@ type SNAccountDetail struct {
 	TechnicalOwner        *PersonRef        `json:"technicalOwner"`
 	AccountManager        *PersonRef        `json:"accountManager"`
 	RenewalAccountManager *PersonRef        `json:"renewalAccountManager"`
-	ActivationDate        string            `json:"activationDate"`
-	DeactivationDate      *string           `json:"deactivationDate"`
-	HasAgent              bool              `json:"hasAgent"`
-	HasKbReferences       bool              `json:"hasKbReferences"`
-	CreatedOn             string            `json:"createdOn"`
-	CreatedBy             *string           `json:"createdBy"`
-	UpdatedOn             string            `json:"updatedOn"`
+	// CreTeam is the account's CRE (customer relationship engineering) team, resolved to a
+	// named group reference (ServiceNow data source only). Mirrors AccountRef.CreTeam.
+	CreTeam *EntityRef `json:"creTeam,omitempty"`
+	// SreTeam is the account's SRE team, resolved to a named group reference (ServiceNow
+	// data source only). Mirrors AccountRef.SreTeam.
+	SreTeam          *EntityRef `json:"sreTeam,omitempty"`
+	ActivationDate   string     `json:"activationDate"`
+	DeactivationDate *string    `json:"deactivationDate"`
+	HasAgent         bool       `json:"hasAgent"`
+	HasKbReferences  bool       `json:"hasKbReferences"`
+	CreatedOn        string     `json:"createdOn"`
+	CreatedBy        *string    `json:"createdBy"`
+	UpdatedOn        string     `json:"updatedOn"`
 }
 
 // SubscriptionType classifies the subscription type of a project.
@@ -1356,6 +1373,14 @@ type CaseFieldFilter struct {
 type SearchCasesFilters struct {
 	SearchQuery string            `json:"searchQuery,omitempty"`
 	Filters     []CaseFieldFilter `json:"filters,omitempty"`
+	// OrGroups expresses cross-field OR: each inner array is a set of
+	// CaseFieldFilter predicates ANDed together (a "branch"); the branches
+	// themselves are OR'd against each other, and the whole OrGroups result is
+	// ANDed with Filters (if both are present). Only fields with a direct,
+	// non-subquery ServiceNow mapping are supported inside a branch -- see
+	// service.ParseCaseFieldFilterGroups for the exact supported field set.
+	// Requires ServiceNow data source.
+	OrGroups [][]CaseFieldFilter `json:"orGroups,omitempty"`
 }
 
 // ParsedCaseFilters is the internal, named-field representation that
@@ -1389,12 +1414,13 @@ type ParsedCaseFilters struct {
 	WorkStates      []CaseWorkState
 	AssignedUserIDs []string
 	ProductNames    []string
-	// Tags filters cases by attached free-text label. Not yet available in the
-	// backing service: same gap as CaseView.Tags — no Ballerina search-filter
-	// support exists yet, so this filter is accepted here but has no effect until
-	// Ballerina wires it through.
+	// Tags filters cases by attached free-text label. Works end-to-end: ServiceNow's
+	// CaseUtils.searchCases honors filters.tags, and Ballerina's CaseSearchFilters
+	// forwards it.
 	Tags []string
-	// ExcludeTags filters to cases NOT carrying any of these free-text tag labels (optional).
+	// ExcludeTags filters to cases NOT carrying any of these free-text tag labels
+	// (optional). Inverse of Tags. Works end-to-end: ServiceNow's CaseUtils.searchCases
+	// honors filters.excludeTags, and Ballerina's CaseSearchFilters declares it.
 	ExcludeTags []string
 	// ParentID filters to child cases of this case (the hierarchical major-case/
 	// child-case relationship set via the case PATCH parentId field). Not yet
@@ -1416,6 +1442,51 @@ type ParsedCaseFilters struct {
 	// ResolutionNotesEmpty, when true, filters to cases with empty resolution notes.
 	// false and omitted are treated identically (optional).
 	ResolutionNotesEmpty bool
+	// TaskSLAFilter filters cases by Task SLA businessElapsedPercent range (optional).
+	// Populated from the "taskSLABusinessElapsedPercent" filter field's gte/lte bounds.
+	// Requires ServiceNow data source (not available via PostgreSQL-only path).
+	// Filtering logic is confined to the SN adapter per vendor-neutral boundary.
+	TaskSLAFilter *TaskSLAFilter
+	// EscalationLevels filters cases to one of these escalation level ids ("0"-"5"),
+	// from the "escalationLevel" filter field's in values (optional).
+	EscalationLevels []string
+	// HasActiveEscalation filters cases by whether they carry an active
+	// escalation, from the "escalation" filter field's isEmpty/isNotEmpty op
+	// (optional; nil means no filter on this field).
+	HasActiveEscalation *bool
+	// OrGroups: see SearchCasesFilters.OrGroups doc comment. Each entry is one
+	// parsed, ANDed branch; branches are OR'd together by the SN adapter.
+	OrGroups []CaseFilterGroup
+}
+
+// CaseFilterGroup is one ANDed branch of a SearchCasesFilters.OrGroups entry.
+// Deliberately narrower than ParsedCaseFilters: only fields with a direct,
+// non-subquery ServiceNow field mapping are supported inside an OR branch (no
+// tags/excludeTags/taskSLAFilter/parentId/createdBy/date-range/
+// projectOnboardingStatus/projectType/integrationCsTeam/resolutionNotes/
+// unassigned/hasActiveEscalation) -- service.ParseCaseFieldFilterGroups
+// rejects any of those fields inside a branch with a validation error, they
+// remain usable only via the top-level (AND-only) Filters array.
+type CaseFilterGroup struct {
+	Types            []string
+	States           []CaseState
+	Severities       []CaseSeverity
+	EngagementTypes  []EngagementType
+	IssueTypes       []CaseIssueType
+	WorkStates       []CaseWorkState
+	ProjectIDs       []string
+	DeploymentIDs    []string
+	AssignedUserIDs  []string
+	EscalationLevels []string
+}
+
+// TaskSLAFilter specifies a range of business-elapsed-percent values for Task SLA
+// filtering. Cases are matched if they have at least one Task SLA record where
+// businessElapsedPercent falls within [MinBusinessElapsedPercent,
+// MaxBusinessElapsedPercent] inclusive.
+type TaskSLAFilter struct {
+	MinBusinessElapsedPercent *int
+	MaxBusinessElapsedPercent *int
 }
 
 // SearchCasesRequest is the input for a case search operation.
@@ -1428,6 +1499,19 @@ type SearchCasesRequest struct {
 	Parsed     ParsedCaseFilters `json:"-"`
 	SortBy     CaseSort          `json:"sortBy"`
 	Pagination Pagination        `json:"pagination"`
+	// GroupBy, when set, returns aggregated counts per value of the named field
+	// instead of a case list (see Groups on SearchCasesResponse). Only fields
+	// backed by a small fixed enum are groupable; see the ServiceNow adapter's
+	// caseGroupByFieldValues for the supported set. Requires ServiceNow data
+	// source.
+	GroupBy string `json:"groupBy,omitempty"`
+}
+
+// CaseGroup is one bucket in a grouped case-search result: Key is the group's
+// field value (e.g. a CaseState string), Count is the number of matching cases.
+type CaseGroup struct {
+	Key   string `json:"key"`
+	Count int    `json:"count"`
 }
 
 // SearchCaseView is the unified case representation returned in search results.
@@ -1468,9 +1552,20 @@ type SearchCaseView struct {
 	Conversation         *EntityRef     `json:"conversation"`
 }
 
-// SearchCasesResponse is the paginated result of a case search.
+// SearchCasesResponse is the paginated result of a case search. When the
+// request set GroupBy, Groups is populated instead of Cases (Cases is nil).
+//
+// Total means different things in the two modes. Ungrouped, it is the total
+// matching record count. Grouped, it is the sum of the returned Groups' counts,
+// which is the number of matching cases whose value of the grouped field is one
+// of the enumerated buckets -- a case carrying a value outside that fixed set
+// (a state or type added in the backing data source but not yet in the
+// service's enum) is counted in no bucket and so is excluded from Total. Do not
+// read a grouped Total as "all cases matching the filters"; issue the same
+// search without GroupBy for that number.
 type SearchCasesResponse struct {
 	Cases  []SearchCaseView `json:"cases"`
+	Groups []CaseGroup      `json:"groups,omitempty"`
 	Total  int              `json:"total"`
 	Offset int              `json:"offset"`
 	Limit  int              `json:"limit"`
@@ -3062,6 +3157,61 @@ type UpdateTaskRequest struct {
 	State           *string    `json:"state"`
 	AssignedToEmail *string    `json:"assignedToEmail"`
 	DueDate         *time.Time `json:"dueDate"`
+}
+
+// TaskState represents the state of a task.
+type TaskState string
+
+const (
+	TaskStateOpen   TaskState = "OPEN"
+	TaskStateClosed TaskState = "CLOSED"
+	TaskStateOther  TaskState = "OTHER"
+)
+
+// TaskSortField enumerates the columns available for sorting task search results.
+type TaskSortField string
+
+const (
+	TaskSortFieldCreatedOn TaskSortField = "createdOn"
+	TaskSortFieldUpdatedOn TaskSortField = "updatedOn"
+)
+
+// TaskSortOrder controls the sort direction for task search.
+type TaskSortOrder string
+
+const (
+	TaskSortOrderAsc  TaskSortOrder = "asc"
+	TaskSortOrderDesc TaskSortOrder = "desc"
+)
+
+// TaskSort specifies the sort field and direction for task search results.
+type TaskSort struct {
+	Field TaskSortField `json:"field"`
+	Order TaskSortOrder `json:"order"`
+}
+
+// SearchTasksFilters holds all optional filter criteria for a task search.
+type SearchTasksFilters struct {
+	States          []TaskState `json:"states"`
+	Types           []string    `json:"types"`
+	AssignedUserIDs []string    `json:"assignedUserIds"`
+	DueDateStart    *time.Time  `json:"dueDateStart"`
+	DueDateEnd      *time.Time  `json:"dueDateEnd"`
+}
+
+// SearchTasksRequest is the input for POST /tasks/search.
+type SearchTasksRequest struct {
+	Filters    SearchTasksFilters `json:"filters"`
+	SortBy     TaskSort           `json:"sortBy"`
+	Pagination Pagination         `json:"pagination"`
+}
+
+// SearchTasksResponse is the paginated result of a task search.
+type SearchTasksResponse struct {
+	Tasks  []TaskSummary `json:"tasks"`
+	Total  int           `json:"total"`
+	Offset int           `json:"offset"`
+	Limit  int           `json:"limit"`
 }
 
 // IncidentPriority represents the priority level of an incident.

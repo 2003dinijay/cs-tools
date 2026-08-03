@@ -98,6 +98,7 @@ vi.mock("@wso2/oxygen-ui-charts-react", () => ({
 }));
 
 import DashboardWidgetTile from "@features/csm-dashboard/components/DashboardWidgetTile";
+import { CURRENT_TEAM_PLACEHOLDER } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
 
 function renderWithClient(ui: ReactNode) {
   const queryClient = new QueryClient({
@@ -348,6 +349,100 @@ describe("DashboardWidgetTile", () => {
     const params = new URLSearchParams(href.split("?")[1]);
     expect(params.get("severities")).toBe("S1");
     expect(params.get("states")).toBe("open");
+  });
+
+  it("resolves the __current_team__ placeholder with the selected team's groupId in both the /search request and the count tile's own click-through href", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_cases"
+        displayName="Team Open Cases"
+        resourceType="case"
+        shape="count"
+        filters={{
+          filters: [
+            { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+          ],
+        }}
+        selectedTeamGroupId="22222222-2222-2222-2222-222222222222"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(postMock).toHaveBeenCalledWith("/cases/search", {
+      filters: {
+        filters: [
+          {
+            field: "integrationCsTeam",
+            op: "in",
+            values: ["22222222-2222-2222-2222-222222222222"],
+          },
+        ],
+      },
+      pagination: { offset: 0, limit: 1 },
+    });
+  });
+
+  it("drops the integrationCsTeam filter (request and href) rather than sending the literal placeholder when no team groupId is selected", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_cases"
+        displayName="Team Open Cases"
+        resourceType="case"
+        shape="count"
+        filters={{
+          filters: [
+            { field: "state", op: "in", values: ["open"] },
+            { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+          ],
+        }}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(postMock).toHaveBeenCalledWith("/cases/search", {
+      filters: { filters: [{ field: "state", op: "in", values: ["open"] }] },
+      pagination: { offset: 0, limit: 1 },
+    });
+
+    const link = screen.getByRole("link");
+    expect(link.getAttribute("href") ?? "").not.toContain(CURRENT_TEAM_PLACEHOLDER);
+  });
+
+  it("shape pie: resolves __current_team__ in a slice click-through href using the selected team's groupId", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-team"
+        displayName="Cases by team"
+        resourceType="case"
+        shape="pie"
+        filters={{}}
+        slices={[
+          {
+            label: "My team",
+            filters: {
+              filters: [
+                { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+              ],
+            },
+          },
+        ]}
+        selectedTeamGroupId="22222222-2222-2222-2222-222222222222"
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:My team:2")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("slice:My team:2"));
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    expect(probeText).not.toContain(CURRENT_TEAM_PLACEHOLDER);
   });
 
   it("shape bar: issues one search per slice and renders a bar per slice, clickable the same way as a pie slice", async () => {

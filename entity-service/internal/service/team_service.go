@@ -44,11 +44,15 @@ func (s *teamService) SearchTeams(
 
 	teams := make([]domain.Team, 0, len(registry))
 	for _, t := range registry {
-		teams = append(teams, domain.Team{
+		team := domain.Team{
 			ID:     t.TeamKey,
 			Name:   t.DisplayName,
 			Family: string(t.Family),
-		})
+		}
+		if t.GroupSysID != "" {
+			team.GroupID = sysidToUUID(t.GroupSysID)
+		}
+		teams = append(teams, team)
 	}
 	sort.Slice(teams, func(i, j int) bool { return teams[i].Name < teams[j].Name })
 

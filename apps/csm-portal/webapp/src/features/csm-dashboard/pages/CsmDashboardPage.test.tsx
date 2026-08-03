@@ -21,13 +21,14 @@ import "@testing-library/jest-dom/vitest";
 import type { JSX } from "react";
 import CsmDashboardPage from "@features/csm-dashboard/pages/CsmDashboardPage";
 import { useDashboardList } from "@features/csm-dashboard/api/useDashboardList";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 
-/** Surfaces the router's current `location.search` for assertions — the
+/** Surfaces the router's current `location.hash` for assertions — the
  * `MemoryRouter`'s history is in-memory, not reflected on `window.location`,
  * so this reads it via `useLocation` instead. */
 function LocationDisplay(): JSX.Element {
   const location = useLocation();
-  return <div data-testid="location-search">{location.search}</div>;
+  return <div data-testid="location-hash">{location.hash}</div>;
 }
 
 function renderAt(initialEntry: string): ReturnType<typeof render> {
@@ -39,8 +40,8 @@ function renderAt(initialEntry: string): ReturnType<typeof render> {
   );
 }
 
-function currentSearch(): string {
-  return screen.getByTestId("location-search").textContent ?? "";
+function currentHash(): string {
+  return screen.getByTestId("location-hash").textContent ?? "";
 }
 
 vi.mock("@features/csm-dashboard/api/useDashboardList", () => ({
@@ -49,22 +50,38 @@ vi.mock("@features/csm-dashboard/api/useDashboardList", () => ({
 
 // None of these dashboards are team-based, so the header's team selector
 // never renders/fetches here, but useTeams still needs mocking since
-// AbtDashboardHeader calls it unconditionally (the fetch itself is disabled
-// via its `enabled` param) — without this, the real hook reaches the real
-// API client, which throws under vitest (no runtime config).
+// AbtDashboardHeader (and now CsmDashboardPage itself, to resolve the
+// selected team's groupId) call it unconditionally (the fetch itself is
+// disabled via its `enabled` param) — without this, the real hook reaches
+// the real API client, which throws under vitest (no runtime config).
 vi.mock("@features/csm-dashboard/api/useTeams", () => ({
   useTeams: vi.fn(() => ({ data: undefined })),
 }));
 
+vi.mock("@context/current-user/CurrentUserContext", () => ({
+  useCurrentUser: vi.fn(),
+}));
+
 // Keeps this test focused on dashboard selection + the header; the widget
-// grid itself has its own tests (AgentsLandingPagePilot.test.tsx).
+// grid itself has its own tests (AgentsLandingPagePilot.test.tsx). Also
+// surfaces `selectedTeamGroupId` so the wiring from CsmDashboardPage down
+// can be asserted on without a real /teams/search round trip.
 vi.mock("@features/csm-dashboard/components/AgentsLandingPagePilot", () => ({
-  default: ({ dashboardId }: { dashboardId: string }) => (
-    <div data-testid="agents-landing-pilot">{dashboardId}</div>
+  default: ({
+    dashboardId,
+    selectedTeamGroupId,
+  }: {
+    dashboardId: string;
+    selectedTeamGroupId?: string;
+  }) => (
+    <div data-testid="agents-landing-pilot" data-team-group-id={selectedTeamGroupId ?? ""}>
+      {dashboardId}
+    </div>
   ),
 }));
 
 const mockedUseDashboardList = vi.mocked(useDashboardList);
+const mockedUseCurrentUser = vi.mocked(useCurrentUser);
 
 const DASHBOARD_LIST = [
   { id: "operations", displayName: "Operations", isDefault: false, isTeamBased: false },
@@ -83,8 +100,24 @@ function mockListResult(
   } as unknown as ReturnType<typeof useDashboardList>);
 }
 
+function mockCurrentUser(
+  overrides: Partial<ReturnType<typeof useCurrentUser>>,
+): void {
+  mockedUseCurrentUser.mockReturnValue({
+    user: undefined,
+    isLoading: false,
+    isError: false,
+    ...overrides,
+  } as unknown as ReturnType<typeof useCurrentUser>);
+}
+
 beforeEach(() => {
   mockedUseDashboardList.mockReset();
+  mockedUseCurrentUser.mockReset();
+  // Default: a resolved profile with no team — most tests aren't about the
+  // team-default-dashboard behavior, so this keeps them on the old
+  // BE-isDefault-only path.
+  mockCurrentUser({});
 });
 
 describe("CsmDashboardPage", () => {
@@ -167,25 +200,25 @@ describe("CsmDashboardPage", () => {
     expect(screen.queryByTestId("agents-landing-pilot")).not.toBeInTheDocument();
   });
 
-  it("selects the dashboard named by the URL's `dashboard` param, not the BE default", () => {
+  it("selects the dashboard named by the URL's fragment, not the BE default", () => {
     mockListResult({ data: DASHBOARD_LIST, isLoading: false });
 
-    renderAt("/dashboard?dashboard=iam");
+    renderAt("/dashboard#iam");
 
     expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent("iam");
   });
 
-  it("falls back to the BE default when the URL names a dashboard id that isn't in the list", () => {
+  it("falls back to the BE default when the fragment names a dashboard id that isn't in the list", () => {
     mockListResult({ data: DASHBOARD_LIST, isLoading: false });
 
-    renderAt("/dashboard?dashboard=does-not-exist");
+    renderAt("/dashboard#does-not-exist");
 
     expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
       "agents_pilot",
     );
   });
 
-  it("writes the `dashboard` param to the URL (via replace) when the switcher is used", () => {
+  it("writes the dashboard id to the URL fragment (via replace) when the switcher is used", () => {
     mockListResult({ data: DASHBOARD_LIST, isLoading: false });
 
     renderAt("/dashboard");
@@ -194,10 +227,10 @@ describe("CsmDashboardPage", () => {
     fireEvent.mouseDown(select);
     fireEvent.click(within(screen.getByRole("listbox")).getByText("Operations"));
 
-    expect(currentSearch()).toBe("?dashboard=operations");
+    expect(currentHash()).toBe("#operations");
   });
 
-  it("clears a stale `team` param from the URL when switching to a non-team-based dashboard", () => {
+  it("clears a stale team suffix from the fragment when switching to a non-team-based dashboard", () => {
     mockListResult({
       data: [
         ...DASHBOARD_LIST,
@@ -206,7 +239,7 @@ describe("CsmDashboardPage", () => {
       isLoading: false,
     });
 
-    renderAt("/dashboard?dashboard=team_performance&team=cs_team_leads");
+    renderAt("/dashboard#team_performance.cs_team_leads");
 
     // Two comboboxes render for a team-based dashboard (team + dashboard);
     // the dashboard switcher is always the second.
@@ -215,6 +248,90 @@ describe("CsmDashboardPage", () => {
     fireEvent.mouseDown(select);
     fireEvent.click(within(screen.getByRole("listbox")).getByText("Operations"));
 
-    expect(currentSearch()).toBe("?dashboard=operations");
+    expect(currentHash()).toBe("#operations");
+  });
+
+  it("ignores a stray team suffix on a fragment naming a non-team-based dashboard, rather than crashing", () => {
+    mockListResult({ data: DASHBOARD_LIST, isLoading: false });
+
+    renderAt("/dashboard#iam.some-stale-team");
+
+    expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent("iam");
+    // Only the dashboard switcher renders — no team selector for a
+    // non-team-based dashboard, regardless of what the stale fragment says.
+    expect(screen.getAllByRole("combobox")).toHaveLength(1);
+  });
+
+  describe("team-based default dashboard", () => {
+    const LIST_WITH_TEAM_DASHBOARD = [
+      { id: "agents_pilot", displayName: "Engineer overview", isDefault: true, isTeamBased: false },
+      { id: "team_performance", displayName: "Team performance", isDefault: false, isTeamBased: true },
+    ];
+
+    it("defaults to the isTeamBased dashboard, with the user's own team auto-selected, when the user has a resolved team", () => {
+      mockListResult({ data: LIST_WITH_TEAM_DASHBOARD, isLoading: false });
+      mockCurrentUser({
+        user: { team: { teamKey: "cs_team_leads", teamName: "CS Team Leads" } },
+        isLoading: false,
+      });
+
+      renderAt("/dashboard");
+
+      expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
+        "team_performance",
+      );
+      // The team selector renders (this dashboard is isTeamBased) — both
+      // the dashboard AND team default are derived UI state, never
+      // auto-written to the URL, so the fragment is untouched until the
+      // user (or a shared URL) actually names something explicitly.
+      expect(screen.getAllByRole("combobox")).toHaveLength(2);
+      expect(currentHash()).toBe("");
+    });
+
+    it("keeps the BE isDefault entry when the user has no resolved team, even though an isTeamBased dashboard exists", () => {
+      mockListResult({ data: LIST_WITH_TEAM_DASHBOARD, isLoading: false });
+      mockCurrentUser({ user: { team: undefined }, isLoading: false });
+
+      renderAt("/dashboard");
+
+      expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
+        "agents_pilot",
+      );
+    });
+
+    it("holds the skeleton while the user profile is still loading, rather than flashing the BE default", () => {
+      mockListResult({ data: LIST_WITH_TEAM_DASHBOARD, isLoading: false });
+      mockCurrentUser({ user: undefined, isLoading: true, isError: false });
+
+      const { container } = renderAt("/dashboard");
+
+      expect(container.querySelectorAll(".MuiSkeleton-root").length).toBeGreaterThan(0);
+      expect(screen.queryByTestId("agents-landing-pilot")).not.toBeInTheDocument();
+    });
+
+    it("falls back to the BE default when the user profile fails to load, rather than hanging on the skeleton", () => {
+      mockListResult({ data: LIST_WITH_TEAM_DASHBOARD, isLoading: false });
+      mockCurrentUser({ user: undefined, isLoading: false, isError: true });
+
+      renderAt("/dashboard");
+
+      expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
+        "agents_pilot",
+      );
+    });
+
+    it("still lets the URL's own fragment win over the team-based default", () => {
+      mockListResult({ data: LIST_WITH_TEAM_DASHBOARD, isLoading: false });
+      mockCurrentUser({
+        user: { team: { teamKey: "cs_team_leads", teamName: "CS Team Leads" } },
+        isLoading: false,
+      });
+
+      renderAt("/dashboard#agents_pilot");
+
+      expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
+        "agents_pilot",
+      );
+    });
   });
 });
