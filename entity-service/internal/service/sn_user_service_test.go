@@ -20,36 +20,16 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
-
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
-// testAbtUserSysid is the caller's ServiceNow sys_id used across the GetMe
-// ABT-team-resolution tests.
-var testAbtUserSysid = sysid32('9')
+// testCallerSysid is the caller's sys_id used across the GetMe membership tests.
+var testCallerSysid = sysid32('9')
 
-// abtTeamRegistryFixture is a representative registry in its configured wire
-// form: a CRE team, a hyphenated flat team (no sub-team nesting), an SRE team,
-// and an unclassified team with no family field. Every name is an invented
-// placeholder -- real team names never appear in this repo.
-const abtTeamRegistryFixture = "alpha|Alpha Team|CRE,delta|Delta-Two|CRE,beta|Beta SRE Group|SRE,gamma|Gamma Team"
-
-// withTeamRegistry installs a parsed team registry for the duration of one
-// test and clears it afterwards, so no test inherits another's registry.
-func withTeamRegistry(t *testing.T, raw string) {
-	t.Helper()
-	teams, err := domain.ParseAbtTeamRegistry(raw)
-	if err != nil {
-		t.Fatalf("ParseAbtTeamRegistry(%q): %v", raw, err)
-	}
-	domain.SetAbtTeams(teams)
-	t.Cleanup(func() { domain.SetAbtTeams(nil) })
-}
-
-// snUserMeJSON is a minimal ServiceNow GET /users/me payload for the given
+// snUserMeJSON is a minimal upstream GET /users/me payload for the given
 // caller sys_id.
 func snUserMeJSON(id string) string {
 	return `{
@@ -67,40 +47,48 @@ func membershipsJSON(userID, groupName string) string {
 	if groupName == "" {
 		return `{"memberships": [], "totalRecords": 0}`
 	}
-	return `{"memberships": [{"userId": "` + userID + `", "groupId": "irrelevant-sysid", "groupName": "` + groupName + `"}], "totalRecords": 1}`
+	return `{"memberships": [{"userId": "` + userID + `", "groupId": "` + sysid32('c') +
+		`", "groupName": "` + groupName + `"}], "totalRecords": 1}`
 }
 
-func TestSNUserService_GetMe_TeamMatch(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
-
+// TestSNUserService_GetMe_ReturnsCallerGroups is the shape the team registry's
+// move depends on: this service reports the caller's raw group membership and
+// says nothing about teams, because the registry that names them is the
+// caller's configuration now.
+//
+// The membership query must therefore be unfiltered -- filtering it by group
+// name would need exactly the registry this service no longer has.
+func TestSNUserService_GetMe_ReturnsCallerGroups(t *testing.T) {
 	var capturedBody []byte
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/users/me", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/users/me", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(snUserMeJSON(testAbtUserSysid)))
+		_, _ = w.Write([]byte(snUserMeJSON(testCallerSysid)))
 	})
 	mux.HandleFunc("/group-members/search", func(w http.ResponseWriter, r *http.Request) {
 		capturedBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(membershipsJSON(testAbtUserSysid, "Alpha Team")))
+		_, _ = w.Write([]byte(membershipsJSON(testCallerSysid, "Alpha Team")))
 	})
 
-	client := newTestSNClient(t, mux)
-	svc := NewServiceNowUserService(client)
+	svc := NewServiceNowUserService(newTestSNClient(t, mux))
 
 	got, err := svc.GetMe(contextWithUserIDToken("token"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.Team == nil {
-		t.Fatalf("Team = nil, want Alpha Team")
+	if len(got.Groups) != 1 {
+		t.Fatalf("Groups = %+v, want the caller's one membership", got.Groups)
 	}
-	if got.Team.TeamKey != "alpha" || got.Team.TeamName != "Alpha Team" || got.Team.Family != "cre" {
-		t.Fatalf("Team = %+v, want {alpha Alpha Team cre}", got.Team)
+	if got.Groups[0].Name != "Alpha Team" {
+		t.Fatalf("Groups[0].Name = %q, want \"Alpha Team\"", got.Groups[0].Name)
+	}
+	// Ids are converted to this platform's UUID form, like every other id.
+	if got.Groups[0].ID != sysidToUUID(sysid32('c')) {
+		t.Fatalf("Groups[0].ID = %q, want the UUID form of the upstream group id", got.Groups[0].ID)
 	}
 
-	// The request body must send groupNames, never groupIds.
 	var reqBody struct {
 		Filters struct {
 			GroupNames []string `json:"groupNames"`
@@ -111,131 +99,54 @@ func TestSNUserService_GetMe_TeamMatch(t *testing.T) {
 	if err := json.Unmarshal(capturedBody, &reqBody); err != nil {
 		t.Fatalf("unmarshal captured request body: %v", err)
 	}
-	if reqBody.Filters.GroupIDs != nil {
-		t.Fatalf("request body carried groupIds %v, want none (name-based lookup only)", reqBody.Filters.GroupIDs)
+	if len(reqBody.Filters.GroupNames) != 0 || len(reqBody.Filters.GroupIDs) != 0 {
+		t.Fatalf("membership query was narrowed (groupNames=%v groupIds=%v); it must ask for every group the caller is in",
+			reqBody.Filters.GroupNames, reqBody.Filters.GroupIDs)
 	}
-	if len(reqBody.Filters.GroupNames) == 0 {
-		t.Fatalf("request body carried no groupNames, want the cached registry's display names")
-	}
-	found := false
-	for _, n := range reqBody.Filters.GroupNames {
-		if n == "Alpha Team" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("groupNames = %v, want it to include \"Alpha Team\"", reqBody.Filters.GroupNames)
-	}
-	if reqBody.Filters.UserID != testAbtUserSysid {
-		t.Fatalf("userId = %q, want %q", reqBody.Filters.UserID, testAbtUserSysid)
+	if reqBody.Filters.UserID != testCallerSysid {
+		t.Fatalf("userId = %q, want %q", reqBody.Filters.UserID, testCallerSysid)
 	}
 }
 
-// TestSNUserService_GetMe_FlatTeamMatch_HyphenatedName verifies a hyphenated team name
-// resolves as its own flat team -- there is no sub-team nesting, so this is
-// just a normal name match like any other team.
-func TestSNUserService_GetMe_FlatTeamMatch_HyphenatedName(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
-
+// TestSNUserService_GetMe_NoMemberships: a caller in no group at all still gets
+// their identity, with an empty (never null) groups list.
+func TestSNUserService_GetMe_NoMemberships(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/users/me", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/users/me", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(snUserMeJSON(testAbtUserSysid)))
+		_, _ = w.Write([]byte(snUserMeJSON(testCallerSysid)))
 	})
-	mux.HandleFunc("/group-members/search", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/group-members/search", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(membershipsJSON(testAbtUserSysid, "Delta-Two")))
+		_, _ = w.Write([]byte(membershipsJSON(testCallerSysid, "")))
 	})
 
-	client := newTestSNClient(t, mux)
-	svc := NewServiceNowUserService(client)
+	svc := NewServiceNowUserService(newTestSNClient(t, mux))
 
 	got, err := svc.GetMe(contextWithUserIDToken("token"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.Team == nil {
-		t.Fatalf("Team = nil, want Delta-Two")
-	}
-	if got.Team.TeamKey != "delta" || got.Team.TeamName != "Delta-Two" || got.Team.Family != "cre" {
-		t.Fatalf("Team = %+v, want {delta Delta-Two cre}", got.Team)
-	}
-}
-
-// TestSNUserService_GetMe_UnclassifiedTeamMatch verifies a team with no
-// "family" set still resolves correctly, with an empty Family rather than an
-// error.
-func TestSNUserService_GetMe_UnclassifiedTeamMatch(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/users/me", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(snUserMeJSON(testAbtUserSysid)))
-	})
-	mux.HandleFunc("/group-members/search", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(membershipsJSON(testAbtUserSysid, "Gamma Team")))
-	})
-
-	client := newTestSNClient(t, mux)
-	svc := NewServiceNowUserService(client)
-
-	got, err := svc.GetMe(contextWithUserIDToken("token"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Team == nil {
-		t.Fatalf("Team = nil, want Gamma Team")
-	}
-	if got.Team.TeamKey != "gamma" || got.Team.TeamName != "Gamma Team" || got.Team.Family != "" {
-		t.Fatalf("Team = %+v, want {gamma \"Gamma Team\" \"\"}", got.Team)
-	}
-}
-
-func TestSNUserService_GetMe_NoMatch(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/users/me", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(snUserMeJSON(testAbtUserSysid)))
-	})
-	mux.HandleFunc("/group-members/search", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(membershipsJSON(testAbtUserSysid, "")))
-	})
-
-	client := newTestSNClient(t, mux)
-	svc := NewServiceNowUserService(client)
-
-	got, err := svc.GetMe(contextWithUserIDToken("token"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Team != nil {
-		t.Fatalf("Team = %+v, want nil (no membership)", got.Team)
+	if got.Groups == nil || len(got.Groups) != 0 {
+		t.Fatalf("Groups = %+v, want an empty non-nil slice", got.Groups)
 	}
 }
 
 // TestSNUserService_GetMe_GroupMembershipCallErrors_IdentityStillReturned
 // verifies that a downstream failure on the group-members/search call never
-// fails the overall /users/me response -- identity/roles must still come
-// back, with Team simply nil.
+// fails the overall /users/me response -- identity/roles must still come back,
+// with groups simply empty.
 func TestSNUserService_GetMe_GroupMembershipCallErrors_IdentityStillReturned(t *testing.T) {
-	withTeamRegistry(t, abtTeamRegistryFixture)
-
 	mux := http.NewServeMux()
-	mux.HandleFunc("/users/me", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/users/me", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(snUserMeJSON(testAbtUserSysid)))
+		_, _ = w.Write([]byte(snUserMeJSON(testCallerSysid)))
 	})
-	mux.HandleFunc("/group-members/search", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/group-members/search", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 
-	client := newTestSNClient(t, mux)
-	svc := NewServiceNowUserService(client)
+	svc := NewServiceNowUserService(newTestSNClient(t, mux))
 
 	got, err := svc.GetMe(contextWithUserIDToken("token"))
 	if err != nil {
@@ -244,133 +155,26 @@ func TestSNUserService_GetMe_GroupMembershipCallErrors_IdentityStillReturned(t *
 	if got.Email != "agent@example.com" {
 		t.Fatalf("Email = %q, want agent@example.com even though group lookup failed", got.Email)
 	}
-	if got.Team != nil {
-		t.Fatalf("Team = %+v, want nil when group-membership call errors", got.Team)
+	if len(got.Groups) != 0 {
+		t.Fatalf("Groups = %+v, want empty when the membership call errors", got.Groups)
 	}
 }
 
-// TestSNUserService_GetMe_EmptyRegistry_IdentityStillReturned verifies that a
-// deployment with no team registry configured still serves identity: roles
-// come back, Team is nil, and the membership lookup is skipped entirely.
-func TestSNUserService_GetMe_EmptyRegistry_IdentityStillReturned(t *testing.T) {
-	withTeamRegistry(t, "")
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/users/me", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(snUserMeJSON(testAbtUserSysid)))
-	})
-	groupMembersCalled := false
-	mux.HandleFunc("/group-members/search", func(w http.ResponseWriter, r *http.Request) {
-		groupMembersCalled = true
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(membershipsJSON(testAbtUserSysid, "Alpha Team")))
-	})
-
-	client := newTestSNClient(t, mux)
-	svc := NewServiceNowUserService(client)
-
-	got, err := svc.GetMe(contextWithUserIDToken("token"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v (identity must still be returned)", err)
-	}
-	if got.Email != "agent@example.com" {
-		t.Fatalf("Email = %q, want agent@example.com with an empty registry", got.Email)
-	}
-	if got.Team != nil {
-		t.Fatalf("Team = %+v, want nil when no teams are configured", got.Team)
-	}
-	// With an empty registry, AbtGroupNames() is empty, so GetMe should
-	// short-circuit and never even call group-members/search.
-	if groupMembersCalled {
-		t.Fatalf("group-members/search was called despite an empty registry")
-	}
-}
-
-// TestGetUserMeResponse_TeamOmittedWhenNil locks in the JSON field names and
-// casing a downstream CSM-backend consumer depends on: "team" (camelCase),
-// omitted entirely when the caller has no resolved ABT team.
-func TestGetUserMeResponse_TeamOmittedWhenNil(t *testing.T) {
-	resp := domain.GetUserMeResponse{ID: "u1", Email: "agent@example.com", Roles: []string{}}
-	raw, err := json.Marshal(resp)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var asMap map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &asMap); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if _, present := asMap["team"]; present {
-		t.Fatalf("expected \"team\" to be omitted when Team is nil, got: %s", raw)
-	}
-}
-
-// TestGetUserMeResponse_TeamFieldShape locks in the exact field names/casing
-// on the populated Team object: teamKey, teamName, family. This shape is
-// unchanged by the sys_id -> name-based resolution switch.
-func TestGetUserMeResponse_TeamFieldShape(t *testing.T) {
+// TestGetUserMeResponse_GroupsFieldShape locks in the exact field names the
+// portal backend decodes to resolve the caller's team. A rename here silently
+// costs every caller their team.
+func TestGetUserMeResponse_GroupsFieldShape(t *testing.T) {
 	resp := domain.GetUserMeResponse{
-		ID: "u1", Email: "agent@example.com", Roles: []string{},
-		Team: &domain.UserTeam{TeamKey: "alpha", TeamName: "Alpha Team", Family: "cre"},
+		ID:     "u1",
+		Email:  "agent@example.com",
+		Roles:  []string{},
+		Groups: []domain.UserGroupRef{{ID: "g1", Name: "Alpha Team"}},
 	}
-	raw, err := json.Marshal(resp)
+	encoded, err := json.Marshal(resp)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var asMap map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &asMap); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	teamRaw, present := asMap["team"]
-	if !present {
-		t.Fatalf("expected \"team\" to be present, got: %s", raw)
-	}
-	var team map[string]string
-	if err := json.Unmarshal(teamRaw, &team); err != nil {
-		t.Fatalf("unmarshal team: %v", err)
-	}
-	want := map[string]string{"teamKey": "alpha", "teamName": "Alpha Team", "family": "cre"}
-	for k, v := range want {
-		if team[k] != v {
-			t.Fatalf("team[%q] = %q, want %q (full team object: %s)", k, team[k], v, teamRaw)
-		}
-	}
-}
-
-// TestSearchUsers_RejectsRoleOutsideConfiguredList proves the allow-list is
-// enforced on the real request path, not just in the helper.
-func TestSearchUsers_RejectsRoleOutsideConfiguredList(t *testing.T) {
-	withUserRoles(t, "agent")
-	withTeamRegistry(t, abtTeamRegistryFixture)
-
-	upstreamCalled := false
-	mux := http.NewServeMux()
-	mux.HandleFunc("/users/search", func(w http.ResponseWriter, _ *http.Request) {
-		upstreamCalled = true
-		_, _ = w.Write([]byte(`{"users":[],"totalRecords":0}`))
-	})
-	svc := NewServiceNowUserService(newTestSNClient(t, mux))
-
-	_, err := svc.SearchUsers(contextWithUserIDToken("token"), domain.SearchUsersRequest{
-		Pagination: domain.Pagination{Limit: 20},
-		Filters:    domain.SearchUsersFilters{RoleIDs: []domain.UserRole{domain.UserRoleAdmin}},
-	})
-	var verr *apierror.ValidationError
-	if !asValidationError(err, &verr) {
-		t.Fatalf("err = %v, want a ValidationError for a role outside the configured list", err)
-	}
-	if upstreamCalled {
-		t.Fatal("upstream user search was called with an unconfigured role")
-	}
-
-	// The configured role still passes validation and reaches upstream.
-	if _, err := svc.SearchUsers(contextWithUserIDToken("token"), domain.SearchUsersRequest{
-		Pagination: domain.Pagination{Limit: 20},
-		Filters:    domain.SearchUsersFilters{RoleIDs: []domain.UserRole{domain.UserRoleAgent}},
-	}); err != nil {
-		t.Fatalf("configured role \"agent\" was rejected: %v", err)
-	}
-	if !upstreamCalled {
-		t.Fatal("configured role did not reach the upstream search")
+	if want := `"groups":[{"id":"g1","name":"Alpha Team"}]`; !strings.Contains(string(encoded), want) {
+		t.Fatalf("encoded = %s, want it to contain %s", encoded, want)
 	}
 }

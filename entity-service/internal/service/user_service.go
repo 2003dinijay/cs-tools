@@ -110,9 +110,9 @@ func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersReq
 	if len(req.Filters.RoleIDs) > 0 {
 		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "roleIds filter is only supported for the ServiceNow data source"}
 	}
-	if len(req.Filters.UserIDs) > 0 || len(req.Filters.GroupIDs) > 0 || len(req.Filters.TeamIDs) > 0 {
+	if len(req.Filters.UserIDs) > 0 || len(req.Filters.GroupIDs) > 0 || len(req.Filters.GroupNames) > 0 {
 		return domain.SearchUsersResponse{}, &apierror.ValidationError{
-			Msg: "userIds, groupIds and teamIds filters are only supported for the ServiceNow data source"}
+			Msg: "userIds, groupIds and groupNames filters are only supported for the ServiceNow data source"}
 	}
 	if req.Filters.Active != nil {
 		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "active filter is only supported for the ServiceNow data source"}

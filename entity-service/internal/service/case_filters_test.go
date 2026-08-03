@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -371,7 +372,7 @@ func TestParseCaseFieldFilterGroups_CreatedByRejectedAsValidationError(t *testin
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseCaseFieldFilterGroups([][]domain.CaseFieldFilter{tc.group})
+			_, err := ParseCaseFieldFilterGroups([]domain.CaseFilterBranch{{Filters: tc.group}})
 			if err == nil {
 				t.Fatalf("expected an error, got nil")
 			}
@@ -383,7 +384,7 @@ func TestParseCaseFieldFilterGroups_CreatedByRejectedAsValidationError(t *testin
 			if !errors.As(err, &ve) {
 				t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
 			}
-			const want = `orGroups: field "createdBy" is not supported inside an OR group`
+			const want = `anyOf: field "createdBy" is not supported inside an OR group`
 			if ve.Msg != want {
 				t.Errorf("Msg = %q, want %q", ve.Msg, want)
 			}
@@ -391,11 +392,76 @@ func TestParseCaseFieldFilterGroups_CreatedByRejectedAsValidationError(t *testin
 	}
 }
 
+// A branch is parsed by ParseCaseFieldFilters, which roots every message it
+// raises at the top-level "filters" path. Returned unchanged, that path is a
+// lie inside an OR group: the array the client has to fix lives at
+// anyOf[i].filters, and the public contract says so. The index has to be the
+// offending branch's, not always zero.
+func TestParseCaseFieldFilterGroups_BranchErrorsCarryTheAnyOfPath(t *testing.T) {
+	valid := domain.CaseFilterBranch{
+		Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open"}}},
+	}
+
+	cases := []struct {
+		name     string
+		branches []domain.CaseFilterBranch
+		want     string
+	}{
+		{
+			name: "invalid field in the first branch",
+			branches: []domain.CaseFilterBranch{
+				{Filters: []domain.CaseFieldFilter{{Field: "notAField", Op: "in", Values: []string{"x"}}}},
+			},
+			want: "anyOf[0].filters: unsupported field: notAField",
+		},
+		{
+			name: "invalid op in the first branch",
+			branches: []domain.CaseFilterBranch{
+				{Filters: []domain.CaseFieldFilter{{Field: "state", Op: "notAnOp", Values: []string{"open"}}}},
+			},
+			want: "anyOf[0].filters: unsupported op: notAnOp",
+		},
+		{
+			name: "field/op combination the field does not support",
+			branches: []domain.CaseFilterBranch{
+				{Filters: []domain.CaseFieldFilter{{Field: "state", Op: "eq", Values: []string{"open"}}}},
+			},
+			want: `anyOf[0].filters: field "state" does not support op "eq"`,
+		},
+		{
+			name:     "invalid field in a later branch reports that branch's index",
+			branches: []domain.CaseFilterBranch{valid, valid, {Filters: []domain.CaseFieldFilter{{Field: "notAField", Op: "in", Values: []string{"x"}}}}},
+			want:     "anyOf[2].filters: unsupported field: notAField",
+		},
+		{
+			name:     "invalid op in a later branch reports that branch's index",
+			branches: []domain.CaseFilterBranch{valid, {Filters: []domain.CaseFieldFilter{{Field: "severity", Op: "notAnOp", Values: []string{"high"}}}}},
+			want:     "anyOf[1].filters: unsupported op: notAnOp",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseCaseFieldFilterGroups(tc.branches)
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			var ve *apierror.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
+			}
+			if ve.Msg != tc.want {
+				t.Errorf("Msg = %q, want %q", ve.Msg, tc.want)
+			}
+		})
+	}
+}
+
 // The sentinel caller email must never leak into a parsed group.
 func TestParseCaseFieldFilterGroups_SupportedFieldsParse(t *testing.T) {
-	groups, err := ParseCaseFieldFilterGroups([][]domain.CaseFieldFilter{
-		{{Field: "state", Op: "in", Values: []string{"open", "closed"}}},
-		{{Field: "severity", Op: "in", Values: []string{"high"}}},
+	groups, err := ParseCaseFieldFilterGroups([]domain.CaseFilterBranch{
+		{Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open", "closed"}}}},
+		{Filters: []domain.CaseFieldFilter{{Field: "severity", Op: "in", Values: []string{"high"}}}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -408,5 +474,54 @@ func TestParseCaseFieldFilterGroups_SupportedFieldsParse(t *testing.T) {
 	}
 	if len(groups[1].Severities) != 1 || groups[1].Severities[0] != domain.CaseSeverity("high") {
 		t.Errorf("groups[1].Severities = %v, want [high]", groups[1].Severities)
+	}
+}
+
+// An OR branch carrying no predicates constrains nothing, and because the
+// branches are OR'd against each other one such branch widens the ENTIRE
+// result set: every case matches, silently, with a 200 and no error anywhere.
+// It has to be rejected at parse time. `"anyOf": [{}]` is valid JSON against
+// the schema's own shape, so nothing upstream catches it either.
+func TestParseCaseFieldFilterGroups_RejectsEmptyBranch(t *testing.T) {
+	valid := domain.CaseFilterBranch{
+		Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open"}}},
+	}
+
+	cases := []struct {
+		name     string
+		branches []domain.CaseFilterBranch
+		want     string
+	}{
+		{
+			name:     `"anyOf": [{}] -- filters key absent entirely`,
+			branches: []domain.CaseFilterBranch{{}},
+			want:     "anyOf[0].filters: an OR branch must carry at least one filter predicate",
+		},
+		{
+			name:     `"anyOf": [{"filters": []}] -- present but empty`,
+			branches: []domain.CaseFilterBranch{{Filters: []domain.CaseFieldFilter{}}},
+			want:     "anyOf[0].filters: an OR branch must carry at least one filter predicate",
+		},
+		{
+			name:     "an empty branch alongside valid ones still reports its own index",
+			branches: []domain.CaseFilterBranch{valid, valid, {}},
+			want:     "anyOf[2].filters: an OR branch must carry at least one filter predicate",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			groups, err := ParseCaseFieldFilterGroups(tc.branches)
+			if err == nil {
+				t.Fatalf("expected an error, got nil and %d group(s) -- an unconstrained branch was forwarded", len(groups))
+			}
+			var ve *apierror.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("err = %v (%T), want *apierror.ValidationError (400)", err, err)
+			}
+			if !strings.HasPrefix(ve.Msg, tc.want) {
+				t.Errorf("Msg = %q, want prefix %q", ve.Msg, tc.want)
+			}
+		})
 	}
 }

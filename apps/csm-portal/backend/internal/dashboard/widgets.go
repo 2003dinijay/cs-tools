@@ -18,14 +18,18 @@
 // templates. Each widget resolves to a search against that ResourceType's own
 // /search endpoint (every resource's search payload shape is
 // {filters: {...}, pagination: {...}}) — there is no generic filter DSL and
-// no database backing this; the registry itself is loaded from the
-// DASHBOARDS_CONFIG environment variable at process startup (see
-// ParseDashboardsConfig and cmd/server/main.go).
+// no database backing this; the registry itself is loaded at process startup
+// from a directory of per-dashboard JSON files (DASHBOARDS_DIR — see LoadDir
+// and Registry in registry.go), or from the deprecated DASHBOARDS_CONFIG
+// environment variable when no directory is set (see ParseDashboardsConfig).
+// Both are wired up in cmd/server/main.go.
 package dashboard
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // CurrentUserPlaceholder marks a filter value that must be resolved to the
@@ -59,8 +63,8 @@ const (
 )
 
 // PieSlice is one wedge of a Shape "pie" widget. The caller resolves its
-// value by issuing that widget's own ResourceType's /search with Filters
-// merged under the widget's own base Filters (this slice's keys win on
+// value by issuing that widget's own ResourceType's /search with Query
+// merged under the widget's own base Query (this slice's keys win on
 // conflict) and pagination.limit=1, reading total off the response — the
 // exact same mechanism Shape "count" uses, just once per slice.
 type PieSlice struct {
@@ -70,15 +74,38 @@ type PieSlice struct {
 	// (see WidgetTemplate's own icon color convention on the frontend) — not
 	// validated here, forwarded verbatim. Falls back to a fixed rotation over
 	// the same palette on the frontend if omitted.
-	Color   string         `json:"color,omitempty"`
-	Filters map[string]any `json:"filters"`
+	Color string `json:"color,omitempty"`
+	// Query is this slice's own search criteria (see WidgetTemplate.Query).
+	Query map[string]any `json:"query"`
+
+	// legacyFilters holds a pre-rename config's "filters" key, moved into
+	// Query by migrateLegacyWidgetKeys. See WidgetTemplate.legacyFilters.
+	legacyFilters map[string]any
 }
 
-// WidgetTemplate is resource-agnostic: Filters is opaque JSON, forwarded
+// UnmarshalJSON decodes a PieSlice, accepting both the current "query" key
+// and the deprecated "filters" key it replaced (see
+// WidgetTemplate.UnmarshalJSON for why).
+func (s *PieSlice) UnmarshalJSON(data []byte) error {
+	type alias PieSlice
+	var raw struct {
+		alias
+		LegacyFilters map[string]any `json:"filters"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*s = PieSlice(raw.alias)
+	s.legacyFilters = raw.LegacyFilters
+	return nil
+}
+
+// WidgetTemplate is resource-agnostic: Query is opaque JSON, forwarded
 // verbatim (after __current_user__ substitution) as the filters object of
 // that ResourceType's own /search payload (every resource's search payload
 // shape is {filters: {...}, pagination: {...}}). The BE never interprets
-// filter contents beyond substituting the current-user placeholder.
+// filter contents beyond substituting the current-user placeholder and
+// migrating deprecated key names (see migrateLegacyWidgetKeys).
 type WidgetTemplate struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
@@ -89,7 +116,7 @@ type WidgetTemplate struct {
 	ResourceType ResourceType   `json:"resourceType"`
 	Shape        Shape          `json:"shape"`
 	GridWidth    int            `json:"gridWidth"` // 1-12, CSS grid columns out of 12
-	Filters      map[string]any `json:"filters"`
+	Query        map[string]any `json:"query"`
 	GroupBy      string         `json:"groupBy,omitempty"`   // unused
 	ListLimit    int            `json:"listLimit,omitempty"` // only meaningful for Shape list; how many records to show
 	Slices       []PieSlice     `json:"slices,omitempty"`    // only meaningful for Shape pie/bar; one search per slice
@@ -101,13 +128,47 @@ type WidgetTemplate struct {
 	// Widgets with no Section (the common case) render in one untitled
 	// group, exactly as before this field existed.
 	Section string `json:"section,omitempty"`
+
+	// legacyFilters holds a pre-rename config's "filters" key so
+	// migrateLegacyWidgetKeys can move it into Query. Unexported so it can
+	// never be re-emitted on the wire: the deprecated shape is accepted on
+	// input only.
+	legacyFilters map[string]any
+}
+
+// UnmarshalJSON decodes a WidgetTemplate, accepting both the current "query"
+// key and the deprecated "filters" key it replaced. Deployed environments
+// carry DASHBOARDS_CONFIG in an env var, so a rename here is not atomic with
+// a config rollout — and encoding/json silently leaves an unknown key's field
+// at its zero value, which would give every widget a nil Query and render 0
+// everywhere with no error at all. See migrateLegacyWidgetKeys, which does
+// the actual move plus the deprecation warning (it has the dashboard/widget
+// ids this method does not).
+func (w *WidgetTemplate) UnmarshalJSON(data []byte) error {
+	type alias WidgetTemplate
+	var raw struct {
+		alias
+		LegacyFilters map[string]any `json:"filters"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*w = WidgetTemplate(raw.alias)
+	w.legacyFilters = raw.LegacyFilters
+	return nil
 }
 
 // Dashboard is a single dashboard's metadata plus its widget templates.
 type Dashboard struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
-	IsDefault   bool   `json:"isDefault"`
+	// Type classifies the dashboard's audience (see Type). It drives the
+	// frontend's automatic dashboard selection from the caller's team
+	// family. It deliberately does not replace IsDefault or IsTeamBased --
+	// all three coexist -- so the three can be set to states that
+	// contradict each other; validate rejects those at load time.
+	Type      Type `json:"type,omitempty"`
+	IsDefault bool `json:"isDefault"`
 	// TargetTeam is purely descriptive metadata (e.g. for a future FE team
 	// picker); it is not enforced anywhere. GET /dashboards still returns
 	// every dashboard to every caller regardless of team membership.
@@ -122,61 +183,160 @@ type Dashboard struct {
 	Widgets     []WidgetTemplate `json:"widgets"`
 }
 
-// Dashboards is the ordered registry of dashboards, populated once at process
-// startup from the DASHBOARDS_CONFIG environment variable (see
-// ParseDashboardsConfig, called from cmd/server/main.go). It is empty (nil)
-// until main() populates it; there is no file-watching or hot-reload — a
-// config change requires restarting the process. Order is deterministic and
-// is what the frontend's dashboard picker displays.
-var Dashboards []Dashboard
-
 // ParseDashboardsConfig decodes DASHBOARDS_CONFIG, a JSON array of Dashboard
 // objects (see the Dashboard and WidgetTemplate json tags for the expected
-// shape). A missing or malformed value logs an error and yields no
-// dashboards rather than failing startup, since callers always check
-// dashboard.Dashboards for emptiness (GET /dashboards simply returns an empty
-// list; GET /dashboards/{id} 404s) instead of crashing the process.
-func ParseDashboardsConfig(raw string) []Dashboard {
-	if raw == "" {
-		return nil
+// shape).
+//
+// DASHBOARDS_CONFIG is DEPRECATED in favour of DASHBOARDS_DIR (see LoadDir),
+// and is honoured only when no directory is configured. Cramming every
+// dashboard into one environment variable makes a definition unreviewable in
+// a diff and gives an error nothing to name; a directory of per-dashboard
+// files gives both back.
+//
+// An empty value yields no dashboards and no error — a deployment with
+// neither setting must still start. Anything else that fails is an error the
+// caller is expected to make fatal: this used to log and return nil, which
+// meant one stray character silently emptied every dashboard in the product
+// with a single log line to show for it.
+//
+// Cross-field validation is the same as the directory loader's, except that
+// "type" is not required here: values already deployed in this variable
+// predate the field. A definition without one gets a warning and is simply
+// invisible to automatic dashboard selection.
+func ParseDashboardsConfig(raw string) ([]Dashboard, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
 	}
+	slog.Warn("DASHBOARDS_CONFIG is deprecated; move each dashboard into its own JSON file and set DASHBOARDS_DIR instead")
+
 	var dashboards []Dashboard
 	if err := json.Unmarshal([]byte(raw), &dashboards); err != nil {
-		slog.Error("failed to parse DASHBOARDS_CONFIG; no dashboards will be available", "err", err)
-		return nil
+		return nil, fmt.Errorf("DASHBOARDS_CONFIG: parse: %w", err)
 	}
-	return dashboards
+
+	loaded := make([]sourced, 0, len(dashboards))
+	for i, d := range dashboards {
+		loaded = append(loaded, sourced{dashboard: d, source: fmt.Sprintf("DASHBOARDS_CONFIG[%d]", i)})
+	}
+	return finalize(loaded, false)
 }
 
-// DashboardByID looks up a dashboard by id, returning ok=false if the id
-// isn't in the registry.
-func DashboardByID(id string) (Dashboard, bool) {
-	for _, d := range Dashboards {
-		if d.ID == id {
-			return d, true
+// migrateLegacyWidgetKeys upgrades one pre-rename dashboard definition in
+// place, logging one deprecation warning per widget (or slice) it had to touch
+// so a deployment still on the old shape is visible in the logs rather than
+// silently working forever:
+//
+//   - widget/slice "filters"       -> "query"
+//   - criteria "orGroups": [[..]]  -> "anyOf": [{"filters": [..]}]
+//
+// The new key always wins when both are present. Nothing here interprets
+// filter contents beyond these two renames.
+//
+// Both loaders run this, so no warning names a configuration mechanism: source
+// is the sourced.source of the definition being migrated -- a DASHBOARDS_DIR
+// file path or a DASHBOARDS_CONFIG[i] index -- and it is logged so an operator
+// is pointed at the file they actually have to edit.
+func migrateLegacyWidgetKeys(d *Dashboard, source string) {
+	for wi := range d.Widgets {
+		w := &d.Widgets[wi]
+		switch {
+		case w.Query == nil && w.legacyFilters != nil:
+			slog.Warn(`dashboard definitions: widget key "filters" is deprecated, rename it to "query"`,
+				"source", source, "dashboardId", d.ID, "widgetId", w.ID)
+			w.Query = w.legacyFilters
+		case w.Query != nil && w.legacyFilters != nil:
+			// Same reasoning as the orGroups/anyOf drop below: silent data loss
+			// otherwise. Worth warning on even when "query" is populated, and
+			// especially when it is an empty {} -- that still wins here, so a
+			// widget whose real criteria are all in "filters" renders 0 with
+			// nothing in the logs pointing at why.
+			slog.Warn(`dashboard definitions: deprecated widget key "filters" dropped because "query" is also set; delete "filters" and keep everything in "query"`,
+				"source", source, "dashboardId", d.ID, "widgetId", w.ID, "queryIsEmpty", len(w.Query) == 0)
+		}
+		w.legacyFilters = nil
+		migrateLegacyCriteriaKeys(w.Query, source, d.ID, w.ID, "")
+		for si := range w.Slices {
+			s := &w.Slices[si]
+			switch {
+			case s.Query == nil && s.legacyFilters != nil:
+				slog.Warn(`dashboard definitions: slice key "filters" is deprecated, rename it to "query"`,
+					"source", source, "dashboardId", d.ID, "widgetId", w.ID, "slice", s.Label)
+				s.Query = s.legacyFilters
+			case s.Query != nil && s.legacyFilters != nil:
+				slog.Warn(`dashboard definitions: deprecated slice key "filters" dropped because "query" is also set; delete "filters" and keep everything in "query"`,
+					"source", source, "dashboardId", d.ID, "widgetId", w.ID, "slice", s.Label, "queryIsEmpty", len(s.Query) == 0)
+			}
+			s.legacyFilters = nil
+			migrateLegacyCriteriaKeys(s.Query, source, d.ID, w.ID, s.Label)
 		}
 	}
-	return Dashboard{}, false
 }
 
-// ResolveFilters returns tpl's filters with CurrentUserPlaceholder substituted
+// migrateLegacyCriteriaKeys rewrites the deprecated case-search "orGroups"
+// key inside one criteria object into the current "anyOf" shape, in place.
+// Each legacy branch was a bare array of filter predicates with implicit AND
+// semantics; each current branch is an object carrying its own "filters"
+// array. A branch that is already an object is passed through untouched, so
+// a half-migrated config is not corrupted.
+func migrateLegacyCriteriaKeys(query map[string]any, source, dashboardID, widgetID, slice string) {
+	if query == nil {
+		return
+	}
+	legacy, ok := query["orGroups"]
+	if !ok {
+		return
+	}
+	delete(query, "orGroups")
+
+	attrs := []any{"source", source, "dashboardId", dashboardID, "widgetId", widgetID}
+	if slice != "" {
+		attrs = append(attrs, "slice", slice)
+	}
+
+	// Both drops below are silent data loss otherwise: the caller wrote a key
+	// this loader recognizes and then never sees it again, with nothing in the
+	// logs saying why.
+	if _, exists := query["anyOf"]; exists {
+		slog.Warn(`dashboard definitions: deprecated criteria key "orGroups" dropped because "anyOf" is already set`, attrs...)
+		return
+	}
+	branches, ok := legacy.([]any)
+	if !ok {
+		slog.Warn(`dashboard definitions: deprecated criteria key "orGroups" is not an array; dropped`, attrs...)
+		return
+	}
+
+	slog.Warn(`dashboard definitions: criteria key "orGroups" is deprecated, rename it to "anyOf" and wrap each branch as {"filters": [...]}`, attrs...)
+	migrated := make([]any, 0, len(branches))
+	for _, branch := range branches {
+		if arr, isArray := branch.([]any); isArray {
+			migrated = append(migrated, map[string]any{"filters": arr})
+			continue
+		}
+		migrated = append(migrated, branch)
+	}
+	query["anyOf"] = migrated
+}
+
+// ResolveFilters returns tpl's Query with CurrentUserPlaceholder substituted
 // by currentUserID wherever it appears as a string inside a []any (the only
-// place a per-user value belongs in a filters object — e.g. assignedUserIds,
-// userIds). It does not mutate tpl.Filters.
+// place a per-user value belongs in a criteria object — e.g. assignedUserIds,
+// userIds). It walks the object generically by key, so no criteria key name
+// is hardcoded here. It does not mutate tpl.Query.
 func ResolveFilters(tpl WidgetTemplate, currentUserID string) map[string]any {
-	return substituteCurrentUser(tpl.Filters, currentUserID).(map[string]any)
+	return substituteCurrentUser(tpl.Query, currentUserID).(map[string]any)
 }
 
 // ResolveSliceFilters is ResolveFilters' counterpart for one Shape "pie"
-// slice: substitutes CurrentUserPlaceholder in slice.Filters only. It
-// deliberately does NOT merge in the widget's own base Filters — the caller
-// (frontend) merges this slice's filters under the widget's own resolved
-// Filters itself (this slice's keys win on conflict), the same way it
+// slice: substitutes CurrentUserPlaceholder in slice.Query only. It
+// deliberately does NOT merge in the widget's own base Query — the caller
+// (frontend) merges this slice's query under the widget's own resolved
+// Query itself (this slice's keys win on conflict), the same way it
 // already merges any other per-slice override. Sending the two separately,
 // rather than one pre-merged object per slice, avoids repeating the base
-// filters' JSON in every slice over the wire. Does not mutate slice.Filters.
+// criteria' JSON in every slice over the wire. Does not mutate slice.Query.
 func ResolveSliceFilters(slice PieSlice, currentUserID string) map[string]any {
-	return substituteCurrentUser(slice.Filters, currentUserID).(map[string]any)
+	return substituteCurrentUser(slice.Query, currentUserID).(map[string]any)
 }
 
 func substituteCurrentUser(v any, currentUserID string) any {

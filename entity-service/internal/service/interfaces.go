@@ -436,15 +436,3 @@ type ConversationService interface {
 	// for invalid input.
 	SearchConversations(ctx context.Context, req domain.SearchConversationsRequest) (domain.SearchConversationsResponse, error)
 }
-
-// RoleService serves the platform's assignable-role catalogue.
-type RoleService interface {
-	// SearchRoles returns a paginated slice of the role catalogue.
-	SearchRoles(ctx context.Context, req domain.SearchRolesRequest) (domain.SearchRolesResponse, error)
-}
-
-// TeamService serves the team registry.
-type TeamService interface {
-	// SearchTeams returns a paginated slice of the team registry.
-	SearchTeams(ctx context.Context, req domain.SearchTeamsRequest) (domain.SearchTeamsResponse, error)
-}

@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/scim"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/updates"
@@ -289,24 +290,35 @@ func (m *mockEntityUserClient) GetUser(ctx context.Context, id string) ([]byte, 
 	return []byte(`{"id":"` + id + `","email":"","roles":[],"groups":[],"teams":[]}`), nil
 }
 
-// mockEntityReferenceClient stubs the role-catalogue and team-registry calls.
-type mockEntityReferenceClient struct {
-	searchRolesFn func(ctx context.Context, body []byte) ([]byte, error)
-	searchTeamsFn func(ctx context.Context, body []byte) ([]byte, error)
-}
+// testTeamRegistry is a representative registry in its configured wire form: an
+// account-based team with a family and a backing group id, a bare row with
+// neither (some real rows legitimately have only two fields), and a team from
+// the other discipline. Every name is an invented placeholder.
+const testTeamRegistry = "abt-1|ABT One|cre-abt|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa," +
+	"abt-2|ABT Two," +
+	"beta|Beta Team|sre-abt|bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-func (m *mockEntityReferenceClient) SearchRoles(ctx context.Context, body []byte) ([]byte, error) {
-	if m.searchRolesFn != nil {
-		return m.searchRolesFn(ctx, body)
-	}
-	return []byte(`{"roles":[],"total":0,"offset":0,"limit":50}`), nil
-}
+// testRoles is a two-entry allow-list, small enough that "the catalogue is
+// exactly what was configured" is a cheap assertion.
+const testRoles = "agent,timecard_approver"
 
-func (m *mockEntityReferenceClient) SearchTeams(ctx context.Context, body []byte) ([]byte, error) {
-	if m.searchTeamsFn != nil {
-		return m.searchTeamsFn(ctx, body)
+// testDirectory builds the startup-resolved catalogue a handler is constructed
+// with, from the same parse path main() uses.
+func testDirectory(t *testing.T) *directory.Directory {
+	t.Helper()
+	teams, err := directory.ParseTeamRegistry(testTeamRegistry)
+	if err != nil {
+		t.Fatalf("ParseTeamRegistry(%q): %v", testTeamRegistry, err)
 	}
-	return []byte(`{"teams":[],"total":0,"offset":0,"limit":50}`), nil
+	roles, err := directory.ParseRoles(testRoles)
+	if err != nil {
+		t.Fatalf("ParseRoles(%q): %v", testRoles, err)
+	}
+	dir, err := directory.New(teams, roles)
+	if err != nil {
+		t.Fatalf("directory.New: %v", err)
+	}
+	return dir
 }
 
 func (m *mockEntityUserClient) GetUserMe(ctx context.Context) ([]byte, error) {

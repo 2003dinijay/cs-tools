@@ -31,7 +31,7 @@ import (
 
 func TestGetMe(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{})
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t))
 		r := httptest.NewRequest(http.MethodGet, "/users/me", nil)
 		w := httptest.NewRecorder()
 		h.GetMe(w, r)
@@ -47,7 +47,7 @@ func TestGetMe(t *testing.T) {
 				return nil, errors.New("scim unavailable")
 			},
 		}
-		h := NewUsersHandler(scimClient, &mockEntityUserClient{})
+		h := NewUsersHandler(scimClient, &mockEntityUserClient{}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodGet, "/users/me", nil))
 		w := httptest.NewRecorder()
 		h.GetMe(w, r)
@@ -69,7 +69,7 @@ func TestGetMe(t *testing.T) {
 				return nil, nil // user not found in SCIM
 			},
 		}
-		h := NewUsersHandler(scimClient, &mockEntityUserClient{})
+		h := NewUsersHandler(scimClient, &mockEntityUserClient{}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodGet, "/users/me", nil))
 		w := httptest.NewRecorder()
 		h.GetMe(w, r)
@@ -81,13 +81,17 @@ func TestGetMe(t *testing.T) {
 		}
 	})
 
-	t.Run("passes through the resolved ABT team when present", func(t *testing.T) {
+	t.Run("resolves the caller's team from their groups, with no extra upstream call", func(t *testing.T) {
+		entityCalls := 0
 		entityClient := &mockEntityUserClient{
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
-				return []byte(`{"id":"u-1","email":"agent@example.com","lastName":"Doe","roles":["agent"],"team":{"teamKey":"abt-1","teamName":"ABT One","family":"cre"}}`), nil
+				entityCalls++
+				return []byte(`{"id":"u-1","email":"agent@example.com","lastName":"Doe","roles":["agent"],` +
+					`"groups":[{"id":"g-9","name":"Some Other Group"},{"id":"g-1","name":"ABT One"}]}`), nil
 			},
 		}
-		h := NewUsersHandler(&mockSCIMClient{}, entityClient)
+		_ = entityCalls
+		h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodGet, "/users/me", nil))
 		w := httptest.NewRecorder()
 		h.GetMe(w, r)
@@ -104,18 +108,24 @@ func TestGetMe(t *testing.T) {
 		if resp.Team == nil {
 			t.Fatal("team should be present")
 		}
-		if resp.Team.TeamKey != "abt-1" || resp.Team.TeamName != "ABT One" || resp.Team.Family != "cre" {
-			t.Errorf("team = %+v, want {abt-1 ABT One cre}", resp.Team)
+		if resp.Team.TeamKey != "abt-1" || resp.Team.TeamName != "ABT One" || resp.Team.Family != "cre-abt" {
+			t.Errorf("team = %+v, want {abt-1 ABT One cre-abt}", resp.Team)
+		}
+		// One entity call, for the identity. The registry lookup that turned
+		// "ABT One" into a team is a map read, not a second round trip.
+		if entityCalls != 1 {
+			t.Errorf("entity was called %d times, want exactly 1", entityCalls)
 		}
 	})
 
-	t.Run("passes through the resolved ABT team when family is unclassified (empty string)", func(t *testing.T) {
+	t.Run("resolves a team whose registry row configured no family", func(t *testing.T) {
 		entityClient := &mockEntityUserClient{
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
-				return []byte(`{"id":"u-1","email":"agent@example.com","lastName":"Doe","roles":["agent"],"team":{"teamKey":"abt-2","teamName":"ABT Two","family":""}}`), nil
+				return []byte(`{"id":"u-1","email":"agent@example.com","lastName":"Doe","roles":["agent"],` +
+					`"groups":[{"id":"g-2","name":"ABT Two"}]}`), nil
 			},
 		}
-		h := NewUsersHandler(&mockSCIMClient{}, entityClient)
+		h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodGet, "/users/me", nil))
 		w := httptest.NewRecorder()
 		h.GetMe(w, r)
@@ -137,13 +147,14 @@ func TestGetMe(t *testing.T) {
 		}
 	})
 
-	t.Run("omits team when absent from the entity response", func(t *testing.T) {
+	t.Run("omits team when the caller is in no registry team", func(t *testing.T) {
 		entityClient := &mockEntityUserClient{
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
-				return []byte(`{"id":"u-1","email":"agent@example.com","lastName":"Doe","roles":["agent"]}`), nil
+				return []byte(`{"id":"u-1","email":"agent@example.com","lastName":"Doe","roles":["agent"],` +
+					`"groups":[{"id":"g-9","name":"Some Other Group"}]}`), nil
 			},
 		}
-		h := NewUsersHandler(&mockSCIMClient{}, entityClient)
+		h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodGet, "/users/me", nil))
 		w := httptest.NewRecorder()
 		h.GetMe(w, r)
@@ -151,7 +162,7 @@ func TestGetMe(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 		resp := decodeJSON[map[string]any](t, w)
 		if _, ok := resp["team"]; ok {
-			t.Error("team should be absent when the entity response has no team")
+			t.Error("team should be absent when none of the caller's groups is a registry team")
 		}
 	})
 
@@ -166,7 +177,7 @@ func TestGetMe(t *testing.T) {
 				}, nil
 			},
 		}
-		h := NewUsersHandler(scimClient, &mockEntityUserClient{})
+		h := NewUsersHandler(scimClient, &mockEntityUserClient{}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodGet, "/users/me", nil))
 		w := httptest.NewRecorder()
 		h.GetMe(w, r)
@@ -194,7 +205,7 @@ func TestGetMe(t *testing.T) {
 
 func TestPatchMe(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{})
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t))
 		r := httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"phoneNumber":"+1"}`))
 		w := httptest.NewRecorder()
 		h.PatchMe(w, r)
@@ -204,7 +215,7 @@ func TestPatchMe(t *testing.T) {
 	})
 
 	t.Run("rejects body exceeding 1 MiB", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{})
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(strings.Repeat("x", maxRequestBodyBytes+1))))
 		w := httptest.NewRecorder()
 		h.PatchMe(w, r)
@@ -213,7 +224,7 @@ func TestPatchMe(t *testing.T) {
 	})
 
 	t.Run("rejects empty body", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{})
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader("")))
 		w := httptest.NewRecorder()
 		h.PatchMe(w, r)
@@ -222,7 +233,7 @@ func TestPatchMe(t *testing.T) {
 	})
 
 	t.Run("rejects invalid JSON", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{})
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`not-json`)))
 		w := httptest.NewRecorder()
 		h.PatchMe(w, r)
@@ -231,7 +242,7 @@ func TestPatchMe(t *testing.T) {
 	})
 
 	t.Run("rejects JSON with no updateable fields", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{})
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{}`)))
 		w := httptest.NewRecorder()
 		h.PatchMe(w, r)
@@ -249,7 +260,7 @@ func TestPatchMe(t *testing.T) {
 				return &updated, nil
 			},
 		}
-		h := NewUsersHandler(scimClient, &mockEntityUserClient{})
+		h := NewUsersHandler(scimClient, &mockEntityUserClient{}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"phoneNumber":"+94777654321"}`)))
 		w := httptest.NewRecorder()
 		h.PatchMe(w, r)
@@ -280,7 +291,7 @@ func TestPatchMe(t *testing.T) {
 						return nil, tc.err
 					},
 				}
-				h := NewUsersHandler(scimClient, &mockEntityUserClient{})
+				h := NewUsersHandler(scimClient, &mockEntityUserClient{}, testDirectory(t))
 				r := withUser(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(`{"phoneNumber":"+1"}`)))
 				w := httptest.NewRecorder()
 				h.PatchMe(w, r)
@@ -296,7 +307,7 @@ func TestPatchMe(t *testing.T) {
 
 func TestSearchUsers(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{})
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t))
 		r := httptest.NewRequest(http.MethodPost, "/users/search", strings.NewReader(`{}`))
 		w := httptest.NewRecorder()
 		h.SearchUsers(w, r)
@@ -306,7 +317,7 @@ func TestSearchUsers(t *testing.T) {
 	})
 
 	t.Run("rejects body exceeding 1 MiB", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{})
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodPost, "/users/search", strings.NewReader(strings.Repeat("x", maxRequestBodyBytes+1))))
 		w := httptest.NewRecorder()
 		h.SearchUsers(w, r)
@@ -315,7 +326,7 @@ func TestSearchUsers(t *testing.T) {
 	})
 
 	t.Run("rejects invalid JSON body", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{})
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodPost, "/users/search", strings.NewReader(`not-json`)))
 		w := httptest.NewRecorder()
 		h.SearchUsers(w, r)
@@ -332,7 +343,7 @@ func TestSearchUsers(t *testing.T) {
 				return []byte(`{"users":[{"id":"u-1"}],"total":1}`), nil
 			},
 		}
-		h := NewUsersHandler(&mockSCIMClient{}, entityClient)
+		h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t))
 		r := withUser(httptest.NewRequest(http.MethodPost, "/users/search", strings.NewReader(reqPayload)))
 		w := httptest.NewRecorder()
 		h.SearchUsers(w, r)
@@ -357,7 +368,7 @@ func TestSearchUsers(t *testing.T) {
 						return nil, tc.err
 					},
 				}
-				h := NewUsersHandler(&mockSCIMClient{}, entityClient)
+				h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t))
 				r := withUser(httptest.NewRequest(http.MethodPost, "/users/search", strings.NewReader(`{}`)))
 				w := httptest.NewRecorder()
 				h.SearchUsers(w, r)

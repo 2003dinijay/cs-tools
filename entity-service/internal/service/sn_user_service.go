@@ -111,10 +111,11 @@ type snUserSearchPayload struct {
 type snUserFilters struct {
 	SearchQuery string `json:"searchQuery,omitempty"`
 	// RoleNames is sent under the backing data source's open, unconstrained role
-	// filter rather than its closed "roles" enum -- this service's own role catalogue
-	// is itself configuration-driven (CSM_USER_ROLES) and not limited to that closed
-	// set, so a role outside it (e.g. timecard_approver) must not be sent under "roles",
-	// which the upstream layer rejects at request binding for values it doesn't recognize.
+	// filter rather than its closed "roles" enum -- the role catalogue is
+	// configuration-driven in the caller (the portal backend's directory package)
+	// and not limited to that closed set, so a role outside it (e.g.
+	// timecard_approver) must not be sent under "roles", which the upstream layer
+	// rejects at request binding for values it doesn't recognize.
 	RoleNames []string `json:"roleNames,omitempty"`
 	UserNames []string `json:"userNames,omitempty"`
 	Emails    []string `json:"emails,omitempty"`
@@ -159,8 +160,9 @@ const (
 	// that resolves the filter to a user-id set, and that set then feeds the same IN
 	// clause snUserIDFilterLimit protects.
 	snGroupIDFilterLimit = 50
-	// snTeamIDFilterLimit caps the teamIds filter, which expands to one group name each.
-	snTeamIDFilterLimit = 50
+	// snGroupNameFilterLimit caps the groupNames filter, which widens the membership
+	// query exactly as groupIds does.
+	snGroupNameFilterLimit = 50
 )
 
 type snUserSort struct {
@@ -206,11 +208,6 @@ func (s *snUserService) SearchUsers(ctx context.Context, req domain.SearchUsersR
 	if len(req.Filters.Emails) > 50 {
 		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{Msg: "emails cannot contain more than 50 values"}
 	}
-	for _, role := range req.Filters.RoleIDs {
-		if !isValidUserRole(role) {
-			return domain.SearchSNUsersResponse{}, &apierror.ValidationError{Msg: "roleIds contains invalid value: " + string(role)}
-		}
-	}
 	if req.SortBy.Field != "" && !validUserSortField[req.SortBy.Field] {
 		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{Msg: "sortBy.field contains invalid value: " + string(req.SortBy.Field)}
 	}
@@ -238,9 +235,9 @@ func (s *snUserService) SearchUsers(ctx context.Context, req domain.SearchUsersR
 	if err := validateUUIDs("groupIds", req.Filters.GroupIDs); err != nil {
 		return domain.SearchSNUsersResponse{}, err
 	}
-	if len(req.Filters.TeamIDs) > snTeamIDFilterLimit {
+	if len(req.Filters.GroupNames) > snGroupNameFilterLimit {
 		return domain.SearchSNUsersResponse{}, &apierror.ValidationError{
-			Msg: fmt.Sprintf("teamIds cannot contain more than %d values", snTeamIDFilterLimit)}
+			Msg: fmt.Sprintf("groupNames cannot contain more than %d values", snGroupNameFilterLimit)}
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
@@ -343,7 +340,7 @@ func (s *snUserService) resolveMembershipUserIDs(
 		explicit = append(explicit, uuidToSysid(id))
 	}
 
-	if len(filters.GroupIDs) == 0 && len(filters.TeamIDs) == 0 {
+	if len(filters.GroupIDs) == 0 && len(filters.GroupNames) == 0 {
 		if len(explicit) == 0 {
 			return nil, nil
 		}
@@ -355,18 +352,10 @@ func (s *snUserService) resolveMembershipUserIDs(
 		groupIDs = append(groupIDs, uuidToSysid(id))
 	}
 
-	// Teams resolve by group name, not id: the registry is keyed that way because the
-	// backing group ids differ between environments.
-	var groupNames []string
-	for _, key := range filters.TeamIDs {
-		team, ok := domain.FindAbtTeamByKey(key)
-		if !ok {
-			return nil, &apierror.ValidationError{Msg: "teamIds contains unknown team: " + key}
-		}
-		groupNames = append(groupNames, team.DisplayName)
-	}
-
-	members, err := s.searchGroupMemberships(ctx, token, groupIDs, groupNames, "")
+	// Group names arrive already resolved: the team registry that maps a team key to a
+	// group name is the caller's configuration, not this service's, because the backing
+	// group ids differ between environments while the names do not.
+	members, err := s.searchGroupMemberships(ctx, token, groupIDs, filters.GroupNames, "")
 	if err != nil {
 		return nil, err
 	}
@@ -486,7 +475,7 @@ func (s *snUserService) GetUser(ctx context.Context, id string) (domain.SNUserDe
 	// The enrichments are best-effort: each degrades to empty on upstream failure rather
 	// than failing the whole profile, matching how the caller's own team is resolved on
 	// GET /users/me.
-	detail.Groups, detail.Teams = s.resolveUserGroupsAndTeams(ctx, token, sysID)
+	detail.Groups = s.resolveUserGroups(ctx, token, sysID)
 	if detail.UserType == domain.UserTypeExternal {
 		detail.ProjectAccess = s.resolveProjectAccess(ctx, token, u.Email)
 	}
@@ -494,31 +483,27 @@ func (s *snUserService) GetUser(ctx context.Context, id string) (domain.SNUserDe
 	return detail, nil
 }
 
-// resolveUserGroupsAndTeams lists every group the user belongs to, marking the subset that
-// are registry teams.
-func (s *snUserService) resolveUserGroupsAndTeams(
+// resolveUserGroups lists every group the user belongs to.
+//
+// Which of those groups are teams is deliberately not decided here: the team registry is
+// the caller's configuration, so the caller maps these names to teams. Reporting the raw
+// membership keeps this service free of organisation vocabulary it would otherwise have to
+// be told about on every deploy.
+func (s *snUserService) resolveUserGroups(
 	ctx context.Context, token, userSysID string,
-) ([]domain.UserGroupRef, []domain.UserTeamRef) {
+) []domain.UserGroupRef {
 	groups := []domain.UserGroupRef{}
-	teams := []domain.UserTeamRef{}
 
 	members, err := s.searchGroupMemberships(ctx, token, nil, nil, userSysID)
 	if err != nil {
 		log.Printf("sn users: group membership lookup for user failed: %v", err)
-		return groups, teams
+		return groups
 	}
 
 	for _, m := range members {
 		groups = append(groups, domain.UserGroupRef{ID: sysidToUUID(m.GroupID), Name: m.GroupName})
-		if team, ok := domain.FindAbtTeamByGroupName(m.GroupName); ok {
-			teams = append(teams, domain.UserTeamRef{
-				ID:     team.TeamKey,
-				Name:   team.DisplayName,
-				Family: string(team.Family),
-			})
-		}
 	}
-	return groups, teams
+	return groups
 }
 
 // resolveProjectAccess lists the user's project-contact rows, including the ones the
@@ -587,55 +572,8 @@ func (s *snUserService) GetMe(ctx context.Context) (domain.GetUserMeResponse, er
 		LastName:  snResp.LastName,
 		TimeZone:  snResp.TimeZone,
 		Roles:     roles,
-		Team:      s.resolveAbtTeam(ctx, token, snResp.ID),
+		Groups:    s.resolveUserGroups(ctx, token, snResp.ID),
 	}, nil
-}
-
-// resolveAbtTeam resolves the caller's ABT team via a live ServiceNow
-// group-membership lookup, using the same forwarded user id token as the
-// /users/me call. Team resolution is best-effort: a registry-fetch failure,
-// a group-membership-call failure, or no matching membership all degrade to
-// a nil result rather than failing the caller's /users/me response.
-func (s *snUserService) resolveAbtTeam(ctx context.Context, token string, userSysID string) *domain.UserTeam {
-	groupNames := domain.AbtGroupNames()
-	if len(groupNames) == 0 {
-		return nil
-	}
-
-	payload := snGroupMembersSearchPayload{
-		Filters: snGroupMembersFilters{
-			GroupNames: groupNames,
-			UserID:     userSysID,
-		},
-	}
-
-	raw, err := s.client.Post(ctx, "/group-members/search", token, payload)
-	if err != nil {
-		log.Printf("sn users: abt team group-membership lookup failed: %v", err)
-		return nil
-	}
-
-	var snResp snGroupMembersSearchResponse
-	if err := json.Unmarshal(raw, &snResp); err != nil {
-		log.Printf("sn users: abt team group-membership lookup: parse response failed: %v", err)
-		return nil
-	}
-	if len(snResp.Memberships) == 0 {
-		return nil
-	}
-
-	// Confirmed: a user belongs to at most one ABT team, so the first
-	// membership returned is authoritative.
-	team, ok := domain.FindAbtTeamByGroupName(snResp.Memberships[0].GroupName)
-	if !ok {
-		return nil
-	}
-
-	return &domain.UserTeam{
-		TeamKey:  team.TeamKey,
-		TeamName: team.DisplayName,
-		Family:   string(team.Family),
-	}
 }
 
 func (s *snUserService) PatchMe(ctx context.Context, req domain.PatchUserMeRequest) (domain.PatchUserMeResponse, error) {
