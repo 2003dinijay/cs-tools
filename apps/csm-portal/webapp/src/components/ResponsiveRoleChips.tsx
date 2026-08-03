@@ -69,8 +69,7 @@ export default function ResponsiveRoleChips({
 }: ResponsiveRoleChipsProps): JSX.Element {
   const theme = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
-  const chipMeasureRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const moreMeasureRef = useRef<HTMLDivElement>(null);
+  const measureRowRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState(Math.min(roleIds.length, 1));
   const labels = useMemo(
     () => roleIds.map((role) => roleDisplayName(role, roleNameById)),
@@ -80,10 +79,12 @@ export default function ResponsiveRoleChips({
   const calculateVisibleCount = useCallback((): void => {
     const availableWidth = containerRef.current?.clientWidth ?? 0;
     if (availableWidth <= 0) return;
-    const chipWidths = roleIds.map(
-      (_, index) => chipMeasureRefs.current[index]?.offsetWidth ?? 0,
-    );
-    const moreWidth = moreMeasureRef.current?.offsetWidth ?? 0;
+    const measureNodes = Array.from(measureRowRef.current?.children ?? []) as HTMLElement[];
+    const chipWidths = measureNodes.slice(0, roleIds.length).map((chip) => chip.offsetWidth);
+    const moreWidth = measureNodes[roleIds.length]?.offsetWidth ?? 0;
+    // The measurement row may not have committed yet. Keep the safe one-chip
+    // fallback instead of interpreting missing measurements as "all fit".
+    if (chipWidths.length !== roleIds.length || chipWidths.some((width) => width === 0)) return;
     const gap = Number.parseFloat(theme.spacing(0.5));
     const allRolesWidth = chipWidths.reduce(
       (total, width, index) => total + width + (index === 0 ? 0 : gap),
@@ -150,24 +151,27 @@ export default function ResponsiveRoleChips({
         )}
       </Stack>
       <Stack
+        ref={measureRowRef}
         aria-hidden
         data-testid="role-measure"
         direction="row"
         spacing={0.5}
-        sx={{ position: "absolute", visibility: "hidden", pointerEvents: "none" }}
+        sx={{
+          position: "absolute",
+          width: "max-content",
+          visibility: "hidden",
+          pointerEvents: "none",
+        }}
       >
         {labels.map((label, index) => (
           <Chip
             key={`${roleIds[index]}-measure`}
-            ref={(element) => {
-              chipMeasureRefs.current[index] = element;
-            }}
             size="small"
             variant="outlined"
             label={label}
           />
         ))}
-        <Chip ref={moreMeasureRef} size="small" variant="outlined" label={`+${roleIds.length} more`} />
+        <Chip size="small" variant="outlined" label={`+${roleIds.length} more`} />
       </Stack>
     </Box>
   );
