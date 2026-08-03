@@ -30,7 +30,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
 import { type JSX, type ReactNode } from "react";
-import { Link as RouterLink, useParams } from "react-router";
+import { Link as RouterLink, useLocation, useParams } from "react-router";
 import { useAccountProjects } from "@features/csm-accounts/api/useAccountProjects";
 import { useGetAccount } from "@features/csm-accounts/api/useGetAccount";
 import {
@@ -95,7 +95,7 @@ function BackButton({ onClick }: { onClick: () => void }): JSX.Element {
       onClick={onClick}
       sx={{ alignSelf: "flex-start" }}
     >
-      Back to accounts
+      Back
     </Button>
   );
 }
@@ -188,6 +188,12 @@ function ProjectsSection({ accountId }: { accountId: string }): JSX.Element {
 export default function CsmAccountDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavTransition();
+  const location = useLocation();
+  // Prefer wherever the caller came from (e.g. a case's Overview panel) over
+  // the hardcoded accounts list, so Back returns to that page instead of
+  // skipping past it — same convention as CsmCaseDetailPage's own back path.
+  const fromListState = location.state as { from?: string } | undefined;
+  const resolvedBackPath = fromListState?.from ?? "/customers/accounts";
   const { data, isLoading, isError } = useGetAccount(id);
 
   if (isLoading) {
@@ -202,7 +208,7 @@ export default function CsmAccountDetailPage(): JSX.Element {
   if (isError) {
     return (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <BackButton onClick={() => navigate("/customers/accounts")} />
+        <BackButton onClick={() => navigate(resolvedBackPath)} />
         <Typography variant="body1" color="error">
           Could not load account {id}.
         </Typography>
@@ -213,7 +219,7 @@ export default function CsmAccountDetailPage(): JSX.Element {
   if (!data) {
     return (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <BackButton onClick={() => navigate("/customers/accounts")} />
+        <BackButton onClick={() => navigate(resolvedBackPath)} />
         <Typography variant="h5">Account not found</Typography>
         <Typography variant="body2" color="text.secondary">
           No account with id <code>{id}</code>.
@@ -228,7 +234,7 @@ export default function CsmAccountDetailPage(): JSX.Element {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
-      <BackButton onClick={() => navigate("/customers/accounts")} />
+      <BackButton onClick={() => navigate(resolvedBackPath)} />
 
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
         <Typography variant="h5">{a.name}</Typography>

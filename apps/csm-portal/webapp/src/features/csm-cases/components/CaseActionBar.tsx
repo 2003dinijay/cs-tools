@@ -21,6 +21,7 @@ import {
   Menu,
   MenuItem,
   Tooltip,
+  Typography,
 } from "@wso2/oxygen-ui";
 import {
   AlertTriangle,
@@ -30,7 +31,6 @@ import {
   ChevronDown,
   Clock,
   Copy,
-  Eye,
   Gauge,
   GitBranch,
   Inbox,
@@ -49,6 +49,7 @@ import type {
 } from "@features/csm-cases/types/csmCases";
 import type { CaseState, Severity } from "@features/csm-dashboard/types/abtDashboard";
 import { stateLabel } from "@features/csm-dashboard/utils/abtDashboard";
+import UserRefLink from "@components/UserRefLink";
 
 /**
  * Presentation for a transition *into* a given state. The button LABEL is never
@@ -462,26 +463,19 @@ export default function CaseActionBar({
         justifyContent: { xs: "flex-start", md: "flex-end" },
       }}
     >
-      {!!onAcknowledge && canAcknowledge(caseDetail) && (
-        // Sits to the left of the state control and stays outlined: claiming a
-        // case is a lighter act than moving it through its lifecycle, so it must
-        // not out-shout the primary transition.
-        <Button
-          size="small"
-          variant="outlined"
-          color="primary"
-          startIcon={
-            isAcknowledging ? (
-              <CircularProgress size={14} color="inherit" />
-            ) : (
-              <Eye size={16} />
-            )
-          }
-          disabled={isAcknowledging || isPending}
-          onClick={() => void onAcknowledge()}
-        >
-          Acknowledge
-        </Button>
+      {!!caseDetail.acknowledgedBy && ACKNOWLEDGEABLE_SEVERITIES.has(caseDetail.severity) && (
+        // Leads the bar as context, read before the action buttons. Mutually
+        // exclusive with the Acknowledge button below (only one of the two
+        // ever renders, since one implies the case is already claimed and
+        // the other implies it isn't) — they sit in different positions,
+        // not "the same slot": this leads the bar, the button trails it.
+        <Typography variant="body2" color="text.secondary" noWrap>
+          Acknowledged by{" "}
+          <UserRefLink
+            name={caseDetail.acknowledgedBy.name}
+            email={caseDetail.acknowledgedBy.email}
+          />
+        </Typography>
       )}
       {primary.length === 1 && (
         // A single reachable state needs no menu — show the transition
@@ -558,6 +552,24 @@ export default function CaseActionBar({
             })}
           </Menu>
         </>
+      )}
+
+      {!!onAcknowledge && canAcknowledge(caseDetail) && (
+        // Sits between the state control and "More": claiming a case is a
+        // lighter act than moving it through its lifecycle, so it trails the
+        // primary transition rather than leading the bar. No leading icon,
+        // for the same plain label-only look as "Change state"/"More" — a
+        // spinner still appears in its place while the claim is in flight.
+        <Button
+          size="small"
+          variant="outlined"
+          color="primary"
+          startIcon={isAcknowledging ? <CircularProgress size={14} color="inherit" /> : undefined}
+          disabled={isAcknowledging || isPending}
+          onClick={() => void onAcknowledge()}
+        >
+          Acknowledge
+        </Button>
       )}
 
       <Button

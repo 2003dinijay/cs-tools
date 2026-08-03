@@ -28,10 +28,10 @@ import {
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
-import { useMemo, useState, type ChangeEvent, type JSX } from "react";
-import { Link as RouterLink } from "react-router";
+import { useMemo, useState, type ChangeEvent, type JSX, type KeyboardEvent } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
+import { useNavTransition } from "@hooks/useNavTransition";
 import { useSearchAccounts } from "@features/csm-accounts/api/useSearchAccounts";
 import {
   resolveAccountTier,
@@ -56,6 +56,7 @@ function formatDate(value?: string | null): string {
 }
 
 export default function CsmAccountsPage(): JSX.Element {
+  const navigate = useNavTransition();
   const [searchInput, setSearchInput] = useState("");
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
@@ -148,20 +149,32 @@ export default function CsmAccountsPage(): JSX.Element {
               ) : (
                 accounts.map((a) => {
                   const tier = resolveAccountTier(a);
+                  const goToAccount = (): void => navigate(`/customers/accounts/${a.id}`);
+                  const handleRowKeyDown = (e: KeyboardEvent<HTMLTableRowElement>): void => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      goToAccount();
+                    }
+                  };
                   return (
-                    <TableRow key={a.id} hover>
+                    <TableRow
+                      key={a.id}
+                      hover
+                      onClick={goToAccount}
+                      onKeyDown={handleRowKeyDown}
+                      tabIndex={0}
+                      aria-label={`View account ${a.name}`}
+                      sx={{
+                        cursor: "pointer",
+                        "&:focus-visible": {
+                          outline: "2px solid",
+                          outlineColor: "primary.main",
+                          outlineOffset: -2,
+                        },
+                      }}
+                    >
                       <TableCell>
-                        <Typography
-                          component={RouterLink}
-                          to={`/customers/accounts/${a.id}`}
-                          variant="body2"
-                          sx={(t) => ({
-                            textDecoration: "none",
-                            color: t.palette.primary.dark,
-                            ...t.applyStyles("dark", { color: t.palette.primary.main }),
-                            "&:hover": { textDecoration: "underline" },
-                          })}
-                        >
+                        <Typography variant="body2" noWrap>
                           {a.name}
                         </Typography>
                       </TableCell>
