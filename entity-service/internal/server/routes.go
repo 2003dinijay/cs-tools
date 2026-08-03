@@ -207,10 +207,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		snUserHandler = handler.NewSNUserHandler(service.NewServiceNowUserService(serviceNowIntegrationServiceClient))
 	}
 
-	var taskHandler *handler.TaskHandler
+	// Tasks are a ServiceNow-only entity, but the routes are registered for both
+	// data sources: with no handler the mux answers 404, while the OpenAPI spec
+	// documents a 503 ErrorResponse for these paths. The Postgres stand-in
+	// supplies that 503 -- same shape as caseService's ServiceNow-only tag
+	// operations.
+	var activeTaskSvc service.TaskService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		taskHandler = handler.NewTaskHandler(service.NewServiceNowTaskService(serviceNowIntegrationServiceClient))
+		activeTaskSvc = service.NewServiceNowTaskService(serviceNowIntegrationServiceClient)
+	} else {
+		activeTaskSvc = service.NewUnavailableTaskService()
 	}
+	taskHandler := handler.NewTaskHandler(activeTaskSvc)
 
 	roleHandler := handler.NewRoleHandler(service.NewRoleService())
 	teamHandler := handler.NewTeamHandler(service.NewTeamService())
@@ -341,13 +349,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		mux.HandleFunc("POST /slas/search", taskSlaHandler.SearchTaskSlas)
 	}
 
-	if taskHandler != nil {
-		mux.HandleFunc("POST /cases/{id}/tasks/search", taskHandler.SearchCaseTasks)
-		mux.HandleFunc("POST /tasks/search", taskHandler.SearchTasks)
-		mux.HandleFunc("GET /tasks/{id}", taskHandler.GetTask)
-		mux.HandleFunc("POST /cases/{id}/tasks", taskHandler.CreateCaseTask)
-		mux.HandleFunc("PATCH /tasks/{id}", taskHandler.UpdateTask)
-	}
+	// Registered unconditionally; the non-ServiceNow data source is served by
+	// service.NewUnavailableTaskService, which answers 503 (see above).
+	mux.HandleFunc("POST /cases/{id}/tasks/search", taskHandler.SearchCaseTasks)
+	mux.HandleFunc("POST /tasks/search", taskHandler.SearchTasks)
+	mux.HandleFunc("GET /tasks/{id}", taskHandler.GetTask)
+	mux.HandleFunc("POST /cases/{id}/tasks", taskHandler.CreateCaseTask)
+	mux.HandleFunc("PATCH /tasks/{id}", taskHandler.UpdateTask)
 
 	if incidentHandler != nil {
 		mux.HandleFunc("GET /incidents/{id}", incidentHandler.GetIncident)
