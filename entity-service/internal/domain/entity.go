@@ -55,23 +55,13 @@ type User struct {
 	UpdatedOn time.Time `json:"updatedOn"`
 }
 
-// UserRole represents a ServiceNow role that can be assigned to a user.
+// UserRole is a role that can be assigned to a user in the backing data
+// source. It is deliberately an open string type with no enumerated
+// constants: this service does not validate role values. The assignable-role
+// allow-list is configuration, and it lives in the caller (the portal
+// backend's directory package), which is what rejects an unknown role. An
+// enum here would read as validation that no longer happens.
 type UserRole string
-
-const (
-	UserRoleInternal      UserRole = "internal"
-	UserRoleAgent         UserRole = "agent"
-	UserRoleAdmin         UserRole = "admin"
-	UserRoleCommenter     UserRole = "commenter"
-	UserRoleExternal      UserRole = "external"
-	UserRoleCustomer      UserRole = "customer"
-	UserRoleCustomerAdmin UserRole = "customer_admin"
-	UserRolePartner       UserRole = "partner"
-	UserRolePartnerAdmin  UserRole = "partner_admin"
-	// UserRoleTimecardApprover exists upstream but was absent from this enum, so it
-	// could not be filtered on.
-	UserRoleTimecardApprover UserRole = "timecard_approver"
-)
 
 // UserSortField enumerates the columns by which user search results may be ordered.
 type UserSortField string
