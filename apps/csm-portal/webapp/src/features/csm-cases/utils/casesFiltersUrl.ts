@@ -53,10 +53,10 @@ export const DEFAULT_CASES_FILTERS: CasesFilters = {
   closedOnLte: null,
   // Note: `tags`/`excludeTags` are real, wired-through fields as of this
   // codec (round-trip URL + `/cases/search` payload) — only the filter-bar
-  // *control* for them is still pending; see the comment above
-  // `TagsMultiSelect`'s import in `CasesFilterBar.tsx`. `TagsMultiSelect` and
-  // `useSearchTags` remain used by the case-detail "Add tag" picker
-  // regardless.
+  // *control* for them is still pending; they surface only as removable
+  // chips (see `buildActiveFilterChips` in `CasesFilterBar.tsx`).
+  // `TagsMultiSelect` and `useSearchTags` remain used by the case-detail
+  // "Add tag" picker regardless.
 };
 
 const VALID_SEVERITIES: Severity[] = ["S0", "S1", "S2", "S3", "S4"];
