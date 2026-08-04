@@ -74,18 +74,20 @@ export const dashboard = {
     }),
 
   // The signed-in user's own non-closed cases, newest-updated first — mirrors the webapp's
-  // MyAssignedCases widget, capped to a short preview (5) rather than paginated.
+  // MyAssignedCases widget (useGetMyAssignedOpenCases.ts: same assignedUserId/state/type filters,
+  // same sort, same 30s staleTime), capped to a short preview (5) rather than paginated.
   assignedToMe: (userId: string | null) =>
     queryOptions({
       queryKey: ["dashboard", "assigned-to-me", userId],
-      queryFn: () =>
-        userId
-          ? getAllCases({
-              filters: { types: ["case"], assignedUserIds: [userId], states: ASSIGNED_TO_ME_STATES },
-              sortBy: { field: "updatedOn", order: "desc" },
-              pagination: { limit: 5 },
-            })
-          : Promise.resolve(EMPTY_RESULT),
+      queryFn: () => {
+        if (!userId) return Promise.resolve(EMPTY_RESULT);
+        return getAllCases({
+          filters: { types: ["case"], assignedUserIds: [userId], states: ASSIGNED_TO_ME_STATES },
+          sortBy: { field: "updatedOn", order: "desc" },
+          pagination: { limit: 5 },
+        });
+      },
       enabled: !!userId,
+      staleTime: 30_000,
     }),
 };
