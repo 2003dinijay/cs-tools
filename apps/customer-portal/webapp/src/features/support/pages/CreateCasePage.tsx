@@ -171,6 +171,7 @@ export default function CreateCasePage(): JSX.Element {
   const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
   const attachmentNamesRef = useRef<Map<string, string>>(new Map());
   const attachmentIdCounterRef = useRef(0);
+  const isSubmittingRef = useRef(false);
   const [isPreparingAttachments, setIsPreparingAttachments] = useState(false);
   const [isAttachmentModalOpen, setIsAttachmentModalOpen] = useState(false);
   const deploymentsQuery = usePostProjectDeploymentsSearchInfinite(
@@ -950,14 +951,30 @@ export default function CreateCasePage(): JSX.Element {
       severityKey = parsedSeverity;
     }
 
+    if (isSubmittingRef.current) return;
+
     let inlineAttachments: Array<{ file: string; name: string }> | undefined;
     if (isSecurityReport) {
-      inlineAttachments = await Promise.all(
-        attachments.map(async (item) => ({
-          file: await fileToBase64Content(item.file),
-          name: attachmentNamesRef.current.get(item.id) || item.file.name,
-        })),
-      );
+      isSubmittingRef.current = true;
+      setIsPreparingAttachments(true);
+      const attachmentsSnapshot = attachments;
+      try {
+        inlineAttachments = await Promise.all(
+          attachmentsSnapshot.map(async (item) => ({
+            file: await fileToBase64Content(item.file),
+            name: attachmentNamesRef.current.get(item.id) || item.file.name,
+          })),
+        );
+      } catch (error) {
+        logger.error("Failed to read attachment file(s)", error);
+        showError(
+          "We couldn't read one or more attachments. Please try again.",
+        );
+        return;
+      } finally {
+        isSubmittingRef.current = false;
+        setIsPreparingAttachments(false);
+      }
     }
 
     const payload: CreateCaseRequest = {
