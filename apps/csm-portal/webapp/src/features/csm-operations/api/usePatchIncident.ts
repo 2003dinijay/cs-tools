@@ -57,13 +57,6 @@ export function usePatchIncident(): UseMutationResult<
       void queryClient.invalidateQueries({
         queryKey: [ApiQueryKeys.INCIDENTS],
       });
-      // A state patch is audited server-side (incidents share the same
-      // activities search as cases), so refresh the activity/field-change
-      // lane too — otherwise the new lifecycle entry wouldn't show until the
-      // next unrelated refetch.
-      void queryClient.invalidateQueries({
-        queryKey: [ApiQueryKeys.CSM_CASE_ACTIVITIES, "incident", variables.id],
-      });
     },
   });
 }

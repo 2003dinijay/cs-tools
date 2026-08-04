@@ -61,9 +61,6 @@ vi.mock("@features/csm-operations/api/useCsmIncidentComments", () => ({
   useGetCsmIncidentComments: () => ({ data: [] }),
   usePostCsmIncidentComment: () => ({ isPending: false, mutate: vi.fn() }),
 }));
-vi.mock("@features/csm-cases/api/useCsmCaseActivities", () => ({
-  useGetCsmCaseActivities: () => ({ data: [] }),
-}));
 vi.mock("@features/csm-cases/api/useCsmCaseAttachments", () => ({
   useGetCsmCaseAttachments: () => ({ data: [] }),
   usePostCsmCaseAttachment: () => ({ isPending: false, mutate: vi.fn() }),

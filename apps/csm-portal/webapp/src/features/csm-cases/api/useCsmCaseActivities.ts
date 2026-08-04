@@ -60,32 +60,25 @@ export function auditEntryFromBeActivity(
 }
 
 /**
- * Load the audited field/state-change lane for a case or incident — the
- * backend confirmed both entity types are served by the same activities
- * search, so this is one hook for both rather than a duplicated per-entity
- * one. In LIVE mode calls `POST /cases/{id}/activities/search` (the path is
- * always `/cases/`, even for an incident id) with a single wide page (limit
- * capped at BE_MAX_PAGE_LIMIT) and `includeFieldChanges: true`, then filters
- * the response down to `type === "field_change"` entries — this endpoint
- * also returns `comment`/`attachment` entries, but those lanes keep reading
- * from their existing hooks (`useGetCsmCaseComments` / `useGetCsmCaseAttachments`
- * and their incident equivalents), so they are ignored here to avoid a
- * second, divergent read path. Notably this endpoint excludes work notes, so
- * it must never replace either comments hook.
- *
- * `entityType` only affects the query key (so a case and an incident never
- * share a cache entry); it does not change the request itself.
+ * Load the audited field/state-change lane for a case. In LIVE mode calls
+ * `POST /cases/{id}/activities/search` with a single wide page (limit capped
+ * at BE_MAX_PAGE_LIMIT) and `includeFieldChanges: true`, then filters the
+ * response down to `type === "field_change"` entries — this endpoint also
+ * returns `comment`/`attachment` entries, but those lanes keep reading from
+ * their existing hooks (`useGetCsmCaseComments` / `useGetCsmCaseAttachments`),
+ * so they are ignored here to avoid a second, divergent read path. Notably
+ * this endpoint excludes work notes, so it must never replace the comments
+ * hook.
  */
 export function useGetCsmCaseActivities(
-  id: string | undefined,
-  entityType: "case" | "incident" = "case",
+  caseId: string | undefined,
 ): UseQueryResult<CaseAuditEntry[], Error> {
   const api = useBackendApi();
 
   return useQuery<CaseAuditEntry[], Error>({
-    queryKey: [ApiQueryKeys.CSM_CASE_ACTIVITIES, entityType, id ?? ""],
+    queryKey: [ApiQueryKeys.CSM_CASE_ACTIVITIES, caseId ?? ""],
     queryFn: async (): Promise<CaseAuditEntry[]> => {
-      if (!id) return [];
+      if (!caseId) return [];
 
       const payload: BeCaseActivitiesSearchPayload = {
         pagination: { offset: 0, limit: ACTIVITIES_PAGE_LIMIT },
@@ -94,12 +87,12 @@ export function useGetCsmCaseActivities(
       const response = await api.post<
         BeCaseActivitiesSearchPayload,
         BeCaseActivitiesSearchResponse
-      >(`/cases/${encodeURIComponent(id)}/activities/search`, payload);
+      >(`/cases/${encodeURIComponent(caseId)}/activities/search`, payload);
       return (response.activity ?? [])
         .filter((a) => a.type === "field_change")
         .map(auditEntryFromBeActivity);
     },
-    enabled: !!id,
+    enabled: !!caseId,
     staleTime: 10_000,
   });
 }

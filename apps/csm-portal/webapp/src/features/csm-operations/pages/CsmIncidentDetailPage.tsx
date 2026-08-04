@@ -46,7 +46,6 @@ import {
   useGetCsmIncidentComments,
   usePostCsmIncidentComment,
 } from "@features/csm-operations/api/useCsmIncidentComments";
-import { useGetCsmCaseActivities } from "@features/csm-cases/api/useCsmCaseActivities";
 import EditIncidentDialog from "@features/csm-operations/components/EditIncidentDialog";
 import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
 import IncidentActionBar from "@features/csm-operations/components/IncidentActionBar";
@@ -188,9 +187,6 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   const engineerName = useEngineerDisplayName();
 
   const { data: comments } = useGetCsmIncidentComments(id);
-  // Confirmed with the team: incidents and cases are served by the same
-  // activities search (see useGetCsmCaseActivities' doc comment).
-  const { data: activityAudit } = useGetCsmCaseActivities(id, "incident");
   const postComment = usePostCsmIncidentComment();
   const { data: attachments } = useGetCsmCaseAttachments(id, "incident");
   const postAttachment = usePostCsmCaseAttachment();
@@ -501,7 +497,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
           )}
           <CaseActivitiesFeed
             comments={comments ?? []}
-            audit={activityAudit ?? []}
+            audit={[]}
             attachments={attachmentList}
             onDownloadAttachment={onDownloadAttachment}
             preview={{

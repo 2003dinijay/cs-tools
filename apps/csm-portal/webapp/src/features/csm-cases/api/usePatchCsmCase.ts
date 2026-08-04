@@ -63,7 +63,7 @@ export function usePatchCsmCase(
       // refresh the activity/field-change lane too — otherwise the new
       // lifecycle entry wouldn't show until the next unrelated refetch.
       queryClient.invalidateQueries({
-        queryKey: [ApiQueryKeys.CSM_CASE_ACTIVITIES, "case", caseId ?? ""],
+        queryKey: [ApiQueryKeys.CSM_CASE_ACTIVITIES, caseId ?? ""],
       });
     },
   });
@@ -95,7 +95,7 @@ export function usePatchCsmCaseById(): (
       });
       queryClient.invalidateQueries({ queryKey: [ApiQueryKeys.CSM_CASES] });
       queryClient.invalidateQueries({
-        queryKey: [ApiQueryKeys.CSM_CASE_ACTIVITIES, "case", caseId],
+        queryKey: [ApiQueryKeys.CSM_CASE_ACTIVITIES, caseId],
       });
     },
     [api, queryClient],
