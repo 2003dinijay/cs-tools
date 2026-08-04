@@ -192,7 +192,7 @@ export function BasicInformationSection({
               <FormControl
                 fullWidth
                 size="small"
-                disabled={isDeploymentDisabled}
+                disabled={isDeploymentDisabled || showNoDeploymentsHint}
               >
                 <Select
                   value={deployment}
@@ -261,7 +261,7 @@ export function BasicInformationSection({
             <FormControl
               fullWidth
               size="small"
-              disabled={isProductDropdownDisabled}
+              disabled={isProductDropdownDisabled || showNoProductsHint}
             >
               <Select
                 value={product}
