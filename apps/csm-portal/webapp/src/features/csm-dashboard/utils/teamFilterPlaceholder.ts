@@ -51,31 +51,37 @@ const TEAM_FILTER_FIELD = "integrationCsTeam";
  * `resolveCurrentUserSentinels` already walk) with the selected team's own
  * `groupId` — the backing data source's assignment-group id reformatted as
  * this platform's UUID (`BeTeam.groupId`), never the team registry key
- * (`BeTeam.id`) that `integrationCsTeam` values are NOT keyed by.
+ * (`BeTeam.id`) that `integrationCsTeam` values are NOT keyed by. This only
+ * applies to a single selected team (`selectedTeamGroupId` a plain string).
  *
  * `selectedTeamGroupId` may also be an array of `groupId`s — the "All ABTs"
- * case (see {@link ALL_TEAMS_SENTINEL}): every team in the current
- * dashboard's family, OR'd together. The single placeholder occurrence in
- * `values` is then spliced out and replaced with all of them (`in` already
- * supports multiple values — no backend change needed), rather than the
- * 1:1 substitution a single string gets. An empty array is treated the same
- * as `undefined` (see below) — a family with no teams configured is no
- * different from no team selected at all.
+ * case (see {@link ALL_TEAMS_SENTINEL}). As of 2026-08-05 this is an
+ * explicit, deliberate product decision: the `integrationCsTeam` entry is
+ * DROPPED from the filter array entirely whenever `selectedTeamGroupId` is
+ * an array, regardless of its contents, rather than being replaced with the
+ * enumerated list of every team's `groupId` in the current dashboard's
+ * family. Dropping the filter widens the query to *every* team in the whole
+ * registry — including non-ABT teams (`cre`, `sre`, etc.) outside this
+ * dashboard's own family — which is broader than "every team in this
+ * family" and was previously avoided on purpose (see the removed "My ABT /
+ * All customers" toggle this replaced). That tradeoff was considered and
+ * accepted: "All ABTs" now means "no team filter at all", org-wide.
  *
- * If `selectedTeamGroupId` is undefined (or an empty array) — no team
- * selected yet, or the selected team has no group configured in the
- * deployment's team registry — the `integrationCsTeam` entry is DROPPED
- * from the filter array entirely, rather than either (a) sent with the
- * literal placeholder string, which the entity-service would either reject
- * with a 400 (not a valid UUID) or, worse, silently treat as a value that
- * matches nothing, or (b) sent with an empty `values` array, which the
- * entity-service also rejects for a non-`isEmpty`/`isNotEmpty` op. Dropping
- * the condition instead just widens the query back to "every team" — the
- * same result as if this filter had never been applied — which is the
- * safer failure mode for a dashboard tile: a count/list that's too broad is
- * visibly wrong (an obviously large number, or rows from other teams) and
- * gets noticed, where a query that silently matches zero rows reads as
- * "there's nothing to see here" and doesn't.
+ * If `selectedTeamGroupId` is undefined, or an array (see above) — no team
+ * selected yet, the selected team has no group configured in the
+ * deployment's team registry, or "All ABTs" is selected — the
+ * `integrationCsTeam` entry is DROPPED from the filter array entirely,
+ * rather than either (a) sent with the literal placeholder string, which
+ * the entity-service would either reject with a 400 (not a valid UUID) or,
+ * worse, silently treat as a value that matches nothing, or (b) sent with
+ * an empty `values` array, which the entity-service also rejects for a
+ * non-`isEmpty`/`isNotEmpty` op. Dropping the condition instead just widens
+ * the query back to "every team" — the same result as if this filter had
+ * never been applied — which is the safer failure mode for a dashboard
+ * tile: a count/list that's too broad is visibly wrong (an obviously large
+ * number, or rows from other teams) and gets noticed, where a query that
+ * silently matches zero rows reads as "there's nothing to see here" and
+ * doesn't.
  *
  * Every other filter entry, and every other resourceType's filters shape
  * (this only touches the case-search generic field/op/values DSL), passes
@@ -88,9 +94,8 @@ export function resolveTeamPlaceholder(
   const fieldFilters = filters.filters;
   if (!isCaseFieldFilterArray(fieldFilters)) return filters;
 
-  const hasReplacement =
-    selectedTeamGroupId !== undefined &&
-    (!Array.isArray(selectedTeamGroupId) || selectedTeamGroupId.length > 0);
+  const replacementGroupId =
+    typeof selectedTeamGroupId === "string" ? selectedTeamGroupId : undefined;
 
   let changed = false;
   const resolved: WidgetCaseFieldFilterLike[] = [];
@@ -101,19 +106,13 @@ export function resolveTeamPlaceholder(
       continue;
     }
     changed = true;
-    if (!hasReplacement) {
+    if (replacementGroupId === undefined) {
       // Drop the entry entirely — see the doc comment above.
       continue;
     }
     resolved.push({
       ...entry,
-      values: values.flatMap((v) =>
-        v === CURRENT_TEAM_PLACEHOLDER
-          ? Array.isArray(selectedTeamGroupId)
-            ? selectedTeamGroupId
-            : [selectedTeamGroupId as string]
-          : [v],
-      ),
+      values: values.flatMap((v) => (v === CURRENT_TEAM_PLACEHOLDER ? [replacementGroupId] : [v])),
     });
   }
 
