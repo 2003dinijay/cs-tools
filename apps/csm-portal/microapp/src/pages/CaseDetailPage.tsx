@@ -135,6 +135,10 @@ function CaseDetailContent({ id }: { id: string }) {
   const invalidateCase = (): void => {
     void queryClient.invalidateQueries({ queryKey: ["case", id] });
     void queryClient.invalidateQueries({ queryKey: ["cases"] });
+    // Home's "Assigned to me"/composition widgets key off a disjoint ["dashboard", ...] prefix —
+    // without this, a state/assignment/workState change made here (e.g. closing or picking up a
+    // case) would leave those widgets showing stale data until their own staleTime lapsed.
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
   };
 
   const handleTransition = (target: CaseState): void => {

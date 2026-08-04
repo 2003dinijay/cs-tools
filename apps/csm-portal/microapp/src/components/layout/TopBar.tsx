@@ -73,7 +73,7 @@ function ExitButton() {
     <>
       <IconButton
         disableRipple
-        color="error"
+        color="primary"
         sx={{
           gap: 1,
           position: "absolute",
