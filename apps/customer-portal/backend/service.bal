@@ -2421,6 +2421,7 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
             }
 
             if getStatusCode(feedbackResponse) == http:STATUS_NOT_FOUND {
+                log:printWarn(string `Feedback not found for case with ID: ${id}.`);
                 return <http:NotFound>{
                     body: {
                         message: string `Feedback not found for case with ID: ${id}.`
