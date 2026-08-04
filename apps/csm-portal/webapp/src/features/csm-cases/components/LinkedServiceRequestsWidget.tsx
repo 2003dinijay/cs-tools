@@ -37,6 +37,7 @@ import {
   type ChildCaseRow,
 } from "@features/csm-cases/api/useSearchChildCases";
 import StateChip from "@components/StateChip";
+import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
 
 const LINKED_SERVICE_REQUESTS_COLUMNS = ["Case", "State", "Assignee"];
 
@@ -83,7 +84,14 @@ export function LinkedServiceRequestsWidget({
   onCreateServiceRequest,
   createDisabled = false,
 }: LinkedServiceRequestsWidgetProps): JSX.Element {
-  const { data, isLoading, isError } = useSearchChildCases(caseId);
+  const {
+    data,
+    isLoading,
+    isError,
+    refetch,
+    isFetching,
+    dataUpdatedAt,
+  } = useSearchChildCases(caseId);
   const navigate = useNavTransition();
 
   const enrichedById = useMemo(() => {
@@ -120,19 +128,27 @@ export function LinkedServiceRequestsWidget({
             Linked service requests{refs.length > 0 ? ` (${refs.length})` : ""}
           </Typography>
         </Box>
-        <Tooltip title={createDisabled ? "This case is closed — it's read-only." : ""}>
-          <Box component="span">
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<Plus size={14} />}
-              onClick={onCreateServiceRequest}
-              disabled={createDisabled}
-            >
-              Create service request
-            </Button>
-          </Box>
-        </Tooltip>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <RefreshButton
+            onRefresh={() => void refetch()}
+            isFetching={isFetching}
+            updatedAt={dataUpdatedAt}
+            label="Refresh linked service requests"
+          />
+          <Tooltip title={createDisabled ? "This case is closed — it's read-only." : ""}>
+            <Box component="span">
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<Plus size={14} />}
+                onClick={onCreateServiceRequest}
+                disabled={createDisabled}
+              >
+                Create service request
+              </Button>
+            </Box>
+          </Tooltip>
+        </Box>
       </Box>
 
       <TableContainer>

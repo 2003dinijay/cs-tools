@@ -23,6 +23,7 @@ import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useWidgetData } from "@features/csm-dashboard/api/useWidgetData";
+import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
 import { WIDGET_LIST_RENDERERS } from "@features/csm-dashboard/config/widgetListConfig";
 import { resourceTypeForPreviewSlug } from "@features/csm-dashboard/config/widgetResourceConfig";
 import {
@@ -144,7 +145,7 @@ function DashboardWidgetPreviewContent({
     return trimmed ? { ...filters, searchQuery: trimmed } : filters;
   }, [filters, debouncedSearch]);
 
-  const { data, isLoading, isError } = useWidgetData(
+  const { data, isLoading, isError, isFetching, refetch, dataUpdatedAt } = useWidgetData(
     widgetId,
     resourceType,
     queriedFilters,
@@ -167,7 +168,15 @@ function DashboardWidgetPreviewContent({
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
       {backButton}
-      <Typography variant="h5">{displayName}</Typography>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+        <Typography variant="h5">{displayName}</Typography>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label={`Refresh ${displayName}`}
+        />
+      </Box>
       <TextField
         size="small"
         label="Search"

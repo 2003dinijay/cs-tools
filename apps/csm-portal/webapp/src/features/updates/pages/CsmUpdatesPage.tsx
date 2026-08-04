@@ -49,6 +49,7 @@ import type { SelectChangeEvent } from "@wso2/oxygen-ui";
 import DOMPurify from "dompurify";
 import { useGetProductUpdateLevels } from "@features/updates/api/useGetProductUpdateLevels";
 import { usePostUpdateLevelsSearch } from "@features/updates/api/usePostUpdateLevelsSearch";
+import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
 import type {
   ProductUpdateLevel,
   SearchUpdatesPayload,
@@ -787,17 +788,25 @@ export default function CsmUpdatesPage(): JSX.Element {
             </Typography>
           ) : (
             <Stack spacing={2}>
-              <Typography variant="body2" color="text.secondary">
-                There are <strong>{sortedEntries.length}</strong> updates with{" "}
-                <strong>{counts.security}</strong> security,{" "}
-                <strong>{counts.regular}</strong> regular
-                {counts.mixed > 0 && (
-                  <>
-                    , and <strong>{counts.mixed}</strong> mixed
-                  </>
-                )}{" "}
-                updates.
-              </Typography>
+              <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+                <Typography variant="body2" color="text.secondary">
+                  There are <strong>{sortedEntries.length}</strong> updates with{" "}
+                  <strong>{counts.security}</strong> security,{" "}
+                  <strong>{counts.regular}</strong> regular
+                  {counts.mixed > 0 && (
+                    <>
+                      , and <strong>{counts.mixed}</strong> mixed
+                    </>
+                  )}{" "}
+                  updates.
+                </Typography>
+                <RefreshButton
+                  onRefresh={() => void searchResult.refetch()}
+                  isFetching={searchResult.isFetching}
+                  updatedAt={searchResult.dataUpdatedAt}
+                  label="Refresh updates"
+                />
+              </Box>
 
               <TableContainer component={Paper}>
                 <Table sx={{ minWidth: 650, width: "100%", tableLayout: "fixed" }}>

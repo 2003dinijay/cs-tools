@@ -52,6 +52,7 @@ import {
   writeChangeRequestFiltersToUrl,
 } from "@features/csm-operations/utils/changeRequestsFiltersUrl";
 import ChangeRequestsFilterBar from "@features/csm-operations/components/ChangeRequestsFilterBar";
+import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
 import type {
   BeChangeRequestSearchPayload,
   BeChangeRequestSearchResponse,
@@ -117,7 +118,7 @@ export default function ChangeRequestsTab(): JSX.Element {
     [debouncedSearch, filters.states, filters.impacts, filters.closedStartDate, filters.closedEndDate, page, rowsPerPage],
   );
 
-  const { data, isLoading, isError, error, isFetching } =
+  const { data, isLoading, isError, error, isFetching, refetch, dataUpdatedAt } =
     useSearchChangeRequests(payload);
 
   const changeRequests = data?.changeRequests ?? [];
@@ -186,7 +187,13 @@ export default function ChangeRequestsTab(): JSX.Element {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1 }}>
+      <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1 }}>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label="Refresh change requests"
+        />
         <FilteredCsvExportButton<BeChangeRequestSearchView>
           entityName="change-requests"
           header={["Number", "Subject", "Project", "State", "Impact", "Planned start", "Updated"]}

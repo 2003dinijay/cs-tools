@@ -29,7 +29,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { GitPullRequest } from "@wso2/oxygen-ui-icons-react";
 import type { JSX } from "react";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useBackendApi } from "@api/backend/client";
 import { ApiQueryKeys } from "@constants/apiConstants";
@@ -38,6 +38,7 @@ import {
   changeRequestStateColor,
   changeRequestStateLabel,
 } from "@features/csm-operations/utils/changeRequests";
+import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
 
 const LINKED_CHANGE_REQUESTS_COLUMNS = ["Change request", "State", "Target environment"];
 
@@ -73,6 +74,7 @@ export function LinkedChangeRequestsWidget({
 }: LinkedChangeRequestsWidgetProps): JSX.Element {
   const api = useBackendApi();
   const navigate = useNavTransition();
+  const queryClient = useQueryClient();
   const refs = changeRequests ?? [];
 
   const queries = useQueries({
@@ -87,13 +89,35 @@ export function LinkedChangeRequestsWidget({
       staleTime: 30_000,
     })),
   });
+  const isFetching = queries.some((q) => q.isFetching);
+  const refreshRows = (): void => {
+    for (const ref of refs) {
+      void queryClient.invalidateQueries({
+        queryKey: [ApiQueryKeys.CHANGE_REQUEST_DETAILS, ref.id],
+      });
+    }
+  };
 
   return (
     <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-      <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-        <GitPullRequest size={16} />
-        <Typography variant="subtitle2">Linked change requests</Typography>
-        <Chip size="small" variant="outlined" label={`${refs.length} total`} />
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 1,
+        }}
+      >
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+          <GitPullRequest size={16} />
+          <Typography variant="subtitle2">Linked change requests</Typography>
+          <Chip size="small" variant="outlined" label={`${refs.length} total`} />
+        </Box>
+        <RefreshButton
+          onRefresh={refreshRows}
+          isFetching={isFetching}
+          label="Refresh linked change requests"
+        />
       </Box>
 
       <TableContainer>

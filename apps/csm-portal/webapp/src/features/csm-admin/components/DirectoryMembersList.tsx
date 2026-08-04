@@ -37,6 +37,7 @@ import type { SearchUsersRequest } from "@features/csm-users/types/csmUsers";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { displayUserTimezone } from "@utils/userDirectoryDisplay";
+import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
@@ -78,7 +79,15 @@ export default function DirectoryMembersList({
     filters: { [filterKey]: [entityId] },
   };
 
-  const { data, isLoading, isFetching, isError, error } = useSearchUsers(request);
+  const {
+    data,
+    isLoading,
+    isFetching,
+    isError,
+    error,
+    refetch,
+    dataUpdatedAt,
+  } = useSearchUsers(request);
   const users = data?.users ?? [];
   const total = data?.total ?? 0;
 
@@ -94,7 +103,16 @@ export default function DirectoryMembersList({
   };
 
   return (
-    <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+      <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label={`Refresh ${entityNoun} members`}
+        />
+      </Box>
+      <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
       <TableContainer sx={{ overflow: "visible" }}>
         <Table
           size="small"
@@ -246,6 +264,7 @@ export default function DirectoryMembersList({
         showFirstButton
         showLastButton
       />
+      </Box>
     </Box>
   );
 }

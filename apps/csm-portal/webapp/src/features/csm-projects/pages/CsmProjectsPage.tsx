@@ -33,6 +33,7 @@ import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useSearchProjects } from "@features/csm-projects/api/useSearchProjects";
 import ClosureStateChip from "@features/csm-projects/components/ClosureStateChip";
+import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
 import type { SearchProjectsRequest } from "@features/csm-projects/types/csmProjects";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 
@@ -68,7 +69,8 @@ export default function CsmProjectsPage(): JSX.Element {
     [debouncedSearch, page, rowsPerPage],
   );
 
-  const { data, isLoading, isFetching, isError, error } = useSearchProjects(request);
+  const { data, isLoading, isFetching, isError, error, refetch, dataUpdatedAt } =
+    useSearchProjects(request);
 
   const handleSearchChange = (e: ChangeEvent<HTMLInputElement>) => {
     setSearchInput(e.target.value);
@@ -85,9 +87,17 @@ export default function CsmProjectsPage(): JSX.Element {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      <Typography variant="body2" color="text.secondary">
-        Search across project name, project key, and subscription type.
-      </Typography>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+        <Typography variant="body2" color="text.secondary">
+          Search across project name, project key, and subscription type.
+        </Typography>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label="Refresh projects"
+        />
+      </Box>
 
       <TextField
         size="small"

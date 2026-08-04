@@ -110,6 +110,7 @@ import { usePostCaseGithubIssue } from "@features/csm-cases/api/useCsmCaseGithub
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
 import { scrollToFragmentWithRetry } from "@features/csm-cases/utils/permalinkScroll";
 import CaseMetaBand from "@features/csm-cases/components/CaseMetaBand";
+import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
 import {
   AttachmentsWidget,
   CustomerContextWidget,
@@ -336,7 +337,15 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // detail page, which never got the state set.
   const fromListState = location.state as { from?: string } | undefined;
   const resolvedBackPath = fromListState?.from ?? backPath;
-  const { data, isLoading, isError, error } = useGetCsmCaseDetail(caseId);
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    refetch: refetchCaseDetail,
+    isFetching: isFetchingCaseDetail,
+    dataUpdatedAt: caseDetailUpdatedAt,
+  } = useGetCsmCaseDetail(caseId);
   // The route alone isn't a reliable signal once data has loaded: a "Related
   // case" link always points at /cases/:id regardless of the target's actual
   // type, so an announcement opened that way would otherwise render the full
@@ -385,6 +394,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
     data: comments,
     isLoading: isCommentsLoading,
     isError: isCommentsError,
+    refetch: refetchComments,
+    isFetching: isFetchingComments,
   } = useGetCsmCaseComments(caseId);
   // Audited field/state changes (the "State changes" lifecycle lane), loaded
   // from the dedicated activities endpoint — kept separate from the comments
@@ -393,6 +404,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
     data: activityAudit,
     isLoading: isActivityLoading,
     isError: isActivityError,
+    refetch: refetchActivities,
+    isFetching: isFetchingActivities,
   } = useGetCsmCaseActivities(caseId);
   // The chat transcript the case was spawned from, when linked. Loaded lazily
   // off the case's conversation id and merged into the comment stream below so
@@ -403,6 +416,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
     data: chatMessages,
     isLoading: isChatLoading,
     isError: isChatError,
+    refetch: refetchChat,
+    isFetching: isFetchingChat,
   } = useGetCsmConversationMessages(data?.conversationId);
   const postComment = usePostCsmCaseComment();
   const {
@@ -410,6 +425,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
     isLoading: isAttachmentsLoading,
     isError: isAttachmentsError,
     refetch: refetchAttachments,
+    isFetching: isFetchingAttachments,
+    dataUpdatedAt: attachmentsUpdatedAt,
   } = useGetCsmCaseAttachments(caseId);
   const postAttachment = usePostCsmCaseAttachment();
   const downloadAttachment = useDownloadCsmCaseAttachment();
@@ -423,9 +440,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const { data: slaList } = useGetCsmCaseSlas(
     isAnnouncement ? undefined : caseId,
   );
-  const { data: callRequests } = useGetCsmCaseCallRequests(
-    isAnnouncement ? undefined : caseId,
-  );
+  const {
+    data: callRequests,
+    refetch: refetchCallRequests,
+    isFetching: isFetchingCallRequests,
+  } = useGetCsmCaseCallRequests(isAnnouncement ? undefined : caseId);
   const { data: caseTasks } = useSearchCaseTasks(
     isAnnouncement ? undefined : caseId,
   );
@@ -433,18 +452,25 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // only runs when the case actually has a deployment link (SN-sourced cases
   // may have none). Reuses the project's deployment list rather than a
   // single-deployment GET, since the backend has no `/deployments/{id}` route.
-  const { data: projectDeployments, isLoading: isProjectDeploymentsLoading } =
-    useSearchDeployments(
-      data?.productContext.deploymentId ? data.projectId : undefined,
-    );
+  const {
+    data: projectDeployments,
+    isLoading: isProjectDeploymentsLoading,
+    refetch: refetchProjectDeployments,
+    isFetching: isFetchingProjectDeployments,
+  } = useSearchDeployments(
+    data?.productContext.deploymentId ? data.projectId : undefined,
+  );
   const liveDeployment = projectDeployments?.find(
     (d) => d.id === data?.productContext.deploymentId,
   );
   // Richer account/project facts for the Customer card, beyond what's
   // embedded in the case-detail payload's `customerContext` snapshot.
-  const { data: caseProject, isLoading: isCaseProjectLoading } = useGetProject(
-    data?.projectId,
-  );
+  const {
+    data: caseProject,
+    isLoading: isCaseProjectLoading,
+    refetch: refetchCaseProject,
+    isFetching: isFetchingCaseProject,
+  } = useGetProject(data?.projectId);
   const patchCase = usePatchCsmCase(caseId);
   const patchCaseById = usePatchCsmCaseById();
   const createTask = useCreateCaseTask(caseId);
@@ -624,6 +650,38 @@ export default function CsmCaseDetailPage(): JSX.Element {
       },
     });
   }, [permalinkFragment, activitiesFeedReady, showError]);
+
+  // Re-runs every source the Activities tab's merged timeline draws from —
+  // comments, the audit trail, the linked chat transcript (a no-op when
+  // disabled), attachments, and call requests (the last only enriches a
+  // field-change entry that references one, but a stale label there is still
+  // worth refreshing). ServiceNow only refreshes a single tab like this in
+  // its own case UI; the whole page previously had to be reloaded to see
+  // this tab's data change.
+  const isRefreshingActivities =
+    isFetchingComments ||
+    isFetchingActivities ||
+    isFetchingChat ||
+    isFetchingAttachments ||
+    isFetchingCallRequests;
+  const refreshActivitiesTab = (): void => {
+    void refetchComments();
+    void refetchActivities();
+    void refetchChat();
+    void refetchAttachments();
+    void refetchCallRequests();
+  };
+
+  // Re-runs every source the Details tab renders: the case itself plus the
+  // two supplemental lookups (project, live deployment) the Customer/Product
+  // cards enrich with.
+  const isRefreshingDetails =
+    isFetchingCaseDetail || isFetchingCaseProject || isFetchingProjectDeployments;
+  const refreshDetailsTab = (): void => {
+    void refetchCaseDetail();
+    void refetchCaseProject();
+    void refetchProjectDeployments();
+  };
 
   useEffect(() => {
     // State-transition feedback is sticky (persists until dismissed) so it
@@ -1872,15 +1930,29 @@ export default function CsmCaseDetailPage(): JSX.Element {
           )}
 
           <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-              <Typography variant="subtitle2">Activity timeline</Typography>
-              {!isCommentsLoading && (
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label={`${safeComments.length + (activityAudit?.length ?? 0) + attachmentList.length} entries`}
-                />
-              )}
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 1.5,
+              }}
+            >
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                <Typography variant="subtitle2">Activity timeline</Typography>
+                {!isCommentsLoading && (
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    label={`${safeComments.length + (activityAudit?.length ?? 0) + attachmentList.length} entries`}
+                  />
+                )}
+              </Box>
+              <RefreshButton
+                onRefresh={refreshActivitiesTab}
+                isFetching={isRefreshingActivities}
+                label="Refresh activity timeline"
+              />
             </Box>
 
             {isCommentsLoading || isChatLoading || isActivityLoading ? (
@@ -1946,7 +2018,15 @@ export default function CsmCaseDetailPage(): JSX.Element {
           }}
         >
           <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
-            <Typography variant="subtitle2">Identifiers &amp; timestamps</Typography>
+            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+              <Typography variant="subtitle2">Identifiers &amp; timestamps</Typography>
+              <RefreshButton
+                onRefresh={refreshDetailsTab}
+                isFetching={isRefreshingDetails}
+                updatedAt={caseDetailUpdatedAt}
+                label="Refresh case details"
+              />
+            </Box>
             <Box
               sx={{
                 display: "grid",
@@ -2033,11 +2113,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           {/* Case-level action, not scoped to any one card below: the dialog
               lets the user pick parent-vs-related for any target case, so it
-              doesn't belong nested inside one specific relationship card.
-              Left-aligned to read in flow with the cards' own title-left
-              layout below, rather than floating alone in right-side
-              whitespace. */}
-          <Box sx={{ display: "flex", justifyContent: "flex-start" }}>
+              doesn't belong nested inside one specific relationship card. The
+              refresh button on the other side of this same row re-runs the
+              case-detail query, which is where each card's linked-item refs
+              (id/number/name) come from — each card's own enrichment data
+              (state, assignee, ...) has its own refresh button instead. */}
+          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 1 }}>
             {/* Same read-only-once-closed rule as the comment composer,
                 attachment upload, and tag add/remove below — a link PATCH
                 on a closed case would otherwise fail server-side and only
@@ -2056,6 +2137,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 </Button>
               </Box>
             </Tooltip>
+            <RefreshButton
+              onRefresh={() => void refetchCaseDetail()}
+              isFetching={isFetchingCaseDetail}
+              updatedAt={caseDetailUpdatedAt}
+              label="Refresh linked items"
+            />
           </Box>
           <Box
             sx={{
@@ -2107,6 +2194,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
             onAdd={onAddWatcher}
             onRemove={onRemoveWatcher}
             isSaving={patchCase.isPending}
+            onRefresh={() => void refetchCaseDetail()}
+            isRefreshing={isFetchingCaseDetail}
+            refreshedAt={caseDetailUpdatedAt}
           />
         </Box>
       )}
@@ -2121,6 +2211,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
             loading={isAttachmentsLoading}
             error={isAttachmentsError}
             onRetry={() => void refetchAttachments()}
+            onRefresh={() => void refetchAttachments()}
+            isRefreshing={isFetchingAttachments}
+            refreshedAt={attachmentsUpdatedAt}
             uploading={postAttachment.isPending}
             uploadError={
               postAttachment.isError

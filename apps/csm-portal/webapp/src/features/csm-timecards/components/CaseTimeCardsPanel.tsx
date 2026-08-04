@@ -36,6 +36,7 @@ import TimeCardStatusChip from "@features/csm-timecards/components/TimeCardStatu
 import TimeCardReviewDialog from "@features/csm-timecards/components/TimeCardReviewDialog";
 import TimeCardTruncatedNotice from "@features/csm-timecards/components/TimeCardTruncatedNotice";
 import type { CsmTimeCard } from "@features/csm-timecards/types/timeCards";
+import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
 
 interface CaseTimeCardsPanelProps {
   caseId: string;
@@ -53,7 +54,8 @@ export default function CaseTimeCardsPanel({
   caseId,
   onLogTime,
 }: CaseTimeCardsPanelProps): JSX.Element {
-  const { data, isLoading, isError } = useCaseTimeCards(caseId);
+  const { data, isLoading, isError, refetch, isFetching, dataUpdatedAt } =
+    useCaseTimeCards(caseId);
   const isTeamLead = useIsTeamLead();
   const me = useCurrentEngineer();
   const decide = useDecideTimeCard();
@@ -81,14 +83,22 @@ export default function CaseTimeCardsPanel({
           <Clock size={16} />
           <Typography variant="subtitle2">Time tracked</Typography>
         </Box>
-        <Button
-          size="small"
-          variant="text"
-          startIcon={<Plus size={14} />}
-          onClick={onLogTime}
-        >
-          Log time
-        </Button>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <RefreshButton
+            onRefresh={() => void refetch()}
+            isFetching={isFetching}
+            updatedAt={dataUpdatedAt}
+            label="Refresh time cards"
+          />
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<Plus size={14} />}
+            onClick={onLogTime}
+          >
+            Log time
+          </Button>
+        </Box>
       </Box>
 
       <Box
