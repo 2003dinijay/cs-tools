@@ -38,6 +38,25 @@ const OS_LABELS: Record<MobileOs, string> = {
 };
 
 /**
+ * Validates a configured store URL and returns its normalized `http(s)` form,
+ * or `undefined` when it's missing or unsupported (e.g. a `javascript:`/
+ * `data:` URI, or a string that doesn't parse as a URL at all). Used both to
+ * decide whether the banner should show at all and as the actual value
+ * `window.open` navigates to -- a config value that fails this check must
+ * never render a Download button that silently does nothing on click.
+ */
+function resolveDownloadUrl(storeUrl: string | undefined): string | undefined {
+  if (!storeUrl) return undefined;
+  try {
+    const parsed = new URL(storeUrl, window.location.origin);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * MobileAppBanner component.
  *
  * Dismissible banner nudging CS engineers on a detected mobile phone (and
@@ -64,8 +83,9 @@ export default function MobileAppBanner(): JSX.Element | null {
   const storeUrl = device
     ? getMobileAppStoreUrl(device.os, mobileAppConfig)
     : undefined;
+  const downloadUrl = resolveDownloadUrl(storeUrl);
 
-  const visible = mobileAppConfig.enabled && device !== null && !!storeUrl;
+  const visible = mobileAppConfig.enabled && device !== null && !!downloadUrl;
 
   // State for the banner dismissal.
   const [dismissed, setDismissed] = useState<boolean>(false);
@@ -78,21 +98,14 @@ export default function MobileAppBanner(): JSX.Element | null {
     }
   }, [visible]);
 
-  if (!visible || dismissed || !device || !storeUrl) {
+  if (!visible || dismissed || !device || !downloadUrl) {
     return null;
   }
 
   const osLabel = OS_LABELS[device.os];
 
   const handleDownload = (): void => {
-    try {
-      const parsed = new URL(storeUrl, window.location.origin);
-      // Allowlist http(s) only to block javascript:/data: URIs.
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
-      window.open(parsed.toString(), "_blank", "noopener,noreferrer");
-    } catch {
-      // ignore invalid URLs
-    }
+    window.open(downloadUrl, "_blank", "noopener,noreferrer");
   };
 
   return (

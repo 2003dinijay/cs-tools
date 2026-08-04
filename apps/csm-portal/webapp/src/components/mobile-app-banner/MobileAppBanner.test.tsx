@@ -129,7 +129,7 @@ describe("MobileAppBanner", () => {
     );
   });
 
-  it("blocks a javascript: store URL instead of opening it", () => {
+  it("suppresses the banner entirely for a javascript: store URL, rather than rendering a dead Download button", () => {
     mockConfig.iosStoreUrl = "javascript:alert('xss')";
     vi.mocked(detectMobileDevice).mockReturnValue({
       os: MobileOs.Ios,
@@ -137,8 +137,21 @@ describe("MobileAppBanner", () => {
     });
 
     render(<MobileAppBanner />);
-    fireEvent.click(screen.getByRole("button", { name: /download/i }));
 
+    expect(screen.queryByText("Get the WSO2 Super App")).toBeNull();
+    expect(screen.queryByRole("button", { name: /download/i })).toBeNull();
     expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it("suppresses the banner for a store URL that fails to parse at all", () => {
+    mockConfig.iosStoreUrl = "http://";
+    vi.mocked(detectMobileDevice).mockReturnValue({
+      os: MobileOs.Ios,
+      deviceType: DeviceType.Phone,
+    });
+
+    render(<MobileAppBanner />);
+
+    expect(screen.queryByText("Get the WSO2 Super App")).toBeNull();
   });
 });
