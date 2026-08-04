@@ -2299,6 +2299,55 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /call-requests/search:
+    post:
+      summary: Search call requests across all cases, filtered by assignee/state.
+      description: >
+        Returns a paginated list of call requests (ServiceNow data source only). Call
+        requests are inherently case-related; this endpoint provides independent search
+        and filtering capabilities across cases, distinct from
+        /cases/{id}/call-requests/search which is scoped to a single case. Forwards to
+        the entity service's /call-requests/search-all, which keeps its "-all" suffix
+        to stay distinct from that service's own case-scoped sibling path.
+      operationId: searchAllCallRequests
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchAllCallRequestsPayload'
+      responses:
+        "200":
+          description: Call requests matching the supplied filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchCallRequestsResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /cases/{caseId}/call-requests/{callRequestId}:
     patch:
       summary: Update a call request (ServiceNow data source only). Alias with caseId param name.
@@ -5327,6 +5376,7 @@ components:
             - time_card
             - problem
             - product_vulnerability
+            - call_request
           description: Which resource's /search endpoint this widget's filters target
         shape:
           type: string
@@ -8583,6 +8633,54 @@ components:
                   - notes_pending
                   - concluded
               description: Filter by one or more states.
+        pagination:
+          allOf:
+            - $ref: '#/components/schemas/Pagination'
+            - properties:
+                limit:
+                  default: 20
+                  maximum: 100
+
+    SearchAllCallRequestsPayload:
+      type: object
+      additionalProperties: false
+      properties:
+        filters:
+          type: object
+          additionalProperties: false
+          properties:
+            assignedUserIds:
+              type: array
+              items:
+                type: string
+                format: uuid
+              description: Filter by the parent case's assigned user(s).
+            states:
+              type: array
+              items:
+                type: string
+                enum:
+                  - pending_on_customer
+                  - pending_on_wso2
+                  - scheduled
+                  - customer_rejected
+                  - wso2_rejected
+                  - canceled
+                  - notes_pending
+                  - concluded
+              description: Filter by one or more states.
+        sortBy:
+          type: object
+          additionalProperties: false
+          properties:
+            field:
+              type: string
+              enum: [createdOn, updatedOn, scheduleTime]
+              description: Field to sort by.
+            order:
+              type: string
+              enum: [asc, desc]
+              description: Sort direction.
         pagination:
           allOf:
             - $ref: '#/components/schemas/Pagination'

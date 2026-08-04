@@ -50,6 +50,7 @@ const (
 	ResourceTimeCard             ResourceType = "time_card"
 	ResourceProblem              ResourceType = "problem"
 	ResourceProductVulnerability ResourceType = "product_vulnerability"
+	ResourceCallRequest          ResourceType = "call_request"
 )
 
 // Shape is how a widget's resolved data should be rendered.

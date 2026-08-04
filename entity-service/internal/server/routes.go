@@ -283,6 +283,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	if callRequestHandler != nil {
 		mux.HandleFunc("POST /call-requests", callRequestHandler.CreateCallRequest)
 		mux.HandleFunc("POST /call-requests/search", callRequestHandler.SearchCallRequests)
+		mux.HandleFunc("POST /call-requests/search-all", callRequestHandler.SearchAllCallRequests)
 		mux.HandleFunc("PATCH /call-requests/{id}", callRequestHandler.PatchCallRequest)
 	}
 

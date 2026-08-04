@@ -347,6 +347,13 @@ func (c *CustomerEntityClient) SearchCallRequests(ctx context.Context, body []by
 	return c.do(ctx, http.MethodPost, "/call-requests/search", body)
 }
 
+// SearchAllCallRequests calls POST /call-requests/search-all on the entity service
+// (standalone call request search, not scoped to a parent case). Response is
+// returned as raw JSON; typed response structs are deferred.
+func (c *CustomerEntityClient) SearchAllCallRequests(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/call-requests/search-all", body)
+}
+
 // PatchCallRequest calls PATCH /call-requests/{id} on the entity service.
 // Response is returned as raw JSON.
 func (c *CustomerEntityClient) PatchCallRequest(ctx context.Context, callRequestID string, body []byte) ([]byte, error) {

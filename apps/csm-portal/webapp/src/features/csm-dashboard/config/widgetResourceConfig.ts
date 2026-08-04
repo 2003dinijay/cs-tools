@@ -470,6 +470,28 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     iconColor: "warning",
     previewSlug: "tasks",
   },
+  call_request: {
+    searchEndpoint: "/call-requests/search",
+    itemsKey: "callRequests",
+    primaryLabel: (item) => {
+      const number = asString(item.number);
+      const reason = asString(item.reason);
+      return [number, reason].filter(Boolean).join(" — ") || "—";
+    },
+    secondaryLabel: (item) => {
+      const state = item.state as { label?: string } | undefined;
+      return state?.label;
+    },
+    // No widget filters a call request by anything the cases list can render as a
+    // filtered view (state keys differ entirely from case state), so the tile-level
+    // "view all" click has nowhere sensible to land other than the dashboard itself
+    // -- unlike a per-row click, which goes straight to the owning case (see the
+    // list renderer in widgetListConfig.tsx, not this file).
+    buildHref: () => "/dashboard",
+    icon: Clock,
+    iconColor: "info",
+    previewSlug: "call-requests",
+  },
 };
 
 /** Reverse lookup of `previewSlug` back to its `resourceType`, for the

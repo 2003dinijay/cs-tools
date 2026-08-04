@@ -2880,6 +2880,44 @@ type SearchCallRequestsResponse struct {
 	Limit        int               `json:"limit"`
 }
 
+// CallRequestSortField enumerates the columns available for sorting a
+// cross-case call request search.
+type CallRequestSortField string
+
+const (
+	CallRequestSortFieldCreatedOn    CallRequestSortField = "createdOn"
+	CallRequestSortFieldUpdatedOn    CallRequestSortField = "updatedOn"
+	CallRequestSortFieldScheduleTime CallRequestSortField = "scheduleTime"
+)
+
+// CallRequestSortOrder controls the sort direction for call request search.
+type CallRequestSortOrder string
+
+const (
+	CallRequestSortOrderAsc  CallRequestSortOrder = "asc"
+	CallRequestSortOrderDesc CallRequestSortOrder = "desc"
+)
+
+// CallRequestSort specifies the sort field and direction for call request search results.
+type CallRequestSort struct {
+	Field CallRequestSortField `json:"field"`
+	Order CallRequestSortOrder `json:"order"`
+}
+
+// SearchAllCallRequestsFilters holds optional filter criteria for the
+// standalone (not case-scoped) call request search.
+type SearchAllCallRequestsFilters struct {
+	AssignedUserIDs []string               `json:"assignedUserIds"`
+	States          []CallRequestStateType `json:"states"`
+}
+
+// SearchAllCallRequestsRequest is the input for POST /call-requests/search-all.
+type SearchAllCallRequestsRequest struct {
+	Filters    SearchAllCallRequestsFilters `json:"filters"`
+	SortBy     CallRequestSort              `json:"sortBy"`
+	Pagination Pagination                   `json:"pagination"`
+}
+
 // UpdateCallRequestRequest is the input for PATCH /call-requests/{id}.
 // ID is injected from the URL path parameter and excluded from JSON decoding.
 // CaseID is optional; when provided the SN service verifies the call request

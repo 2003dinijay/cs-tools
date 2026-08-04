@@ -262,6 +262,11 @@ type CallRequestService interface {
 	// SearchCallRequests returns a paginated list of call requests for the given case.
 	// A ValidationError is returned for invalid input.
 	SearchCallRequests(ctx context.Context, req domain.SearchCallRequestsRequest) (domain.SearchCallRequestsResponse, error)
+	// SearchAllCallRequests returns a paginated list of call requests across all
+	// cases, filtered by assignee/state -- distinct from SearchCallRequests, which
+	// is scoped to one case and has no filter set of its own.
+	// A ValidationError is returned for invalid input.
+	SearchAllCallRequests(ctx context.Context, req domain.SearchAllCallRequestsRequest) (domain.SearchCallRequestsResponse, error)
 	// UpdateCallRequest updates the state or other fields of a call request.
 	// The target state selects the behaviour (customer/agent transitions, scheduling,
 	// rejection, conclusion with notes). A ValidationError is returned for invalid
