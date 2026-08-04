@@ -184,8 +184,13 @@ export default function CasesList({
             Updated
           </Typography>
         )}
-        {/* Unlabeled — holds the per-row quick-preview action. */}
-        <Box />
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ fontWeight: 600, textAlign: "left" }}
+        >
+          Preview
+        </Typography>
       </Box>
 
       {/* Rows */}
@@ -361,7 +366,7 @@ export default function CasesList({
                     e.stopPropagation();
                     setPreviewRow(c);
                   }}
-                  sx={{ justifySelf: "end" }}
+                  sx={{ justifySelf: "center" }}
                 >
                   <Eye size={16} />
                 </IconButton>
