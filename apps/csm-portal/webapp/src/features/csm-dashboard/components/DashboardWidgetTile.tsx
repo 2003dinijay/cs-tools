@@ -112,6 +112,9 @@ export default function DashboardWidgetTile({
     selectedTeamGroupId,
   );
   const config = WIDGET_RESOURCE_CONFIG[resourceType];
+  // Thousands separators for shape "count"'s big number -- used both in the
+  // visible Typography and the tile's aria-label, so both stay in sync.
+  const formattedCount = (data?.total ?? 0).toLocaleString();
 
   if (!config) {
     // resourceType came from a runtime-configurable backend registry (not a
@@ -385,7 +388,7 @@ export default function DashboardWidgetTile({
               textOverflow: "ellipsis",
             }}
           >
-            {data?.total ?? 0}
+            {formattedCount}
           </Typography>
         </Box>
       </Box>
@@ -414,7 +417,7 @@ export default function DashboardWidgetTile({
         // layer above this anchor, not inside it as descendant text anymore
         // (that's the whole point -- see the comment above), so it needs its
         // own accessible name instead of inheriting one from its content.
-        aria-label={`${displayName}: ${data?.total ?? 0}`}
+        aria-label={`${displayName}: ${formattedCount}`}
         sx={{
           position: "absolute",
           inset: 0,
