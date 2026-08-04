@@ -38,7 +38,7 @@ import {
   type SearchAccountsRequest,
 } from "@features/csm-accounts/types/csmAccounts";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 // Top option is the backend's max page limit; larger requests are rejected.

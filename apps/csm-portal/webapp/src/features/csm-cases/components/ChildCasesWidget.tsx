@@ -33,7 +33,7 @@ import { useNavTransition } from "@hooks/useNavTransition";
 import { useSearchChildCases } from "@features/csm-cases/api/useSearchChildCases";
 import SeverityChip from "@components/SeverityChip";
 import StateChip from "@components/StateChip";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 const CHILD_CASES_COLUMNS = ["Case", "Severity", "State", "Assignee"];
 

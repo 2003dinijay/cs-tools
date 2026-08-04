@@ -51,7 +51,7 @@ import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
 import { useSearchRoles } from "@features/csm-admin/api/useSearchRoles";
 import { useSearchTeams } from "@features/csm-admin/api/useSearchTeams";
 import ResponsiveRoleChips from "@components/ResponsiveRoleChips";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 import type { SearchUsersRequest } from "@features/csm-users/types/csmUsers";
 import {
   readUsersFiltersFromUrl,

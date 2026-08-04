@@ -110,7 +110,7 @@ import { usePostCaseGithubIssue } from "@features/csm-cases/api/useCsmCaseGithub
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
 import { scrollToFragmentWithRetry } from "@features/csm-cases/utils/permalinkScroll";
 import CaseMetaBand from "@features/csm-cases/components/CaseMetaBand";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 import {
   AttachmentsWidget,
   CustomerContextWidget,

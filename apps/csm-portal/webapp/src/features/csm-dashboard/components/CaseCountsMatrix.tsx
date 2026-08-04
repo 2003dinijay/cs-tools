@@ -39,7 +39,7 @@ import type {
   Severity,
 } from "@features/csm-dashboard/types/abtDashboard";
 import SectionCard from "@features/csm-dashboard/components/SectionCard";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 /** Build a `/cases?...` href for the given severity and/or state filter. */
 function casesHref(severity?: Severity, state?: CaseState): string {

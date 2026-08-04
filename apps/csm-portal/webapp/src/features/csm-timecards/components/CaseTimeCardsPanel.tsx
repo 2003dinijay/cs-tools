@@ -36,7 +36,7 @@ import TimeCardStatusChip from "@features/csm-timecards/components/TimeCardStatu
 import TimeCardReviewDialog from "@features/csm-timecards/components/TimeCardReviewDialog";
 import TimeCardTruncatedNotice from "@features/csm-timecards/components/TimeCardTruncatedNotice";
 import type { CsmTimeCard } from "@features/csm-timecards/types/timeCards";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 interface CaseTimeCardsPanelProps {
   caseId: string;

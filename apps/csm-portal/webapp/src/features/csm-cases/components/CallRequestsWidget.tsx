@@ -50,7 +50,7 @@ import { RejectCallDialog } from "./RejectCallDialog";
 import { SendCallNotesDialog } from "./SendCallNotesDialog";
 import { CancelCallDialog } from "./CancelCallDialog";
 import { CallRequestsTable } from "./CallRequestsTable";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 // ---------------------------------------------------------------------------
 // Types

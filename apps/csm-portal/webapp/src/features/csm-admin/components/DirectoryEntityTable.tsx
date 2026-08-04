@@ -31,7 +31,7 @@ import { type ChangeEvent, type JSX } from "react";
 import { Link as RouterLink } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
 

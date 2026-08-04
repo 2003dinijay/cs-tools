@@ -38,7 +38,7 @@ import {
   changeRequestStateColor,
   changeRequestStateLabel,
 } from "@features/csm-operations/utils/changeRequests";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 const LINKED_CHANGE_REQUESTS_COLUMNS = ["Change request", "State", "Target environment"];
 

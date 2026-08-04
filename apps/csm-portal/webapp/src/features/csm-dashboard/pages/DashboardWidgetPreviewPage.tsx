@@ -23,7 +23,7 @@ import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useWidgetData } from "@features/csm-dashboard/api/useWidgetData";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 import { WIDGET_LIST_RENDERERS } from "@features/csm-dashboard/config/widgetListConfig";
 import { resourceTypeForPreviewSlug } from "@features/csm-dashboard/config/widgetResourceConfig";
 import {

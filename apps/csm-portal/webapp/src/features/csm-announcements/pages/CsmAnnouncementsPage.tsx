@@ -54,7 +54,7 @@ import {
 import { announcementStateRole } from "@features/csm-announcements/utils/announcementState";
 import { STATE_LABEL } from "@features/csm-dashboard/utils/abtDashboard";
 import type { CaseState } from "@features/csm-dashboard/types/abtDashboard";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];

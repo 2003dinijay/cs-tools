@@ -78,7 +78,7 @@ import type { ProjectDetails } from "@features/csm-projects/types/csmProjects";
 import type { BeDeployment } from "@api/backend/types";
 import RelativeTime from "@components/RelativeTime";
 import UserRefLink from "@components/UserRefLink";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 // ---------------------------------------------------------------------------
 // Shared widget shell

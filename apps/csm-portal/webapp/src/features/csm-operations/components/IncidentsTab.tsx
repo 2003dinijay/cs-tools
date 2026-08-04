@@ -53,7 +53,7 @@ import {
   writeIncidentFiltersToUrl,
 } from "@features/csm-operations/utils/incidentsFiltersUrl";
 import IncidentsFilterBar from "@features/csm-operations/components/IncidentsFilterBar";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 import type { BeIncident, BeIncidentSearchPayload, BeIncidentSearchResponse } from "@api/backend/types";
 
 const DEFAULT_ROWS_PER_PAGE = 20;

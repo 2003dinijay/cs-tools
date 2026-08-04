@@ -58,7 +58,7 @@ import {
 } from "@features/csm-cases/utils/casesSort";
 import { stateLabel } from "@features/csm-dashboard/utils/abtDashboard";
 import { WORK_STATE_LABEL } from "@features/csm-cases/utils/caseWorkState";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 import type { BeCaseSearchPayload, BeCaseSearchResponse } from "@api/backend/types";
 import type { CsmCaseRow } from "@features/csm-cases/types/csmCases";
 

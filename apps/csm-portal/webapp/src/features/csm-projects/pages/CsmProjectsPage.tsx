@@ -33,7 +33,7 @@ import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useSearchProjects } from "@features/csm-projects/api/useSearchProjects";
 import ClosureStateChip from "@features/csm-projects/components/ClosureStateChip";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 import type { SearchProjectsRequest } from "@features/csm-projects/types/csmProjects";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 

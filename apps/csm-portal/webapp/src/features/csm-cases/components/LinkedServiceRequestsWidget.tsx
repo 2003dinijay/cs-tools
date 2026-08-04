@@ -37,7 +37,7 @@ import {
   type ChildCaseRow,
 } from "@features/csm-cases/api/useSearchChildCases";
 import StateChip from "@components/StateChip";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 const LINKED_SERVICE_REQUESTS_COLUMNS = ["Case", "State", "Assignee"];
 

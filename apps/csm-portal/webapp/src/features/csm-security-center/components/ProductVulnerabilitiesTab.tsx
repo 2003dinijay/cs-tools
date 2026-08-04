@@ -42,7 +42,7 @@ import {
 } from "@features/csm-security-center/utils/vulnerabilities";
 import type { BeVulnerabilityPriority } from "@api/backend/types";
 import { useNavTransition } from "@hooks/useNavTransition";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];

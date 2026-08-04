@@ -41,7 +41,7 @@ import {
   type ProblemFilters,
 } from "@features/csm-operations/utils/problems";
 import ProblemsFilterBar from "@features/csm-operations/components/ProblemsFilterBar";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];

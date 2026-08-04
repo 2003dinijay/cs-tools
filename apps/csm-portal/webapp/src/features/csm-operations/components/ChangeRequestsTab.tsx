@@ -52,7 +52,7 @@ import {
   writeChangeRequestFiltersToUrl,
 } from "@features/csm-operations/utils/changeRequestsFiltersUrl";
 import ChangeRequestsFilterBar from "@features/csm-operations/components/ChangeRequestsFilterBar";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 import type {
   BeChangeRequestSearchPayload,
   BeChangeRequestSearchResponse,

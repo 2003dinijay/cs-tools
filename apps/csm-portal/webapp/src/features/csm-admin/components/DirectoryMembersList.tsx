@@ -37,7 +37,7 @@ import type { SearchUsersRequest } from "@features/csm-users/types/csmUsers";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { displayUserTimezone } from "@utils/userDirectoryDisplay";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];

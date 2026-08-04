@@ -22,7 +22,7 @@ import type { BeDashboardWidget } from "@api/backend/types";
 import { useDashboard } from "@features/csm-dashboard/api/useDashboard";
 import DashboardWidgetTile from "@features/csm-dashboard/components/DashboardWidgetTile";
 import SectionCard from "@features/csm-dashboard/components/SectionCard";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 /** Placeholder tile count while the dashboard detail is in flight. */
 const PILOT_TILE_COUNT = 3;
