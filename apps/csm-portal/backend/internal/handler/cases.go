@@ -83,6 +83,7 @@ type entityCaseClient interface {
 	DeleteCaseAttachment(ctx context.Context, attachmentID string) ([]byte, error)
 	CreateCallRequest(ctx context.Context, body []byte) ([]byte, error)
 	SearchCallRequests(ctx context.Context, body []byte) ([]byte, error)
+	SearchAllCallRequests(ctx context.Context, body []byte) ([]byte, error)
 	PatchCallRequest(ctx context.Context, callRequestID string, body []byte) ([]byte, error)
 	CreateCaseGithubIssue(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	AddCaseTag(ctx context.Context, caseID string, body []byte) ([]byte, error)
@@ -877,6 +878,43 @@ func (h *CaseHandler) SearchCallRequests(w http.ResponseWriter, r *http.Request)
 	result, err := h.entity.SearchCallRequests(r.Context(), entityBody)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchCallRequests failed", "userID", user.UserID, "caseID", caseID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to search call requests.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// SearchAllCallRequests handles POST /call-requests/search-all — standalone call
+// request search across all cases (not scoped to one case; see SearchCallRequests
+// for that path). Raw pass-through body/response.
+func (h *CaseHandler) SearchAllCallRequests(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
+		return
+	}
+
+	if !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.SearchAllCallRequests(r.Context(), body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity SearchAllCallRequests failed", "userID", user.UserID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to search call requests.")
 		return
 	}

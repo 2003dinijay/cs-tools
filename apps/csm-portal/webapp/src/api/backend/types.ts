@@ -2770,7 +2770,8 @@ export type BeWidgetResourceType =
   | "time_card"
   | "problem"
   | "product_vulnerability"
-  | "task";
+  | "task"
+  | "call_request";
 
 /**
  * How a widget's resolved data should be rendered. `pie` and `bar` both

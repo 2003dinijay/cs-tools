@@ -99,6 +99,7 @@ type mockEntityCaseClient struct {
 	deleteCaseAttachmentFn     func(ctx context.Context, attachmentID string) ([]byte, error)
 	createCallRequestFn        func(ctx context.Context, body []byte) ([]byte, error)
 	searchCallRequestsFn       func(ctx context.Context, body []byte) ([]byte, error)
+	searchAllCallRequestsFn    func(ctx context.Context, body []byte) ([]byte, error)
 	patchCallRequestFn         func(ctx context.Context, callRequestID string, body []byte) ([]byte, error)
 	createCaseGithubIssueFn    func(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	addCaseTagFn               func(ctx context.Context, caseID string, body []byte) ([]byte, error)
@@ -193,6 +194,13 @@ func (m *mockEntityCaseClient) CreateCallRequest(ctx context.Context, body []byt
 func (m *mockEntityCaseClient) SearchCallRequests(ctx context.Context, body []byte) ([]byte, error) {
 	if m.searchCallRequestsFn != nil {
 		return m.searchCallRequestsFn(ctx, body)
+	}
+	return []byte(`{"callRequests":[],"total":0,"limit":20,"offset":0}`), nil
+}
+
+func (m *mockEntityCaseClient) SearchAllCallRequests(ctx context.Context, body []byte) ([]byte, error) {
+	if m.searchAllCallRequestsFn != nil {
+		return m.searchAllCallRequestsFn(ctx, body)
 	}
 	return []byte(`{"callRequests":[],"total":0,"limit":20,"offset":0}`), nil
 }

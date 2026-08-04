@@ -67,6 +67,24 @@ type snCallRequestSearchFilters struct {
 	StateKeys []int `json:"stateKeys,omitempty"`
 }
 
+// snCallRequestsSearchAllPayload mirrors POST /call-requests/search-all in the SN
+// integration service (standalone, not case-scoped).
+type snCallRequestsSearchAllPayload struct {
+	Filters    *snCallRequestsSearchAllFilters `json:"filters,omitempty"`
+	SortBy     *snCallRequestSort              `json:"sortBy,omitempty"`
+	Pagination snProjectPagination             `json:"pagination"`
+}
+
+type snCallRequestsSearchAllFilters struct {
+	AssignedUserIDs []string `json:"assignedUserIds,omitempty"`
+	StateKeys       []int    `json:"stateKeys,omitempty"`
+}
+
+type snCallRequestSort struct {
+	Field string `json:"field"`
+	Order string `json:"order"`
+}
+
 // snCallRequestsResponse mirrors the SN integration service POST /call-requests/search response.
 type snCallRequestsResponse struct {
 	CallRequests []snCallRequest `json:"callRequests"`
@@ -283,8 +301,23 @@ func (s *snCallRequestService) SearchCallRequests(ctx context.Context, req domai
 		return domain.SearchCallRequestsResponse{}, fmt.Errorf("sn call requests: parse search response: %w", err)
 	}
 
-	views := make([]domain.CallRequestView, 0, len(snResp.CallRequests))
-	for _, cr := range snResp.CallRequests {
+	views := mapSNCallRequestsToViews(snResp.CallRequests)
+
+	total := snResp.TotalRecords
+	return domain.SearchCallRequestsResponse{
+		CallRequests: views,
+		Total:        total,
+		Limit:        req.Pagination.Limit,
+		Offset:       req.Pagination.Offset,
+	}, nil
+}
+
+// mapSNCallRequestsToViews converts raw SN call request records to domain views.
+// Shared by SearchCallRequests (case-scoped) and SearchAllCallRequests (cross-case) --
+// both call the same underlying SN response shape.
+func mapSNCallRequestsToViews(crs []snCallRequest) []domain.CallRequestView {
+	views := make([]domain.CallRequestView, 0, len(crs))
+	for _, cr := range crs {
 		views = append(views, domain.CallRequestView{
 			ID:     sysidToUUID(cr.ID),
 			Number: cr.Number,
@@ -310,13 +343,89 @@ func (s *snCallRequestService) SearchCallRequests(ctx context.Context, req domai
 			ActualDurationMin:  cr.ActualDurationMin,
 		})
 	}
+	return views
+}
 
-	total := snResp.TotalRecords
+// validCallRequestSortField is the set of accepted CallRequestSortField values.
+var validCallRequestSortField = map[domain.CallRequestSortField]bool{
+	domain.CallRequestSortFieldCreatedOn:    true,
+	domain.CallRequestSortFieldUpdatedOn:    true,
+	domain.CallRequestSortFieldScheduleTime: true,
+}
+
+// validCallRequestSortOrder is the set of accepted CallRequestSortOrder values.
+var validCallRequestSortOrder = map[domain.CallRequestSortOrder]bool{
+	domain.CallRequestSortOrderAsc:  true,
+	domain.CallRequestSortOrderDesc: true,
+}
+
+// SearchAllCallRequests implements CallRequestService.
+func (s *snCallRequestService) SearchAllCallRequests(ctx context.Context, req domain.SearchAllCallRequestsRequest) (domain.SearchCallRequestsResponse, error) {
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchCallRequestsResponse{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	if err := validateUUIDs("filters.assignedUserIds", req.Filters.AssignedUserIDs); err != nil {
+		return domain.SearchCallRequestsResponse{}, err
+	}
+
+	if req.SortBy.Field == "" {
+		req.SortBy.Field = domain.CallRequestSortFieldUpdatedOn
+	} else if !validCallRequestSortField[req.SortBy.Field] {
+		return domain.SearchCallRequestsResponse{}, &apierror.ValidationError{Msg: "sortBy.field must be one of: createdOn, updatedOn, scheduleTime"}
+	}
+	if req.SortBy.Order == "" {
+		req.SortBy.Order = domain.CallRequestSortOrderDesc
+	} else if !validCallRequestSortOrder[req.SortBy.Order] {
+		return domain.SearchCallRequestsResponse{}, &apierror.ValidationError{Msg: "sortBy.order must be one of: asc, desc"}
+	}
+
+	payload := snCallRequestsSearchAllPayload{
+		Pagination: snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
+		SortBy: &snCallRequestSort{
+			Field: string(req.SortBy.Field),
+			Order: string(req.SortBy.Order),
+		},
+	}
+
+	var filters snCallRequestsSearchAllFilters
+	hasFilters := false
+	if len(req.Filters.AssignedUserIDs) > 0 {
+		filters.AssignedUserIDs = uuidsToSysids(req.Filters.AssignedUserIDs)
+		hasFilters = true
+	}
+	if len(req.Filters.States) > 0 {
+		keys := make([]int, 0, len(req.Filters.States))
+		for _, st := range req.Filters.States {
+			if _, ok := validCallRequestStates[st]; !ok {
+				return domain.SearchCallRequestsResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid state %q", st)}
+			}
+			keys = append(keys, callRequestStateToKey[st])
+		}
+		filters.StateKeys = keys
+		hasFilters = true
+	}
+	if hasFilters {
+		payload.Filters = &filters
+	}
+
+	raw, err := s.client.Post(ctx, "/call-requests/search-all", token, payload)
+	if err != nil {
+		return domain.SearchCallRequestsResponse{}, err
+	}
+
+	var snResp snCallRequestsResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.SearchCallRequestsResponse{}, fmt.Errorf("sn call requests: parse search-all response: %w", err)
+	}
+
 	return domain.SearchCallRequestsResponse{
-		CallRequests: views,
-		Total:        total,
-		Limit:        req.Pagination.Limit,
+		CallRequests: mapSNCallRequestsToViews(snResp.CallRequests),
+		Total:        snResp.TotalRecords,
 		Offset:       req.Pagination.Offset,
+		Limit:        req.Pagination.Limit,
 	}, nil
 }
 

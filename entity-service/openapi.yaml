@@ -1490,6 +1490,47 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /call-requests/search-all:
+    post:
+      summary: Search call requests across all cases, filtered by assignee/state.
+      description: >
+        Returns a paginated list of call requests (ServiceNow data source only). Call
+        requests are inherently case-related; this endpoint provides independent search
+        and filtering capabilities across cases, distinct from /call-requests/search
+        which is scoped to a single case.
+      operationId: searchAllCallRequests
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchAllCallRequestsRequest'
+      responses:
+        "200":
+          description: Call requests matching the supplied filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchCallRequestsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /call-requests/{id}:
     patch:
       summary: Update a call request (supported by the backing data source only).
@@ -6760,6 +6801,55 @@ components:
           type: integer
         limit:
           type: integer
+
+    CallRequestSort:
+      type: object
+      additionalProperties: false
+      properties:
+        field:
+          type: string
+          enum: [createdOn, updatedOn, scheduleTime]
+          description: Field to sort by.
+        order:
+          type: string
+          enum: [asc, desc]
+          description: Sort direction.
+
+    SearchAllCallRequestsFilters:
+      type: object
+      additionalProperties: false
+      properties:
+        assignedUserIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Filter by the parent case's assigned user(s).
+        states:
+          type: array
+          items:
+            type: string
+            enum:
+              - pending_on_customer
+              - pending_on_wso2
+              - scheduled
+              - customer_rejected
+              - wso2_rejected
+              - canceled
+              - notes_pending
+              - concluded
+          description: Filter by one or more call request states.
+
+    SearchAllCallRequestsRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        filters:
+          $ref: '#/components/schemas/SearchAllCallRequestsFilters'
+        sortBy:
+          $ref: '#/components/schemas/CallRequestSort'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
 
     UpdateCallRequestRequest:
       type: object

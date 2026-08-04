@@ -352,6 +352,7 @@ var validWidgetResourceTypes = map[ResourceType]bool{
 	ResourceCase: true, ResourceIncident: true, ResourceChangeRequest: true,
 	ResourceAccount: true, ResourceProject: true, ResourceUser: true,
 	ResourceTimeCard: true, ResourceProblem: true, ResourceProductVulnerability: true,
+	ResourceCallRequest: true,
 }
 
 var validWidgetShapes = map[Shape]bool{

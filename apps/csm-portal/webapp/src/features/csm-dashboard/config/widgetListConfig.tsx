@@ -55,6 +55,7 @@ import { normalizeUser, type User, type SnUser } from "@features/csm-users/types
 import UserRefLink from "@components/UserRefLink";
 import { vulnerabilityPriorityColor } from "@features/csm-security-center/utils/vulnerabilities";
 import type { BeProductVulnerabilityView } from "@api/backend/types";
+import type { BeCallRequestView } from "@api/backend/types";
 
 /** Raw item shape a dashboard widget's `/search` response resolves to —
  * matches `WidgetItem` in `widgetResourceConfig.ts` (kept loose there since
@@ -454,6 +455,47 @@ function TaskWidgetList({ items, isLoading }: WidgetListRendererProps): JSX.Elem
   );
 }
 
+/** Call request: unlike task, `CallRequestView.case.id` is always present, so
+ * rows navigate straight to the owning case's real detail page rather than
+ * opening a dialog. */
+function CallRequestWidgetList({ items, isLoading }: WidgetListRendererProps): JSX.Element {
+  const callRequests = items as unknown as BeCallRequestView[];
+  return (
+    <DashboardMiniTable
+      isLoading={isLoading}
+      emptyMessage="No call requests match this widget's filters."
+      columns={[
+        { label: "Number", width: "minmax(90px, 0.7fr)" },
+        { label: "Reason", width: "minmax(160px, 2fr)" },
+        { label: "State", width: "minmax(100px, 1fr)" },
+        { label: "Scheduled", width: "minmax(90px, 1fr)" },
+      ]}
+      rows={callRequests.map((cr, i) => ({
+        key: cr.id ?? `call-request-${i}`,
+        href: cr.case?.id ? `/cases/${cr.case.id}` : undefined,
+        cells: [
+          <Typography key="number" variant="body2" noWrap>
+            {cr.number || "—"}
+          </Typography>,
+          <Typography key="reason" variant="body2" noWrap title={cr.reason ?? undefined}>
+            {cr.reason || "—"}
+          </Typography>,
+          cr.state?.label ? (
+            <Chip key="state" size="small" variant="outlined" label={cr.state.label} />
+          ) : (
+            <Typography key="state" variant="body2">
+              —
+            </Typography>
+          ),
+          <Typography key="scheduled" variant="caption" color="text.secondary" noWrap>
+            {formatDate(cr.scheduleTime)}
+          </Typography>,
+        ],
+      }))}
+    />
+  );
+}
+
 /** Per-resourceType renderer for a `shape: "list"` dashboard widget. Every
  * resource type is covered — `WIDGET_RESOURCE_CONFIG` (in
  * `widgetResourceConfig.ts`) is keyed the same way, so a missing entry here
@@ -472,4 +514,5 @@ export const WIDGET_LIST_RENDERERS: Record<
   time_card: TimeCardWidgetList,
   product_vulnerability: ProductVulnerabilityWidgetList,
   task: TaskWidgetList,
+  call_request: CallRequestWidgetList,
 };
