@@ -183,7 +183,7 @@ describe("AbtDashboardHeader", () => {
       />,
     );
 
-    const [teamSelect] = screen.getAllByRole("combobox");
+    const [, teamSelect] = screen.getAllByRole("combobox");
     fireEvent.mouseDown(teamSelect);
     const listbox = await screen.findByRole("listbox");
 
@@ -207,7 +207,7 @@ describe("AbtDashboardHeader", () => {
       />,
     );
 
-    const [teamSelect] = screen.getAllByRole("combobox");
+    const [, teamSelect] = screen.getAllByRole("combobox");
     fireEvent.mouseDown(teamSelect);
     const listbox = await screen.findByRole("listbox");
     fireEvent.click(within(listbox).getByText("All ABTs"));

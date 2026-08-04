@@ -390,11 +390,11 @@ describe("CsmDashboardPage", () => {
         "data-team-label",
         "All ABTs",
       );
-      // The team selector is the first of the two comboboxes for a
-      // team-based dashboard, and shows its currently selected value even
-      // while closed.
+      // The team selector is the second of the two comboboxes for a
+      // team-based dashboard (the dashboard selector renders first), and
+      // shows its currently selected value even while closed.
       const selects = screen.getAllByRole("combobox");
-      expect(within(selects[0]).getByText("All ABTs")).toBeInTheDocument();
+      expect(within(selects[1]).getByText("All ABTs")).toBeInTheDocument();
     });
 
     it("does not default to 'All ABTs' when the URL already names a real team", () => {
