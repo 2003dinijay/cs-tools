@@ -32,7 +32,7 @@ const VIEW_ALL_HREF = `/support?${filtersToSearchParams("", { ...EMPTY_FILTERS, 
 
 // The signed-in user's own non-closed cases — mirrors the webapp's "Assigned to me" widget
 // (apps/csm-portal/webapp/src/features/csm-dashboard/components/MyAssignedCases.tsx): same "View
-// all" deep-link + refresh control, capped to a short 5-item preview. The webapp puts title/View
+// all" deep-link + refresh control, capped to a short 4-item preview. The webapp puts title/View
 // all/Last refreshed/refresh icon all in one row — fine on a wide desktop card, but on a phone
 // width that crushes the title itself into wrapping. Split across two rows instead: title + icon
 // on top (always fits), "View all" + "Last refreshed" below (each has its own room to breathe).
