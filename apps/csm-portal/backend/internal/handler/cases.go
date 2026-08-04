@@ -885,9 +885,13 @@ func (h *CaseHandler) SearchCallRequests(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, result)
 }
 
-// SearchAllCallRequests handles POST /call-requests/search-all — standalone call
+// SearchAllCallRequests handles POST /call-requests/search — standalone call
 // request search across all cases (not scoped to one case; see SearchCallRequests
-// for that path). Raw pass-through body/response.
+// for that path, which is nested under /cases/{id}/). Raw pass-through
+// body/response. Despite the shared "search" name with the case-scoped path,
+// this is a distinct route (flat, no case-id path param) with no collision --
+// forwards to the entity service's own /call-requests/search-all, which keeps
+// its "-all" suffix to stay distinct from ITS sibling case-scoped path.
 func (h *CaseHandler) SearchAllCallRequests(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {

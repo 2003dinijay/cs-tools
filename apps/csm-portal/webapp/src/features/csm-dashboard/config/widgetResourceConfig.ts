@@ -471,7 +471,7 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     previewSlug: "tasks",
   },
   call_request: {
-    searchEndpoint: "/call-requests/search-all",
+    searchEndpoint: "/call-requests/search",
     itemsKey: "callRequests",
     primaryLabel: (item) => {
       const number = asString(item.number);
