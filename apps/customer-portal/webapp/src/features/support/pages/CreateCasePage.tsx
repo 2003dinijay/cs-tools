@@ -883,7 +883,7 @@ export default function CreateCasePage(): JSX.Element {
 
   const handleSubmit = async (e?: FormEvent, bypassPii = false) => {
     e?.preventDefault();
-    if (!projectId || isNavigatingAfterCreate) return;
+    if (!projectId || isNavigatingAfterCreate || isCreatePending) return;
     if (isProjectLoading || isProjectFeaturesLoading) return;
 
     const titlePlain = htmlToPlainText(title).trim();
