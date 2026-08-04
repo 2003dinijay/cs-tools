@@ -44,8 +44,9 @@ export function AssignedToMeSection() {
   );
 
   // sortBy: updatedOn desc is sent on the request (see dashboard.ts) but isn't reliably honored
-  // upstream — re-sort client-side as a backstop. See compareByUpdatedOnDesc for why.
-  const items = (data?.items ?? []).sort((a, b) => compareByUpdatedOnDesc(a.updatedOn, b.updatedOn));
+  // upstream — re-sort client-side as a backstop. See compareByUpdatedOnDesc for why. Copies
+  // first: data.items is the live react-query cache reference, and sort() mutates in place.
+  const items = [...(data?.items ?? [])].sort((a, b) => compareByUpdatedOnDesc(a.updatedOn, b.updatedOn));
   // Mirrors the webapp's `total > 0` guard for showing "View all" at all.
   const hasViewAll = (data?.total ?? 0) > 0;
 
