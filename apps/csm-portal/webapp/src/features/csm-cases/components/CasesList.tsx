@@ -227,7 +227,21 @@ export default function CasesList({
           return (
             <Box
               key={c.id}
-              onClick={() => navigate(`${rowBasePath}/${c.id}`, { state: rowState })}
+              onClick={(e) => {
+                // The case-id block below is a real RouterLink: a plain click
+                // on it already navigates via its own handler (which calls
+                // preventDefault), and that click still bubbles up here — do
+                // nothing in that case, or this would push a second, duplicate
+                // history entry for the same destination. A modified click
+                // (cmd/ctrl/shift/alt) on that link deliberately does *not*
+                // preventDefault — react-router leaves it to the browser to
+                // open a new tab — so skip here too, or this would navigate
+                // the current tab away from the list while a new tab is also
+                // opening, defeating the point of cmd-click "open in new tab
+                // for reference" the link exists for.
+                if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                navigate(`${rowBasePath}/${c.id}`, { state: rowState });
+              }}
               onMouseEnter={() => preloadRoute(rowBasePath)}
               sx={{
                 gridColumn: "1 / -1",
