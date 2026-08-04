@@ -80,6 +80,22 @@ func (h *IncidentHandler) PatchIncident(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// SearchIncidentActivities handles POST /incidents/{id}/activities/search.
+func (h *IncidentHandler) SearchIncidentActivities(w http.ResponseWriter, r *http.Request) {
+	var req domain.SearchIncidentActivitiesRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	req.IncidentID = r.PathValue("id")
+	resp, err := h.svc.SearchIncidentActivities(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // SearchIncidents handles POST /incidents/search.
 func (h *IncidentHandler) SearchIncidents(w http.ResponseWriter, r *http.Request) {
 	var req domain.SearchIncidentsRequest

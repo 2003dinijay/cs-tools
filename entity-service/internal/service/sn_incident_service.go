@@ -1062,3 +1062,47 @@ func (s *snIncidentService) UpdateIncident(ctx context.Context, req domain.Updat
 		Incident: mapSNIncidentToView(snResp.Incident),
 	}, nil
 }
+
+// SearchIncidentActivities returns the activity feed for an incident. Confirmed by the
+// team as a real, distinct endpoint from the case one (both are built on the same
+// underlying activity-search mechanism), though this exact request/response shape has
+// not been exercised against a live response.
+func (s *snIncidentService) SearchIncidentActivities(ctx context.Context, req domain.SearchIncidentActivitiesRequest) (domain.SearchIncidentActivitiesResponse, error) {
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchIncidentActivitiesResponse{}, err
+	}
+	if err := validateUUIDs("id", []string{req.IncidentID}); err != nil {
+		return domain.SearchIncidentActivitiesResponse{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	payload := snSearchActivitiesPayload{
+		Pagination:          snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
+		IncludeFieldChanges: req.IncludeFieldChanges,
+	}
+
+	raw, err := s.client.Post(ctx, "/incidents/"+uuidToSysid(req.IncidentID)+"/activities/search", token, payload)
+	if err != nil {
+		return domain.SearchIncidentActivitiesResponse{}, err
+	}
+
+	var snResp snSearchActivitiesResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.SearchIncidentActivitiesResponse{}, fmt.Errorf("sn search incident activities: parse response: %w", err)
+	}
+
+	activities, err := mapSNActivitiesToDomain(snResp.Activity)
+	if err != nil {
+		return domain.SearchIncidentActivitiesResponse{}, fmt.Errorf("sn search incident activities: %w", err)
+	}
+
+	total := snResp.TotalRecords
+	return domain.SearchIncidentActivitiesResponse{
+		Activity: activities,
+		Total:    total,
+		Limit:    req.Pagination.Limit,
+		Offset:   req.Pagination.Offset,
+		HasMore:  req.Pagination.Offset+len(activities) < total,
+	}, nil
+}

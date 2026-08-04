@@ -440,12 +440,13 @@ func (m *mockEntityProductClient) SearchProductVersions(ctx context.Context, pro
 // ----- mock entity incident client -----
 
 type mockEntityIncidentClient struct {
-	searchIncidentsFn func(ctx context.Context, body []byte) ([]byte, error)
-	createIncidentFn  func(ctx context.Context, body []byte) ([]byte, error)
-	getIncidentFn     func(ctx context.Context, id string) ([]byte, error)
-	patchIncidentFn   func(ctx context.Context, id string, body []byte) ([]byte, error)
-	createCommentFn   func(ctx context.Context, body []byte) ([]byte, error)
-	searchCommentsFn  func(ctx context.Context, body []byte) ([]byte, error)
+	searchIncidentsFn          func(ctx context.Context, body []byte) ([]byte, error)
+	createIncidentFn           func(ctx context.Context, body []byte) ([]byte, error)
+	getIncidentFn              func(ctx context.Context, id string) ([]byte, error)
+	patchIncidentFn            func(ctx context.Context, id string, body []byte) ([]byte, error)
+	createCommentFn            func(ctx context.Context, body []byte) ([]byte, error)
+	searchCommentsFn           func(ctx context.Context, body []byte) ([]byte, error)
+	searchIncidentActivitiesFn func(ctx context.Context, id string, body []byte) ([]byte, error)
 }
 
 func (m *mockEntityIncidentClient) SearchIncidents(ctx context.Context, body []byte) ([]byte, error) {
@@ -488,6 +489,13 @@ func (m *mockEntityIncidentClient) SearchComments(ctx context.Context, body []by
 		return m.searchCommentsFn(ctx, body)
 	}
 	return []byte(`{"comments":[],"total":0,"limit":20,"offset":0}`), nil
+}
+
+func (m *mockEntityIncidentClient) SearchIncidentActivities(ctx context.Context, id string, body []byte) ([]byte, error) {
+	if m.searchIncidentActivitiesFn != nil {
+		return m.searchIncidentActivitiesFn(ctx, id, body)
+	}
+	return []byte(`{"activity":[],"total":0,"limit":20,"offset":0,"hasMore":false}`), nil
 }
 
 // ----- mock entity problem client -----
