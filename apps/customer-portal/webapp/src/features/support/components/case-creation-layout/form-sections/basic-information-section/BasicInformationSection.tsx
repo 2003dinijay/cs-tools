@@ -112,9 +112,11 @@ export function BasicInformationSection({
   );
   const useProductOptionList = Array.isArray(productOptionList);
   const hasProductRows = (productOptionList?.length ?? 0) > 0;
+  const hasEffectiveProductOptions = useProductOptionList
+    ? hasProductRows
+    : productOptionsLegacy.length > 0;
   const showNoProductsHint =
-    useProductOptionList &&
-    !hasProductRows &&
+    !hasEffectiveProductOptions &&
     !isProductDropdownDisabled &&
     !isProductLoading;
 
