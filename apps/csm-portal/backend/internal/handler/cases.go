@@ -911,7 +911,7 @@ func (h *CaseHandler) SearchAllCallRequests(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if !json.Valid(body) {
+	if !isJSONObjectOrEmpty(body) {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}

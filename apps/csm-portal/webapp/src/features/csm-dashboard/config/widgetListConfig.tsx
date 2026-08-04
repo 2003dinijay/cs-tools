@@ -71,6 +71,21 @@ function formatDate(value?: string | null): string {
   );
 }
 
+/** Date + time, for columns where same-day values must stay distinguishable
+ * (e.g. a call request's scheduled time) -- `formatDate` alone drops the
+ * hour/minute and collapses same-day rows to an identical-looking value. */
+function formatDateTime(value?: string | null): string {
+  return (
+    formatBackendTimestampForDisplay(value, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }) ?? "—"
+  );
+}
+
 export interface WidgetListRendererProps {
   items: WidgetItem[];
   isLoading: boolean;
@@ -488,7 +503,7 @@ function CallRequestWidgetList({ items, isLoading }: WidgetListRendererProps): J
             </Typography>
           ),
           <Typography key="scheduled" variant="caption" color="text.secondary" noWrap>
-            {formatDate(cr.scheduleTime)}
+            {formatDateTime(cr.scheduleTime)}
           </Typography>,
         ],
       }))}

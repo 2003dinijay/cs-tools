@@ -6809,11 +6809,13 @@ components:
         field:
           type: string
           enum: [createdOn, updatedOn, scheduleTime]
-          description: Field to sort by.
+          default: updatedOn
+          description: Field to sort by. Defaults to updatedOn when omitted.
         order:
           type: string
           enum: [asc, desc]
-          description: Sort direction.
+          default: desc
+          description: Sort direction. Defaults to desc when omitted.
 
     SearchAllCallRequestsFilters:
       type: object
