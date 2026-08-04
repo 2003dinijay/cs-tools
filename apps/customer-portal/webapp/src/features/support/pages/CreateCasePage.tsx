@@ -950,6 +950,16 @@ export default function CreateCasePage(): JSX.Element {
       severityKey = parsedSeverity;
     }
 
+    let inlineAttachments: Array<{ file: string; name: string }> | undefined;
+    if (isSecurityReport) {
+      inlineAttachments = await Promise.all(
+        attachments.map(async (item) => ({
+          file: await fileToBase64Content(item.file),
+          name: attachmentNamesRef.current.get(item.id) || item.file.name,
+        })),
+      );
+    }
+
     const payload: CreateCaseRequest = {
       type: isSecurityReport
         ? CaseType.SECURITY_REPORT_ANALYSIS
@@ -968,6 +978,7 @@ export default function CreateCasePage(): JSX.Element {
         conversationId,
       }),
       ...(watchList.length > 0 && { watchList }),
+      ...(inlineAttachments && { attachments: inlineAttachments }),
     };
 
     postCase(payload, {
@@ -1013,7 +1024,7 @@ export default function CreateCasePage(): JSX.Element {
 
         let failedAttachmentNames: string[] = [];
         let attachmentsStillUploading = false;
-        if (attachments.length > 0) {
+        if (!isSecurityReport && attachments.length > 0) {
           setIsPreparingAttachments(true);
           const uploadPromise = uploadAttachments();
           const timedOut = await Promise.race([
