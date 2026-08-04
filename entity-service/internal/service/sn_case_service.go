@@ -21,6 +21,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -915,12 +916,16 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	if c.WorstCaseFixEta != nil && *c.WorstCaseFixEta != "" {
 		cv.WorstCaseFixEta = c.WorstCaseFixEta
 	}
-	// Tags are not populated here: the Choreo GET /cases/{id} response (snCase above)
-	// still has no tags field, and case tags are managed via the dedicated
-	// AddCaseTag/RemoveCaseTag/SearchTags endpoints rather than being inlined on the
-	// case detail read. cv.Tags is left nil until the backing service's case-detail
-	// response (or a case-scoped tags-list endpoint) surfaces a case's current tags.
-	// See the CaseView.Tags doc comment.
+	// The Choreo GET /cases/{id} response (snCase above) still has no inline tags field,
+	// so the case's current tags are fetched separately via the case-scoped
+	// GET /cases/{id}/tags resource. A failure here must not fail the whole case read
+	// (see CaseView.Tags doc comment): cv.Tags is left nil and the failure is logged.
+	tags, err := s.listCaseTags(ctx, id)
+	if err != nil {
+		slog.WarnContext(ctx, "sn get case: case tags lookup failed", "caseId", id, "error", err)
+	} else {
+		cv.Tags = tags
+	}
 
 	return cv, nil
 }
@@ -2612,9 +2617,36 @@ func (s *snCaseService) RemoveCaseTag(ctx context.Context, caseID, tagID string)
 	return err
 }
 
-// snSearchTagsResponse mirrors the Choreo GET /tags/search response.
+// snSearchTagsResponse mirrors the Choreo GET /tags/search response, and the shape of the
+// case-scoped GET /cases/{id}/tags response consumed by listCaseTags below.
 type snSearchTagsResponse struct {
 	Tags []snTag `json:"tags"`
+}
+
+// listCaseTags returns the tags currently attached to the case identified by caseID, via the
+// case-scoped GET /cases/{id}/tags resource.
+func (s *snCaseService) listCaseTags(ctx context.Context, caseID string) ([]domain.Tag, error) {
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	raw, err := s.client.Get(ctx, "/cases/"+uuidToSysid(caseID)+"/tags", token)
+	if err != nil {
+		return nil, err
+	}
+
+	var snResp snSearchTagsResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return nil, fmt.Errorf("sn list case tags: parse response: %w", err)
+	}
+
+	tags := make([]domain.Tag, 0, len(snResp.Tags))
+	for _, t := range snResp.Tags {
+		tags = append(tags, domain.Tag{
+			ID:    sysidToUUID(t.ID),
+			Label: t.Label,
+			Color: t.Color,
+		})
+	}
+	return tags, nil
 }
 
 // SearchTags returns the tags (not scoped to any single case) whose label matches query, for

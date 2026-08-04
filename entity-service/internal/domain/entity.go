@@ -1264,12 +1264,12 @@ type CaseView struct {
 	// platform label/label_entry mechanism (not a case-specific column). Tags
 	// themselves are managed out-of-band via AddCaseTag/RemoveCaseTag/SearchTags.
 	//
-	// Not yet populated on the case detail read: the Choreo GET /cases/{id} contract
-	// does not inline a case's current tags, and there is no case-scoped "list tags
-	// for this case" endpoint yet either — only the case-agnostic GET /tags/search.
-	// Confirmed real tag values exist in production (e.g. "micro-gw", "ws-policy",
-	// "node") but this field is always nil until the backing service's case-detail
-	// response (or a case-scoped tags-list endpoint) surfaces them.
+	// Populated on the case detail read via a case-scoped tags-list lookup: the
+	// Choreo GET /cases/{id} contract still does not inline a case's current tags, so
+	// the case-detail read fetches them separately through the case-scoped "list tags
+	// for this case" endpoint. That lookup is best-effort — if it fails, the case
+	// detail read still succeeds and this field is left nil rather than failing the
+	// whole read.
 	Tags []Tag `json:"tags"`
 }
 
