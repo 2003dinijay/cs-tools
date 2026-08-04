@@ -54,6 +54,7 @@ import {
 import { announcementStateRole } from "@features/csm-announcements/utils/announcementState";
 import { STATE_LABEL } from "@features/csm-dashboard/utils/abtDashboard";
 import type { CaseState } from "@features/csm-dashboard/types/abtDashboard";
+import RefreshButton from "@components/RefreshButton";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
@@ -141,11 +142,8 @@ export default function CsmAnnouncementsPage(): JSX.Element {
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
   const debouncedSearch = useDebouncedValue(filters.search.trim(), 300);
 
-  const { data, isLoading, isFetching, isError, error } = useSearchAnnouncements(
-    { ...filters, search: debouncedSearch },
-    page,
-    rowsPerPage,
-  );
+  const { data, isLoading, isFetching, isError, error, refetch, dataUpdatedAt } =
+    useSearchAnnouncements({ ...filters, search: debouncedSearch }, page, rowsPerPage);
 
   const announcements = data?.announcements ?? [];
   const total = data?.total ?? 0;
@@ -165,11 +163,19 @@ export default function CsmAnnouncementsPage(): JSX.Element {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      <Box>
-        <Typography variant="h5">Announcements</Typography>
-        <Typography variant="body2" color="text.secondary">
-          Customer-facing announcements published across projects and tiers.
-        </Typography>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+        <Box>
+          <Typography variant="h5">Announcements</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Customer-facing announcements published across projects and tiers.
+          </Typography>
+        </Box>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label="Refresh announcements"
+        />
       </Box>
 
       {/* Filters — search + state + project, all "show all" by default */}

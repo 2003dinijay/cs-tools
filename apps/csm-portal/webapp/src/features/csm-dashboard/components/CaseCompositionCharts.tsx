@@ -23,7 +23,7 @@ import {
   useCaseComposition,
 } from "@features/csm-dashboard/api/useCaseComposition";
 import { MATRIX_SEVERITIES } from "@features/csm-dashboard/api/useCaseCountsMatrix";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 import CompositionDonut, {
   type CompositionSlice,
 } from "@features/csm-dashboard/components/CompositionDonut";

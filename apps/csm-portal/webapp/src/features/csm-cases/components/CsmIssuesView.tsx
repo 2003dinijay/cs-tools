@@ -58,6 +58,7 @@ import {
 } from "@features/csm-cases/utils/casesSort";
 import { stateLabel } from "@features/csm-dashboard/utils/abtDashboard";
 import { WORK_STATE_LABEL } from "@features/csm-cases/utils/caseWorkState";
+import RefreshButton from "@components/RefreshButton";
 import type { BeCaseSearchPayload, BeCaseSearchResponse } from "@api/backend/types";
 import type { CsmCaseRow } from "@features/csm-cases/types/csmCases";
 
@@ -188,13 +189,15 @@ export default function CsmIssuesView({
     [filters, debouncedSearch, showSeverityFilter, lockedFilters],
   );
 
-  const { data, isLoading, isFetching, isError, error } = useGetCsmCases(
-    queryFilters,
-    page,
-    rowsPerPage,
-    true,
-    sortOrder,
-  );
+  const {
+    data,
+    isLoading,
+    isFetching,
+    isError,
+    error,
+    refetch,
+    dataUpdatedAt,
+  } = useGetCsmCases(queryFilters, page, rowsPerPage, true, sortOrder);
 
   const handleSortOrderChange = (order: CasesSortOrder): void => {
     setSortOrder(order);
@@ -367,6 +370,12 @@ export default function CsmIssuesView({
           {breachedCount > 0 && (
             <Chip size="small" color="error" label={`${breachedCount} breached`} />
           )}
+          <RefreshButton
+            onRefresh={() => void refetch()}
+            isFetching={isFetching}
+            updatedAt={dataUpdatedAt}
+            label={`Refresh ${entityNoun}`}
+          />
           <FilteredCsvExportButton<CsmCaseRow>
             entityName={entityNoun.replace(/\s+/g, "-")}
             entityNounPlural={entityNoun}

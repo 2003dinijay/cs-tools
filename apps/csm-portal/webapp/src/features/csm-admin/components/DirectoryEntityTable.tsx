@@ -31,6 +31,7 @@ import { type ChangeEvent, type JSX } from "react";
 import { Link as RouterLink } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
+import RefreshButton from "@components/RefreshButton";
 
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
 
@@ -59,6 +60,8 @@ interface DirectoryEntityTableProps {
   onPageChange: (page: number) => void;
   rowsPerPage: number;
   onRowsPerPageChange: (rowsPerPage: number) => void;
+  onRefresh: () => void;
+  refreshedAt?: number;
 }
 
 /**
@@ -83,6 +86,8 @@ export default function DirectoryEntityTable({
   onPageChange,
   rowsPerPage,
   onRowsPerPageChange,
+  onRefresh,
+  refreshedAt,
 }: DirectoryEntityTableProps): JSX.Element {
   const entityLabel =
     entityNounPlural.charAt(0).toUpperCase() +
@@ -98,14 +103,22 @@ export default function DirectoryEntityTable({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <TextField
-        size="small"
-        label={`Search ${entityNounPlural}`}
-        value={search}
-        onChange={handleSearchChange}
-        sx={{ maxWidth: 360 }}
-        slotProps={{ htmlInput: { "aria-label": `Search ${entityNounPlural} by name` } }}
-      />
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+        <TextField
+          size="small"
+          label={`Search ${entityNounPlural}`}
+          value={search}
+          onChange={handleSearchChange}
+          sx={{ maxWidth: 360, flex: 1 }}
+          slotProps={{ htmlInput: { "aria-label": `Search ${entityNounPlural} by name` } }}
+        />
+        <RefreshButton
+          onRefresh={onRefresh}
+          isFetching={isFetching}
+          updatedAt={refreshedAt}
+          label={`Refresh ${entityNounPlural}`}
+        />
+      </Box>
 
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
         <TableContainer>

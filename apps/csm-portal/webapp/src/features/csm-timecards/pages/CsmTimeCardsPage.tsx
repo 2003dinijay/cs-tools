@@ -67,6 +67,7 @@ import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
 import { TIME_CARD_STATE_META } from "@features/csm-timecards/constants/timeCardConstants";
+import RefreshButton from "@components/RefreshButton";
 import { useTimecardRole } from "@features/csm-timecards/hooks/useTimecardRole";
 import TimeCardsTable from "@features/csm-timecards/components/TimeCardsTable";
 import TimeCardReviewDialog from "@features/csm-timecards/components/TimeCardReviewDialog";
@@ -436,16 +437,25 @@ export default function CsmTimeCardsPage(): JSX.Element {
             onClear={clearFilters}
           />
 
+          <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1 }}>
+            <RefreshButton
+              onRefresh={() => void myCards.refetch()}
+              isFetching={myCards.isFetching}
+              updatedAt={myCards.dataUpdatedAt}
+              label="Refresh my time sheets"
+            />
+            {!myCards.isError && (
+              <ExportCsvButton
+                cards={mineFilteredCards}
+                filename={`time-cards-my-sheets-${todayStamp}.csv`}
+              />
+            )}
+          </Box>
+
           {myCards.isError ? (
             <Typography color="error">Could not load your time cards.</Typography>
           ) : (
             <>
-              <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
-                <ExportCsvButton
-                  cards={mineFilteredCards}
-                  filename={`time-cards-my-sheets-${todayStamp}.csv`}
-                />
-              </Box>
               <TimeCardsTable
                 cards={mineFilteredCards}
                 isLoading={myCards.isLoading}
@@ -514,16 +524,25 @@ export default function CsmTimeCardsPage(): JSX.Element {
 
           <GroupByToggle value={groupBy} onChange={setGroupBy} />
 
+          <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1 }}>
+            <RefreshButton
+              onRefresh={() => void allCards.refetch()}
+              isFetching={allCards.isFetching}
+              updatedAt={allCards.dataUpdatedAt}
+              label="Refresh time cards"
+            />
+            {!allCards.isError && (
+              <ExportCsvButton
+                cards={allFilteredCards}
+                filename={`time-cards-all-${todayStamp}.csv`}
+              />
+            )}
+          </Box>
+
           {allCards.isError ? (
             <Typography color="error">Could not load time cards.</Typography>
           ) : (
             <>
-              <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
-                <ExportCsvButton
-                  cards={allFilteredCards}
-                  filename={`time-cards-all-${todayStamp}.csv`}
-                />
-              </Box>
               <TimeCardsTable
                 cards={allFilteredCards}
                 isLoading={allCards.isLoading}
@@ -583,16 +602,25 @@ export default function CsmTimeCardsPage(): JSX.Element {
 
           <GroupByToggle value={groupBy} onChange={setGroupBy} />
 
+          <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1 }}>
+            <RefreshButton
+              onRefresh={() => void queue.refetch()}
+              isFetching={queue.isFetching}
+              updatedAt={queue.dataUpdatedAt}
+              label="Refresh approval queue"
+            />
+            {!queue.isError && (
+              <ExportCsvButton
+                cards={approvalsFilteredCards}
+                filename={`time-cards-approvals-${todayStamp}.csv`}
+              />
+            )}
+          </Box>
+
           {queue.isError ? (
             <Typography color="error">Could not load the approval queue.</Typography>
           ) : (
             <>
-              <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
-                <ExportCsvButton
-                  cards={approvalsFilteredCards}
-                  filename={`time-cards-approvals-${todayStamp}.csv`}
-                />
-              </Box>
               <TimeCardsTable
                 cards={approvalsFilteredCards}
                 isLoading={queue.isLoading}

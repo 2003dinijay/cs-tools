@@ -20,7 +20,7 @@ import type { JSX } from "react";
 import { formatRelativeTime } from "@features/csm-dashboard/utils/abtDashboard";
 
 interface RefreshButtonProps {
-  /** Re-runs the widget's query. Wire to the react-query `refetch`. */
+  /** Re-runs the underlying query. Wire to the react-query `refetch`. */
   onRefresh: () => void;
   /** True while a fetch is in flight; disables the control to avoid re-entrancy. */
   isFetching: boolean;
@@ -31,9 +31,9 @@ interface RefreshButtonProps {
 }
 
 /**
- * Reusable dashboard-widget refresh control. Mirrors the SLA table's refresh
- * button (icon button + "last refreshed" hint), so refresh looks and behaves
- * the same across the app.
+ * Reusable refresh control (icon button + "last refreshed" hint), shared
+ * across dashboard widgets, case detail tabs, and list pages so refresh
+ * looks and behaves the same everywhere.
  */
 export default function RefreshButton({
   onRefresh,

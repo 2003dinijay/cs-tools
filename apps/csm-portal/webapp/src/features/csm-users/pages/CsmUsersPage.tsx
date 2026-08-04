@@ -51,6 +51,7 @@ import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
 import { useSearchRoles } from "@features/csm-admin/api/useSearchRoles";
 import { useSearchTeams } from "@features/csm-admin/api/useSearchTeams";
 import ResponsiveRoleChips from "@components/ResponsiveRoleChips";
+import RefreshButton from "@components/RefreshButton";
 import type { SearchUsersRequest } from "@features/csm-users/types/csmUsers";
 import {
   readUsersFiltersFromUrl,
@@ -124,7 +125,8 @@ export default function CsmUsersPage(): JSX.Element {
     [debouncedSearch, page, rowsPerPage, filters],
   );
 
-  const { data, isLoading, isFetching, isError, error } = useSearchUsers(request);
+  const { data, isLoading, isFetching, isError, error, refetch, dataUpdatedAt } =
+    useSearchUsers(request);
 
   const handleSearchChange = (e: ChangeEvent<HTMLInputElement>) => {
     setFilters({ ...filters, search: e.target.value });
@@ -154,10 +156,18 @@ export default function CsmUsersPage(): JSX.Element {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      <Typography variant="body2" color="text.secondary">
-        Search across username and email (case-insensitive). Filter by role, group, team and
-        status.
-      </Typography>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+        <Typography variant="body2" color="text.secondary">
+          Search across username and email (case-insensitive). Filter by role, group, team and
+          status.
+        </Typography>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label="Refresh users"
+        />
+      </Box>
 
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ flexWrap: "wrap" }}>
         <TextField

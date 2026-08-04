@@ -26,7 +26,7 @@ import {
 } from "@features/csm-dashboard/api/useGetMyAssignedOpenCases";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import SectionCard from "@features/csm-dashboard/components/SectionCard";
-import RefreshButton from "@features/csm-dashboard/components/RefreshButton";
+import RefreshButton from "@components/RefreshButton";
 
 // Deep-link to the full cases list, pre-filtered to the caller's non-closed
 // cases. `assignees=@me` resolves against the current user server-side; the

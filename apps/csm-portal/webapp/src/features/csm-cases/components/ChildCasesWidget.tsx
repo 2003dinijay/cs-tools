@@ -33,6 +33,7 @@ import { useNavTransition } from "@hooks/useNavTransition";
 import { useSearchChildCases } from "@features/csm-cases/api/useSearchChildCases";
 import SeverityChip from "@components/SeverityChip";
 import StateChip from "@components/StateChip";
+import RefreshButton from "@components/RefreshButton";
 
 const CHILD_CASES_COLUMNS = ["Case", "Severity", "State", "Assignee"];
 
@@ -49,7 +50,14 @@ interface ChildCasesWidgetProps {
  * endpoint.
  */
 export function ChildCasesWidget({ caseId }: ChildCasesWidgetProps): JSX.Element {
-  const { data, isLoading, isError } = useSearchChildCases(caseId);
+  const {
+    data,
+    isLoading,
+    isError,
+    refetch,
+    isFetching,
+    dataUpdatedAt,
+  } = useSearchChildCases(caseId);
   const navigate = useNavTransition();
 
   const cases = data?.cases ?? [];
@@ -61,11 +69,26 @@ export function ChildCasesWidget({ caseId }: ChildCasesWidgetProps): JSX.Element
 
   return (
     <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-      <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-        <GitFork size={16} />
-        <Typography variant="subtitle2">
-          Child cases{!isLoading && !isError && total > 0 ? ` (${total})` : ""}
-        </Typography>
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 1,
+        }}
+      >
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+          <GitFork size={16} />
+          <Typography variant="subtitle2">
+            Child cases{!isLoading && !isError && total > 0 ? ` (${total})` : ""}
+          </Typography>
+        </Box>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label="Refresh child cases"
+        />
       </Box>
 
       {isError ? (

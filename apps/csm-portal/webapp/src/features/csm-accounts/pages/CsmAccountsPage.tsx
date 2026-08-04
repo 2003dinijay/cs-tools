@@ -38,6 +38,7 @@ import {
   type SearchAccountsRequest,
 } from "@features/csm-accounts/types/csmAccounts";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
+import RefreshButton from "@components/RefreshButton";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 // Top option is the backend's max page limit; larger requests are rejected.
@@ -73,7 +74,8 @@ export default function CsmAccountsPage(): JSX.Element {
     };
   }, [debouncedSearch, page, rowsPerPage]);
 
-  const { data, isLoading, isFetching, isError, error } = useSearchAccounts(request);
+  const { data, isLoading, isFetching, isError, error, refetch, dataUpdatedAt } =
+    useSearchAccounts(request);
 
   const handleSearchChange = (e: ChangeEvent<HTMLInputElement>) => {
     setSearchInput(e.target.value);
@@ -90,9 +92,17 @@ export default function CsmAccountsPage(): JSX.Element {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      <Typography variant="body2" color="text.secondary">
-        Search across account name and Salesforce ID (case-insensitive).
-      </Typography>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+        <Typography variant="body2" color="text.secondary">
+          Search across account name and Salesforce ID (case-insensitive).
+        </Typography>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label="Refresh accounts"
+        />
+      </Box>
 
       <TextField
         size="small"
