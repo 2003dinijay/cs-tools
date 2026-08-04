@@ -47,11 +47,13 @@ export function useWidgetPieData(
   resourceType: BeWidgetResourceType,
   baseFilters: Record<string, unknown>,
   slices: BeDashboardPieSlice[],
-  /** The currently selected team's own `groupId`, for resolving a
-   * `__current_team__` filter placeholder (see `teamFilterPlaceholder.ts`)
-   * — applied AFTER `mergeWidgetFilters`, since a slice's own `query` may
-   * carry the placeholder too, not just the widget's base `query`. */
-  selectedTeamGroupId?: string,
+  /** The currently selected team's own `groupId`, or an array of every
+   * team's `groupId` in the current dashboard's family for the "All ABTs"
+   * option (see `ALL_TEAMS_SENTINEL`), for resolving a `__current_team__`
+   * filter placeholder (see `teamFilterPlaceholder.ts`) — applied AFTER
+   * `mergeWidgetFilters`, since a slice's own `query` may carry the
+   * placeholder too, not just the widget's base `query`. */
+  selectedTeamGroupId?: string | string[],
 ): WidgetPieData {
   const api = useBackendApi();
   const config = WIDGET_RESOURCE_CONFIG[resourceType];

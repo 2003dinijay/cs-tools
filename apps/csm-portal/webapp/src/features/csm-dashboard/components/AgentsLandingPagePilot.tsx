@@ -83,12 +83,20 @@ function widgetGridColumnSx(widget: BeDashboardWidget) {
 interface AgentsLandingPagePilotProps {
   /** Id of the dashboard to render (e.g. "agents_pilot"). */
   dashboardId: string;
-  /** The currently selected team's own `groupId` (see `BeTeam.groupId`),
-   * only meaningful for an `isTeamBased` dashboard — threaded straight
-   * through to every tile so each can resolve its own `__current_team__`
-   * filter placeholder (see `teamFilterPlaceholder.ts`). `undefined` for a
+  /** The currently selected team's own `groupId` (see `BeTeam.groupId`), or
+   * an array of every team's `groupId` in the current dashboard's family
+   * when the "All ABTs" option is selected (see `ALL_TEAMS_SENTINEL` in
+   * `teamFilterPlaceholder.ts`) — only meaningful for an `isTeamBased`
+   * dashboard, threaded straight through to every tile so each can resolve
+   * its own `__current_team__` filter placeholder. `undefined` for a
    * non-team-based dashboard, or while the team isn't resolved yet. */
-  selectedTeamGroupId?: string;
+  selectedTeamGroupId?: string | string[];
+  /** Human-readable label for the selected team (its own display `name`,
+   * or the literal `"All ABTs"`) — threaded down for each tile's own
+   * `{{currentTeam}}` widget text placeholder (see
+   * `widgetTextPlaceholder.ts`). `undefined` in the same cases
+   * `selectedTeamGroupId` is. */
+  selectedTeamLabel?: string;
 }
 
 /**
@@ -104,6 +112,7 @@ interface AgentsLandingPagePilotProps {
 export default function AgentsLandingPagePilot({
   dashboardId,
   selectedTeamGroupId,
+  selectedTeamLabel,
 }: AgentsLandingPagePilotProps): JSX.Element {
   const queryClient = useQueryClient();
   const { data, isLoading, isError } = useDashboard(dashboardId);
@@ -173,6 +182,7 @@ export default function AgentsLandingPagePilot({
                   listLimit={widget.listLimit}
                   slices={widget.slices}
                   selectedTeamGroupId={selectedTeamGroupId}
+                  selectedTeamLabel={selectedTeamLabel}
                 />
               </Box>
             );

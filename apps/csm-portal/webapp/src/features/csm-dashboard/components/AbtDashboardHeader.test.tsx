@@ -27,6 +27,7 @@ vi.mock("@api/backend/client", () => ({
 }));
 
 import AbtDashboardHeader from "@features/csm-dashboard/components/AbtDashboardHeader";
+import { ALL_TEAMS_SENTINEL } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
 
 const DASHBOARD_LIST = [
   { id: "agents_pilot", displayName: "Engineer overview", isDefault: true, isTeamBased: false },
@@ -165,5 +166,52 @@ describe("AbtDashboardHeader", () => {
     expect(postMock).toHaveBeenCalledWith("/teams/search", {
       pagination: { offset: 0, limit: 100 },
     });
+  });
+
+  it("offers an 'All ABTs' option alongside the real teams for a team-based dashboard", async () => {
+    postMock.mockResolvedValue({
+      teams: [{ id: "castor", name: "Castor", family: "cre-abt" }],
+    });
+
+    renderWithClient(
+      <AbtDashboardHeader
+        dashboardKey="abt"
+        onDashboardChange={vi.fn()}
+        dashboardList={DASHBOARD_LIST}
+        selectedTeamId={undefined}
+        onTeamChange={vi.fn()}
+      />,
+    );
+
+    const [teamSelect] = screen.getAllByRole("combobox");
+    fireEvent.mouseDown(teamSelect);
+    const listbox = await screen.findByRole("listbox");
+
+    expect(within(listbox).getByText("All ABTs")).toBeInTheDocument();
+    expect(await within(listbox).findByText("Castor")).toBeInTheDocument();
+  });
+
+  it("calls onTeamChange with the sentinel value when 'All ABTs' is selected", async () => {
+    postMock.mockResolvedValue({
+      teams: [{ id: "castor", name: "Castor", family: "cre-abt" }],
+    });
+    const onTeamChange = vi.fn();
+
+    renderWithClient(
+      <AbtDashboardHeader
+        dashboardKey="abt"
+        onDashboardChange={vi.fn()}
+        dashboardList={DASHBOARD_LIST}
+        selectedTeamId={undefined}
+        onTeamChange={onTeamChange}
+      />,
+    );
+
+    const [teamSelect] = screen.getAllByRole("combobox");
+    fireEvent.mouseDown(teamSelect);
+    const listbox = await screen.findByRole("listbox");
+    fireEvent.click(within(listbox).getByText("All ABTs"));
+
+    expect(onTeamChange).toHaveBeenCalledWith(ALL_TEAMS_SENTINEL);
   });
 });

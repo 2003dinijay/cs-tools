@@ -71,11 +71,21 @@ vi.mock("@features/csm-dashboard/components/AgentsLandingPagePilot", () => ({
   default: ({
     dashboardId,
     selectedTeamGroupId,
+    selectedTeamLabel,
   }: {
     dashboardId: string;
-    selectedTeamGroupId?: string;
+    selectedTeamGroupId?: string | string[];
+    selectedTeamLabel?: string;
   }) => (
-    <div data-testid="agents-landing-pilot" data-team-group-id={selectedTeamGroupId ?? ""}>
+    <div
+      data-testid="agents-landing-pilot"
+      data-team-group-id={
+        Array.isArray(selectedTeamGroupId)
+          ? selectedTeamGroupId.join(",")
+          : (selectedTeamGroupId ?? "")
+      }
+      data-team-label={selectedTeamLabel ?? ""}
+    >
       {dashboardId}
     </div>
   ),
@@ -364,6 +374,43 @@ describe("CsmDashboardPage", () => {
 
       expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
         "agents_pilot",
+      );
+    });
+
+    it("defaults the team selector to 'All ABTs' when the user has no home team, for a directly-viewed team-based dashboard", () => {
+      mockListResult({ data: LIST_WITH_TEAM_DASHBOARD, isLoading: false });
+      mockCurrentUser({ user: { team: undefined }, isLoading: false });
+
+      renderAt("/dashboard#team_performance");
+
+      expect(screen.getByTestId("agents-landing-pilot")).toHaveTextContent(
+        "team_performance",
+      );
+      expect(screen.getByTestId("agents-landing-pilot")).toHaveAttribute(
+        "data-team-label",
+        "All ABTs",
+      );
+      // The team selector is the first of the two comboboxes for a
+      // team-based dashboard, and shows its currently selected value even
+      // while closed.
+      const selects = screen.getAllByRole("combobox");
+      expect(within(selects[0]).getByText("All ABTs")).toBeInTheDocument();
+    });
+
+    it("does not default to 'All ABTs' when the URL already names a real team", () => {
+      mockListResult({ data: LIST_WITH_TEAM_DASHBOARD, isLoading: false });
+      mockCurrentUser({ user: { team: undefined }, isLoading: false });
+
+      renderAt("/dashboard#team_performance.cs_team_leads");
+
+      expect(currentHash()).toBe("#team_performance.cs_team_leads");
+      // teams.data is undefined in this mock, so the real team's name can't
+      // resolve to a label either — the point of this test is that it's
+      // NOT "All ABTs" (the URL-named real team id always wins over the
+      // no-home-team default, per `selectedTeamId`'s own precedence).
+      expect(screen.getByTestId("agents-landing-pilot")).toHaveAttribute(
+        "data-team-label",
+        "",
       );
     });
 
