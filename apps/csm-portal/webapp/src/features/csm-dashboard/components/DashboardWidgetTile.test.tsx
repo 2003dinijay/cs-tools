@@ -996,6 +996,67 @@ describe("DashboardWidgetTile", () => {
     expect(postMock).not.toHaveBeenCalled();
   });
 
+  it("resolves the {{currentTeam}} text token in displayName/description to the selected team's own label", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_incidents"
+        displayName="Open Incidents — {{currentTeam}}"
+        description="Open incidents for {{currentTeam}}."
+        resourceType="case"
+        shape="count"
+        filters={{}}
+        selectedTeamLabel="Castor"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(screen.getByText("Open Incidents — Castor")).toBeInTheDocument();
+    const infoButton = screen.getByRole("button", { name: "About Open Incidents — Castor" });
+    fireEvent.mouseOver(infoButton);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent("Open incidents for Castor.");
+  });
+
+  it("resolves the {{currentTeam}} text token to the literal 'All ABTs' when that's the selected team label", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_incidents"
+        displayName="Open Incidents — {{currentTeam}}"
+        resourceType="case"
+        shape="count"
+        filters={{}}
+        selectedTeamLabel="All ABTs"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(screen.getByText("Open Incidents — All ABTs")).toBeInTheDocument();
+  });
+
+  it("strips the {{currentTeam}} text token cleanly (no literal token, no dangling separator) when unresolved", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_incidents"
+        displayName="Open Incidents — {{currentTeam}}"
+        resourceType="case"
+        shape="count"
+        filters={{}}
+        // No selectedTeamLabel passed — the unresolved case (non-team-based
+        // dashboard, or the team list/user profile still loading).
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(screen.getByText("Open Incidents")).toBeInTheDocument();
+    expect(screen.queryByText(/\{\{currentTeam\}\}/)).not.toBeInTheDocument();
+  });
+
   it("renders an unsupported-widget message instead of crashing for an unrecognized resourceType", () => {
     renderWithClient(
       <DashboardWidgetTile

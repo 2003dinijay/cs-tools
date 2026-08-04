@@ -27,6 +27,7 @@ import { WIDGET_LIST_RENDERERS } from "@features/csm-dashboard/config/widgetList
 import { buildWidgetPreviewHref } from "@features/csm-dashboard/utils/widgetPreviewUrl";
 import { mergeWidgetFilters } from "@features/csm-dashboard/utils/widgetFilterMerge";
 import { resolveTeamPlaceholder } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
+import { resolveWidgetText } from "@features/csm-dashboard/utils/widgetTextPlaceholder";
 import DashboardPieChart from "@features/csm-dashboard/components/DashboardPieChart";
 import DashboardBarChart from "@features/csm-dashboard/components/DashboardBarChart";
 
@@ -51,14 +52,23 @@ interface DashboardWidgetTileProps {
    * `useWidgetPieData`). Empty/absent renders an empty chart rather than
    * crashing. */
   slices?: BeDashboardPieSlice[];
-  /** The currently selected team's own `groupId` (see `BeTeam.groupId`),
+  /** The currently selected team's own `groupId` (see `BeTeam.groupId`), or
+   * an array of every team's `groupId` in the current dashboard's family
+   * when the "All ABTs" option is selected (see `ALL_TEAMS_SENTINEL`),
    * threaded down from `CsmDashboardPage` for resolving this widget's own
    * `__current_team__` filter placeholder (see `teamFilterPlaceholder.ts`)
    * — never the team registry key. `undefined` for a non-team-based
    * dashboard, or while the team isn't resolved yet (any `integrationCsTeam`
    * filter entry carrying the placeholder is then dropped, not sent
    * literally). */
-  selectedTeamGroupId?: string;
+  selectedTeamGroupId?: string | string[];
+  /** Human-readable label for the selected team (its own display `name`, or
+   * the literal `"All ABTs"`) — used to resolve the `{{currentTeam}}` text
+   * placeholder (see `widgetTextPlaceholder.ts`) inside `displayName`/
+   * `description` before render. `undefined` in the same cases
+   * `selectedTeamGroupId` is (the token is then stripped rather than left
+   * literally visible). */
+  selectedTeamLabel?: string;
 }
 
 /**
@@ -87,10 +97,18 @@ export default function DashboardWidgetTile({
   listLimit,
   slices,
   selectedTeamGroupId,
+  selectedTeamLabel,
 }: DashboardWidgetTileProps): JSX.Element {
   const theme = useTheme();
   const navigate = useNavigate();
   const { user } = useCurrentUser();
+  // Resolve the `{{currentTeam}}` text placeholder before anything below
+  // renders/reads `displayName`/`description` — every other use of those two
+  // props in this component reads the resolved value, never the raw one, so
+  // the token never leaks into the UI (or the "View more"/preview-page href,
+  // which carries `displayName` verbatim — see `buildWidgetPreviewHref`).
+  const resolvedDisplayName = resolveWidgetText(displayName, selectedTeamLabel) ?? displayName;
+  const resolvedDescription = resolveWidgetText(description, selectedTeamLabel);
   // Shape "pie" resolves via useWidgetPieData instead (one search per
   // slice) — skip this one's own network call rather than wasting it, but
   // still call the hook unconditionally (rules of hooks; a widget's shape
@@ -106,6 +124,7 @@ export default function DashboardWidgetTile({
     selectedTeamGroupId,
   );
   const pieData = useWidgetPieData(
+    widgetId,
     resourceType,
     filters,
     shape === "pie" || shape === "bar" ? (slices ?? []) : [],
@@ -123,7 +142,7 @@ export default function DashboardWidgetTile({
     return (
       <Card variant="outlined" sx={{ p: 1.75 }}>
         <Typography variant="caption" color="text.secondary">
-          {displayName}
+          {resolvedDisplayName}
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
           Unsupported widget type.
@@ -165,11 +184,11 @@ export default function DashboardWidgetTile({
   // (see the pie/bar branch below), so an icon there would just duplicate
   // it. Renders only when this widget actually has a `description` to show
   // — an empty/absent one means there's nothing to disclose.
-  const infoIcon = shape === "count" && description && (
-    <Tooltip title={description}>
+  const infoIcon = shape === "count" && resolvedDescription && (
+    <Tooltip title={resolvedDescription}>
       <IconButton
         size="small"
-        aria-label={`About ${displayName}`}
+        aria-label={`About ${resolvedDisplayName}`}
         sx={{
           position: "absolute",
           top: 8,
@@ -201,7 +220,7 @@ export default function DashboardWidgetTile({
         <Icon size={16} />
       </Box>
       <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
-        {displayName}
+        {resolvedDisplayName}
       </Typography>
     </Box>
   );
@@ -233,7 +252,7 @@ export default function DashboardWidgetTile({
                   to={buildWidgetPreviewHref({
                     previewSlug: config.previewSlug,
                     widgetId,
-                    displayName,
+                    displayName: resolvedDisplayName,
                     filters,
                     currentUserId: user?.id,
                   })}
@@ -295,7 +314,7 @@ export default function DashboardWidgetTile({
         <Box
           role="button"
           tabIndex={0}
-          aria-label={`View all cases for ${displayName}`}
+          aria-label={`View all cases for ${resolvedDisplayName}`}
           onClick={handleTileClick}
           onKeyDown={handleTileKeyDown}
           sx={{
@@ -317,10 +336,10 @@ export default function DashboardWidgetTile({
               chart below it — so the chart's top edge (and, at the size this
               chart renders at, its tooltip) never sits flush against/behind
               the title row above it. */}
-          <Box sx={{ pb: description ? 1 : 2.5 }}>{header}</Box>
-          {description && (
+          <Box sx={{ pb: resolvedDescription ? 1 : 2.5 }}>{header}</Box>
+          {resolvedDescription && (
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-              {description}
+              {resolvedDescription}
             </Typography>
           )}
           <Box sx={{ pointerEvents: "auto" }}>
@@ -375,7 +394,7 @@ export default function DashboardWidgetTile({
         </Box>
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Typography variant="caption" color="text.secondary" noWrap>
-            {displayName}
+            {resolvedDisplayName}
           </Typography>
           <Typography
             noWrap
@@ -417,7 +436,7 @@ export default function DashboardWidgetTile({
         // layer above this anchor, not inside it as descendant text anymore
         // (that's the whole point -- see the comment above), so it needs its
         // own accessible name instead of inheriting one from its content.
-        aria-label={`${displayName}: ${formattedCount}`}
+        aria-label={`${resolvedDisplayName}: ${formattedCount}`}
         sx={{
           position: "absolute",
           inset: 0,

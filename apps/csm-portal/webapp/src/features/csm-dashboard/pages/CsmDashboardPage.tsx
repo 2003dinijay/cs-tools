@@ -20,13 +20,14 @@ import { useLocation, useNavigate } from "react-router";
 import AbtDashboardHeader from "@features/csm-dashboard/components/AbtDashboardHeader";
 import AgentsLandingPagePilot from "@features/csm-dashboard/components/AgentsLandingPagePilot";
 import { useDashboardList } from "@features/csm-dashboard/api/useDashboardList";
-import { useTeams } from "@features/csm-dashboard/api/useTeams";
+import { abtFamilyForDashboardType, useTeams } from "@features/csm-dashboard/api/useTeams";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import type { DashboardKey } from "@features/csm-dashboard/types/abtDashboard";
 import {
   buildDashboardHash,
   parseDashboardHash,
 } from "@features/csm-dashboard/utils/dashboardUrlHash";
+import { ALL_TEAMS_SENTINEL } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
 
 /**
  * Top-level CSM dashboard. The dashboard list is BE-driven (`GET
@@ -114,9 +115,15 @@ export default function CsmDashboardPage(): JSX.Element {
   // resolved, but only ever as a default: the moment the URL itself names a
   // team (including one written by the user's own pick — see
   // `handleTeamChange`), that value always wins over this one, so a manual
-  // switch is never fought on re-render.
+  // switch is never fought on re-render. A user with NO home team (or
+  // whose profile hasn't resolved one yet) defaults to `ALL_TEAMS_SENTINEL`
+  // ("All ABTs") rather than an empty selection — see `AbtDashboardHeader`.
   const defaultTeamId =
-    isTeamBased && !hashTeamId && userHasTeam ? currentUser.user?.team?.teamKey : undefined;
+    isTeamBased && !hashTeamId
+      ? userHasTeam
+        ? currentUser.user?.team?.teamKey
+        : ALL_TEAMS_SENTINEL
+      : undefined;
   const selectedTeamId = hashTeamId ?? defaultTeamId;
 
   // Every team, unfiltered, for resolving the selected team's `groupId` (the
@@ -129,7 +136,32 @@ export default function CsmDashboardPage(): JSX.Element {
   // differently-scoped query from the header's — react-query no longer
   // dedupes these into one fetch.
   const teams = useTeams(isTeamBased);
-  const selectedTeamGroupId = teams.data?.find((t) => t.id === selectedTeamId)?.groupId;
+
+  // "All ABTs" resolves to every team in the CURRENT DASHBOARD's own family
+  // specifically (not the signed-in user's own team's family, which is what
+  // the unscoped `teams` query above is for) — filtering the same
+  // unscoped `teams.data` client-side by family, rather than firing a
+  // second, family-scoped query, since `teams.data` already has every
+  // team's `family` on it.
+  const currentDashboardFamily = abtFamilyForDashboardType(currentEntry?.type);
+  const allTeamsInFamilyGroupIds = useMemo(
+    () =>
+      (teams.data ?? [])
+        .filter((t) => t.family === currentDashboardFamily)
+        .map((t) => t.groupId)
+        .filter((groupId): groupId is string => Boolean(groupId)),
+    [teams.data, currentDashboardFamily],
+  );
+
+  const selectedTeam = teams.data?.find((t) => t.id === selectedTeamId);
+  const selectedTeamGroupId: string | string[] | undefined =
+    selectedTeamId === ALL_TEAMS_SENTINEL ? allTeamsInFamilyGroupIds : selectedTeam?.groupId;
+  // Human-readable label for the selected team, threaded down for the
+  // `{{currentTeam}}` widget text placeholder (see
+  // `widgetTextPlaceholder.ts`) — never the opaque `groupId` above, which is
+  // useless for display.
+  const selectedTeamLabel: string | undefined =
+    selectedTeamId === ALL_TEAMS_SENTINEL ? "All ABTs" : selectedTeam?.name;
 
   const writeHash = useCallback(
     (nextDashboardId: string, nextTeamId: string | undefined) => {
@@ -196,6 +228,7 @@ export default function CsmDashboardPage(): JSX.Element {
       <AgentsLandingPagePilot
         dashboardId={dashboardKey}
         selectedTeamGroupId={selectedTeamGroupId}
+        selectedTeamLabel={selectedTeamLabel}
       />
     </Box>
   );

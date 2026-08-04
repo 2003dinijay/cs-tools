@@ -19,6 +19,7 @@ import { type JSX } from "react";
 import type { BeDashboardListItem } from "@api/backend/types";
 import type { DashboardKey } from "@features/csm-dashboard/types/abtDashboard";
 import { abtFamilyForDashboardType, useTeams } from "@features/csm-dashboard/api/useTeams";
+import { ALL_TEAMS_SENTINEL } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
 
 interface AbtDashboardHeaderProps {
   dashboardKey: DashboardKey;
@@ -26,12 +27,18 @@ interface AbtDashboardHeaderProps {
   /** Every dashboard in the BE registry (GET /dashboards), for the switcher. */
   dashboardList: BeDashboardListItem[];
   /** The currently selected team, controlled by the parent (URL-synced,
-   * defaulted to the signed-in user's own team once resolved — see
+   * defaulted to the signed-in user's own team once resolved, or to
+   * `ALL_TEAMS_SENTINEL` when the signed-in user has no home team — see
    * `CsmDashboardPage`). `undefined` when the current dashboard isn't
    * `isTeamBased` (the parent never passes a stale team id through in that
    * case) or, briefly, while the team list/user profile are still loading.
-   * There is deliberately no "All teams" option any more — every team-based
-   * dashboard view has a real team selected. */
+   * The Select also offers an `ALL_TEAMS_SENTINEL`-valued "All ABTs" entry
+   * (see `teamFilterPlaceholder.ts`) — every team-based dashboard view now
+   * has either a real team or "All ABTs" selected, never nothing. This is
+   * narrower than, and unrelated to, the earlier "My ABT / All customers"
+   * toggle removed 2026-08-02: that one spanned every team in the whole
+   * registry, this one never leaves the current dashboard's own family
+   * (`abtFamilyForDashboardType`). */
   selectedTeamId: string | undefined;
   onTeamChange: (teamId: string | undefined) => void;
 }
@@ -51,7 +58,9 @@ interface AbtDashboardHeaderProps {
  * to the widget grid. The earlier My ABT / All customers toggle was removed
  * entirely — ABT scoping was never implemented and dashboards carry no
  * other special behavior beyond which one (and, for team-based ones, which
- * team) is selected.
+ * team) is selected. The picker's "All ABTs" entry (`ALL_TEAMS_SENTINEL`)
+ * scopes to every team in the CURRENT dashboard's own family, not every
+ * team in the registry — see `selectedTeamId`'s own doc comment above.
  */
 export default function AbtDashboardHeader({
   dashboardKey,
@@ -83,22 +92,6 @@ export default function AbtDashboardHeader({
         </Typography>
       </Box>
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
-        {isTeamBased && (
-          <FormControl size="small" sx={{ minWidth: 180 }}>
-            <Select
-              value={selectedTeamId ?? ""}
-              onChange={(e) => onTeamChange(e.target.value || undefined)}
-              displayEmpty
-              aria-label="Select team"
-            >
-              {(teams.data ?? []).map((t) => (
-                <MenuItem key={t.id} value={t.id}>
-                  {t.name}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        )}
         <FormControl size="small" sx={{ minWidth: 200 }}>
           <Select
             value={dashboardKey}
@@ -113,6 +106,23 @@ export default function AbtDashboardHeader({
             ))}
           </Select>
         </FormControl>
+        {isTeamBased && (
+          <FormControl size="small" sx={{ minWidth: 180 }}>
+            <Select
+              value={selectedTeamId ?? ""}
+              onChange={(e) => onTeamChange(e.target.value || undefined)}
+              displayEmpty
+              aria-label="Select team"
+            >
+              <MenuItem value={ALL_TEAMS_SENTINEL}>All ABTs</MenuItem>
+              {(teams.data ?? []).map((t) => (
+                <MenuItem key={t.id} value={t.id}>
+                  {t.name}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
       </Box>
     </Box>
   );

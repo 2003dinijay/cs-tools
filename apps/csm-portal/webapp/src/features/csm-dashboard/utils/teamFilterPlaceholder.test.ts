@@ -100,4 +100,79 @@ describe("resolveTeamPlaceholder", () => {
 
     expect(resolveTeamPlaceholder(filters, "team-group-id")).toBe(filters);
   });
+
+  it("splices every groupId in an array into the placeholder's spot ('All ABTs')", () => {
+    const filters = {
+      filters: [
+        { field: "state", op: "in", values: ["open"] },
+        { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+      ],
+    };
+
+    const resolved = resolveTeamPlaceholder(filters, ["group-a", "group-b", "group-c"]);
+
+    expect(resolved).toEqual({
+      filters: [
+        { field: "state", op: "in", values: ["open"] },
+        {
+          field: "integrationCsTeam",
+          op: "in",
+          values: ["group-a", "group-b", "group-c"],
+        },
+      ],
+    });
+  });
+
+  it("keeps a literal value alongside a spliced-in array, in position", () => {
+    const filters = {
+      filters: [
+        {
+          field: "integrationCsTeam",
+          op: "in",
+          values: ["some-literal-group-id", CURRENT_TEAM_PLACEHOLDER],
+        },
+      ],
+    };
+
+    const resolved = resolveTeamPlaceholder(filters, ["group-a", "group-b"]);
+
+    expect(resolved).toEqual({
+      filters: [
+        {
+          field: "integrationCsTeam",
+          op: "in",
+          values: ["some-literal-group-id", "group-a", "group-b"],
+        },
+      ],
+    });
+  });
+
+  it("drops the integrationCsTeam entry entirely when given an empty array", () => {
+    const filters = {
+      filters: [
+        { field: "state", op: "in", values: ["open"] },
+        { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+      ],
+    };
+
+    const resolved = resolveTeamPlaceholder(filters, []);
+
+    expect(resolved).toEqual({
+      filters: [{ field: "state", op: "in", values: ["open"] }],
+    });
+  });
+
+  it("still substitutes a single string 1:1, same as before array support existed", () => {
+    const filters = {
+      filters: [
+        { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+      ],
+    };
+
+    const resolved = resolveTeamPlaceholder(filters, "single-group-id");
+
+    expect(resolved).toEqual({
+      filters: [{ field: "integrationCsTeam", op: "in", values: ["single-group-id"] }],
+    });
+  });
 });
