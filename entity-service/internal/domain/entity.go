@@ -1261,13 +1261,15 @@ type CaseView struct {
 	// CSM-engineer-facing only, never shared with the customer.
 	WorstCaseFixEta *string `json:"worstCaseFixEta"`
 	// Tags are the free-text labels attached to the case via ServiceNow's generic
-	// platform label/label_entry mechanism (not a case-specific column).
+	// platform label/label_entry mechanism (not a case-specific column). Tags
+	// themselves are managed out-of-band via AddCaseTag/RemoveCaseTag/SearchTags.
 	//
-	// Not yet available in the backing service: no Ballerina adapter exists yet
-	// for SN's generic label/label_entry tables. Confirmed real tag values exist in
-	// production (e.g. "micro-gw", "ws-policy", "node") but nothing in the current
-	// Choreo GET /cases/{id} contract returns them. This field is always nil until
-	// a Ballerina endpoint surfaces the case's tags.
+	// Not yet populated on the case detail read: the Choreo GET /cases/{id} contract
+	// does not inline a case's current tags, and there is no case-scoped "list tags
+	// for this case" endpoint yet either — only the case-agnostic GET /tags/search.
+	// Confirmed real tag values exist in production (e.g. "micro-gw", "ws-policy",
+	// "node") but this field is always nil until the backing service's case-detail
+	// response (or a case-scoped tags-list endpoint) surfaces them.
 	Tags []Tag `json:"tags"`
 }
 
@@ -1751,13 +1753,9 @@ type CreateCaseCommentRequest struct {
 	Content   string      `json:"content"`
 }
 
-// AddCaseTagRequest is the request body for POST /cases/{id}/tags.
-//
-// Not yet available in the backing service: SN's tagging is the generic platform
-// label/label_entry mechanism (table-agnostic, not a case column), so it needs an
-// entirely new Ballerina/Choreo adapter — nothing in the current contract creates
-// a label on a case. This request/the AddCaseTag service method are implemented so
-// the entity-service side is ready once Ballerina adds the endpoint.
+// AddCaseTagRequest is the request body for POST /cases/{id}/tags. SN's tagging is
+// the generic platform label/label_entry mechanism (table-agnostic, not a case
+// column).
 type AddCaseTagRequest struct {
 	CaseID string `json:"-"`
 	Label  string `json:"label"`
