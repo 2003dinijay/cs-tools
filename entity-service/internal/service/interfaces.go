@@ -416,6 +416,10 @@ type IncidentService interface {
 	// UpdateIncident partially updates an existing incident. At least one field must be
 	// provided. A NotFoundError is returned if the incident does not exist.
 	UpdateIncident(ctx context.Context, req domain.UpdateIncidentRequest) (domain.UpdateIncidentResponse, error)
+
+	// SearchIncidentActivities returns a paginated activity feed for an incident.
+	// Confirmed as a real, distinct endpoint from SearchCaseActivities.
+	SearchIncidentActivities(ctx context.Context, req domain.SearchIncidentActivitiesRequest) (domain.SearchIncidentActivitiesResponse, error)
 }
 
 // ProblemService defines the operations available on the problems entity.

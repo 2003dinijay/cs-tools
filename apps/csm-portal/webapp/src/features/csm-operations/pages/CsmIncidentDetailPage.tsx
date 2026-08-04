@@ -46,6 +46,7 @@ import {
   useGetCsmIncidentComments,
   usePostCsmIncidentComment,
 } from "@features/csm-operations/api/useCsmIncidentComments";
+import { useGetCsmIncidentActivities } from "@features/csm-operations/api/useCsmIncidentActivities";
 import EditIncidentDialog from "@features/csm-operations/components/EditIncidentDialog";
 import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
 import IncidentActionBar from "@features/csm-operations/components/IncidentActionBar";
@@ -187,6 +188,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   const engineerName = useEngineerDisplayName();
 
   const { data: comments } = useGetCsmIncidentComments(id);
+  const { data: activityAudit } = useGetCsmIncidentActivities(id);
   const postComment = usePostCsmIncidentComment();
   const { data: attachments } = useGetCsmCaseAttachments(id, "incident");
   const postAttachment = usePostCsmCaseAttachment();
@@ -497,7 +499,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
           )}
           <CaseActivitiesFeed
             comments={comments ?? []}
-            audit={[]}
+            audit={activityAudit ?? []}
             attachments={attachmentList}
             onDownloadAttachment={onDownloadAttachment}
             preview={{

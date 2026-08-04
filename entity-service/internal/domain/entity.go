@@ -1883,6 +1883,29 @@ type SearchCaseActivitiesResponse struct {
 	HasMore  bool           `json:"hasMore"`
 }
 
+// SearchIncidentActivitiesRequest is the input for listing the activity feed of an
+// incident. IncidentID is populated from the URL path parameter and is not part of the
+// JSON body. Shape mirrors SearchCaseActivitiesRequest exactly -- confirmed by the team
+// that incidents are served by their own activities endpoint, built on the same
+// underlying mechanism as the case one, though the exact response shape has not been
+// exercised against a live response.
+type SearchIncidentActivitiesRequest struct {
+	IncidentID          string     `json:"-"`
+	Pagination          Pagination `json:"pagination"`
+	IncludeFieldChanges *bool      `json:"includeFieldChanges,omitempty"`
+}
+
+// SearchIncidentActivitiesResponse is the paginated result of an incident activity
+// search. Shape mirrors SearchCaseActivitiesResponse exactly -- CaseActivity is reused
+// as-is since an activity feed entry is not inherently case-specific.
+type SearchIncidentActivitiesResponse struct {
+	Activity []CaseActivity `json:"activity"`
+	Total    int            `json:"total"`
+	Limit    int            `json:"limit"`
+	Offset   int            `json:"offset"`
+	HasMore  bool           `json:"hasMore"`
+}
+
 // Comment is a generic comment associated with any reference entity type
 // (case, conversation, change_request, etc.).
 type Comment struct {

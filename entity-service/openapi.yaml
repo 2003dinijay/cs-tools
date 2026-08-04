@@ -2742,6 +2742,53 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /incidents/{id}/activities/search:
+    post:
+      summary: >-
+        Search the activity feed of an incident (comments, attachments, and optional
+        field changes). Confirmed as a distinct endpoint from the case one, built on the
+        same underlying mechanism.
+      operationId: searchIncidentActivities
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Incident UUID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchIncidentActivitiesRequest'
+      responses:
+        "200":
+          description: Paginated activity feed for the incident.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchIncidentActivitiesResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /incidents:
     post:
       summary: Create a new incident (ServiceNow data source only).
@@ -5545,6 +5592,37 @@ components:
 
     SearchCaseActivitiesResponse:
       type: object
+      properties:
+        activity:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseActivity'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    SearchIncidentActivitiesRequest:
+      type: object
+      description: Mirrors SearchCaseActivitiesRequest -- see that endpoint's own notes.
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        includeFieldChanges:
+          type: boolean
+          description: >-
+            When omitted or false, only comment and attachment entries are
+            returned. When true, field-change entries are included as well.
+
+    SearchIncidentActivitiesResponse:
+      type: object
+      description: >-
+        Mirrors SearchCaseActivitiesResponse. CaseActivity is reused as-is since an
+        activity feed entry is not inherently case-specific.
       properties:
         activity:
           type: array

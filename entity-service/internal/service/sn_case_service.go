@@ -1862,37 +1862,15 @@ type snSearchActivitiesResponse struct {
 	TotalRecords int          `json:"totalRecords"`
 }
 
-func (s *snCaseService) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error) {
-	if err := normalizePagination(&req.Pagination); err != nil {
-		return domain.SearchCaseActivitiesResponse{}, err
-	}
-
-	token := middleware.UserIDTokenFromContext(ctx)
-
-	if err := validateUUIDs("id", []string{req.CaseID}); err != nil {
-		return domain.SearchCaseActivitiesResponse{}, err
-	}
-
-	payload := snSearchActivitiesPayload{
-		Pagination:          snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
-		IncludeFieldChanges: req.IncludeFieldChanges,
-	}
-
-	raw, err := s.client.Post(ctx, "/cases/"+uuidToSysid(req.CaseID)+"/activities/search", token, payload)
-	if err != nil {
-		return domain.SearchCaseActivitiesResponse{}, err
-	}
-
-	var snResp snSearchActivitiesResponse
-	if err := json.Unmarshal(raw, &snResp); err != nil {
-		return domain.SearchCaseActivitiesResponse{}, fmt.Errorf("sn search activities: parse response: %w", err)
-	}
-
-	activities := make([]domain.CaseActivity, 0, len(snResp.Activity))
-	for _, a := range snResp.Activity {
+// mapSNActivitiesToDomain converts a raw ServiceNow activity list into the domain
+// representation shared by the case and incident activity feeds -- an activity entry
+// (comment, attachment, or field change) is not inherently case-specific.
+func mapSNActivitiesToDomain(raw []snActivity) ([]domain.CaseActivity, error) {
+	activities := make([]domain.CaseActivity, 0, len(raw))
+	for _, a := range raw {
 		createdOn, err := time.Parse(snCreatedOnLayout, a.CreatedOn)
 		if err != nil {
-			return domain.SearchCaseActivitiesResponse{}, fmt.Errorf("sn search activities: parse createdOn %q: %w", a.CreatedOn, err)
+			return nil, fmt.Errorf("parse createdOn %q: %w", a.CreatedOn, err)
 		}
 		activity := domain.CaseActivity{
 			ID:                 sysidToUUID(a.ID),
@@ -1937,6 +1915,39 @@ func (s *snCaseService) SearchCaseActivities(ctx context.Context, req domain.Sea
 			activity.Changes = changes
 		}
 		activities = append(activities, activity)
+	}
+	return activities, nil
+}
+
+func (s *snCaseService) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error) {
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	if err := validateUUIDs("id", []string{req.CaseID}); err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+
+	payload := snSearchActivitiesPayload{
+		Pagination:          snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
+		IncludeFieldChanges: req.IncludeFieldChanges,
+	}
+
+	raw, err := s.client.Post(ctx, "/cases/"+uuidToSysid(req.CaseID)+"/activities/search", token, payload)
+	if err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+
+	var snResp snSearchActivitiesResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.SearchCaseActivitiesResponse{}, fmt.Errorf("sn search activities: parse response: %w", err)
+	}
+
+	activities, err := mapSNActivitiesToDomain(snResp.Activity)
+	if err != nil {
+		return domain.SearchCaseActivitiesResponse{}, fmt.Errorf("sn search activities: %w", err)
 	}
 
 	total := snResp.TotalRecords

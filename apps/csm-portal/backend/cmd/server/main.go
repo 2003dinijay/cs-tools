@@ -210,6 +210,7 @@ func main() {
 	mux.HandleFunc("PATCH /incidents/{id}", incidentHandler.PatchIncident)
 	mux.HandleFunc("POST /incidents/{id}/comments", incidentHandler.CreateIncidentComment)
 	mux.HandleFunc("POST /incidents/{id}/comments/search", incidentHandler.SearchIncidentComments)
+	mux.HandleFunc("POST /incidents/{id}/activities/search", incidentHandler.SearchIncidentActivities)
 	mux.HandleFunc("POST /change-requests/{id}/comments", changeRequestHandler.CreateChangeRequestComment)
 	mux.HandleFunc("POST /change-requests/{id}/comments/search", changeRequestHandler.SearchChangeRequestComments)
 	mux.HandleFunc("POST /problems", problemHandler.CreateProblem)
