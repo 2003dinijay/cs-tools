@@ -20,11 +20,10 @@
 // newest-updated first, mirroring `services/cases.ts` `cases.infinite`.
 
 import { infiniteQueryOptions } from "@tanstack/react-query";
-import { CASES_SEARCH_ENDPOINT } from "@config/endpoints";
-import type { CaseSearchPayloadDto, CaseSearchResponseDto } from "@src/types";
+import type { CaseSearchPayloadDto } from "@src/types";
 import { toCaseSummary, type CaseSummary } from "@src/types";
 import type { AnnouncementFilters } from "@utils/announcements";
-import apiClient from "./apiClient";
+import { postCasesSearch } from "./cases";
 
 export interface AnnouncementSearchResult {
   items: CaseSummary[];
@@ -52,7 +51,7 @@ async function searchAnnouncements(filters: AnnouncementFilters, offset: number)
       ...(filters.projects.length ? { projectIds: filters.projects.map((p) => p.id) } : {}),
     },
   };
-  const { data } = await apiClient.post<CaseSearchResponseDto>(CASES_SEARCH_ENDPOINT, payload);
+  const data = await postCasesSearch(payload);
   const items = data.cases.map(toCaseSummary);
   return {
     items,

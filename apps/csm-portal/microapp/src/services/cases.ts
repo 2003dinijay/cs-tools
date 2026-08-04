@@ -89,15 +89,25 @@ function toWireFilters(filters: CaseSearchFiltersDto = {}): { searchQuery?: stri
   };
 }
 
+// The one place any caller — inside this module or elsewhere in the app — should hit
+// `/cases/search` from: applies the CaseSearchFiltersDto -> wire-contract translation above, so
+// no other module needs to know the endpoint expects the generic filter array. Exported (not just
+// used internally) for announcements.ts/engagements.ts/securityReports.ts, which each scope the
+// same endpoint to one case `type` and previously posted to it directly with the old shape.
+export async function postCasesSearch(payload: CaseSearchPayloadDto = {}): Promise<CaseSearchResponseDto> {
+  const { data } = await apiClient.post<CaseSearchResponseDto>(CASES_SEARCH_ENDPOINT, {
+    ...payload,
+    filters: toWireFilters(payload.filters),
+  });
+  return data;
+}
+
 // Exported (not just used internally) so the Home dashboard's composition query can fan out
 // count-only searches (`pagination: { limit: 1 }`, read `.total`) without going through the
 // `cases.all` query-options wrapper — mirrors the webapp's useCaseComposition.ts, which calls its
 // api client directly for the same reason.
 export const getAllCases = async (payload: CaseSearchPayloadDto = {}): Promise<CaseSearchResult> => {
-  const { data } = await apiClient.post<CaseSearchResponseDto>(CASES_SEARCH_ENDPOINT, {
-    ...payload,
-    filters: toWireFilters(payload.filters),
-  });
+  const data = await postCasesSearch(payload);
   const items = data.cases.map(toCaseSummary);
   return {
     items,

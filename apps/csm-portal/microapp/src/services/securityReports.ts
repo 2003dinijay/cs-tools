@@ -22,11 +22,10 @@
 // scroll, newest-updated first, mirroring services/engagements.ts.
 
 import { infiniteQueryOptions } from "@tanstack/react-query";
-import { CASES_SEARCH_ENDPOINT } from "@config/endpoints";
-import type { CaseSearchPayloadDto, CaseSearchResponseDto } from "@src/types";
+import type { CaseSearchPayloadDto } from "@src/types";
 import { toCaseSummary, type CaseSummary } from "@src/types";
 import type { SecurityReportFilters } from "@utils/securityReports";
-import apiClient from "./apiClient";
+import { postCasesSearch } from "./cases";
 
 export interface SecurityReportSearchResult {
   items: CaseSummary[];
@@ -58,7 +57,7 @@ async function searchSecurityReports(
       ...(filters.productNames.length ? { productNames: filters.productNames } : {}),
     },
   };
-  const { data } = await apiClient.post<CaseSearchResponseDto>(CASES_SEARCH_ENDPOINT, payload);
+  const data = await postCasesSearch(payload);
   const items = data.cases.map(toCaseSummary);
   return {
     items,
