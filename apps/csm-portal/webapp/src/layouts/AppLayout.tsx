@@ -38,6 +38,7 @@ import IdleTimeoutProvider from "@providers/IdleTimeoutProvider";
 import { useSyncRecentViewsIdentity } from "@features/csm-recent/hooks/useRecentViews";
 import GlobalNotificationBanner from "@components/notification-banner/GlobalNotificationBanner";
 import HtmlAnnouncementBanner from "@components/announcement-banner/HtmlAnnouncementBanner";
+import MobileAppBanner from "@components/mobile-app-banner/MobileAppBanner";
 import TopBanner from "@components/top-banner/TopBanner";
 import Header from "@components/header/Header";
 import CsmSideBar from "@components/side-nav-bar/CsmSideBar";
@@ -131,6 +132,7 @@ export default function AppLayout({ children }: AppLayoutProps): JSX.Element {
         }}
       >
         <TopBanner />
+        <MobileAppBanner />
         <GlobalNotificationBanner visible={notificationBannerConfig.visible} />
         <HtmlAnnouncementBanner />
         <AppShell sx={{ flex: 1, minHeight: 0, height: "auto" }}>
