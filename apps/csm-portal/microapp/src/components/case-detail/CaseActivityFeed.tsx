@@ -14,9 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Suspense, useMemo, type ReactNode } from "react";
+import { Suspense, useMemo, useState, type ReactNode } from "react";
 import { Chip, IconButton, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
-import { Eye, History, Paperclip } from "@wso2/oxygen-ui-icons-react";
+import { Download, Eye, History, Paperclip } from "@wso2/oxygen-ui-icons-react";
 import { useQueryErrorResetBoundary, useSuspenseQuery } from "@tanstack/react-query";
 import { activities as activitiesService } from "@src/services/activities";
 import { attachments as attachmentsService } from "@src/services/attachments";
@@ -24,8 +24,10 @@ import type { CaseAttachment, CaseAuditEntry, Comment } from "@src/types";
 import { ErrorBoundary } from "@components/common/ErrorBoundary";
 import { ErrorState } from "@components/support/ErrorState";
 import { formatBytes } from "@utils/attachments";
+import { getAttachmentPreviewKind } from "@utils/attachmentPreview";
 import { fromNow } from "@utils/dateTime";
 import { openUrl } from "@components/microapp-bridge";
+import { AttachmentPreviewDialog } from "./AttachmentPreviewDialog";
 import { CommentBody } from "./CommentBody";
 
 interface CaseActivityFeedProps {
@@ -73,6 +75,8 @@ function FieldChangeLine({ field }: { field: CaseAuditEntry["changes"][number] }
  * category filter/sort-order chips — everything is always shown here.
  */
 export function CaseActivityFeed({ comments, audit, attachments }: CaseActivityFeedProps) {
+  const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(null);
+
   const entries = useMemo(() => {
     const out: FeedEntry[] = [];
     for (const c of comments) out.push({ kind: "comment", at: c.createdOn, id: c.id, comment: c });
@@ -165,22 +169,32 @@ export function CaseActivityFeed({ comments, audit, attachments }: CaseActivityF
               </Stack>
             </Stack>
             {e.attachment.downloadUrl && (
-              // Only "Open" — the native bridge exposes a single `openUrl` action (open in the
-              // in-app browser), no distinct "save to device" primitive. A "Download" button
-              // that called the same thing was misleading rather than offering real download
-              // behavior.
-              <IconButton
-                size="small"
-                aria-label={`Open ${e.attachment.name}`}
-                onClick={() => openUrl({ url: e.attachment.downloadUrl as string, presentationStyle: "fullScreen" })}
-                sx={{ flexShrink: 0 }}
-              >
-                <Eye size={16} />
-              </IconButton>
+              <Stack direction="row" gap={0.5} sx={{ flexShrink: 0 }}>
+                {/* In-app zoom/pan viewer, same as AttachmentsTab — only for content types it
+                    actually renders (images/PDFs); everything else is download-only. */}
+                {getAttachmentPreviewKind(e.attachment.type) && (
+                  <IconButton
+                    size="small"
+                    aria-label={`Preview ${e.attachment.name}`}
+                    onClick={() => setPreviewTarget(e.attachment)}
+                  >
+                    <Eye size={16} />
+                  </IconButton>
+                )}
+                <IconButton
+                  size="small"
+                  aria-label={`Download ${e.attachment.name}`}
+                  onClick={() => openUrl({ url: e.attachment.downloadUrl as string, presentationStyle: "fullScreen" })}
+                >
+                  <Download size={16} />
+                </IconButton>
+              </Stack>
             )}
           </Stack>
         );
       })}
+
+      <AttachmentPreviewDialog attachment={previewTarget} onClose={() => setPreviewTarget(null)} />
     </Stack>
   );
 }

@@ -15,7 +15,7 @@
 // under the License.
 
 import { queryOptions } from "@tanstack/react-query";
-import { ATTACHMENTS_ENDPOINT, ATTACHMENTS_SEARCH_ENDPOINT } from "@config/endpoints";
+import { ATTACHMENT_CONTENT_ENDPOINT, ATTACHMENTS_ENDPOINT, ATTACHMENTS_SEARCH_ENDPOINT } from "@config/endpoints";
 import type {
   AttachmentCreatePayloadDto,
   AttachmentCreateResponseDto,
@@ -24,6 +24,7 @@ import type {
   AttachmentSearchResponseDto,
 } from "@src/types";
 import { toCaseAttachment, type CaseAttachment } from "@src/types";
+import { isSafeAttachmentContentType } from "@utils/attachmentPreview";
 import apiClient from "./apiClient";
 
 const createAttachment = async (payload: AttachmentCreatePayloadDto): Promise<AttachmentDetailDto> => {
@@ -43,6 +44,25 @@ const searchAttachments = async (
   return (data.attachments ?? []).map(toCaseAttachment);
 };
 
+// Fetches an attachment's raw bytes via `GET /attachments/{id}/content`, for the preview dialog.
+// The content endpoint always responds with `Content-Disposition: attachment` and streams behind
+// auth, so it's fetched as a Blob rather than pointed at directly (a plain `openUrl`/`<img src>`
+// would miss the auth headers and would force a download instead of rendering inline) — mirrors
+// the webapp's useGetCsmCaseAttachmentContent (useCsmCaseAttachments.ts).
+//
+// The response's Content-Type is only forwarded as-is for the backend's safe-content-type
+// allowlist (case_handler.go) — anything else is coerced to application/octet-stream server-side
+// to block a stored-XSS via a crafted upstream type. The attachment's own `type` from
+// /attachments/search list metadata is whatever the uploader claimed, unverified — so it's only
+// used to relabel the fetched blob when that metadata type is itself in the same allowlist
+// (mirrored client-side as isSafeAttachmentContentType); otherwise the blob is left as
+// application/octet-stream, matching what the backend already coerced it to.
+const getAttachmentContent = async (attachment: CaseAttachment): Promise<Blob> => {
+  const { data } = await apiClient.get<Blob>(ATTACHMENT_CONTENT_ENDPOINT(attachment.id), { responseType: "blob" });
+  if (!isSafeAttachmentContentType(attachment.type)) return data;
+  return data.type === attachment.type ? data : data.slice(0, data.size, attachment.type);
+};
+
 export const attachments = {
   create: createAttachment,
   forCase: (caseId: string) =>
@@ -50,4 +70,5 @@ export const attachments = {
       queryKey: ["case", caseId, "attachments"],
       queryFn: () => searchAttachments(caseId, "case"),
     }),
+  getContent: getAttachmentContent,
 };
