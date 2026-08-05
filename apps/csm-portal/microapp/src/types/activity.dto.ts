@@ -33,12 +33,21 @@ export interface CaseActivityFieldChangeDto {
  * are consumed from here, mirroring the webapp's useCsmCaseActivities.ts (it deliberately avoids
  * a second, divergent read path for comments/attachments).
  */
+/** The canonical {id, email, name} UserReference shape (openapi.yaml's CaseActivity.createdBy) —
+ * matches the webapp's own ground-truth useCsmCaseActivities.ts, which reads
+ * entry.createdBy?.name / ?.email throughout and never treats createdBy as a plain string. */
+export interface CaseActivityAuthorDto {
+  id?: string | null;
+  email?: string;
+  name?: string;
+}
+
 export interface CaseActivityEntryDto {
   id: string;
   type: CaseActivityType;
   content?: string;
   createdOn: string;
-  createdBy?: string;
+  createdBy?: CaseActivityAuthorDto | null;
   createdByFirstName?: string;
   createdByLastName?: string;
   createdByFullName?: string;

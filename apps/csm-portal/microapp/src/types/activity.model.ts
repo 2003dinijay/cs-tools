@@ -32,8 +32,13 @@ export interface CaseAuditEntry {
   changes: CaseAuditFieldChange[];
 }
 
-/** Best display name off an activity entry's flat author fields — mirrors commentAuthorLabel's
- * fallback chain in case.model.ts, adapted to this endpoint's flat (non-nested) author fields. */
+/** Best display name off an activity entry's author fields — mirrors commentAuthorLabel's
+ * fallback chain in case.model.ts. The final fallback used to read entry.createdBy as a plain
+ * string (entry.createdBy?.trim()), but createdBy is actually the canonical {id, email, name}
+ * UserReference object per openapi.yaml and the webapp's own useCsmCaseActivities.ts (which reads
+ * entry.createdBy?.name / ?.email, never .trim() on createdBy itself) — calling .trim() on that
+ * object throws, which would have crashed this entry's render whenever createdByFullName and
+ * createdByFirstName/createdByLastName were all empty. */
 function activityAuthorLabel(entry: CaseActivityEntryDto): string {
   const full = entry.createdByFullName?.trim();
   if (full) return full;
@@ -42,7 +47,7 @@ function activityAuthorLabel(entry: CaseActivityEntryDto): string {
     .join(" ")
     .trim();
   if (composed) return composed;
-  return entry.createdBy?.trim() || "Unknown";
+  return entry.createdBy?.name?.trim() || entry.createdBy?.email?.trim() || "Unknown";
 }
 
 export function toCaseAuditEntry(dto: CaseActivityEntryDto): CaseAuditEntry {

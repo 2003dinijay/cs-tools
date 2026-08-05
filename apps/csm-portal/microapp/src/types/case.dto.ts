@@ -61,10 +61,15 @@ export interface UserIdEmailRefDto {
   email: string;
 }
 
+// CaseView/CaseSearchView.assignedEngineer both reference the canonical UserReference schema
+// (openapi.yaml) — {id: string|null, email: string, name: string} — not the separate,
+// differently-nullable AssignedEngineerRef schema used elsewhere (e.g. acknowledgedBy). Field
+// names already matched reality (no render crash), but id/email's nullability were backwards:
+// id can genuinely be null, email is always populated when assignedEngineer itself is non-null.
 export interface AssignedEngineerRefDto {
-  id: string;
+  id: string | null;
   name: string;
-  email: string | null;
+  email: string;
 }
 
 export interface CaseNumberRefDto {
@@ -138,9 +143,15 @@ export interface CaseSearchViewDto {
   createdOn?: string;
   updatedOn?: string;
   closedOn: string | null;
-  // The case-search view returns the creator's email as a plain string (unlike
-  // the by-id detail view, which returns a full user object).
-  createdBy: string;
+  // This comment used to claim the case-search view returns the creator's email as a plain
+  // string, unlike the by-id detail view. That was never true: openapi.yaml documents
+  // CaseSearchView.createdBy as the same nullable UserReference ({id, email, name}) as the
+  // detail view, and live data confirms it (e.g. {"id":null,"email":"hesara@wso2.com","name":""}).
+  // Rendering this directly as a string (AnnouncementCard.tsx, which shows CaseSummary.createdBy)
+  // crashed with "Objects are not valid as a React child" and nothing caught it, so the whole
+  // Announcements page went blank. Same bug class as CaseCommentDto/AttachmentViewDto/CaseViewDto's
+  // createdBy fields, just the one instance not caught in that earlier pass.
+  createdBy: string | UserRefDto | null;
   project: EntityRefDto;
   deployment: EntityRefDto | null;
   deployedProduct: EntityRefDto | null;
