@@ -101,7 +101,7 @@ describe("resolveTeamPlaceholder", () => {
     expect(resolveTeamPlaceholder(filters, "team-group-id")).toBe(filters);
   });
 
-  it("splices every groupId in an array into the placeholder's spot ('All ABTs')", () => {
+  it("drops the integrationCsTeam entry entirely when given an array with many ids ('All ABTs')", () => {
     const filters = {
       filters: [
         { field: "state", op: "in", values: ["open"] },
@@ -112,18 +112,11 @@ describe("resolveTeamPlaceholder", () => {
     const resolved = resolveTeamPlaceholder(filters, ["group-a", "group-b", "group-c"]);
 
     expect(resolved).toEqual({
-      filters: [
-        { field: "state", op: "in", values: ["open"] },
-        {
-          field: "integrationCsTeam",
-          op: "in",
-          values: ["group-a", "group-b", "group-c"],
-        },
-      ],
+      filters: [{ field: "state", op: "in", values: ["open"] }],
     });
   });
 
-  it("keeps a literal value alongside a spliced-in array, in position", () => {
+  it("drops the integrationCsTeam entry entirely when given an array with a single id", () => {
     const filters = {
       filters: [
         {
@@ -134,17 +127,9 @@ describe("resolveTeamPlaceholder", () => {
       ],
     };
 
-    const resolved = resolveTeamPlaceholder(filters, ["group-a", "group-b"]);
+    const resolved = resolveTeamPlaceholder(filters, ["group-a"]);
 
-    expect(resolved).toEqual({
-      filters: [
-        {
-          field: "integrationCsTeam",
-          op: "in",
-          values: ["some-literal-group-id", "group-a", "group-b"],
-        },
-      ],
-    });
+    expect(resolved).toEqual({ filters: [] });
   });
 
   it("drops the integrationCsTeam entry entirely when given an empty array", () => {
