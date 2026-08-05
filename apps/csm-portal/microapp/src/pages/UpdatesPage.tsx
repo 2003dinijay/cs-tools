@@ -35,6 +35,7 @@ import DOMPurify from "dompurify";
 import { DialogPaper } from "@components/common/DialogPaper";
 import { updates } from "@src/services/updates";
 import type { ProductUpdateLevel, SearchUpdatesInput, UpdateDescription, UpdateLevelGroup } from "@src/types";
+import { useResolvedInlineImageHtml } from "@utils/useResolvedInlineImageHtml";
 
 // The Acrylic theme renders popup papers translucent, so a dropdown reads as
 // see-through unless forced opaque — same fix as TimeCardFiltersSheet /
@@ -53,14 +54,29 @@ const INITIAL_FILTER: FilterState = { productName: "", productVersion: "", start
 // Real HTML tags that warrant sanitized HTML rendering vs a plain-text fallback
 // — update descriptions come back as HTML sometimes and plain text other
 // times, from the same upstream field (see the webapp's identical gotcha).
-const HTML_FORMAT_RE = /<\/?(p|span|div|ul|ol|li|strong|em|b|i|br|h[1-6]|a[\s>]|table|tr|td|th|code|pre|blockquote)\b/i;
+const HTML_FORMAT_RE =
+  /<\/?(p|span|div|ul|ol|li|strong|em|b|i|br|h[1-6]|a[\s>]|table|tr|td|th|code|pre|blockquote|img)\b/i;
 
 function HtmlOrText({ content }: { content: string }) {
-  if (HTML_FORMAT_RE.test(content)) {
+  const isHtml = HTML_FORMAT_RE.test(content);
+  // Sanitize first, then resolve `.iix` inline-image references against the sanitized HTML —
+  // same order and reasoning as CommentBody.tsx: update descriptions embed inline images the same
+  // way comments do, and nothing resolved them before.
+  const sanitized = isHtml ? DOMPurify.sanitize(content) : "";
+  const { resolvedHtml, isLoading: imagesLoading } = useResolvedInlineImageHtml(sanitized);
+
+  if (isHtml) {
+    if (imagesLoading) return <Skeleton variant="rounded" height={80} />;
     return (
       <Box
-        dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(content) }}
-        sx={{ fontSize: "0.875rem", lineHeight: 1.6, color: "text.secondary", "& p": { m: "0 0 0.4em 0" } }}
+        dangerouslySetInnerHTML={{ __html: resolvedHtml }}
+        sx={{
+          fontSize: "0.875rem",
+          lineHeight: 1.6,
+          color: "text.secondary",
+          "& p": { m: "0 0 0.4em 0" },
+          "& img": { maxWidth: "100%", height: "auto", display: "block" },
+        }}
       />
     );
   }

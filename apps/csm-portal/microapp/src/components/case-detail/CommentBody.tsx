@@ -15,13 +15,15 @@
 // under the License.
 
 import { useState } from "react";
-import { Box, Button, Typography } from "@wso2/oxygen-ui";
+import { Box, Button, Skeleton, Typography } from "@wso2/oxygen-ui";
 import DOMPurify from "dompurify";
+import { useResolvedInlineImageHtml } from "@utils/useResolvedInlineImageHtml";
 
 // Some comments (state-change audit entries, etc.) carry real HTML (`<br><p>...</p>`) rather than
 // plain text — rendering those as plain text shows the literal tags. Same sniff-then-sanitize
 // pattern as the webapp's UpdatesPage (apps/csm-portal/webapp), which hits the same ambiguity.
-const HTML_FORMAT_RE = /<\/?(p|span|div|ul|ol|li|strong|em|b|i|br|h[1-6]|a[\s>]|table|tr|td|th|code|pre|blockquote)\b/i;
+const HTML_FORMAT_RE =
+  /<\/?(p|span|div|ul|ol|li|strong|em|b|i|br|h[1-6]|a[\s>]|table|tr|td|th|code|pre|blockquote|img)\b/i;
 
 const HTML_CONTENT_SX = {
   fontSize: "0.875rem",
@@ -50,17 +52,28 @@ export function CommentBody({ content }: { content: string }) {
   const truncated = isLong && !expanded;
   const shown = truncated ? content.slice(0, TRUNCATE_AT) : content;
 
+  // Sanitize the sliced content on its own, then append the ellipsis outside the sanitized HTML
+  // — appending it before sanitizing risks DOMPurify swallowing it while repairing a tag the
+  // slice cut through mid-way.
+  const sanitized = isHtml ? DOMPurify.sanitize(shown) : "";
+  // Resolve `.iix` inline-image references against the already-sanitized HTML, mirroring the
+  // webapp's CsmCaseCommentBubble (sanitize, then useResolvedInlineImageHtml on the result) —
+  // comment/description HTML embeds inline images as auth-gated `.iix` refs the WebView can't
+  // fetch directly; nothing rendered this before, so images silently never appeared.
+  const { resolvedHtml, isLoading: imagesLoading } = useResolvedInlineImageHtml(sanitized);
+
   return (
     <Box sx={{ overflowWrap: "anywhere" }}>
       {isHtml ? (
         <>
-          {/* Sanitize the sliced content on its own, then append the ellipsis outside the
-           * sanitized HTML — appending it before sanitizing risks DOMPurify swallowing it while
-           * repairing a tag the slice cut through mid-way. */}
-          <Box
-            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(shown) }}
-            sx={{ ...HTML_CONTENT_SX, color: "text.primary" }}
-          />
+          {imagesLoading ? (
+            <Skeleton variant="rounded" height={80} />
+          ) : (
+            <Box
+              dangerouslySetInnerHTML={{ __html: resolvedHtml }}
+              sx={{ ...HTML_CONTENT_SX, color: "text.primary" }}
+            />
+          )}
           {truncated && (
             <Typography variant="body2" color="text.primary">
               …

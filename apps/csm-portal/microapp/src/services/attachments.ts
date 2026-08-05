@@ -66,6 +66,16 @@ const getAttachmentContent = async (attachment: CaseAttachment): Promise<Blob> =
   return data.type === safeType ? data : data.slice(0, data.size, safeType);
 };
 
+// For inline `<img>` references embedded in comment/description HTML, where there's no
+// CaseAttachment metadata to cross-check a claimed content type against (see
+// useResolvedInlineImageHtml) — the backend already coerces unsafe upstream content types to
+// application/octet-stream server-side (case_handler.go), so the blob's own reported type is
+// trustworthy as-is.
+const getAttachmentContentById = async (id: string): Promise<Blob> => {
+  const { data } = await apiClient.get<Blob>(ATTACHMENT_CONTENT_ENDPOINT(id), { responseType: "blob" });
+  return data;
+};
+
 export const attachments = {
   create: createAttachment,
   forCase: (caseId: string) =>
@@ -74,4 +84,5 @@ export const attachments = {
       queryFn: () => searchAttachments(caseId, "case"),
     }),
   getContent: getAttachmentContent,
+  getContentById: getAttachmentContentById,
 };
