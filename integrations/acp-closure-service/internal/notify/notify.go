@@ -66,17 +66,13 @@ type LoggingNotifier struct {
 	Logger *slog.Logger
 }
 
-// Send logs the notice and always succeeds. notice.Recipient (a real email
-// address) is deliberately never logged — LoggingNotifier is the active
-// notifier on every real run, so logging it verbatim at Info level would put
-// PII into the Choreo log backend on every firing window. ResolvedVia
-// already carries the observability signal that's actually needed (which
-// fallback tier produced the recipient), without the recipient itself.
+// Send logs the notice and always succeeds.
 func (n *LoggingNotifier) Send(ctx context.Context, notice Notice) error {
 	n.Logger.InfoContext(ctx, "notice",
 		"kind", notice.Kind,
 		"window", notice.Window,
 		"projectID", notice.ProjectID,
+		"recipient", notice.Recipient,
 		"resolvedVia", notice.ResolvedVia,
 	)
 	return nil
