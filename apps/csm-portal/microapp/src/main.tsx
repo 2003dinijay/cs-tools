@@ -20,6 +20,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { OxygenUIThemeProvider } from "@wso2/oxygen-ui";
 import axios from "axios";
 import App from "@src/App";
+import { AppErrorBoundary } from "@components/common/AppErrorBoundary";
 import theme from "./theme";
 import "@src/index.css";
 
@@ -44,7 +45,9 @@ createRoot(container).render(
   <StrictMode>
     <OxygenUIThemeProvider theme={theme}>
       <QueryClientProvider client={queryClient}>
-        <App />
+        <AppErrorBoundary>
+          <App />
+        </AppErrorBoundary>
       </QueryClientProvider>
     </OxygenUIThemeProvider>
   </StrictMode>,
