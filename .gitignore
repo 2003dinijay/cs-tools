@@ -31,3 +31,6 @@ Config.toml
 
 # Local session handoff documents — never committed/pushed
 handoffs/
+
+# Local working docs (PR reply/decision drafts, etc.) — never committed/pushed
+local-docs/
