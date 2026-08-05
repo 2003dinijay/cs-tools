@@ -85,6 +85,57 @@ func TestResolveCustomerContact_FallsBackToPrimaryContact(t *testing.T) {
 	}
 }
 
+// TestResolveCustomerContact_SkipsBusinessContactWithEmptyEmail covers a
+// real, unremarkable data state (mirrors AccountManagerEmail's treatment of
+// "assigned but no email" elsewhere in this package): a Project Contact has
+// the business-contact role but no email on file. Accepting it anyway would
+// resolve to Recipient: "" instead of falling through to a usable tier.
+func TestResolveCustomerContact_SkipsBusinessContactWithEmptyEmail(t *testing.T) {
+	projectContacts := []ProjectContact{
+		{Name: "Bob", Email: "", Roles: []string{businessContactRole}},
+	}
+	accountContacts := []AccountContact{
+		{Name: "Carol", Email: "carol@customer.example", IsPrimary: true},
+	}
+
+	got := ResolveCustomerContact(projectContacts, accountContacts)
+
+	if got.NeedsAMNudge {
+		t.Fatalf("NeedsAMNudge = true, want false")
+	}
+	if got.ResolvedVia != ResolvedViaPrimaryContact {
+		t.Errorf("ResolvedVia = %v, want %v", got.ResolvedVia, ResolvedViaPrimaryContact)
+	}
+	if got.CustomerContact == nil || got.CustomerContact.Email != "carol@customer.example" {
+		t.Errorf("CustomerContact = %+v, want Carol", got.CustomerContact)
+	}
+}
+
+// TestResolveCustomerContact_NudgesAccountManagerWhenOnlyContactsHaveEmptyEmail
+// covers both tiers resolving to a real contact, but neither having a usable
+// email — must fall through to NeedsAMNudge rather than resolving to an
+// empty Recipient.
+func TestResolveCustomerContact_NudgesAccountManagerWhenOnlyContactsHaveEmptyEmail(t *testing.T) {
+	projectContacts := []ProjectContact{
+		{Name: "Bob", Email: "", Roles: []string{businessContactRole}},
+	}
+	accountContacts := []AccountContact{
+		{Name: "Carol", Email: "", IsPrimary: true},
+	}
+
+	got := ResolveCustomerContact(projectContacts, accountContacts)
+
+	if !got.NeedsAMNudge {
+		t.Fatalf("NeedsAMNudge = false, want true")
+	}
+	if got.CustomerContact != nil {
+		t.Errorf("CustomerContact = %+v, want nil", got.CustomerContact)
+	}
+	if got.ResolvedVia != ResolvedViaNone {
+		t.Errorf("ResolvedVia = %v, want %v", got.ResolvedVia, ResolvedViaNone)
+	}
+}
+
 func TestResolveCustomerContact_NudgesAccountManagerWhenNoContactFound(t *testing.T) {
 	projectContacts := []ProjectContact{
 		{Name: "Alice", Email: "alice@customer.example", Roles: []string{"developer"}},

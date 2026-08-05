@@ -27,7 +27,7 @@ reviewed cutover.
 
 ## Overview
 
-- Runtime: Go `1.26+`
+- Runtime: Go `1.26.5+`
 - Entry point: `cmd/acp-closure/main.go`
 - Calls `csm-integration-service`, not entity-service directly — see
   `internal/entity`'s package doc for why
@@ -36,7 +36,7 @@ reviewed cutover.
 
 ## Prerequisites
 
-- Go `1.26+` — [install](https://go.dev/doc/install)
+- Go `1.26.5+` — [install](https://go.dev/doc/install)
 
 ## Testing
 

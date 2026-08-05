@@ -88,6 +88,35 @@ func TestLoggingNotifier_Send_LogsResolvedViaForCustomerNotice(t *testing.T) {
 	}
 }
 
+// TestLoggingNotifier_Send_DoesNotLogRawRecipient verifies the log line never
+// carries notice.Recipient verbatim — it's a real email address (customer
+// contact or Account Manager), and LoggingNotifier is the active notifier on
+// every real run, so logging it verbatim at Info level would put PII into
+// the Choreo log backend on every firing window. ResolvedVia (covered by
+// TestLoggingNotifier_Send_LogsResolvedViaForCustomerNotice) already carries
+// the observability signal that's actually needed.
+func TestLoggingNotifier_Send_DoesNotLogRawRecipient(t *testing.T) {
+	h := &capturingHandler{}
+	n := &LoggingNotifier{Logger: slog.New(h)}
+
+	const recipient = "bob@customer.example"
+	err := n.Send(context.Background(), Notice{
+		Kind:      KindCustomer,
+		ProjectID: "p1",
+		Recipient: recipient,
+	})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	if len(h.records) != 1 {
+		t.Fatalf("records = %d, want 1", len(h.records))
+	}
+
+	if got, found := attrValue(t, h.records[0], "recipient"); found && got == recipient {
+		t.Errorf("log record carries the raw recipient email %q", got)
+	}
+}
+
 // TestLoggingNotifier_Send_LogsEmptyResolvedViaForInternalNotice covers the
 // internal (Account Manager) notice, which never goes through
 // recipients.ResolveCustomerContact's fallback chain at all — its

@@ -70,10 +70,15 @@ type Resolution struct {
 
 // ResolveCustomerContact implements the three-tier fallback: a Project
 // Contact with the business-contact role first, then the account's Primary
-// Contact, then a signal to nudge the Account Manager instead.
+// Contact, then a signal to nudge the Account Manager instead. A tier only
+// counts as resolved if the contact has a usable (non-empty) email — a real
+// contact record with no email on file (confirmed elsewhere in this package,
+// see AccountManagerEmail's doc comment, to be a legitimate, unremarkable
+// data state) is not a usable Recipient, and must fall through to the next
+// tier rather than resolving to Recipient: "".
 func ResolveCustomerContact(projectContacts []ProjectContact, accountContacts []AccountContact) Resolution {
 	for _, c := range projectContacts {
-		if hasBusinessContactRole(c) {
+		if hasBusinessContactRole(c) && c.Email != "" {
 			return Resolution{
 				CustomerContact: &Contact{Name: c.Name, Email: c.Email},
 				ResolvedVia:     ResolvedViaBusinessContact,
@@ -82,7 +87,7 @@ func ResolveCustomerContact(projectContacts []ProjectContact, accountContacts []
 	}
 
 	for _, c := range accountContacts {
-		if c.IsPrimary {
+		if c.IsPrimary && c.Email != "" {
 			return Resolution{
 				CustomerContact: &Contact{Name: c.Name, Email: c.Email},
 				ResolvedVia:     ResolvedViaPrimaryContact,
