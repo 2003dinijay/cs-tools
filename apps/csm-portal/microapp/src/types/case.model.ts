@@ -174,8 +174,8 @@ export function toCaseDetail(dto: CaseViewDto): CaseDetail {
 }
 function commentAuthorLabel(createdBy: CaseCommentDto["createdBy"] | null | undefined): string {
   if (!createdBy) return "Unknown";
-  if (typeof createdBy === "string") return createdBy;
-  return createdBy.name || createdBy.email || "Unknown";
+  if (typeof createdBy === "string") return createdBy.trim() || "Unknown";
+  return createdBy.name?.trim() || createdBy.email?.trim() || "Unknown";
 }
 
 export function toComment(dto: CaseCommentDto): Comment {
