@@ -35,6 +35,7 @@ import "react-pdf/dist/Page/TextLayer.css";
 import { PDF_JS_DIST_CDN } from "@config/endpoints";
 import { attachments as attachmentsService } from "@src/services/attachments";
 import { getAttachmentPreviewKind } from "@utils/attachmentPreview";
+import { Logger } from "@utils/logger";
 import type { CaseAttachment } from "@src/types";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(PDF_JS_DIST_CDN(pdfjs.version)).toString();
@@ -100,9 +101,7 @@ function UnsupportedPreview() {
       <Box mb={1}>
         <File size={pxToRem(48)} />
       </Box>
-      <Typography variant="body1" lineHeight={0.6}>
-        Preview not available for this file type.
-      </Typography>
+      <Typography variant="body1">Preview not available for this file type.</Typography>
       <Typography variant="caption">Use Download instead.</Typography>
     </Stack>
   );
@@ -184,15 +183,19 @@ function PdfToolbar({ currentPage, numberOfPages, goToPage, zoomIn, zoomOut, res
             <ChevronDown />
           </IconButton>
         </ButtonGroup>
-        <Typography sx={{ minWidth: 60, textAlign: "center" }}>
-          {currentPage} / {numberOfPages}
-        </Typography>
+        {/* Hidden until the page count is known, rather than showing "1 / 0" while the PDF is
+            still loading. aria-live announces page changes as the user scrolls/paginates. */}
+        {numberOfPages > 0 && (
+          <Typography sx={{ minWidth: 60, textAlign: "center" }} aria-live="polite">
+            {currentPage} / {numberOfPages}
+          </Typography>
+        )}
       </Stack>
     </Stack>
   );
 }
 
-function ImagePreview({ src }: { src: string }) {
+function ImagePreview({ src, alt, onError }: { src: string; alt: string; onError: () => void }) {
   const transformRef = useRef<ReactZoomPanPinchRef>(null);
 
   return (
@@ -224,6 +227,8 @@ function ImagePreview({ src }: { src: string }) {
             <Box
               component="img"
               src={src}
+              alt={alt}
+              onError={onError}
               sx={{
                 maxWidth: "100%",
                 maxHeight: "100%",
@@ -324,21 +329,25 @@ function PdfPreview({ src }: { src: string }) {
           >
             <Document file={src} onLoadSuccess={handleOnLoadSuccess} onLoadError={() => setIsError(true)}>
               <Stack gap={0.5}>
-                {Array.from({ length: numberOfPages }, (_, i) => (
-                  <Box
-                    key={i}
-                    ref={(el) => {
-                      pageRefs.current[i] = el as HTMLDivElement;
-                    }}
-                  >
-                    <Page width={containerWidth} pageNumber={i + 1} />
-                  </Box>
-                ))}
+                {/* Don't render pages until the container's real width is measured — Document's
+                    onLoadSuccess can fire before the ResizeObserver's first callback, and a Page
+                    given width={0} renders collapsed/broken until the next re-render. */}
+                {containerWidth > 0 &&
+                  Array.from({ length: numberOfPages }, (_, i) => (
+                    <Box
+                      key={i}
+                      ref={(el) => {
+                        pageRefs.current[i] = el as HTMLDivElement;
+                      }}
+                    >
+                      <Page width={containerWidth} pageNumber={i + 1} />
+                    </Box>
+                  ))}
               </Stack>
             </Document>
           </TransformComponent>
 
-          {numberOfPages === 0 && (
+          {(numberOfPages === 0 || containerWidth === 0) && (
             <Box sx={{ width: "100%", height: "100%", position: "absolute", bgcolor: "background.default" }}>
               <Skeleton variant="rectangular" width="100%" height="100%" />
             </Box>
@@ -387,8 +396,14 @@ export function AttachmentPreviewDialog({ attachment, onClose }: AttachmentPrevi
     setError(null);
   }
 
+  const kind = attachment ? getAttachmentPreviewKind(attachment.type) : null;
+
   useEffect(() => {
-    if (!attachment) return;
+    // Both callers only ever open this dialog for a previewable kind (see AttachmentsTab.tsx /
+    // CaseActivityFeed.tsx's own getAttachmentPreviewKind-gated Preview button), but guard here
+    // too rather than trust that invariant — fetching content that can only ever render
+    // UnsupportedPreview would be a wasted request.
+    if (!attachment || !kind) return;
 
     let cancelled = false;
     let createdUrl: string | null = null;
@@ -400,17 +415,18 @@ export function AttachmentPreviewDialog({ attachment, onClose }: AttachmentPrevi
         createdUrl = URL.createObjectURL(blob);
         setObjectUrl(createdUrl);
       })
-      .catch(() => {
-        if (!cancelled) setError("Could not load the preview.");
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        Logger.error(`Failed to load attachment preview for ${attachment.id}`, err);
+        setError("Could not load the preview.");
       });
 
     return () => {
       cancelled = true;
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [attachment]);
+  }, [attachment, kind]);
 
-  const kind = attachment ? getAttachmentPreviewKind(attachment.type) : null;
   const open = !!attachment;
   const loading = open && !objectUrl && !error;
 
@@ -436,7 +452,13 @@ export function AttachmentPreviewDialog({ attachment, onClose }: AttachmentPrevi
       ) : (
         <>
           {kind === null && <UnsupportedPreview />}
-          {kind === "image" && objectUrl && <ImagePreview src={objectUrl} />}
+          {kind === "image" && objectUrl && (
+            <ImagePreview
+              src={objectUrl}
+              alt={attachment?.name ?? "Attachment preview"}
+              onError={() => setError("Could not display this image.")}
+            />
+          )}
           {kind === "pdf" && objectUrl && <PdfPreview src={objectUrl} />}
         </>
       )}

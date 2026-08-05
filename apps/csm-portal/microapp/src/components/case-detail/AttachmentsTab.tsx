@@ -150,23 +150,27 @@ function AttachmentRow({
           </Typography>
         </Stack>
       </Stack>
-      {attachment.downloadUrl && (
+      {(attachment.downloadUrl || getAttachmentPreviewKind(attachment.type)) && (
         <Stack direction="row" gap={2} sx={{ flexShrink: 0 }}>
-          {/* Only for content types the in-app viewer actually renders (images/PDFs) — matches
-              the webapp's own conditional Preview button (CaseActivitiesFeed.tsx). Everything
-              else is download-only. */}
+          {/* Preview doesn't depend on downloadUrl — it fetches via GET /attachments/{id}/content,
+              a different mechanism entirely — so it must not be gated behind downloadUrl being
+              present. Only for content types the in-app viewer actually renders (images/PDFs) —
+              matches the webapp's own conditional Preview button (CaseActivitiesFeed.tsx).
+              Everything else is download-only. */}
           {getAttachmentPreviewKind(attachment.type) && (
             <IconButton size="small" aria-label={`Preview ${attachment.name}`} onClick={() => onPreview(attachment)}>
               <Eye size={16} />
             </IconButton>
           )}
-          <IconButton
-            size="small"
-            aria-label={`Download ${attachment.name}`}
-            onClick={() => openUrl({ url: attachment.downloadUrl as string, presentationStyle: "fullScreen" })}
-          >
-            <Download size={16} />
-          </IconButton>
+          {attachment.downloadUrl && (
+            <IconButton
+              size="small"
+              aria-label={`Download ${attachment.name}`}
+              onClick={() => openUrl({ url: attachment.downloadUrl as string, presentationStyle: "fullScreen" })}
+            >
+              <Download size={16} />
+            </IconButton>
+          )}
         </Stack>
       )}
     </Stack>

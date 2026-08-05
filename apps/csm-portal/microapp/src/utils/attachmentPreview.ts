@@ -48,9 +48,11 @@ const SAFE_ATTACHMENT_CONTENT_TYPES: ReadonlySet<string> = new Set([
 
 /**
  * Normalizes a content type the same way the backend does before its allowlist check: strip any
- * `;`-parameters, trim, lowercase.
+ * `;`-parameters, trim, lowercase. Exported for attachments.ts's getAttachmentContent, which
+ * relabels a fetched Blob with this same normalized form rather than the raw uploader-provided
+ * string.
  */
-function normalizeContentType(contentType: string): string {
+export function normalizeContentType(contentType: string): string {
   return contentType.split(";")[0].trim().toLowerCase();
 }
 

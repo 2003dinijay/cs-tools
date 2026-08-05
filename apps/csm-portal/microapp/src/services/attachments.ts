@@ -24,7 +24,7 @@ import type {
   AttachmentSearchResponseDto,
 } from "@src/types";
 import { toCaseAttachment, type CaseAttachment } from "@src/types";
-import { isSafeAttachmentContentType } from "@utils/attachmentPreview";
+import { isSafeAttachmentContentType, normalizeContentType } from "@utils/attachmentPreview";
 import apiClient from "./apiClient";
 
 const createAttachment = async (payload: AttachmentCreatePayloadDto): Promise<AttachmentDetailDto> => {
@@ -60,7 +60,10 @@ const searchAttachments = async (
 const getAttachmentContent = async (attachment: CaseAttachment): Promise<Blob> => {
   const { data } = await apiClient.get<Blob>(ATTACHMENT_CONTENT_ENDPOINT(attachment.id), { responseType: "blob" });
   if (!isSafeAttachmentContentType(attachment.type)) return data;
-  return data.type === attachment.type ? data : data.slice(0, data.size, attachment.type);
+  // Compare/relabel with the normalized form, not the raw uploader-provided string — a stray
+  // ";charset=..." parameter would otherwise make it into the relabeled blob's type verbatim.
+  const safeType = normalizeContentType(attachment.type);
+  return data.type === safeType ? data : data.slice(0, data.size, safeType);
 };
 
 export const attachments = {

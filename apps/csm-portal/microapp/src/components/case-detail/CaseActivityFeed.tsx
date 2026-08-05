@@ -168,10 +168,13 @@ export function CaseActivityFeed({ comments, audit, attachments }: CaseActivityF
                 </Typography>
               </Stack>
             </Stack>
-            {e.attachment.downloadUrl && (
+            {(e.attachment.downloadUrl || getAttachmentPreviewKind(e.attachment.type)) && (
               <Stack direction="row" gap={0.5} sx={{ flexShrink: 0 }}>
-                {/* In-app zoom/pan viewer, same as AttachmentsTab — only for content types it
-                    actually renders (images/PDFs); everything else is download-only. */}
+                {/* Preview doesn't depend on downloadUrl — it fetches via
+                    GET /attachments/{id}/content, a different mechanism entirely — so it must not
+                    be gated behind downloadUrl being present. Same in-app zoom/pan viewer as
+                    AttachmentsTab, only for content types it actually renders (images/PDFs);
+                    everything else is download-only. */}
                 {getAttachmentPreviewKind(e.attachment.type) && (
                   <IconButton
                     size="small"
@@ -181,13 +184,17 @@ export function CaseActivityFeed({ comments, audit, attachments }: CaseActivityF
                     <Eye size={16} />
                   </IconButton>
                 )}
-                <IconButton
-                  size="small"
-                  aria-label={`Download ${e.attachment.name}`}
-                  onClick={() => openUrl({ url: e.attachment.downloadUrl as string, presentationStyle: "fullScreen" })}
-                >
-                  <Download size={16} />
-                </IconButton>
+                {e.attachment.downloadUrl && (
+                  <IconButton
+                    size="small"
+                    aria-label={`Download ${e.attachment.name}`}
+                    onClick={() =>
+                      openUrl({ url: e.attachment.downloadUrl as string, presentationStyle: "fullScreen" })
+                    }
+                  >
+                    <Download size={16} />
+                  </IconButton>
+                )}
               </Stack>
             )}
           </Stack>
