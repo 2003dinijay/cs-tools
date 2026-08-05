@@ -56,19 +56,27 @@ export function sysidToUuid(id: string): string {
   return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20, 32)}`;
 }
 
+// A comment/description with an unreasonable number of distinct inline images would otherwise
+// fire one parallel authenticated Blob fetch per image (see useResolvedInlineImageHtml) — this
+// caps how many unique ids are ever collected, so that stays bounded regardless of how much HTML
+// is thrown at it. Ids past the cap are simply never extracted, so replaceInlineImageSrcs treats
+// them the same as any other unresolved reference (stripped, not left pointing at an auth-gated
+// URL the WebView can't load).
+const MAX_INLINE_IMAGES = 20;
+
 /** Extracts every attachment id referenced by a `.iix` `<img>` src within an HTML string. */
 export function extractIixAttachmentIds(html: string): string[] {
-  const ids: string[] = [];
+  const ids = new Set<string>();
   let match;
   IMG_TAG_SRC.lastIndex = 0;
-  while ((match = IMG_TAG_SRC.exec(html)) !== null) {
+  while (ids.size < MAX_INLINE_IMAGES && (match = IMG_TAG_SRC.exec(html)) !== null) {
     const src = match[2] ?? match[3] ?? match[4] ?? "";
     if (src.includes(".iix")) {
       const id = extractInlineImageRefId(src);
-      if (id && !ids.includes(id)) ids.push(id);
+      if (id) ids.add(id);
     }
   }
-  return ids;
+  return Array.from(ids);
 }
 
 /**
