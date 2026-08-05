@@ -22,6 +22,7 @@ import { activities as activitiesService } from "@src/services/activities";
 import { attachments as attachmentsService } from "@src/services/attachments";
 import type { CaseAttachment, CaseAuditEntry, Comment } from "@src/types";
 import { ErrorBoundary } from "@components/common/ErrorBoundary";
+import { ListItemErrorBoundary } from "@components/common/ListItemErrorBoundary";
 import { ErrorState } from "@components/support/ErrorState";
 import { formatBytes } from "@utils/attachments";
 import { fromNow } from "@utils/dateTime";
@@ -95,84 +96,81 @@ export function CaseActivityFeed({ comments, audit, attachments }: CaseActivityF
       {entries.map((e) => {
         if (e.kind === "comment") {
           return (
-            <Stack
-              key={`c-${e.id}`}
-              gap={0.5}
-              sx={{ p: 1.5, border: "1px solid", borderColor: "divider", borderRadius: 1 }}
-            >
-              <Stack direction="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
-                <Stack direction="row" alignItems="center" gap={1} sx={{ minWidth: 0 }}>
-                  <Typography variant="subtitle2" color="text.secondary" noWrap sx={{ minWidth: 0 }}>
-                    {e.comment.createdBy}
+            <ListItemErrorBoundary key={`c-${e.id}`} context="comment">
+              <Stack gap={0.5} sx={{ p: 1.5, border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
+                  <Stack direction="row" alignItems="center" gap={1} sx={{ minWidth: 0 }}>
+                    <Typography variant="subtitle2" color="text.secondary" noWrap sx={{ minWidth: 0 }}>
+                      {e.comment.createdBy}
+                    </Typography>
+                    {e.comment.type === "work_note" && <Chip size="small" variant="outlined" label="Work note" />}
+                  </Stack>
+                  <Typography variant="subtitle2" color="text.secondary" noWrap sx={{ flexShrink: 0 }}>
+                    {fromNow(e.comment.createdOn)}
                   </Typography>
-                  {e.comment.type === "work_note" && <Chip size="small" variant="outlined" label="Work note" />}
                 </Stack>
-                <Typography variant="subtitle2" color="text.secondary" noWrap sx={{ flexShrink: 0 }}>
-                  {fromNow(e.comment.createdOn)}
-                </Typography>
+                <CommentBody content={e.comment.content} />
               </Stack>
-              <CommentBody content={e.comment.content} />
-            </Stack>
+            </ListItemErrorBoundary>
           );
         }
 
         if (e.kind === "audit") {
           return (
-            <Stack
-              key={`a-${e.id}`}
-              gap={0.75}
-              sx={{ p: 1.5, border: "1px solid", borderColor: "divider", borderRadius: 1 }}
-            >
-              <Stack direction="row" alignItems="center" gap={1} flexWrap="wrap">
-                <History size={14} />
-                <Typography variant="subtitle2">{e.entry.actor}</Typography>
-                <Chip size="small" variant="outlined" label="Lifecycle" />
-                <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
-                  {fromNow(e.entry.createdOn)}
-                </Typography>
+            <ListItemErrorBoundary key={`a-${e.id}`} context="lifecycle entry">
+              <Stack gap={0.75} sx={{ p: 1.5, border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
+                <Stack direction="row" alignItems="center" gap={1} flexWrap="wrap">
+                  <History size={14} />
+                  <Typography variant="subtitle2">{e.entry.actor}</Typography>
+                  <Chip size="small" variant="outlined" label="Lifecycle" />
+                  <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
+                    {fromNow(e.entry.createdOn)}
+                  </Typography>
+                </Stack>
+                <Stack gap={0.25}>
+                  {e.entry.changes.map((change, i) => (
+                    <FieldChangeLine key={`${change.field}-${i}`} field={change} />
+                  ))}
+                </Stack>
               </Stack>
-              <Stack gap={0.25}>
-                {e.entry.changes.map((change, i) => (
-                  <FieldChangeLine key={`${change.field}-${i}`} field={change} />
-                ))}
-              </Stack>
-            </Stack>
+            </ListItemErrorBoundary>
           );
         }
 
         return (
-          <Stack
-            key={`f-${e.id}`}
-            direction="row"
-            alignItems="center"
-            justifyContent="space-between"
-            gap={1}
-            onClick={() => setPreviewTarget(e.attachment)}
-            sx={{ p: 1.5, border: "1px solid", borderColor: "divider", borderRadius: 1, cursor: "pointer" }}
-          >
-            <Stack direction="row" alignItems="center" gap={1} sx={{ minWidth: 0 }}>
-              <Paperclip size={16} />
-              <Stack sx={{ minWidth: 0 }}>
-                <Stack direction="row" alignItems="center" gap={1}>
-                  <Typography variant="subtitle2" noWrap>
-                    {e.attachment.createdBy}
+          <ListItemErrorBoundary key={`f-${e.id}`} context="attachment entry">
+            <Stack
+              direction="row"
+              alignItems="center"
+              justifyContent="space-between"
+              gap={1}
+              onClick={() => setPreviewTarget(e.attachment)}
+              sx={{ p: 1.5, border: "1px solid", borderColor: "divider", borderRadius: 1, cursor: "pointer" }}
+            >
+              <Stack direction="row" alignItems="center" gap={1} sx={{ minWidth: 0 }}>
+                <Paperclip size={16} />
+                <Stack sx={{ minWidth: 0 }}>
+                  <Stack direction="row" alignItems="center" gap={1}>
+                    <Typography variant="subtitle2" noWrap>
+                      {e.attachment.createdBy}
+                    </Typography>
+                    <Chip size="small" variant="outlined" label="Attachment" />
+                  </Stack>
+                  <Typography variant="body2" noWrap sx={{ fontWeight: 600 }}>
+                    {e.attachment.name}
                   </Typography>
-                  <Chip size="small" variant="outlined" label="Attachment" />
+                  <Typography variant="caption" color="text.secondary" noWrap>
+                    {formatBytes(e.attachment.sizeBytes)} · {fromNow(e.attachment.createdOn)}
+                  </Typography>
                 </Stack>
-                <Typography variant="body2" noWrap sx={{ fontWeight: 600 }}>
-                  {e.attachment.name}
-                </Typography>
-                <Typography variant="caption" color="text.secondary" noWrap>
-                  {formatBytes(e.attachment.sizeBytes)} · {fromNow(e.attachment.createdOn)}
-                </Typography>
               </Stack>
+              {/* Whole row opens Preview, same as AttachmentsTab/customer-portal microapp's
+                  AttachmentCard — no separate Download action (neither app's native bridge has a
+                  "save file to device" primitive). Unsupported types still open the dialog; it
+                  renders its own "Preview not available" state for those. */}
+              <Eye size={16} />
             </Stack>
-            {/* Whole row opens Preview, same as AttachmentsTab/customer-portal microapp's
-                AttachmentCard — no separate Download action (neither app's native bridge has a
-                "save file to device" primitive). Unsupported types still open the dialog; it
-                renders its own "Preview not available" state for those. */}
-            <Eye size={16} />
-          </Stack>
+          </ListItemErrorBoundary>
         );
       })}
 

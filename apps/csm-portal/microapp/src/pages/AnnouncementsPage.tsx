@@ -28,6 +28,7 @@ import {
 } from "@utils/announcements";
 import { SearchBar } from "@components/support/SearchBar";
 import { EmptyState } from "@components/support/EmptyState";
+import { ListItemErrorBoundary } from "@components/common/ListItemErrorBoundary";
 import { ErrorState } from "@components/support/ErrorState";
 import { AnnouncementCard, AnnouncementCardSkeleton } from "@components/announcements/AnnouncementCard";
 import { AnnouncementFiltersSheet } from "@components/announcements/AnnouncementFiltersSheet";
@@ -104,7 +105,9 @@ export default function AnnouncementsPage() {
           </Typography>
 
           {items.map((item) => (
-            <AnnouncementCard key={item.id} item={item} />
+            <ListItemErrorBoundary key={item.id} context="announcement card">
+              <AnnouncementCard item={item} />
+            </ListItemErrorBoundary>
           ))}
 
           {/* IntersectionObserver can miss a zero-height target, so give the sentinel 1px to observe. */}

@@ -23,6 +23,7 @@ import { cases } from "@src/services/cases";
 import { currentUser } from "@src/services/currentUser";
 import type { CaseState } from "@src/types";
 import { ErrorBoundary } from "@components/common/ErrorBoundary";
+import { ListItemErrorBoundary } from "@components/common/ListItemErrorBoundary";
 import { CaseCard, CaseCardSkeleton } from "@components/support/CaseCard";
 import { EmptyState } from "@components/support/EmptyState";
 import { ErrorState } from "@components/support/ErrorState";
@@ -197,7 +198,9 @@ function CaseListContent({
       </Typography>
 
       {items.map((item) => (
-        <CaseCard key={item.id} item={item} />
+        <ListItemErrorBoundary key={item.id} context="case card">
+          <CaseCard item={item} />
+        </ListItemErrorBoundary>
       ))}
 
       {/* IntersectionObserver can miss a zero-height target, so give the sentinel 1px to observe. */}
