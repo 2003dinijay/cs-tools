@@ -19,7 +19,7 @@ package sweep
 import (
 	"context"
 
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/notify"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/notify"
 )
 
 type mockEntityReader struct {
@@ -88,8 +88,9 @@ func (m *mockProjectUpdater) UpdateProject(ctx context.Context, id string, body 
 }
 
 type mockNotifier struct {
-	sendFn func(ctx context.Context, n notify.Notice) error
-	sent   []notify.Notice
+	sendFn     func(ctx context.Context, n notify.Notice) error
+	deliversFn func() bool
+	sent       []notify.Notice
 }
 
 func (m *mockNotifier) Send(ctx context.Context, n notify.Notice) error {
@@ -98,4 +99,11 @@ func (m *mockNotifier) Send(ctx context.Context, n notify.Notice) error {
 		return m.sendFn(ctx, n)
 	}
 	return nil
+}
+
+func (m *mockNotifier) Delivers() bool {
+	if m.deliversFn != nil {
+		return m.deliversFn()
+	}
+	return false
 }

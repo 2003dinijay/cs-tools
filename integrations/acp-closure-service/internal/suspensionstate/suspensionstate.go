@@ -30,7 +30,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/closure"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/closure"
 )
 
 const subscriptionEndDateKey = "based_on_subscription_end_date"
@@ -106,7 +106,12 @@ func WithSubscriptionEndDateState(raw json.RawMessage, window closure.NoticeWind
 		}
 	}
 
-	section := map[string]string{"event_type": windowToEventType[window]}
+	eventType, ok := windowToEventType[window]
+	if !ok {
+		return nil, fmt.Errorf("suspensionstate: no event_type mapping for window %d", window)
+	}
+
+	section := map[string]string{"event_type": eventType}
 	for action, result := range actions {
 		section[action] = result
 	}

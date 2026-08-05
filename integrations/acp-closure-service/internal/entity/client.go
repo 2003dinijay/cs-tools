@@ -30,15 +30,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/apierror"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 )
 
-// RequiredScopes is the exact space-separated scope set csm-integration-service's
-// token endpoint requires — confirmed empirically via Postman against the real
-// staging token endpoint; a bare grant_type=client_credentials with no scope is
-// not sufficient. Pass this as Config.Scopes when constructing a Client.
+// RequiredScopes is the exact scope set csm-integration-service's token
+// endpoint requires — confirmed empirically via Postman against the real
+// staging token endpoint; a bare grant_type=client_credentials with no scope
+// is not sufficient. cmd/acp-closure no longer passes this to Config.Scopes
+// directly (CSM_INTEGRATION_SCOPES in .env is the actual source now, kept
+// out of code so the grant can be adjusted without a redeploy); this remains
+// the reference value documented in .env.example and used directly by this
+// package's own tests.
 var RequiredScopes = []string{
 	"csm_integration:project:read",
 	"csm_integration:account:read",
@@ -105,6 +109,14 @@ func NewClient(cfg Config) *Client {
 		&http.Client{Timeout: tokenFetchTimeout})
 	httpClient := cc.Client(tokenCtx)
 	httpClient.Timeout = 25 * time.Second
+	// oauth2.Transport reattaches the Authorization bearer token to every
+	// request it processes, including a followed redirect to a different
+	// host. Refuse to follow so the token can never leak to wherever
+	// csm-integration-service says to redirect to; the 3xx response is
+	// surfaced through the normal non-2xx error path in do() instead.
+	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 
 	return &Client{
 		http:    httpClient,

@@ -25,8 +25,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/closure"
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/recipients"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/closure"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/recipients"
 )
 
 // Kind distinguishes the purpose of a Notice, since the same window can
@@ -76,4 +76,10 @@ func (n *LoggingNotifier) Send(ctx context.Context, notice Notice) error {
 		"resolvedVia", notice.ResolvedVia,
 	)
 	return nil
+}
+
+// Delivers reports false: LoggingNotifier only logs what would have been
+// sent, it never actually delivers a notice to anyone.
+func (n *LoggingNotifier) Delivers() bool {
+	return false
 }

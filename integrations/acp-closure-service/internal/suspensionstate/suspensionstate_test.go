@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/closure"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/closure"
 )
 
 func TestLastNoticeWindow(t *testing.T) {
@@ -186,6 +186,23 @@ func TestWithSubscriptionEndDateState_PreservesOtherSectionsByteForByte(t *testi
 	}
 	if state.EventType != "7_days_notice" {
 		t.Errorf("based_on_subscription_end_date.event_type = %q, want %q", state.EventType, "7_days_notice")
+	}
+}
+
+// TestWithSubscriptionEndDateState_RejectsUnmappedWindow verifies that a
+// closure.NoticeWindow with no entry in windowToEventType (any value other
+// than the six confirmed constants) is rejected with an error rather than
+// silently written as event_type:"". A silent empty write would later be
+// read back by LastNoticeWindow as "no prior notice" (since "" isn't in
+// eventTypeToWindow either), risking a wrong re-notification cascade.
+func TestWithSubscriptionEndDateState_RejectsUnmappedWindow(t *testing.T) {
+	const unmapped closure.NoticeWindow = 5
+
+	_, err := WithSubscriptionEndDateState(nil, unmapped, map[string]string{
+		"actionSendEmailNotification": "SUCCESSFUL",
+	})
+	if err == nil {
+		t.Fatal("WithSubscriptionEndDateState() error = nil, want an error for an unmapped window")
 	}
 }
 

@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/notify"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/notify"
 )
 
 // project is the subset of csm-integration-service's Project shape this
@@ -36,11 +36,23 @@ import (
 // never read Account directly, so callers don't need to duplicate the nil
 // check.
 type project struct {
-	ID                     string             `json:"id"`
-	Account                *projectAccountRef `json:"account"`
-	EndDate                *time.Time         `json:"endDate"`
-	ClosureState           *string            `json:"closureState"`
-	SuspensionProcessState json.RawMessage    `json:"suspensionProcessState"`
+	ID      string             `json:"id"`
+	Account *projectAccountRef `json:"account"`
+	EndDate *time.Time         `json:"endDate"`
+	// ClosureState is the derived roll-up over EndDateClosureState,
+	// InvoiceDueDateClosureState, and ComplianceViolationClosureState — not
+	// settable directly, and not what suspend()'s idempotency guard checks
+	// (see EndDateClosureState's doc comment).
+	ClosureState *string `json:"closureState"`
+	// EndDateClosureState is the specific per-dimension state this
+	// component's suspend() writes ("Suspended") and later reads back to
+	// decide whether suspend already happened. Confirmed via a real
+	// suspended project (Postman, project acac149b-eba1-4714-fcf5-f5dabad0cdb1)
+	// that this can progress past "Suspended" to "Closed" via a process
+	// outside this component — suspend()'s guard treats any non-"Open"
+	// value as already handled, not just an exact "Suspended" match.
+	EndDateClosureState    *string         `json:"endDateClosureState"`
+	SuspensionProcessState json.RawMessage `json:"suspensionProcessState"`
 }
 
 // projectAccountRef is the nested account reference on both GetProject's and
@@ -170,4 +182,9 @@ type projectUpdater interface {
 // interface once one exists.
 type notifier interface {
 	Send(ctx context.Context, n notify.Notice) error
+	// Delivers reports whether this notifier actually delivers notices
+	// (real email) as opposed to only logging them. recordNoticeSent uses
+	// this to avoid claiming a notification succeeded when nothing was
+	// ever sent.
+	Delivers() bool
 }

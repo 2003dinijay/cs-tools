@@ -21,7 +21,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/recipients"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/recipients"
 )
 
 // capturingHandler records every log record passed to it, so tests can

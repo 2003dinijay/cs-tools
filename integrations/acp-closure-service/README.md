@@ -14,7 +14,7 @@ this process.
 ## Quick Start
 
 ```bash
-# from acp-closure-service
+# from integrations/acp-closure-service
 cp .env.example .env   # fill in real values
 go run ./cmd/acp-closure
 ```
@@ -79,10 +79,7 @@ Copy `.env.example` to `.env` and fill in the values.
 | `CSM_INTEGRATION_TOKEN_URL` | OAuth2 token endpoint |
 | `CSM_INTEGRATION_CLIENT_ID` | OAuth2 client ID |
 | `CSM_INTEGRATION_CLIENT_SECRET` | OAuth2 client secret |
-
-Scopes are not configurable — `entity.RequiredScopes` sends the seven
-confirmed scope strings directly; that set is a fixed fact, not something a
-deployment should be able to misconfigure.
+| `CSM_INTEGRATION_SCOPES` | Required, space-separated. Kept out of code (rather than hardcoded) so the requested grant can be adjusted without a redeploy. Asgardeo enforces the actual grant regardless, so this only controls what's requested. See `entity.RequiredScopes` for the scope set csm-integration-service's token endpoint currently requires. |
 
 ### Run behavior
 

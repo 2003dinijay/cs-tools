@@ -99,9 +99,20 @@ func Run(ctx context.Context, reader sweepReader, updater projectUpdater, ntf no
 			}
 		}
 
+		if len(page.Projects) == 0 {
+			break
+		}
+
 		if !page.HasMore {
 			break
 		}
+
+		if page.Total > 0 && result.ProjectsEvaluated >= page.Total {
+			slog.WarnContext(ctx, "sweep: pagination hit the Total bound while hasMore was still true",
+				"total", page.Total, "projectsEvaluated", result.ProjectsEvaluated)
+			break
+		}
+
 		offset += pageSize
 	}
 

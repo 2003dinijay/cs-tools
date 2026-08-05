@@ -27,10 +27,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/closure"
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/notify"
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/recipients"
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/suspensionstate"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/closure"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/notify"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/recipients"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/suspensionstate"
 )
 
 // processProject evaluates and, if anything is due, acts on a single
@@ -57,7 +57,7 @@ func processProject(ctx context.Context, reader entityReader, updater projectUpd
 		if err := notifyForWindow(ctx, reader, ntf, proj, decision.Window); err != nil {
 			return fmt.Errorf("sweep: notify project %s: %w", proj.ID, err)
 		}
-		if err := recordNoticeSent(ctx, updater, proj, decision.Window); err != nil {
+		if err := recordNoticeSent(ctx, updater, proj, decision.Window, ntf.Delivers()); err != nil {
 			return fmt.Errorf("sweep: record notice for project %s: %w", proj.ID, err)
 		}
 	}
@@ -190,6 +190,15 @@ func fetchContacts(ctx context.Context, reader entityReader, proj project) ([]re
 		return nil, nil, fmt.Errorf("parse project contacts: %w", err)
 	}
 
+	projectContacts := make([]recipients.ProjectContact, len(pcResp.Contacts))
+	for i, c := range pcResp.Contacts {
+		projectContacts[i] = recipients.ProjectContact{Name: c.Name, Email: c.Email, Roles: c.Roles}
+	}
+
+	if proj.accountID() == "" {
+		return projectContacts, nil, nil
+	}
+
 	acRaw, err := reader.SearchAccountContacts(ctx, proj.accountID(), []byte(`{}`))
 	if err != nil {
 		return nil, nil, fmt.Errorf("search account contacts: %w", err)
@@ -199,10 +208,6 @@ func fetchContacts(ctx context.Context, reader entityReader, proj project) ([]re
 		return nil, nil, fmt.Errorf("parse account contacts: %w", err)
 	}
 
-	projectContacts := make([]recipients.ProjectContact, len(pcResp.Contacts))
-	for i, c := range pcResp.Contacts {
-		projectContacts[i] = recipients.ProjectContact{Name: c.Name, Email: c.Email, Roles: c.Roles}
-	}
 	accountContacts := make([]recipients.AccountContact, len(acResp.Contacts))
 	for i, c := range acResp.Contacts {
 		accountContacts[i] = recipients.AccountContact{Name: c.Name, Email: c.Email, IsPrimary: c.IsPrimary}
@@ -212,9 +217,17 @@ func fetchContacts(ctx context.Context, reader entityReader, proj project) ([]re
 
 // recordNoticeSent writes the new window into suspensionProcessState's
 // based_on_subscription_end_date key, preserving every other key untouched.
-func recordNoticeSent(ctx context.Context, updater projectUpdater, proj project, window closure.NoticeWindow) error {
+// actionSendEmailNotification records "SUCCESSFUL" only when delivered is
+// true (the notifier in use actually sends real notices); otherwise it
+// records "IGNORED" — the notice was logged, not sent, and the state must
+// not claim a delivery that never happened.
+func recordNoticeSent(ctx context.Context, updater projectUpdater, proj project, window closure.NoticeWindow, delivered bool) error {
+	action := "IGNORED"
+	if delivered {
+		action = "SUCCESSFUL"
+	}
 	newState, err := suspensionstate.WithSubscriptionEndDateState(proj.SuspensionProcessState, window, map[string]string{
-		"actionSendEmailNotification": "SUCCESSFUL",
+		"actionSendEmailNotification": action,
 	})
 	if err != nil {
 		return fmt.Errorf("build suspensionProcessState: %w", err)
@@ -229,11 +242,17 @@ func recordNoticeSent(ctx context.Context, updater projectUpdater, proj project,
 	return err
 }
 
-// suspend writes endDateClosureState=Suspended, unless the project is
-// already suspended (checked against the already-fetched closureState — no
-// extra round-trip), mirroring legacy's checkForOpenProject guard.
+// suspend writes endDateClosureState=Suspended, unless this dimension has
+// already moved past its initial "Open" state (checked against the
+// already-fetched endDateClosureState — no extra round-trip), mirroring
+// legacy's checkForOpenProject guard. Guarding on "not Open" rather than "==
+// Suspended" matters because endDateClosureState can progress further to
+// "Closed" via a process outside this component (confirmed via a real
+// suspended project, Postman, project
+// acac149b-eba1-4714-fcf5-f5dabad0cdb1) — an equality check against
+// "Suspended" alone would miss that real case and re-suspend indefinitely.
 func suspend(ctx context.Context, updater projectUpdater, proj project) error {
-	if proj.ClosureState != nil && *proj.ClosureState == "Suspended" {
+	if proj.EndDateClosureState != nil && *proj.EndDateClosureState != "Open" {
 		return nil
 	}
 

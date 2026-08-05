@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/notify"
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/recipients"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/notify"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/recipients"
 )
 
 func TestProcessProject_NoEndDateIsNoOp(t *testing.T) {
@@ -95,6 +95,43 @@ func TestProcessProject_InternalOnlyWindowSkipsCustomerContactLookup(t *testing.
 	}
 	if got := body.SuspensionProcessState.BasedOnSubscriptionEndDate.EventType; got != "90_days_notice" {
 		t.Errorf("event_type = %q, want %q", got, "90_days_notice")
+	}
+}
+
+// TestProcessProject_RecordsIgnoredWhenNotifierDoesNotDeliver verifies that
+// recordNoticeSent writes "IGNORED" rather than "SUCCESSFUL" when the
+// notifier in use doesn't actually deliver notices (as LoggingNotifier
+// never does) — a real Send succeeding is not the same fact as a real email
+// having been sent, and the recorded state must not claim otherwise.
+func TestProcessProject_RecordsIgnoredWhenNotifierDoesNotDeliver(t *testing.T) {
+	reader := &mockEntityReader{}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{deliversFn: func() bool { return false }}
+
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	endDate := now.AddDate(0, 0, 89) // fires the 90-day window
+	proj := project{ID: "p1", Account: &projectAccountRef{ID: "a1"}, EndDate: &endDate}
+
+	err := processProject(context.Background(), reader, updater, ntf, now, proj)
+	if err != nil {
+		t.Fatalf("processProject() error = %v, want nil", err)
+	}
+
+	if len(updater.calls) != 1 {
+		t.Fatalf("updater.calls = %d, want 1", len(updater.calls))
+	}
+	var body struct {
+		SuspensionProcessState struct {
+			BasedOnSubscriptionEndDate struct {
+				ActionSendEmailNotification string `json:"actionSendEmailNotification"`
+			} `json:"based_on_subscription_end_date"`
+		} `json:"suspensionProcessState"`
+	}
+	if err := json.Unmarshal(updater.calls[0].body, &body); err != nil {
+		t.Fatalf("parse update body: %v", err)
+	}
+	if got := body.SuspensionProcessState.BasedOnSubscriptionEndDate.ActionSendEmailNotification; got != "IGNORED" {
+		t.Errorf("actionSendEmailNotification = %q, want %q", got, "IGNORED")
 	}
 }
 
@@ -196,6 +233,56 @@ func TestProcessProject_CustomerAudienceWindowNudgesAMWhenNoContactFound(t *test
 	}
 	if sawCustomer {
 		t.Error("expected no customer notice when no contact resolved, got one")
+	}
+}
+
+// TestProcessProject_CustomerAudienceWindowSkipsAccountContactLookupWhenNoAccount
+// verifies that a project with no linked account never calls
+// SearchAccountContacts. Calling it anyway with an empty account ID would hit
+// SearchAccountContacts(ctx, "", ...), which fetchContacts must not do when
+// there's no account to search — it should fall through to the AM nudge
+// exactly as it does when a real account search simply returns no contacts.
+func TestProcessProject_CustomerAudienceWindowSkipsAccountContactLookupWhenNoAccount(t *testing.T) {
+	reader := &mockEntityReader{
+		searchAccountContactsFn: func(ctx context.Context, accountID string, body []byte) ([]byte, error) {
+			t.Fatal("SearchAccountContacts should not be called when the project has no linked account")
+			return nil, nil
+		},
+	}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{}
+
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	endDate := now.AddDate(0, 0, 6) // fires the 7-day window
+	proj := project{ID: "p1", Account: nil, EndDate: &endDate}
+
+	err := processProject(context.Background(), reader, updater, ntf, now, proj)
+	if err != nil {
+		t.Fatalf("processProject() error = %v, want nil", err)
+	}
+
+	if len(ntf.sent) != 2 {
+		t.Fatalf("ntf.sent = %d, want 2", len(ntf.sent))
+	}
+	var sawInternal, sawNudge, sawCustomer bool
+	for _, n := range ntf.sent {
+		switch n.Kind {
+		case notify.KindInternal:
+			sawInternal = true
+		case notify.KindAMNudge:
+			sawNudge = true
+		case notify.KindCustomer:
+			sawCustomer = true
+		}
+	}
+	if !sawInternal {
+		t.Error("expected an internal notice, got none")
+	}
+	if !sawNudge {
+		t.Error("expected an AM-nudge notice, got none")
+	}
+	if sawCustomer {
+		t.Error("expected no customer notice when no account is linked, got one")
 	}
 }
 
@@ -328,8 +415,12 @@ func TestProcessProject_Day0RetrySkipsNotifyWhenAlreadyRecorded(t *testing.T) {
 }
 
 // TestProcessProject_SuspendGuardSkipsAlreadySuspendedProject verifies the
-// suspend guard: if closureState already reads "Suspended" (from this run's
-// already-fetched data), no UpdateProject call happens at all for suspend.
+// suspend guard: if endDateClosureState already reads "Suspended" (from this
+// run's already-fetched data), no UpdateProject call happens at all for
+// suspend. This is the field suspend() itself writes — closureState is a
+// separate, derived roll-up field this code never sets, so the guard must
+// not be keyed on it (confirmed bug: see EndDateClosureState's doc comment
+// in types.go).
 func TestProcessProject_SuspendGuardSkipsAlreadySuspendedProject(t *testing.T) {
 	reader := &mockEntityReader{}
 	updater := &mockProjectUpdater{}
@@ -342,7 +433,7 @@ func TestProcessProject_SuspendGuardSkipsAlreadySuspendedProject(t *testing.T) {
 		ID:                     "p1",
 		Account:                &projectAccountRef{ID: "a1"},
 		EndDate:                &endDate,
-		ClosureState:           &suspended,
+		EndDateClosureState:    &suspended,
 		SuspensionProcessState: []byte(`{"based_on_subscription_end_date":{"event_type":"suspend"}}`),
 	}
 
@@ -352,6 +443,68 @@ func TestProcessProject_SuspendGuardSkipsAlreadySuspendedProject(t *testing.T) {
 	}
 	if len(updater.calls) != 0 {
 		t.Errorf("updater.calls = %d, want 0 (already suspended, no-op)", len(updater.calls))
+	}
+}
+
+// TestProcessProject_SuspendGuardSkipsWhenEndDateClosureStateIsClosed
+// verifies the guard also treats "Closed" as already-handled, not just an
+// exact "Suspended" match. Confirmed via a real suspended project fetched
+// directly (Postman, project acac149b-eba1-4714-fcf5-f5dabad0cdb1,
+// closureState="Suspended" but endDateClosureState="Closed") that this field
+// can progress past "Suspended" via a process outside this component — an
+// equality check against "Suspended" alone would miss this real case and
+// re-suspend indefinitely.
+func TestProcessProject_SuspendGuardSkipsWhenEndDateClosureStateIsClosed(t *testing.T) {
+	reader := &mockEntityReader{}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{}
+
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	endDate := now.AddDate(0, 0, -3)
+	closed := "Closed"
+	proj := project{
+		ID:                     "p1",
+		Account:                &projectAccountRef{ID: "a1"},
+		EndDate:                &endDate,
+		EndDateClosureState:    &closed,
+		SuspensionProcessState: []byte(`{"based_on_subscription_end_date":{"event_type":"suspend"}}`),
+	}
+
+	err := processProject(context.Background(), reader, updater, ntf, now, proj)
+	if err != nil {
+		t.Fatalf("processProject() error = %v, want nil", err)
+	}
+	if len(updater.calls) != 0 {
+		t.Errorf("updater.calls = %d, want 0 (already closed, no-op)", len(updater.calls))
+	}
+}
+
+// TestProcessProject_SuspendProceedsWhenEndDateClosureStateIsExplicitlyOpen
+// covers the explicit (not just nil) "Open" case — confirmed via real data
+// that sibling closure-state dimensions come back as an explicit "Open"
+// string, not a null, for an untouched project. This guards against a
+// future casing/logic slip in the inequality check landing on the wrong
+// side for this specific, real value.
+func TestProcessProject_SuspendProceedsWhenEndDateClosureStateIsExplicitlyOpen(t *testing.T) {
+	reader := &mockEntityReader{
+		searchProjectContactsFn: func(ctx context.Context, projectID string, body []byte) ([]byte, error) {
+			return []byte(`{"contacts":[{"name":"Bob","email":"bob@customer.example","roles":["business_contact"]}]}`), nil
+		},
+	}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{}
+
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	endDate := now.AddDate(0, 0, -3) // 3 days past due
+	open := "Open"
+	proj := project{ID: "p1", Account: &projectAccountRef{ID: "a1"}, EndDate: &endDate, EndDateClosureState: &open}
+
+	err := processProject(context.Background(), reader, updater, ntf, now, proj)
+	if err != nil {
+		t.Fatalf("processProject() error = %v, want nil", err)
+	}
+	if len(updater.calls) != 2 {
+		t.Errorf("updater.calls = %d, want 2 (record notice, then suspend)", len(updater.calls))
 	}
 }
 

@@ -93,6 +93,82 @@ func TestRun_MultiPagePaginatesUntilHasMoreFalse(t *testing.T) {
 	}
 }
 
+// TestRun_StopsWhenPageReturnsZeroProjects verifies the loop terminates on an
+// empty page even if hasMore claims true — hasMore is a field the PR
+// documents as undocumented upstream, so it must never be the sole loop
+// condition. The mock fails the test itself if SearchProjects is called more
+// than once, so an unbounded loop fails fast here instead of hanging.
+func TestRun_StopsWhenPageReturnsZeroProjects(t *testing.T) {
+	calls := 0
+	reader := &mockEntityReader{
+		searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			calls++
+			if calls > 1 {
+				t.Fatal("SearchProjects called more than once; loop did not stop on an empty page")
+			}
+			return []byte(`{
+				"projects": [],
+				"total": 1000000, "limit": 50, "offset": 0, "hasMore": true
+			}`), nil
+		},
+	}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{}
+
+	result, err := Run(context.Background(), reader, updater, ntf, time.Now(), "")
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if result.ProjectsEvaluated != 0 {
+		t.Errorf("ProjectsEvaluated = %d, want 0", result.ProjectsEvaluated)
+	}
+	if calls != 1 {
+		t.Errorf("SearchProjects calls = %d, want 1", calls)
+	}
+}
+
+// TestRun_BoundsIterationsByTotalWhenHasMoreNeverFalse verifies the loop
+// stops using the already-parsed Total field even when hasMore never
+// legitimately turns false. total=100 with a 50-project page should bound
+// the loop to 2 pages. The mock fails the test itself if SearchProjects is
+// called a third time, so an unbounded loop fails fast here instead of
+// hanging.
+func TestRun_BoundsIterationsByTotalWhenHasMoreNeverFalse(t *testing.T) {
+	calls := 0
+	reader := &mockEntityReader{
+		searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			calls++
+			if calls > 2 {
+				t.Fatal("SearchProjects called more than twice; loop did not bound on Total")
+			}
+			projects := make([]byte, 0)
+			for i := 0; i < 50; i++ {
+				if i > 0 {
+					projects = append(projects, ',')
+				}
+				projects = append(projects, []byte(`{"id": "p", "endDate": null}`)...)
+			}
+			return []byte(`{
+				"projects": [` + string(projects) + `],
+				"total": 100, "limit": 50, "offset": 0, "hasMore": true
+			}`), nil
+		},
+	}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{}
+
+	result, err := Run(context.Background(), reader, updater, ntf, time.Now(), "")
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if result.ProjectsEvaluated != 100 {
+		t.Errorf("ProjectsEvaluated = %d, want 100", result.ProjectsEvaluated)
+	}
+	if calls != 2 {
+		t.Errorf("SearchProjects calls = %d, want 2", calls)
+	}
+}
+
 // TestRun_OneProjectFailureDoesNotBlockTheRest verifies the two-tier failure
 // design: a single project's processProject failure (malformed
 // suspensionProcessState, here) is recorded in Result.Failures and the

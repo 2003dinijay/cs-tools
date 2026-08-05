@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/apierror"
 )
 
 // tokenServer returns an httptest.Server that always issues a client-credentials
@@ -195,6 +195,55 @@ func TestDoWithoutCorrelationIDOmitsHeader(t *testing.T) {
 	}
 	if sawHeader {
 		t.Error("X-CSM-Correlation-ID header sent with no correlation ID in context, want omitted")
+	}
+}
+
+// TestDoRejectsRedirects verifies the client refuses to follow a 3xx
+// response rather than transparently following it. oauth2.Transport
+// reattaches the Authorization bearer token to every request it processes,
+// including a followed redirect — so silently following one would leak the
+// M2M token to whatever host the upstream says to redirect to.
+func TestDoRejectsRedirects(t *testing.T) {
+	var redirectTargetHit bool
+	var gotAuthAtTarget string
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectTargetHit = true
+		gotAuthAtTarget = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer redirectTarget.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL, http.StatusFound)
+	}))
+	defer upstream.Close()
+
+	tokenSrv := tokenServer(t)
+	client := NewClient(Config{
+		BaseURL:      upstream.URL,
+		TokenURL:     tokenSrv.URL,
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		Scopes:       RequiredScopes,
+	})
+
+	_, err := client.SearchProjects(context.Background(), []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected error for a 3xx upstream response, got nil")
+	}
+	var apiErr *apierror.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %v, want *apierror.Error", err)
+	}
+	if apiErr.StatusCode != http.StatusFound {
+		t.Errorf("StatusCode = %d, want %d", apiErr.StatusCode, http.StatusFound)
+	}
+	if redirectTargetHit {
+		t.Errorf("redirect target was contacted; want the client to never follow the redirect")
+	}
+	if gotAuthAtTarget != "" {
+		t.Errorf("Authorization header leaked to redirect target: %q", gotAuthAtTarget)
 	}
 }
 

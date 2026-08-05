@@ -30,9 +30,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/entity"
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/notify"
-	"github.com/wso2-open-operations/cs-tools/acp-closure-service/internal/sweep"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/notify"
+	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/sweep"
 )
 
 // projectUpdater is declared locally so main can hold either the real
@@ -57,7 +57,7 @@ func main() {
 		TokenURL:     mustEnv("CSM_INTEGRATION_TOKEN_URL"),
 		ClientID:     mustEnv("CSM_INTEGRATION_CLIENT_ID"),
 		ClientSecret: mustEnv("CSM_INTEGRATION_CLIENT_SECRET"),
-		Scopes:       entity.RequiredScopes,
+		Scopes:       strings.Fields(mustEnv("CSM_INTEGRATION_SCOPES")),
 	})
 
 	var updater projectUpdater = entityClient
@@ -84,6 +84,19 @@ func main() {
 	for _, f := range result.Failures {
 		slog.Error("project failed", "runID", runID, "projectID", f.ProjectID, "err", f.Err)
 	}
+
+	os.Exit(exitCode(len(result.Failures)))
+}
+
+// exitCode reports the process exit status for a completed sweep. A
+// scheduled Choreo task relies on the exit code as its alerting signal, so
+// any project failure — not just a fatal sweep-level error — must be
+// reported as non-zero; a fully green run is the only case that exits 0.
+func exitCode(failureCount int) int {
+	if failureCount > 0 {
+		return 1
+	}
+	return 0
 }
 
 func mustEnv(key string) string {
@@ -139,7 +152,7 @@ func loadDotEnv(path string) {
 		if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
 			v = v[1 : len(v)-1]
 		}
-		if os.Getenv(k) == "" {
+		if _, set := os.LookupEnv(k); !set {
 			_ = os.Setenv(k, v)
 		}
 	}
