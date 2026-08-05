@@ -229,7 +229,19 @@ export default function DashboardWidgetTile({
     const ListRenderer = WIDGET_LIST_RENDERERS[resourceType];
     return (
       <Card variant="outlined" sx={{ position: "relative", p: 1.75, height: "100%" }}>
-        {header}
+        <Box sx={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 1 }}>
+          {header}
+          {!isLoading && !isError && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ mt: 0.5, flexShrink: 0, fontWeight: 600 }}
+              aria-label={`${resolvedDisplayName}: ${(data?.total ?? 0).toLocaleString()} total`}
+            >
+              {(data?.total ?? 0).toLocaleString()}
+            </Typography>
+          )}
+        </Box>
         {isLoading ? (
           <Skeleton variant="rounded" height={28 * (listLimit ?? 4) + 40} sx={{ mt: 1 }} />
         ) : isError ? (
@@ -253,7 +265,13 @@ export default function DashboardWidgetTile({
                     previewSlug: config.previewSlug,
                     widgetId,
                     displayName: resolvedDisplayName,
-                    filters,
+                    // Resolved the same way the count-shape tile's own
+                    // click-through href is (see `href` above) — the preview
+                    // page has no team context of its own, so an unresolved
+                    // placeholder here used to get silently dropped there
+                    // (teamFilterPlaceholder.ts's fail-open), returning
+                    // every team's cases instead of the viewer's own.
+                    filters: resolveTeamPlaceholder(filters, selectedTeamGroupId),
                     currentUserId: user?.id,
                   })}
                   size="small"

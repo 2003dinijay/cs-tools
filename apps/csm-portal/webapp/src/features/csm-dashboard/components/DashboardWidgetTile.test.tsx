@@ -236,6 +236,49 @@ describe("DashboardWidgetTile", () => {
     });
   });
 
+  it("shows the widget's total item count for shape: list, reusing the same total the 'View more' logic uses", async () => {
+    postMock.mockResolvedValue({
+      total: 42,
+      cases: [
+        { id: "11111111-1111-1111-1111-111111111111", number: "CS-1", subject: "Disk full", state: "open" },
+      ],
+      limit: 5,
+      offset: 0,
+      hasMore: true,
+    });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="my_critical_open"
+        displayName="My Critical & High Cases"
+        resourceType="case"
+        shape="list"
+        filters={{}}
+        listLimit={5}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("CS-1")).toBeInTheDocument());
+    expect(screen.getByText("42")).toBeInTheDocument();
+  });
+
+  it("does not show a total count for shape: list while the widget is still loading", () => {
+    postMock.mockReturnValue(new Promise(() => {}));
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="my_critical_open"
+        displayName="My Critical & High Cases"
+        resourceType="case"
+        shape="list"
+        filters={{}}
+        listLimit={5}
+      />,
+    );
+
+    expect(screen.queryByText(/^\d+$/)).not.toBeInTheDocument();
+  });
+
   it("shows a 'View more' link through to the full tab only when more records exist than shown", async () => {
     postMock.mockResolvedValue({
       total: 1,
@@ -327,6 +370,76 @@ describe("DashboardWidgetTile", () => {
     expect(href).not.toContain("11111111-aaaa-bbbb-cccc-000000000001");
     const params = new URLSearchParams(href.split("?")[1]);
     expect(params.get("assignedUserId")).toBe("@me");
+  });
+
+  it("resolves the __current_team__ placeholder before it reaches the 'View more' href (list-shape), so the drill-down page never falls back to querying every team", async () => {
+    postMock.mockResolvedValue({
+      total: 6,
+      cases: [{ id: "11111111-1111-1111-1111-111111111111", number: "CS-1", subject: "Disk full", state: "open" }],
+      limit: 5,
+      offset: 0,
+      hasMore: true,
+    });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_cases"
+        displayName="Team Open Cases"
+        resourceType="case"
+        shape="list"
+        filters={{
+          filters: [
+            { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+          ],
+        }}
+        listLimit={5}
+        selectedTeamGroupId="22222222-2222-2222-2222-222222222222"
+      />,
+    );
+
+    const viewMoreLink = await screen.findByRole("link", { name: /view more/i });
+    const href = viewMoreLink.getAttribute("href") ?? "";
+    // The literal placeholder must never reach the URL — the destination
+    // preview page has no team context of its own to resolve it with, so a
+    // still-placeholder-carrying filter there silently gets DROPPED
+    // (fail-open — see teamFilterPlaceholder.ts), widening the query to
+    // every team's cases instead of just the viewer's own team's.
+    expect(href).not.toContain(CURRENT_TEAM_PLACEHOLDER);
+    const params = new URLSearchParams(href.split("?")[1]);
+    expect(params.get("integrationCsTeam")).toBe("22222222-2222-2222-2222-222222222222");
+  });
+
+  it("drops the integrationCsTeam filter from the 'View more' href (list-shape) rather than sending the literal placeholder when no team groupId is selected", async () => {
+    postMock.mockResolvedValue({
+      total: 6,
+      cases: [{ id: "11111111-1111-1111-1111-111111111111", number: "CS-1", subject: "Disk full", state: "open" }],
+      limit: 5,
+      offset: 0,
+      hasMore: true,
+    });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_cases"
+        displayName="Team Open Cases"
+        resourceType="case"
+        shape="list"
+        filters={{
+          filters: [
+            { field: "state", op: "in", values: ["open"] },
+            { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+          ],
+        }}
+        listLimit={5}
+      />,
+    );
+
+    const viewMoreLink = await screen.findByRole("link", { name: /view more/i });
+    const href = viewMoreLink.getAttribute("href") ?? "";
+    expect(href).not.toContain(CURRENT_TEAM_PLACEHOLDER);
+    const params = new URLSearchParams(href.split("?")[1]);
+    expect(params.get("integrationCsTeam")).toBeNull();
+    expect(params.get("state")).toBe("open");
   });
 
   it("navigates to /cases with translated filters when a case-resource tile is clicked", async () => {
