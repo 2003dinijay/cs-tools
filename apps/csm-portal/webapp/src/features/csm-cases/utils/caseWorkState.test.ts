@@ -16,7 +16,9 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  canResumeToUnlockPublicReply,
   caseAcceptsPublicComments,
+  effectiveWorkState,
   publicCommentGateReason,
 } from "./caseWorkState";
 
@@ -67,5 +69,59 @@ describe("publicCommentGateReason", () => {
     expect(publicCommentGateReason("work_in_progress", "paused")).not.toMatch(
       /work note/i,
     );
+  });
+});
+
+describe("canResumeToUnlockPublicReply", () => {
+  it("is true for the engineer's own paused, work_in_progress case", () => {
+    expect(
+      canResumeToUnlockPublicReply("work_in_progress", "paused", true),
+    ).toBe(true);
+  });
+
+  it("is false when the case isn't assigned to the signed-in engineer, even if paused", () => {
+    expect(
+      canResumeToUnlockPublicReply("work_in_progress", "paused", false),
+    ).toBe(false);
+  });
+
+  it("is false once the case is already ongoing (nothing to resume)", () => {
+    expect(
+      canResumeToUnlockPublicReply("work_in_progress", "ongoing", true),
+    ).toBe(false);
+  });
+
+  it("is false when the case hasn't started yet, regardless of assignee", () => {
+    expect(canResumeToUnlockPublicReply("open", null, true)).toBe(false);
+    expect(canResumeToUnlockPublicReply("open", null, false)).toBe(false);
+  });
+
+  // A null/undefined workState on a work_in_progress case is a real, expected
+  // state (e.g. data predating the work-state feature), not just "open"'s
+  // absent-workState case above — and it's resumable, matching
+  // CaseActionBar's own deliberate handling of the same case (see its
+  // "anything else (paused OR a null work-state in-progress case) is
+  // resumable" comment in buildSecondaryItems). Requiring workState ===
+  // "paused" exactly here would hide this quick-fix for a case where the
+  // action bar's own "Resume work" item is still shown and functional.
+  it("is true for a work_in_progress case with a null or undefined work state", () => {
+    expect(canResumeToUnlockPublicReply("work_in_progress", null, true)).toBe(
+      true,
+    );
+    expect(
+      canResumeToUnlockPublicReply("work_in_progress", undefined, true),
+    ).toBe(true);
+  });
+});
+
+describe("effectiveWorkState", () => {
+  it("passes through an explicit work state as-is", () => {
+    expect(effectiveWorkState("ongoing")).toBe("ongoing");
+    expect(effectiveWorkState("paused")).toBe("paused");
+  });
+
+  it("treats a never-set work state as paused", () => {
+    expect(effectiveWorkState(null)).toBe("paused");
+    expect(effectiveWorkState(undefined)).toBe("paused");
   });
 });

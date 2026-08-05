@@ -53,6 +53,56 @@ export function publicCommentGateReason(
   return "Customer replies are disabled unless the case is actively in progress.";
 }
 
+/**
+ * Whether resuming work — a single-field PATCH, no reassignment or state
+ * change — would be enough to unlock a public reply right now. True only for
+ * the one lock reason that's actually a single click away: the case is
+ * already `work_in_progress` and assigned to the signed-in engineer, just not
+ * `ongoing`. `assigneeIsMe` matters because pausing/resuming is only offered
+ * to the case's own assignee elsewhere in the UI (see CaseActionBar's own
+ * `assigneeIsMe && state === "work_in_progress"` gate on the same action) —
+ * without this check, an engineer viewing someone else's paused case would
+ * see a "Resume work" quick-fix that isn't actually theirs to use. The other
+ * lock reason (case not started at all) needs the full assign/start flow
+ * instead, so it's never resumable this way regardless of assignee.
+ *
+ * Deliberately `workState !== "ongoing"`, not `workState === "paused"`: a
+ * null/undefined work state on a work_in_progress case is real (e.g. data
+ * predating the work-state feature) and is resumable too, matching
+ * CaseActionBar's own handling of the exact same case — see its "anything
+ * else (paused OR a null work-state in-progress case) is resumable" comment
+ * in `buildSecondaryItems`. Narrowing this to `=== "paused"` would hide the
+ * quick-fix for a case where the action bar's own "Resume work" item is
+ * still shown and functional.
+ */
+export function canResumeToUnlockPublicReply(
+  state: CaseState | undefined,
+  workState: CaseWorkState | null | undefined,
+  assigneeIsMe: boolean,
+): boolean {
+  return (
+    assigneeIsMe && state === "work_in_progress" && workState !== "ongoing"
+  );
+}
+
+/**
+ * The work sub-state a `work_in_progress` case should be *shown* as having,
+ * treating a never-set `workState` (`null`/`undefined`) the same as
+ * `paused` — the same "anything but ongoing behaves like paused" rule
+ * `canResumeToUnlockPublicReply` already applies to behavior (resuming,
+ * unlocking public replies). Without this, the work-state chip on the cases
+ * list / case header / preview drawer silently renders nothing at all for
+ * such a case, reading as "no status" rather than the paused state it
+ * actually is. Only meaningful once the caller already knows `state` is
+ * `work_in_progress` — callers still gate on that themselves, same as the
+ * other functions here.
+ */
+export function effectiveWorkState(
+  workState: CaseWorkState | null | undefined,
+): CaseWorkState {
+  return workState ?? "paused";
+}
+
 /** Short label for the work sub-state chip on the case header / list. */
 export const WORK_STATE_LABEL: Record<CaseWorkState, string> = {
   ongoing: "Ongoing",

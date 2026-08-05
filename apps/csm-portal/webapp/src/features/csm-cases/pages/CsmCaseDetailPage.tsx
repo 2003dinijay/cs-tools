@@ -139,6 +139,8 @@ import {
 } from "@utils/sanitizeHtml";
 import { useDarkMode } from "@utils/useDarkMode";
 import {
+  canResumeToUnlockPublicReply as computeCanResumeToUnlockPublicReply,
+  effectiveWorkState,
   publicCommentGateReason,
   WORK_STATE_LABEL,
 } from "@features/csm-cases/utils/caseWorkState";
@@ -1582,6 +1584,18 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // notes. Mirrors the BFF comment guard so the engineer sees a clear reason
   // instead of a generic error.
   const publicReplyGateReason = publicCommentGateReason(c.state, c.workState);
+  // The composer's inline "Resume work" quick-fix only applies to this one
+  // lock reason — the case is already work_in_progress and assigned to the
+  // signed-in engineer, just paused, so resuming is the single-field PATCH
+  // `onAction` already runs for "toggle_work_state" below. The other lock
+  // reason (not started yet) needs the full assign/start flow, which doesn't
+  // belong in the composer; `assigneeIsMe` also excludes another engineer's
+  // paused case, matching CaseActionBar's own gate on the same action.
+  const canResumeToUnlockPublicReply = computeCanResumeToUnlockPublicReply(
+    c.state,
+    c.workState,
+    c.assigneeIsMe,
+  );
   // FE-only, advisory close-gate: warn when the case has an open task, so the
   // engineer isn't surprised by a close rejection. Best-effort — the task
   // *list* (`POST /cases/{id}/tasks/search`) returns `BeTaskSummary`, which
@@ -1704,12 +1718,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   sx={{ fontWeight: 600 }}
                 />
               )}
-            {!isAnnouncement && c.state === "work_in_progress" && c.workState && (
+            {!isAnnouncement && c.state === "work_in_progress" && (
               <Chip
                 size="small"
                 variant="outlined"
-                color={c.workState === "paused" ? "warning" : "default"}
-                label={WORK_STATE_LABEL[c.workState]}
+                color={effectiveWorkState(c.workState) === "paused" ? "warning" : "default"}
+                label={WORK_STATE_LABEL[effectiveWorkState(c.workState)]}
                 sx={{ fontWeight: 600 }}
               />
             )}
@@ -1860,6 +1874,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
               <CsmCaseCommentInput
                 disabled={!caseId || isClosed}
                 publicCommentDisabledReason={publicReplyGateReason}
+                canResumeToUnlockPublicReply={canResumeToUnlockPublicReply}
+                onResumeWork={() => onAction({ secondary: "toggle_work_state" })}
+                isResumingWork={patchCase.isPending}
                 autoFocus
                 onSubmit={async (bodyHtml, internal, commentAttachments) => {
                   if (!caseId) return;
