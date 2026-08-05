@@ -42,6 +42,7 @@ import {
   caseTypeDetailBasePath,
   caseTypeHasSeverity,
 } from "@features/csm-cases/utils/caseType";
+import { effectiveWorkState } from "@features/csm-cases/utils/caseWorkState";
 
 interface CasesListProps {
   cases: CsmCaseRow[];
@@ -362,8 +363,8 @@ export default function CasesList({
                 }}
               >
                 <StateChip state={c.state} variant="outlined" clickable />
-                {c.state === "work_in_progress" && c.workState && (
-                  <WorkStateChip workState={c.workState} />
+                {c.state === "work_in_progress" && (
+                  <WorkStateChip workState={effectiveWorkState(c.workState)} />
                 )}
               </Box>
               <Typography variant="caption" color="text.secondary" noWrap>

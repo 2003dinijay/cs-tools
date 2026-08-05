@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import {
   canResumeToUnlockPublicReply,
   caseAcceptsPublicComments,
+  effectiveWorkState,
   publicCommentGateReason,
 } from "./caseWorkState";
 
@@ -93,5 +94,17 @@ describe("canResumeToUnlockPublicReply", () => {
   it("is false when the case hasn't started yet, regardless of assignee", () => {
     expect(canResumeToUnlockPublicReply("open", null, true)).toBe(false);
     expect(canResumeToUnlockPublicReply("open", null, false)).toBe(false);
+  });
+});
+
+describe("effectiveWorkState", () => {
+  it("passes through an explicit work state as-is", () => {
+    expect(effectiveWorkState("ongoing")).toBe("ongoing");
+    expect(effectiveWorkState("paused")).toBe("paused");
+  });
+
+  it("treats a never-set work state as paused", () => {
+    expect(effectiveWorkState(null)).toBe("paused");
+    expect(effectiveWorkState(undefined)).toBe("paused");
   });
 });

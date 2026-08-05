@@ -140,6 +140,7 @@ import {
 import { useDarkMode } from "@utils/useDarkMode";
 import {
   canResumeToUnlockPublicReply as computeCanResumeToUnlockPublicReply,
+  effectiveWorkState,
   publicCommentGateReason,
   WORK_STATE_LABEL,
 } from "@features/csm-cases/utils/caseWorkState";
@@ -1717,12 +1718,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   sx={{ fontWeight: 600 }}
                 />
               )}
-            {!isAnnouncement && c.state === "work_in_progress" && c.workState && (
+            {!isAnnouncement && c.state === "work_in_progress" && (
               <Chip
                 size="small"
                 variant="outlined"
-                color={c.workState === "paused" ? "warning" : "default"}
-                label={WORK_STATE_LABEL[c.workState]}
+                color={effectiveWorkState(c.workState) === "paused" ? "warning" : "default"}
+                label={WORK_STATE_LABEL[effectiveWorkState(c.workState)]}
                 sx={{ fontWeight: 600 }}
               />
             )}

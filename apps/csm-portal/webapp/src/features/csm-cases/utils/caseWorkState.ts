@@ -76,6 +76,24 @@ export function canResumeToUnlockPublicReply(
   );
 }
 
+/**
+ * The work sub-state a `work_in_progress` case should be *shown* as having,
+ * treating a never-set `workState` (`null`/`undefined`) the same as
+ * `paused` — the same "anything but ongoing behaves like paused" rule
+ * `canResumeToUnlockPublicReply` already applies to behavior (resuming,
+ * unlocking public replies). Without this, the work-state chip on the cases
+ * list / case header / preview drawer silently renders nothing at all for
+ * such a case, reading as "no status" rather than the paused state it
+ * actually is. Only meaningful once the caller already knows `state` is
+ * `work_in_progress` — callers still gate on that themselves, same as the
+ * other functions here.
+ */
+export function effectiveWorkState(
+  workState: CaseWorkState | null | undefined,
+): CaseWorkState {
+  return workState ?? "paused";
+}
+
 /** Short label for the work sub-state chip on the case header / list. */
 export const WORK_STATE_LABEL: Record<CaseWorkState, string> = {
   ongoing: "Ongoing",
