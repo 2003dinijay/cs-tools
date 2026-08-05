@@ -39,6 +39,20 @@ const theme = extendTheme(AcrylicPurpleTheme, {
         }),
       },
     },
+    // AcrylicPurpleTheme (unlike AcrylicOrangeTheme, which has no such override — see the
+    // customer-portal microapp's theme/index.ts) paints a radial-gradient onto <body>, keyed to
+    // fixed focal points (e.g. "circle at 65% 30%") that fade back to background.default
+    // elsewhere. With background-attachment: fixed, that reads as tinted near those points and
+    // plain white/black everywhere else — inconsistent rather than a deliberate design choice
+    // here. Same selectors @wso2/oxygen-ui's own override uses (dist/index.js), just dropping the
+    // image so the page falls back to the flat background.default color everywhere, matching how
+    // the orange theme already looks.
+    MuiCssBaseline: {
+      styleOverrides: {
+        "html[data-color-scheme='dark'] body": { backgroundImage: "none" },
+        "html[data-color-scheme='light'] body": { backgroundImage: "none" },
+      },
+    },
   },
 }) as OxygenTheme;
 

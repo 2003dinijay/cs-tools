@@ -589,7 +589,10 @@ function CaseMetadataSection({ caseDetail }: { caseDetail: CaseDetail }) {
       {
         icon: PenLine,
         label: "Created By",
-        value: caseDetail.createdBy?.displayName || caseDetail.createdBy?.email,
+        // Falls back to "Unknown" rather than leaving this undefined — this section's groups are
+        // filtered to only fields with a truthy value, so an undefined here would silently drop
+        // the whole "Created By" row instead of showing that the creator is unknown.
+        value: caseDetail.createdBy?.name || caseDetail.createdBy?.email || "Unknown",
       },
     ],
     [
