@@ -116,7 +116,10 @@ function TimeCardRow({
 }) {
   const canDecide = onDecide && card.state === "submitted";
   return (
-    <Stack gap={1}>
+    <Stack
+      gap={1}
+      sx={{ p: 1.25, bgcolor: "action.hover", border: "1px solid", borderColor: "divider", borderRadius: 1 }}
+    >
       <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1}>
         <Box sx={{ minWidth: 0 }}>
           <Typography variant="body2" noWrap>

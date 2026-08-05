@@ -96,7 +96,12 @@ export function CompositionDonut({
               data={pieData}
               colors={pieData.map((s) => s.color)}
               legend={{ show: false }}
-              tooltip={{ show: true }}
+              // Hover/tooltip doesn't map cleanly onto touch — a tap registers as "hover" first,
+              // leaving the tooltip stuck open over the center total until something else is
+              // tapped. This is a mobile-only WebView, so there's no real hover state to serve;
+              // tap already navigates directly via onSliceClick below. Matches customer-portal
+              // microapp's PieChartWidget, which disables the tooltip the same way.
+              tooltip={{ show: false }}
               width="100%"
               height={DONUT_SIZE}
               margin={{ top: 0, right: 0, bottom: 5, left: 0 }}
