@@ -44,11 +44,15 @@ export interface EntityRefDto {
   name: string;
 }
 
+// The canonical {id, email, name} UserReference shape (openapi.yaml), used for CaseViewDto's
+// createdBy — confirmed live: {"id":"bcc4881f-...","email":"anuradhab@wso2.com","name":"Anuradha
+// Basnayake ⓦ"}. Previously modeled as {id, displayName, userId, email}, none of which (besides
+// id/email) exist on the real object — CaseDetailPage's `displayName` read always came up empty
+// and silently fell back to rendering the email instead of the name.
 export interface UserRefDto {
-  id: string;
-  displayName: string;
-  userId: string;
+  id: string | null;
   email: string;
+  name: string;
 }
 
 export interface UserIdEmailRefDto {

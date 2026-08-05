@@ -589,7 +589,7 @@ function CaseMetadataSection({ caseDetail }: { caseDetail: CaseDetail }) {
       {
         icon: PenLine,
         label: "Created By",
-        value: caseDetail.createdBy?.displayName || caseDetail.createdBy?.email,
+        value: caseDetail.createdBy?.name || caseDetail.createdBy?.email,
       },
     ],
     [

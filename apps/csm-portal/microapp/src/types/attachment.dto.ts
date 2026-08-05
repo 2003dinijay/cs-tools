@@ -36,6 +36,16 @@ export interface AttachmentCreateResponseDto {
   attachment: AttachmentDetailDto;
 }
 
+// The canonical {id, email, name} UserReference shape (openapi.yaml) — confirmed live:
+// {"id":"bcc4881f-...","email":"anuradhab@wso2.com","name":"Anuradha Basnayake ⓦ"}. Same shape
+// as CaseCommentAuthorDto in case.dto.ts; kept separate per this codebase's convention of one
+// type per DTO file rather than a shared cross-file import for it.
+export interface AttachmentAuthorDto {
+  id: string | null;
+  email: string;
+  name: string;
+}
+
 // List/search view — mirrors openapi.yaml's Attachment schema (the full record, as opposed to
 // AttachmentDetailDto's thin create-response ack).
 export interface AttachmentViewDto {
@@ -46,7 +56,7 @@ export interface AttachmentViewDto {
   type: string;
   sizeBytes: number;
   description: string | null;
-  createdBy: string;
+  createdBy: string | AttachmentAuthorDto;
   createdOn: string;
   downloadUrl: string | null;
   previewUrl: string | null;

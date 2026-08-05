@@ -28,6 +28,18 @@ export interface CaseAttachment {
   downloadUrl: string | null;
 }
 
+// createdBy used to be assumed a plain string; the live shape is the {id, email, name}
+// UserReference object (see AttachmentAuthorDto) — rendering that object directly as a string,
+// as this codebase did before this fix, crashes React ("Objects are not valid as a React
+// child"), which is what tripped CaseActivityFeed's error boundary for the whole Activities tab
+// the moment an attachment with this shape entered the render. Mirrors commentAuthorLabel in
+// case.model.ts (same fallback chain the webapp's authorDisplayName uses).
+function attachmentAuthorLabel(createdBy: AttachmentViewDto["createdBy"] | null | undefined): string {
+  if (!createdBy) return "Unknown";
+  if (typeof createdBy === "string") return createdBy.trim() || "Unknown";
+  return createdBy.name?.trim() || createdBy.email?.trim() || "Unknown";
+}
+
 export function toCaseAttachment(dto: AttachmentViewDto): CaseAttachment {
   return {
     id: dto.id,
@@ -35,7 +47,7 @@ export function toCaseAttachment(dto: AttachmentViewDto): CaseAttachment {
     type: dto.type,
     sizeBytes: dto.sizeBytes,
     description: dto.description,
-    createdBy: dto.createdBy,
+    createdBy: attachmentAuthorLabel(dto.createdBy),
     createdOn: parseBackendTimestamp(dto.createdOn),
     downloadUrl: dto.downloadUrl,
   };
