@@ -181,16 +181,10 @@ export interface CaseViewDto {
 
 export type CaseCommentType = "work_note" | "comment" | "activity";
 
-// openapi.yaml declares `createdBy` as a plain string, but the live entity-service response
-// doesn't consistently match that — it comes back as a richer {id, firstName, lastName, fullName}
-// object for at least some comments (same createdBy string-vs-object drift already seen on
-// CaseSearchViewDto — see reference_csm_announcements memory). Modeled as a union and normalized
-// to a display string in `toComment` rather than trusted as a string at the DTO boundary.
 export interface CaseCommentAuthorDto {
-  id?: string;
-  firstName?: string;
-  lastName?: string;
-  fullName?: string;
+  id: string | null;
+  email: string;
+  name: string;
 }
 
 export interface CaseCommentDto {
