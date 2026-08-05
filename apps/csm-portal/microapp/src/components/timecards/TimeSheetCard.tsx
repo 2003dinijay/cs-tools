@@ -116,10 +116,15 @@ function TimeCardRow({
 }) {
   const canDecide = onDecide && card.state === "submitted";
   return (
-    // A tinted background separates each card from its neighbors and from the sheet's own
-    // background — a plain gap between rows was indistinguishable in dark mode, where the
-    // accordion body and each card otherwise render as the same flat surface color.
-    <Stack gap={1} sx={{ p: 1.25, borderRadius: 1.5, bgcolor: "action.hover" }}>
+    // A visible border separates each card from its neighbors and from the sheet's own
+    // background — a plain Stack gap was indistinguishable in dark mode, where the accordion
+    // body and each card otherwise render as the same flat surface color. A translucent
+    // bgcolor (action.hover) isn't reliable here: this theme's Card surfaces are themselves
+    // semi-transparent (see theme/index.ts's MuiDialog override for the same "double
+    // transparency" issue), so a low-opacity fill on top of one can end up unnoticeable. A solid
+    // 1px border, the same pattern AttachmentsTab/CaseActivityFeed rows already use, doesn't have
+    // that problem.
+    <Stack gap={1} sx={{ p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1}>
         <Box sx={{ minWidth: 0 }}>
           <Typography variant="body2" noWrap>
