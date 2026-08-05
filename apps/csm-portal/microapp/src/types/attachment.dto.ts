@@ -36,10 +36,9 @@ export interface AttachmentCreateResponseDto {
   attachment: AttachmentDetailDto;
 }
 
-// The canonical {id, email, name} UserReference shape (openapi.yaml) — confirmed live:
-// {"id":"bcc4881f-...","email":"anuradhab@wso2.com","name":"Anuradha Basnayake ⓦ"}. Same shape
-// as CaseCommentAuthorDto in case.dto.ts; kept separate per this codebase's convention of one
-// type per DTO file rather than a shared cross-file import for it.
+// The canonical {id, email, name} UserReference shape (openapi.yaml) — confirmed live against a
+// real response. Same shape as CaseCommentAuthorDto in case.dto.ts; kept separate per this
+// codebase's convention of one type per DTO file rather than a shared cross-file import for it.
 export interface AttachmentAuthorDto {
   id: string | null;
   email: string;
@@ -56,7 +55,10 @@ export interface AttachmentViewDto {
   type: string;
   sizeBytes: number;
   description: string | null;
-  createdBy: string | AttachmentAuthorDto;
+  // openapi.yaml marks this nullable — null is handled defensively in attachmentAuthorLabel
+  // (attachment.model.ts) already, but the type should say so too rather than let a future,
+  // non-defensive read assume it's always present.
+  createdBy: string | AttachmentAuthorDto | null;
   createdOn: string;
   downloadUrl: string | null;
   previewUrl: string | null;

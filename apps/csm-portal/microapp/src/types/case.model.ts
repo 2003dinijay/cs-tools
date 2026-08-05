@@ -95,7 +95,7 @@ export interface CaseDetail {
   createdOn: Date;
   updatedOn: Date;
   closedOn: Date | null;
-  createdBy: UserRefDto;
+  createdBy: UserRefDto | null;
   project: EntityRefDto;
   deployment: EntityRefDto | null;
   deployedProduct: DeployedProductRefDto | null;
