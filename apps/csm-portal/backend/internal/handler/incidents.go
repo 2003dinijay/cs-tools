@@ -35,6 +35,7 @@ type entityIncidentClient interface {
 	PatchIncident(ctx context.Context, id string, body []byte) ([]byte, error)
 	CreateComment(ctx context.Context, body []byte) ([]byte, error)
 	SearchComments(ctx context.Context, body []byte) ([]byte, error)
+	SearchIncidentActivities(ctx context.Context, id string, body []byte) ([]byte, error)
 }
 
 // searchIncidentsRequest mirrors the enum/format-constrained fields of the documented
@@ -528,6 +529,50 @@ func (h *IncidentHandler) CreateIncidentComment(w http.ResponseWriter, r *http.R
 	}
 
 	writeJSON(w, http.StatusCreated, result)
+}
+
+// SearchIncidentActivities handles POST /incidents/{id}/activities/search.
+// Confirmed as a real, distinct endpoint from the case one. The request body is capped
+// and forwarded to the entity service as-is (no fields are injected) and the response is
+// returned verbatim.
+func (h *IncidentHandler) SearchIncidentActivities(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
+		return
+	}
+
+	if len(body) > 0 && !json.Valid(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.SearchIncidentActivities(r.Context(), id, body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity SearchIncidentActivities failed", "userID", user.UserID, "incidentID", id, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to search incident activities.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 // SearchIncidentComments handles POST /incidents/{id}/comments/search.

@@ -15,7 +15,7 @@
 // under the License.
 
 import { describe, expect, it } from "vitest";
-import type { BeCaseComment, BeComment } from "./types";
+import type { BeComment } from "./types";
 import {
   beStateFromUi,
   commentTypeFromInternal,
@@ -102,16 +102,15 @@ describe("commentTypeFromInternal", () => {
 });
 
 describe("uiCommentFromBe", () => {
-  const base: BeCaseComment = {
+  const base: BeComment = {
     id: "c1",
-    caseId: "case1",
+    referenceId: "case1",
     type: "comment",
     content: "<p>hello</p>",
     createdBy: {
-      id: "user@wso2.com",
-      firstName: "Ada",
-      lastName: "Lovelace",
-      fullName: "Ada Lovelace ⓦ",
+      id: null,
+      email: "user@wso2.com",
+      name: "Ada Lovelace ⓦ",
     },
     createdOn: "2026-06-01T10:00:00Z",
   };
@@ -145,23 +144,24 @@ describe("uiCommentFromBe", () => {
     expect(ui.bodyHtml).toBe('<p>a &amp; b</p><img src=x onerror="alert(1)">');
   });
 
-  it("falls back from fullName to first+last, then id", () => {
+  it("falls back from name to email, then Unknown when createdBy is null", () => {
     expect(
       uiCommentFromBe({
         ...base,
-        createdBy: { id: "x@wso2.com", firstName: "Grace", lastName: "Hopper" },
+        createdBy: { id: null, email: "x@wso2.com", name: "" },
       }).authorName,
-    ).toBe("Grace Hopper");
-    expect(
-      uiCommentFromBe({ ...base, createdBy: { id: "x@wso2.com" } }).authorName,
     ).toBe("x@wso2.com");
+    expect(
+      uiCommentFromBe({ ...base, createdBy: null }).authorName,
+    ).toBe("Unknown");
   });
 });
 
 describe("uiCommentFromBe — /comments/search shape and chat", () => {
-  // The confirmed shape backing both case comments and chat messages: a nested
-  // `createdBy` object, `referenceId` (not `caseId`), and a normalized singular
-  // `type`. (createdOn tie-break etc. is covered in caseActivityFeed.test.ts.)
+  // The confirmed shape backing both case comments and chat messages: a
+  // canonical `createdBy` UserReference, `referenceId` (not `caseId`), and a
+  // normalized singular `type`. (createdOn tie-break etc. is covered in
+  // caseActivityFeed.test.ts.)
   const msg: BeComment = {
     id: "m1",
     referenceId: "conv1",
@@ -169,10 +169,9 @@ describe("uiCommentFromBe — /comments/search shape and chat", () => {
     type: "comment",
     createdOn: "2026-07-01T00:51:54Z",
     createdBy: {
-      id: "sree@abc.com",
-      firstName: "Sree",
-      lastName: "Kumar",
-      fullName: "Sree Kumar",
+      id: null,
+      email: "sree@abc.com",
+      name: "Sree Kumar",
     },
   };
 
@@ -184,18 +183,9 @@ describe("uiCommentFromBe — /comments/search shape and chat", () => {
     expect(ui.caseId).toBe("conv1"); // referenceId, not caseId
   });
 
-  it("detects Novera as a chatbot via the nested createdBy.id", () => {
+  it("detects Novera as a chatbot via the nested createdBy.name", () => {
     const ui = uiCommentFromBe(
-      { ...msg, createdBy: { id: "Novera", fullName: "Novera" } },
-      { context: "conversation" },
-    );
-    expect(ui.authorRole).toBe("chatbot");
-  });
-
-  it("detects Novera via nested createdBy.fullName when the id is opaque", () => {
-    // The field the settled BE payload actually carries the bot name in.
-    const ui = uiCommentFromBe(
-      { ...msg, createdBy: { id: "svc-account-9f2c", fullName: "Novera" } },
+      { ...msg, createdBy: { id: null, email: "novera@bot", name: "Novera" } },
       { context: "conversation" },
     );
     expect(ui.authorRole).toBe("chatbot");
@@ -211,11 +201,11 @@ describe("uiCommentFromBe — /comments/search shape and chat", () => {
     expect(ui.authorRole).toBe("wso2_engineer");
   });
 
-  it("uses the bare createdBy string from the comment-create ack", () => {
+  it("falls back to Unknown when createdBy is null", () => {
     const ui = uiCommentFromBe(
-      { ...msg, createdBy: "someone@wso2.com" },
+      { ...msg, createdBy: null },
       { context: "case" },
     );
-    expect(ui.authorName).toBe("someone@wso2.com");
+    expect(ui.authorName).toBe("Unknown");
   });
 });

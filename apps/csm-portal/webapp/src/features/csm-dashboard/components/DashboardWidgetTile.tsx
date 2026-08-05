@@ -14,9 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Button, Card, Skeleton, Tooltip, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
+import { Box, Button, Card, IconButton, Skeleton, Tooltip, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
 import { ArrowRight, Info } from "@wso2/oxygen-ui-icons-react";
-import type { JSX, ReactNode } from "react";
+import type { JSX, KeyboardEvent, ReactNode } from "react";
 import { Link as RouterLink, useNavigate } from "react-router";
 import type { BeDashboardPieSlice, BeWidgetResourceType, BeWidgetShape } from "@api/backend/types";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
@@ -26,14 +26,20 @@ import { WIDGET_RESOURCE_CONFIG } from "@features/csm-dashboard/config/widgetRes
 import { WIDGET_LIST_RENDERERS } from "@features/csm-dashboard/config/widgetListConfig";
 import { buildWidgetPreviewHref } from "@features/csm-dashboard/utils/widgetPreviewUrl";
 import { mergeWidgetFilters } from "@features/csm-dashboard/utils/widgetFilterMerge";
+import { resolveTeamPlaceholder } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
+import { resolveWidgetText } from "@features/csm-dashboard/utils/widgetTextPlaceholder";
 import DashboardPieChart from "@features/csm-dashboard/components/DashboardPieChart";
 import DashboardBarChart from "@features/csm-dashboard/components/DashboardBarChart";
 
 interface DashboardWidgetTileProps {
   widgetId: string;
   displayName: string;
-  /** Explanatory subtitle shown under `displayName` — only rendered for
-   * shapes "pie"/"bar" today, but not shape-specific by design. */
+  /** Explanatory copy for this widget (`WidgetTemplate.Description`).
+   * Rendered as an inline subtitle under `displayName` for shape "pie"/"bar"
+   * (there's room), and as a keyboard-accessible info-icon tooltip for
+   * shape "count" (there isn't) — either way, only when actually set; an
+   * empty/absent one renders neither. Not surfaced for shape "list" (its own
+   * table already fills the space this would otherwise sit in). */
   description?: string;
   resourceType: BeWidgetResourceType;
   shape: BeWidgetShape;
@@ -46,6 +52,23 @@ interface DashboardWidgetTileProps {
    * `useWidgetPieData`). Empty/absent renders an empty chart rather than
    * crashing. */
   slices?: BeDashboardPieSlice[];
+  /** The currently selected team's own `groupId` (see `BeTeam.groupId`), or
+   * an array of every team's `groupId` in the current dashboard's family
+   * when the "All ABTs" option is selected (see `ALL_TEAMS_SENTINEL`),
+   * threaded down from `CsmDashboardPage` for resolving this widget's own
+   * `__current_team__` filter placeholder (see `teamFilterPlaceholder.ts`)
+   * — never the team registry key. `undefined` for a non-team-based
+   * dashboard, or while the team isn't resolved yet (any `integrationCsTeam`
+   * filter entry carrying the placeholder is then dropped, not sent
+   * literally). */
+  selectedTeamGroupId?: string | string[];
+  /** Human-readable label for the selected team (its own display `name`, or
+   * the literal `"All ABTs"`) — used to resolve the `{{currentTeam}}` text
+   * placeholder (see `widgetTextPlaceholder.ts`) inside `displayName`/
+   * `description` before render. `undefined` in the same cases
+   * `selectedTeamGroupId` is (the token is then stripped rather than left
+   * literally visible). */
+  selectedTeamLabel?: string;
 }
 
 /**
@@ -73,10 +96,19 @@ export default function DashboardWidgetTile({
   filters,
   listLimit,
   slices,
+  selectedTeamGroupId,
+  selectedTeamLabel,
 }: DashboardWidgetTileProps): JSX.Element {
   const theme = useTheme();
   const navigate = useNavigate();
   const { user } = useCurrentUser();
+  // Resolve the `{{currentTeam}}` text placeholder before anything below
+  // renders/reads `displayName`/`description` — every other use of those two
+  // props in this component reads the resolved value, never the raw one, so
+  // the token never leaks into the UI (or the "View more"/preview-page href,
+  // which carries `displayName` verbatim — see `buildWidgetPreviewHref`).
+  const resolvedDisplayName = resolveWidgetText(displayName, selectedTeamLabel) ?? displayName;
+  const resolvedDescription = resolveWidgetText(description, selectedTeamLabel);
   // Shape "pie" resolves via useWidgetPieData instead (one search per
   // slice) — skip this one's own network call rather than wasting it, but
   // still call the hook unconditionally (rules of hooks; a widget's shape
@@ -89,13 +121,19 @@ export default function DashboardWidgetTile({
     listLimit,
     0,
     shape !== "pie" && shape !== "bar",
+    selectedTeamGroupId,
   );
   const pieData = useWidgetPieData(
+    widgetId,
     resourceType,
     filters,
     shape === "pie" || shape === "bar" ? (slices ?? []) : [],
+    selectedTeamGroupId,
   );
   const config = WIDGET_RESOURCE_CONFIG[resourceType];
+  // Thousands separators for shape "count"'s big number -- used both in the
+  // visible Typography and the tile's aria-label, so both stay in sync.
+  const formattedCount = (data?.total ?? 0).toLocaleString();
 
   if (!config) {
     // resourceType came from a runtime-configurable backend registry (not a
@@ -104,7 +142,7 @@ export default function DashboardWidgetTile({
     return (
       <Card variant="outlined" sx={{ p: 1.75 }}>
         <Typography variant="caption" color="text.secondary">
-          {displayName}
+          {resolvedDisplayName}
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
           Unsupported widget type.
@@ -113,32 +151,54 @@ export default function DashboardWidgetTile({
     );
   }
 
-  const href = config.buildHref(filters);
+  // The count-shape tile's own click-through href — resolved so a "View
+  // all" link never carries the literal `__current_team__` placeholder
+  // into the destination resource's own filters (see
+  // `teamFilterPlaceholder.ts`).
+  const href = config.buildHref(resolveTeamPlaceholder(filters, selectedTeamGroupId));
   const Icon = config.icon;
   const isListShape = shape === "list";
 
+  // Shared hover idiom for every clickable tile (the count-shape anchor and
+  // the pie/bar tile-level click-through target below) — matches the
+  // customer-portal app's own clickable summary-card hover (see
+  // `UpdateCardBreakdown.tsx`): a border/background tint plus a small lift,
+  // no `boxShadow`. `border` is transparent at rest so the accent color only
+  // shows up on hover, without shifting layout (`border-box` sizing keeps
+  // the box the same size whether the border is drawn transparent or
+  // colored). One shared object so shape "count" and shape "pie"/"bar"
+  // never drift into two different hover looks.
+  const widgetHoverSx = {
+    border: "1px solid transparent",
+    transition: "border-color 0.2s ease, background-color 0.2s ease, transform 0.15s ease",
+    "&:hover": {
+      borderColor: theme.palette.primary.main,
+      bgcolor: alpha(theme.palette.primary.main, 0.06),
+      transform: "translateY(-1px)",
+    },
+  } as const;
+
   // Count tiles only — a list-shape tile's real table already has its own
-  // header row and border right where this would otherwise sit, so it just
-  // overlapped rather than adding anything.
-  //
-  // Tooltip copy is intentionally empty until the per-widget messages are
-  // finalized — the icon renders now so the layout/interaction is in place
-  // ahead of that content.
-  const infoIcon = shape === "count" && (
-    <Tooltip title="">
-      <Box
-        component="span"
+  // header row and border right where this would otherwise sit, and a
+  // pie/bar tile already shows its own `description` as an inline subtitle
+  // (see the pie/bar branch below), so an icon there would just duplicate
+  // it. Renders only when this widget actually has a `description` to show
+  // — an empty/absent one means there's nothing to disclose.
+  const infoIcon = shape === "count" && resolvedDescription && (
+    <Tooltip title={resolvedDescription}>
+      <IconButton
+        size="small"
+        aria-label={`About ${resolvedDisplayName}`}
         sx={{
           position: "absolute",
-          top: 12,
-          right: 12,
+          top: 8,
+          right: 8,
           zIndex: 1,
-          display: "inline-flex",
           color: "text.secondary",
         }}
       >
-        <Info size={14} />
-      </Box>
+        <Info size={13} />
+      </IconButton>
     </Tooltip>
   );
 
@@ -160,7 +220,7 @@ export default function DashboardWidgetTile({
         <Icon size={16} />
       </Box>
       <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
-        {displayName}
+        {resolvedDisplayName}
       </Typography>
     </Box>
   );
@@ -192,7 +252,7 @@ export default function DashboardWidgetTile({
                   to={buildWidgetPreviewHref({
                     previewSlug: config.previewSlug,
                     widgetId,
-                    displayName,
+                    displayName: resolvedDisplayName,
                     filters,
                     currentUserId: user?.id,
                   })}
@@ -211,33 +271,95 @@ export default function DashboardWidgetTile({
   }
 
   if (shape === "pie" || shape === "bar") {
-    // Each slice/legend row (or bar) navigates independently, so — same
-    // rationale as shape "list" — this can't be one big link the way shape
-    // "count" is; it's a plain, non-link Card with its own nested click
-    // targets.
+    // Each slice/legend row (or bar) navigates independently to that
+    // slice's OWN filtered list, so — same rationale as shape "list" — this
+    // can't be one big link the way shape "count" is. It's still a
+    // click-through target in its own right, though: clicking the tile
+    // anywhere OTHER than a slice/legend row (the header, the padding, the
+    // empty state) goes to the widget's own base filters, the same
+    // destination a "count" tile with those filters would produce.
+    //
+    // That tile-level target keeps its role="button"/Enter+Space keyboard
+    // handling (a real <a> only activates on Enter, not Space, and this
+    // control has always supported both) -- but it is a SIBLING of the
+    // chart, not its ancestor: an element with an interactive role makes its
+    // descendants' own roles presentational to assistive tech, so nesting
+    // the chart's own role="button" legend rows inside it would hide them
+    // from screen readers even though they're still clickable. The target is
+    // absolutely positioned to fill the card and sits behind (`zIndex: 0`) a
+    // `pointerEvents: "none"` content layer, so it only ever receives clicks
+    // that land on genuine background -- pointer events are switched back on
+    // (`pointerEvents: "auto"`) for the chart specifically, letting its own
+    // click and keyboard handling work exactly as before.
     const ChartComponent = shape === "pie" ? DashboardPieChart : DashboardBarChart;
+    const tileHref = config.buildHref(resolveTeamPlaceholder(filters, selectedTeamGroupId));
+    const handleTileClick = (): void => {
+      void navigate(tileHref);
+    };
+    const handleTileKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handleTileClick();
+      }
+    };
     return (
-      <Card variant="outlined" sx={{ p: 1.75, height: "100%" }}>
-        {/* The header's own bottom padding — not just a top margin on the
-            chart below it — so the chart's top edge (and, at the size this
-            chart renders at, its tooltip) never sits flush against/behind
-            the title row above it. */}
-        <Box sx={{ pb: description ? 1 : 2.5 }}>{header}</Box>
-        {description && (
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-            {description}
-          </Typography>
-        )}
-        <Box>
-          <ChartComponent
-            slices={pieData.slices}
-            total={pieData.total}
-            isLoading={pieData.isLoading}
-            isError={pieData.isError}
-            onSliceClick={(slice: PieSliceResult) =>
-              navigate(config.buildHref(mergeWidgetFilters(filters, slice.filters)))
-            }
-          />
+      <Card
+        variant="outlined"
+        sx={{
+          position: "relative",
+          p: 1.75,
+          height: "100%",
+        }}
+      >
+        <Box
+          role="button"
+          tabIndex={0}
+          aria-label={`View all cases for ${resolvedDisplayName}`}
+          onClick={handleTileClick}
+          onKeyDown={handleTileKeyDown}
+          sx={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 0,
+            borderRadius: "inherit",
+            cursor: "pointer",
+            ...widgetHoverSx,
+            "&:focus-visible": {
+              outline: "2px solid",
+              outlineColor: "primary.main",
+              outlineOffset: -2,
+            },
+          }}
+        />
+        <Box sx={{ position: "relative", zIndex: 1, height: "100%", pointerEvents: "none" }}>
+          {/* The header's own bottom padding — not just a top margin on the
+              chart below it — so the chart's top edge (and, at the size this
+              chart renders at, its tooltip) never sits flush against/behind
+              the title row above it. */}
+          <Box sx={{ pb: resolvedDescription ? 1 : 2.5 }}>{header}</Box>
+          {resolvedDescription && (
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+              {resolvedDescription}
+            </Typography>
+          )}
+          <Box sx={{ pointerEvents: "auto" }}>
+            <ChartComponent
+              slices={pieData.slices}
+              total={pieData.total}
+              isLoading={pieData.isLoading}
+              isError={pieData.isError}
+              onSliceClick={(slice: PieSliceResult) =>
+                navigate(
+                  config.buildHref(
+                    resolveTeamPlaceholder(
+                      mergeWidgetFilters(filters, slice.query),
+                      selectedTeamGroupId,
+                    ),
+                  ),
+                )
+              }
+            />
+          </Box>
         </Box>
       </Card>
     );
@@ -272,20 +394,20 @@ export default function DashboardWidgetTile({
         </Box>
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Typography variant="caption" color="text.secondary" noWrap>
-            {displayName}
+            {resolvedDisplayName}
           </Typography>
           <Typography
             noWrap
             sx={{
               mt: 0.5,
               lineHeight: 1.1,
-              fontWeight: 700,
+              fontWeight: 400,
               fontSize: "3.25rem",
               overflow: "hidden",
               textOverflow: "ellipsis",
             }}
           >
-            {data?.total ?? 0}
+            {formattedCount}
           </Typography>
         </Box>
       </Box>
@@ -293,28 +415,45 @@ export default function DashboardWidgetTile({
   }
 
   return (
+    // Same sibling-target restructuring as the pie/bar branch above: the
+    // whole-card click-through used to BE the (now-removed) refresh
+    // IconButton's own ancestor (`Card component={RouterLink}`), which hides
+    // a nested interactive control from assistive tech exactly like a nested
+    // role="button" does. The anchor here is a background sibling instead;
+    // see the pie/bar branch's comment for the pointer-events layering.
     <Card
       variant="outlined"
-      component={RouterLink}
-      to={href}
       sx={{
         position: "relative",
         p: 1.75,
-        display: "block",
         height: "100%",
-        cursor: "pointer",
-        color: "inherit",
-        textDecoration: "none",
-        transition: "box-shadow 0.2s ease, transform 0.15s ease",
-        "&:hover": {
-          boxShadow: `0 0 0 1px ${theme.palette.primary.main}, 0 4px 16px rgba(0,0,0,0.12)`,
-          transform: "translateY(-2px)",
-        },
-        "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: -2 },
       }}
     >
-      {infoIcon}
-      {body}
+      <Box
+        component={RouterLink}
+        to={href}
+        // The visible count + label sit in the pointer-events-none content
+        // layer above this anchor, not inside it as descendant text anymore
+        // (that's the whole point -- see the comment above), so it needs its
+        // own accessible name instead of inheriting one from its content.
+        aria-label={`${resolvedDisplayName}: ${formattedCount}`}
+        sx={{
+          position: "absolute",
+          inset: 0,
+          zIndex: 0,
+          display: "block",
+          borderRadius: "inherit",
+          cursor: "pointer",
+          color: "inherit",
+          textDecoration: "none",
+          ...widgetHoverSx,
+          "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: -2 },
+        }}
+      />
+      <Box sx={{ position: "relative", zIndex: 1, height: "100%", pointerEvents: "none" }}>
+        <Box sx={{ pointerEvents: "auto" }}>{infoIcon}</Box>
+        {body}
+      </Box>
     </Card>
   );
 }

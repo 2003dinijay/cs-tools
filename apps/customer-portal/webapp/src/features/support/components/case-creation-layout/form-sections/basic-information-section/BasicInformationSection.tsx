@@ -112,9 +112,11 @@ export function BasicInformationSection({
   );
   const useProductOptionList = Array.isArray(productOptionList);
   const hasProductRows = (productOptionList?.length ?? 0) > 0;
+  const hasEffectiveProductOptions = useProductOptionList
+    ? hasProductRows
+    : productOptionsLegacy.length > 0;
   const showNoProductsHint =
-    useProductOptionList &&
-    !hasProductRows &&
+    !hasEffectiveProductOptions &&
     !isProductDropdownDisabled &&
     !isProductLoading;
 
@@ -192,7 +194,7 @@ export function BasicInformationSection({
               <FormControl
                 fullWidth
                 size="small"
-                disabled={isDeploymentDisabled}
+                disabled={isDeploymentDisabled || showNoDeploymentsHint}
               >
                 <Select
                   value={deployment}
@@ -261,7 +263,7 @@ export function BasicInformationSection({
             <FormControl
               fullWidth
               size="small"
-              disabled={isProductDropdownDisabled}
+              disabled={isProductDropdownDisabled || showNoProductsHint}
             >
               <Select
                 value={product}

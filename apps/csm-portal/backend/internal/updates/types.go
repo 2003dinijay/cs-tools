@@ -27,7 +27,7 @@ const updateTypeRegular = "regular"
 // These mirror the record types defined by the upstream updates service.
 
 type upstreamProductUpdateLevel struct {
-	ProductName         string               `json:"product-name"`
+	ProductName         string                `json:"product-name"`
 	ProductUpdateLevels []upstreamUpdateLevel `json:"product-update-levels"`
 }
 
@@ -47,21 +47,21 @@ type upstreamUpdateDescriptionRequest struct {
 }
 
 type upstreamUpdateDescription struct {
-	ProductName        string                    `json:"product-name"`
-	ProductVersion     string                    `json:"product-version"`
-	Channel            string                    `json:"channel"`
-	UpdateLevel        int                       `json:"update-level"`
-	UpdateNumber       int                       `json:"update-number"`
-	Description        *string                   `json:"description,omitempty"`
-	Instructions       *string                   `json:"instructions,omitempty"`
-	BugFixes           *string                   `json:"bug-fixes,omitempty"`
-	FilesAdded         *string                   `json:"files-added,omitempty"`
-	FilesModified      *string                   `json:"files-modified,omitempty"`
-	FilesRemoved       *string                   `json:"files-removed,omitempty"`
-	BundlesInfoChanges *string                   `json:"bundles-info-changes,omitempty"`
+	ProductName        string                     `json:"product-name"`
+	ProductVersion     string                     `json:"product-version"`
+	Channel            string                     `json:"channel"`
+	UpdateLevel        int                        `json:"update-level"`
+	UpdateNumber       int                        `json:"update-number"`
+	Description        *string                    `json:"description,omitempty"`
+	Instructions       *string                    `json:"instructions,omitempty"`
+	BugFixes           *string                    `json:"bug-fixes,omitempty"`
+	FilesAdded         *string                    `json:"files-added,omitempty"`
+	FilesModified      *string                    `json:"files-modified,omitempty"`
+	FilesRemoved       *string                    `json:"files-removed,omitempty"`
+	BundlesInfoChanges *string                    `json:"bundles-info-changes,omitempty"`
 	DependantReleases  []upstreamDependantRelease `json:"dependant-releases,omitempty"`
-	UpdateType         string                    `json:"update-type"`
-	Timestamp          int64                     `json:"timestamp"`
+	UpdateType         string                     `json:"update-type"`
+	Timestamp          int64                      `json:"timestamp"`
 	SecurityAdvisories []upstreamSecurityAdvisory `json:"security-advisories"`
 }
 

@@ -66,4 +66,15 @@ window.config = {
   CSM_PORTAL_TOP_BANNER_ENABLED: false,
   // Optional top banner rendered above the header (raw HTML string):
   // CSM_PORTAL_TOP_BANNER_HTML: '<div style="background-color:#000;height:6.8rem"><a href="https://wso2.com/wso2con/" target="_blank"><img style="object-fit:cover;height:100%;width:100%" src="banner.png" role="presentation"></a></div>',
+
+  // Dismissible banner nudging engineers on a detected mobile phone browser
+  // toward the WSO2 Super App micro-app. Unlike the customer portal, this
+  // never blocks access -- engineers can dismiss it and keep using the web
+  // portal on a phone. Leave the store URLs unset to suppress the banner
+  // even when enabled (no download destination to offer).
+  CSM_PORTAL_MOBILE_APP_PROMPT_ENABLED: false,
+  // CSM_PORTAL_MOBILE_APP_IOS_STORE_URL: "https://apps.apple.com/app/id0000000000",
+  // CSM_PORTAL_MOBILE_APP_ANDROID_STORE_URL: "https://play.google.com/store/apps/details?id=com.example.app",
+  // Also show the banner on tablets, not just phones (default false).
+  // CSM_PORTAL_MOBILE_APP_INCLUDE_TABLETS: false,
 };

@@ -17,6 +17,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
+import { MemoryRouter } from "react-router";
 import { TaskDetailDialog } from "@features/csm-cases/components/TaskDetailDialog";
 import type { BeTaskDetail } from "@api/backend/types";
 import { useGetTask } from "@features/csm-cases/api/useGetTask";
@@ -96,19 +97,51 @@ describe("TaskDetailDialog — inline state/assignee edits", () => {
   });
 
   it("changes the task state via the inline select", () => {
-    render(<TaskDetailDialog taskId="task-1" caseId="case-1" onClose={() => {}} />);
+    render(
+      <MemoryRouter>
+        <TaskDetailDialog taskId="task-1" caseId="case-1" onClose={() => {}} />
+      </MemoryRouter>,
+    );
     fireEvent.mouseDown(screen.getByRole("combobox"));
     fireEvent.click(screen.getByRole("option", { name: "Closed" }));
     expect(mutate).toHaveBeenCalledWith({ state: "CLOSED" });
   });
 
   it("reassigns the task by picking an engineer from the inline search", () => {
-    render(<TaskDetailDialog taskId="task-1" caseId="case-1" onClose={() => {}} />);
+    render(
+      <MemoryRouter>
+        <TaskDetailDialog taskId="task-1" caseId="case-1" onClose={() => {}} />
+      </MemoryRouter>,
+    );
     fireEvent.click(screen.getByRole("button", { name: /change assignee/i }));
     fireEvent.change(screen.getByPlaceholderText(/search engineers/i), {
       target: { value: "jane" },
     });
     fireEvent.click(screen.getByRole("button", { name: /jane smith/i }));
     expect(mutate).toHaveBeenCalledWith({ assignedToEmail: "jane.smith@example.com" });
+  });
+
+  /**
+   * A modified click (Ctrl/Cmd/Shift/middle) opens the parent case in a NEW tab,
+   * so the dialog must stay open in the current one. Closing it there loses the
+   * user's place in a tab they never navigated away from.
+   */
+  it("keeps the dialog open when the parent-case link is opened in a new tab", () => {
+    const onClose = vi.fn();
+    render(
+      <MemoryRouter>
+        <TaskDetailDialog taskId="task-1" caseId="case-1" onClose={onClose} />
+      </MemoryRouter>,
+    );
+    const link = screen.getByRole("link", { name: "CS0440062" });
+
+    fireEvent.click(link, { ctrlKey: true });
+    fireEvent.click(link, { metaKey: true });
+    fireEvent.click(link, { shiftKey: true });
+    fireEvent.click(link, { button: 1 });
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(link);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

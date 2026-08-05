@@ -107,4 +107,55 @@ describe("useAuthApiClient", () => {
     expect(getIdTokenMock).toHaveBeenCalledTimes(2);
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
+
+  it.each([503, 504])(
+    "replaces a raw gateway body/statusText with a friendly message for %d",
+    async (status) => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response("upstream timeout", {
+          status,
+          statusText: "upstream timeout",
+        }),
+      ) as typeof fetch;
+
+      const { result } = renderHook(() => useAuthApiClient());
+      const response = await result.current("https://api.test/resource");
+
+      expect(response.status).toBe(status);
+      expect(response.statusText).toBe(
+        status === 503 ? "Service Unavailable" : "Gateway Timeout",
+      );
+      const body = await response.json();
+      expect(body).toEqual({
+        message:
+          status === 503
+            ? "The service is temporarily unavailable. Please try again in a few moments."
+            : "The request timed out. Please try again in a few moments.",
+      });
+      expect(response.headers.get("Content-Type")).toBe("application/json");
+    },
+  );
+
+  it.each([
+    [404, "Not Found", "not found"],
+    [500, "Internal Server Error", "internal error"],
+  ] as const)(
+    "passes through other statuses unchanged: %d",
+    async (status, statusText, message) => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ message }), {
+          status,
+          statusText,
+        }),
+      ) as typeof fetch;
+
+      const { result } = renderHook(() => useAuthApiClient());
+      const response = await result.current("https://api.test/resource");
+
+      expect(response.status).toBe(status);
+      expect(response.statusText).toBe(statusText);
+      const body = await response.json();
+      expect(body.message).toBe(message);
+    },
+  );
 });

@@ -99,6 +99,86 @@ export function buildCaseSearchFilters(
       values: filters.productNames,
     });
   }
+  if (filters.csTeams.length > 0) {
+    fieldFilters.push({
+      field: "integrationCsTeam",
+      op: "in",
+      values: filters.csTeams,
+    });
+  }
+  // `tags`/`excludeTags` both target the `tag` field but with different ops
+  // (`in`/`notIn`) — two independent entries, not a single one an op flag
+  // toggles, so both may be active at once (the backend ANDs the array).
+  if (filters.tags.length > 0) {
+    fieldFilters.push({ field: "tag", op: "in", values: filters.tags });
+  }
+  if (filters.excludeTags.length > 0) {
+    fieldFilters.push({ field: "tag", op: "notIn", values: filters.excludeTags });
+  }
+  if (filters.onboardingStatuses.length > 0) {
+    fieldFilters.push({
+      field: "projectOnboardingStatus",
+      op: "in",
+      values: filters.onboardingStatuses,
+    });
+  }
+  if (filters.slaElapsedPctGte !== null) {
+    fieldFilters.push({
+      field: "taskSLABusinessElapsedPercent",
+      op: "gte",
+      values: [String(filters.slaElapsedPctGte)],
+    });
+  }
+  if (filters.slaElapsedPctLte !== null) {
+    fieldFilters.push({
+      field: "taskSLABusinessElapsedPercent",
+      op: "lte",
+      values: [String(filters.slaElapsedPctLte)],
+    });
+  }
+  // Value-less predicate: `escalation isEmpty`/`isNotEmpty` carry no
+  // `values` at all — the op alone is the whole filter (see
+  // `case_filters.go`'s `escalation` case). Must still be emitted whenever
+  // `hasEscalation` is non-null, exactly the class of entry
+  // `writeWidgetPreviewHref` used to silently drop for having nothing in
+  // `values` to serialize.
+  if (filters.hasEscalation === true) {
+    fieldFilters.push({ field: "escalation", op: "isNotEmpty" });
+  } else if (filters.hasEscalation === false) {
+    fieldFilters.push({ field: "escalation", op: "isEmpty" });
+  }
+  if (filters.escalationLevels.length > 0) {
+    fieldFilters.push({
+      field: "escalationLevel",
+      op: "in",
+      values: filters.escalationLevels,
+    });
+  }
+  if (filters.projectTypes.length > 0) {
+    fieldFilters.push({
+      field: "projectType",
+      op: "in",
+      values: filters.projectTypes,
+    });
+  }
+  if (filters.createdOnGte !== null) {
+    fieldFilters.push({ field: "createdOn", op: "gte", values: [filters.createdOnGte] });
+  }
+  if (filters.createdOnLte !== null) {
+    fieldFilters.push({ field: "createdOn", op: "lte", values: [filters.createdOnLte] });
+  }
+  if (filters.updatedOnGte !== null) {
+    fieldFilters.push({ field: "updatedOn", op: "gte", values: [filters.updatedOnGte] });
+  }
+  if (filters.updatedOnLte !== null) {
+    fieldFilters.push({ field: "updatedOn", op: "lte", values: [filters.updatedOnLte] });
+  }
+  if (filters.closedOnGte !== null) {
+    fieldFilters.push({ field: "closedOn", op: "gte", values: [filters.closedOnGte] });
+  }
+  if (filters.closedOnLte !== null) {
+    fieldFilters.push({ field: "closedOn", op: "lte", values: [filters.closedOnLte] });
+  }
 
   return {
     ...(search.length > 0 && { searchQuery: search }),

@@ -81,9 +81,9 @@ func TestAuth_HealthCheck(t *testing.T) {
 
 func TestAuth_TokenValidation(t *testing.T) {
 	tests := []struct {
-		name      string
-		token     string // empty string means no header set
-		wantCode  int
+		name     string
+		token    string // empty string means no header set
+		wantCode int
 	}{
 		{"missing token header", "", http.StatusUnauthorized},
 		{"too few segments", "only-one-segment", http.StatusUnauthorized},

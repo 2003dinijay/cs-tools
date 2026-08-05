@@ -27,12 +27,13 @@ import {
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
-import { useMemo, useState, type ChangeEvent, type JSX } from "react";
-import { Link as RouterLink } from "react-router";
+import { useMemo, useState, type ChangeEvent, type JSX, type KeyboardEvent } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
+import { useNavTransition } from "@hooks/useNavTransition";
 import { useSearchProjects } from "@features/csm-projects/api/useSearchProjects";
 import ClosureStateChip from "@features/csm-projects/components/ClosureStateChip";
+import RefreshButton from "@components/RefreshButton";
 import type { SearchProjectsRequest } from "@features/csm-projects/types/csmProjects";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 
@@ -53,6 +54,7 @@ function formatDate(value?: string | null): string {
 }
 
 export default function CsmProjectsPage(): JSX.Element {
+  const navigate = useNavTransition();
   const [searchInput, setSearchInput] = useState("");
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
@@ -67,7 +69,8 @@ export default function CsmProjectsPage(): JSX.Element {
     [debouncedSearch, page, rowsPerPage],
   );
 
-  const { data, isLoading, isFetching, isError, error } = useSearchProjects(request);
+  const { data, isLoading, isFetching, isError, error, refetch, dataUpdatedAt } =
+    useSearchProjects(request);
 
   const handleSearchChange = (e: ChangeEvent<HTMLInputElement>) => {
     setSearchInput(e.target.value);
@@ -84,9 +87,17 @@ export default function CsmProjectsPage(): JSX.Element {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      <Typography variant="body2" color="text.secondary">
-        Search across project name, project key, and subscription type.
-      </Typography>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+        <Typography variant="body2" color="text.secondary">
+          Search across project name, project key, and subscription type.
+        </Typography>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label="Refresh projects"
+        />
+      </Box>
 
       <TextField
         size="small"
@@ -139,34 +150,48 @@ export default function CsmProjectsPage(): JSX.Element {
                   </TableCell>
                 </TableRow>
               ) : (
-                projects.map((p) => (
-                  <TableRow key={p.id} hover>
-                    <TableCell>
-                      <Typography
-                        component={RouterLink}
-                        to={`/customers/projects/${p.id}`}
-                        variant="body2"
-                        sx={(t) => ({
-                          textDecoration: "none",
-                          color: t.palette.primary.dark,
-                          ...t.applyStyles("dark", { color: t.palette.primary.main }),
-                          "&:hover": { textDecoration: "underline" },
-                        })}
-                      >
-                        {p.name}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>{p.key}</TableCell>
-                    <TableCell>
-                      <ClosureStateChip
-                        closureState={p.closureState}
-                        emptyFallback="—"
-                      />
-                    </TableCell>
-                    <TableCell>{formatDate(p.startDate)}</TableCell>
-                    <TableCell>{formatDate(p.endDate)}</TableCell>
-                  </TableRow>
-                ))
+                projects.map((p) => {
+                  const goToProject = (): void => navigate(`/customers/projects/${p.id}`);
+                  const handleRowKeyDown = (e: KeyboardEvent<HTMLTableRowElement>): void => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      goToProject();
+                    }
+                  };
+                  return (
+                    <TableRow
+                      key={p.id}
+                      hover
+                      onClick={goToProject}
+                      onKeyDown={handleRowKeyDown}
+                      tabIndex={0}
+                      aria-label={`View project ${p.name}`}
+                      sx={{
+                        cursor: "pointer",
+                        "&:focus-visible": {
+                          outline: "2px solid",
+                          outlineColor: "primary.main",
+                          outlineOffset: -2,
+                        },
+                      }}
+                    >
+                      <TableCell>
+                        <Typography variant="body2" noWrap>
+                          {p.name}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>{p.key}</TableCell>
+                      <TableCell>
+                        <ClosureStateChip
+                          closureState={p.closureState}
+                          emptyFallback="—"
+                        />
+                      </TableCell>
+                      <TableCell>{formatDate(p.startDate)}</TableCell>
+                      <TableCell>{formatDate(p.endDate)}</TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>

@@ -173,14 +173,6 @@ export interface BeCase {
   closedOn?: string;
 }
 
-/** A referenced user, as embedded in case views (not just an id string). */
-export interface BeUserRef {
-  id: string;
-  name?: string;
-  userId?: string;
-  email?: string;
-}
-
 /**
  * Canonical reference to a person: id, email and display name, nothing else.
  * Emitted as a sibling of whatever actor field a response already carried
@@ -261,10 +253,19 @@ export interface BeAssignedEngineerRef {
   email?: string | null;
 }
 
-/** A referenced deployed product (its display name is the product + version). */
+/**
+ * A deployed product instance, together with the product catalogue entry it
+ * was deployed from. The two are different records with different ids: `id`/
+ * `displayName` describe the deployed instance (`displayName` is the product
+ * name combined with its version), while `product` is the catalogue entry.
+ * `id` and `displayName` are `null` when the case names a catalogue product
+ * but no deployed instance of it — `product` is then the only populated
+ * field.
+ */
 export interface BeDeployedProductRef {
-  id: string;
-  displayName: string;
+  id: string | null;
+  displayName: string | null;
+  product?: BeEntityRef | null;
 }
 
 /**
@@ -313,27 +314,33 @@ export interface BeCaseView {
   nextStates?: BeCaseState[];
   /** The case this one was created as related to, when any. */
   relatedCase?: BeCaseNumberRef | null;
-  createdBy?: BeUserRef;
   /** Canonical reference to the case creator. `id` is always null here — the
    * data source doesn't resolve the reporter to a user record on this view.
    * See {@link BeUserReference}. */
-  createdByUser?: BeUserReference | null;
-  /** The CS engineer the case is assigned to; null when unassigned. */
-  assignedEngineer?: BeAssignedEngineerRef | null;
-  /** Canonical reference to the assigned engineer, `id` populated. See
+  createdBy?: BeUserReference | null;
+  /** The CS engineer the case is assigned to, or null when unassigned. See
    * {@link BeUserReference}. */
-  assignedEngineerUser?: BeUserReference | null;
+  assignedEngineer?: BeUserReference | null;
+  /**
+   * The CS engineer who acknowledged the case — a first-write-wins claim that
+   * someone has seen it and picked it up, which is **not** the same as being
+   * assigned to it. `null` until someone acknowledges. The backing data source
+   * clears it again when the case's type or severity changes or it is reopened,
+   * so a materially changed case has to be acknowledged afresh.
+   */
+  acknowledgedBy?: BeAssignedEngineerRef | null;
   account?: BeCaseAccountRef;
   project?: BeEntityRef;
   /** Nullable: ServiceNow-sourced cases may have no deployment / product. */
   deployment?: BeEntityRef | null;
-  deployedProduct?: BeDeployedProductRef | null;
   /**
-   * The product itself (distinct from {@link deployedProduct}, the
-   * deployment-scoped instance). Populated even when no specific deployed
-   * product is linked, so it's the reliable fallback for the product name.
+   * Deployed product instance named by the case, together with the product
+   * catalogue entry it was deployed from. A case can name a catalogue product
+   * without naming a deployed instance of it, in which case this object is
+   * still returned with `id`/`displayName` null and `product` populated. See
+   * {@link BeDeployedProductRef}.
    */
-  product?: BeEntityRef | null;
+  deployedProduct?: BeDeployedProductRef | null;
   /** SR catalog refs (managed-cloud); null for non-catalog cases. */
   catalog?: BeEntityRef | null;
   catalogItem?: BeEntityRef | null;
@@ -618,6 +625,7 @@ interface BeCaseUpdateNever {
   addPublicComment?: never;
   product?: never;
   publicTicket?: never;
+  acknowledge?: never;
 }
 
 /**
@@ -664,6 +672,14 @@ export type BeCaseUpdatePayload =
   | (Omit<BeCaseUpdateNever, "deployedProductId"> & { deployedProductId: string })
   /** UUID of another case to cross-link to this one as a related case (looser than `parentId`; ServiceNow only). */
   | (Omit<BeCaseUpdateNever, "relatedCaseId"> & { relatedCaseId: string })
+  /**
+   * Acknowledge the case as the signed-in engineer. Typed as the literal `true`
+   * because that is the only accepted value: acknowledgement is first-write-wins
+   * and there is no way to remove one. Acknowledging an already-acknowledged
+   * case succeeds and changes nothing, and the response then carries
+   * `alreadyAcknowledged: true` with whoever claimed it first.
+   */
+  | (Omit<BeCaseUpdateNever, "acknowledge"> & { acknowledge: true })
   /**
    * Places the case on hold in the backing data source's staged auto-closure
    * sequence until this ISO date-time (ServiceNow only). The raw
@@ -732,6 +748,16 @@ export interface BeUpdatedCase {
   mostLikelyFixEta?: string | null;
   /** Echoes the updated internal-only worst-case fix estimate. Present when the update set `worstCaseFixEta`. */
   worstCaseFixEta?: string | null;
+  /** Human-readable case number. Present when the update set `acknowledge`. */
+  number?: string;
+  /**
+   * True when the case already had an acknowledger, so the request changed
+   * nothing and `acknowledgedBy` names whoever claimed it first. Present when
+   * the update set `acknowledge`.
+   */
+  alreadyAcknowledged?: boolean;
+  /** Whoever now holds the acknowledgement. Present when the update set `acknowledge`. */
+  acknowledgedBy?: BeAssignedEngineerRef | null;
 }
 
 /** `PATCH /cases/{id}` response: a message plus the mutated case fields. */
@@ -772,7 +798,10 @@ export type BeCaseFieldFilterField =
   | "projectType"
   | "integrationCsTeam"
   | "resolutionNotes"
-  | "parentId";
+  | "parentId"
+  | "taskSLABusinessElapsedPercent"
+  | "escalationLevel"
+  | "escalation";
 
 /**
  * `op` enum accepted by {@link BeCaseFieldFilter}, independent of `field` —
@@ -865,19 +894,15 @@ export interface BeCaseSearchView {
   state?: BeCaseState;
   /** Work sub-state; only meaningful while `state` is `work_in_progress`. */
   workState?: BeCaseWorkState | null;
-  /** The CS engineer the case is assigned to; null when unassigned. */
-  assignedEngineer?: BeAssignedEngineerRef | null;
-  /** Canonical reference to the assigned engineer, `id` populated. See
+  /** The CS engineer the case is assigned to, or null when unassigned. See
    * {@link BeUserReference}. */
-  assignedEngineerUser?: BeUserReference | null;
+  assignedEngineer?: BeUserReference | null;
   createdOn?: string;
   /** Often absent on the search view (unlike the GET view); tolerate it missing. */
   updatedOn?: string;
-  /** Created-by is a bare email string here (not a UserRef like the GET view). */
-  createdBy?: string;
   /** Canonical reference to the case creator. `id` is always null here. See
    * {@link BeUserReference}. */
-  createdByUser?: BeUserReference | null;
+  createdBy?: BeUserReference | null;
   project?: BeEntityRef;
   /** Nullable: ServiceNow-sourced cases may have no deployment / product. */
   deployment?: BeEntityRef | null;
@@ -941,9 +966,8 @@ export interface BeCaseCommentSearchResponse extends BeSearchResponseBase {
  * conversation id) rather than `caseId`; the backend normalizes `type` to the
  * `BeCaseCommentType` enum (unknown SN types default to `comment`).
  *
- * `createdBy` is typed `BeCaseCommentAuthor | string`: search/messages embed the
- * nested author object, while the comment-create ack echoes only a bare string.
- * The mapper handles both.
+ * `createdBy` carries the canonical {@link BeUserReference} shape; `null`
+ * when the comment has no resolvable author.
  */
 export interface BeComment {
   id: string;
@@ -954,11 +978,7 @@ export interface BeComment {
   /** Normalized comment type; `string` (not the enum) to tolerate new values. */
   type: string;
   createdOn: string;
-  createdBy: BeCaseCommentAuthor | string | null;
-  /** Canonical reference to the author, `id` populated. Absent on the
-   * comment-create ack, which echoes only the bare-string `createdBy`. See
-   * {@link BeUserReference}. */
-  createdByUser?: BeUserReference | null;
+  createdBy: BeUserReference | null;
 }
 
 export interface BeCommentSearchResponse extends BeSearchResponseBase {
@@ -996,13 +1016,13 @@ export interface BeCaseActivityEntry {
   type: BeCaseActivityType;
   content?: string;
   createdOn: string;
-  createdBy?: string;
   createdByFirstName?: string;
   createdByLastName?: string;
-  createdByFullName?: string;
-  /** Canonical reference to the actor. `id` is always null here. See
-   * {@link BeUserReference}. */
-  createdByUser?: BeUserReference | null;
+  /** Canonical reference to the actor, `id` always null here. Its `name`
+   * field is the actor's full display name; `createdByFirstName`/
+   * `createdByLastName` remain separate because a full name cannot be split
+   * back into them reliably. See {@link BeUserReference}. */
+  createdBy?: BeUserReference | null;
   /** Only present on `type === "field_change"` entries. */
   changes?: BeFieldChange[];
 }
@@ -1042,11 +1062,9 @@ export interface BeAttachment {
   type: string;
   sizeBytes: number;
   description?: string | null;
-  /** Uploader, in the same `{ id, name, email }` shape used elsewhere (e.g. case `createdBy`). */
-  createdBy: BeUserRef;
-  /** Canonical reference to the uploader, `id` populated. See
-   * {@link BeUserReference}. */
-  createdByUser?: BeUserReference | null;
+  /** Uploader, in the canonical {@link BeUserReference} shape. Null when the
+   * uploader isn't resolvable. */
+  createdBy: BeUserReference | null;
   createdOn: string;
   downloadUrl?: string | null;
   previewUrl?: string | null;
@@ -2032,6 +2050,14 @@ export interface BeTeam {
   id: string;
   name: string;
   family?: string;
+  /** The backing data source's assignment group id, reformatted as this
+   * platform's UUID — present only when the deployment's team registry has
+   * one configured for this team. This is the id an `integrationCsTeam`
+   * case filter entry actually needs (see
+   * `BE_CURRENT_USER_FILTER_PLACEHOLDER`-style team filter substitution in
+   * `teamFilterPlaceholder.ts`) — never `id` above, which is just the
+   * registry key. */
+  groupId?: string;
 }
 
 export interface BeTeamSearchPayload {
@@ -2743,7 +2769,9 @@ export type BeWidgetResourceType =
   | "user"
   | "time_card"
   | "problem"
-  | "product_vulnerability";
+  | "product_vulnerability"
+  | "task"
+  | "call_request";
 
 /**
  * How a widget's resolved data should be rendered. `pie` and `bar` both
@@ -2765,22 +2793,23 @@ export type BeWidgetPaletteColor =
   | "warning";
 
 /** One wedge of a `shape: "pie"` widget. Resolved by issuing this
- * resourceType's own `POST /{resourceType}s/search` with `filters` merged
- * under the widget's own base `filters` (this slice's keys win on
- * conflict) and `pagination: { limit: 1 }`, reading `total` — the exact
+ * resourceType's own `POST /{resourceType}s/search` with this slice's
+ * `query` merged under the widget's own base `query` (this slice's keys win
+ * on conflict) and `pagination: { limit: 1 }`, reading `total` — the exact
  * same mechanism `shape: "count"` uses, just once per slice. */
 export interface BeDashboardPieSlice {
   label: string;
   /** Falls back to a fixed rotation over the same palette if omitted. */
   color?: BeWidgetPaletteColor;
-  filters: Record<string, unknown>;
+  query: Record<string, unknown>;
 }
 
 /**
  * A single widget template, embedded in {@link BeDashboard}: display metadata
- * plus its already-resolved filter criteria. The caller resolves the
- * widget's own data by issuing its own `POST /{resourceType}s/search` with
- * `filters` and reading `total` (or the item list) off the response.
+ * plus its already-resolved search criteria. The caller resolves the
+ * widget's own data by issuing its own `POST /{resourceType}s/search`,
+ * posting `query` as that request's `filters` and reading `total` (or the
+ * item list) off the response.
  */
 export interface BeDashboardWidget {
   widgetId: string;
@@ -2793,14 +2822,15 @@ export interface BeDashboardWidget {
   /** CSS grid columns out of 12 this widget should occupy. */
   gridWidth: number;
   /**
-   * Opaque filter criteria, with any current-user placeholder already
+   * Opaque search criteria, with any current-user placeholder already
    * substituted. Pass this directly as the `filters` of that
-   * `resourceType`'s own `POST /{resourceType}s/search` request. For
-   * shapes "pie"/"bar" this is a shared base merged under every slice's own
-   * `filters` (see {@link BeDashboardPieSlice}), rather than queried on
-   * its own.
+   * `resourceType`'s own `POST /{resourceType}s/search` request — the
+   * request-body key stays `filters`; only this widget-config key is
+   * `query`. For shapes "pie"/"bar" this is a shared base merged under
+   * every slice's own `query` (see {@link BeDashboardPieSlice}), rather
+   * than queried on its own.
    */
-  filters: Record<string, unknown>;
+  query: Record<string, unknown>;
   /** Present on the wire; unused today — `slices` is what actually drives
    * pie/bar grouping. */
   groupBy?: string;
@@ -2826,11 +2856,19 @@ export interface BeDashboardWidget {
 export interface BeDashboardListItem {
   id: string;
   displayName: string;
+  /** Who the dashboard is built for. Drives which team `family` the team
+   * picker requests (see `abtFamilyForDashboardType` in `useTeams.ts`) —
+   * `cre` teams see only `cre-abt` teams, `sre` only `sre-abt`. Omitted only
+   * for a definition that predates the field (the deprecated single-variable
+   * configuration path). */
+  type?: "cre" | "sre" | "cs";
   isDefault: boolean;
   /** Whether this dashboard should show a team selector (from
-   * `POST /teams/search`) alongside the dashboard switcher when selected.
-   * UI skeleton only today — selecting a team doesn't yet scope any
-   * widget's data. */
+   * `POST /teams/search`) alongside the dashboard switcher when selected —
+   * and default that selector to the signed-in user's own team, once
+   * resolved. The selected team scopes widget data client-side via the
+   * `__current_team__` filter placeholder (see `teamFilterPlaceholder.ts`
+   * in the webapp). */
   isTeamBased: boolean;
 }
 

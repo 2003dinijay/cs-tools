@@ -52,11 +52,15 @@ vi.mock("@wso2/oxygen-ui-charts-react", () => ({
     onClick,
   }: {
     data: { name: string; value: number }[];
-    onClick?: (item: unknown, index: number) => void;
+    onClick?: (item: unknown, index: number, event?: unknown) => void;
   }) => (
     <div>
       {data.map((item, i) => (
-        <button key={item.name} type="button" onClick={() => onClick?.(item, i)}>
+        // Forwards the real click event as recharts' own `Pie.onClick`
+        // does (data, index, event) — DashboardPieChart's wedge onClick
+        // relies on that third argument to stop the click from also
+        // bubbling to the tile-level click-through.
+        <button key={item.name} type="button" onClick={(e) => onClick?.(item, i, e)}>
           slice:{item.name}:{item.value}
         </button>
       ))}
@@ -85,11 +89,13 @@ vi.mock("@wso2/oxygen-ui-charts-react", () => ({
     onClick,
   }: {
     data?: { name: string; value: number }[];
-    onClick?: (item: unknown, index: number) => void;
+    onClick?: (item: unknown, index: number, event?: unknown) => void;
   }) => (
     <div>
       {(data ?? []).map((item, i) => (
-        <button key={item.name} type="button" onClick={() => onClick?.(item, i)}>
+        // Forwards the real click event, same rationale as the Pie mock
+        // above.
+        <button key={item.name} type="button" onClick={(e) => onClick?.(item, i, e)}>
           bar:{item.name}:{item.value}
         </button>
       ))}
@@ -98,6 +104,7 @@ vi.mock("@wso2/oxygen-ui-charts-react", () => ({
 }));
 
 import DashboardWidgetTile from "@features/csm-dashboard/components/DashboardWidgetTile";
+import { CURRENT_TEAM_PLACEHOLDER } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
 
 function renderWithClient(ui: ReactNode) {
   const queryClient = new QueryClient({
@@ -350,6 +357,159 @@ describe("DashboardWidgetTile", () => {
     expect(params.get("states")).toBe("open");
   });
 
+  it("resolves the __current_team__ placeholder with the selected team's groupId in both the /search request and the count tile's own click-through href", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_cases"
+        displayName="Team Open Cases"
+        resourceType="case"
+        shape="count"
+        filters={{
+          filters: [
+            { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+          ],
+        }}
+        selectedTeamGroupId="22222222-2222-2222-2222-222222222222"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(postMock).toHaveBeenCalledWith("/cases/search", {
+      filters: {
+        filters: [
+          {
+            field: "integrationCsTeam",
+            op: "in",
+            values: ["22222222-2222-2222-2222-222222222222"],
+          },
+        ],
+      },
+      pagination: { offset: 0, limit: 1 },
+    });
+  });
+
+  it("re-fetches with the new team's own filters when selectedTeamGroupId changes (team switch must not reuse a stale cached query)", async () => {
+    // Regression guard: this widget's react-query queryKey must include the
+    // RESOLVED filters (placeholder already substituted with the selected
+    // team's groupId), not the raw `filters` prop (which still carries the
+    // literal __current_team__ placeholder, identical for every team). A
+    // queryKey built from the raw prop would hash the same regardless of
+    // which team is selected, so switching teams would keep serving the
+    // first team's cached response — the exact bug this guards against.
+    const filters = {
+      filters: [{ field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] }],
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    postMock.mockResolvedValueOnce({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    const { rerender } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <DashboardWidgetTile
+            widgetId="team_open_cases"
+            displayName="Team Open Cases"
+            resourceType="case"
+            shape="count"
+            filters={filters}
+            selectedTeamGroupId="team-a-group-id"
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(postMock).toHaveBeenLastCalledWith("/cases/search", {
+      filters: { filters: [{ field: "integrationCsTeam", op: "in", values: ["team-a-group-id"] }] },
+      pagination: { offset: 0, limit: 1 },
+    });
+
+    postMock.mockResolvedValueOnce({ total: 9, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <DashboardWidgetTile
+            widgetId="team_open_cases"
+            displayName="Team Open Cases"
+            resourceType="case"
+            shape="count"
+            filters={filters}
+            selectedTeamGroupId="team-b-group-id"
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText("9")).toBeInTheDocument());
+    expect(postMock).toHaveBeenLastCalledWith("/cases/search", {
+      filters: { filters: [{ field: "integrationCsTeam", op: "in", values: ["team-b-group-id"] }] },
+      pagination: { offset: 0, limit: 1 },
+    });
+  });
+
+  it("drops the integrationCsTeam filter (request and href) rather than sending the literal placeholder when no team groupId is selected", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_cases"
+        displayName="Team Open Cases"
+        resourceType="case"
+        shape="count"
+        filters={{
+          filters: [
+            { field: "state", op: "in", values: ["open"] },
+            { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+          ],
+        }}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(postMock).toHaveBeenCalledWith("/cases/search", {
+      filters: { filters: [{ field: "state", op: "in", values: ["open"] }] },
+      pagination: { offset: 0, limit: 1 },
+    });
+
+    const link = screen.getByRole("link");
+    expect(link.getAttribute("href") ?? "").not.toContain(CURRENT_TEAM_PLACEHOLDER);
+  });
+
+  it("shape pie: resolves __current_team__ in a slice click-through href using the selected team's groupId", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-team"
+        displayName="Cases by team"
+        resourceType="case"
+        shape="pie"
+        filters={{}}
+        slices={[
+          {
+            label: "My team",
+            query: {
+              filters: [
+                { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+              ],
+            },
+          },
+        ]}
+        selectedTeamGroupId="22222222-2222-2222-2222-222222222222"
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:My team:2")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("slice:My team:2"));
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    expect(probeText).not.toContain(CURRENT_TEAM_PLACEHOLDER);
+  });
+
   it("shape bar: issues one search per slice and renders a bar per slice, clickable the same way as a pie slice", async () => {
     postMock.mockImplementation(
       (_path: string, body: { filters: { filters: { field: string; values?: string[] }[] } }) => {
@@ -371,12 +531,12 @@ describe("DashboardWidgetTile", () => {
           {
             label: "S1 · Critical",
             color: "error",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
           {
             label: "S2 · High",
             color: "warning",
-            filters: { filters: [{ field: "severity", op: "in", values: ["high"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["high"] }] },
           },
         ]}
       />,
@@ -425,12 +585,12 @@ describe("DashboardWidgetTile", () => {
           {
             label: "S1 · Critical",
             color: "error",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
           {
             label: "S2 · High",
             color: "warning",
-            filters: { filters: [{ field: "severity", op: "in", values: ["high"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["high"] }] },
           },
         ]}
       />,
@@ -474,7 +634,7 @@ describe("DashboardWidgetTile", () => {
         slices={[
           {
             label: "Critical",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
         ]}
       />,
@@ -505,7 +665,7 @@ describe("DashboardWidgetTile", () => {
         slices={[
           {
             label: "Critical",
-            filters: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
           },
         ]}
       />,
@@ -518,6 +678,306 @@ describe("DashboardWidgetTile", () => {
     await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
     const probeText = screen.getByTestId("location-probe").textContent ?? "";
     expect(new URLSearchParams(probeText.split("?")[1]).get("severities")).toBe("S1");
+  });
+
+  it("shape pie: clicking the tile itself (not a slice/legend row) navigates to the widget's own base filters", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:Critical:2")).toBeInTheDocument());
+    // The accessible tile-level click target (role="button", not a slice or
+    // legend row) — its own aria-label names the widget.
+    fireEvent.click(screen.getByRole("button", { name: "View all cases for Cases by severity" }));
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    expect(probeText.startsWith("/cases?")).toBe(true);
+    const params = new URLSearchParams(probeText.split("?")[1]);
+    // The tile's own base filters (state:open), NOT the slice's severity —
+    // that's what distinguishes this from a slice/legend click.
+    expect(params.get("states")).toBe("open");
+    expect(params.get("severities")).toBeNull();
+  });
+
+  it("shape pie: Enter on the focused tile activates the same tile-level click-through as a click", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:Critical:2")).toBeInTheDocument());
+    const tile = screen.getByRole("button", { name: "View all cases for Cases by severity" });
+    tile.focus();
+    fireEvent.keyDown(tile, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    expect(new URLSearchParams(probeText.split("?")[1]).get("states")).toBe("open");
+  });
+
+  it("shape pie: Space on the focused tile activates the same tile-level click-through as a click", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:Critical:2")).toBeInTheDocument());
+    const tile = screen.getByRole("button", { name: "View all cases for Cases by severity" });
+    tile.focus();
+    fireEvent.keyDown(tile, { key: " " });
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    // Same destination filters as a click — states:open (tile-level), not
+    // the slice's own severity.
+    const params = new URLSearchParams(probeText.split("?")[1]);
+    expect(params.get("states")).toBe("open");
+    expect(params.get("severities")).toBeNull();
+  });
+
+  it("shape pie: the tile-level click target is a sibling of the legend rows, not their ancestor", async () => {
+    // Regression guard for the ancestor role="button" issue: a role="button"
+    // (or role="link") ancestor makes its descendants' own roles
+    // presentational to assistive tech, so the legend's own role="button"
+    // rows must never be nested inside the tile-level click target — only
+    // ever a sibling of it.
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("Critical")).toBeInTheDocument());
+    const tile = screen.getByRole("button", { name: "View all cases for Cases by severity" });
+    const legendRow = screen.getByRole("button", { name: /Critical: 2 cases/ });
+
+    expect(tile.contains(legendRow)).toBe(false);
+  });
+
+  it("does not render a per-widget refresh button on any shape", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="my_patches"
+        displayName="My Patches"
+        resourceType="case"
+        shape="count"
+        filters={{}}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /Refresh/i })).not.toBeInTheDocument();
+  });
+
+  it("shape count: shows an info icon with the widget's description in an accessible tooltip, only when a description is set", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    const { rerender } = renderWithClient(
+      <DashboardWidgetTile
+        widgetId="my_patches"
+        displayName="My Patches"
+        description="Cases assigned to you that carry an open patch."
+        resourceType="case"
+        shape="count"
+        filters={{}}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    const infoButton = screen.getByRole("button", { name: "About My Patches" });
+    expect(infoButton).toBeInTheDocument();
+
+    // The button existing proves nothing on its own — the tooltip could render
+    // empty and still pass. Open it and assert it actually surfaces the
+    // description text.
+    fireEvent.mouseOver(infoButton);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent("Cases assigned to you that carry an open patch.");
+
+    // It closes again on mouse-out, so the assertion above is about this
+    // tooltip and not some permanently-mounted node.
+    // (The keyboard path is not asserted here: the Tooltip opens on
+    // :focus-visible, which fireEvent.focus does not produce and which needs
+    // @testing-library/user-event — not a dependency of this app.)
+    fireEvent.mouseOut(infoButton);
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+
+    // Only `description` changes across the rerender — `widgetId` stays
+    // `my_patches`, so the disappearing icon can only be attributed to the
+    // missing description and not to a different widget being rendered.
+    rerender(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter>
+          <DashboardWidgetTile
+            widgetId="my_patches"
+            displayName="My Patches"
+            resourceType="case"
+            shape="count"
+            filters={{}}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "About My Patches" })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("shape pie: clicking a slice does NOT also trigger the tile-level click-through (no double-navigation)", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:Critical:2")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("slice:Critical:2"));
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    const params = new URLSearchParams(probeText.split("?")[1]);
+    // Slice's own severity survives — if the tile-level handler had also
+    // fired (bubbling not stopped), this would have been overwritten by the
+    // base-filters-only navigation and severities would be absent.
+    expect(params.get("severities")).toBe("S1");
+    expect(params.get("states")).toBe("open");
+  });
+
+  it("shape pie: legend row is keyboard-activatable (Enter) the same as a click, and doesn't also trigger the tile-level click-through", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("Critical")).toBeInTheDocument());
+    const legendRow = screen.getByRole("button", { name: /Critical: 2 cases/ });
+    legendRow.focus();
+    fireEvent.keyDown(legendRow, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    const params = new URLSearchParams(probeText.split("?")[1]);
+    expect(params.get("severities")).toBe("S1");
+    expect(params.get("states")).toBe("open");
+  });
+
+  it("shape pie: legend row is keyboard-activatable (Space) the same as a click, and doesn't also trigger the tile-level click-through", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          {
+            label: "Critical",
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("Critical")).toBeInTheDocument());
+    const legendRow = screen.getByRole("button", { name: /Critical: 2 cases/ });
+    legendRow.focus();
+    fireEvent.keyDown(legendRow, { key: " " });
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    const probeText = screen.getByTestId("location-probe").textContent ?? "";
+    const params = new URLSearchParams(probeText.split("?")[1]);
+    expect(params.get("severities")).toBe("S1");
+    expect(params.get("states")).toBe("open");
   });
 
   it("shape pie: renders an empty state (no slices, zero total) rather than crashing when a widget has no slices configured yet", async () => {
@@ -534,6 +994,67 @@ describe("DashboardWidgetTile", () => {
     expect(screen.getByText("Cases by severity")).toBeInTheDocument();
     expect(screen.getByText("Nothing to show here right now")).toBeInTheDocument();
     expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves the {{currentTeam}} text token in displayName/description to the selected team's own label", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_incidents"
+        displayName="Open Incidents — {{currentTeam}}"
+        description="Open incidents for {{currentTeam}}."
+        resourceType="case"
+        shape="count"
+        filters={{}}
+        selectedTeamLabel="Castor"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(screen.getByText("Open Incidents — Castor")).toBeInTheDocument();
+    const infoButton = screen.getByRole("button", { name: "About Open Incidents — Castor" });
+    fireEvent.mouseOver(infoButton);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent("Open incidents for Castor.");
+  });
+
+  it("resolves the {{currentTeam}} text token to the literal 'All ABTs' when that's the selected team label", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_incidents"
+        displayName="Open Incidents — {{currentTeam}}"
+        resourceType="case"
+        shape="count"
+        filters={{}}
+        selectedTeamLabel="All ABTs"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(screen.getByText("Open Incidents — All ABTs")).toBeInTheDocument();
+  });
+
+  it("strips the {{currentTeam}} text token cleanly (no literal token, no dangling separator) when unresolved", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_incidents"
+        displayName="Open Incidents — {{currentTeam}}"
+        resourceType="case"
+        shape="count"
+        filters={{}}
+        // No selectedTeamLabel passed — the unresolved case (non-team-based
+        // dashboard, or the team list/user profile still loading).
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    expect(screen.getByText("Open Incidents")).toBeInTheDocument();
+    expect(screen.queryByText(/\{\{currentTeam\}\}/)).not.toBeInTheDocument();
   });
 
   it("renders an unsupported-widget message instead of crashing for an unrecognized resourceType", () => {

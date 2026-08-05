@@ -38,7 +38,6 @@ import {
   Eye,
   History,
   Link as LinkIcon,
-  MapPin,
   Paperclip,
   Plus,
   Search,
@@ -51,8 +50,10 @@ import {
   Users,
   X,
 } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, useRef, useState, type ChangeEvent, type JSX } from "react";
+import { useMemo, useRef, useState, type ChangeEvent, type JSX, type ReactNode } from "react";
+import { Link as RouterLink } from "react-router";
 import { formatBytes } from "@utils/formatBytes";
+import DirectoryEntityChip from "@features/csm-admin/components/DirectoryEntityChip";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
 import type { NormalizedUser } from "@features/csm-users/types/csmUsers";
@@ -76,6 +77,7 @@ import type { ProjectDetails } from "@features/csm-projects/types/csmProjects";
 import type { BeDeployment } from "@api/backend/types";
 import RelativeTime from "@components/RelativeTime";
 import UserRefLink from "@components/UserRefLink";
+import RefreshButton from "@components/RefreshButton";
 
 // ---------------------------------------------------------------------------
 // Shared widget shell
@@ -157,6 +159,35 @@ function MetaRow({
   );
 }
 
+// Same link styling/convention as `CaseMetaBand`'s own `LinkText` (not
+// exported from there) — a real anchor so account/project names stay
+// cmd/middle-clickable and copyable, with plain left-click staying in-app.
+function LinkText({ to, children }: { to: string; children: ReactNode }): JSX.Element {
+  return (
+    <Typography
+      component={RouterLink}
+      to={to}
+      variant="body2"
+      sx={(t) => ({
+        display: "inline",
+        cursor: "pointer",
+        textDecoration: "none",
+        color: t.palette.primary.dark,
+        ...t.applyStyles("dark", { color: t.palette.primary.main }),
+        "&:hover": { textDecoration: "underline" },
+        "&:focus-visible": {
+          outline: "2px solid",
+          outlineColor: "primary.main",
+          outlineOffset: 2,
+          borderRadius: 0.5,
+        },
+      })}
+    >
+      {children}
+    </Typography>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // 1. Customer / Account context
 // ---------------------------------------------------------------------------
@@ -171,6 +202,7 @@ export function CustomerContextWidget({
   ctx,
   project,
   isLoadingProject,
+  accountId,
 }: {
   ctx: CaseCustomerContext;
   /** The case's project, via `GET /projects/{id}` — carries the subscription
@@ -178,6 +210,11 @@ export function CustomerContextWidget({
    * embedded `customerContext`. */
   project?: ProjectDetails | null;
   isLoadingProject?: boolean;
+  /** The case's account id, when known — links `ctx.accountName` to its
+   * detail page (`/customers/accounts/{accountId}`), matching `CaseMetaBand`'s
+   * own Account cell. Omit (e.g. an announcement without a resolved account)
+   * to fall back to plain text. */
+  accountId?: string;
 }): JSX.Element {
   return (
     <WidgetCard
@@ -193,26 +230,42 @@ export function CustomerContextWidget({
     >
       <MetaRow label="Account">
         <Typography variant="body2">
-          <strong>{ctx.accountName}</strong>
+          {accountId ? (
+            <strong>
+              <LinkText to={`/customers/accounts/${accountId}`}>
+                {ctx.accountName}
+              </LinkText>
+            </strong>
+          ) : (
+            <strong>{ctx.accountName}</strong>
+          )}
         </Typography>
-      </MetaRow>
-      <MetaRow label="Account Manager">
-        <Typography variant="body2">{ctx.accountManager}</Typography>
       </MetaRow>
       {ctx.technicalOwner && (
         <MetaRow label="Technical Owner">
           <Typography variant="body2">{ctx.technicalOwner}</Typography>
         </MetaRow>
       )}
-      <MetaRow label="Region">
-        <Typography
-          variant="body2"
-          sx={{ display: "flex", alignItems: "center", gap: 0.5 }}
-        >
-          <MapPin size={12} />
-          {ctx.region}
-        </Typography>
-      </MetaRow>
+      {(ctx.creTeam || ctx.sreTeam) && (
+        <MetaRow label="CRE / SRE team">
+          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+            {ctx.creTeam && (
+              <DirectoryEntityChip
+                id={ctx.creTeam.id}
+                name={ctx.creTeam.name}
+                routeBase="/admin/teams"
+              />
+            )}
+            {ctx.sreTeam && (
+              <DirectoryEntityChip
+                id={ctx.sreTeam.id}
+                name={ctx.sreTeam.name}
+                routeBase="/admin/teams"
+              />
+            )}
+          </Box>
+        </MetaRow>
+      )}
       {isLoadingProject && (
         <MetaRow label="Project">
           <Typography variant="body2" color="text.secondary">
@@ -223,7 +276,11 @@ export function CustomerContextWidget({
       {project && (
         <>
           <MetaRow label="Project name">
-            <Typography variant="body2">{project.name}</Typography>
+            <Typography variant="body2">
+              <LinkText to={`/customers/projects/${project.id}`}>
+                {project.name}
+              </LinkText>
+            </Typography>
           </MetaRow>
           <MetaRow label="Project key">
             <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
@@ -496,6 +553,9 @@ export function WatchersWidget({
   onAdd,
   onRemove,
   isSaving,
+  onRefresh,
+  isRefreshing,
+  refreshedAt,
 }: {
   watchers: CaseWatcher[];
   /** Add a watcher by email — the caller PATCHes the full replacement watch
@@ -507,6 +567,11 @@ export function WatchersWidget({
   onRemove?: (watcher: CaseWatcher) => void;
   /** True while a watch-list PATCH is in flight; disables add/remove. */
   isSaving?: boolean;
+  /** Re-runs the case-detail query the watch list comes from. Omit to hide
+   * the refresh control. */
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
+  refreshedAt?: number;
 }): JSX.Element {
   const [addOpen, setAddOpen] = useState(false);
   const existingEmails = useMemo(
@@ -522,17 +587,27 @@ export function WatchersWidget({
       title="Watchers"
       icon={<Users size={16} />}
       action={
-        onAdd ? (
-          <Button
-            size="small"
-            variant="text"
-            startIcon={<Plus size={14} />}
-            disabled={isSaving}
-            onClick={() => setAddOpen((v) => !v)}
-          >
-            Add watcher
-          </Button>
-        ) : undefined
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          {onRefresh && (
+            <RefreshButton
+              onRefresh={onRefresh}
+              isFetching={!!isRefreshing}
+              updatedAt={refreshedAt}
+              label="Refresh watchers"
+            />
+          )}
+          {onAdd && (
+            <Button
+              size="small"
+              variant="text"
+              startIcon={<Plus size={14} />}
+              disabled={isSaving}
+              onClick={() => setAddOpen((v) => !v)}
+            >
+              Add watcher
+            </Button>
+          )}
+        </Box>
       }
     >
       {watchers.length === 0 ? (
@@ -675,6 +750,9 @@ export function AttachmentsWidget({
   onDelete,
   deletingId,
   preview,
+  onRefresh,
+  isRefreshing,
+  refreshedAt,
 }: {
   attachments: CaseAttachment[];
   /** List query is loading. */
@@ -712,6 +790,10 @@ export function AttachmentsWidget({
     previewTarget: CaseAttachment | null;
     onPreviewTargetChange: (attachment: CaseAttachment | null) => void;
   };
+  /** Re-runs the attachments list query. Omit to hide the refresh control. */
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
+  refreshedAt?: number;
 }): JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sorted = [...attachments].sort(
@@ -734,6 +816,14 @@ export function AttachmentsWidget({
         icon={<Paperclip size={16} />}
         action={
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            {onRefresh && (
+              <RefreshButton
+                onRefresh={onRefresh}
+                isFetching={!!isRefreshing}
+                updatedAt={refreshedAt}
+                label="Refresh attachments"
+              />
+            )}
             {onUpload && (
               <Button
                 size="small"

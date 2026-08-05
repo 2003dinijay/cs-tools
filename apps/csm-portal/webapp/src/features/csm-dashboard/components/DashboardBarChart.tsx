@@ -17,7 +17,7 @@
 import { Box, Skeleton, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
 import { Inbox } from "@wso2/oxygen-ui-icons-react";
 import { Bar, BarChart, Cell } from "@wso2/oxygen-ui-charts-react";
-import { useState, type JSX } from "react";
+import { useState, type JSX, type SyntheticEvent } from "react";
 import type { BeWidgetPaletteColor } from "@api/backend/types";
 import type { PieSliceResult } from "@features/csm-dashboard/api/useWidgetPieData";
 import { useDarkMode } from "@utils/useDarkMode";
@@ -118,7 +118,15 @@ export default function DashboardBarChart({
       <BarChart
         data={chartData}
         xAxisDataKey="name"
-        height="100%"
+        // height is a fixed constant (the parent Box's own height, CHART_HEIGHT_PX),
+        // not a percentage -- passing it directly avoids the same first-render
+        // ResizeObserver race as DashboardPieChart's width/height (see that
+        // component's comment). width genuinely must stay "100%": this tile's
+        // rendered width varies with its grid column count, so it still depends
+        // on a ResizeObserver measurement, which is the expected/correct
+        // behavior for a responsive dimension -- only the height half of the
+        // warning is avoidable here.
+        height={CHART_HEIGHT_PX}
         width="100%"
         legend={{ show: false }}
         yAxis={{ show: false }}
@@ -143,7 +151,12 @@ export default function DashboardBarChart({
           }}
           onMouseEnter={(_data: unknown, i: number) => setActiveIndex(i)}
           onMouseLeave={() => setActiveIndex(undefined)}
-          onClick={(_data: unknown, i: number) => {
+          // Stops the click from also bubbling up to the tile-level
+          // click-through `DashboardWidgetTile` attaches to the whole card
+          // for shape "pie"/"bar" — see `DashboardPieChart`'s wedge onClick
+          // for the same fix and full rationale.
+          onClick={(_data: unknown, i: number, event?: SyntheticEvent) => {
+            event?.stopPropagation();
             const slice = slices[i];
             if (slice) onSliceClick(slice);
           }}

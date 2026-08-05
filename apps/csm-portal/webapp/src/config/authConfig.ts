@@ -47,6 +47,17 @@ declare global {
       CSM_PORTAL_ANNOUNCEMENT_BANNER_VISIBLE?: boolean;
       CSM_PORTAL_ANNOUNCEMENT_BANNER_STORAGE_KEY?: string;
       CSM_PORTAL_ANNOUNCEMENT_BANNER_HTML?: string;
+      /**
+       * Dismissible banner nudging CS engineers on a detected mobile phone
+       * (and optionally tablet) browser toward the WSO2 Super App micro-app
+       * instead of the full web portal. Unlike the customer portal's
+       * equivalent, this never blocks access -- engineers may need emergency
+       * mobile access. See `mobileAppConfig.ts`.
+       */
+      CSM_PORTAL_MOBILE_APP_PROMPT_ENABLED?: boolean;
+      CSM_PORTAL_MOBILE_APP_IOS_STORE_URL?: string;
+      CSM_PORTAL_MOBILE_APP_ANDROID_STORE_URL?: string;
+      CSM_PORTAL_MOBILE_APP_INCLUDE_TABLETS?: boolean;
     };
   }
 }

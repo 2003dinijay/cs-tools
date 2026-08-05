@@ -64,9 +64,10 @@ function detailFromBeCase(
     !!currentUserEmail &&
     assigneeEmail.toLowerCase() === currentUserEmail.toLowerCase();
   // Prefer the deployed-product label (carries the version); fall back to the
-  // plain product name, which the CaseView populates even when no specific
-  // deployed product is linked. `||` so an empty displayName also falls through.
-  const product = c.deployedProduct?.displayName || c.product?.name || "—";
+  // product catalogue entry nested under it, populated even when no specific
+  // deployed product instance is linked. `||` so an empty displayName also
+  // falls through.
+  const product = c.deployedProduct?.displayName || c.deployedProduct?.product?.name || "—";
   return {
     id: c.id,
     caseNumber: c.number,
@@ -92,10 +93,18 @@ function detailFromBeCase(
     linkedChangeRequests: c.linkedChangeRequests ?? undefined,
     autoclosureStep: c.autoclosureStep ?? undefined,
     autoclosureStateTime: c.autoclosureStateTime ?? undefined,
+    acknowledgedBy: c.acknowledgedBy
+      ? {
+          // Fall back to the email when the data source returns a blank display
+          // name, so the UI never renders "Acknowledged by" with nothing after it.
+          name: c.acknowledgedBy.name?.trim() || (c.acknowledgedBy.email ?? "—"),
+          email: c.acknowledgedBy.email ?? undefined,
+        }
+      : undefined,
     assignee,
     assigneeName,
     assigneeEmail,
-    assigneeUser: userReferenceFromBe(c.assignedEngineerUser),
+    assigneeUser: userReferenceFromBe(c.assignedEngineer),
     assigneeIsMe,
     slaClockType: "ack",
     minutesToBreach: 0,
@@ -107,7 +116,7 @@ function detailFromBeCase(
     conversationId: c.conversation?.id,
     createdBy: reporter,
     createdByEmail: c.createdBy?.email,
-    createdByUser: userReferenceFromBe(c.createdByUser),
+    createdByUser: userReferenceFromBe(c.createdBy),
     customerContext: {
       accountName: customer,
       // Account tier from the embedded account's `type` (e.g. "Enterprise");
@@ -133,7 +142,7 @@ function detailFromBeCase(
       version: "—",
       deployment: c.deployment?.name ?? "—",
       deploymentId: c.deployment?.id,
-      deployedProductId: c.deployedProduct?.id,
+      deployedProductId: c.deployedProduct?.id ?? undefined,
       environment: "prod",
     },
     watchers,

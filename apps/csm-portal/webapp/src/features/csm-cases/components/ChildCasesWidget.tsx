@@ -17,7 +17,6 @@
 import {
   Box,
   Card,
-  Chip,
   Skeleton,
   Table,
   TableBody,
@@ -29,10 +28,12 @@ import {
 } from "@wso2/oxygen-ui";
 import { GitFork } from "@wso2/oxygen-ui-icons-react";
 import type { JSX } from "react";
+import { Link as RouterLink } from "react-router";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useSearchChildCases } from "@features/csm-cases/api/useSearchChildCases";
 import SeverityChip from "@components/SeverityChip";
 import StateChip from "@components/StateChip";
+import RefreshButton from "@components/RefreshButton";
 
 const CHILD_CASES_COLUMNS = ["Case", "Severity", "State", "Assignee"];
 
@@ -49,20 +50,45 @@ interface ChildCasesWidgetProps {
  * endpoint.
  */
 export function ChildCasesWidget({ caseId }: ChildCasesWidgetProps): JSX.Element {
-  const { data, isLoading, isError } = useSearchChildCases(caseId);
+  const {
+    data,
+    isLoading,
+    isError,
+    refetch,
+    isFetching,
+    dataUpdatedAt,
+  } = useSearchChildCases(caseId);
   const navigate = useNavTransition();
 
   const cases = data?.cases ?? [];
   const total = data?.total ?? cases.length;
+  // So Back on the child case's own page returns here instead of falling
+  // through to that case's hardcoded list route (see CsmCaseDetailPage's
+  // `resolvedBackPath`, which prefers `location.state.from` when present).
+  const backPath = `/cases/${encodeURIComponent(caseId)}`;
 
   return (
     <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-      <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-        <GitFork size={16} />
-        <Typography variant="subtitle2">Child cases</Typography>
-        {!isLoading && !isError && (
-          <Chip size="small" variant="outlined" label={`${total} total`} />
-        )}
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 1,
+        }}
+      >
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+          <GitFork size={16} />
+          <Typography variant="subtitle2">
+            Child cases{!isLoading && !isError && total > 0 ? ` (${total})` : ""}
+          </Typography>
+        </Box>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label="Refresh child cases"
+        />
       </Box>
 
       {isError ? (
@@ -71,12 +97,19 @@ export function ChildCasesWidget({ caseId }: ChildCasesWidgetProps): JSX.Element
         </Typography>
       ) : (
         <TableContainer>
-          <Table size="small">
+          {/* Deliberately NOT table-layout:fixed — that takes each column's
+              width literally, and a narrow one (e.g. state's old "1%" hack)
+              just collapses instead of sizing to content, bleeding its text
+              into the next column. Auto layout sizes Severity/State/Assignee
+              to their actual content and only the Case/Assignee `Typography`
+              below (via `maxWidth` + `noWrap`) truncate. */}
+          <Table size="small" sx={{ width: "100%" }}>
             <TableHead>
               <TableRow>
-                {CHILD_CASES_COLUMNS.map((col) => (
-                  <TableCell key={col}>{col}</TableCell>
-                ))}
+                <TableCell>Case</TableCell>
+                <TableCell>Severity</TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>State</TableCell>
+                <TableCell>Assignee</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -92,43 +125,55 @@ export function ChildCasesWidget({ caseId }: ChildCasesWidgetProps): JSX.Element
                 ))
               ) : cases.length === 0 ? (
                 <TableRow>
-                  <TableCell
-                    colSpan={CHILD_CASES_COLUMNS.length}
-                    align="center"
-                    sx={{ py: 3 }}
-                  >
+                  <TableCell colSpan={CHILD_CASES_COLUMNS.length} align="center">
                     <Typography variant="body2" color="text.secondary">
                       No child cases linked to this case.
                     </Typography>
                   </TableCell>
                 </TableRow>
               ) : (
-                cases.map((c) => (
-                  <TableRow
-                    key={c.id}
-                    hover
-                    onClick={() => navigate(`/cases/${encodeURIComponent(c.id)}`)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        navigate(`/cases/${encodeURIComponent(c.id)}`);
-                      }
-                    }}
-                    tabIndex={0}
-                    role="button"
-                    aria-label={`View case ${c.caseNumber ?? c.id}`}
-                    sx={{ cursor: "pointer" }}
-                  >
-                    <TableCell>{c.caseNumber ?? c.id} — {c.subject}</TableCell>
-                    <TableCell>
-                      <SeverityChip severity={c.severity} />
-                    </TableCell>
-                    <TableCell>
-                      <StateChip state={c.state} />
-                    </TableCell>
-                    <TableCell>{c.assigneeName ?? "—"}</TableCell>
-                  </TableRow>
-                ))
+                cases.map((c) => {
+                  const caseLabel = `${c.caseNumber ?? c.id} — ${c.subject}`;
+                  const casePath = `/cases/${encodeURIComponent(c.id)}`;
+                  return (
+                    <TableRow
+                      key={c.id}
+                      hover
+                      onClick={() => navigate(casePath, { state: { from: backPath } })}
+                      sx={{ cursor: "pointer" }}
+                    >
+                      <TableCell sx={{ maxWidth: 0, width: "40%" }}>
+                        {/* A real link, not a `role="button"` override on the
+                            row — that strips the row's implicit ARIA role,
+                            leaving its cells with no valid parent role. The
+                            row's own onClick above is just a mouse
+                            convenience on top of this. */}
+                        <Typography
+                          component={RouterLink}
+                          to={casePath}
+                          state={{ from: backPath }}
+                          variant="body2"
+                          noWrap
+                          title={caseLabel}
+                          sx={{ color: "inherit", textDecoration: "none", display: "block" }}
+                        >
+                          {caseLabel}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <SeverityChip severity={c.severity} />
+                      </TableCell>
+                      <TableCell sx={{ whiteSpace: "nowrap" }}>
+                        <StateChip state={c.state} />
+                      </TableCell>
+                      <TableCell sx={{ maxWidth: 0, width: "25%" }}>
+                        <Typography variant="body2" noWrap title={c.assigneeName ?? "—"}>
+                          {c.assigneeName ?? "—"}
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>

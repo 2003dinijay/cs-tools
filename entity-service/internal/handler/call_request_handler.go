@@ -67,6 +67,21 @@ func (h *CallRequestHandler) SearchCallRequests(w http.ResponseWriter, r *http.R
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// SearchAllCallRequests handles POST /call-requests/search-all.
+func (h *CallRequestHandler) SearchAllCallRequests(w http.ResponseWriter, r *http.Request) {
+	var req domain.SearchAllCallRequestsRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.SearchAllCallRequests(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // PatchCallRequest handles PATCH /call-requests/{id}.
 func (h *CallRequestHandler) PatchCallRequest(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

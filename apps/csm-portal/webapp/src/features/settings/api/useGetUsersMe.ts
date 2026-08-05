@@ -33,6 +33,16 @@ export interface UsersMeResponse {
   timeZone?: string;
   roles?: string[];
   phoneNumber?: string;
+  /** The caller's ABT team membership, when resolvable; omitted/null when
+   * the caller has no resolvable team membership. Consumed by the
+   * team-based dashboards to default both the dashboard selection and its
+   * team selector to the signed-in user's own team (see
+   * `CsmDashboardPage.tsx`). */
+  team?: {
+    teamKey: string;
+    teamName: string;
+    family?: string;
+  };
 }
 
 export function useGetUsersMe() {

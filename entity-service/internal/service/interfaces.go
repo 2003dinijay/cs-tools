@@ -262,6 +262,11 @@ type CallRequestService interface {
 	// SearchCallRequests returns a paginated list of call requests for the given case.
 	// A ValidationError is returned for invalid input.
 	SearchCallRequests(ctx context.Context, req domain.SearchCallRequestsRequest) (domain.SearchCallRequestsResponse, error)
+	// SearchAllCallRequests returns a paginated list of call requests across all
+	// cases, filtered by assignee/state -- distinct from SearchCallRequests, which
+	// is scoped to one case and has no filter set of its own.
+	// A ValidationError is returned for invalid input.
+	SearchAllCallRequests(ctx context.Context, req domain.SearchAllCallRequestsRequest) (domain.SearchCallRequestsResponse, error)
 	// UpdateCallRequest updates the state or other fields of a call request.
 	// The target state selects the behaviour (customer/agent transitions, scheduling,
 	// rejection, conclusion with notes). A ValidationError is returned for invalid
@@ -363,6 +368,9 @@ type TaskService interface {
 	// SearchCaseTasks returns a paginated list of tasks for the case identified by
 	// caseID. A ValidationError is returned for invalid input (e.g. malformed UUID).
 	SearchCaseTasks(ctx context.Context, caseID string, req domain.SearchCaseTasksRequest) (domain.SearchCaseTasksResponse, error)
+	// SearchTasks returns a paginated list of all tasks filtered by optional state, type,
+	// assigned user ID, and due date range. A ValidationError is returned for invalid input.
+	SearchTasks(ctx context.Context, req domain.SearchTasksRequest) (domain.SearchTasksResponse, error)
 	// GetTask returns the full detail of a single task by its UUID.
 	// A NotFoundError is returned if the task does not exist.
 	GetTask(ctx context.Context, id string) (domain.TaskDetail, error)
@@ -408,6 +416,10 @@ type IncidentService interface {
 	// UpdateIncident partially updates an existing incident. At least one field must be
 	// provided. A NotFoundError is returned if the incident does not exist.
 	UpdateIncident(ctx context.Context, req domain.UpdateIncidentRequest) (domain.UpdateIncidentResponse, error)
+
+	// SearchIncidentActivities returns a paginated activity feed for an incident.
+	// Confirmed as a real, distinct endpoint from SearchCaseActivities.
+	SearchIncidentActivities(ctx context.Context, req domain.SearchIncidentActivitiesRequest) (domain.SearchIncidentActivitiesResponse, error)
 }
 
 // ProblemService defines the operations available on the problems entity.
@@ -432,16 +444,4 @@ type ConversationService interface {
 	// project IDs, states, search query, and createdByMe. A ValidationError is returned
 	// for invalid input.
 	SearchConversations(ctx context.Context, req domain.SearchConversationsRequest) (domain.SearchConversationsResponse, error)
-}
-
-// RoleService serves the platform's assignable-role catalogue.
-type RoleService interface {
-	// SearchRoles returns a paginated slice of the role catalogue.
-	SearchRoles(ctx context.Context, req domain.SearchRolesRequest) (domain.SearchRolesResponse, error)
-}
-
-// TeamService serves the team registry.
-type TeamService interface {
-	// SearchTeams returns a paginated slice of the team registry.
-	SearchTeams(ctx context.Context, req domain.SearchTeamsRequest) (domain.SearchTeamsResponse, error)
 }

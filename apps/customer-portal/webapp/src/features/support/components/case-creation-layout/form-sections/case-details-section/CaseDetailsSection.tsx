@@ -36,6 +36,7 @@ import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import {
   ERROR_UNSUPPORTED_TYPE,
   ERROR_SIZE_EXCEEDED,
+  EMPTY_DROPDOWN_PLACEHOLDER,
 } from "@constants/common";
 
 /**
@@ -129,6 +130,16 @@ export function CaseDetailsSection({
     color: getSeverityLegendColor(level.label),
     label: SEVERITY_LABEL_MAP[level.label] ?? level.label,
   }));
+
+  const issueTypeLabels = issueTypes
+    .map((type: unknown) =>
+      typeof type === "string" ? type : (type as { label?: string }).label,
+    )
+    .filter(
+      (label): label is string => label != null && label.trim() !== "",
+    );
+  const showNoIssueTypesHint = !isLoading && issueTypeLabels.length === 0;
+  const showNoSeverityLevelsHint = !isLoading && severityLevels.length === 0;
 
   return (
     <Paper sx={{ p: 3 }}>
@@ -419,38 +430,35 @@ export function CaseDetailsSection({
                   />
                 )}
               </Box>
-              <FormControl fullWidth size="small" disabled={isLoading}>
+              <FormControl
+                fullWidth
+                size="small"
+                disabled={isLoading || showNoIssueTypesHint}
+              >
                 <Select
                   id="issue-type-select"
                   value={issueType}
                   onChange={(e) => setIssueType(e.target.value)}
                   displayEmpty
-                  renderValue={(value) =>
-                    value === "" ? "Select Issue Type..." : value
-                  }
+                  renderValue={(value) => {
+                    if (value === "") {
+                      return showNoIssueTypesHint
+                        ? EMPTY_DROPDOWN_PLACEHOLDER
+                        : "Select Issue Type...";
+                    }
+                    return value;
+                  }}
                 >
                   <MenuItem value="" disabled>
-                    Select Issue Type...
+                    {showNoIssueTypesHint
+                      ? EMPTY_DROPDOWN_PLACEHOLDER
+                      : "Select Issue Type..."}
                   </MenuItem>
-                  {issueTypes
-                    .filter((type: unknown) => {
-                      const label =
-                        typeof type === "string"
-                          ? type
-                          : (type as { label?: string }).label;
-                      return label != null && String(label).trim() !== "";
-                    })
-                    .map((type: unknown) => {
-                      const label =
-                        typeof type === "string"
-                          ? type
-                          : ((type as { label?: string }).label as string);
-                      return (
-                        <MenuItem key={label} value={label}>
-                          {label}
-                        </MenuItem>
-                      );
-                    })}
+                  {issueTypeLabels.map((label) => (
+                    <MenuItem key={label} value={label}>
+                      {label}
+                    </MenuItem>
+                  ))}
                 </Select>
               </FormControl>
             </Grid>
@@ -510,7 +518,11 @@ export function CaseDetailsSection({
                   );
                 })()
               ) : (
-                <FormControl fullWidth size="small" disabled={isLoading}>
+                <FormControl
+                  fullWidth
+                  size="small"
+                  disabled={isLoading || showNoSeverityLevelsHint}
+                >
                   <Select
                     id="severity-level-select"
                     value={severity}
@@ -518,7 +530,9 @@ export function CaseDetailsSection({
                     displayEmpty
                     renderValue={(value) => {
                       if (value === "") {
-                        return "Select Severity Level...";
+                        return showNoSeverityLevelsHint
+                          ? EMPTY_DROPDOWN_PLACEHOLDER
+                          : "Select Severity Level...";
                       }
                       const selectedLevel = severityLevels.find(
                         (level) => level.id === value,
@@ -547,7 +561,9 @@ export function CaseDetailsSection({
                     }}
                   >
                     <MenuItem value="" disabled>
-                      Select Severity Level...
+                      {showNoSeverityLevelsHint
+                        ? EMPTY_DROPDOWN_PLACEHOLDER
+                        : "Select Severity Level..."}
                     </MenuItem>
                     {severityLevels.map((lvl) => (
                       <MenuItem key={lvl.id} value={lvl.id}>

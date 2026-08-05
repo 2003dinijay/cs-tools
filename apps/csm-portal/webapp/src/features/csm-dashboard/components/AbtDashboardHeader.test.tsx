@@ -27,10 +27,12 @@ vi.mock("@api/backend/client", () => ({
 }));
 
 import AbtDashboardHeader from "@features/csm-dashboard/components/AbtDashboardHeader";
+import { ALL_TEAMS_SENTINEL } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
 
 const DASHBOARD_LIST = [
   { id: "agents_pilot", displayName: "Engineer overview", isDefault: true, isTeamBased: false },
   { id: "team_performance", displayName: "Team performance", isDefault: false, isTeamBased: true },
+  { id: "abt", displayName: "ABT Dashboard", type: "cre" as const, isDefault: false, isTeamBased: true },
 ];
 
 function renderWithClient(ui: ReactNode) {
@@ -85,7 +87,9 @@ describe("AbtDashboardHeader", () => {
       pagination: { offset: 0, limit: 100 },
     });
 
-    const [teamSelect] = screen.getAllByRole("combobox");
+    // Dashboard order is: dashboard selector, then team selector — see
+    // AbtDashboardHeader's layout.
+    const [, teamSelect] = screen.getAllByRole("combobox");
     fireEvent.mouseDown(teamSelect);
     const listbox = await screen.findByRole("listbox");
     // The teams query resolves asynchronously; retry (findByText) rather
@@ -94,7 +98,9 @@ describe("AbtDashboardHeader", () => {
       await within(listbox).findByText("CS Team Leads"),
     ).toBeInTheDocument();
     expect(within(listbox).getByText("CS Operations")).toBeInTheDocument();
-    expect(within(listbox).getByText("All teams")).toBeInTheDocument();
+    // No "All teams" option any more — every team-based dashboard view must
+    // have a real team selected.
+    expect(within(listbox).queryByText("All teams")).not.toBeInTheDocument();
   });
 
   it("calls onTeamChange when a team is picked", async () => {
@@ -113,11 +119,99 @@ describe("AbtDashboardHeader", () => {
       />,
     );
 
-    const [teamSelect] = screen.getAllByRole("combobox");
+    // Dashboard order is: dashboard selector, then team selector — see
+    // AbtDashboardHeader's layout.
+    const [, teamSelect] = screen.getAllByRole("combobox");
     fireEvent.mouseDown(teamSelect);
     const listbox = await screen.findByRole("listbox");
     fireEvent.click(await within(listbox).findByText("CS Team Leads"));
 
     expect(onTeamChange).toHaveBeenCalledWith("cs_team_leads");
+  });
+
+  it("scopes the team query to the dashboard's family for a typed dashboard", () => {
+    postMock.mockResolvedValue({
+      teams: [{ id: "castor", name: "Castor", family: "cre-abt" }],
+    });
+
+    renderWithClient(
+      <AbtDashboardHeader
+        dashboardKey="abt"
+        onDashboardChange={vi.fn()}
+        dashboardList={DASHBOARD_LIST}
+        selectedTeamId={undefined}
+        onTeamChange={vi.fn()}
+      />,
+    );
+
+    expect(postMock).toHaveBeenCalledWith("/teams/search", {
+      filters: { family: "cre-abt" },
+      pagination: { offset: 0, limit: 100 },
+    });
+  });
+
+  it("does not scope the team query for an untyped team-based dashboard", () => {
+    postMock.mockResolvedValue({ teams: [] });
+
+    renderWithClient(
+      <AbtDashboardHeader
+        dashboardKey="team_performance"
+        onDashboardChange={vi.fn()}
+        dashboardList={DASHBOARD_LIST}
+        selectedTeamId={undefined}
+        onTeamChange={vi.fn()}
+      />,
+    );
+
+    expect(postMock).toHaveBeenCalledWith("/teams/search", {
+      pagination: { offset: 0, limit: 100 },
+    });
+  });
+
+  it("offers an 'All ABTs' option alongside the real teams for a team-based dashboard", async () => {
+    postMock.mockResolvedValue({
+      teams: [{ id: "castor", name: "Castor", family: "cre-abt" }],
+    });
+
+    renderWithClient(
+      <AbtDashboardHeader
+        dashboardKey="abt"
+        onDashboardChange={vi.fn()}
+        dashboardList={DASHBOARD_LIST}
+        selectedTeamId={undefined}
+        onTeamChange={vi.fn()}
+      />,
+    );
+
+    const [, teamSelect] = screen.getAllByRole("combobox");
+    fireEvent.mouseDown(teamSelect);
+    const listbox = await screen.findByRole("listbox");
+
+    expect(within(listbox).getByText("All ABTs")).toBeInTheDocument();
+    expect(await within(listbox).findByText("Castor")).toBeInTheDocument();
+  });
+
+  it("calls onTeamChange with the sentinel value when 'All ABTs' is selected", async () => {
+    postMock.mockResolvedValue({
+      teams: [{ id: "castor", name: "Castor", family: "cre-abt" }],
+    });
+    const onTeamChange = vi.fn();
+
+    renderWithClient(
+      <AbtDashboardHeader
+        dashboardKey="abt"
+        onDashboardChange={vi.fn()}
+        dashboardList={DASHBOARD_LIST}
+        selectedTeamId={undefined}
+        onTeamChange={onTeamChange}
+      />,
+    );
+
+    const [, teamSelect] = screen.getAllByRole("combobox");
+    fireEvent.mouseDown(teamSelect);
+    const listbox = await screen.findByRole("listbox");
+    fireEvent.click(within(listbox).getByText("All ABTs"));
+
+    expect(onTeamChange).toHaveBeenCalledWith(ALL_TEAMS_SENTINEL);
   });
 });

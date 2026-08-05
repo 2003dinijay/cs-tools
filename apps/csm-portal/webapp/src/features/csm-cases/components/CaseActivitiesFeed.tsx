@@ -43,7 +43,9 @@ import {
   Users,
 } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type JSX } from "react";
+import type { BeCallRequestView } from "@api/backend/types";
 import AttachmentPreviewDialog from "@features/csm-cases/components/AttachmentPreviewDialog";
+import CallRequestDetailModal from "@features/csm-cases/components/CallRequestDetailModal";
 import CsmCaseCommentBubble from "@features/csm-cases/components/CsmCaseCommentBubble";
 import ImageFullscreenModal from "@features/csm-cases/components/ImageFullscreenModal";
 import RelativeTime from "@components/RelativeTime";
@@ -65,6 +67,15 @@ interface CaseActivitiesFeedProps {
   comments: CsmCaseComment[];
   audit: CaseAuditEntry[];
   attachments: CaseAttachment[];
+  /**
+   * Call requests already fetched for this case (e.g. by the page's Call
+   * Requests tab query) — reused here, never re-fetched, to resolve a
+   * call-request link embedded in a comment body to its detail popup.
+   * Optional: incidents/change requests don't have call requests, so a
+   * missing/empty list just means the click-to-open affordance never
+   * resolves a match (comment text still renders, link click is a no-op).
+   */
+  callRequests?: BeCallRequestView[];
   /** Download a file surfaced in the timeline. */
   onDownloadAttachment?: (attachment: CaseAttachment) => void;
   /**
@@ -146,6 +157,7 @@ export default function CaseActivitiesFeed({
   comments,
   audit,
   attachments,
+  callRequests = [],
   onDownloadAttachment,
   preview,
 }: CaseActivitiesFeedProps): JSX.Element {
@@ -156,6 +168,8 @@ export default function CaseActivitiesFeed({
   const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
   const [fullscreenImageSrc, setFullscreenImageSrc] = useState<string | null>(null);
   const [fullscreenImageAlt, setFullscreenImageAlt] = useState<string | undefined>(undefined);
+  const [selectedCallRequest, setSelectedCallRequest] =
+    useState<BeCallRequestView | null>(null);
 
   const entries: FeedEntry[] = useMemo(() => {
     const out: FeedEntry[] = [];
@@ -289,6 +303,13 @@ export default function CaseActivitiesFeed({
                   onImageClick={(src, alt) => {
                     setFullscreenImageSrc(src);
                     setFullscreenImageAlt(alt);
+                  }}
+                  onCallRequestClick={(sysId) => {
+                    // Stale/cross-case reference (not in this case's fetched
+                    // call requests) — do nothing rather than open a broken
+                    // popup; see task scope, this fallback is intentional.
+                    const match = callRequests.find((cr) => cr.id === sysId);
+                    if (match) setSelectedCallRequest(match);
                   }}
                 />
               );
@@ -515,6 +536,12 @@ export default function CaseActivitiesFeed({
           attachment={preview.previewTarget}
           onClose={() => preview.onPreviewTargetChange(null)}
           fetchContent={preview.onGetPreviewContent}
+        />
+      )}
+      {selectedCallRequest && (
+        <CallRequestDetailModal
+          callRequest={selectedCallRequest}
+          onClose={() => setSelectedCallRequest(null)}
         />
       )}
     </Box>

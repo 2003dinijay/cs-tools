@@ -67,6 +67,13 @@ func (c *CustomerEntityClient) SearchCaseActivities(ctx context.Context, caseID 
 	return c.do(ctx, http.MethodPost, "/cases/"+url.PathEscape(caseID)+"/activities/search", body)
 }
 
+// SearchTasks calls POST /tasks/search on the entity service (standalone task
+// search, not scoped to a parent case). Response is returned as raw JSON;
+// typed response structs are deferred.
+func (c *CustomerEntityClient) SearchTasks(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/tasks/search", body)
+}
+
 // GetUserMe calls GET /users/me on the entity service.
 // Response is returned as raw JSON.
 func (c *CustomerEntityClient) GetUserMe(ctx context.Context) ([]byte, error) {
@@ -96,18 +103,6 @@ func (c *CustomerEntityClient) GetProjectContact(ctx context.Context, projectID,
 // Response is returned as raw JSON.
 func (c *CustomerEntityClient) GetUser(ctx context.Context, id string) ([]byte, error) {
 	return c.do(ctx, http.MethodGet, fmt.Sprintf("/users/%s", url.PathEscape(id)), nil)
-}
-
-// SearchRoles calls POST /roles/search on the entity service.
-// Response is returned as raw JSON.
-func (c *CustomerEntityClient) SearchRoles(ctx context.Context, body []byte) ([]byte, error) {
-	return c.do(ctx, http.MethodPost, "/roles/search", body)
-}
-
-// SearchTeams calls POST /teams/search on the entity service.
-// Response is returned as raw JSON.
-func (c *CustomerEntityClient) SearchTeams(ctx context.Context, body []byte) ([]byte, error) {
-	return c.do(ctx, http.MethodPost, "/teams/search", body)
 }
 
 // GetAccount calls GET /accounts/{id} on the entity service.
@@ -186,6 +181,12 @@ func (c *CustomerEntityClient) GetIncident(ctx context.Context, id string) ([]by
 // Response is returned as raw JSON; typed response structs are deferred.
 func (c *CustomerEntityClient) PatchIncident(ctx context.Context, id string, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/incidents/%s", url.PathEscape(id)), body)
+}
+
+// SearchIncidentActivities calls POST /incidents/{id}/activities/search on the entity service.
+// Response is returned as raw JSON; typed response structs are deferred.
+func (c *CustomerEntityClient) SearchIncidentActivities(ctx context.Context, id string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, fmt.Sprintf("/incidents/%s/activities/search", url.PathEscape(id)), body)
 }
 
 // SearchProblems calls POST /problems/search on the entity service.
@@ -350,6 +351,13 @@ func (c *CustomerEntityClient) CreateCallRequest(ctx context.Context, body []byt
 // Response is returned as raw JSON.
 func (c *CustomerEntityClient) SearchCallRequests(ctx context.Context, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, "/call-requests/search", body)
+}
+
+// SearchAllCallRequests calls POST /call-requests/search-all on the entity service
+// (standalone call request search, not scoped to a parent case). Response is
+// returned as raw JSON; typed response structs are deferred.
+func (c *CustomerEntityClient) SearchAllCallRequests(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/call-requests/search-all", body)
 }
 
 // PatchCallRequest calls PATCH /call-requests/{id} on the entity service.

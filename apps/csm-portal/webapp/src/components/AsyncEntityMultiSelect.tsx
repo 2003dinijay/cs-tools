@@ -14,8 +14,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Autocomplete, TextField } from "@wso2/oxygen-ui";
-import { useMemo, useState, type JSX } from "react";
+import {
+  Autocomplete,
+  Box,
+  Checkbox,
+  ListItemText,
+  TextField,
+  Tooltip,
+} from "@wso2/oxygen-ui";
+import { useMemo, useState, type HTMLAttributes, type JSX } from "react";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 
 interface AsyncEntityMultiSelectOption {
@@ -46,6 +53,10 @@ export interface AsyncEntityMultiSelectProps<T> {
    * watch list) — shown until a real search result for the same id replaces
    * them. Same purpose as `AsyncEntitySelect`'s `knownLabel`, plural. */
   knownLabels?: Record<string, string>;
+  /** Render selected values as a compact, single-line summary matching
+   * Select-based multi-filters. Other form usages retain removable chips by
+   * default. */
+  compactSelectedValues?: boolean;
 }
 
 /**
@@ -67,6 +78,7 @@ export default function AsyncEntityMultiSelect<T>({
   getId,
   getLabel,
   knownLabels,
+  compactSelectedValues = false,
 }: AsyncEntityMultiSelectProps<T>): JSX.Element {
   const [searchTerm, setSearchTerm] = useState("");
   const [open, setOpen] = useState(false);
@@ -113,6 +125,44 @@ export default function AsyncEntityMultiSelect<T>({
       filterOptions={(opts) => opts}
       getOptionLabel={(opt) => opt.label}
       isOptionEqualToValue={(opt, val) => opt.id === val.id}
+      renderOption={(props, option, { selected }) => {
+        const { key, ...liProps } = props as HTMLAttributes<HTMLLIElement> & { key: string };
+        return (
+          <li key={key} {...liProps} style={{ paddingTop: 2, paddingBottom: 2 }}>
+            <Checkbox size="small" checked={selected} sx={{ mr: 1, p: 0.25 }} />
+            <ListItemText
+              primary={option.label}
+              slotProps={{ primary: { style: { fontSize: 13 } } }}
+            />
+          </li>
+        );
+      }}
+      renderTags={
+        compactSelectedValues
+          ? (tagValues) => {
+              const displayText = tagValues.map((option) => option.label).join(", ");
+              const content = (
+                <Box
+                  component="span"
+                  sx={{
+                    flex: "1 1 0",
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {displayText}
+                </Box>
+              );
+              return tagValues.length === 1 ? content : (
+                <Tooltip title={displayText} placement="top">
+                  {content}
+                </Tooltip>
+              );
+            }
+          : undefined
+      }
       onChange={(_event, next) => {
         setLabelById((prev) => {
           const merged = { ...prev };

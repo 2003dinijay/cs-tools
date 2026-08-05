@@ -53,17 +53,6 @@ type Config struct {
 	ServiceNowIntegrationServiceClientID     string
 	ServiceNowIntegrationServiceClientSecret string
 	ServiceNowIntegrationServiceScopes       string
-	// TeamRegistry is the raw CSM_TEAM_REGISTRY value: the curated ABT team
-	// registry as "teamKey|Display Name|FAMILY,..." rows. Parsed and installed
-	// at startup by domain.ParseAbtTeamRegistry / domain.SetAbtTeams. Empty
-	// means no teams are configured; there is deliberately no default, because
-	// team names are organisation vocabulary that must not be committed here.
-	TeamRegistry string
-	// UserRoles is the raw CSM_USER_ROLES value: a comma-separated
-	// assignable-role allow-list. Parsed and installed at startup by
-	// service.ParseUserRoles / service.SetUserRoles. Empty falls back to the
-	// committed default list.
-	UserRoles string
 }
 
 // Load reads configuration from environment variables and returns a populated
@@ -71,21 +60,19 @@ type Config struct {
 // validate required fields (e.g. DBUser, DBPassword, DBName) before use.
 func Load() *Config {
 	return &Config{
-		DBHost:     getEnvOrDefault("DB_HOST", "localhost"),
-		DBPort:     getEnvOrDefault("DB_PORT", "5432"),
-		DBUser:     os.Getenv("DB_USER"),
-		DBPassword: os.Getenv("DB_PASSWORD"),
-		DBName:     os.Getenv("DB_NAME"),
-		DBSSLMode:  os.Getenv("DB_SSLMODE"),
-		ServerPort: getEnvOrDefault("SERVER_PORT", "8080"),
-		DataSource:             DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
+		DBHost:                                   getEnvOrDefault("DB_HOST", "localhost"),
+		DBPort:                                   getEnvOrDefault("DB_PORT", "5432"),
+		DBUser:                                   os.Getenv("DB_USER"),
+		DBPassword:                               os.Getenv("DB_PASSWORD"),
+		DBName:                                   os.Getenv("DB_NAME"),
+		DBSSLMode:                                os.Getenv("DB_SSLMODE"),
+		ServerPort:                               getEnvOrDefault("SERVER_PORT", "8080"),
+		DataSource:                               DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
 		ServiceNowIntegrationServiceBaseURL:      os.Getenv("SERVICENOW_INTEGRATION_SERVICE_BASE_URL"),
 		ServiceNowIntegrationServiceTokenURL:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL"),
 		ServiceNowIntegrationServiceClientID:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID"),
 		ServiceNowIntegrationServiceClientSecret: os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET"),
 		ServiceNowIntegrationServiceScopes:       os.Getenv("SERVICENOW_INTEGRATION_SERVICE_SCOPES"),
-		TeamRegistry:                             os.Getenv("CSM_TEAM_REGISTRY"),
-		UserRoles:                                os.Getenv("CSM_USER_ROLES"),
 	}
 }
 

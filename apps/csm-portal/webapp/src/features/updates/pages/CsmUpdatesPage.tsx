@@ -49,6 +49,7 @@ import type { SelectChangeEvent } from "@wso2/oxygen-ui";
 import DOMPurify from "dompurify";
 import { useGetProductUpdateLevels } from "@features/updates/api/useGetProductUpdateLevels";
 import { usePostUpdateLevelsSearch } from "@features/updates/api/usePostUpdateLevelsSearch";
+import RefreshButton from "@components/RefreshButton";
 import type {
   ProductUpdateLevel,
   SearchUpdatesPayload,
@@ -771,7 +772,16 @@ export default function CsmUpdatesPage(): JSX.Element {
 
       {/* Results */}
       {search && (
-        <Box>
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+            <RefreshButton
+              onRefresh={() => void searchResult.refetch()}
+              isFetching={searchResult.isFetching}
+              updatedAt={searchResult.dataUpdatedAt}
+              label="Refresh updates"
+            />
+          </Box>
+
           {searchResult.isLoading ? (
             <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
               <CircularProgress />

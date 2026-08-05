@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -53,6 +53,27 @@ beforeEach(() => {
 });
 
 describe("UserRefLink", () => {
+  it("clears a hover underline after the hover behavior is disabled", () => {
+    const view = renderWithProviders(
+      <UserRefLink name="Jane Doe" userId={JANE_UUID} underlineOnHover />,
+    );
+    const link = screen.getByRole("link", { name: "Jane Doe" });
+    fireEvent.mouseEnter(link);
+    expect(link).toHaveStyle({ textDecoration: "underline" });
+
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <UserRefLink name="Jane Doe" userId={JANE_UUID} underlineOnHover={false} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    fireEvent.mouseLeave(screen.getByRole("link", { name: "Jane Doe" }));
+    expect(screen.getByRole("link", { name: "Jane Doe" })).toHaveStyle({
+      textDecoration: "none",
+    });
+  });
+
   it("renders a link to /people/<id> when an id is already known", async () => {
     renderWithProviders(
       <UserRefLink name="Jane Doe" email="jane.doe@example.com" userId={JANE_UUID} />,

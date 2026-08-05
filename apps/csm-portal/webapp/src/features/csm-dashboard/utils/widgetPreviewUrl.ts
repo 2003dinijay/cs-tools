@@ -28,6 +28,16 @@ const RESERVED_PARAMS = new Set(["w", "n", CASE_FILTER_MARKER]);
  * preview URL never carries a bare internal user id. */
 const CURRENT_USER_SENTINEL = "@me";
 
+/** Separates a field from a non-default op in a preview query param, e.g.
+ * `tag~notIn=s_dip`. `~` is safe: every filter field name is camelCase
+ * alphanumeric, so it can never appear in one. */
+const OP_SEPARATOR = "~";
+
+/** Ops that carry no `values` — they must still survive the round trip, so
+ * they are encoded with an empty value (`escalation~isNotEmpty=`) rather than
+ * skipped for being value-less. */
+const VALUELESS_OPS = new Set(["isEmpty", "isNotEmpty"]);
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === "string");
 }
@@ -47,12 +57,12 @@ export interface WidgetCaseFieldFilterLike {
 /**
  * True when `value` is the `filters` array of a case widget's filters object
  * (`{ filters: BeCaseFieldFilter[] }` — see `BeCaseSearchFilters`), detected
- * structurally so this file never needs to know the resourceType. Every
- * dashboard case-filter widget today uses `op: "in"` only (see
- * `.env.example`'s `DASHBOARDS_CONFIG`); a non-`"in"` op still round-trips
- * through the URL (its `values` are preserved), but always decodes back with
- * `op: "in"` — a lossy simplification acceptable only because op isn't
- * configurable from this preview UI yet.
+ * structurally so this file never needs to know the resourceType. Ops other
+ * than `in` are common now (`notIn` tag exclusions, `isEmpty` for unassigned,
+ * `isNotEmpty` for escalated), so the op is encoded in the query param
+ * (`field~op`) and round-trips faithfully. It previously did NOT: every entry
+ * decoded back as `op: "in"`, which inverted `notIn` — a tag EXCLUSION became
+ * a tag filter — and value-less ops were dropped entirely.
  */
 export function isCaseFieldFilterArray(value: unknown): value is WidgetCaseFieldFilterLike[] {
   return (
@@ -104,11 +114,19 @@ export function buildWidgetPreviewHref(params: {
       usesCaseFieldFilterShape = true;
       for (const entry of value) {
         const values = entry.values ?? [];
-        if (values.length === 0) continue;
+        const op = entry.op || "in";
+        // A value-less op (isEmpty/isNotEmpty) is the whole predicate, so it
+        // must be emitted even with no values -- skipping it silently widened
+        // e.g. "Unassigned Cases" into "all cases".
+        if (values.length === 0 && !VALUELESS_OPS.has(op)) continue;
         const masked = values.map((v) =>
           v === params.currentUserId ? CURRENT_USER_SENTINEL : v,
         );
-        q.set(entry.field, masked.join(","));
+        // `in` keeps the bare `field=values` form so previously-shared links
+        // still resolve; any other op is encoded as `field~op` so it survives
+        // the round trip instead of silently decoding back as `in` (which
+        // inverted `notIn` -- a tag EXCLUSION became a tag filter).
+        q.set(op === "in" ? entry.field : `${entry.field}${OP_SEPARATOR}${op}`, masked.join(","));
       }
       continue;
     }
@@ -147,11 +165,13 @@ export function parseWidgetPreviewFilters(
     const fieldFilters: WidgetCaseFieldFilterLike[] = [];
     for (const [key, raw] of searchParams.entries()) {
       if (RESERVED_PARAMS.has(key)) continue;
-      const values = raw.split(",");
+      // `field~op` carries a non-default op; a bare `field` means `in`.
+      const sep = key.indexOf(OP_SEPARATOR);
+      const field = sep === -1 ? key : key.slice(0, sep);
+      const op = sep === -1 ? "in" : key.slice(sep + OP_SEPARATOR.length);
+      const values = raw === "" ? [] : raw.split(",");
       if (values.includes(CURRENT_USER_SENTINEL)) needsCurrentUser = true;
-      // Every dashboard case-filter widget today uses `op: "in"` only — see
-      // `isCaseFieldFilterArray`'s doc comment.
-      fieldFilters.push({ field: key, op: "in", values });
+      fieldFilters.push({ field, op, values });
     }
     return { filters: { filters: fieldFilters }, needsCurrentUser };
   }

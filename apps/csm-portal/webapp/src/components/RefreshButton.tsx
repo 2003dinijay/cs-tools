@@ -16,10 +16,11 @@
 
 import { Box, IconButton, Tooltip, Typography } from "@wso2/oxygen-ui";
 import { RefreshCw } from "@wso2/oxygen-ui-icons-react";
-import { fromNow } from "@utils/dateTime";
+import type { JSX } from "react";
+import { formatRelativeTime } from "@features/csm-dashboard/utils/abtDashboard";
 
 interface RefreshButtonProps {
-  /** Re-runs the widget's query. Wire to the react-query `refetch`. */
+  /** Re-runs the underlying query. Wire to the react-query `refetch`. */
   onRefresh: () => void;
   /** True while a fetch is in flight; disables the control to avoid re-entrancy. */
   isFetching: boolean;
@@ -29,21 +30,34 @@ interface RefreshButtonProps {
   label: string;
 }
 
-// Reusable dashboard-widget refresh control — mirrors the webapp's RefreshButton
-// (apps/csm-portal/webapp/src/features/csm-dashboard/components/RefreshButton.tsx):
-// icon button + "Last refreshed X ago" hint, so refresh looks and behaves the same across apps.
-export function RefreshButton({ onRefresh, isFetching, updatedAt, label }: RefreshButtonProps) {
+/**
+ * Reusable refresh control (icon button + "last refreshed" hint), shared
+ * across dashboard widgets, case detail tabs, and list pages so refresh
+ * looks and behaves the same everywhere.
+ */
+export default function RefreshButton({
+  onRefresh,
+  isFetching,
+  updatedAt,
+  label,
+}: RefreshButtonProps): JSX.Element {
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
       {updatedAt ? (
         <Typography variant="caption" color="text.secondary">
-          Last refreshed {fromNow(new Date(updatedAt))}
+          Last refreshed{" "}
+          {formatRelativeTime(new Date(updatedAt).toISOString())}
         </Typography>
       ) : null}
       <Tooltip title={label}>
         {/* span wrapper so the tooltip still shows while the button is disabled */}
         <span>
-          <IconButton size="small" onClick={onRefresh} disabled={isFetching} aria-label={label}>
+          <IconButton
+            size="small"
+            onClick={onRefresh}
+            disabled={isFetching}
+            aria-label={label}
+          >
             <RefreshCw size={14} />
           </IconButton>
         </span>

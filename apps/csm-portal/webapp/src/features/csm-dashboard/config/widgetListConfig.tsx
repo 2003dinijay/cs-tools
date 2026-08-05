@@ -17,13 +17,14 @@
 /* eslint-disable react-refresh/only-export-components -- this is a config module of per-resourceType render helpers (like widgetResourceConfig.ts), not a component module; none of the individual XxxWidgetList functions are exported (fast-refresh DX only) */
 
 import { Chip, Typography } from "@wso2/oxygen-ui";
-import type { JSX } from "react";
+import { useState, type JSX } from "react";
 import type {
   BeCaseSearchView,
   BeIncident,
   BeChangeRequestSearchView,
   BeProblemSearchView,
   BeTimeCardView,
+  BeTaskSummary,
   BeWidgetResourceType,
 } from "@api/backend/types";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
@@ -45,6 +46,8 @@ import {
   changeRequestStateLabel,
 } from "@features/csm-operations/utils/changeRequests";
 import { problemStateColor, problemStateLabel } from "@features/csm-operations/utils/problems";
+import { taskStateColor, taskStateLabel } from "@features/csm-cases/utils/taskState";
+import { TaskDetailDialog } from "@features/csm-cases/components/TaskDetailDialog";
 import { resolveAccountTier, type Account } from "@features/csm-accounts/types/csmAccounts";
 import type { Project } from "@features/csm-projects/types/csmProjects";
 import ClosureStateChip from "@features/csm-projects/components/ClosureStateChip";
@@ -52,6 +55,7 @@ import { normalizeUser, type User, type SnUser } from "@features/csm-users/types
 import UserRefLink from "@components/UserRefLink";
 import { vulnerabilityPriorityColor } from "@features/csm-security-center/utils/vulnerabilities";
 import type { BeProductVulnerabilityView } from "@api/backend/types";
+import type { BeCallRequestView } from "@api/backend/types";
 
 /** Raw item shape a dashboard widget's `/search` response resolves to —
  * matches `WidgetItem` in `widgetResourceConfig.ts` (kept loose there since
@@ -64,6 +68,21 @@ function formatDate(value?: string | null): string {
   return (
     formatBackendTimestampForDisplay(value, { year: "numeric", month: "short", day: "numeric" }) ??
     "—"
+  );
+}
+
+/** Date + time, for columns where same-day values must stay distinguishable
+ * (e.g. a call request's scheduled time) -- `formatDate` alone drops the
+ * hour/minute and collapses same-day rows to an identical-looking value. */
+function formatDateTime(value?: string | null): string {
+  return (
+    formatBackendTimestampForDisplay(value, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }) ?? "—"
   );
 }
 
@@ -395,6 +414,103 @@ function ProductVulnerabilityWidgetList({ items, isLoading }: WidgetListRenderer
   );
 }
 
+/** Task: no standalone list page exists (tasks are only ever shown inside a
+ * case's own Tasks tab or this dialog), so rows open {@link TaskDetailDialog}
+ * in place rather than navigating -- that dialog shows the call/task details
+ * and its own real link through to the parent case, which is the actual
+ * destination a row click should reach (a task is not a first-class page of
+ * its own). */
+function TaskWidgetList({ items, isLoading }: WidgetListRendererProps): JSX.Element {
+  const tasks = items as unknown as BeTaskSummary[];
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  return (
+    <>
+      <DashboardMiniTable
+        isLoading={isLoading}
+        emptyMessage="No tasks match this widget's filters."
+        columns={[
+          { label: "Subject", width: "minmax(160px, 2fr)" },
+          { label: "State", width: "minmax(90px, 1fr)" },
+          { label: "Assigned to", width: "minmax(100px, 1fr)" },
+          { label: "Updated", width: "minmax(90px, 1fr)" },
+        ]}
+        rows={tasks.map((task, i) => ({
+          key: task.id ?? `task-${i}`,
+          onClick: task.id ? () => setOpenTaskId(task.id) : undefined,
+          cells: [
+            <Typography key="subject" variant="body2" noWrap title={task.subject ?? undefined}>
+              {task.subject || "—"}
+            </Typography>,
+            task.state ? (
+              <Chip
+                key="state"
+                size="small"
+                variant="outlined"
+                color={taskStateColor(task.state)}
+                label={taskStateLabel(task.state)}
+              />
+            ) : (
+              <Typography key="state" variant="body2">
+                —
+              </Typography>
+            ),
+            <Typography key="assignedTo" variant="body2" noWrap>
+              {task.assignedTo?.name || "—"}
+            </Typography>,
+            <Typography key="updated" variant="caption" color="text.secondary" noWrap>
+              {formatDate(task.updatedOn)}
+            </Typography>,
+          ],
+        }))}
+      />
+      {openTaskId && (
+        <TaskDetailDialog taskId={openTaskId} onClose={() => setOpenTaskId(null)} />
+      )}
+    </>
+  );
+}
+
+/** Call request: unlike task, `CallRequestView.case.id` is always present, so
+ * rows navigate straight to the owning case's real detail page rather than
+ * opening a dialog. */
+function CallRequestWidgetList({ items, isLoading }: WidgetListRendererProps): JSX.Element {
+  const callRequests = items as unknown as BeCallRequestView[];
+  return (
+    <DashboardMiniTable
+      isLoading={isLoading}
+      emptyMessage="No call requests match this widget's filters."
+      columns={[
+        { label: "Number", width: "minmax(90px, 0.7fr)" },
+        { label: "Reason", width: "minmax(160px, 2fr)" },
+        { label: "State", width: "minmax(100px, 1fr)" },
+        { label: "Scheduled", width: "minmax(90px, 1fr)" },
+      ]}
+      rows={callRequests.map((cr, i) => ({
+        key: cr.id ?? `call-request-${i}`,
+        href: cr.case?.id ? `/cases/${cr.case.id}` : undefined,
+        cells: [
+          <Typography key="number" variant="body2" noWrap>
+            {cr.number || "—"}
+          </Typography>,
+          <Typography key="reason" variant="body2" noWrap title={cr.reason ?? undefined}>
+            {cr.reason || "—"}
+          </Typography>,
+          cr.state?.label ? (
+            <Chip key="state" size="small" variant="outlined" label={cr.state.label} />
+          ) : (
+            <Typography key="state" variant="body2">
+              —
+            </Typography>
+          ),
+          <Typography key="scheduled" variant="caption" color="text.secondary" noWrap>
+            {formatDateTime(cr.scheduleTime)}
+          </Typography>,
+        ],
+      }))}
+    />
+  );
+}
+
 /** Per-resourceType renderer for a `shape: "list"` dashboard widget. Every
  * resource type is covered — `WIDGET_RESOURCE_CONFIG` (in
  * `widgetResourceConfig.ts`) is keyed the same way, so a missing entry here
@@ -412,4 +528,6 @@ export const WIDGET_LIST_RENDERERS: Record<
   user: UserWidgetList,
   time_card: TimeCardWidgetList,
   product_vulnerability: ProductVulnerabilityWidgetList,
+  task: TaskWidgetList,
+  call_request: CallRequestWidgetList,
 };

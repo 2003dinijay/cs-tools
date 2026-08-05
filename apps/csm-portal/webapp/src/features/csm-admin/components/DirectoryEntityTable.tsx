@@ -31,6 +31,7 @@ import { type ChangeEvent, type JSX } from "react";
 import { Link as RouterLink } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
+import RefreshButton from "@components/RefreshButton";
 
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
 
@@ -59,6 +60,8 @@ interface DirectoryEntityTableProps {
   onPageChange: (page: number) => void;
   rowsPerPage: number;
   onRowsPerPageChange: (rowsPerPage: number) => void;
+  onRefresh: () => void;
+  refreshedAt?: number;
 }
 
 /**
@@ -83,7 +86,13 @@ export default function DirectoryEntityTable({
   onPageChange,
   rowsPerPage,
   onRowsPerPageChange,
+  onRefresh,
+  refreshedAt,
 }: DirectoryEntityTableProps): JSX.Element {
+  const entityLabel =
+    entityNounPlural.charAt(0).toUpperCase() +
+    entityNounPlural.slice(1, entityNounPlural.endsWith("s") ? -1 : undefined);
+
   const handleSearchChange = (e: ChangeEvent<HTMLInputElement>): void => {
     onSearchChange(e.target.value);
   };
@@ -94,14 +103,22 @@ export default function DirectoryEntityTable({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <TextField
-        size="small"
-        label={`Search ${entityNounPlural}`}
-        value={search}
-        onChange={handleSearchChange}
-        sx={{ maxWidth: 360 }}
-        slotProps={{ htmlInput: { "aria-label": `Search ${entityNounPlural} by name` } }}
-      />
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+        <TextField
+          size="small"
+          label={`Search ${entityNounPlural}`}
+          value={search}
+          onChange={handleSearchChange}
+          sx={{ maxWidth: 360, flex: 1 }}
+          slotProps={{ htmlInput: { "aria-label": `Search ${entityNounPlural} by name` } }}
+        />
+        <RefreshButton
+          onRefresh={onRefresh}
+          isFetching={isFetching}
+          updatedAt={refreshedAt}
+          label={`Refresh ${entityNounPlural}`}
+        />
+      </Box>
 
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
         <TableContainer>
@@ -112,12 +129,10 @@ export default function DirectoryEntityTable({
           >
             <TableHead>
               <TableRow sx={{ bgcolor: "action.hover" }}>
-                <TableCell>Name</TableCell>
+                <TableCell>{entityLabel}</TableCell>
               </TableRow>
             </TableHead>
-            <TableBody
-              sx={isFetching ? { opacity: 0.6, transition: "opacity 0.15s" } : undefined}
-            >
+            <TableBody sx={isFetching && !isLoading ? { opacity: 0.6 } : undefined}>
               {isLoading ? (
                 Array.from({ length: rowsPerPage }).map((_, i) => (
                   <TableRow key={i}>
@@ -148,27 +163,55 @@ export default function DirectoryEntityTable({
                   </TableCell>
                 </TableRow>
               ) : (
-                rows.map((row) => (
-                  <TableRow key={row.id} hover>
-                    <TableCell>
-                      <Typography
-                        component={RouterLink}
-                        to={`${memberBasePath}/${encodeURIComponent(row.id)}`}
-                        state={{ name: row.name }}
-                        variant="body2"
-                        sx={(t) => ({
-                          fontWeight: 600,
-                          textDecoration: "none",
-                          color: t.palette.primary.dark,
-                          ...t.applyStyles("dark", { color: t.palette.primary.main }),
-                          "&:hover": { textDecoration: "underline" },
-                        })}
-                      >
-                        {row.family ? `${row.name} (${row.family})` : row.name}
-                      </Typography>
-                    </TableCell>
-                  </TableRow>
-                ))
+                rows.map((row) => {
+                  const destination = `${memberBasePath}/${encodeURIComponent(row.id)}`;
+
+                  return (
+                    <TableRow
+                      key={row.id}
+                      hover
+                      sx={{ position: "relative", cursor: "pointer" }}
+                    >
+                      <TableCell sx={{ minWidth: 0, position: "relative" }}>
+                        <Box
+                          component={RouterLink}
+                          to={destination}
+                          state={{ name: row.name }}
+                          aria-label={`View members of ${row.name}`}
+                          sx={{
+                            position: "absolute",
+                            inset: 0,
+                            color: "inherit",
+                            textDecoration: "none",
+                            "&:focus-visible": {
+                              outline: "2px solid",
+                              outlineColor: "primary.main",
+                              outlineOffset: -2,
+                            },
+                          }}
+                        />
+                        <Typography
+                          variant="body2"
+                          noWrap
+                          title={row.name}
+                          sx={{ position: "relative", pointerEvents: "none" }}
+                        >
+                          {row.name}
+                        </Typography>
+                        {row.family && (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            noWrap
+                            sx={{ display: "block", position: "relative", pointerEvents: "none" }}
+                          >
+                            {row.family.toUpperCase()} team
+                          </Typography>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>

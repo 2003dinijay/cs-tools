@@ -41,6 +41,7 @@ import {
   type ProblemFilters,
 } from "@features/csm-operations/utils/problems";
 import ProblemsFilterBar from "@features/csm-operations/components/ProblemsFilterBar";
+import RefreshButton from "@components/RefreshButton";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
@@ -69,7 +70,8 @@ export default function ProblemsTab(): JSX.Element {
     [debouncedSearch, filters.states, page, rowsPerPage],
   );
 
-  const { data, isLoading, isError, error, isFetching } = useSearchProblems(payload);
+  const { data, isLoading, isError, error, isFetching, refetch, dataUpdatedAt } =
+    useSearchProblems(payload);
 
   const problems = data?.problems ?? [];
   const total = data?.total ?? 0;
@@ -91,7 +93,13 @@ export default function ProblemsTab(): JSX.Element {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+      <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1 }}>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label="Refresh problems"
+        />
         <Button
           variant="contained"
           color="primary"

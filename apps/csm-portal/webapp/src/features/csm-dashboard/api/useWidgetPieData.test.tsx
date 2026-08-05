@@ -26,6 +26,7 @@ vi.mock("@api/backend/client", () => ({
 }));
 
 import { useWidgetPieData } from "@features/csm-dashboard/api/useWidgetPieData";
+import { CURRENT_TEAM_PLACEHOLDER } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
 
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({
@@ -48,9 +49,9 @@ describe("useWidgetPieData", () => {
 
     const { result } = renderHook(
       () =>
-        useWidgetPieData("case", { states: ["open"] }, [
-          { label: "Critical", filters: { severities: "critical" } },
-          { label: "High", filters: { severities: "high" } },
+        useWidgetPieData("widget-1", "case", { states: ["open"] }, [
+          { label: "Critical", query: { severities: "critical" } },
+          { label: "High", query: { severities: "high" } },
         ]),
       { wrapper },
     );
@@ -67,19 +68,94 @@ describe("useWidgetPieData", () => {
       pagination: { offset: 0, limit: 1 },
     });
     expect(result.current.slices).toEqual([
-      { label: "Critical", filters: { severities: "critical" }, value: 1 },
-      { label: "High", filters: { severities: "high" }, value: 3 },
+      { label: "Critical", query: { severities: "critical" }, value: 1 },
+      { label: "High", query: { severities: "high" }, value: 3 },
     ]);
     expect(result.current.total).toBe(4);
   });
 
   it("fires no queries and returns a zero total for an empty slices array", () => {
-    const { result } = renderHook(() => useWidgetPieData("case", {}, []), { wrapper });
+    const { result } = renderHook(() => useWidgetPieData("widget-1", "case", {}, []), { wrapper });
 
     expect(postMock).not.toHaveBeenCalled();
     expect(result.current.slices).toEqual([]);
     expect(result.current.total).toBe(0);
     expect(result.current.isLoading).toBe(false);
+  });
+
+  it("resolves __current_team__ (in either the base or a slice's own filters) after merging, using the selected team's groupId", async () => {
+    postMock.mockResolvedValue({ total: 1 });
+
+    const { result } = renderHook(
+      () =>
+        useWidgetPieData(
+          "widget-1",
+          "case",
+          { filters: [{ field: "state", op: "in", values: ["open"] }] },
+          [
+            {
+              label: "My team",
+              query: {
+                filters: [
+                  { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+                ],
+              },
+            },
+          ],
+          "22222222-2222-2222-2222-222222222222",
+        ),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(postMock).toHaveBeenCalledWith("/cases/search", {
+      filters: {
+        filters: [
+          { field: "state", op: "in", values: ["open"] },
+          {
+            field: "integrationCsTeam",
+            op: "in",
+            values: ["22222222-2222-2222-2222-222222222222"],
+          },
+        ],
+      },
+      pagination: { offset: 0, limit: 1 },
+    });
+  });
+
+  it("drops the integrationCsTeam entry rather than sending the literal placeholder when no team groupId is selected", async () => {
+    postMock.mockResolvedValue({ total: 1 });
+
+    renderHook(
+      () =>
+        useWidgetPieData(
+          "widget-1",
+          "case",
+          { filters: [{ field: "state", op: "in", values: ["open"] }] },
+          [
+            {
+              label: "My team",
+              query: {
+                filters: [
+                  { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+                ],
+              },
+            },
+          ],
+          undefined,
+        ),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(postMock).toHaveBeenCalled());
+
+    expect(postMock).toHaveBeenCalledWith("/cases/search", {
+      filters: {
+        filters: [{ field: "state", op: "in", values: ["open"] }],
+      },
+      pagination: { offset: 0, limit: 1 },
+    });
   });
 
   it("surfaces isError when any one slice's search fails", async () => {
@@ -89,9 +165,9 @@ describe("useWidgetPieData", () => {
 
     const { result } = renderHook(
       () =>
-        useWidgetPieData("case", {}, [
-          { label: "A", filters: { a: "1" } },
-          { label: "B", filters: { b: "2" } },
+        useWidgetPieData("widget-1", "case", {}, [
+          { label: "A", query: { a: "1" } },
+          { label: "B", query: { b: "2" } },
         ]),
       { wrapper },
     );

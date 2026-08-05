@@ -111,20 +111,21 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
 	var cv domain.CaseView
 	var (
-		aeID, aeName                        *string
-		pcID, pcNum                         *string
-		rcID, rcNum                         *string
-		accountID, accountName, accountTier string
-		workState                           *string
-		depID, depName                      string
-		dpID, dpDisplayName                 string
-		prodID, prodName                    string
+		aeID, aeName                         *string
+		pcID, pcNum                          *string
+		rcID, rcNum                          *string
+		accountID, accountName, accountTier  string
+		workState                            *string
+		depID, depName                       string
+		dpID, dpDisplayName                  string
+		prodID, prodName                     string
+		creatorID, creatorName, creatorEmail string
 	)
 	err := r.db.QueryRow(ctx,
 		`SELECT c.id, c.number, c.internal_id,
 		        c.subject, c.description, c.severity, c.issue_type, c.state, c.work_state,
 		        c.created_at, c.updated_at, c.closed_at,
-		        u.id, u.first_name || ' ' || u.last_name, u.user_name, u.email,
+		        u.id, u.first_name || ' ' || u.last_name, u.email,
 		        p.id, p.name,
 		        d.id, d.name,
 		        dp.id, prod.name || COALESCE(' ' || pv.version, ''),
@@ -149,7 +150,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		&cv.ID, &cv.Number, &cv.InternalID,
 		&cv.Subject, &cv.Description, &cv.Severity, &cv.IssueType, &cv.State, &workState,
 		&cv.CreatedOn, &cv.UpdatedOn, &cv.ClosedOn,
-		&cv.CreatedByDetails.ID, &cv.CreatedByDetails.Name, &cv.CreatedByDetails.UserID, &cv.CreatedByDetails.Email,
+		&creatorID, &creatorName, &creatorEmail,
 		&cv.ProjectDetails.ID, &cv.ProjectDetails.Name,
 		&depID, &depName,
 		&dpID, &dpDisplayName,
@@ -166,19 +167,23 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		return domain.CaseView{}, fmt.Errorf("get case by id: %w", err)
 	}
 	cv.DeploymentDetails = &domain.EntityRef{ID: depID, Name: depName}
-	cv.DeployedProductDetails = &domain.DeployedProductRef{ID: dpID, DisplayName: dpDisplayName}
-	cv.ProductDetails = &domain.EntityRef{ID: prodID, Name: prodName}
+	cv.DeployedProductDetails = &domain.DeployedProductRef{
+		ID:          &dpID,
+		DisplayName: &dpDisplayName,
+		// The catalogue product the deployed instance was created from. Both
+		// joins are inner, so this data source always has one when it has a
+		// deployed product.
+		Product: &domain.EntityRef{ID: prodID, Name: prodName},
+	}
 	cv.AccountDetails = &domain.AccountRef{ID: accountID, Name: accountName, Type: accountTier}
 	if workState != nil {
 		ws := domain.CaseWorkState(*workState)
 		cv.WorkState = &ws
 	}
-	cv.CreatedByUser = domain.NewUserReference(
-		cv.CreatedByDetails.ID, cv.CreatedByDetails.Email, cv.CreatedByDetails.Name)
+	cv.CreatedBy = domain.NewUserReference(creatorID, creatorEmail, creatorName)
 	if aeID != nil {
-		cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: *aeID, Name: *aeName}
 		// This data source stores no email on the assignee join, only id and name.
-		cv.AssignedEngineerUser = domain.NewUserReference(*aeID, "", *aeName)
+		cv.AssignedEngineer = domain.NewUserReference(*aeID, "", *aeName)
 	}
 	if pcID != nil {
 		// cases.parent_case_id is a foreign key into cases, so a parent resolved from
@@ -200,9 +205,10 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 		RETURNING id, case_id, type, content, created_by, created_at`
 
 	var c domain.CaseComment
+	var createdByID string
 	err := r.db.QueryRow(ctx, query,
 		req.CaseID, string(req.Type), req.Content, req.CreatedBy,
-	).Scan(&c.ID, &c.CaseID, &c.Type, &c.Content, &c.CreatedBy, &c.CreatedOn)
+	).Scan(&c.ID, &c.CaseID, &c.Type, &c.Content, &createdByID, &c.CreatedOn)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 			switch pgErr.Code {
@@ -214,6 +220,9 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 		}
 		return domain.CaseComment{}, fmt.Errorf("create case comment: %w", err)
 	}
+	// The insert returns only the author's id; email and display name would need
+	// a further join, so the reference carries the id alone.
+	c.CreatedBy = domain.NewUserReference(createdByID, "", "")
 	return c, nil
 }
 
@@ -229,7 +238,7 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 	countQuery := `SELECT COUNT(*) FROM case_comments cc WHERE cc.case_id = $1` + typeFilter
 	dataQuery := fmt.Sprintf(`
 		SELECT cc.id, cc.case_id, cc.type, cc.content,
-		       u.id, u.first_name, u.last_name,
+		       u.id, u.email,
 		       TRIM(u.first_name || ' ' || u.last_name) AS full_name,
 		       cc.created_at
 		FROM case_comments cc
@@ -262,13 +271,14 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 		result := make([]domain.CaseComment, 0, req.Pagination.Limit)
 		for rows.Next() {
 			var c domain.CaseComment
+			var authorID, authorEmail, authorName string
 			if err := rows.Scan(
 				&c.ID, &c.CaseID, &c.Type, &c.Content,
-				&c.CreatedBy.ID, &c.CreatedBy.FirstName, &c.CreatedBy.LastName,
-				&c.CreatedBy.FullName, &c.CreatedOn,
+				&authorID, &authorEmail, &authorName, &c.CreatedOn,
 			); err != nil {
 				return fmt.Errorf("scan case comment: %w", err)
 			}
+			c.CreatedBy = domain.NewUserReference(authorID, authorEmail, authorName)
 			result = append(result, c)
 		}
 		if err := rows.Err(); err != nil {
@@ -530,11 +540,12 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			var prodID, prodName string
 			var depID, depName string
 			var dpID, dpName string
+			var creatorEmail string
 			if err := rows.Scan(
 				&cv.ID, &cv.Number, &cv.InternalID,
 				&caseType, &subject, &description, &severity, &issueType, &cv.State,
 				&engagementType, &workState, &createdAt, &updatedAt,
-				&cv.CreatedBy,
+				&creatorEmail,
 				&cv.Project.ID, &cv.Project.Name,
 				&depID, &depName,
 				&dpID, &dpName,
@@ -559,10 +570,9 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			cv.Product = &domain.EntityRef{ID: prodID, Name: prodName}
 			// The search projection carries only the creator's email, no id or
 			// display name, so the canonical reference keeps a null id.
-			cv.CreatedByUser = domain.NewUserReference("", cv.CreatedBy, "")
+			cv.CreatedBy = domain.NewUserReference("", creatorEmail, "")
 			if aeID != nil {
-				cv.AssignedEngineer = &domain.AssignedEngineerRef{ID: *aeID, Name: *aeName}
-				cv.AssignedEngineerUser = domain.NewUserReference(*aeID, "", *aeName)
+				cv.AssignedEngineer = domain.NewUserReference(*aeID, "", *aeName)
 			}
 			if pcID != nil {
 				cv.ParentCase = &domain.EntityRef{ID: *pcID, Name: *pcNumber}

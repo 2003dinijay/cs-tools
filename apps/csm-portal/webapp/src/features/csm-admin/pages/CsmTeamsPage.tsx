@@ -43,7 +43,8 @@ export default function CsmTeamsPage(): JSX.Element {
     [debouncedSearch, page, rowsPerPage],
   );
 
-  const { data, isLoading, isFetching, isError, error } = useSearchTeams(request);
+  const { data, isLoading, isFetching, isError, error, refetch, dataUpdatedAt } =
+    useSearchTeams(request);
 
   const handleSearchChange = (value: string): void => {
     setSearch(value);
@@ -76,6 +77,8 @@ export default function CsmTeamsPage(): JSX.Element {
         onPageChange={setPage}
         rowsPerPage={rowsPerPage}
         onRowsPerPageChange={handleRowsPerPageChange}
+        onRefresh={() => void refetch()}
+        refreshedAt={dataUpdatedAt}
       />
     </Box>
   );

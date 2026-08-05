@@ -207,13 +207,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		snUserHandler = handler.NewSNUserHandler(service.NewServiceNowUserService(serviceNowIntegrationServiceClient))
 	}
 
-	var taskHandler *handler.TaskHandler
+	// Tasks are a ServiceNow-only entity, but the routes are registered for both
+	// data sources: with no handler the mux answers 404, while the OpenAPI spec
+	// documents a 503 ErrorResponse for these paths. The Postgres stand-in
+	// supplies that 503 -- same shape as caseService's ServiceNow-only tag
+	// operations.
+	var activeTaskSvc service.TaskService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		taskHandler = handler.NewTaskHandler(service.NewServiceNowTaskService(serviceNowIntegrationServiceClient))
+		activeTaskSvc = service.NewServiceNowTaskService(serviceNowIntegrationServiceClient)
+	} else {
+		activeTaskSvc = service.NewUnavailableTaskService()
 	}
-
-	roleHandler := handler.NewRoleHandler(service.NewRoleService())
-	teamHandler := handler.NewTeamHandler(service.NewTeamService())
+	taskHandler := handler.NewTaskHandler(activeTaskSvc)
 
 	mux := http.NewServeMux()
 
@@ -278,6 +283,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	if callRequestHandler != nil {
 		mux.HandleFunc("POST /call-requests", callRequestHandler.CreateCallRequest)
 		mux.HandleFunc("POST /call-requests/search", callRequestHandler.SearchCallRequests)
+		mux.HandleFunc("POST /call-requests/search-all", callRequestHandler.SearchAllCallRequests)
 		mux.HandleFunc("PATCH /call-requests/{id}", callRequestHandler.PatchCallRequest)
 	}
 
@@ -322,11 +328,6 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		mux.HandleFunc("POST /groups/search", groupHandler.SearchGroups)
 	}
 
-	// The role catalogue and the team registry are reference data, not data-source
-	// specific, so these are registered unconditionally.
-	mux.HandleFunc("POST /roles/search", roleHandler.SearchRoles)
-	mux.HandleFunc("POST /teams/search", teamHandler.SearchTeams)
-
 	if configurationItemHandler != nil {
 		mux.HandleFunc("POST /configuration-items/search", configurationItemHandler.SearchConfigurationItems)
 	}
@@ -341,18 +342,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		mux.HandleFunc("POST /slas/search", taskSlaHandler.SearchTaskSlas)
 	}
 
-	if taskHandler != nil {
-		mux.HandleFunc("POST /cases/{id}/tasks/search", taskHandler.SearchCaseTasks)
-		mux.HandleFunc("GET /tasks/{id}", taskHandler.GetTask)
-		mux.HandleFunc("POST /cases/{id}/tasks", taskHandler.CreateCaseTask)
-		mux.HandleFunc("PATCH /tasks/{id}", taskHandler.UpdateTask)
-	}
+	// Registered unconditionally; the non-ServiceNow data source is served by
+	// service.NewUnavailableTaskService, which answers 503 (see above).
+	mux.HandleFunc("POST /cases/{id}/tasks/search", taskHandler.SearchCaseTasks)
+	mux.HandleFunc("POST /tasks/search", taskHandler.SearchTasks)
+	mux.HandleFunc("GET /tasks/{id}", taskHandler.GetTask)
+	mux.HandleFunc("POST /cases/{id}/tasks", taskHandler.CreateCaseTask)
+	mux.HandleFunc("PATCH /tasks/{id}", taskHandler.UpdateTask)
 
 	if incidentHandler != nil {
 		mux.HandleFunc("GET /incidents/{id}", incidentHandler.GetIncident)
 		mux.HandleFunc("PATCH /incidents/{id}", incidentHandler.PatchIncident)
 		mux.HandleFunc("POST /incidents", incidentHandler.CreateIncident)
 		mux.HandleFunc("POST /incidents/search", incidentHandler.SearchIncidents)
+		mux.HandleFunc("POST /incidents/{id}/activities/search", incidentHandler.SearchIncidentActivities)
 	}
 
 	if problemHandler != nil {

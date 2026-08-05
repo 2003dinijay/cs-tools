@@ -24,6 +24,7 @@ import {
   GitPullRequest,
   ShieldAlert,
   Users,
+  ListChecks,
   type LucideIcon,
 } from "@wso2/oxygen-ui-icons-react";
 import type { BeWidgetResourceType } from "@api/backend/types";
@@ -41,6 +42,8 @@ import {
   type ChangeRequestFilters,
 } from "@features/csm-operations/utils/changeRequests";
 import { writeChangeRequestFiltersToUrl } from "@features/csm-operations/utils/changeRequestsFiltersUrl";
+import { taskStateLabel } from "@features/csm-cases/utils/taskState";
+import type { BeTaskState } from "@api/backend/types";
 
 /** A resolved search-result row, typed loosely since its real shape depends
  * on `resourceType` — the label extractors below narrow what they read. */
@@ -136,19 +139,50 @@ function caseFilterValues(
   return fieldFilters?.find((f) => f.field === field)?.values;
 }
 
+/** Reads the first entry matching `field` AND `op` in a case widget's
+ * `filters.filters` array, or `undefined` if no such combination is present
+ * — used for fields where the op itself carries meaning (`tag` in vs.
+ * notIn, `escalation`'s value-less isEmpty vs. isNotEmpty, and each
+ * gte/lte range bound), so the wrong op is never silently matched. */
+function caseFilterEntry(
+  fieldFilters: CaseDashboardFieldFilter[] | undefined,
+  field: string,
+  op: string,
+): CaseDashboardFieldFilter | undefined {
+  return fieldFilters?.find((f) => f.field === field && f.op === op);
+}
+
 /**
  * Translate a dashboard widget's opaque case filters (the `POST
  * /cases/search`-shaped `{ filters: BeCaseFieldFilter[] }` body — see
  * `BeCaseSearchFilters`) into the cases list's own `CasesFilters` shape.
- * `tag` has no equivalent in `CasesFilters` today (the case-list tag filter
- * was pulled out of the filter bar/URL — see the note on `CasesFilters.tags`
- * in `casesFiltersUrl.ts`) and is dropped rather than invented.
+ * Every field the case-search DSL supports (see `caseFilterFieldSet` in
+ * `case_filters.go`) now has a home in `CasesFilters` and is passed through
+ * — this used to drop `taskSLABusinessElapsedPercent`, `escalationLevel`/
+ * `escalation`, `integrationCsTeam`, `tag`, `projectOnboardingStatus`,
+ * `projectType`, and the `createdOn`/`updatedOn`/`closedOn` date ranges,
+ * which was the root cause of the click-through data-loss bug this function
+ * exists to fix (a tile reading a filtered count landed on the org-wide
+ * cases list because its filters had nowhere to go). Only `anyOf`,
+ * `parentId`, and `resolutionNotes` remain genuinely dropped: no dashboard
+ * widget uses them today, and `CasesFilters` has no equivalent to invent one
+ * for without guessing at a UI treatment.
+ *
  * `assignedUserId` carries the current user's own UUID (every widget that
  * sets it does so via the current-user placeholder), and
  * `CasesFilters.assignees` is email/`@me`-based with no UUID lookup
  * available here — since these widgets only ever filter "assigned to me",
  * any non-empty `assignedUserId` maps to the `@me` sentinel rather than an
  * (unresolvable) literal UUID.
+ *
+ * `tag`'s two ops (`in`/`notIn`) map to the two distinct `CasesFilters`
+ * fields `tags`/`excludeTags` — never a single field plus an inferred op —
+ * so a `notIn` widget filter can never decode as `tags` (an inclusion) the
+ * way the equivalent bug shipped once in the dashboard preview URL (see
+ * `casesFiltersUrl.ts`'s `writeCasesFiltersToUrl` doc comment for the full
+ * story). Likewise `escalation`'s value-less `isEmpty`/`isNotEmpty` map to
+ * the explicit tri-state `hasEscalation` (`false`/`true`), never silently
+ * defaulted when absent (`undefined`, i.e. not touched in `out`).
  */
 function translateCaseDashboardFilters(
   filters: Record<string, unknown>,
@@ -170,6 +204,70 @@ function translateCaseDashboardFilters(
   if (productNames && productNames.length > 0) out.productNames = productNames;
   const assignedUserIds = caseFilterValues(fieldFilters, "assignedUserId");
   if (assignedUserIds && assignedUserIds.length > 0) out.assignees = ["@me"];
+  const engagementTypes = caseFilterValues(fieldFilters, "engagementType");
+  if (engagementTypes && engagementTypes.length > 0) {
+    out.engagementTypes = engagementTypes as CasesFilters["engagementTypes"];
+  }
+  const workStates = caseFilterValues(fieldFilters, "workState");
+  if (workStates && workStates.length > 0) {
+    out.workStates = workStates as CasesFilters["workStates"];
+  }
+
+  const csTeams = caseFilterValues(fieldFilters, "integrationCsTeam");
+  if (csTeams && csTeams.length > 0) out.csTeams = csTeams;
+
+  // `tag` in vs. notIn -> two distinct CasesFilters fields, matched by
+  // field+op together so one can never be mistaken for the other.
+  const tags = caseFilterEntry(fieldFilters, "tag", "in")?.values;
+  if (tags && tags.length > 0) out.tags = tags;
+  const excludeTags = caseFilterEntry(fieldFilters, "tag", "notIn")?.values;
+  if (excludeTags && excludeTags.length > 0) out.excludeTags = excludeTags;
+
+  const onboardingStatuses = caseFilterValues(fieldFilters, "projectOnboardingStatus");
+  if (onboardingStatuses && onboardingStatuses.length > 0) {
+    out.onboardingStatuses = onboardingStatuses;
+  }
+
+  const slaGte = caseFilterEntry(fieldFilters, "taskSLABusinessElapsedPercent", "gte")
+    ?.values?.[0];
+  if (slaGte !== undefined) {
+    const n = Number(slaGte);
+    if (Number.isInteger(n) && n >= 0) out.slaElapsedPctGte = n;
+  }
+  const slaLte = caseFilterEntry(fieldFilters, "taskSLABusinessElapsedPercent", "lte")
+    ?.values?.[0];
+  if (slaLte !== undefined) {
+    const n = Number(slaLte);
+    if (Number.isInteger(n) && n >= 0) out.slaElapsedPctLte = n;
+  }
+
+  // Value-less predicate: presence of the entry (matched by op alone, no
+  // `values` to read) is the whole filter -- must not be skipped for
+  // "having nothing to read", the exact failure mode `writeWidgetPreviewHref`
+  // shipped once for `isEmpty`/`isNotEmpty` entries generally.
+  if (caseFilterEntry(fieldFilters, "escalation", "isNotEmpty")) out.hasEscalation = true;
+  else if (caseFilterEntry(fieldFilters, "escalation", "isEmpty")) out.hasEscalation = false;
+
+  const escalationLevels = caseFilterValues(fieldFilters, "escalationLevel");
+  if (escalationLevels && escalationLevels.length > 0) {
+    out.escalationLevels = escalationLevels;
+  }
+
+  const projectTypes = caseFilterValues(fieldFilters, "projectType");
+  if (projectTypes && projectTypes.length > 0) out.projectTypes = projectTypes;
+
+  const dateRangeFields: [string, keyof CasesFilters, keyof CasesFilters][] = [
+    ["createdOn", "createdOnGte", "createdOnLte"],
+    ["updatedOn", "updatedOnGte", "updatedOnLte"],
+    ["closedOn", "closedOnGte", "closedOnLte"],
+  ];
+  for (const [beField, gteKey, lteKey] of dateRangeFields) {
+    const gte = caseFilterEntry(fieldFilters, beField, "gte")?.values?.[0];
+    if (gte !== undefined) (out as Record<string, unknown>)[gteKey] = gte;
+    const lte = caseFilterEntry(fieldFilters, beField, "lte")?.values?.[0];
+    if (lte !== undefined) (out as Record<string, unknown>)[lteKey] = lte;
+  }
+
   return out;
 }
 
@@ -354,6 +452,45 @@ export const WIDGET_RESOURCE_CONFIG: Record<
     icon: ShieldAlert,
     iconColor: "error",
     previewSlug: "vulnerabilities",
+  },
+  task: {
+    searchEndpoint: "/tasks/search",
+    itemsKey: "tasks",
+    primaryLabel: (item) => asString(item.subject) ?? "—",
+    secondaryLabel: (item) => {
+      const state = asString(item.state);
+      return state ? taskStateLabel(state as BeTaskState) : undefined;
+    },
+    // Tasks have no standalone list page today (they're only ever shown
+    // inside a case's own Tasks tab) -- clicking a task widget's tile stays
+    // on the dashboard rather than 404ing. Revisit once/if a dedicated tasks
+    // list page exists.
+    buildHref: () => "/dashboard",
+    icon: ListChecks,
+    iconColor: "warning",
+    previewSlug: "tasks",
+  },
+  call_request: {
+    searchEndpoint: "/call-requests/search",
+    itemsKey: "callRequests",
+    primaryLabel: (item) => {
+      const number = asString(item.number);
+      const reason = asString(item.reason);
+      return [number, reason].filter(Boolean).join(" — ") || "—";
+    },
+    secondaryLabel: (item) => {
+      const state = item.state as { label?: string } | undefined;
+      return state?.label;
+    },
+    // No widget filters a call request by anything the cases list can render as a
+    // filtered view (state keys differ entirely from case state), so the tile-level
+    // "view all" click has nowhere sensible to land other than the dashboard itself
+    // -- unlike a per-row click, which goes straight to the owning case (see the
+    // list renderer in widgetListConfig.tsx, not this file).
+    buildHref: () => "/dashboard",
+    icon: Clock,
+    iconColor: "info",
+    previewSlug: "call-requests",
   },
 };
 

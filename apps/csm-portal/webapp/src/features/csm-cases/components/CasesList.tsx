@@ -17,18 +17,23 @@
 import {
   Box,
   Chip,
+  IconButton,
   Skeleton,
   TableSortLabel,
+  Tooltip,
   Typography,
   useTheme,
 } from "@wso2/oxygen-ui";
-import type { JSX } from "react";
+import { Eye } from "@wso2/oxygen-ui-icons-react";
+import { useState, type JSX } from "react";
 import { Link as RouterLink, useLocation } from "react-router";
+import { useNavTransition } from "@hooks/useNavTransition";
 import { preloadRoute } from "@utils/routePreloaders";
 import RelativeTime from "@components/RelativeTime";
 import SeverityChip from "@components/SeverityChip";
 import StateChip from "@components/StateChip";
 import WorkStateChip from "@components/WorkStateChip";
+import CasePreviewDrawer from "@features/csm-cases/components/CasePreviewDrawer";
 import type { CsmCaseRow } from "@features/csm-cases/types/csmCases";
 import type { CasesSortOrder } from "@features/csm-cases/utils/casesSort";
 import {
@@ -83,11 +88,13 @@ const HEADER_CELLS_WITHOUT_SEVERITY: string[] = [
 // Subject gets the lion's share of the row; the ids sit in their own narrow
 // column so a long subject no longer has to share one cell with them.
 // The work-state chip (only present for WIP cases) stacks under the State chip
-// in the State column, so it doesn't need a column of its own.
+// in the State column, so it doesn't need a column of its own. The trailing
+// `auto` track (unlabeled in the header, like the one before it for "Updated")
+// holds the per-row quick-preview action.
 const GRID_WITH_SEVERITY =
-  "minmax(120px, 0.9fr) minmax(280px, 3fr) minmax(140px, 1fr) auto auto minmax(110px, 1fr) auto";
+  "minmax(120px, 0.9fr) minmax(280px, 3fr) minmax(140px, 1fr) auto auto minmax(110px, 1fr) auto auto";
 const GRID_WITHOUT_SEVERITY =
-  "minmax(120px, 0.9fr) minmax(280px, 3fr) minmax(140px, 1fr) minmax(110px, 1fr) auto";
+  "minmax(120px, 0.9fr) minmax(280px, 3fr) minmax(140px, 1fr) minmax(110px, 1fr) auto auto";
 
 export default function CasesList({
   cases,
@@ -100,6 +107,8 @@ export default function CasesList({
 }: CasesListProps): JSX.Element {
   const theme = useTheme();
   const location = useLocation();
+  const navigate = useNavTransition();
+  const [previewRow, setPreviewRow] = useState<CsmCaseRow | null>(null);
   const headerCells = hideSeverityColumn
     ? HEADER_CELLS_WITHOUT_SEVERITY
     : HEADER_CELLS_WITH_SEVERITY;
@@ -175,6 +184,13 @@ export default function CasesList({
             Updated
           </Typography>
         )}
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ fontWeight: 600, textAlign: "left" }}
+        >
+          Preview
+        </Typography>
       </Box>
 
       {/* Rows */}
@@ -206,19 +222,26 @@ export default function CasesList({
       {!isLoading &&
         cases.map((c) => {
           const rowBasePath = detailBasePath ?? caseTypeDetailBasePath(c.caseType);
+          const rowState = { from: `${location.pathname}${location.search}` };
+          const rowLabel = c.wso2CaseId || c.caseNumber || c.subject;
           return (
-            // A real anchor (not a click-handler div) so the row supports
-            // cmd/middle-click "open in new tab" — essential when an engineer
-            // pulls up other cases for reference — and exposes a copyable URL
-            // (ISSU-031). RouterLink keeps plain left-click as in-app SPA nav.
             <Box
               key={c.id}
-              component={RouterLink}
-              to={`${rowBasePath}/${c.id}`}
-              // Carries the current (filtered) list URL forward so the detail
-              // page's back button can return to it instead of a bare,
-              // filter-less list path.
-              state={{ from: `${location.pathname}${location.search}` }}
+              onClick={(e) => {
+                // The case-id block below is a real RouterLink: a plain click
+                // on it already navigates via its own handler (which calls
+                // preventDefault), and that click still bubbles up here — do
+                // nothing in that case, or this would push a second, duplicate
+                // history entry for the same destination. A modified click
+                // (cmd/ctrl/shift/alt) on that link deliberately does *not*
+                // preventDefault — react-router leaves it to the browser to
+                // open a new tab — so skip here too, or this would navigate
+                // the current tab away from the list while a new tab is also
+                // opening, defeating the point of cmd-click "open in new tab
+                // for reference" the link exists for.
+                if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                navigate(`${rowBasePath}/${c.id}`, { state: rowState });
+              }}
               onMouseEnter={() => preloadRoute(rowBasePath)}
               sx={{
                 gridColumn: "1 / -1",
@@ -231,21 +254,39 @@ export default function CasesList({
                 borderBottom: 1,
                 borderColor: "divider",
                 cursor: "pointer",
-                color: "inherit",
-                textDecoration: "none",
                 "&:hover": {
                   bgcolor: "action.hover",
-                },
-                "&:focus-visible": {
-                  outline: `2px solid ${theme.palette.primary.main}`,
-                  outlineOffset: -2,
                 },
                 "&:last-of-type": { borderBottom: 0 },
               }}
             >
               {/* Case ids: WSO2 internal id on top, CS number beneath. Never
-                  the UUID. "—" when the case has neither yet. */}
-              <Box sx={{ minWidth: 0 }}>
+                  the UUID. "—" when the case has neither yet. This block is
+                  the row's one real anchor — cmd/middle-click "open in new
+                  tab" (essential when pulling up other cases for reference),
+                  a copyable URL (ISSU-031), and a keyboard tab stop. The rest
+                  of the row relies on the onClick above for a mouse click
+                  anywhere in it; making the whole row a real anchor (or a
+                  role="button" override) would either force the quick-preview
+                  button below into invalid button-inside-anchor nesting, or
+                  strip the row's cells of their own semantics. */}
+              <Box
+                component={RouterLink}
+                to={`${rowBasePath}/${c.id}`}
+                state={rowState}
+                aria-label={`Open ${rowLabel}`}
+                sx={{
+                  minWidth: 0,
+                  color: "inherit",
+                  textDecoration: "none",
+                  display: "block",
+                  "&:focus-visible": {
+                    outline: `2px solid ${theme.palette.primary.main}`,
+                    outlineOffset: 2,
+                    borderRadius: 0.5,
+                  },
+                }}
+              >
                 {c.wso2CaseId && (
                   <Typography
                     variant="body2"
@@ -328,9 +369,26 @@ export default function CasesList({
               <Typography variant="caption" color="text.secondary" noWrap>
                 <RelativeTime iso={c.updatedAt} />
               </Typography>
+              {/* Quick preview. `stopPropagation` keeps the click from also
+                  bubbling up into the row's own onClick (which would open the
+                  full case instead of just previewing it). */}
+              <Tooltip title={`Quick preview ${rowLabel}`}>
+                <IconButton
+                  size="small"
+                  aria-label={`Quick preview ${rowLabel}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPreviewRow(c);
+                  }}
+                  sx={{ justifySelf: "center" }}
+                >
+                  <Eye size={16} />
+                </IconButton>
+              </Tooltip>
             </Box>
           );
         })}
+      <CasePreviewDrawer row={previewRow} onClose={() => setPreviewRow(null)} />
     </Box>
   );
 }

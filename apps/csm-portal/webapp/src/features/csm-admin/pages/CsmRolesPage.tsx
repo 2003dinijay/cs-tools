@@ -42,7 +42,8 @@ export default function CsmRolesPage(): JSX.Element {
     [debouncedSearch, page, rowsPerPage],
   );
 
-  const { data, isLoading, isFetching, isError, error } = useSearchRoles(request);
+  const { data, isLoading, isFetching, isError, error, refetch, dataUpdatedAt } =
+    useSearchRoles(request);
 
   const handleSearchChange = (value: string): void => {
     setSearch(value);
@@ -75,6 +76,8 @@ export default function CsmRolesPage(): JSX.Element {
         onPageChange={setPage}
         rowsPerPage={rowsPerPage}
         onRowsPerPageChange={handleRowsPerPageChange}
+        onRefresh={() => void refetch()}
+        refreshedAt={dataUpdatedAt}
       />
     </Box>
   );

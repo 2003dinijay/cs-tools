@@ -65,7 +65,7 @@ const DASHBOARD_DETAIL = {
       resourceType: "case",
       shape: "count",
       gridWidth: 3,
-      filters: { assignedUserIds: ["user-1"], tags: ["patch"] },
+      query: { assignedUserIds: ["user-1"], tags: ["patch"] },
     },
     {
       widgetId: "my_reminders",
@@ -73,7 +73,7 @@ const DASHBOARD_DETAIL = {
       resourceType: "case",
       shape: "count",
       gridWidth: 3,
-      filters: { assignedUserIds: ["user-1"], states: ["awaiting_info"] },
+      query: { assignedUserIds: ["user-1"], states: ["awaiting_info"] },
     },
     {
       widgetId: "open_incident_team",
@@ -81,7 +81,7 @@ const DASHBOARD_DETAIL = {
       resourceType: "case",
       shape: "count",
       gridWidth: 3,
-      filters: { tags: ["s_dip"] },
+      query: { tags: ["s_dip"] },
     },
   ],
 };
@@ -158,34 +158,25 @@ describe("AgentsLandingPagePilot", () => {
     expect(screen.queryByText("3")).not.toBeInTheDocument();
   });
 
-  it("shows skeleton tiles again and re-fetches every widget's own data when refresh is clicked", async () => {
-    getMock.mockResolvedValueOnce(DASHBOARD_DETAIL);
+  it("re-fetches only that section's own widgets when its refresh button is clicked, without re-pulling the dashboard config", async () => {
+    getMock.mockResolvedValue(DASHBOARD_DETAIL);
     postMock.mockResolvedValue(searchResponseFor(3));
 
-    const { container } = renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
+    renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
     await waitFor(() => expect(screen.getByText("My Patches")).toBeInTheDocument());
     expect(postMock).toHaveBeenCalledTimes(3);
+    expect(getMock).toHaveBeenCalledTimes(1);
 
-    let resolveRefetch: (value: typeof DASHBOARD_DETAIL) => void = () => {};
-    getMock.mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveRefetch = resolve;
-      }),
-    );
+    // All three DASHBOARD_DETAIL widgets are unsectioned, so they share the
+    // one untitled default group — its refresh button carries a plain
+    // "Refresh section" label (no section name to fold into it).
+    fireEvent.click(screen.getByRole("button", { name: "Refresh section" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Refresh widget pilot" }));
-
-    // Skeletons reappear immediately, before the held-open refetch resolves —
-    // not just stale tiles sitting there while new data loads underneath.
-    await waitFor(() =>
-      expect(container.querySelectorAll(".MuiSkeleton-root").length).toBe(3),
-    );
-
-    resolveRefetch(DASHBOARD_DETAIL);
-
-    // Every widget's own /cases/search re-runs too, not just the dashboard
-    // metadata — 3 more calls on top of the initial 3.
+    // Every widget in that section re-runs its own /cases/search — 3 more
+    // calls on top of the initial 3 — but the dashboard's own metadata GET
+    // is not re-pulled (a section refresh is data-only).
     await waitFor(() => expect(postMock).toHaveBeenCalledTimes(6));
+    expect(getMock).toHaveBeenCalledTimes(1);
     expect(screen.getByText("My Patches")).toBeInTheDocument();
   });
 
@@ -201,7 +192,7 @@ describe("AgentsLandingPagePilot", () => {
           resourceType: "case",
           shape: "count",
           gridWidth: 6,
-          filters: {},
+          query: {},
         },
         {
           widgetId: "incident_wow",
@@ -210,7 +201,7 @@ describe("AgentsLandingPagePilot", () => {
           resourceType: "case",
           shape: "count",
           gridWidth: 6,
-          filters: {},
+          query: {},
         },
         {
           widgetId: "query_wow",
@@ -219,7 +210,7 @@ describe("AgentsLandingPagePilot", () => {
           resourceType: "case",
           shape: "count",
           gridWidth: 6,
-          filters: {},
+          query: {},
         },
       ],
     });
@@ -234,5 +225,33 @@ describe("AgentsLandingPagePilot", () => {
     // Exactly one "SLA Violation" heading — both of its widgets share the
     // section, they don't each get their own repeated heading.
     expect(screen.getAllByText("SLA Violation")).toHaveLength(1);
+  });
+
+  it("resolves the {{currentTeam}} text token in a section heading, same as a widget's own displayName", async () => {
+    getMock.mockResolvedValue({
+      id: "team_performance",
+      displayName: "Team performance",
+      isDefault: false,
+      widgets: [
+        {
+          widgetId: "team_open_cases",
+          displayName: "Team Open P0/P1",
+          section: "Overall - {{currentTeam}}",
+          resourceType: "case",
+          shape: "count",
+          gridWidth: 6,
+          query: {},
+        },
+      ],
+    });
+    postMock.mockResolvedValue(searchResponseFor(1));
+
+    renderWithClient(
+      <AgentsLandingPagePilot dashboardId="team_performance" selectedTeamLabel="Castor" />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Team Open P0/P1")).toBeInTheDocument());
+    expect(screen.getByText("Overall - Castor")).toBeInTheDocument();
+    expect(screen.queryByText(/{{currentTeam}}/)).not.toBeInTheDocument();
   });
 });

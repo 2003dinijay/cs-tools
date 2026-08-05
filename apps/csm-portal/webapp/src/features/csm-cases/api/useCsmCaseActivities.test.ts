@@ -33,10 +33,9 @@ describe("auditEntryFromBeActivity", () => {
       id: "fc-1",
       type: "field_change",
       createdOn: "2026-07-01T00:00:00Z",
-      createdBy: "jane.doe@example.com",
+      createdBy: { id: null, email: "jane.doe@example.com", name: "Jane Doe" },
       createdByFirstName: "Jane",
       createdByLastName: "Doe",
-      createdByFullName: "Jane Doe",
       changes: [
         {
           field: "state",
@@ -53,6 +52,7 @@ describe("auditEntryFromBeActivity", () => {
       id: "fc-1",
       kind: "field_change",
       actor: "Jane Doe",
+      actorUser: { id: null, email: "jane.doe@example.com", name: "Jane Doe" },
       createdAt: "2026-07-01T00:00:00Z",
       changes: [
         {
@@ -65,8 +65,8 @@ describe("auditEntryFromBeActivity", () => {
     });
   });
 
-  it("falls back to first+last name, then the bare email, when fullName is absent", () => {
-    const noFullName: BeCaseActivityEntry = {
+  it("falls back to first+last name, then the bare email, when createdBy.name is absent", () => {
+    const noName: BeCaseActivityEntry = {
       id: "fc-2",
       type: "field_change",
       createdOn: "2026-07-01T00:00:00Z",
@@ -74,13 +74,13 @@ describe("auditEntryFromBeActivity", () => {
       createdByLastName: "Doe",
       changes: [],
     };
-    expect(auditEntryFromBeActivity(noFullName).actor).toBe("Jane Doe");
+    expect(auditEntryFromBeActivity(noName).actor).toBe("Jane Doe");
 
     const emailOnly: BeCaseActivityEntry = {
       id: "fc-3",
       type: "field_change",
       createdOn: "2026-07-01T00:00:00Z",
-      createdBy: "jane.doe@example.com",
+      createdBy: { id: null, email: "jane.doe@example.com", name: "" },
       changes: [],
     };
     expect(auditEntryFromBeActivity(emailOnly).actor).toBe(
@@ -101,7 +101,7 @@ describe("auditEntryFromBeActivity", () => {
       id: "fc-5",
       type: "field_change",
       createdOn: "2026-07-01T00:00:00Z",
-      createdByFullName: "Jane Doe",
+      createdBy: { id: null, email: "jane.doe@example.com", name: "Jane Doe" },
     };
     expect(auditEntryFromBeActivity(entry).changes).toEqual([]);
   });

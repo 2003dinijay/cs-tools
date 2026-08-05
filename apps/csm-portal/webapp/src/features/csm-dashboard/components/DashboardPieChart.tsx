@@ -17,7 +17,7 @@
 import { Box, Skeleton, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
 import { Inbox } from "@wso2/oxygen-ui-icons-react";
 import { Cell, Pie, PieChart } from "@wso2/oxygen-ui-charts-react";
-import { useState, type JSX } from "react";
+import { useState, type JSX, type KeyboardEvent, type SyntheticEvent } from "react";
 import type { BeWidgetPaletteColor } from "@api/backend/types";
 import type { PieSliceResult } from "@features/csm-dashboard/api/useWidgetPieData";
 import { useDarkMode } from "@utils/useDarkMode";
@@ -150,8 +150,17 @@ export default function DashboardPieChart({
             180x180 box, making the top of the donut look pushed toward /
             cut off by this tile's own header above it. */}
         <PieChart
-          width="100%"
-          height="100%"
+          // Explicit pixel size, not "100%": the parent Box just above is
+          // already a fixed CHART_SIZE_PX square, not a responsive/percentage
+          // container, so there's nothing for a percentage width/height to
+          // measure against except an internal ResizeObserver callback --
+          // that callback fires one tick after first paint, so the chart's
+          // very first render sees width/height as -1 (a real, harmless but
+          // noisy console warning: "The width(-1) and height(-1) of chart
+          // should be greater than 0"). Passing the known constant directly
+          // sizes it synchronously on the first render, no observer race.
+          width={CHART_SIZE_PX}
+          height={CHART_SIZE_PX}
           legend={{ show: false }}
           margin={{ top: 0, right: 0, bottom: 0, left: 0 }}
           tooltip={{ show: true, wrapperStyle: { zIndex: 1000 } }}
@@ -171,7 +180,14 @@ export default function DashboardPieChart({
             labelLine={false}
             onMouseEnter={(_data: unknown, i: number) => setActiveIndex(i)}
             onMouseLeave={() => setActiveIndex(undefined)}
-            onClick={(_data: unknown, i: number) => {
+            // Stops the click from also bubbling up to the tile-level
+            // click-through `DashboardWidgetTile` attaches to the whole
+            // card for `shape: "pie"`/`"bar"` — without this, clicking a
+            // wedge would navigate to the slice's own filtered list AND
+            // then (via bubbling) immediately re-navigate to the tile's
+            // base-filtered list.
+            onClick={(_data: unknown, i: number, event?: SyntheticEvent) => {
+              event?.stopPropagation();
               const slice = slices[i];
               if (slice) onSliceClick(slice);
             }}
@@ -210,7 +226,24 @@ export default function DashboardPieChart({
           return (
             <Box
               key={slice.label}
-              onClick={() => onSliceClick(slice)}
+              role="button"
+              tabIndex={0}
+              aria-label={`${slice.label}: ${slice.value} cases (${pct}%)`}
+              // stopPropagation for the same reason as the wedge's own
+              // onClick above — this row sits inside the tile-level
+              // click-through `DashboardWidgetTile` attaches for
+              // shape "pie"/"bar".
+              onClick={(event) => {
+                event.stopPropagation();
+                onSliceClick(slice);
+              }}
+              onKeyDown={(event: KeyboardEvent) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onSliceClick(slice);
+                }
+              }}
               sx={{
                 display: "flex",
                 alignItems: "center",
@@ -220,6 +253,10 @@ export default function DashboardPieChart({
                 borderRadius: 1,
                 cursor: "pointer",
                 "&:hover": { bgcolor: "action.hover" },
+                "&:focus-visible": {
+                  outline: `2px solid ${theme.palette.primary.main}`,
+                  outlineOffset: -2,
+                },
               }}
             >
               <Box

@@ -55,23 +55,13 @@ type User struct {
 	UpdatedOn time.Time `json:"updatedOn"`
 }
 
-// UserRole represents a ServiceNow role that can be assigned to a user.
+// UserRole is a role that can be assigned to a user in the backing data
+// source. It is deliberately an open string type with no enumerated
+// constants: this service does not validate role values. The assignable-role
+// allow-list is configuration, and it lives in the caller (the portal
+// backend's directory package), which is what rejects an unknown role. An
+// enum here would read as validation that no longer happens.
 type UserRole string
-
-const (
-	UserRoleInternal      UserRole = "internal"
-	UserRoleAgent         UserRole = "agent"
-	UserRoleAdmin         UserRole = "admin"
-	UserRoleCommenter     UserRole = "commenter"
-	UserRoleExternal      UserRole = "external"
-	UserRoleCustomer      UserRole = "customer"
-	UserRoleCustomerAdmin UserRole = "customer_admin"
-	UserRolePartner       UserRole = "partner"
-	UserRolePartnerAdmin  UserRole = "partner_admin"
-	// UserRoleTimecardApprover exists upstream but was absent from this enum, so it
-	// could not be filtered on.
-	UserRoleTimecardApprover UserRole = "timecard_approver"
-)
 
 // UserSortField enumerates the columns by which user search results may be ordered.
 type UserSortField string
@@ -111,10 +101,13 @@ type SearchUsersFilters struct {
 	// set before the upstream call, since the data source cannot join users against
 	// group membership in one query.
 	GroupIDs []string `json:"groupIds"`
-	// TeamIDs restricts the search to members of these teams, by team key. Teams are
-	// resolved to their group names via the registry, then to a user-ID set.
-	TeamIDs []string `json:"teamIds"`
-	Active  *bool    `json:"active"`
+	// GroupNames restricts the search to members of the groups with these exact display
+	// names, resolved to a user-ID set the same way GroupIDs is. It exists alongside
+	// GroupIDs because the caller's team registry is keyed by group name: group ids
+	// differ between environments while the names do not, and not every configured team
+	// carries an id at all.
+	GroupNames []string `json:"groupNames"`
+	Active     *bool    `json:"active"`
 }
 
 // UserSortBy specifies the sort field and direction for a user search.
@@ -166,10 +159,9 @@ type SNUser struct {
 // upstream lookup fails, so a partial profile still renders instead of erroring.
 type SNUserDetail struct {
 	SNUser
-	// Groups is every group the user belongs to.
+	// Groups is every group the user belongs to. Which of them are teams is the
+	// caller's determination, since the team registry is the caller's configuration.
 	Groups []UserGroupRef `json:"groups"`
-	// Teams is the subset of Groups that are registry teams.
-	Teams []UserTeamRef `json:"teams"`
 	// ProjectAccess is populated for external contacts only; it is nil for staff.
 	ProjectAccess []UserProjectAccess `json:"projectAccess,omitempty"`
 }
@@ -178,14 +170,6 @@ type SNUserDetail struct {
 type UserGroupRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-}
-
-// UserTeamRef is a team the user is a member of. ID is the registry team key, which is
-// stable across environments -- unlike the underlying group id.
-type UserTeamRef struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Family string `json:"family,omitempty"`
 }
 
 // UserProjectAccess is one project-contact row for a user, reported as stored rather than
@@ -215,72 +199,12 @@ type UserProjectAccess struct {
 	GrantsCaseAccess     bool     `json:"grantsCaseAccess"`
 }
 
-// Role is an assignable platform role.
-type Role struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-// SearchRolesRequest is the input for POST /roles/search.
-type SearchRolesRequest struct {
-	Filters    SearchRolesFilters `json:"filters"`
-	Pagination Pagination         `json:"pagination"`
-}
-
-// SearchRolesFilters holds optional filter criteria for role searches.
-type SearchRolesFilters struct {
-	SearchQuery string `json:"searchQuery,omitempty"`
-}
-
-// SearchRolesResponse is the paginated result of a role search.
-type SearchRolesResponse struct {
-	Roles  []Role `json:"roles"`
-	Total  int    `json:"total"`
-	Offset int    `json:"offset"`
-	Limit  int    `json:"limit"`
-}
-
-// Team is one of the organisation's teams. ID is the registry key, stable across
-// environments; the backing group's id is not.
-type Team struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Family string `json:"family,omitempty"`
-}
-
-// SearchTeamsRequest is the input for POST /teams/search.
-type SearchTeamsRequest struct {
-	Filters    SearchTeamsFilters `json:"filters"`
-	Pagination Pagination         `json:"pagination"`
-}
-
-// SearchTeamsFilters holds optional filter criteria for team searches.
-type SearchTeamsFilters struct {
-	SearchQuery string `json:"searchQuery,omitempty"`
-}
-
-// SearchTeamsResponse is the paginated result of a team search.
-type SearchTeamsResponse struct {
-	Teams  []Team `json:"teams"`
-	Total  int    `json:"total"`
-	Offset int    `json:"offset"`
-	Limit  int    `json:"limit"`
-}
-
 // SearchSNUsersResponse is the paginated result of a ServiceNow user search.
 type SearchSNUsersResponse struct {
 	Users  []SNUser `json:"users"`
 	Total  int      `json:"total"`
 	Limit  int      `json:"limit"`
 	Offset int      `json:"offset"`
-}
-
-// UserTeam identifies the caller's resolved ABT (Account-Based Team),
-// derived live from ServiceNow group membership on every GET /users/me call.
-type UserTeam struct {
-	TeamKey  string `json:"teamKey"`
-	TeamName string `json:"teamName"`
-	Family   string `json:"family"` // "cre" | "sre"
 }
 
 // GetUserMeResponse is the response for GET /users/me from the ServiceNow data source.
@@ -291,10 +215,11 @@ type GetUserMeResponse struct {
 	LastName  string   `json:"lastName"`
 	TimeZone  *string  `json:"timeZone,omitempty"`
 	Roles     []string `json:"roles"`
-	// Team is nil when the caller has no resolvable ABT team membership, or
-	// when team resolution failed — team resolution is best-effort and never
-	// fails the identity response.
-	Team *UserTeam `json:"team,omitempty"`
+	// Groups is every group the caller belongs to, which is what a caller
+	// holding the team registry needs to resolve their team. Empty when the
+	// membership lookup failed — it is best-effort and never fails the
+	// identity response.
+	Groups []UserGroupRef `json:"groups"`
 }
 
 // PatchUserMeRequest is the request body for PATCH /users/me.
@@ -382,13 +307,19 @@ type SNAccountView struct {
 	TechnicalOwner        *PersonRef `json:"technicalOwner"`
 	AccountManager        *PersonRef `json:"accountManager"`
 	RenewalAccountManager *PersonRef `json:"renewalAccountManager"`
-	ActivationDate        string     `json:"activationDate"`
-	DeactivationDate      *string    `json:"deactivationDate"`
-	HasAgent              bool       `json:"hasAgent"`
-	HasKbReferences       bool       `json:"hasKbReferences"`
-	CreatedOn             string     `json:"createdOn"`
-	CreatedBy             *string    `json:"createdBy"`
-	UpdatedOn             string     `json:"updatedOn"`
+	// CreTeam is the account's CRE (customer relationship engineering) team, resolved to a
+	// named group reference (ServiceNow data source only). Mirrors AccountRef.CreTeam.
+	CreTeam *EntityRef `json:"creTeam,omitempty"`
+	// SreTeam is the account's SRE team, resolved to a named group reference (ServiceNow
+	// data source only). Mirrors AccountRef.SreTeam.
+	SreTeam          *EntityRef `json:"sreTeam,omitempty"`
+	ActivationDate   string     `json:"activationDate"`
+	DeactivationDate *string    `json:"deactivationDate"`
+	HasAgent         bool       `json:"hasAgent"`
+	HasKbReferences  bool       `json:"hasKbReferences"`
+	CreatedOn        string     `json:"createdOn"`
+	CreatedBy        *string    `json:"createdBy"`
+	UpdatedOn        string     `json:"updatedOn"`
 }
 
 // SearchSNAccountsResponse is the paginated result of a ServiceNow account search.
@@ -420,13 +351,19 @@ type SNAccountDetail struct {
 	TechnicalOwner        *PersonRef        `json:"technicalOwner"`
 	AccountManager        *PersonRef        `json:"accountManager"`
 	RenewalAccountManager *PersonRef        `json:"renewalAccountManager"`
-	ActivationDate        string            `json:"activationDate"`
-	DeactivationDate      *string           `json:"deactivationDate"`
-	HasAgent              bool              `json:"hasAgent"`
-	HasKbReferences       bool              `json:"hasKbReferences"`
-	CreatedOn             string            `json:"createdOn"`
-	CreatedBy             *string           `json:"createdBy"`
-	UpdatedOn             string            `json:"updatedOn"`
+	// CreTeam is the account's CRE (customer relationship engineering) team, resolved to a
+	// named group reference (ServiceNow data source only). Mirrors AccountRef.CreTeam.
+	CreTeam *EntityRef `json:"creTeam,omitempty"`
+	// SreTeam is the account's SRE team, resolved to a named group reference (ServiceNow
+	// data source only). Mirrors AccountRef.SreTeam.
+	SreTeam          *EntityRef `json:"sreTeam,omitempty"`
+	ActivationDate   string     `json:"activationDate"`
+	DeactivationDate *string    `json:"deactivationDate"`
+	HasAgent         bool       `json:"hasAgent"`
+	HasKbReferences  bool       `json:"hasKbReferences"`
+	CreatedOn        string     `json:"createdOn"`
+	CreatedBy        *string    `json:"createdBy"`
+	UpdatedOn        string     `json:"updatedOn"`
 }
 
 // SubscriptionType classifies the subscription type of a project.
@@ -1105,14 +1042,6 @@ type Case struct {
 	ClosedOn          *time.Time     `json:"closedOn"`
 }
 
-// UserRef is a reference to a user with key display fields.
-type UserRef struct {
-	ID     string `json:"id,omitempty"`
-	Name   string `json:"name,omitempty"`
-	UserID string `json:"userId,omitempty"`
-	Email  string `json:"email"`
-}
-
 // AssignedEngineerRef is a compact reference to an assigned support engineer.
 type AssignedEngineerRef struct {
 	ID    string  `json:"id"`
@@ -1196,9 +1125,8 @@ type PersonRef struct {
 
 // UserReference is the canonical reference to a person appearing anywhere in
 // this service's responses: exactly the user's id, email and display name.
-// Every person-valued field carries one as a sibling of whatever
-// actor fields that response already returned, so a consumer has a single
-// shape for "who did this", whichever entity it hangs off.
+// Every person-valued field is one of these, so a consumer has a single shape
+// for "who did this", whichever entity it hangs off.
 //
 // ID is a pointer, serialized as an explicit null and never omitted, and that
 // is deliberate — do not "fix" it.
@@ -1240,50 +1168,65 @@ func NewUserReference(id, email, name string) *UserReference {
 }
 
 // DeployedProductRef is a compact reference to a deployed product with a
-// computed display name combining the product name and version.
+// computed display name combining the product name and version, plus the
+// product catalogue entry that instance was deployed from.
+//
+// Product is a genuinely different record from the deployed product itself,
+// with its own id: the deployed product is one installed instance, Product is
+// the catalogue entry it came from. The two often read alike because a
+// catalogue name usually already embeds its version.
+//
+// ID and DisplayName are pointers because a case can name a catalogue product
+// without naming a deployed instance of it. The reference is still emitted in
+// that situation, carrying Product alone with id and displayName null, so the
+// catalogue entry stays reachable.
 type DeployedProductRef struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"displayName"`
+	ID          *string    `json:"id"`
+	DisplayName *string    `json:"displayName"`
+	Product     *EntityRef `json:"product"`
 }
 
 // CaseView is the enriched read representation of a case.
 type CaseView struct {
-	ID               string         `json:"id"`
-	Number           string         `json:"number"`
-	InternalID       string         `json:"internalId"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	Severity         CaseSeverity   `json:"severity"`
-	IssueType        CaseIssueType  `json:"issueType"`
-	State            CaseState      `json:"state"`
-	WorkState        *CaseWorkState `json:"workState"`
-	Type             *string        `json:"type"`
-	EngagementType   *string        `json:"engagementType"`
-	CreatedOn        time.Time      `json:"createdOn"`
-	UpdatedOn        time.Time      `json:"updatedOn"`
-	ClosedOn         *time.Time     `json:"closedOn"`
-	CreatedByDetails UserRef        `json:"createdBy"`
-	// CreatedByUser is the canonical user reference for the case creator, a
-	// sibling of createdBy. Its id is populated only where the backing data
-	// source already supplies one, and null otherwise: see UserReference.
-	CreatedByUser          *UserReference       `json:"createdByUser"`
-	ProjectDetails         EntityRef            `json:"project"`
-	DeploymentDetails      *EntityRef           `json:"deployment"`
-	DeployedProductDetails *DeployedProductRef  `json:"deployedProduct"`
-	ProductDetails         *EntityRef           `json:"product"`
-	Catalog                *EntityRef           `json:"catalog"`
-	CatalogItem            *EntityRef           `json:"catalogItem"`
-	AssignedTeam           *EntityRef           `json:"assignedTeam"`
-	Conversation           *EntityRef           `json:"conversation"`
-	AssignedEngineer       *AssignedEngineerRef `json:"assignedEngineer"`
-	// AssignedEngineerUser is the canonical user reference for the assigned
-	// engineer, a sibling of assignedEngineer. Its id is populated: the
-	// assignee's own id already arrives with the response, so no extra lookup
-	// is involved. Null when the case is unassigned.
-	AssignedEngineerUser *UserReference `json:"assignedEngineerUser"`
-	ParentCase           *CaseNumberRef `json:"parentCase"`
-	RelatedCase          *CaseNumberRef `json:"relatedCase"`
-	AccountDetails       *AccountRef    `json:"account"`
+	ID             string         `json:"id"`
+	Number         string         `json:"number"`
+	InternalID     string         `json:"internalId"`
+	Subject        string         `json:"subject"`
+	Description    string         `json:"description"`
+	Severity       CaseSeverity   `json:"severity"`
+	IssueType      CaseIssueType  `json:"issueType"`
+	State          CaseState      `json:"state"`
+	WorkState      *CaseWorkState `json:"workState"`
+	Type           *string        `json:"type"`
+	EngagementType *string        `json:"engagementType"`
+	CreatedOn      time.Time      `json:"createdOn"`
+	UpdatedOn      time.Time      `json:"updatedOn"`
+	ClosedOn       *time.Time     `json:"closedOn"`
+	// CreatedBy is the canonical user reference for the case creator. Its id is
+	// populated only where the backing data source already supplies one, and
+	// null otherwise: see UserReference.
+	CreatedBy              *UserReference      `json:"createdBy"`
+	ProjectDetails         EntityRef           `json:"project"`
+	DeploymentDetails      *EntityRef          `json:"deployment"`
+	DeployedProductDetails *DeployedProductRef `json:"deployedProduct"`
+	Catalog                *EntityRef          `json:"catalog"`
+	CatalogItem            *EntityRef          `json:"catalogItem"`
+	AssignedTeam           *EntityRef          `json:"assignedTeam"`
+	Conversation           *EntityRef          `json:"conversation"`
+	// AssignedEngineer is the canonical user reference for the assigned
+	// engineer. Its id is populated: the assignee's own id already arrives with
+	// the response, so no extra lookup is involved. Null when the case is
+	// unassigned.
+	AssignedEngineer *UserReference `json:"assignedEngineer"`
+	// AcknowledgedBy is the support engineer who acknowledged the case: a
+	// first-write-wins claim that someone has seen it and picked it up, distinct
+	// from assignment. Null until someone acknowledges, and cleared again by the
+	// backing data source when the case's type or severity changes or it is
+	// reopened, so that a materially changed case has to be re-acknowledged.
+	AcknowledgedBy *AssignedEngineerRef `json:"acknowledgedBy"`
+	ParentCase     *CaseNumberRef       `json:"parentCase"`
+	RelatedCase    *CaseNumberRef       `json:"relatedCase"`
+	AccountDetails *AccountRef          `json:"account"`
 	// LinkedServiceRequests lists any service-request cases whose parent points to this
 	// case. Populated on every case detail response, not just high-severity cases.
 	LinkedServiceRequests []LinkedServiceRequestRef `json:"linkedServiceRequests"`
@@ -1356,6 +1299,22 @@ type CaseFieldFilter struct {
 type SearchCasesFilters struct {
 	SearchQuery string            `json:"searchQuery,omitempty"`
 	Filters     []CaseFieldFilter `json:"filters,omitempty"`
+	// AnyOf expresses cross-field OR: each entry is a branch whose own
+	// Filters array is ANDed together; the branches themselves are OR'd
+	// against each other, and the whole AnyOf result is ANDed with Filters
+	// (if both are present). Only fields with a direct, non-subquery
+	// ServiceNow mapping are supported inside a branch -- see
+	// service.ParseCaseFieldFilterGroups for the exact supported field set.
+	// Requires ServiceNow data source.
+	AnyOf []CaseFilterBranch `json:"anyOf,omitempty"`
+}
+
+// CaseFilterBranch is one branch of SearchCasesFilters.AnyOf: a set of
+// CaseFieldFilter predicates ANDed together. Wrapping the predicate array in
+// an object (rather than expressing a branch as a bare array) keeps the AND
+// semantics of the inner array explicit and named.
+type CaseFilterBranch struct {
+	Filters []CaseFieldFilter `json:"filters"`
 }
 
 // ParsedCaseFilters is the internal, named-field representation that
@@ -1389,12 +1348,13 @@ type ParsedCaseFilters struct {
 	WorkStates      []CaseWorkState
 	AssignedUserIDs []string
 	ProductNames    []string
-	// Tags filters cases by attached free-text label. Not yet available in the
-	// backing service: same gap as CaseView.Tags — no Ballerina search-filter
-	// support exists yet, so this filter is accepted here but has no effect until
-	// Ballerina wires it through.
+	// Tags filters cases by attached free-text label. Works end-to-end: ServiceNow's
+	// CaseUtils.searchCases honors filters.tags, and Ballerina's CaseSearchFilters
+	// forwards it.
 	Tags []string
-	// ExcludeTags filters to cases NOT carrying any of these free-text tag labels (optional).
+	// ExcludeTags filters to cases NOT carrying any of these free-text tag labels
+	// (optional). Inverse of Tags. Works end-to-end: ServiceNow's CaseUtils.searchCases
+	// honors filters.excludeTags, and Ballerina's CaseSearchFilters declares it.
 	ExcludeTags []string
 	// ParentID filters to child cases of this case (the hierarchical major-case/
 	// child-case relationship set via the case PATCH parentId field). Not yet
@@ -1416,6 +1376,51 @@ type ParsedCaseFilters struct {
 	// ResolutionNotesEmpty, when true, filters to cases with empty resolution notes.
 	// false and omitted are treated identically (optional).
 	ResolutionNotesEmpty bool
+	// TaskSLAFilter filters cases by Task SLA businessElapsedPercent range (optional).
+	// Populated from the "taskSLABusinessElapsedPercent" filter field's gte/lte bounds.
+	// Requires ServiceNow data source (not available via PostgreSQL-only path).
+	// Filtering logic is confined to the SN adapter per vendor-neutral boundary.
+	TaskSLAFilter *TaskSLAFilter
+	// EscalationLevels filters cases to one of these escalation level ids ("0"-"5"),
+	// from the "escalationLevel" filter field's in values (optional).
+	EscalationLevels []string
+	// HasActiveEscalation filters cases by whether they carry an active
+	// escalation, from the "escalation" filter field's isEmpty/isNotEmpty op
+	// (optional; nil means no filter on this field).
+	HasActiveEscalation *bool
+	// OrGroups: see SearchCasesFilters.AnyOf doc comment. Each entry is one
+	// parsed, ANDed branch; branches are OR'd together by the SN adapter.
+	OrGroups []CaseFilterGroup
+}
+
+// CaseFilterGroup is one ANDed branch of a SearchCasesFilters.AnyOf entry.
+// Deliberately narrower than ParsedCaseFilters: only fields with a direct,
+// non-subquery ServiceNow field mapping are supported inside an OR branch (no
+// tags/excludeTags/taskSLAFilter/parentId/createdBy/date-range/
+// projectOnboardingStatus/projectType/integrationCsTeam/resolutionNotes/
+// unassigned/hasActiveEscalation) -- service.ParseCaseFieldFilterGroups
+// rejects any of those fields inside a branch with a validation error, they
+// remain usable only via the top-level (AND-only) Filters array.
+type CaseFilterGroup struct {
+	Types            []string
+	States           []CaseState
+	Severities       []CaseSeverity
+	EngagementTypes  []EngagementType
+	IssueTypes       []CaseIssueType
+	WorkStates       []CaseWorkState
+	ProjectIDs       []string
+	DeploymentIDs    []string
+	AssignedUserIDs  []string
+	EscalationLevels []string
+}
+
+// TaskSLAFilter specifies a range of business-elapsed-percent values for Task SLA
+// filtering. Cases are matched if they have at least one Task SLA record where
+// businessElapsedPercent falls within [MinBusinessElapsedPercent,
+// MaxBusinessElapsedPercent] inclusive.
+type TaskSLAFilter struct {
+	MinBusinessElapsedPercent *int
+	MaxBusinessElapsedPercent *int
 }
 
 // SearchCasesRequest is the input for a case search operation.
@@ -1428,6 +1433,19 @@ type SearchCasesRequest struct {
 	Parsed     ParsedCaseFilters `json:"-"`
 	SortBy     CaseSort          `json:"sortBy"`
 	Pagination Pagination        `json:"pagination"`
+	// GroupBy, when set, returns aggregated counts per value of the named field
+	// instead of a case list (see Groups on SearchCasesResponse). Only fields
+	// backed by a small fixed enum are groupable; see the ServiceNow adapter's
+	// caseGroupByFieldValues for the supported set. Requires ServiceNow data
+	// source.
+	GroupBy string `json:"groupBy,omitempty"`
+}
+
+// CaseGroup is one bucket in a grouped case-search result: Key is the group's
+// field value (e.g. a CaseState string), Count is the number of matching cases.
+type CaseGroup struct {
+	Key   string `json:"key"`
+	Count int    `json:"count"`
 }
 
 // SearchCaseView is the unified case representation returned in search results.
@@ -1438,39 +1456,48 @@ type SearchCaseView struct {
 	Number     string `json:"number"`
 	CreatedOn  string `json:"createdOn"`
 	UpdatedOn  string `json:"updatedOn"`
-	CreatedBy  string `json:"createdBy"`
-	// CreatedByUser is the canonical user reference for the case creator, a
-	// sibling of createdBy. Its id is populated only where the backing data
-	// source already supplies one, and null otherwise: see UserReference.
-	CreatedByUser    *UserReference       `json:"createdByUser"`
-	Subject          *string              `json:"subject"`
-	Description      *string              `json:"description"`
-	IssueType        *string              `json:"issueType"`
-	State            string               `json:"state"`
-	Severity         *string              `json:"severity"`
-	Catalog          *EntityRef           `json:"catalog"`
-	CatalogItem      *EntityRef           `json:"catalogItem"`
-	AssignedTeam     *EntityRef           `json:"assignedTeam"`
-	Product          *EntityRef           `json:"product"`
-	EngagementType   *string              `json:"engagementType"`
-	WorkState        *string              `json:"workState"`
-	Type             string               `json:"type"`
-	Project          EntityRef            `json:"project"`
-	Deployment       *EntityRef           `json:"deployment"`
-	DeployedProduct  *EntityRef           `json:"deployedProduct"`
-	AssignedEngineer *AssignedEngineerRef `json:"assignedEngineer"`
-	// AssignedEngineerUser is the canonical user reference for the assigned
-	// engineer, a sibling of assignedEngineer. Its id is populated from the
-	// assignee id the response already carries. Null when unassigned.
-	AssignedEngineerUser *UserReference `json:"assignedEngineerUser"`
-	ParentCase           *EntityRef     `json:"parentCase"`
-	RelatedCase          *EntityRef     `json:"relatedCase"`
-	Conversation         *EntityRef     `json:"conversation"`
+	// CreatedBy is the canonical user reference for the case creator. Its id is
+	// populated only where the backing data source already supplies one, and
+	// null otherwise: see UserReference.
+	CreatedBy       *UserReference `json:"createdBy"`
+	Subject         *string        `json:"subject"`
+	Description     *string        `json:"description"`
+	IssueType       *string        `json:"issueType"`
+	State           string         `json:"state"`
+	Severity        *string        `json:"severity"`
+	Catalog         *EntityRef     `json:"catalog"`
+	CatalogItem     *EntityRef     `json:"catalogItem"`
+	AssignedTeam    *EntityRef     `json:"assignedTeam"`
+	Product         *EntityRef     `json:"product"`
+	EngagementType  *string        `json:"engagementType"`
+	WorkState       *string        `json:"workState"`
+	Type            string         `json:"type"`
+	Project         EntityRef      `json:"project"`
+	Deployment      *EntityRef     `json:"deployment"`
+	DeployedProduct *EntityRef     `json:"deployedProduct"`
+	// AssignedEngineer is the canonical user reference for the assigned
+	// engineer. Its id is populated from the assignee id the response already
+	// carries. Null when unassigned.
+	AssignedEngineer *UserReference `json:"assignedEngineer"`
+	ParentCase       *EntityRef     `json:"parentCase"`
+	RelatedCase      *EntityRef     `json:"relatedCase"`
+	Conversation     *EntityRef     `json:"conversation"`
 }
 
-// SearchCasesResponse is the paginated result of a case search.
+// SearchCasesResponse is the paginated result of a case search. When the
+// request set GroupBy, Groups is populated instead of Cases (Cases is nil).
+//
+// Total means different things in the two modes. Ungrouped, it is the total
+// matching record count. Grouped, it is the sum of the returned Groups' counts,
+// which is the number of matching cases whose value of the grouped field is one
+// of the enumerated buckets -- a case carrying a value outside that fixed set
+// (a state or type added in the backing data source but not yet in the
+// service's enum) is counted in no bucket and so is excluded from Total. Do not
+// read a grouped Total as "all cases matching the filters"; issue the same
+// search without GroupBy for that number.
 type SearchCasesResponse struct {
 	Cases  []SearchCaseView `json:"cases"`
+	Groups []CaseGroup      `json:"groups,omitempty"`
 	Total  int              `json:"total"`
 	Offset int              `json:"offset"`
 	Limit  int              `json:"limit"`
@@ -1551,6 +1578,13 @@ type UpdateCaseRequest struct {
 	// issue) echoed into the public comment. Required by ServiceNow when
 	// AddPublicComment is true (ServiceNow data source only).
 	PublicTicket *string `json:"publicTicket"`
+	// Acknowledge, when true, claims the case for the calling engineer: it records
+	// them as the acknowledger if nobody has acknowledged it yet, and otherwise
+	// succeeds without changing anything (the response then carries
+	// AlreadyAcknowledged). Only true is accepted — there is no unacknowledge — and
+	// it cannot be combined with any other field in the same request. Requires an
+	// elevated support role (ServiceNow data source only).
+	Acknowledge *bool `json:"acknowledge"`
 }
 
 // UpdateCaseResponse is the response for PATCH /cases/{id}.
@@ -1598,6 +1632,17 @@ type UpdatedCase struct {
 	// as a date-only "YYYY-MM-DD" string. Present only when the update set
 	// worstCaseFixEta.
 	WorstCaseFixEta *string `json:"worstCaseFixEta,omitempty"`
+	// Number echoes the case's human-readable number. Present only when the update
+	// acknowledged the case, whose confirmation message names the case by number.
+	Number string `json:"number,omitempty"`
+	// AlreadyAcknowledged reports that the case already had an acknowledger, so the
+	// request changed nothing and AcknowledgedBy names whoever claimed it first.
+	// Present only when the update set acknowledge.
+	AlreadyAcknowledged *bool `json:"alreadyAcknowledged,omitempty"`
+	// AcknowledgedBy is the engineer who now holds the acknowledgement, whether this
+	// request set it or found it already set. Present only when the update set
+	// acknowledge.
+	AcknowledgedBy *AssignedEngineerRef `json:"acknowledgedBy,omitempty"`
 }
 
 // WatchListUser is a compact user reference within the watch list.
@@ -1683,28 +1728,18 @@ const (
 	CommentTypeActivity CommentType = "activity"
 )
 
-// CommentUserRef holds user details embedded in a case comment response.
-type CommentUserRef struct {
-	ID        string `json:"id"`
-	FirstName string `json:"firstName"`
-	LastName  string `json:"lastName"`
-	FullName  string `json:"fullName"`
-}
-
 // CaseComment represents a comment on a support case.
 type CaseComment struct {
-	ID        string         `json:"id"`
-	CaseID    string         `json:"caseId"`
-	Type      CommentType    `json:"type"`
-	Content   string         `json:"content"`
-	CreatedBy CommentUserRef `json:"createdBy"`
-	// CreatedByUser is the canonical user reference for the comment author, a
-	// sibling of createdBy (whose id field is the author's email, not an id).
-	// Its id is populated when the backing data source resolved the author to a
-	// real user record, and null otherwise — a comment can be written by an
+	ID      string      `json:"id"`
+	CaseID  string      `json:"caseId"`
+	Type    CommentType `json:"type"`
+	Content string      `json:"content"`
+	// CreatedBy is the canonical user reference for the comment author. Its id
+	// is populated when the backing data source resolved the author to a real
+	// user record, and null otherwise — a comment can be written by an
 	// automation or integration account that is not a user. See UserReference.
-	CreatedByUser *UserReference `json:"createdByUser"`
-	CreatedOn     time.Time      `json:"createdOn"`
+	CreatedBy *UserReference `json:"createdBy"`
+	CreatedOn time.Time      `json:"createdOn"`
 }
 
 // CreateCaseCommentRequest is the input for creating a new case comment.
@@ -1809,14 +1844,14 @@ type CaseActivity struct {
 	Type               ActivityType `json:"type"`
 	Content            string       `json:"content"`
 	CreatedOn          time.Time    `json:"createdOn"`
-	CreatedBy          string       `json:"createdBy"`
 	CreatedByFirstName string       `json:"createdByFirstName"`
 	CreatedByLastName  string       `json:"createdByLastName"`
-	CreatedByFullName  string       `json:"createdByFullName"`
-	// CreatedByUser is the canonical user reference for the actor behind this
-	// activity entry, a sibling of the createdBy* fields. Its id is always
-	// null: the activity feed carries no user id. See UserReference.
-	CreatedByUser *UserReference `json:"createdByUser"`
+	// CreatedBy is the canonical user reference for the actor behind this
+	// activity entry. Its id is always null: the activity feed carries no user
+	// id. See UserReference. The actor's full display name is its name field;
+	// createdByFirstName/createdByLastName remain as separate fields because a
+	// full name cannot be split back into them reliably.
+	CreatedBy *UserReference `json:"createdBy"`
 	// CommentType is set only for Type == ActivityTypeComment.
 	CommentType *CommentType `json:"commentType,omitempty"`
 	// FileName, ContentType, SizeBytes, and DownloadURL are set only for
@@ -1848,20 +1883,41 @@ type SearchCaseActivitiesResponse struct {
 	HasMore  bool           `json:"hasMore"`
 }
 
+// SearchIncidentActivitiesRequest is the input for listing the activity feed of an
+// incident. IncidentID is populated from the URL path parameter and is not part of the
+// JSON body. Shape mirrors SearchCaseActivitiesRequest exactly -- confirmed by the team
+// that incidents are served by their own activities endpoint, built on the same
+// underlying mechanism as the case one, though the exact response shape has not been
+// exercised against a live response.
+type SearchIncidentActivitiesRequest struct {
+	IncidentID          string     `json:"-"`
+	Pagination          Pagination `json:"pagination"`
+	IncludeFieldChanges *bool      `json:"includeFieldChanges,omitempty"`
+}
+
+// SearchIncidentActivitiesResponse is the paginated result of an incident activity
+// search. Shape mirrors SearchCaseActivitiesResponse exactly -- CaseActivity is reused
+// as-is since an activity feed entry is not inherently case-specific.
+type SearchIncidentActivitiesResponse struct {
+	Activity []CaseActivity `json:"activity"`
+	Total    int            `json:"total"`
+	Limit    int            `json:"limit"`
+	Offset   int            `json:"offset"`
+	HasMore  bool           `json:"hasMore"`
+}
+
 // Comment is a generic comment associated with any reference entity type
 // (case, conversation, change_request, etc.).
 type Comment struct {
-	ID          string         `json:"id"`
-	ReferenceID string         `json:"referenceId"`
-	Content     string         `json:"content"`
-	Type        CommentType    `json:"type"`
-	CreatedOn   time.Time      `json:"createdOn"`
-	CreatedBy   CommentUserRef `json:"createdBy"`
-	// CreatedByUser is the canonical user reference for the comment author, a
-	// sibling of createdBy (whose id field is the author's email, not an id).
-	// Its id is populated when the backing data source resolved the author to a
-	// real user record, and null otherwise. See UserReference.
-	CreatedByUser *UserReference `json:"createdByUser"`
+	ID          string      `json:"id"`
+	ReferenceID string      `json:"referenceId"`
+	Content     string      `json:"content"`
+	Type        CommentType `json:"type"`
+	CreatedOn   time.Time   `json:"createdOn"`
+	// CreatedBy is the canonical user reference for the comment author. Its id
+	// is populated when the backing data source resolved the author to a real
+	// user record, and null otherwise. See UserReference.
+	CreatedBy *UserReference `json:"createdBy"`
 }
 
 // SearchCommentsRequest is the input for POST /comments/search.
@@ -1936,15 +1992,13 @@ type Attachment struct {
 	Type          string        `json:"type"`
 	SizeBytes     int           `json:"sizeBytes"`
 	Description   *string       `json:"description"`
-	CreatedBy     UserRef       `json:"createdBy"`
-	// CreatedByUser is the canonical user reference for whoever uploaded the
-	// attachment, a sibling of createdBy. Its id is populated when the backing
-	// data source resolved the uploader to a real user record, and null
-	// otherwise. See UserReference.
-	CreatedByUser *UserReference `json:"createdByUser"`
-	CreatedOn     time.Time      `json:"createdOn"`
-	DownloadURL   *string        `json:"downloadUrl"`
-	PreviewURL    *string        `json:"previewUrl"`
+	// CreatedBy is the canonical user reference for whoever uploaded the
+	// attachment. Its id is populated when the backing data source resolved the
+	// uploader to a real user record, and null otherwise. See UserReference.
+	CreatedBy   *UserReference `json:"createdBy"`
+	CreatedOn   time.Time      `json:"createdOn"`
+	DownloadURL *string        `json:"downloadUrl"`
+	PreviewURL  *string        `json:"previewUrl"`
 }
 
 // CreateAttachmentRequest is the input for POST /attachments.
@@ -2849,6 +2903,44 @@ type SearchCallRequestsResponse struct {
 	Limit        int               `json:"limit"`
 }
 
+// CallRequestSortField enumerates the columns available for sorting a
+// cross-case call request search.
+type CallRequestSortField string
+
+const (
+	CallRequestSortFieldCreatedOn    CallRequestSortField = "createdOn"
+	CallRequestSortFieldUpdatedOn    CallRequestSortField = "updatedOn"
+	CallRequestSortFieldScheduleTime CallRequestSortField = "scheduleTime"
+)
+
+// CallRequestSortOrder controls the sort direction for call request search.
+type CallRequestSortOrder string
+
+const (
+	CallRequestSortOrderAsc  CallRequestSortOrder = "asc"
+	CallRequestSortOrderDesc CallRequestSortOrder = "desc"
+)
+
+// CallRequestSort specifies the sort field and direction for call request search results.
+type CallRequestSort struct {
+	Field CallRequestSortField `json:"field"`
+	Order CallRequestSortOrder `json:"order"`
+}
+
+// SearchAllCallRequestsFilters holds optional filter criteria for the
+// standalone (not case-scoped) call request search.
+type SearchAllCallRequestsFilters struct {
+	AssignedUserIDs []string               `json:"assignedUserIds"`
+	States          []CallRequestStateType `json:"states"`
+}
+
+// SearchAllCallRequestsRequest is the input for POST /call-requests/search-all.
+type SearchAllCallRequestsRequest struct {
+	Filters    SearchAllCallRequestsFilters `json:"filters"`
+	SortBy     CallRequestSort              `json:"sortBy"`
+	Pagination Pagination                   `json:"pagination"`
+}
+
 // UpdateCallRequestRequest is the input for PATCH /call-requests/{id}.
 // ID is injected from the URL path parameter and excluded from JSON decoding.
 // CaseID is optional; when provided the SN service verifies the call request
@@ -3062,6 +3154,61 @@ type UpdateTaskRequest struct {
 	State           *string    `json:"state"`
 	AssignedToEmail *string    `json:"assignedToEmail"`
 	DueDate         *time.Time `json:"dueDate"`
+}
+
+// TaskState represents the state of a task.
+type TaskState string
+
+const (
+	TaskStateOpen   TaskState = "OPEN"
+	TaskStateClosed TaskState = "CLOSED"
+	TaskStateOther  TaskState = "OTHER"
+)
+
+// TaskSortField enumerates the columns available for sorting task search results.
+type TaskSortField string
+
+const (
+	TaskSortFieldCreatedOn TaskSortField = "createdOn"
+	TaskSortFieldUpdatedOn TaskSortField = "updatedOn"
+)
+
+// TaskSortOrder controls the sort direction for task search.
+type TaskSortOrder string
+
+const (
+	TaskSortOrderAsc  TaskSortOrder = "asc"
+	TaskSortOrderDesc TaskSortOrder = "desc"
+)
+
+// TaskSort specifies the sort field and direction for task search results.
+type TaskSort struct {
+	Field TaskSortField `json:"field"`
+	Order TaskSortOrder `json:"order"`
+}
+
+// SearchTasksFilters holds all optional filter criteria for a task search.
+type SearchTasksFilters struct {
+	States          []TaskState `json:"states"`
+	Types           []string    `json:"types"`
+	AssignedUserIDs []string    `json:"assignedUserIds"`
+	DueDateStart    *time.Time  `json:"dueDateStart"`
+	DueDateEnd      *time.Time  `json:"dueDateEnd"`
+}
+
+// SearchTasksRequest is the input for POST /tasks/search.
+type SearchTasksRequest struct {
+	Filters    SearchTasksFilters `json:"filters"`
+	SortBy     TaskSort           `json:"sortBy"`
+	Pagination Pagination         `json:"pagination"`
+}
+
+// SearchTasksResponse is the paginated result of a task search.
+type SearchTasksResponse struct {
+	Tasks  []TaskSummary `json:"tasks"`
+	Total  int           `json:"total"`
+	Offset int           `json:"offset"`
+	Limit  int           `json:"limit"`
 }
 
 // IncidentPriority represents the priority level of an incident.

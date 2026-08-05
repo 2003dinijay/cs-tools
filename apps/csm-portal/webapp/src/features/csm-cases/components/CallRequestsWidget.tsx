@@ -50,6 +50,7 @@ import { RejectCallDialog } from "./RejectCallDialog";
 import { SendCallNotesDialog } from "./SendCallNotesDialog";
 import { CancelCallDialog } from "./CancelCallDialog";
 import { CallRequestsTable } from "./CallRequestsTable";
+import RefreshButton from "@components/RefreshButton";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -95,10 +96,8 @@ export function CallRequestsWidget({
   const [stateFilter, setStateFilter] = useState<BeCallRequestStateKey | "">("");
   const activeStates = stateFilter ? [stateFilter] : undefined;
 
-  const { data, isLoading, isError, refetch } = useGetCsmCaseCallRequests(
-    caseId,
-    activeStates,
-  );
+  const { data, isLoading, isError, refetch, isFetching, dataUpdatedAt } =
+    useGetCsmCaseCallRequests(caseId, activeStates);
   const postCallRequest = usePostCsmCaseCallRequest();
   const patchCallRequest = usePatchCsmCaseCallRequest();
 
@@ -282,6 +281,12 @@ export function CallRequestsWidget({
             )}
           </Box>
           <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
+            <RefreshButton
+              onRefresh={() => void refetch()}
+              isFetching={isFetching}
+              updatedAt={dataUpdatedAt}
+              label="Refresh call requests"
+            />
             {/* State filter */}
             <FormControl size="small" sx={{ minWidth: 180 }}>
               <InputLabel id="cr-filter-label">Filter by state</InputLabel>

@@ -19,6 +19,8 @@ package service
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,7 +152,7 @@ func TestParseCaseFieldFilters_NamedFieldTranslations(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p, err := ParseCaseFieldFilters(tc.in, callerEmail, callerErr)
+			p, err := ParseCaseFieldFilters(tc.in, callerEmail, callerErr, time.Now().UTC())
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -176,7 +178,7 @@ func TestParseCaseFieldFilters_Rejections(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseCaseFieldFilters(tc.in, "caller@example.com", nil)
+			_, err := ParseCaseFieldFilters(tc.in, "caller@example.com", nil, time.Now().UTC())
 			if err == nil {
 				t.Fatalf("expected an error, got nil")
 			}
@@ -193,7 +195,7 @@ func TestParseCaseFieldFilters_DateOnlyLteBoundIncludesWholeDay(t *testing.T) {
 		{Field: "createdOn", Op: "lte", Values: []string{"2026-01-31"}},
 	}
 
-	p, err := ParseCaseFieldFilters(filters, "caller@example.com", nil)
+	p, err := ParseCaseFieldFilters(filters, "caller@example.com", nil, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -215,14 +217,311 @@ func TestParseCaseFieldFilters_DateOnlyLteBoundIncludesWholeDay(t *testing.T) {
 func TestParseCaseFieldFilters_CreatedByCurrentUser_RequiresCallerEmail(t *testing.T) {
 	filters := []domain.CaseFieldFilter{{Field: "createdBy", Op: "eq", Values: []string{currentUserFilterPlaceholder}}}
 
-	if _, err := ParseCaseFieldFilters(filters, "", nil); err == nil {
+	if _, err := ParseCaseFieldFilters(filters, "", nil, time.Now().UTC()); err == nil {
 		t.Fatalf("expected an error when no caller email is available")
 	} else if _, ok := err.(*apierror.UnauthorizedError); !ok {
 		t.Fatalf("expected *apierror.UnauthorizedError, got %T: %v", err, err)
 	}
 
 	forwardedErr := &apierror.ValidationError{Msg: "x-user-id-token: malformed"}
-	if _, err := ParseCaseFieldFilters(filters, "", forwardedErr); err != forwardedErr {
+	if _, err := ParseCaseFieldFilters(filters, "", forwardedErr, time.Now().UTC()); err != forwardedErr {
 		t.Fatalf("expected the resolver's own error to be forwarded, got %v", err)
+	}
+}
+
+// fixedNow is a fixed reference instant (a Saturday, no significance beyond
+// being unambiguous) every resolveRelativeDate test below resolves against,
+// so the expected outputs are exact rather than moving-target "relative to
+// whenever this test happens to run."
+var fixedNow = time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC)
+
+func TestResolveRelativeDate_Resolutions(t *testing.T) {
+	cases := []struct {
+		name     string
+		value    string
+		expected string
+	}{
+		{"today", "__today__", "2026-08-15"},
+		{"daysAgo 0", "__daysAgo:0__", "2026-08-15"},
+		{"daysAgo 2", "__daysAgo:2__", "2026-08-13"},
+		{"daysAgo 30 crosses month boundary", "__daysAgo:30__", "2026-07-16"},
+		{"startOfMonth 0 (this month)", "__startOfMonth:0__", "2026-08-01"},
+		{"startOfMonth -1 (last month)", "__startOfMonth:-1__", "2026-07-01"},
+		{"startOfMonth -2 (month before last)", "__startOfMonth:-2__", "2026-06-01"},
+		{"startOfMonth 1 (next month)", "__startOfMonth:1__", "2026-09-01"},
+		{"endOfMonth 0 (this month, 31 days)", "__endOfMonth:0__", "2026-08-31"},
+		{"endOfMonth 1 (next month, 30 days)", "__endOfMonth:1__", "2026-09-30"},
+		{"startOfQuarter 0 (Q3: Jul-Sep)", "__startOfQuarter:0__", "2026-07-01"},
+		{"startOfQuarter -1 (Q2: Apr-Jun)", "__startOfQuarter:-1__", "2026-04-01"},
+		{"endOfQuarter 0 (Q3 ends Sep 30)", "__endOfQuarter:0__", "2026-09-30"},
+		{"endOfQuarter 1 (Q4 ends Dec 31)", "__endOfQuarter:1__", "2026-12-31"},
+		{"year rollover: startOfMonth 6 from August", "__startOfMonth:6__", "2027-02-01"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resolved, matched, err := resolveRelativeDate(tc.value, fixedNow)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !matched {
+				t.Fatalf("expected %q to be recognized as a relative-date placeholder", tc.value)
+			}
+			if resolved != tc.expected {
+				t.Fatalf("resolveRelativeDate(%q) = %q, want %q", tc.value, resolved, tc.expected)
+			}
+		})
+	}
+}
+
+func TestResolveRelativeDate_NotAPlaceholder(t *testing.T) {
+	cases := []string{"2026-07-01", "2026-07-01T00:00:00Z", "__current_user_email__", "__bogus__", "__bogus:1__", "not-a-date-at-all"}
+
+	for _, value := range cases {
+		t.Run(value, func(t *testing.T) {
+			resolved, matched, err := resolveRelativeDate(value, fixedNow)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if matched {
+				t.Fatalf("expected %q not to be recognized as a relative-date placeholder, got resolved=%q", value, resolved)
+			}
+		})
+	}
+}
+
+func TestResolveRelativeDate_Rejections(t *testing.T) {
+	cases := []string{
+		"__daysAgo__",        // missing required offset
+		"__daysAgo:abc__",    // non-integer offset
+		"__daysAgo:-1__",     // negative offset not allowed for daysAgo
+		"__today:5__",        // today takes no argument
+		"__startOfMonth__",   // missing required offset
+		"__startOfQuarter__", // missing required offset
+	}
+
+	for _, value := range cases {
+		t.Run(value, func(t *testing.T) {
+			_, _, err := resolveRelativeDate(value, fixedNow)
+			if err == nil {
+				t.Fatalf("expected an error for %q, got nil", value)
+			}
+			var ve *apierror.ValidationError
+			if !asValidationError(err, &ve) {
+				t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestParseCaseFieldFilters_RelativeDatePlaceholders(t *testing.T) {
+	filters := []domain.CaseFieldFilter{
+		{Field: "createdOn", Op: "gte", Values: []string{"__daysAgo:30__"}},
+		{Field: "createdOn", Op: "lte", Values: []string{"__today__"}},
+	}
+
+	p, err := ParseCaseFieldFilters(filters, "caller@example.com", nil, fixedNow)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.StartCreatedDate == nil || p.EndCreatedDate == nil {
+		t.Fatalf("expected both StartCreatedDate and EndCreatedDate set")
+	}
+
+	wantStart := time.Date(2026, time.July, 16, 0, 0, 0, 0, time.UTC)
+	if !p.StartCreatedDate.Equal(wantStart) {
+		t.Fatalf("StartCreatedDate = %v, want %v", p.StartCreatedDate, wantStart)
+	}
+
+	// lte on a relative-date placeholder still gets the same inclusive-of-
+	// whole-day bump a literal YYYY-MM-DD lte value gets (see
+	// TestParseCaseFieldFilters_DateOnlyLteBoundIncludesWholeDay) -- resolution
+	// happens before that logic runs, not around it.
+	wantEnd := time.Date(2026, time.August, 15, 23, 59, 59, 999999999, time.UTC)
+	if !p.EndCreatedDate.Equal(wantEnd) {
+		t.Fatalf("EndCreatedDate = %v, want %v (inclusive of the whole day)", p.EndCreatedDate, wantEnd)
+	}
+}
+
+// An OR-group branch containing createdBy must fail with the "not supported
+// inside an OR group" validation error (400). Before the caller-email sentinel
+// was introduced, ParseCaseFieldFilterGroups passed an empty callerEmail, so
+// the createdBy current-user filter short-circuited with an UnauthorizedError
+// and an authenticated caller saw a misleading 401 for a merely-invalid request.
+func TestParseCaseFieldFilterGroups_CreatedByRejectedAsValidationError(t *testing.T) {
+	cases := []struct {
+		name  string
+		group []domain.CaseFieldFilter
+	}{
+		{
+			name:  "createdBy eq current-user placeholder",
+			group: []domain.CaseFieldFilter{{Field: "createdBy", Op: "eq", Values: []string{currentUserFilterPlaceholder}}},
+		},
+		{
+			name:  "createdBy in literal emails",
+			group: []domain.CaseFieldFilter{{Field: "createdBy", Op: "in", Values: []string{"someone@example.com"}}},
+		},
+		{
+			name: "createdBy alongside a supported field",
+			group: []domain.CaseFieldFilter{
+				{Field: "state", Op: "in", Values: []string{"open"}},
+				{Field: "createdBy", Op: "eq", Values: []string{currentUserFilterPlaceholder}},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseCaseFieldFilterGroups([]domain.CaseFilterBranch{{Filters: tc.group}})
+			if err == nil {
+				t.Fatalf("expected an error, got nil")
+			}
+			var ue *apierror.UnauthorizedError
+			if errors.As(err, &ue) {
+				t.Fatalf("got *apierror.UnauthorizedError (401) %q, want a 400 validation error", ue.Msg)
+			}
+			var ve *apierror.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
+			}
+			const want = `anyOf: field "createdBy" is not supported inside an OR group`
+			if ve.Msg != want {
+				t.Errorf("Msg = %q, want %q", ve.Msg, want)
+			}
+		})
+	}
+}
+
+// A branch is parsed by ParseCaseFieldFilters, which roots every message it
+// raises at the top-level "filters" path. Returned unchanged, that path is a
+// lie inside an OR group: the array the client has to fix lives at
+// anyOf[i].filters, and the public contract says so. The index has to be the
+// offending branch's, not always zero.
+func TestParseCaseFieldFilterGroups_BranchErrorsCarryTheAnyOfPath(t *testing.T) {
+	valid := domain.CaseFilterBranch{
+		Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open"}}},
+	}
+
+	cases := []struct {
+		name     string
+		branches []domain.CaseFilterBranch
+		want     string
+	}{
+		{
+			name: "invalid field in the first branch",
+			branches: []domain.CaseFilterBranch{
+				{Filters: []domain.CaseFieldFilter{{Field: "notAField", Op: "in", Values: []string{"x"}}}},
+			},
+			want: "anyOf[0].filters: unsupported field: notAField",
+		},
+		{
+			name: "invalid op in the first branch",
+			branches: []domain.CaseFilterBranch{
+				{Filters: []domain.CaseFieldFilter{{Field: "state", Op: "notAnOp", Values: []string{"open"}}}},
+			},
+			want: "anyOf[0].filters: unsupported op: notAnOp",
+		},
+		{
+			name: "field/op combination the field does not support",
+			branches: []domain.CaseFilterBranch{
+				{Filters: []domain.CaseFieldFilter{{Field: "state", Op: "eq", Values: []string{"open"}}}},
+			},
+			want: `anyOf[0].filters: field "state" does not support op "eq"`,
+		},
+		{
+			name:     "invalid field in a later branch reports that branch's index",
+			branches: []domain.CaseFilterBranch{valid, valid, {Filters: []domain.CaseFieldFilter{{Field: "notAField", Op: "in", Values: []string{"x"}}}}},
+			want:     "anyOf[2].filters: unsupported field: notAField",
+		},
+		{
+			name:     "invalid op in a later branch reports that branch's index",
+			branches: []domain.CaseFilterBranch{valid, {Filters: []domain.CaseFieldFilter{{Field: "severity", Op: "notAnOp", Values: []string{"high"}}}}},
+			want:     "anyOf[1].filters: unsupported op: notAnOp",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseCaseFieldFilterGroups(tc.branches)
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			var ve *apierror.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
+			}
+			if ve.Msg != tc.want {
+				t.Errorf("Msg = %q, want %q", ve.Msg, tc.want)
+			}
+		})
+	}
+}
+
+// The sentinel caller email must never leak into a parsed group.
+func TestParseCaseFieldFilterGroups_SupportedFieldsParse(t *testing.T) {
+	groups, err := ParseCaseFieldFilterGroups([]domain.CaseFilterBranch{
+		{Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open", "closed"}}}},
+		{Filters: []domain.CaseFieldFilter{{Field: "severity", Op: "in", Values: []string{"high"}}}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("len(groups) = %d, want 2", len(groups))
+	}
+	if len(groups[0].States) != 2 || groups[0].States[0] != domain.CaseState("open") {
+		t.Errorf("groups[0].States = %v, want [open closed]", groups[0].States)
+	}
+	if len(groups[1].Severities) != 1 || groups[1].Severities[0] != domain.CaseSeverity("high") {
+		t.Errorf("groups[1].Severities = %v, want [high]", groups[1].Severities)
+	}
+}
+
+// An OR branch carrying no predicates constrains nothing, and because the
+// branches are OR'd against each other one such branch widens the ENTIRE
+// result set: every case matches, silently, with a 200 and no error anywhere.
+// It has to be rejected at parse time. `"anyOf": [{}]` is valid JSON against
+// the schema's own shape, so nothing upstream catches it either.
+func TestParseCaseFieldFilterGroups_RejectsEmptyBranch(t *testing.T) {
+	valid := domain.CaseFilterBranch{
+		Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open"}}},
+	}
+
+	cases := []struct {
+		name     string
+		branches []domain.CaseFilterBranch
+		want     string
+	}{
+		{
+			name:     `"anyOf": [{}] -- filters key absent entirely`,
+			branches: []domain.CaseFilterBranch{{}},
+			want:     "anyOf[0].filters: an OR branch must carry at least one filter predicate",
+		},
+		{
+			name:     `"anyOf": [{"filters": []}] -- present but empty`,
+			branches: []domain.CaseFilterBranch{{Filters: []domain.CaseFieldFilter{}}},
+			want:     "anyOf[0].filters: an OR branch must carry at least one filter predicate",
+		},
+		{
+			name:     "an empty branch alongside valid ones still reports its own index",
+			branches: []domain.CaseFilterBranch{valid, valid, {}},
+			want:     "anyOf[2].filters: an OR branch must carry at least one filter predicate",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			groups, err := ParseCaseFieldFilterGroups(tc.branches)
+			if err == nil {
+				t.Fatalf("expected an error, got nil and %d group(s) -- an unconstrained branch was forwarded", len(groups))
+			}
+			var ve *apierror.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("err = %v (%T), want *apierror.ValidationError (400)", err, err)
+			}
+			if !strings.HasPrefix(ve.Msg, tc.want) {
+				t.Errorf("Msg = %q, want prefix %q", ve.Msg, tc.want)
+			}
+		})
 	}
 }

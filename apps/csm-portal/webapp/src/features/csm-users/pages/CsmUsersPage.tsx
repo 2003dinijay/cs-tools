@@ -17,8 +17,9 @@
 import {
   Box,
   Checkbox,
-  Chip,
   FormControl,
+  IconButton,
+  InputAdornment,
   InputLabel,
   ListItemText,
   MenuItem,
@@ -33,11 +34,11 @@ import {
   TableHead,
   TablePagination,
   TableRow,
-  TableSortLabel,
   TextField,
   Typography,
   type SelectChangeEvent,
 } from "@wso2/oxygen-ui";
+import { X } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type ChangeEvent, type JSX, type KeyboardEvent } from "react";
 import { useSearchParams } from "react-router";
 import QueryErrorState from "@components/QueryErrorState";
@@ -49,13 +50,9 @@ import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchUsers } from "@features/csm-users/api/useSearchUsers";
 import { useSearchRoles } from "@features/csm-admin/api/useSearchRoles";
 import { useSearchTeams } from "@features/csm-admin/api/useSearchTeams";
-import DirectoryEntityChip from "@features/csm-admin/components/DirectoryEntityChip";
-import {
-  INTERNAL_USER_ROLES,
-  type SearchUsersRequest,
-  type UserSortField,
-  type UserSortOrder,
-} from "@features/csm-users/types/csmUsers";
+import ResponsiveRoleChips from "@components/ResponsiveRoleChips";
+import RefreshButton from "@components/RefreshButton";
+import type { SearchUsersRequest } from "@features/csm-users/types/csmUsers";
 import {
   readUsersFiltersFromUrl,
   writeUsersFiltersToUrl,
@@ -63,15 +60,11 @@ import {
 } from "@features/csm-users/utils/usersFiltersUrl";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
 import type { BeGroup } from "@api/backend/types";
+import { displayUserTimezone } from "@utils/userDirectoryDisplay";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 // Top option is the backend's max page limit; larger requests are rejected.
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
-// Roles beyond this many collapse into a single "+N more" chip that links to
-// the user's profile — a table cell isn't the place to enumerate every role a
-// user carries.
-const MAX_VISIBLE_ROLES = 3;
-
 /**
  * The users list, with filters reflected in the URL (`search`, `roles`,
  * `groups`, `teams`, `active`) so a filtered link is shareable and survives a
@@ -92,8 +85,6 @@ export default function CsmUsersPage(): JSX.Element {
 
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
-  const [sortField, setSortField] = useState<UserSortField>("name");
-  const [sortOrder, setSortOrder] = useState<UserSortOrder>("asc");
 
   const setFilters = (next: UsersFilters): void => {
     setPage(0);
@@ -129,12 +120,13 @@ export default function CsmUsersPage(): JSX.Element {
         ...(filters.teamIds.length > 0 && { teamIds: filters.teamIds }),
         ...(filters.active !== "all" && { active: filters.active === "active" }),
       },
-      sortBy: { field: sortField, order: sortOrder },
+      sortBy: { field: "name", order: "asc" },
     }),
-    [debouncedSearch, page, rowsPerPage, filters, sortField, sortOrder],
+    [debouncedSearch, page, rowsPerPage, filters],
   );
 
-  const { data, isLoading, isFetching, isError, error } = useSearchUsers(request);
+  const { data, isLoading, isFetching, isError, error, refetch, dataUpdatedAt } =
+    useSearchUsers(request);
 
   const handleSearchChange = (e: ChangeEvent<HTMLInputElement>) => {
     setFilters({ ...filters, search: e.target.value });
@@ -159,25 +151,23 @@ export default function CsmUsersPage(): JSX.Element {
     setFilters({ ...filters, active: e.target.value as UsersFilters["active"] });
   };
 
-  const handleSort = (field: UserSortField) => {
-    if (sortField === field) {
-      setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
-    } else {
-      setSortField(field);
-      setSortOrder("asc");
-    }
-    setPage(0);
-  };
-
   const users = data?.users ?? [];
   const total = data?.total ?? 0;
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      <Typography variant="body2" color="text.secondary">
-        Search across username and email (case-insensitive). Filter by role, group, team and
-        status.
-      </Typography>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+        <Typography variant="body2" color="text.secondary">
+          Search across username and email (case-insensitive). Filter by role, group, team and
+          status.
+        </Typography>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label="Refresh users"
+        />
+      </Box>
 
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ flexWrap: "wrap" }}>
         <TextField
@@ -190,17 +180,53 @@ export default function CsmUsersPage(): JSX.Element {
           sx={{ minWidth: 280, flex: 1 }}
         />
 
-        <FormControl size="small" sx={{ minWidth: 200 }}>
+        <FormControl size="small" sx={{ width: 200, flexShrink: 0 }}>
           <InputLabel id="user-roles-label">Roles</InputLabel>
           <Select
             labelId="user-roles-label"
             multiple
             value={filters.roleIds}
             onChange={handleRoleChange}
-            input={<OutlinedInput label="Roles" />}
-            renderValue={(selected) =>
-              (selected as string[]).map((id) => roleNameById.get(id) ?? id).join(", ")
+            input={
+              <OutlinedInput
+                label="Roles"
+                endAdornment={
+                  filters.roleIds.length > 0 ? (
+                    <InputAdornment position="end" sx={{ mr: 1.5 }}>
+                      <IconButton
+                        size="small"
+                        aria-label="Clear roles filter"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFilters({ ...filters, roleIds: [] });
+                        }}
+                      >
+                        <X size={14} />
+                      </IconButton>
+                    </InputAdornment>
+                  ) : undefined
+                }
+              />
             }
+            MenuProps={{
+              anchorOrigin: { vertical: "bottom", horizontal: "left" },
+              transformOrigin: { vertical: "top", horizontal: "left" },
+              slotProps: { paper: { sx: { maxHeight: 320 } } },
+            }}
+            renderValue={(selected) => {
+              const label = (selected as string[])
+                .map((id) => roleNameById.get(id) ?? id)
+                .join(", ");
+              return <Box component="span" title={label}>{label}</Box>;
+            }}
+            sx={{
+              "& .MuiSelect-select": {
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              },
+            }}
           >
             {roles.map((role) => (
               <MenuItem key={role.id} value={role.id}>
@@ -221,20 +247,57 @@ export default function CsmUsersPage(): JSX.Element {
             useSearch={useSearchGroups}
             getId={(g) => g.id}
             getLabel={(g) => g.name}
+            compactSelectedValues
           />
         </Box>
 
-        <FormControl size="small" sx={{ minWidth: 200 }}>
+        <FormControl size="small" sx={{ width: 200, flexShrink: 0 }}>
           <InputLabel id="user-teams-label">Teams</InputLabel>
           <Select
             labelId="user-teams-label"
             multiple
             value={filters.teamIds}
             onChange={handleTeamChange}
-            input={<OutlinedInput label="Teams" />}
-            renderValue={(selected) =>
-              (selected as string[]).map((id) => teamNameById.get(id) ?? id).join(", ")
+            input={
+              <OutlinedInput
+                label="Teams"
+                endAdornment={
+                  filters.teamIds.length > 0 ? (
+                    <InputAdornment position="end" sx={{ mr: 1.5 }}>
+                      <IconButton
+                        size="small"
+                        aria-label="Clear teams filter"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFilters({ ...filters, teamIds: [] });
+                        }}
+                      >
+                        <X size={14} />
+                      </IconButton>
+                    </InputAdornment>
+                  ) : undefined
+                }
+              />
             }
+            MenuProps={{
+              anchorOrigin: { vertical: "bottom", horizontal: "left" },
+              transformOrigin: { vertical: "top", horizontal: "left" },
+              slotProps: { paper: { sx: { maxHeight: 320 } } },
+            }}
+            renderValue={(selected) => {
+              const label = (selected as string[])
+                .map((id) => teamNameById.get(id) ?? id)
+                .join(", ");
+              return <Box component="span" title={label}>{label}</Box>;
+            }}
+            sx={{
+              "& .MuiSelect-select": {
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              },
+            }}
           >
             {teams.map((team) => (
               <MenuItem key={team.id} value={team.id}>
@@ -261,41 +324,40 @@ export default function CsmUsersPage(): JSX.Element {
       </Stack>
 
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
-        <TableContainer>
-          <Table size="small" aria-label="Users search results" sx={{ "& .MuiTableCell-root": { borderColor: "divider" } }}>
+        <TableContainer sx={{ overflow: "visible" }}>
+          <Table
+            size="small"
+            aria-label="Users search results"
+            sx={{
+              width: "100%",
+              tableLayout: "fixed",
+              "& .MuiTableCell-root": { borderColor: "divider" },
+            }}
+          >
             <TableHead>
               <TableRow sx={{ bgcolor: "action.hover" }}>
-                <TableCell>Username</TableCell>
-                <TableCell sortDirection={sortField === "name" ? sortOrder : false}>
-                  <TableSortLabel
-                    active={sortField === "name"}
-                    direction={sortField === "name" ? sortOrder : "asc"}
-                    onClick={() => handleSort("name")}
-                  >
-                    Name
-                  </TableSortLabel>
-                </TableCell>
-                <TableCell>Email</TableCell>
-                <TableCell>Roles</TableCell>
-                <TableCell>Status</TableCell>
-                <TableCell>Timezone</TableCell>
+                <TableCell sx={{ width: "32%" }}>User</TableCell>
+                <TableCell sx={{ width: "44%" }}>Roles</TableCell>
+                <TableCell sx={{ width: "12%" }}>Status</TableCell>
+                <TableCell sx={{ width: "12%" }}>Timezone</TableCell>
               </TableRow>
             </TableHead>
-            <TableBody>
-              {isLoading || isFetching ? (
+            <TableBody sx={isFetching && !isLoading ? { opacity: 0.6 } : undefined}>
+              {isLoading ? (
                 Array.from({ length: rowsPerPage }).map((_, i) => (
                   <TableRow key={i}>
-                    <TableCell><Skeleton variant="rounded" width="70%" height={18} /></TableCell>
-                    <TableCell><Skeleton variant="rounded" width="75%" height={18} /></TableCell>
-                    <TableCell><Skeleton variant="rounded" width="85%" height={18} /></TableCell>
+                    <TableCell>
+                      <Skeleton variant="rounded" width="65%" height={18} />
+                      <Skeleton variant="rounded" width="85%" height={14} sx={{ mt: 0.75 }} />
+                    </TableCell>
                     <TableCell><Skeleton variant="rounded" width={64} height={22} /></TableCell>
-                    <TableCell><Skeleton variant="rounded" width={60} height={22} /></TableCell>
+                    <TableCell><Skeleton variant="rounded" width={64} height={18} /></TableCell>
                     <TableCell><Skeleton variant="rounded" width="55%" height={18} /></TableCell>
                   </TableRow>
                 ))
               ) : isError ? (
                 <TableRow>
-                  <TableCell colSpan={6} align="center">
+                  <TableCell colSpan={4} align="center">
                     <QueryErrorState
                       message={error instanceof Error && error.message.trim() ? error.message : "Failed to load users."}
                       error={error}
@@ -304,7 +366,7 @@ export default function CsmUsersPage(): JSX.Element {
                 </TableRow>
               ) : users.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
+                  <TableCell colSpan={4} align="center" sx={{ py: 4 }}>
                     <Typography variant="body2" color="text.secondary">
                       No users found.
                     </Typography>
@@ -320,8 +382,12 @@ export default function CsmUsersPage(): JSX.Element {
                       goToProfile();
                     }
                   };
-                  const visibleRoles = u.roles?.slice(0, MAX_VISIBLE_ROLES) ?? [];
-                  const hiddenRoleCount = Math.max((u.roles?.length ?? 0) - MAX_VISIBLE_ROLES, 0);
+                  const displayName = u.name?.trim();
+                  const primaryIdentity = displayName || u.userName;
+                  const secondaryIdentity = [
+                    u.userName !== primaryIdentity ? u.userName : undefined,
+                    u.email !== primaryIdentity && u.email !== u.userName ? u.email : undefined,
+                  ].filter((value): value is string => Boolean(value));
 
                   return (
                     <TableRow
@@ -331,70 +397,68 @@ export default function CsmUsersPage(): JSX.Element {
                       onKeyDown={handleRowKeyDown}
                       tabIndex={0}
                       aria-label={`View profile for ${u.name || u.userName}`}
-                      sx={{ cursor: "pointer" }}
+                      sx={{
+                        cursor: "pointer",
+                        "&:focus-visible": {
+                          outline: "2px solid",
+                          outlineColor: "primary.main",
+                          outlineOffset: -2,
+                        },
+                      }}
                     >
-                      <TableCell>
-                        <UserRefLink name={u.userName} email={u.email} userId={u.id} />
+                      <TableCell sx={{ minWidth: 0 }}>
+                        <UserRefLink
+                          name={primaryIdentity}
+                          email={u.email}
+                          userId={u.id}
+                          underlineOnHover={false}
+                        />
+                        {secondaryIdentity.length > 0 && (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            noWrap
+                            title={secondaryIdentity.join(" · ")}
+                            sx={{ display: "block" }}
+                          >
+                            {secondaryIdentity.join(" · ")}
+                          </Typography>
+                        )}
                       </TableCell>
-                      <TableCell>{u.name || "—"}</TableCell>
-                      <TableCell>{u.email}</TableCell>
                       <TableCell>
-                        <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5 }}>
-                          {u.roles && u.roles.length > 0 ? (
-                            <>
-                              {visibleRoles.map((r) => (
-                                <DirectoryEntityChip
-                                  key={r}
-                                  id={r}
-                                  name={roleNameById.get(r) ?? r}
-                                  routeBase="/admin/roles"
-                                  color={(INTERNAL_USER_ROLES as string[]).includes(r) ? "primary" : "default"}
-                                />
-                              ))}
-                              {hiddenRoleCount > 0 && (
-                                <Chip
-                                  size="small"
-                                  variant="outlined"
-                                  label={`+${hiddenRoleCount} more`}
-                                  clickable
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    goToProfile();
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter" || e.key === " ") {
-                                      e.stopPropagation();
-                                    }
-                                  }}
-                                  aria-label={`View all ${u.roles.length} roles for ${u.name || u.userName}`}
-                                />
-                              )}
-                            </>
-                          ) : u.userType ? (
-                            <Chip
-                              size="small"
-                              label={u.userType}
-                              color={u.userType === "internal" ? "primary" : "default"}
-                              variant="outlined"
-                            />
-                          ) : (
-                            "—"
-                          )}
-                        </Stack>
+                        {u.roles && u.roles.length > 0 ? (
+                          <ResponsiveRoleChips
+                            roleIds={u.roles}
+                            roleNameById={roleNameById}
+                            userLabel={u.name || u.userName}
+                            onViewAll={goToProfile}
+                          />
+                        ) : (
+                          "—"
+                        )}
                       </TableCell>
                       <TableCell>
                         {u.active === undefined ? (
                           "—"
                         ) : (
-                          <Chip
-                            size="small"
-                            label={u.active ? "Active" : "Inactive"}
-                            color={u.active ? "success" : "default"}
-                            variant="outlined"
-                          />
+                          <Stack direction="row" spacing={0.75} alignItems="center">
+                            <Box
+                              aria-hidden
+                              sx={{
+                                width: 7,
+                                height: 7,
+                                flexShrink: 0,
+                                borderRadius: "50%",
+                                bgcolor: u.active ? "success.main" : "text.disabled",
+                              }}
+                            />
+                            <Typography variant="body2">
+                              {u.active ? "Active" : "Inactive"}
+                            </Typography>
+                          </Stack>
                         )}
                       </TableCell>
-                      <TableCell>{u.timezone ?? "—"}</TableCell>
+                      <TableCell>{displayUserTimezone(u.timezone)}</TableCell>
                     </TableRow>
                   );
                 })

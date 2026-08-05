@@ -20,6 +20,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -362,7 +363,7 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 
 	token := middleware.UserIDTokenFromContext(ctx)
 	callerEmail, callerEmailErr := resolveCaseFilterCallerEmail(token)
-	parsed, err := ParseCaseFieldFilters(req.Filters.Filters, callerEmail, callerEmailErr)
+	parsed, err := ParseCaseFieldFilters(req.Filters.Filters, callerEmail, callerEmailErr, time.Now().UTC())
 	if err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
@@ -457,6 +458,29 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "resolutionNotes" is not supported by this data source`}
 	}
 
+	// Task-SLA and escalation predicates, OR groups, and grouped counts are
+	// implemented only in the ServiceNow case service (snCaseService.SearchCases);
+	// caseRepo.SearchCases models none of them. ParseCaseFieldFilters accepts them
+	// because it is shared by both data sources, so without these guards a
+	// Postgres deployment would drop the predicate and answer 200 with a wider
+	// result set than the caller asked for. These stay ServiceNow-only by design:
+	// reject loudly rather than implement them here.
+	if parsed.TaskSLAFilter != nil {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "taskSLABusinessElapsedPercent" is not supported by this data source`}
+	}
+	if len(parsed.EscalationLevels) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "escalationLevel" is not supported by this data source`}
+	}
+	if parsed.HasActiveEscalation != nil {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "escalation" is not supported by this data source`}
+	}
+	if len(req.Filters.AnyOf) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "anyOf is not supported by this data source"}
+	}
+	if req.GroupBy != "" {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "groupBy is not supported by this data source"}
+	}
+
 	req.Parsed = parsed
 
 	if req.SortBy.Field == "" {
@@ -476,10 +500,10 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	}
 
 	return domain.SearchCasesResponse{
-		Cases:        cases,
-		Total: total,
-		Limit:        req.Pagination.Limit,
-		Offset:       req.Pagination.Offset,
+		Cases:  cases,
+		Total:  total,
+		Limit:  req.Pagination.Limit,
+		Offset: req.Pagination.Offset,
 	}, nil
 }
 

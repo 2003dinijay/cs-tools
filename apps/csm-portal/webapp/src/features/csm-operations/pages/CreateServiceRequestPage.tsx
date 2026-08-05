@@ -277,10 +277,10 @@ export default function CreateServiceRequestPage(): JSX.Element {
             }}
           >
             <Typography variant="body2" color="error.main">
-              Some dropdown options failed to load.
+              Some dropdown options failed to load. See the failed fields below for details.
             </Typography>
             <Button size="small" variant="outlined" onClick={retryOptions}>
-              Retry
+              Retry all
             </Button>
           </Box>
         )}
@@ -313,6 +313,8 @@ export default function CreateServiceRequestPage(): JSX.Element {
               </Select>
               {!projectId ? (
                 <FormHelperText>Select a project first</FormHelperText>
+              ) : deployments.isError ? (
+                <FormHelperText error>Failed to load deployments.</FormHelperText>
               ) : deployments.isLoading ? (
                 <FormHelperText>Loading deployments…</FormHelperText>
               ) : (deployments.data ?? []).length === 0 ? (
@@ -339,6 +341,8 @@ export default function CreateServiceRequestPage(): JSX.Element {
               </Select>
               {!deploymentId ? (
                 <FormHelperText>Select a deployment first</FormHelperText>
+              ) : deployedProducts.isError ? (
+                <FormHelperText error>Failed to load deployed products.</FormHelperText>
               ) : deployedProducts.isLoading ? (
                 <FormHelperText>Loading products…</FormHelperText>
               ) : (deployedProducts.data ?? []).length === 0 ? (
@@ -365,6 +369,8 @@ export default function CreateServiceRequestPage(): JSX.Element {
               </Select>
               {!deployedProductId ? (
                 <FormHelperText>Select a deployed product first</FormHelperText>
+              ) : catalogs.isError ? (
+                <FormHelperText error>Failed to load catalogs.</FormHelperText>
               ) : catalogs.isLoading ? (
                 <FormHelperText>Loading catalogs…</FormHelperText>
               ) : noCatalogs ? (

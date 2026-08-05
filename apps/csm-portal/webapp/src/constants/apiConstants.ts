@@ -75,6 +75,7 @@ export const ApiQueryKeys = {
   INCIDENTS: "incidents",
   INCIDENT_DETAILS: "incident-details",
   INCIDENT_COMMENTS: "incident-comments",
+  INCIDENT_ACTIVITIES: "incident-activities",
   PROBLEMS: "problems",
   PROBLEM_DETAILS: "problem-details",
   GROUPS_SEARCH: "groups-search",

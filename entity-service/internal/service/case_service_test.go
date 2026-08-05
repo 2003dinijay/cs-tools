@@ -152,3 +152,77 @@ func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.
 		})
 	}
 }
+
+// TestCaseService_SearchCases_RejectsServiceNowOnlyOptions proves the Postgres
+// path rejects the search options that only snCaseService implements: the
+// Task-SLA percent filter, the two escalation filters, OR groups, and grouped
+// counts. caseRepo.SearchCases models none of them, so accepting the request
+// would silently drop the predicate and return a wider result set with a 200.
+// The stub repository panics if reached, so a passing test proves the
+// short-circuit, not merely that the repository ignored the option.
+func TestCaseService_SearchCases_RejectsServiceNowOnlyOptions(t *testing.T) {
+	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	cases := []struct {
+		name    string
+		req     domain.SearchCasesRequest
+		wantMsg string
+	}{
+		{
+			name: "taskSLABusinessElapsedPercent",
+			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+				Filters: []domain.CaseFieldFilter{{Field: "taskSLABusinessElapsedPercent", Op: "gte", Values: []string{"80"}}},
+			}},
+			wantMsg: `field "taskSLABusinessElapsedPercent" is not supported by this data source`,
+		},
+		{
+			name: "taskSLABusinessElapsedPercent lte 0",
+			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+				Filters: []domain.CaseFieldFilter{{Field: "taskSLABusinessElapsedPercent", Op: "lte", Values: []string{"0"}}},
+			}},
+			wantMsg: `field "taskSLABusinessElapsedPercent" is not supported by this data source`,
+		},
+		{
+			name: "escalationLevel",
+			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+				Filters: []domain.CaseFieldFilter{{Field: "escalationLevel", Op: "in", Values: []string{"level_1"}}},
+			}},
+			wantMsg: `field "escalationLevel" is not supported by this data source`,
+		},
+		{
+			name: "escalation",
+			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+				Filters: []domain.CaseFieldFilter{{Field: "escalation", Op: "isNotEmpty"}},
+			}},
+			wantMsg: `field "escalation" is not supported by this data source`,
+		},
+		{
+			name: "anyOf",
+			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+				AnyOf: []domain.CaseFilterBranch{
+					{Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open"}}}},
+				},
+			}},
+			wantMsg: "anyOf is not supported by this data source",
+		},
+		{
+			name:    "groupBy",
+			req:     domain.SearchCasesRequest{GroupBy: "state"},
+			wantMsg: "groupBy is not supported by this data source",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.SearchCases(ctx, tc.req)
+			var ve *apierror.ValidationError
+			if !asValidationError(err, &ve) {
+				t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+			}
+			if ve.Msg != tc.wantMsg {
+				t.Errorf("Msg = %q, want %q", ve.Msg, tc.wantMsg)
+			}
+		})
+	}
+}

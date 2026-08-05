@@ -83,6 +83,7 @@ type entityCaseClient interface {
 	DeleteCaseAttachment(ctx context.Context, attachmentID string) ([]byte, error)
 	CreateCallRequest(ctx context.Context, body []byte) ([]byte, error)
 	SearchCallRequests(ctx context.Context, body []byte) ([]byte, error)
+	SearchAllCallRequests(ctx context.Context, body []byte) ([]byte, error)
 	PatchCallRequest(ctx context.Context, callRequestID string, body []byte) ([]byte, error)
 	CreateCaseGithubIssue(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	AddCaseTag(ctx context.Context, caseID string, body []byte) ([]byte, error)
@@ -123,18 +124,18 @@ const maxAttachmentBodyBytes = 15 << 20
 // text/html). All responses also carry Content-Disposition: attachment and
 // X-Content-Type-Options: nosniff regardless of type.
 var safeAttachmentTypes = map[string]bool{
-	"image/png":  true,
-	"image/jpeg": true,
-	"image/gif":  true,
-	"image/webp": true,
-	"application/pdf":          true,
-	"text/plain":               true,
-	"application/zip":          true,
+	"image/png":                    true,
+	"image/jpeg":                   true,
+	"image/gif":                    true,
+	"image/webp":                   true,
+	"application/pdf":              true,
+	"text/plain":                   true,
+	"application/zip":              true,
 	"application/x-zip-compressed": true,
-	"application/msword":       true,
+	"application/msword":           true,
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": true,
 	"application/vnd.ms-excel": true,
-	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":       true,
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": true,
 }
 
 // CreateCase handles POST /cases.
@@ -656,7 +657,11 @@ func (h *CaseHandler) SearchTags(w http.ResponseWriter, r *http.Request) {
 }
 
 // PatchCase handles PATCH /cases/{id}.
-// Accepts state, severity, workState, watchList, or assigneeEmail and forwards to the entity service.
+// Accepts state, severity, workState, watchList, assigneeEmail, or acknowledge and forwards
+// to the entity service. The body is forwarded verbatim, so fields with no local guard (like
+// acknowledge, whose first-write-wins semantics and role gate both live upstream) need no
+// handling here — only state and workState are pre-validated, because their guards depend on
+// the case's current state.
 func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -873,6 +878,47 @@ func (h *CaseHandler) SearchCallRequests(w http.ResponseWriter, r *http.Request)
 	result, err := h.entity.SearchCallRequests(r.Context(), entityBody)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchCallRequests failed", "userID", user.UserID, "caseID", caseID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to search call requests.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// SearchAllCallRequests handles POST /call-requests/search — standalone call
+// request search across all cases (not scoped to one case; see SearchCallRequests
+// for that path, which is nested under /cases/{id}/). Raw pass-through
+// body/response. Despite the shared "search" name with the case-scoped path,
+// this is a distinct route (flat, no case-id path param) with no collision --
+// forwards to the entity service's own /call-requests/search-all, which keeps
+// its "-all" suffix to stay distinct from ITS sibling case-scoped path.
+func (h *CaseHandler) SearchAllCallRequests(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, errMsgReadBody)
+		return
+	}
+
+	if !isJSONObjectOrEmpty(body) {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	result, err := h.entity.SearchAllCallRequests(r.Context(), body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity SearchAllCallRequests failed", "userID", user.UserID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to search call requests.")
 		return
 	}

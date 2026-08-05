@@ -18,10 +18,9 @@ import {
   Box,
   Button,
   Chip,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
+  Divider,
+  Modal,
+  Paper,
   Typography,
 } from "@wso2/oxygen-ui";
 import { type JSX, type ReactNode } from "react";
@@ -56,7 +55,10 @@ function MetaCell({ label, children }: { label: string; children: ReactNode }): 
  * Read-only details for a single deployment: its metadata plus the products
  * deployed in it (loaded by {@link DeployedProductsPanel} when this dialog
  * mounts). Editing the deployment and managing deployed products are separate
- * concerns handled elsewhere / not yet backed by the API.
+ * concerns handled elsewhere / not yet backed by the API. A plain `Modal` +
+ * `Paper` rather than `Dialog` — same reasoning as {@link LinkCaseDialog}:
+ * `Dialog`'s paper renders on the theme's more opaque `background.paper`,
+ * while bare `Paper` gets the lighter, translucent "acrylic" look for free.
  */
 export default function DeploymentDetailsDialog({
   deployment,
@@ -71,17 +73,41 @@ export default function DeploymentDetailsDialog({
   );
 
   return (
-    <Dialog open onClose={onClose} maxWidth="md" fullWidth>
-      <DialogTitle>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
-          <span>{deployment.name || "Deployment"}</span>
+    <Modal
+      open
+      onClose={onClose}
+      slotProps={{ backdrop: { sx: { backgroundColor: "transparent" } } }}
+    >
+      <Paper
+        elevation={3}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="deployment-details-dialog-title"
+        sx={{
+          position: "fixed",
+          top: "10vh",
+          left: "50%",
+          transform: "translateX(-50%)",
+          width: { xs: "calc(100% - 32px)", sm: "calc(100% - 64px)", md: 900 },
+          maxWidth: 900,
+          maxHeight: "80vh",
+          display: "flex",
+          flexDirection: "column",
+          outline: "none",
+          border: "1px solid",
+          borderColor: "divider",
+        }}
+      >
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap", p: 3, pb: 2 }}>
+          <Typography id="deployment-details-dialog-title" variant="h6">
+            {deployment.name || "Deployment"}
+          </Typography>
           {deployment.type && (
             <Chip size="small" variant="outlined" label={deploymentTypeLabel(deployment.type)} />
           )}
         </Box>
-      </DialogTitle>
-      <DialogContent dividers>
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
+        <Divider />
+        <Box sx={{ p: 3, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2.5 }}>
           {hasMeta && (
             <Box
               sx={{
@@ -110,10 +136,13 @@ export default function DeploymentDetailsDialog({
 
           <DeployedProductsPanel deploymentId={deployment.id} projectId={deployment.projectId} />
         </Box>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Close</Button>
-      </DialogActions>
-    </Dialog>
+        <Divider />
+        <Box sx={{ display: "flex", justifyContent: "flex-end", p: 2 }}>
+          <Button variant="outlined" color="inherit" onClick={onClose}>
+            Close
+          </Button>
+        </Box>
+      </Paper>
+    </Modal>
   );
 }

@@ -42,6 +42,7 @@ import {
 } from "@features/csm-security-center/utils/vulnerabilities";
 import type { BeVulnerabilityPriority } from "@api/backend/types";
 import { useNavTransition } from "@hooks/useNavTransition";
+import RefreshButton from "@components/RefreshButton";
 
 const DEFAULT_ROWS_PER_PAGE = 20;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
@@ -70,7 +71,7 @@ export default function ProductVulnerabilitiesTab(): JSX.Element {
     [debouncedSearch, priorityFilter, page, rowsPerPage],
   );
 
-  const { data, isLoading, isError, error, isFetching } =
+  const { data, isLoading, isError, error, isFetching, refetch, dataUpdatedAt } =
     useSearchProductVulnerabilities(payload);
 
   const vulnerabilities = data?.productVulnerabilities ?? [];
@@ -93,7 +94,8 @@ export default function ProductVulnerabilitiesTab(): JSX.Element {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2, flexWrap: "wrap" }}>
+        <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
         <TextField
           value={searchInput}
           onChange={handleSearchChange}
@@ -129,6 +131,13 @@ export default function ProductVulnerabilitiesTab(): JSX.Element {
             </MenuItem>
           ))}
         </TextField>
+        </Box>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label="Refresh vulnerabilities"
+        />
       </Box>
 
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
