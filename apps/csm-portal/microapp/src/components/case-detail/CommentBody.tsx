@@ -22,7 +22,8 @@ import { useResolvedInlineImageHtml } from "@utils/useResolvedInlineImageHtml";
 // Some comments (state-change audit entries, etc.) carry real HTML (`<br><p>...</p>`) rather than
 // plain text — rendering those as plain text shows the literal tags. Same sniff-then-sanitize
 // pattern as the webapp's UpdatesPage (apps/csm-portal/webapp), which hits the same ambiguity.
-const HTML_FORMAT_RE = /<\/?(p|span|div|ul|ol|li|strong|em|b|i|br|h[1-6]|a[\s>]|table|tr|td|th|code|pre|blockquote)\b/i;
+const HTML_FORMAT_RE =
+  /<\/?(p|span|div|ul|ol|li|strong|em|b|i|br|h[1-6]|a[\s>]|table|tr|td|th|code|pre|blockquote|img)\b/i;
 
 const HTML_CONTENT_SX = {
   fontSize: "0.875rem",

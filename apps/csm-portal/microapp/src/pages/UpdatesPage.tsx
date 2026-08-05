@@ -54,7 +54,8 @@ const INITIAL_FILTER: FilterState = { productName: "", productVersion: "", start
 // Real HTML tags that warrant sanitized HTML rendering vs a plain-text fallback
 // — update descriptions come back as HTML sometimes and plain text other
 // times, from the same upstream field (see the webapp's identical gotcha).
-const HTML_FORMAT_RE = /<\/?(p|span|div|ul|ol|li|strong|em|b|i|br|h[1-6]|a[\s>]|table|tr|td|th|code|pre|blockquote)\b/i;
+const HTML_FORMAT_RE =
+  /<\/?(p|span|div|ul|ol|li|strong|em|b|i|br|h[1-6]|a[\s>]|table|tr|td|th|code|pre|blockquote|img)\b/i;
 
 function HtmlOrText({ content }: { content: string }) {
   const isHtml = HTML_FORMAT_RE.test(content);
