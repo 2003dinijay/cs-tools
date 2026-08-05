@@ -16,6 +16,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  canResumeToUnlockPublicReply,
   caseAcceptsPublicComments,
   publicCommentGateReason,
 } from "./caseWorkState";
@@ -67,5 +68,30 @@ describe("publicCommentGateReason", () => {
     expect(publicCommentGateReason("work_in_progress", "paused")).not.toMatch(
       /work note/i,
     );
+  });
+});
+
+describe("canResumeToUnlockPublicReply", () => {
+  it("is true for the engineer's own paused, work_in_progress case", () => {
+    expect(
+      canResumeToUnlockPublicReply("work_in_progress", "paused", true),
+    ).toBe(true);
+  });
+
+  it("is false when the case isn't assigned to the signed-in engineer, even if paused", () => {
+    expect(
+      canResumeToUnlockPublicReply("work_in_progress", "paused", false),
+    ).toBe(false);
+  });
+
+  it("is false once the case is already ongoing (nothing to resume)", () => {
+    expect(
+      canResumeToUnlockPublicReply("work_in_progress", "ongoing", true),
+    ).toBe(false);
+  });
+
+  it("is false when the case hasn't started yet, regardless of assignee", () => {
+    expect(canResumeToUnlockPublicReply("open", null, true)).toBe(false);
+    expect(canResumeToUnlockPublicReply("open", null, false)).toBe(false);
   });
 });

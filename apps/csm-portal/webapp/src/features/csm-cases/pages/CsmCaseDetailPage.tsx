@@ -139,6 +139,7 @@ import {
 } from "@utils/sanitizeHtml";
 import { useDarkMode } from "@utils/useDarkMode";
 import {
+  canResumeToUnlockPublicReply as computeCanResumeToUnlockPublicReply,
   publicCommentGateReason,
   WORK_STATE_LABEL,
 } from "@features/csm-cases/utils/caseWorkState";
@@ -1583,12 +1584,17 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // instead of a generic error.
   const publicReplyGateReason = publicCommentGateReason(c.state, c.workState);
   // The composer's inline "Resume work" quick-fix only applies to this one
-  // lock reason — the case is already work_in_progress and assigned, just
-  // paused, so resuming is the single-field PATCH `onAction` already runs
-  // for "toggle_work_state" below. The other lock reason (not started yet)
-  // needs the full assign/start flow, which doesn't belong in the composer.
-  const canResumeToUnlockPublicReply =
-    c.state === "work_in_progress" && c.workState !== "ongoing";
+  // lock reason — the case is already work_in_progress and assigned to the
+  // signed-in engineer, just paused, so resuming is the single-field PATCH
+  // `onAction` already runs for "toggle_work_state" below. The other lock
+  // reason (not started yet) needs the full assign/start flow, which doesn't
+  // belong in the composer; `assigneeIsMe` also excludes another engineer's
+  // paused case, matching CaseActionBar's own gate on the same action.
+  const canResumeToUnlockPublicReply = computeCanResumeToUnlockPublicReply(
+    c.state,
+    c.workState,
+    c.assigneeIsMe,
+  );
   // FE-only, advisory close-gate: warn when the case has an open task, so the
   // engineer isn't surprised by a close rejection. Best-effort — the task
   // *list* (`POST /cases/{id}/tasks/search`) returns `BeTaskSummary`, which

@@ -53,6 +53,29 @@ export function publicCommentGateReason(
   return "Customer replies are disabled unless the case is actively in progress.";
 }
 
+/**
+ * Whether resuming work — a single-field PATCH, no reassignment or state
+ * change — would be enough to unlock a public reply right now. True only for
+ * the one lock reason that's actually a single click away: the case is
+ * already `work_in_progress` and assigned to the signed-in engineer, just not
+ * `ongoing`. `assigneeIsMe` matters because pausing/resuming is only offered
+ * to the case's own assignee elsewhere in the UI (see CaseActionBar's own
+ * `assigneeIsMe && state === "work_in_progress"` gate on the same action) —
+ * without this check, an engineer viewing someone else's paused case would
+ * see a "Resume work" quick-fix that isn't actually theirs to use. The other
+ * lock reason (case not started at all) needs the full assign/start flow
+ * instead, so it's never resumable this way regardless of assignee.
+ */
+export function canResumeToUnlockPublicReply(
+  state: CaseState | undefined,
+  workState: CaseWorkState | null | undefined,
+  assigneeIsMe: boolean,
+): boolean {
+  return (
+    assigneeIsMe && state === "work_in_progress" && workState !== "ongoing"
+  );
+}
+
 /** Short label for the work sub-state chip on the case header / list. */
 export const WORK_STATE_LABEL: Record<CaseWorkState, string> = {
   ongoing: "Ongoing",
