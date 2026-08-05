@@ -115,7 +115,13 @@ export interface CaseSearchPayloadDto {
 export interface CaseSearchViewDto {
   id: string;
   number: string;
-  wso2Id: string;
+  // openapi.yaml's CaseSearchView documents this field as `wso2Id`, but the live /cases/search
+  // response sends it as `internalId` (confirmed live: {"id":"20d3964f-...","internalId":"CPPSUB-175",
+  // "number":"CS0441016",...}) — same spec-vs-reality drift already documented elsewhere in this
+  // file. `wso2Id` is kept as the app-facing name in case.model.ts's CaseSummary/CaseDetail (it's
+  // the concept name used throughout the UI); only this wire-level DTO field is renamed to match
+  // what actually arrives.
+  internalId: string;
   subject: string;
   description: string;
   // Only meaningful for the "case" type — null for service_request/security_report_analysis/etc.
@@ -156,7 +162,9 @@ export interface CaseSearchResponseDto {
 export interface CaseViewDto {
   id: string;
   number: string;
-  wso2Id: string;
+  // See CaseSearchViewDto's internalId comment — same spec-vs-reality field-name drift, confirmed
+  // by this same symptom (case detail header not showing a second id) on the by-id detail view.
+  internalId: string;
   subject: string;
   description: string;
   severity: string | null;
@@ -340,11 +348,6 @@ export interface CreatedCaseDto {
   id: string;
 }
 
-// POST /cases wraps the created case in a { message, case } envelope rather than returning it
-// flat — confirmed against the webapp's usePostCsmCase.ts (BeCaseCreateResponse/BeCreatedCase),
-// which unwraps res.case for exactly this reason. openapi.yaml's postCases 201 response
-// ($ref: Case) doesn't reflect the envelope; trust the webapp's actual working code over the spec
-// here, same doc-vs-reality gap seen elsewhere in this backend family.
 export interface CaseCreateResponseDto {
   message?: string;
   case: CreatedCaseDto;

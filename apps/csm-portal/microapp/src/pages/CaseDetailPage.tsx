@@ -490,10 +490,19 @@ function CaseSummarySection({
         <Stack direction="row" alignItems="center" gap={0.5}>
           <Icon size={pxToRem(18)} color={color} />
           <Typography variant="subtitle2" color="text.secondary">
+            {/* wso2Id then number, "|"-separated — matches the customer-portal microapp's
+                OverlineSlot/ItemCard convention (ids={[internalId, number]}). Copy button below
+                copies only the number (not wso2Id) — that's the value Support's search box
+                actually matches on, so copying it lets you paste straight into a case search. */}
+            {caseDetail.wso2Id && (
+              <>
+                {caseDetail.wso2Id}
+                <span style={{ opacity: 0.5, margin: "0 4px" }}>|</span>
+              </>
+            )}
             {caseDetail.number}
-            {caseDetail.wso2Id ? ` · ${caseDetail.wso2Id}` : ""}
           </Typography>
-          <CopyIconButton value={caseDetail.wso2Id || caseDetail.number} aria-label="Copy case ID" />
+          <CopyIconButton value={caseDetail.number} aria-label="Copy case ID" />
         </Stack>
 
         <Typography variant="h6">{caseDetail.subject}</Typography>

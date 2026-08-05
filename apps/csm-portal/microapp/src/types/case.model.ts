@@ -120,7 +120,7 @@ export function toCaseSummary(dto: CaseSearchViewDto): CaseSummary {
   return {
     id: dto.id,
     number: dto.number,
-    wso2Id: dto.wso2Id,
+    wso2Id: dto.internalId,
     subject: dto.subject,
     description: dto.description,
     severity: normalizeSeverity(dto.severity),
@@ -147,7 +147,7 @@ export function toCaseDetail(dto: CaseViewDto): CaseDetail {
   return {
     id: dto.id,
     number: dto.number,
-    wso2Id: dto.wso2Id,
+    wso2Id: dto.internalId,
     subject: dto.subject,
     description: dto.description,
     severity: normalizeSeverity(dto.severity),

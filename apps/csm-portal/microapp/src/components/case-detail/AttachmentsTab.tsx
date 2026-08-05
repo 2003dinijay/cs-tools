@@ -24,9 +24,11 @@ import { ErrorBoundary } from "@components/common/ErrorBoundary";
 import { ErrorState } from "@components/support/ErrorState";
 import { AttachmentsField } from "@components/support/AttachmentsField";
 import { formatBytes, type PendingAttachment } from "@utils/attachments";
+import { getAttachmentPreviewKind } from "@utils/attachmentPreview";
 import { formatDate } from "@utils/dateTime";
 import { openUrl } from "@components/microapp-bridge";
 import { Logger } from "@utils/logger";
+import { AttachmentPreviewDialog } from "./AttachmentPreviewDialog";
 
 /**
  * Full attachment list + upload for a case — the standalone flow (10 MB cap), distinct from the
@@ -48,6 +50,7 @@ function AttachmentsTabContent({ caseId }: { caseId: string }) {
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(null);
 
   const handleUpload = async () => {
     if (pending.length === 0) return;
@@ -111,15 +114,23 @@ function AttachmentsTabContent({ caseId }: { caseId: string }) {
       ) : (
         <Stack gap={1}>
           {caseAttachments.map((attachment) => (
-            <AttachmentRow key={attachment.id} attachment={attachment} />
+            <AttachmentRow key={attachment.id} attachment={attachment} onPreview={setPreviewTarget} />
           ))}
         </Stack>
       )}
+
+      <AttachmentPreviewDialog attachment={previewTarget} onClose={() => setPreviewTarget(null)} />
     </Stack>
   );
 }
 
-function AttachmentRow({ attachment }: { attachment: CaseAttachment }) {
+function AttachmentRow({
+  attachment,
+  onPreview,
+}: {
+  attachment: CaseAttachment;
+  onPreview: (attachment: CaseAttachment) => void;
+}) {
   return (
     <Stack
       direction="row"
@@ -139,22 +150,27 @@ function AttachmentRow({ attachment }: { attachment: CaseAttachment }) {
           </Typography>
         </Stack>
       </Stack>
-      {attachment.downloadUrl && (
+      {(attachment.downloadUrl || getAttachmentPreviewKind(attachment.type)) && (
         <Stack direction="row" gap={2} sx={{ flexShrink: 0 }}>
-          <IconButton
-            size="small"
-            aria-label={`Open ${attachment.name}`}
-            onClick={() => openUrl({ url: attachment.downloadUrl as string, presentationStyle: "fullScreen" })}
-          >
-            <Eye size={16} />
-          </IconButton>
-          <IconButton
-            size="small"
-            aria-label={`Download ${attachment.name}`}
-            onClick={() => openUrl({ url: attachment.downloadUrl as string, presentationStyle: "fullScreen" })}
-          >
-            <Download size={16} />
-          </IconButton>
+          {/* Preview doesn't depend on downloadUrl — it fetches via GET /attachments/{id}/content,
+              a different mechanism entirely — so it must not be gated behind downloadUrl being
+              present. Only for content types the in-app viewer actually renders (images/PDFs) —
+              matches the webapp's own conditional Preview button (CaseActivitiesFeed.tsx).
+              Everything else is download-only. */}
+          {getAttachmentPreviewKind(attachment.type) && (
+            <IconButton size="small" aria-label={`Preview ${attachment.name}`} onClick={() => onPreview(attachment)}>
+              <Eye size={16} />
+            </IconButton>
+          )}
+          {attachment.downloadUrl && (
+            <IconButton
+              size="small"
+              aria-label={`Download ${attachment.name}`}
+              onClick={() => openUrl({ url: attachment.downloadUrl as string, presentationStyle: "fullScreen" })}
+            >
+              <Download size={16} />
+            </IconButton>
+          )}
         </Stack>
       )}
     </Stack>

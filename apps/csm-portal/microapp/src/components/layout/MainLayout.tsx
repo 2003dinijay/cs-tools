@@ -26,7 +26,8 @@ export default function MainLayout() {
   return (
     <>
       <TopBar />
-      <Box component="main" flexGrow={1} p={2} pb="calc(var(--tab-bar-height, 120px) + 24px)">
+
+      <Box component="main" flexGrow={1} p={2} pb={15}>
         <Outlet />
       </Box>
       <TabBar />
