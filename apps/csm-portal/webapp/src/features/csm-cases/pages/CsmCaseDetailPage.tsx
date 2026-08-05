@@ -1582,6 +1582,13 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // notes. Mirrors the BFF comment guard so the engineer sees a clear reason
   // instead of a generic error.
   const publicReplyGateReason = publicCommentGateReason(c.state, c.workState);
+  // The composer's inline "Resume work" quick-fix only applies to this one
+  // lock reason — the case is already work_in_progress and assigned, just
+  // paused, so resuming is the single-field PATCH `onAction` already runs
+  // for "toggle_work_state" below. The other lock reason (not started yet)
+  // needs the full assign/start flow, which doesn't belong in the composer.
+  const canResumeToUnlockPublicReply =
+    c.state === "work_in_progress" && c.workState !== "ongoing";
   // FE-only, advisory close-gate: warn when the case has an open task, so the
   // engineer isn't surprised by a close rejection. Best-effort — the task
   // *list* (`POST /cases/{id}/tasks/search`) returns `BeTaskSummary`, which
@@ -1860,6 +1867,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
               <CsmCaseCommentInput
                 disabled={!caseId || isClosed}
                 publicCommentDisabledReason={publicReplyGateReason}
+                canResumeToUnlockPublicReply={canResumeToUnlockPublicReply}
+                onResumeWork={() => onAction({ secondary: "toggle_work_state" })}
+                isResumingWork={patchCase.isPending}
                 autoFocus
                 onSubmit={async (bodyHtml, internal, commentAttachments) => {
                   if (!caseId) return;
