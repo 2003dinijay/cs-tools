@@ -15,8 +15,8 @@
 // under the License.
 
 import { Suspense, useMemo, useState, type ReactNode } from "react";
-import { Chip, IconButton, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
-import { Download, Eye, History, Paperclip } from "@wso2/oxygen-ui-icons-react";
+import { Chip, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
+import { Eye, History, Paperclip } from "@wso2/oxygen-ui-icons-react";
 import { useQueryErrorResetBoundary, useSuspenseQuery } from "@tanstack/react-query";
 import { activities as activitiesService } from "@src/services/activities";
 import { attachments as attachmentsService } from "@src/services/attachments";
@@ -24,9 +24,7 @@ import type { CaseAttachment, CaseAuditEntry, Comment } from "@src/types";
 import { ErrorBoundary } from "@components/common/ErrorBoundary";
 import { ErrorState } from "@components/support/ErrorState";
 import { formatBytes } from "@utils/attachments";
-import { getAttachmentPreviewKind } from "@utils/attachmentPreview";
 import { fromNow } from "@utils/dateTime";
-import { openUrl } from "@components/microapp-bridge";
 import { AttachmentPreviewDialog } from "./AttachmentPreviewDialog";
 import { CommentBody } from "./CommentBody";
 
@@ -149,7 +147,8 @@ export function CaseActivityFeed({ comments, audit, attachments }: CaseActivityF
             alignItems="center"
             justifyContent="space-between"
             gap={1}
-            sx={{ p: 1.5, border: "1px solid", borderColor: "divider", borderRadius: 1 }}
+            onClick={() => setPreviewTarget(e.attachment)}
+            sx={{ p: 1.5, border: "1px solid", borderColor: "divider", borderRadius: 1, cursor: "pointer" }}
           >
             <Stack direction="row" alignItems="center" gap={1} sx={{ minWidth: 0 }}>
               <Paperclip size={16} />
@@ -168,35 +167,11 @@ export function CaseActivityFeed({ comments, audit, attachments }: CaseActivityF
                 </Typography>
               </Stack>
             </Stack>
-            {(e.attachment.downloadUrl || getAttachmentPreviewKind(e.attachment.type)) && (
-              <Stack direction="row" gap={0.5} sx={{ flexShrink: 0 }}>
-                {/* Preview doesn't depend on downloadUrl — it fetches via
-                    GET /attachments/{id}/content, a different mechanism entirely — so it must not
-                    be gated behind downloadUrl being present. Same in-app zoom/pan viewer as
-                    AttachmentsTab, only for content types it actually renders (images/PDFs);
-                    everything else is download-only. */}
-                {getAttachmentPreviewKind(e.attachment.type) && (
-                  <IconButton
-                    size="small"
-                    aria-label={`Preview ${e.attachment.name}`}
-                    onClick={() => setPreviewTarget(e.attachment)}
-                  >
-                    <Eye size={16} />
-                  </IconButton>
-                )}
-                {e.attachment.downloadUrl && (
-                  <IconButton
-                    size="small"
-                    aria-label={`Download ${e.attachment.name}`}
-                    onClick={() =>
-                      openUrl({ url: e.attachment.downloadUrl as string, presentationStyle: "fullScreen" })
-                    }
-                  >
-                    <Download size={16} />
-                  </IconButton>
-                )}
-              </Stack>
-            )}
+            {/* Whole row opens Preview, same as AttachmentsTab/customer-portal microapp's
+                AttachmentCard — no separate Download action (neither app's native bridge has a
+                "save file to device" primitive). Unsupported types still open the dialog; it
+                renders its own "Preview not available" state for those. */}
+            <Eye size={16} />
           </Stack>
         );
       })}

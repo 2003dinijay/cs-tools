@@ -16,17 +16,15 @@
 
 import { Suspense, useState, type ReactNode } from "react";
 import { useQueryClient, useQueryErrorResetBoundary, useSuspenseQuery } from "@tanstack/react-query";
-import { Button, IconButton, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
-import { Download, Eye, FileText } from "@wso2/oxygen-ui-icons-react";
+import { Button, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
+import { Eye, FileText } from "@wso2/oxygen-ui-icons-react";
 import { attachments as attachmentsService } from "@src/services/attachments";
 import type { CaseAttachment } from "@src/types";
 import { ErrorBoundary } from "@components/common/ErrorBoundary";
 import { ErrorState } from "@components/support/ErrorState";
 import { AttachmentsField } from "@components/support/AttachmentsField";
 import { formatBytes, type PendingAttachment } from "@utils/attachments";
-import { getAttachmentPreviewKind } from "@utils/attachmentPreview";
 import { formatDate } from "@utils/dateTime";
-import { openUrl } from "@components/microapp-bridge";
 import { Logger } from "@utils/logger";
 import { AttachmentPreviewDialog } from "./AttachmentPreviewDialog";
 
@@ -137,7 +135,8 @@ function AttachmentRow({
       alignItems="center"
       justifyContent="space-between"
       gap={1}
-      sx={{ p: 1, border: "1px solid", borderColor: "divider", borderRadius: 1 }}
+      onClick={() => onPreview(attachment)}
+      sx={{ p: 1, border: "1px solid", borderColor: "divider", borderRadius: 1, cursor: "pointer" }}
     >
       <Stack direction="row" alignItems="center" gap={1} sx={{ minWidth: 0 }}>
         <FileText size={16} />
@@ -150,29 +149,12 @@ function AttachmentRow({
           </Typography>
         </Stack>
       </Stack>
-      {(attachment.downloadUrl || getAttachmentPreviewKind(attachment.type)) && (
-        <Stack direction="row" gap={2} sx={{ flexShrink: 0 }}>
-          {/* Preview doesn't depend on downloadUrl — it fetches via GET /attachments/{id}/content,
-              a different mechanism entirely — so it must not be gated behind downloadUrl being
-              present. Only for content types the in-app viewer actually renders (images/PDFs) —
-              matches the webapp's own conditional Preview button (CaseActivitiesFeed.tsx).
-              Everything else is download-only. */}
-          {getAttachmentPreviewKind(attachment.type) && (
-            <IconButton size="small" aria-label={`Preview ${attachment.name}`} onClick={() => onPreview(attachment)}>
-              <Eye size={16} />
-            </IconButton>
-          )}
-          {attachment.downloadUrl && (
-            <IconButton
-              size="small"
-              aria-label={`Download ${attachment.name}`}
-              onClick={() => openUrl({ url: attachment.downloadUrl as string, presentationStyle: "fullScreen" })}
-            >
-              <Download size={16} />
-            </IconButton>
-          )}
-        </Stack>
-      )}
+      {/* Whole row opens Preview, same as customer-portal microapp's AttachmentCard — no separate
+          Download action (neither app's native bridge has a "save file to device" primitive, only
+          a small JSON-value local store unrelated to files). Unsupported types still open the
+          dialog; it renders its own "Preview not available" state for those rather than leaving
+          the row with no action at all. */}
+      <Eye size={16} />
     </Stack>
   );
 }
