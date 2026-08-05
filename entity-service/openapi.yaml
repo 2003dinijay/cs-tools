@@ -5284,6 +5284,15 @@ components:
           description: >-
             Internal-only worst-case fix-commitment date (date-only, YYYY-MM-DD), visible to
             CSM engineers only. Populated for ServiceNow cases; null otherwise.
+        tags:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/Tag'
+          description: >-
+            Tags currently attached to the case, fetched via a best-effort lookup against the
+            backing data source. null if that lookup failed; the rest of the case detail is
+            still valid in that case, not an indication the case has no tags.
 
     CaseSearchView:
       type: object

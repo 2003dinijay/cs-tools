@@ -44,11 +44,16 @@ export interface EntityRefDto {
   name: string;
 }
 
+// The canonical {id, email, name} UserReference shape (openapi.yaml), used for CaseViewDto's
+// createdBy — confirmed live against a real response. Previously modeled as {id, displayName,
+// userId, email}, none of which (besides id/email) exist on the real object — CaseDetailPage's
+// `displayName` read always came up empty and silently fell back to rendering the email instead
+// of the name. openapi.yaml marks both UserReference and CaseView.createdBy nullable, so callers
+// must not assume a CaseViewDto always has one.
 export interface UserRefDto {
-  id: string;
-  displayName: string;
-  userId: string;
+  id: string | null;
   email: string;
+  name: string;
 }
 
 export interface UserIdEmailRefDto {
@@ -163,7 +168,7 @@ export interface CaseViewDto {
   createdOn?: string;
   updatedOn?: string;
   closedOn: string | null;
-  createdBy: UserRefDto;
+  createdBy: UserRefDto | null;
   project: EntityRefDto;
   deployment: EntityRefDto | null;
   deployedProduct: DeployedProductRefDto | null;
@@ -181,16 +186,10 @@ export interface CaseViewDto {
 
 export type CaseCommentType = "work_note" | "comment" | "activity";
 
-// openapi.yaml declares `createdBy` as a plain string, but the live entity-service response
-// doesn't consistently match that — it comes back as a richer {id, firstName, lastName, fullName}
-// object for at least some comments (same createdBy string-vs-object drift already seen on
-// CaseSearchViewDto — see reference_csm_announcements memory). Modeled as a union and normalized
-// to a display string in `toComment` rather than trusted as a string at the DTO boundary.
 export interface CaseCommentAuthorDto {
-  id?: string;
-  firstName?: string;
-  lastName?: string;
-  fullName?: string;
+  id: string | null;
+  email: string;
+  name: string;
 }
 
 export interface CaseCommentDto {

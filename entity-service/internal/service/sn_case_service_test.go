@@ -1531,3 +1531,91 @@ func TestSNCaseService_GetCaseByID_MapsLinkedChangeRequests(t *testing.T) {
 		}
 	})
 }
+
+// caseDetailBody is a minimal, valid GET /cases/{id} response body for the given sysid,
+// used by the tags-population tests below where only the tags side-fetch is under test.
+func caseDetailBody(caseSysid string) string {
+	return `{
+		"id": "` + caseSysid + `",
+		"internalId": "WSO2-001",
+		"number": "CS0001001",
+		"title": "Case subject",
+		"description": "Case description",
+		"createdOn": "2026-01-01 10:00:00",
+		"project": {"id": "` + testProjectSysid + `", "name": "Project A"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"state": {"id": 1, "label": "Open"}
+	}`
+}
+
+// TestSNCaseService_GetCaseByID_PopulatesTags verifies GetCaseByID fetches the case's
+// current tags from the case-scoped GET /cases/{id}/tags resource and maps them onto
+// CaseView.Tags, the same way SearchTags/AddCaseTag map the shared snTag shape.
+func TestSNCaseService_GetCaseByID_PopulatesTags(t *testing.T) {
+	var gotTagsPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cases/"+testCaseSysid, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(caseDetailBody(testCaseSysid)))
+	})
+	mux.HandleFunc("/cases/"+testCaseSysid+"/tags", func(w http.ResponseWriter, r *http.Request) {
+		gotTagsPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tags": []map[string]any{
+				{"id": testTagSysid, "label": "micro-gw", "color": "#f97316"},
+			},
+		})
+	})
+
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowCaseService(client, nil)
+
+	cv, err := svc.GetCaseByID(contextWithUserIDToken("token"), testCaseUUID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotTagsPath != "/cases/"+testCaseSysid+"/tags" {
+		t.Fatalf("tags endpoint not called, got path %q", gotTagsPath)
+	}
+	if len(cv.Tags) != 1 {
+		t.Fatalf("expected 1 tag, got %d: %+v", len(cv.Tags), cv.Tags)
+	}
+	if cv.Tags[0].ID != testTagUUID || cv.Tags[0].Label != "micro-gw" {
+		t.Fatalf("unexpected tag mapping: %+v", cv.Tags[0])
+	}
+	if cv.Tags[0].Color == nil || *cv.Tags[0].Color != "#f97316" {
+		t.Fatalf("tag.Color = %v, want #f97316", cv.Tags[0].Color)
+	}
+}
+
+// TestSNCaseService_GetCaseByID_TagsFetchFailureDoesNotFailRead verifies that a failing
+// tags lookup is soft-failed: the case detail read still succeeds (matching this file's
+// established soft-fail convention for supplementary side-fetches, e.g.
+// resolveUserGroups/resolveProjectAccess in sn_user_service.go), with CaseView.Tags left
+// nil rather than the whole GetCaseByID call returning an error.
+func TestSNCaseService_GetCaseByID_TagsFetchFailureDoesNotFailRead(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cases/"+testCaseSysid, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(caseDetailBody(testCaseSysid)))
+	})
+	mux.HandleFunc("/cases/"+testCaseSysid+"/tags", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message": "internal error"}`))
+	})
+
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowCaseService(client, nil)
+
+	cv, err := svc.GetCaseByID(contextWithUserIDToken("token"), testCaseUUID)
+	if err != nil {
+		t.Fatalf("expected GetCaseByID to succeed despite the tags-lookup failure, got: %v", err)
+	}
+	if cv.Tags != nil {
+		t.Fatalf("expected Tags to stay nil on a fetch failure, got %+v", cv.Tags)
+	}
+	if cv.Number != "CS0001001" {
+		t.Fatalf("expected the rest of the case detail to still be populated, got %+v", cv)
+	}
+}

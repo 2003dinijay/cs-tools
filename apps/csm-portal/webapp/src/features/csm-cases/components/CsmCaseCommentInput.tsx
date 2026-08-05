@@ -19,6 +19,7 @@ import {
   Button,
   FormControlLabel,
   IconButton,
+  Link,
   Switch,
   TextField,
   Tooltip,
@@ -64,6 +65,26 @@ interface CsmCaseCommentInputProps {
    * are always allowed. `null`/absent = public replies allowed.
    */
   publicCommentDisabledReason?: string | null;
+  /**
+   * True when the *only* thing blocking a public reply is paused work — i.e.
+   * the case is already `work_in_progress` and assigned, just not `ongoing`,
+   * so resuming (a single click, no reassignment or state change needed)
+   * would unlock it right away. Drives the inline "Resume work" quick-fix
+   * shown next to the Internal note toggle; omit/false when the case isn't
+   * even in progress yet, where "resume" doesn't apply. Ignored unless
+   * `publicCommentDisabledReason` and `onResumeWork` are both set.
+   */
+  canResumeToUnlockPublicReply?: boolean;
+  /** Resumes work on the case (`workState` paused → ongoing). Runs the same
+   * single-active-case conflict check as the case header's own Resume
+   * action — see CsmCaseDetailPage's `onAction("toggle_work_state")`. Once it
+   * succeeds, `publicCommentDisabledReason` clears on its own (the case
+   * detail query refetches) and the Internal note toggle unlocks — this
+   * doesn't flip it or send anything by itself. */
+  onResumeWork?: () => void;
+  /** True while a resume (or any other case mutation sharing the same
+   * pending flag) is in flight; disables the quick-fix link. */
+  isResumingWork?: boolean;
   /** Focus the editor as soon as it mounts (e.g. when the composer opens). */
   autoFocus?: boolean;
 }
@@ -91,6 +112,9 @@ export default function CsmCaseCommentInput({
   onSubmit,
   disabled = false,
   publicCommentDisabledReason = null,
+  canResumeToUnlockPublicReply = false,
+  onResumeWork,
+  isResumingWork = false,
   autoFocus = false,
 }: CsmCaseCommentInputProps): JSX.Element {
   const [html, setHtml] = useState<string>("");
@@ -209,6 +233,16 @@ export default function CsmCaseCommentInput({
     if (publicReplyLocked && !internal) setInternal(true);
   }, [publicReplyLocked, internal]);
 
+  // One reason, shown once. When resuming would unlock public replies, the
+  // quick-fix next to Internal note covers it (with the actionable link) —
+  // the send-row status line below falls back to its normal hint instead of
+  // repeating the same reason a second time. Otherwise (the case hasn't even
+  // started) there's no quick fix to offer, so the send-row line is the only
+  // place the reason shows.
+  const showResumeQuickFix =
+    publicReplyLocked && canResumeToUnlockPublicReply && !!onResumeWork;
+  const showBottomLockReason = publicReplyLocked && !showResumeQuickFix;
+
   const toggleSourceMode = useCallback(
     (nextSource: boolean) => {
       setSourceMode(nextSource);
@@ -316,6 +350,26 @@ export default function CsmCaseCommentInput({
         </Box>
       </Box>
 
+      {/* Quick-fix for the most common lock reason (paused work): resuming
+          is a single click here, unlike the other lock reason (case not
+          started yet), which needs the full assign/start flow and isn't
+          offered inline. */}
+      {showResumeQuickFix && (
+        <Typography variant="caption" color="text.secondary">
+          Only resumed work can send public replies to the customer.{" "}
+          <Link
+            component="button"
+            type="button"
+            variant="caption"
+            onClick={onResumeWork}
+            disabled={isResumingWork}
+          >
+            {isResumingWork ? "Resuming…" : "Resume work"}
+          </Link>{" "}
+          to publish this as a public comment.
+        </Typography>
+      )}
+
       {sourceMode ? (
         <TextField
           value={html}
@@ -380,14 +434,14 @@ export default function CsmCaseCommentInput({
           color={
             sizeError || error
               ? "error"
-              : publicReplyLocked
+              : showBottomLockReason
                 ? "warning.main"
                 : "text.secondary"
           }
         >
           {sizeError ??
             error ??
-            (publicReplyLocked
+            (showBottomLockReason
               ? publicCommentDisabledReason
               : sourceMode
                 ? "Output is sent as-is. Use this to fix paste-formatting or insert tables."

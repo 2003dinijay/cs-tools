@@ -21,6 +21,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -915,8 +916,16 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	if c.WorstCaseFixEta != nil && *c.WorstCaseFixEta != "" {
 		cv.WorstCaseFixEta = c.WorstCaseFixEta
 	}
-	// Tags are not populated: not yet available in the backing service, see the
-	// CaseView.Tags doc comment. cv.Tags is left nil.
+	// The Choreo GET /cases/{id} response (snCase above) still has no inline tags field,
+	// so the case's current tags are fetched separately via the case-scoped
+	// GET /cases/{id}/tags resource. A failure here must not fail the whole case read
+	// (see CaseView.Tags doc comment): cv.Tags is left nil and the failure is logged.
+	tags, err := s.listCaseTags(ctx, id)
+	if err != nil {
+		slog.WarnContext(ctx, "sn get case: case tags lookup failed", "caseId", id, "error", err)
+	} else {
+		cv.Tags = tags
+	}
 
 	return cv, nil
 }
@@ -2544,20 +2553,15 @@ func snWorkStateLabelToEnum(ws *snCaseLabel) *domain.CaseWorkState {
 	}
 }
 
-// snAddTagPayload is the Choreo POST /cases/{id}/tags request body.
-//
-// Not yet available in the backing service: no Ballerina/Choreo endpoint exists yet
-// for this. SN's tagging is the generic platform label/label_entry mechanism
-// (table-agnostic, not a case column), so a new adapter is needed -- ask: add
-// POST /cases/{id}/tags (body: {"label": string}) and
-// DELETE /cases/{id}/tags/{tagId} to the backing service's case API, backed by the
-// sys_label / label_entry tables scoped to
+// snAddTagPayload is the Choreo POST /cases/{id}/tags request body. SN's tagging is
+// the generic platform label/label_entry mechanism (table-agnostic, not a case
+// column), backed by the sys_label / label_entry tables scoped to
 // reference_table="sn_customerservice_case".
 type snAddTagPayload struct {
 	Label string `json:"label"`
 }
 
-// snTag mirrors the Choreo tag shape (once it exists).
+// snTag mirrors the Choreo tag shape.
 type snTag struct {
 	ID    string  `json:"id"`
 	Label string  `json:"label"`
@@ -2570,10 +2574,6 @@ type snAddTagResponse struct {
 }
 
 // AddCaseTag attaches a free-text label to the case identified by caseID.
-//
-// Not yet available in the backing service: see snAddTagPayload doc comment. This
-// is implemented so the entity-service side is ready the moment Ballerina adds it;
-// until then, calling it returns a downstream error (no such Choreo route today).
 func (s *snCaseService) AddCaseTag(ctx context.Context, caseID, label string) (domain.Tag, error) {
 	if err := validateUUIDs("id", []string{caseID}); err != nil {
 		return domain.Tag{}, err
@@ -2603,9 +2603,6 @@ func (s *snCaseService) AddCaseTag(ctx context.Context, caseID, label string) (d
 }
 
 // RemoveCaseTag removes the tag identified by tagID from the case identified by caseID.
-//
-// Not yet available in the backing service: see snAddTagPayload doc comment (no
-// such Choreo route today).
 func (s *snCaseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) error {
 	if err := validateUUIDs("id", []string{caseID}); err != nil {
 		return err
@@ -2620,22 +2617,42 @@ func (s *snCaseService) RemoveCaseTag(ctx context.Context, caseID, tagID string)
 	return err
 }
 
-// snSearchTagsResponse mirrors the Choreo GET /tags/search response (once it exists).
+// snSearchTagsResponse mirrors the Choreo GET /tags/search response, and the shape of the
+// case-scoped GET /cases/{id}/tags response consumed by listCaseTags below.
 type snSearchTagsResponse struct {
 	Tags []snTag `json:"tags"`
 }
 
+// listCaseTags returns the tags currently attached to the case identified by caseID, via the
+// case-scoped GET /cases/{id}/tags resource.
+func (s *snCaseService) listCaseTags(ctx context.Context, caseID string) ([]domain.Tag, error) {
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	raw, err := s.client.Get(ctx, "/cases/"+uuidToSysid(caseID)+"/tags", token)
+	if err != nil {
+		return nil, err
+	}
+
+	var snResp snSearchTagsResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return nil, fmt.Errorf("sn list case tags: parse response: %w", err)
+	}
+
+	tags := make([]domain.Tag, 0, len(snResp.Tags))
+	for _, t := range snResp.Tags {
+		tags = append(tags, domain.Tag{
+			ID:    sysidToUUID(t.ID),
+			Label: t.Label,
+			Color: t.Color,
+		})
+	}
+	return tags, nil
+}
+
 // SearchTags returns the tags (not scoped to any single case) whose label matches query, for
-// FE autocomplete when attaching a tag to a case.
-//
-// Not yet available in the backing service: no Ballerina/Choreo endpoint exists yet for this.
-// SN's tagging is the generic platform label mechanism (table-agnostic, not a case column), so
-// listing/searching existing labels needs a new adapter -- ask: add
-// GET /tags/search?q={query}&limit={limit} (response: {"tags": [{"id", "label", "color"}]}) to
-// the backing service's case API, backed by the sys_label table (optionally scoped to labels
-// used against reference_table="sn_customerservice_case" label_entry rows). This is so the
-// entity-service side is ready the moment Ballerina adds the endpoint; until then, calling it
-// returns a downstream error (no such Choreo route today).
+// FE autocomplete when attaching a tag to a case. SN's tagging is the generic platform label
+// mechanism (table-agnostic, not a case column), backed by the sys_label table (optionally
+// scoped to labels used against reference_table="sn_customerservice_case" label_entry rows).
 func (s *snCaseService) SearchTags(ctx context.Context, query string, limit int) ([]domain.Tag, error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 

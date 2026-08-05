@@ -34,6 +34,7 @@ import WorkStateChip from "@components/WorkStateChip";
 import CsmCaseCommentBubble from "@features/csm-cases/components/CsmCaseCommentBubble";
 import { useGetCsmCaseComments } from "@features/csm-cases/api/useCsmCaseComments";
 import { caseTypeDetailBasePath, caseTypeHasSeverity } from "@features/csm-cases/utils/caseType";
+import { effectiveWorkState } from "@features/csm-cases/utils/caseWorkState";
 import type { CsmCaseRow } from "@features/csm-cases/types/csmCases";
 
 // "The last few at least" — deliberately not the full thread (that's the
@@ -108,8 +109,8 @@ export default function CasePreviewDrawer({ row, onClose }: CasePreviewDrawerPro
             </Box>
             <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
               <StateChip state={row.state} variant="outlined" />
-              {row.state === "work_in_progress" && row.workState && (
-                <WorkStateChip workState={row.workState} />
+              {row.state === "work_in_progress" && (
+                <WorkStateChip workState={effectiveWorkState(row.workState)} />
               )}
               {caseTypeHasSeverity(row.caseType) && <SeverityChip severity={row.severity} />}
             </Box>

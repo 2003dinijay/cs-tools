@@ -218,18 +218,13 @@ type CaseService interface {
 	DeleteCaseAttachment(ctx context.Context, req domain.DeleteAttachmentRequest) (domain.DeleteAttachmentResponse, error)
 	// AddCaseTag attaches a free-text label to the case identified by caseID.
 	// A ValidationError is returned for invalid input (e.g. malformed UUID, empty label).
-	// Not yet available in the backing service: no Ballerina adapter exists yet for
-	// ServiceNow's generic label/label_entry mechanism; see AddCaseTagRequest doc comment.
 	AddCaseTag(ctx context.Context, caseID, label string) (domain.Tag, error)
 	// RemoveCaseTag removes the tag identified by tagID from the case identified by caseID.
 	// A NotFoundError is returned if the tag does not exist on the case.
-	// Not yet available in the backing service: same gap as AddCaseTag above.
 	RemoveCaseTag(ctx context.Context, caseID, tagID string) error
 	// SearchTags returns the tags (not scoped to any single case) whose label matches query,
 	// for FE autocomplete when attaching a tag to a case. An empty query returns all known tags.
 	// limit caps the number of results (<=0 means use the downstream default).
-	// Not yet available in the backing service: no Ballerina/Choreo endpoint exists yet for a
-	// case-agnostic tag search; see SearchTags in sn_case_service.go for the requested contract.
 	SearchTags(ctx context.Context, query string, limit int) ([]domain.Tag, error)
 }
 
