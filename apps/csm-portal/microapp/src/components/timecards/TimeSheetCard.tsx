@@ -116,7 +116,10 @@ function TimeCardRow({
 }) {
   const canDecide = onDecide && card.state === "submitted";
   return (
-    <Stack gap={1}>
+    // A tinted background separates each card from its neighbors and from the sheet's own
+    // background — a plain gap between rows was indistinguishable in dark mode, where the
+    // accordion body and each card otherwise render as the same flat surface color.
+    <Stack gap={1} sx={{ p: 1.25, borderRadius: 1.5, bgcolor: "action.hover" }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1}>
         <Box sx={{ minWidth: 0 }}>
           <Typography variant="body2" noWrap>
