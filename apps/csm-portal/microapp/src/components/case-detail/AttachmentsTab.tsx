@@ -21,6 +21,7 @@ import { Eye, FileText } from "@wso2/oxygen-ui-icons-react";
 import { attachments as attachmentsService } from "@src/services/attachments";
 import type { CaseAttachment } from "@src/types";
 import { ErrorBoundary } from "@components/common/ErrorBoundary";
+import { ListItemErrorBoundary } from "@components/common/ListItemErrorBoundary";
 import { ErrorState } from "@components/support/ErrorState";
 import { AttachmentsField } from "@components/support/AttachmentsField";
 import { formatBytes, type PendingAttachment } from "@utils/attachments";
@@ -112,7 +113,9 @@ function AttachmentsTabContent({ caseId }: { caseId: string }) {
       ) : (
         <Stack gap={1}>
           {caseAttachments.map((attachment) => (
-            <AttachmentRow key={attachment.id} attachment={attachment} onPreview={setPreviewTarget} />
+            <ListItemErrorBoundary key={attachment.id} context="attachment row">
+              <AttachmentRow attachment={attachment} onPreview={setPreviewTarget} />
+            </ListItemErrorBoundary>
           ))}
         </Stack>
       )}
