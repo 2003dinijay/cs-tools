@@ -33,6 +33,14 @@ export function CaseCard({ item }: { item: CaseSummary }) {
           <Stack direction="row" alignItems="center" gap={1}>
             <Icon size={pxToRem(16)} color={color} />
             <Typography variant="subtitle2" color="text.secondary">
+              {/* wso2Id then number, "|"-separated — matches the customer-portal microapp's
+                  ItemCard list convention and this same case's own detail-page header. */}
+              {item.wso2Id && (
+                <>
+                  {item.wso2Id}
+                  <span style={{ opacity: 0.5, margin: "0 4px" }}>|</span>
+                </>
+              )}
               {item.number}
             </Typography>
           </Stack>
