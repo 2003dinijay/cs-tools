@@ -95,6 +95,23 @@ describe("canResumeToUnlockPublicReply", () => {
     expect(canResumeToUnlockPublicReply("open", null, true)).toBe(false);
     expect(canResumeToUnlockPublicReply("open", null, false)).toBe(false);
   });
+
+  // A null/undefined workState on a work_in_progress case is a real, expected
+  // state (e.g. data predating the work-state feature), not just "open"'s
+  // absent-workState case above — and it's resumable, matching
+  // CaseActionBar's own deliberate handling of the same case (see its
+  // "anything else (paused OR a null work-state in-progress case) is
+  // resumable" comment in buildSecondaryItems). Requiring workState ===
+  // "paused" exactly here would hide this quick-fix for a case where the
+  // action bar's own "Resume work" item is still shown and functional.
+  it("is true for a work_in_progress case with a null or undefined work state", () => {
+    expect(canResumeToUnlockPublicReply("work_in_progress", null, true)).toBe(
+      true,
+    );
+    expect(
+      canResumeToUnlockPublicReply("work_in_progress", undefined, true),
+    ).toBe(true);
+  });
 });
 
 describe("effectiveWorkState", () => {

@@ -65,6 +65,15 @@ export function publicCommentGateReason(
  * see a "Resume work" quick-fix that isn't actually theirs to use. The other
  * lock reason (case not started at all) needs the full assign/start flow
  * instead, so it's never resumable this way regardless of assignee.
+ *
+ * Deliberately `workState !== "ongoing"`, not `workState === "paused"`: a
+ * null/undefined work state on a work_in_progress case is real (e.g. data
+ * predating the work-state feature) and is resumable too, matching
+ * CaseActionBar's own handling of the exact same case — see its "anything
+ * else (paused OR a null work-state in-progress case) is resumable" comment
+ * in `buildSecondaryItems`. Narrowing this to `=== "paused"` would hide the
+ * quick-fix for a case where the action bar's own "Resume work" item is
+ * still shown and functional.
  */
 export function canResumeToUnlockPublicReply(
   state: CaseState | undefined,
