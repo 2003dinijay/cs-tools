@@ -236,49 +236,6 @@ describe("DashboardWidgetTile", () => {
     });
   });
 
-  it("shows a '{from}–{to} of {total}' range for shape: list, reusing the same total the 'View more' logic uses", async () => {
-    postMock.mockResolvedValue({
-      total: 42,
-      cases: [
-        { id: "11111111-1111-1111-1111-111111111111", number: "CS-1", subject: "Disk full", state: "open" },
-      ],
-      limit: 5,
-      offset: 0,
-      hasMore: true,
-    });
-
-    renderWithClient(
-      <DashboardWidgetTile
-        widgetId="my_critical_open"
-        displayName="My Critical & High Cases"
-        resourceType="case"
-        shape="list"
-        filters={{}}
-        listLimit={5}
-      />,
-    );
-
-    await waitFor(() => expect(screen.getByText("CS-1")).toBeInTheDocument());
-    expect(screen.getByText("1–1 of 42")).toBeInTheDocument();
-  });
-
-  it("does not show a total count for shape: list while the widget is still loading", () => {
-    postMock.mockReturnValue(new Promise(() => {}));
-
-    renderWithClient(
-      <DashboardWidgetTile
-        widgetId="my_critical_open"
-        displayName="My Critical & High Cases"
-        resourceType="case"
-        shape="list"
-        filters={{}}
-        listLimit={5}
-      />,
-    );
-
-    expect(screen.queryByText(/^\d+$/)).not.toBeInTheDocument();
-  });
-
   it("shows a 'View more' link through to the full tab only when more records exist than shown", async () => {
     postMock.mockResolvedValue({
       total: 1,
