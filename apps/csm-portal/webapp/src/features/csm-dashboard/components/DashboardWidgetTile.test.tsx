@@ -119,7 +119,12 @@ function renderWithClient(ui: ReactNode) {
 
 function LocationProbe() {
   const location = useLocation();
-  return <div data-testid="location-probe">{location.pathname + location.search}</div>;
+  return (
+    <>
+      <div data-testid="location-probe">{location.pathname + location.search}</div>
+      <div data-testid="location-state-probe">{JSON.stringify(location.state ?? null)}</div>
+    </>
+  );
 }
 
 /** For tests that need to observe where a click actually navigated to —
@@ -427,6 +432,29 @@ describe("DashboardWidgetTile", () => {
     expect(params.get("states")).toBe("open");
   });
 
+  it("shape count: click-through carries a `from` location.state pointing back to this dashboard page, so the destination list can offer a Back button", async () => {
+    postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="my_patches"
+        displayName="My Patches"
+        resourceType="case"
+        shape="count"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("3")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("link"));
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    expect(screen.getByTestId("location-state-probe").textContent).toBe(
+      JSON.stringify({ from: "/" }),
+    );
+  });
+
   it("resolves the __current_team__ placeholder with the selected team's groupId in both the /search request and the count tile's own click-through href", async () => {
     postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
 
@@ -722,6 +750,35 @@ describe("DashboardWidgetTile", () => {
     expect(params.get("states")).toBe("open");
   });
 
+  it("shape pie: clicking a slice carries a `from` location.state pointing back to this dashboard page", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{}}
+        slices={[
+          {
+            label: "Critical",
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:Critical:2")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("slice:Critical:2"));
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    expect(screen.getByTestId("location-state-probe").textContent).toBe(
+      JSON.stringify({ from: "/" }),
+    );
+  });
+
   it("shape pie: clicking a legend row navigates the same way as clicking the slice", async () => {
     postMock.mockResolvedValue({ total: 2 });
 
@@ -783,6 +840,35 @@ describe("DashboardWidgetTile", () => {
     // that's what distinguishes this from a slice/legend click.
     expect(params.get("states")).toBe("open");
     expect(params.get("severities")).toBeNull();
+  });
+
+  it("shape pie: clicking the tile itself carries a `from` location.state pointing back to this dashboard page", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    renderWithRoutes(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{}}
+        slices={[
+          {
+            label: "Critical",
+            query: { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+          },
+        ]}
+      />,
+      "/cases",
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:Critical:2")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "View all cases for Cases by severity" }));
+
+    await waitFor(() => expect(screen.getByTestId("location-probe")).toBeInTheDocument());
+    expect(screen.getByTestId("location-state-probe").textContent).toBe(
+      JSON.stringify({ from: "/" }),
+    );
   });
 
   it("shape pie: Enter on the focused tile activates the same tile-level click-through as a click", async () => {

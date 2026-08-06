@@ -17,7 +17,7 @@
 import { Box, Button, Card, IconButton, Skeleton, Tooltip, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
 import { ArrowRight, Info } from "@wso2/oxygen-ui-icons-react";
 import type { JSX, KeyboardEvent, ReactNode } from "react";
-import { Link as RouterLink, useNavigate } from "react-router";
+import { Link as RouterLink, useLocation, useNavigate } from "react-router";
 import type { BeDashboardPieSlice, BeWidgetResourceType, BeWidgetShape } from "@api/backend/types";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useWidgetData } from "@features/csm-dashboard/api/useWidgetData";
@@ -101,7 +101,14 @@ export default function DashboardWidgetTile({
 }: DashboardWidgetTileProps): JSX.Element {
   const theme = useTheme();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useCurrentUser();
+  // Carried on every count/pie/bar click-through below so the resource's own
+  // list page (which has no dashboard context of its own) can offer a Back
+  // button straight to this exact dashboard — mirroring the list-shape
+  // widget, whose embedded list already sets this same `from` shape (see
+  // CasesList) because it lives directly on this page.
+  const dashboardReturnState = { from: `${location.pathname}${location.search}` };
   // Resolve the `{{currentTeam}}` text placeholder before anything below
   // renders/reads `displayName`/`description` — every other use of those two
   // props in this component reads the resolved value, never the raw one, so
@@ -300,7 +307,7 @@ export default function DashboardWidgetTile({
     const ChartComponent = shape === "pie" ? DashboardPieChart : DashboardBarChart;
     const tileHref = config.buildHref(resolveTeamPlaceholder(filters, selectedTeamGroupId));
     const handleTileClick = (): void => {
-      void navigate(tileHref);
+      void navigate(tileHref, { state: dashboardReturnState });
     };
     const handleTileKeyDown = (e: KeyboardEvent): void => {
       if (e.key === "Enter" || e.key === " ") {
@@ -362,6 +369,7 @@ export default function DashboardWidgetTile({
                       selectedTeamGroupId,
                     ),
                   ),
+                  { state: dashboardReturnState },
                 )
               }
             />
@@ -438,6 +446,7 @@ export default function DashboardWidgetTile({
       <Box
         component={RouterLink}
         to={href}
+        state={dashboardReturnState}
         // The visible count + label sit in the pointer-events-none content
         // layer above this anchor, not inside it as descendant text anymore
         // (that's the whole point -- see the comment above), so it needs its

@@ -14,7 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Chip, TablePagination, Typography } from "@wso2/oxygen-ui";
+import { Box, Button, Chip, TablePagination, Typography } from "@wso2/oxygen-ui";
+import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
 import {
   useCallback,
   useEffect,
@@ -25,11 +26,12 @@ import {
   type JSX,
   type ReactNode,
 } from "react";
-import { useSearchParams } from "react-router";
+import { useLocation, useSearchParams } from "react-router";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
+import { useNavTransition } from "@hooks/useNavTransition";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { useBackendApi } from "@api/backend/client";
 import FilteredCsvExportButton from "@components/FilteredCsvExportButton";
@@ -125,6 +127,16 @@ export default function CsmIssuesView({
     () => readCasesFiltersFromUrl(searchParams),
     [searchParams],
   );
+
+  const location = useLocation();
+  const navigate = useNavTransition();
+  // Set by DashboardWidgetTile's count/pie/bar click-throughs, since this
+  // view has no dashboard context of its own (unlike the dashboard's
+  // list-shape widget, whose embedded CasesList sets the same `from` shape
+  // pointing at the dashboard itself). Absent for every other way of
+  // reaching this view (nav-bar tab, project-issues tab, etc.), so the Back
+  // button only ever appears when there's somewhere meaningful to return to.
+  const backTo = (location.state as { from?: string } | null)?.from;
 
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
@@ -349,6 +361,17 @@ export default function CsmIssuesView({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      {backTo && (
+        <Button
+          variant="text"
+          size="small"
+          startIcon={<ArrowLeft size={16} />}
+          onClick={() => navigate(backTo)}
+          sx={{ alignSelf: "flex-start" }}
+        >
+          Back
+        </Button>
+      )}
       <Box
         sx={{
           display: "flex",
