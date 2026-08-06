@@ -13,7 +13,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Grid, Pagination, Typography } from "@wso2/oxygen-ui";
+import { Box, CircularProgress, Grid, Pagination, Typography } from "@wso2/oxygen-ui";
 import {
   useState,
   useEffect,
@@ -63,11 +63,11 @@ export default function ProjectTimeTracking({
     enabled: !!projectId,
   });
 
-  // Reset pagination when filters change
+  // Reset pagination when the project changes
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setPage(1);
-  }, [projectId, startDate, endDate]);
+  }, [projectId]);
 
   const paginatedTimeCards = data?.caseTimeCards ?? [];
   const totalItems = data?.totalRecords ?? 0;
@@ -77,7 +77,18 @@ export default function ProjectTimeTracking({
     setPage(value);
   };
 
+  const handleStartDateChange = (value: string) => {
+    setPage(1);
+    setStartDate(value);
+  };
+
+  const handleEndDateChange = (value: string) => {
+    setPage(1);
+    setEndDate(value);
+  };
+
   const handleClearDates = () => {
+    setPage(1);
     setStartDate("");
     setEndDate("");
   };
@@ -96,17 +107,22 @@ export default function ProjectTimeTracking({
         <TimeCardsDateFilter
           startDate={startDate}
           endDate={endDate}
-          onStartDateChange={setStartDate}
-          onEndDateChange={setEndDate}
+          onStartDateChange={handleStartDateChange}
+          onEndDateChange={handleEndDateChange}
           onClear={handleClearDates}
           hasFilters={hasDateFilters}
         />
       </Box>
 
       <Box sx={{ mb: 2, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <Typography variant="body2" color="text.secondary">
-          Showing {paginatedTimeCards.length} of {totalItems} time cards
-        </Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Typography variant="body2" color="text.secondary">
+            Showing {paginatedTimeCards.length} of {totalItems} time cards
+          </Typography>
+          {!isTimeCardsLoading && isTimeCardsFetching && (
+            <CircularProgress size={14} />
+          )}
+        </Box>
         <TimeCardsCsvExportButton
           projectId={projectId}
           projectName={project?.name}
@@ -126,7 +142,7 @@ export default function ProjectTimeTracking({
       ) : (
         <>
           <Grid container spacing={3}>
-            {isTimeCardsLoading || isTimeCardsFetching ? (
+            {isTimeCardsLoading ? (
               Array.from({ length: 7 }).map((_, index) => (
                 <Grid key={`skeleton-${index}`} size={12}>
                   <TimeTrackingCardSkeleton />

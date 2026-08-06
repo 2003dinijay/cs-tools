@@ -51,7 +51,9 @@ export default function useSearchProjectCaseTimeCards({
   const logger = useLogger();
   const { isSignedIn, isLoading: isAuthLoading } = useAsgardeo();
   const authFetch = useAuthApiClient();
-  const offset = (page - 1) * pageSize;
+  const normalizedPage = Math.max(1, Math.floor(page));
+  const normalizedPageSize = Math.max(1, Math.floor(pageSize));
+  const offset = (normalizedPage - 1) * normalizedPageSize;
 
   return useQuery<CaseTimeCardSearchResponse, Error>({
     queryKey: [
@@ -61,7 +63,7 @@ export default function useSearchProjectCaseTimeCards({
       endDate,
       states,
       offset,
-      pageSize,
+      normalizedPageSize,
     ],
     queryFn: async ({ signal }): Promise<CaseTimeCardSearchResponse> => {
       logger.debug(
@@ -81,7 +83,7 @@ export default function useSearchProjectCaseTimeCards({
 
       const body: TimeCardSearchRequest = {
         filters,
-        pagination: { limit: pageSize, offset },
+        pagination: { limit: normalizedPageSize, offset },
       };
 
       const response = await authFetch(
