@@ -231,16 +231,27 @@ export default function DashboardWidgetTile({
       <Card variant="outlined" sx={{ position: "relative", p: 1.75, height: "100%" }}>
         <Box sx={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 1 }}>
           {header}
-          {!isLoading && !isError && (
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ mt: 0.5, flexShrink: 0, fontWeight: 600 }}
-              aria-label={`${resolvedDisplayName}: ${(data?.total ?? 0).toLocaleString()} total`}
-            >
-              {(data?.total ?? 0).toLocaleString()}
-            </Typography>
-          )}
+          {!isLoading && !isError && (() => {
+            const shownCount = data?.items?.length ?? 0;
+            const total = data?.total ?? 0;
+            // Matches the "{from}–{to} of {count}" wording TablePagination
+            // uses by default on the drill-down page (DashboardWidgetPreviewPage)
+            // — this tile always starts at row 1, since it never paginates
+            // itself (see useWidgetData's own note that the compact tile
+            // always fetches from the start).
+            const from = shownCount > 0 ? 1 : 0;
+            const rangeLabel = `${from}–${shownCount} of ${total.toLocaleString()}`;
+            return (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ mt: 0.5, flexShrink: 0, fontWeight: 600 }}
+                aria-label={`${resolvedDisplayName}: showing ${rangeLabel}`}
+              >
+                {rangeLabel}
+              </Typography>
+            );
+          })()}
         </Box>
         {isLoading ? (
           <Skeleton variant="rounded" height={28 * (listLimit ?? 4) + 40} sx={{ mt: 1 }} />

@@ -236,7 +236,7 @@ describe("DashboardWidgetTile", () => {
     });
   });
 
-  it("shows the widget's total item count for shape: list, reusing the same total the 'View more' logic uses", async () => {
+  it("shows a '{from}–{to} of {total}' range for shape: list, reusing the same total the 'View more' logic uses", async () => {
     postMock.mockResolvedValue({
       total: 42,
       cases: [
@@ -259,7 +259,7 @@ describe("DashboardWidgetTile", () => {
     );
 
     await waitFor(() => expect(screen.getByText("CS-1")).toBeInTheDocument());
-    expect(screen.getByText("42")).toBeInTheDocument();
+    expect(screen.getByText("1–1 of 42")).toBeInTheDocument();
   });
 
   it("does not show a total count for shape: list while the widget is still loading", () => {
