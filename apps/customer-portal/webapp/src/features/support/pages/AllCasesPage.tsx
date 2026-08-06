@@ -28,6 +28,7 @@ import {
   type ChangeEvent,
 } from "react";
 import { useSessionState } from "@hooks/useSessionState";
+import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import { useLoader } from "@context/linear-loader/LoaderContext";
 import { Stack, Divider } from "@wso2/oxygen-ui";
 import useGetProjectDetails from "@api/useGetProjectDetails";
@@ -81,6 +82,7 @@ export default function AllCasesPage(): JSX.Element {
 
   const sessionPrefix = `${projectId ?? "unknown"}-cases`;
   const [searchTerm, setSearchTerm] = useSessionState(`${sessionPrefix}-search`, "", undefined, { popOnly: true });
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, 300);
   const [filters, setFilters] = useSessionState<AllCasesFilterValues>(
     `${sessionPrefix}-filters`,
     initialSeverityId ? { severityIds: [initialSeverityId] } : {},
@@ -166,7 +168,7 @@ export default function AllCasesPage(): JSX.Element {
           deploymentIds: permissions.hasDeployments
             ? (filters.deploymentIds as string[] | undefined)
             : undefined,
-          searchQuery: searchTerm,
+          searchQuery: debouncedSearchTerm,
           createdByMe: createdByMe || undefined,
           createdBy: filters.createdBy as string[] | undefined,
           caseStates: filterMetadata?.caseStates,
@@ -190,7 +192,7 @@ export default function AllCasesPage(): JSX.Element {
       hideSearchPanel,
       statusFilter,
       filters,
-      searchTerm,
+      debouncedSearchTerm,
       sortField,
       sortOrder,
       createdByMe,
@@ -198,7 +200,6 @@ export default function AllCasesPage(): JSX.Element {
       filterMetadata?.caseStates,
       isDashboardSeverityNavigation,
       initialSeverityId,
-      contactsList,
     ],
   );
 
