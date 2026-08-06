@@ -14,11 +14,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Box, Button, Divider, Skeleton, Stack, Typography } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
-import { useNavigate } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { timecards } from "@src/services/timecards";
 import type { CaseSeverity, CreateTimeCardInput, CsmTimeCard } from "@src/types";
 import { cardDateLabel, formatMinutes } from "@utils/timecard";
@@ -33,41 +32,69 @@ interface TimeTrackingTabProps {
   projectName: string;
 }
 
+// A bordered, tinted box per entry — mirrors the webapp's CaseTimeCardsPanel row
+// (border + rounded corners) and this app's own TimeSheetCard's inner
+// TimeCardRow (same treatment, plus the `action.hover` tint), so a logged card
+// reads as a distinct entry instead of a bare line of text in the list.
 function TimeCardRow({ card }: { card: CsmTimeCard }) {
   return (
-    <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1}>
-      <Typography variant="body2" noWrap sx={{ minWidth: 0 }}>
-        {card.userName}
-      </Typography>
-      <Stack alignItems="flex-end" gap={0.5} flexShrink={0}>
-        <TimeCardStateChip state={card.state} />
-        <Typography variant="caption" color="text.secondary">
-          {cardDateLabel(card.createdOn)} · {formatMinutes(card.totalMinutes)}
-          {card.billable ? "" : " · Non-billable"}
+    <Stack
+      gap={0.5}
+      sx={{ p: 1.25, bgcolor: "action.hover", border: "1px solid", borderColor: "divider", borderRadius: 1 }}
+    >
+      <Stack direction="row" alignItems="center" justifyContent="space-between" gap={1}>
+        <Typography variant="body2" noWrap sx={{ minWidth: 0 }}>
+          {card.userName}
         </Typography>
+        <Stack direction="row" alignItems="center" gap={1} flexShrink={0}>
+          <Typography variant="body2">{formatMinutes(card.totalMinutes)}</Typography>
+          <TimeCardStateChip state={card.state} />
+        </Stack>
       </Stack>
+      <Typography variant="caption" color="text.secondary">
+        {card.billable ? "Billable" : "Non-billable"} · {cardDateLabel(card.createdOn)}
+      </Typography>
     </Stack>
   );
 }
 
 /**
- * `caseId` is confirmed non-functional live as a `/time-cards/search` filter (see
- * services/timecards.ts's fetchCaseTimeCards), so this list is scoped to the case's
- * project server-side and filtered to the case client-side, same workaround the
- * webapp's CaseTimeCardsPanel uses. Only the first page of the project's cards is
- * fetched — a single case logging more than a page's worth of time isn't expected —
- * so a truncated notice covers the rare case where it does.
+ * Scoped server-side by `filters.caseId` (see services/timecards.ts's `forCase`
+ * and BeSearchTimeCardsFilters.caseId's comment on the backend fix this relies
+ * on), paged the same way the "Time cards" > All tab is — an IntersectionObserver
+ * sentinel fetches the next page as it scrolls into view — for the rare case
+ * whose entries outnumber one page. There's no separate "Open Time Cards" entry
+ * point to leave for any of the case's own cards, since this tab shows all of
+ * them.
  */
 export function TimeTrackingTab({ caseId, caseNumber, caseSeverity, projectId, projectName }: TimeTrackingTabProps) {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [logTimeOpen, setLogTimeOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { data, isLoading, isError } = useQuery(timecards.forCase(caseId, projectId));
-  const cards = data?.cards ?? [];
+  const { data, isLoading, isError, hasNextPage, isFetchingNextPage, fetchNextPage } = useInfiniteQuery(
+    timecards.forCase(caseId),
+  );
+  const cards = data ?? [];
   const total = cards.reduce((sum, c) => sum + c.totalMinutes, 0);
+
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting && hasNextPage && !isFetchingNextPage) {
+          void fetchNextPage();
+        }
+      },
+      { threshold: 0.1 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   const handleSubmit = (input: CreateTimeCardInput) => {
     setIsSubmitting(true);
@@ -103,12 +130,6 @@ export function TimeTrackingTab({ caseId, caseNumber, caseSeverity, projectId, p
 
       <Divider />
 
-      {!isError && data?.truncated && (
-        <Typography variant="caption" color="text.secondary">
-          Some entries on this case may not be shown.
-        </Typography>
-      )}
-
       {isLoading ? (
         <Stack gap={1}>
           {[0, 1].map((i) => (
@@ -119,7 +140,7 @@ export function TimeTrackingTab({ caseId, caseNumber, caseSeverity, projectId, p
         <Typography variant="body2" color="error">
           Could not load time cards.
         </Typography>
-      ) : cards.length === 0 ? (
+      ) : cards.length === 0 && !hasNextPage ? (
         <Typography variant="body2" color="text.secondary">
           No time logged on this case yet.
         </Typography>
@@ -128,12 +149,14 @@ export function TimeTrackingTab({ caseId, caseNumber, caseSeverity, projectId, p
           {cards.map((c) => (
             <TimeCardRow key={c.id} card={c} />
           ))}
+
+          {/* IntersectionObserver can miss a zero-height target, so give the sentinel 1px to
+           * observe. Kept mounted even once every card is in — cheap and avoids a layout jump. */}
+          <div ref={sentinelRef} style={{ height: 1 }} />
+
+          {(isFetchingNextPage || (cards.length === 0 && hasNextPage)) && <Skeleton variant="rounded" height={48} />}
         </Stack>
       )}
-
-      <Button variant="outlined" size="small" onClick={() => navigate("/more/time-cards")} sx={{ alignSelf: "start" }}>
-        Open Time Cards
-      </Button>
 
       {logTimeOpen && (
         <LogTimeCardDialog
