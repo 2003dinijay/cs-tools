@@ -57,6 +57,7 @@ export default function ProjectTimeTracking({
     hasNextPage,
     fetchNextPage,
     isFetchingNextPage,
+    isFetchNextPageError,
   } = useSearchProjectCaseTimeCards({
     projectId,
     startDate,
@@ -67,12 +68,12 @@ export default function ProjectTimeTracking({
 
   // Fetch the next page only once the current page needs data beyond what's loaded
   useEffect(() => {
-    if (!data || !hasNextPage || isFetchingNextPage) return;
+    if (!data || !hasNextPage || isFetchingNextPage || isFetchNextPageError) return;
     const loadedCount = data.pages.flatMap((p) => p.caseTimeCards).length;
     if (page * pageSize > loadedCount) {
       void fetchNextPage();
     }
-  }, [page, pageSize, data, hasNextPage, isFetchingNextPage, fetchNextPage]);
+  }, [page, pageSize, data, hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
 
   // Reset pagination when filters change
   useEffect(() => {
@@ -147,7 +148,7 @@ export default function ProjectTimeTracking({
       ) : (
         <>
           <Grid container spacing={3}>
-            {isTimeCardsLoading ? (
+            {isTimeCardsLoading || isFetchingNextPage ? (
               Array.from({ length: 7 }).map((_, index) => (
                 <Grid key={`skeleton-${index}`} size={12}>
                   <TimeTrackingCardSkeleton />
