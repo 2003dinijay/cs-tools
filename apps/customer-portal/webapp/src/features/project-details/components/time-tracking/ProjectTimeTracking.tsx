@@ -56,6 +56,7 @@ export default function ProjectTimeTracking({
     isError: isTimeCardsError,
     hasNextPage,
     fetchNextPage,
+    isFetchingNextPage,
   } = useSearchProjectCaseTimeCards({
     projectId,
     startDate,
@@ -64,11 +65,14 @@ export default function ProjectTimeTracking({
     enabled: !!projectId,
   });
 
-  // Auto-fetch all remaining pages in background
+  // Fetch the next page only once the current page needs data beyond what's loaded
   useEffect(() => {
-    if (!data || !hasNextPage) return;
-    void fetchNextPage();
-  }, [data, hasNextPage, fetchNextPage]);
+    if (!data || !hasNextPage || isFetchingNextPage) return;
+    const loadedCount = data.pages.flatMap((p) => p.caseTimeCards).length;
+    if (page * pageSize > loadedCount) {
+      void fetchNextPage();
+    }
+  }, [page, pageSize, data, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   // Reset pagination when filters change
   useEffect(() => {
