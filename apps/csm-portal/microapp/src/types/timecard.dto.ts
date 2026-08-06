@@ -47,12 +47,14 @@ export interface BeTimeCardView {
   case?: BeTimeCardCaseRef;
 }
 
-// `caseId` is deliberately omitted here: it's documented in entity-service's
-// openapi.yaml and implemented end-to-end, but confirmed non-functional live
-// (always returns total: 0). Case scoping goes through `projectIds` plus a
-// client-side filter instead. `states` is filtered client-side too — combining
-// it with a large `projectIds` array 500s the backend.
+// `states` is filtered client-side — combining it with a large `projectIds`
+// array 500s the backend.
 export interface BeSearchTimeCardsFilters {
+  /** Confirmed live (2026-08): scopes correctly and returns an accurate `total`, mirroring the
+   * webapp's own filters.caseId — see useCaseTimeCards's comment for the backend fix (PR #1133)
+   * this now relies on. Previously worked around via `projectIds` plus a client-side filter,
+   * back when this filter unconditionally returned `total: 0`. */
+  caseId?: string;
   projectIds?: string[];
   /** Only time cards submitted by this user. */
   userId?: string;

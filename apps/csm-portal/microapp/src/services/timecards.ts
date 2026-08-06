@@ -30,7 +30,7 @@
 // flattened, then grouped into weekly sheets in one pass — so a week that spans a
 // page boundary stays a single sheet, rather than being split per page.
 
-import { infiniteQueryOptions, queryOptions, type InfiniteData } from "@tanstack/react-query";
+import { infiniteQueryOptions, type InfiniteData } from "@tanstack/react-query";
 import { TIME_CARDS_ENDPOINT, TIME_CARDS_SEARCH_ENDPOINT, TIME_CARD_ENDPOINT } from "@config/endpoints";
 import type {
   BeCreateTimeCardPayload,
@@ -56,9 +56,9 @@ import {
 import apiClient from "./apiClient";
 
 // Server-side filters honored by the search endpoint. `states` is filtered
-// client-side (combining it with a large `projectIds` array 500s the backend),
-// and there is deliberately no `caseId` (non-functional live — see the DTO).
+// client-side (combining it with a large `projectIds` array 500s the backend).
 interface TimeCardSearchFilters {
+  caseId?: string;
   projectIds?: string[];
   userId?: string;
   approverId?: string;
@@ -97,6 +97,7 @@ const EMPTY_PAGE: TimeCardPage = { cards: [], total: 0, nextOffset: 0, hasMore: 
 async function searchTimeCardsPage(filters: TimeCardSearchFilters, offset: number): Promise<TimeCardPage> {
   const payload: BeSearchTimeCardsPayload = {
     filters: {
+      ...(filters.caseId ? { caseId: filters.caseId } : {}),
       ...(filters.projectIds?.length ? { projectIds: filters.projectIds } : {}),
       ...(filters.userId ? { userId: filters.userId } : {}),
       ...(filters.approverId ? { approverId: filters.approverId } : {}),
@@ -113,26 +114,6 @@ async function searchTimeCardsPage(filters: TimeCardSearchFilters, offset: numbe
   const nextOffset = data.offset + raw.length;
   const cards = filters.states?.length ? raw.filter((c) => filters.states!.includes(c.state)) : raw;
   return { cards, total: data.total, nextOffset, hasMore: raw.length > 0 && nextOffset < data.total };
-}
-
-// A case's time cards from the first TIME_CARD_MAX_PAGE_LIMIT cards in its
-// project, plus whether that one page fell short of the project's full
-// `total` — some of the case's cards may not have been fetched if so. No
-// pagination UI (a single case logging more than a page's worth of time is
-// not expected). Mirrors the webapp's useCaseTimeCards: `caseId` itself is
-// non-functional as a search filter (see the interface note above), so this
-// scopes to the case's own project instead and filters client-side.
-export interface CaseTimeCardsResult {
-  cards: CsmTimeCard[];
-  truncated: boolean;
-}
-
-async function fetchCaseTimeCards(caseId: string, projectId: string): Promise<CaseTimeCardsResult> {
-  const { cards, total } = await searchTimeCardsPage({ projectIds: [projectId] }, 0);
-  return {
-    cards: cards.filter((c) => c.caseId === caseId),
-    truncated: cards.length < total,
-  };
 }
 
 // Flatten every loaded page's cards, derive the client-filter option lists from
@@ -293,16 +274,26 @@ export const timecards = {
   decide: decideCard,
   create: createCard,
 
-  // A single case's logged time cards (Time Tracking tab). See fetchCaseTimeCards
-  // for the projectIds-scoped + client-filtered workaround this relies on.
-  forCase: (caseId: string | undefined, projectId: string | undefined) =>
-    queryOptions({
-      queryKey: ["timecards", "case", caseId ?? "", projectId ?? ""],
-      queryFn: () =>
-        caseId && projectId
-          ? fetchCaseTimeCards(caseId, projectId)
-          : Promise.resolve<CaseTimeCardsResult>({ cards: [], truncated: false }),
-      enabled: !!caseId && !!projectId,
+  // A single case's logged time cards (Time Tracking tab), scoped server-side by
+  // `filters.caseId` (see BeSearchTimeCardsFilters.caseId's comment) — an
+  // infinite query, paged the same way as the "Time cards" > All tab (the
+  // caller drains it with a scroll sentinel), for the rare case whose entries
+  // outnumber one page, rather than a hard-coded single fetch.
+  forCase: (caseId: string | undefined) =>
+    infiniteQueryOptions({
+      queryKey: ["timecards", "case", caseId ?? ""],
+      queryFn: ({ pageParam }) => (caseId ? searchTimeCardsPage({ caseId }, pageParam) : Promise.resolve(EMPTY_PAGE)),
+      initialPageParam: 0,
+      getNextPageParam,
+      enabled: !!caseId,
       staleTime: 5_000,
+      // Carries `total` (the backend's real count for the case, unaffected by
+      // client-side filtering — this query applies none) alongside the loaded
+      // cards, so the caller can tell "every card is in" from "more pages remain"
+      // instead of the loaded-so-far count silently reading as the whole total.
+      select: (data) => ({
+        cards: data.pages.flatMap((p) => p.cards),
+        total: data.pages[0]?.total ?? 0,
+      }),
     }),
 };
