@@ -15,9 +15,9 @@
 // under the License.
 
 import {
-  useInfiniteQuery,
-  type UseInfiniteQueryResult,
-  type InfiniteData,
+  useQuery,
+  keepPreviousData,
+  type UseQueryResult,
 } from "@tanstack/react-query";
 import { useAsgardeo } from "@asgardeo/react";
 import { useAuthApiClient } from "@/hooks/useAuthApiClient";
@@ -30,39 +30,44 @@ import type {
 import type { UseSearchProjectTimeCardsParams } from "@features/usage-metrics/types/usageMetrics";
 
 /**
- * Searches case-level time cards via projects/:projectId/cases/time-cards/search.
+ * Searches case-level time cards via projects/:projectId/cases/time-cards/search,
+ * fetching exactly the requested page's offset directly.
  *
- * @param {UseSearchProjectTimeCardsParams} params - Project ID and optional filters.
- * @returns {UseInfiniteQueryResult} The infinite query result.
+ * @param {UseSearchProjectTimeCardsParams} params - Project ID, page, and optional filters.
+ * @returns {UseQueryResult} The query result for the requested page.
  */
 export default function useSearchProjectCaseTimeCards({
   projectId,
   startDate,
   endDate,
   states,
+  page = 1,
+  pageSize = 10,
   enabled,
-}: UseSearchProjectTimeCardsParams): UseInfiniteQueryResult<
-  InfiniteData<CaseTimeCardSearchResponse>,
+}: UseSearchProjectTimeCardsParams): UseQueryResult<
+  CaseTimeCardSearchResponse,
   Error
 > {
   const logger = useLogger();
   const { isSignedIn, isLoading: isAuthLoading } = useAsgardeo();
   const authFetch = useAuthApiClient();
+  const normalizedPage = Math.max(1, Math.floor(page));
+  const normalizedPageSize = Math.max(1, Math.floor(pageSize));
+  const offset = (normalizedPage - 1) * normalizedPageSize;
 
-  return useInfiniteQuery<CaseTimeCardSearchResponse, Error>({
+  return useQuery<CaseTimeCardSearchResponse, Error>({
     queryKey: [
       ApiQueryKeys.CASE_TIME_CARDS_SEARCH,
       projectId,
       startDate,
       endDate,
       states,
+      offset,
+      normalizedPageSize,
     ],
-    queryFn: async ({
-      pageParam = 0,
-      signal,
-    }): Promise<CaseTimeCardSearchResponse> => {
+    queryFn: async ({ signal }): Promise<CaseTimeCardSearchResponse> => {
       logger.debug(
-        `Searching case time cards for project ID: ${projectId}, offset: ${pageParam}`,
+        `Searching case time cards for project ID: ${projectId}, offset: ${offset}`,
       );
 
       const baseUrl = window.config?.CUSTOMER_PORTAL_BACKEND_BASE_URL;
@@ -78,7 +83,7 @@ export default function useSearchProjectCaseTimeCards({
 
       const body: TimeCardSearchRequest = {
         filters,
-        pagination: { limit: 10, offset: pageParam as number },
+        pagination: { limit: normalizedPageSize, offset },
       };
 
       const response = await authFetch(
@@ -94,12 +99,8 @@ export default function useSearchProjectCaseTimeCards({
       logger.debug("[useSearchProjectCaseTimeCards] Data received:", data);
       return data;
     },
-    initialPageParam: 0,
-    getNextPageParam: (lastPage) => {
-      const nextOffset = lastPage.offset + lastPage.limit;
-      return nextOffset < lastPage.totalRecords ? nextOffset : undefined;
-    },
     enabled: enabled !== false && !!projectId && isSignedIn && !isAuthLoading,
+    placeholderData: keepPreviousData,
     staleTime: 0,
   });
 }
