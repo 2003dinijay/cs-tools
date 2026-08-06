@@ -63,7 +63,10 @@ function buildItems(
   const caseClosed = caseDetail.state === "closed";
   const NOT_AVAILABLE = "Not available yet.";
 
-  if (caseDetail.assignedEngineer?.id === currentUserId && caseDetail.state === "work_in_progress") {
+  // Guard on `currentUserId` being present first: `assignedEngineer?.id` is `undefined` for an
+  // unassigned case, which would otherwise equal an `undefined` currentUserId (an unidentified
+  // caller) and wrongly show the toggle for a case nobody — including the viewer — is assigned to.
+  if (currentUserId && caseDetail.assignedEngineer?.id === currentUserId && caseDetail.state === "work_in_progress") {
     const ongoing = caseDetail.workState === "ongoing";
     items.push({
       key: "toggle_work_state",
