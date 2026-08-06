@@ -68,7 +68,7 @@ export const adminUsers = {
       queryKey: ["admin-users", "search", searchQuery],
       queryFn: () =>
         searchUsers({
-          filters: { searchQuery, roles: APPROVER_ROLES, active: true },
+          filters: { searchQuery, roleIds: APPROVER_ROLES, active: true },
           pagination: { offset: 0, limit: APPROVER_SEARCH_LIMIT },
         }),
       enabled: searchQuery.trim().length > 0,

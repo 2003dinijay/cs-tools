@@ -16,20 +16,7 @@
 
 import { Suspense, useRef, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
-import {
-  Card,
-  Divider,
-  FormControl,
-  Grid,
-  MenuItem,
-  Select,
-  Skeleton,
-  Stack,
-  Tab,
-  Tabs,
-  Typography,
-  pxToRem,
-} from "@wso2/oxygen-ui";
+import { Card, Divider, Grid, Skeleton, Stack, Tab, Tabs, Typography, pxToRem } from "@wso2/oxygen-ui";
 import {
   Building2,
   CheckCircle,
@@ -46,6 +33,7 @@ import { useQueryClient, useQueryErrorResetBoundary, useSuspenseQuery } from "@t
 import { cases, parseOngoingConflictCaseNumber, type MyOngoingCase } from "@src/services/cases";
 import { currentUser } from "@src/services/currentUser";
 import { attachments as attachmentsService } from "@src/services/attachments";
+import { timecards } from "@src/services/timecards";
 import { useUserStore } from "@src/store/user";
 import type {
   CaseCause,
@@ -56,13 +44,17 @@ import type {
   CaseState,
   CaseWorkState,
   Comment,
+  CreateTimeCardInput,
 } from "@src/types";
 import { ErrorBoundary } from "@components/common/ErrorBoundary";
 import { CopyIconButton } from "@components/common/CopyIconButton";
 import { SeverityChip, StatusChip } from "@components/support/Chips";
 import { ErrorState } from "@components/support/ErrorState";
-import { ALL_SEVERITIES, SEVERITY_LABELS, TYPE_CONFIG } from "@components/support/config";
+import { TYPE_CONFIG } from "@components/support/config";
 import { CaseActionBar } from "@components/case-detail/CaseActionBar";
+import { CaseMoreMenu } from "@components/case-detail/CaseMoreMenu";
+import { ChangeSeverityDialog } from "@components/case-detail/ChangeSeverityDialog";
+import { LogTimeCardDialog } from "@components/case-detail/LogTimeCardDialog";
 import { ResolutionDialog } from "@components/case-detail/ResolutionDialog";
 import { CommentComposer } from "@components/case-detail/CommentComposer";
 import { CaseActivitiesTab } from "@components/case-detail/CaseActivityFeed";
@@ -123,6 +115,10 @@ function CaseDetailContent({ id }: { id: string }) {
   const [isPostingComment, setIsPostingComment] = useState(false);
   const [activeTab, setActiveTab] = useState<CaseTabId>("activities");
   const [pauseConflict, setPauseConflict] = useState<MyOngoingCase[] | null>(null);
+  const [severityDialogOpen, setSeverityDialogOpen] = useState(false);
+  const [logTimeOpen, setLogTimeOpen] = useState(false);
+  const [isLoggingTime, setIsLoggingTime] = useState(false);
+  const [logTimeError, setLogTimeError] = useState<string | null>(null);
 
   const visibleTabDefs = isAnnouncement
     ? TAB_DEFS.filter((tab) => tab.id !== "sla" && tab.id !== "time" && tab.id !== "call-requests")
@@ -317,9 +313,27 @@ function CaseDetailContent({ id }: { id: string }) {
     setMutationError(null);
     cases
       .patch(id, { severity: next })
-      .then(invalidateCase)
+      .then(() => {
+        setSeverityDialogOpen(false);
+        invalidateCase();
+      })
       .catch(() => setMutationError("Could not change the severity. Please try again."))
       .finally(() => setIsMutating(false));
+  };
+
+  const handleLogTimeSubmit = (input: CreateTimeCardInput): void => {
+    setIsLoggingTime(true);
+    setLogTimeError(null);
+    timecards
+      .create(input)
+      .then(() => {
+        setLogTimeOpen(false);
+        // Root key — one invalidate refreshes every time-cards view (My sheets, All, Approvals,
+        // and this case's own list), same as TimeTrackingTab's own log-time flow.
+        void queryClient.invalidateQueries({ queryKey: ["timecards"] });
+      })
+      .catch(() => setLogTimeError("Could not log time. Please try again."))
+      .finally(() => setIsLoggingTime(false));
   };
 
   // Text and inline attachments upload as separate requests (the backend's comment payload has no
@@ -398,7 +412,8 @@ function CaseDetailContent({ id }: { id: string }) {
         onTransition={handleTransition}
         onAssignAndStart={handleAssignAndStart}
         onNeedsResolution={setResolutionTarget}
-        onChangeSeverity={handleSeveritySubmit}
+        onOpenChangeSeverity={() => setSeverityDialogOpen(true)}
+        onOpenLogTime={() => setLogTimeOpen(true)}
       />
 
       <Tabs value={effectiveTab} variant="scrollable" onChange={(_, value: CaseTabId) => setActiveTab(value)}>
@@ -433,6 +448,7 @@ function CaseDetailContent({ id }: { id: string }) {
         <TimeTrackingTab
           caseId={id}
           caseNumber={caseDetail.number}
+          caseSeverity={caseDetail.severity}
           projectId={caseDetail.project?.id ?? ""}
           projectName={caseDetail.project?.name ?? ""}
         />
@@ -456,6 +472,32 @@ function CaseDetailContent({ id }: { id: string }) {
           onDecline={handleDeclinePauseConflict}
         />
       )}
+      {severityDialogOpen && caseDetail.severity && (
+        <ChangeSeverityDialog
+          currentSeverity={caseDetail.severity}
+          isSubmitting={isMutating}
+          onClose={() => setSeverityDialogOpen(false)}
+          onSubmit={handleSeveritySubmit}
+        />
+      )}
+      {logTimeOpen && (
+        <LogTimeCardDialog
+          caseId={id}
+          caseNumber={caseDetail.number}
+          caseSeverity={caseDetail.severity}
+          projectId={caseDetail.project?.id ?? ""}
+          projectName={caseDetail.project?.name ?? ""}
+          isSubmitting={isLoggingTime}
+          error={logTimeError}
+          onClose={() => {
+            if (!isLoggingTime) {
+              setLogTimeOpen(false);
+              setLogTimeError(null);
+            }
+          }}
+          onSubmit={handleLogTimeSubmit}
+        />
+      )}
     </Stack>
   );
 }
@@ -469,7 +511,8 @@ function CaseSummarySection({
   onTransition,
   onAssignAndStart,
   onNeedsResolution,
-  onChangeSeverity,
+  onOpenChangeSeverity,
+  onOpenLogTime,
 }: {
   caseDetail: CaseDetail;
   currentUserId: string | null;
@@ -479,10 +522,10 @@ function CaseSummarySection({
   onTransition: (target: CaseState) => void;
   onAssignAndStart: () => void;
   onNeedsResolution: (target: "closed" | "solution_proposed") => void;
-  onChangeSeverity: (next: CaseSeverity) => void;
+  onOpenChangeSeverity: () => void;
+  onOpenLogTime: () => void;
 }) {
   const { icon: Icon, color } = TYPE_CONFIG[caseDetail.type ?? "case"] ?? TYPE_CONFIG.case;
-  const canChangeSeverity = !isAnnouncement && caseDetail.severity && caseDetail.state !== "closed";
 
   return (
     <Stack gap={1.5}>
@@ -518,8 +561,10 @@ function CaseSummarySection({
       </Stack>
 
       {/* Actions live in their own row, visually separated from the identity block above so the
-       * primary "what can I do" affordance isn't read as part of the case's own metadata. */}
-      {!isAnnouncement && (caseDetail.nextStates.length > 0 || canChangeSeverity) && (
+       * primary "what can I do" affordance isn't read as part of the case's own metadata. The
+       * More menu always renders alongside a lifecycle button (mirrors the webapp's action bar) —
+       * it has case-independent items (e.g. Log time) that apply regardless of `nextStates`. */}
+      {!isAnnouncement && (
         <Stack
           direction="row"
           gap={1}
@@ -535,35 +580,12 @@ function CaseSummarySection({
             onAssignAndStart={onAssignAndStart}
             onNeedsResolution={onNeedsResolution}
           />
-          {/* Closed is read-only, same rule the webapp applies to comments/attachments/severity. */}
-          {canChangeSeverity && (
-            <FormControl size="small" sx={{ minWidth: 150, flexShrink: 0 }}>
-              <Select
-                value=""
-                displayEmpty
-                disabled={isMutating}
-                renderValue={() => "Change severity"}
-                onChange={(e) => onChangeSeverity(e.target.value as CaseSeverity)}
-                sx={{
-                  borderRadius: 999,
-                  color: "primary.main",
-                  "& .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main", borderRadius: 999 },
-                  "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main" },
-                  "&.Mui-focused .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main" },
-                  "&.Mui-disabled": {
-                    color: "action.disabled",
-                    "& .MuiOutlinedInput-notchedOutline": { borderColor: "action.disabledBackground" },
-                  },
-                }}
-              >
-                {ALL_SEVERITIES.map((severity) => (
-                  <MenuItem key={severity} value={severity} disabled={severity === caseDetail.severity}>
-                    {SEVERITY_LABELS[severity]}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
+          <CaseMoreMenu
+            caseDetail={caseDetail}
+            currentUserId={currentUserId}
+            onChangeSeverity={onOpenChangeSeverity}
+            onLogTime={onOpenLogTime}
+          />
         </Stack>
       )}
 
