@@ -18,6 +18,7 @@ import type { ChipProps } from "@wso2/oxygen-ui";
 import type {
   ActivityBreakdown,
   ActivityKey,
+  CaseSeverity,
   CsmTimeCard,
   CsmTimeSheet,
   IssueComplexity,
@@ -259,6 +260,15 @@ export const DEFAULT_ISSUE_COMPLEXITY: IssueComplexity = "N/A";
  * billable; the engineer can flip it per card. */
 export const DEFAULT_BILLABLE = true;
 
+/**
+ * Severities ServiceNow always treats as non-billable, regardless of what a time card's
+ * create/update request sends: an unconditional `after` business rule forces the card back to
+ * non-billable for cases of these severities. Mirrors the webapp's NON_BILLABLE_SEVERITIES — the
+ * FE billable switch is disabled rather than left silently overridden after submit. Only "low"
+ * (S4) is left editable.
+ */
+export const NON_BILLABLE_SEVERITIES: CaseSeverity[] = ["catastrophic", "critical", "high", "medium"];
+
 /** Character cap mirroring the ServiceNow work-log field. */
 export const WORK_LOG_MAX = 4000;
 
@@ -288,6 +298,15 @@ export function hasLoggedTime(breakdown: ActivityBreakdown): boolean {
   return ACTIVITY_KEYS.some((key) => (breakdown[key] || 0) > 0);
 }
 
+/** Today's date as `yyyy-MM-dd`, in local time — comparable lexicographically against another
+ * `yyyy-MM-dd` string since both are zero-padded and share that format. */
+function todayIsoDate(): string {
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
 /** Field-level validation errors for the log dialog, keyed by field name. */
 export interface TimeCardDraftErrors {
   date?: string;
@@ -310,7 +329,13 @@ export interface TimeCardDraft {
  */
 export function timeCardDraftErrors(draft: TimeCardDraft): TimeCardDraftErrors {
   const errors: TimeCardDraftErrors = {};
-  if (!draft.date) errors.date = "Pick a date.";
+  if (!draft.date) {
+    errors.date = "Pick a date.";
+  } else if (draft.date > todayIsoDate()) {
+    // Backstop for the DatePicker's own `maxDate` (e.g. a manually typed date) — time can only be
+    // logged for today or earlier, never in advance.
+    errors.date = "Date can't be in the future.";
+  }
   if (!hasLoggedTime(draft.breakdown)) {
     errors.minutes = "Log time against at least one activity.";
   } else if (

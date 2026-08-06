@@ -20,7 +20,7 @@ import { Plus } from "@wso2/oxygen-ui-icons-react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { timecards } from "@src/services/timecards";
-import type { CreateTimeCardInput, CsmTimeCard } from "@src/types";
+import type { CaseSeverity, CreateTimeCardInput, CsmTimeCard } from "@src/types";
 import { cardDateLabel, formatMinutes } from "@utils/timecard";
 import { TimeCardStateChip } from "@components/timecards/TimeCardStateChip";
 import { LogTimeCardDialog } from "./LogTimeCardDialog";
@@ -28,6 +28,7 @@ import { LogTimeCardDialog } from "./LogTimeCardDialog";
 interface TimeTrackingTabProps {
   caseId: string;
   caseNumber: string;
+  caseSeverity: CaseSeverity | null;
   projectId: string;
   projectName: string;
 }
@@ -57,7 +58,7 @@ function TimeCardRow({ card }: { card: CsmTimeCard }) {
  * fetched — a single case logging more than a page's worth of time isn't expected —
  * so a truncated notice covers the rare case where it does.
  */
-export function TimeTrackingTab({ caseId, caseNumber, projectId, projectName }: TimeTrackingTabProps) {
+export function TimeTrackingTab({ caseId, caseNumber, caseSeverity, projectId, projectName }: TimeTrackingTabProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [logTimeOpen, setLogTimeOpen] = useState(false);
@@ -138,6 +139,7 @@ export function TimeTrackingTab({ caseId, caseNumber, projectId, projectName }: 
         <LogTimeCardDialog
           caseId={caseId}
           caseNumber={caseNumber}
+          caseSeverity={caseSeverity}
           projectId={projectId}
           projectName={projectName}
           isSubmitting={isSubmitting}
