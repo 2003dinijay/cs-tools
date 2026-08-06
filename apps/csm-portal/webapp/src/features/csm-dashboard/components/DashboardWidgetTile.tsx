@@ -253,7 +253,13 @@ export default function DashboardWidgetTile({
                     previewSlug: config.previewSlug,
                     widgetId,
                     displayName: resolvedDisplayName,
-                    filters,
+                    // Resolved the same way the count-shape tile's own
+                    // click-through href is (see `href` above) — the preview
+                    // page has no team context of its own, so an unresolved
+                    // placeholder here used to get silently dropped there
+                    // (teamFilterPlaceholder.ts's fail-open), returning
+                    // every team's cases instead of the viewer's own.
+                    filters: resolveTeamPlaceholder(filters, selectedTeamGroupId),
                     currentUserId: user?.id,
                   })}
                   size="small"

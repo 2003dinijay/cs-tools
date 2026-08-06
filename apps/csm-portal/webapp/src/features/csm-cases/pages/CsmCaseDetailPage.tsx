@@ -293,7 +293,7 @@ const TAB_DEFS: Array<{
   // inside this tab, not the people icon "Related" used.
   { id: "related", label: "Linked Items", icon: <LinkIcon size={16} /> },
   { id: "watchers", label: "Watchers", icon: <Eye size={16} /> },
-  { id: "sla", label: "SLAs", icon: <Clock size={16} />, hidden: true },
+  { id: "sla", label: "SLAs", icon: <Clock size={16} /> },
   { id: "attachments", label: "Attachments", icon: <Paperclip size={16} /> },
   { id: "time", label: "Time tracking", icon: <Layers size={16} /> },
   { id: "call-requests", label: "Call requests", icon: <Phone size={16} /> },

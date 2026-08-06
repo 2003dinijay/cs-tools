@@ -144,6 +144,65 @@ export function buildWidgetPreviewHref(params: {
   return `/dashboard/${params.previewSlug}?${q.toString()}`;
 }
 
+/** One human-readable "what's actually being queried" entry — a single
+ * filter field and the value(s) it's currently set to, `op` set only for a
+ * non-default (non-`in`) operator so a plain `field: value` reads cleanly
+ * for the common case. Field names are the raw camelCase filter key (e.g.
+ * `integrationCsTeam`); no friendly-label lookup exists for every filter
+ * field across every resourceType, so this deliberately stays literal
+ * rather than inventing a large label-mapping table for partial coverage. */
+export interface WidgetFilterSummaryEntry {
+  field: string;
+  op?: string;
+  value: string;
+}
+
+/**
+ * Flattens a widget's (already fully-resolved — no `__current_team__`/`@me`
+ * placeholders left in it) filters object into a readable list of active
+ * filter criteria, for display on `DashboardWidgetPreviewPage` so a viewer
+ * can see exactly what's being queried rather than trusting it silently.
+ * Handles both filter shapes this app's widgets use: the case-search
+ * generic field/op/values DSL (`{ filters: BeCaseFieldFilter[] }` — see
+ * `isCaseFieldFilterArray`) and every other resourceType's flat
+ * `{ fieldName: string[] }` record — the same two shapes
+ * `buildWidgetPreviewHref` already branches on, reusing its own
+ * value-less-op handling (`VALUELESS_OPS`) so an `isEmpty`/`isNotEmpty`
+ * entry still shows up here instead of being silently skipped for
+ * "having nothing to read".
+ */
+export function describeWidgetFilters(
+  filters: Record<string, unknown>,
+): WidgetFilterSummaryEntry[] {
+  const entries: WidgetFilterSummaryEntry[] = [];
+  const fieldFilters = filters.filters;
+
+  if (isCaseFieldFilterArray(fieldFilters)) {
+    for (const entry of fieldFilters) {
+      const op = entry.op || "in";
+      const values = entry.values ?? [];
+      if (values.length === 0 && !VALUELESS_OPS.has(op)) continue;
+      entries.push({
+        field: entry.field,
+        op: op === "in" ? undefined : op,
+        value: values.length > 0 ? values.join(", ") : "(no value)",
+      });
+    }
+    return entries;
+  }
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (RESERVED_PARAMS.has(key)) continue;
+    if (isStringArray(value)) {
+      if (value.length === 0) continue;
+      entries.push({ field: key, value: value.join(", ") });
+    } else if (typeof value === "string" && value.length > 0) {
+      entries.push({ field: key, value });
+    }
+  }
+  return entries;
+}
+
 export interface ParsedWidgetPreviewFilters {
   filters: Record<string, unknown>;
   /** True if a filter value still carries the `@me` sentinel and needs

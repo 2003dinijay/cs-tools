@@ -329,6 +329,76 @@ describe("DashboardWidgetTile", () => {
     expect(params.get("assignedUserId")).toBe("@me");
   });
 
+  it("resolves the __current_team__ placeholder before it reaches the 'View more' href (list-shape), so the drill-down page never falls back to querying every team", async () => {
+    postMock.mockResolvedValue({
+      total: 6,
+      cases: [{ id: "11111111-1111-1111-1111-111111111111", number: "CS-1", subject: "Disk full", state: "open" }],
+      limit: 5,
+      offset: 0,
+      hasMore: true,
+    });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_cases"
+        displayName="Team Open Cases"
+        resourceType="case"
+        shape="list"
+        filters={{
+          filters: [
+            { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+          ],
+        }}
+        listLimit={5}
+        selectedTeamGroupId="22222222-2222-2222-2222-222222222222"
+      />,
+    );
+
+    const viewMoreLink = await screen.findByRole("link", { name: /view more/i });
+    const href = viewMoreLink.getAttribute("href") ?? "";
+    // The literal placeholder must never reach the URL — the destination
+    // preview page has no team context of its own to resolve it with, so a
+    // still-placeholder-carrying filter there silently gets DROPPED
+    // (fail-open — see teamFilterPlaceholder.ts), widening the query to
+    // every team's cases instead of just the viewer's own team's.
+    expect(href).not.toContain(CURRENT_TEAM_PLACEHOLDER);
+    const params = new URLSearchParams(href.split("?")[1]);
+    expect(params.get("integrationCsTeam")).toBe("22222222-2222-2222-2222-222222222222");
+  });
+
+  it("drops the integrationCsTeam filter from the 'View more' href (list-shape) rather than sending the literal placeholder when no team groupId is selected", async () => {
+    postMock.mockResolvedValue({
+      total: 6,
+      cases: [{ id: "11111111-1111-1111-1111-111111111111", number: "CS-1", subject: "Disk full", state: "open" }],
+      limit: 5,
+      offset: 0,
+      hasMore: true,
+    });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="team_open_cases"
+        displayName="Team Open Cases"
+        resourceType="case"
+        shape="list"
+        filters={{
+          filters: [
+            { field: "state", op: "in", values: ["open"] },
+            { field: "integrationCsTeam", op: "in", values: [CURRENT_TEAM_PLACEHOLDER] },
+          ],
+        }}
+        listLimit={5}
+      />,
+    );
+
+    const viewMoreLink = await screen.findByRole("link", { name: /view more/i });
+    const href = viewMoreLink.getAttribute("href") ?? "";
+    expect(href).not.toContain(CURRENT_TEAM_PLACEHOLDER);
+    const params = new URLSearchParams(href.split("?")[1]);
+    expect(params.get("integrationCsTeam")).toBeNull();
+    expect(params.get("state")).toBe("open");
+  });
+
   it("navigates to /cases with translated filters when a case-resource tile is clicked", async () => {
     postMock.mockResolvedValue({ total: 3, cases: [], limit: 1, offset: 0, hasMore: false });
 

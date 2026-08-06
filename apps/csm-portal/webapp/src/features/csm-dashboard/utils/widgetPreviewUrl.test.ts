@@ -17,6 +17,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildWidgetPreviewHref,
+  describeWidgetFilters,
   parseWidgetPreviewFilters,
   resolveCurrentUserSentinels,
 } from "./widgetPreviewUrl";
@@ -203,5 +204,62 @@ describe("widget preview URL — filter op round-trip", () => {
     const parsed = roundTrip(input);
     const entries = (parsed.filters as { filters: unknown[] }).filters;
     expect(entries).toEqual(input);
+  });
+});
+
+describe("describeWidgetFilters", () => {
+  it("flattens the flat resourceType filter shape into readable field: value entries", () => {
+    expect(
+      describeWidgetFilters({ severities: ["critical", "high"], states: ["open"] }),
+    ).toEqual([
+      { field: "severities", value: "critical, high" },
+      { field: "states", value: "open" },
+    ]);
+  });
+
+  it("flattens the case field/op/values DSL shape, omitting the op for the default 'in'", () => {
+    expect(
+      describeWidgetFilters({
+        filters: [
+          { field: "state", op: "in", values: ["open"] },
+          { field: "tag", op: "notIn", values: ["s_dip"] },
+        ],
+      }),
+    ).toEqual([
+      { field: "state", op: undefined, value: "open" },
+      { field: "tag", op: "notIn", value: "s_dip" },
+    ]);
+  });
+
+  it("still shows a value-less op (isEmpty/isNotEmpty) rather than silently dropping it", () => {
+    expect(
+      describeWidgetFilters({
+        filters: [{ field: "escalation", op: "isNotEmpty", values: [] }],
+      }),
+    ).toEqual([{ field: "escalation", op: "isNotEmpty", value: "(no value)" }]);
+  });
+
+  it("shows an already-resolved team filter's real groupId value, not a placeholder", () => {
+    expect(
+      describeWidgetFilters({
+        filters: [
+          {
+            field: "integrationCsTeam",
+            op: "in",
+            values: ["22222222-2222-2222-2222-222222222222"],
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        field: "integrationCsTeam",
+        op: undefined,
+        value: "22222222-2222-2222-2222-222222222222",
+      },
+    ]);
+  });
+
+  it("returns an empty list for empty/absent filters", () => {
+    expect(describeWidgetFilters({})).toEqual([]);
   });
 });
