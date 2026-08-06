@@ -16,7 +16,6 @@
 import { Box, Grid, Pagination, Typography } from "@wso2/oxygen-ui";
 import {
   useState,
-  useMemo,
   useEffect,
   type JSX,
   type ChangeEvent,
@@ -31,7 +30,6 @@ import EmptyState from "@components/empty-state/EmptyState";
 import TimeCardsCsvExportButton from "@time-tracking/TimeCardsCsvExportButton";
 
 import type { ProjectTimeTrackingProps } from "@features/project-details/types/projectDetailsComponents";
-import { paginateList } from "@features/project-details/utils/timeTrackingPage";
 
 /**
  * ProjectTimeTracking manages the display of time tracking statistics, date filter, and case time cards.
@@ -53,27 +51,17 @@ export default function ProjectTimeTracking({
   const {
     data,
     isLoading: isTimeCardsLoading,
+    isFetching: isTimeCardsFetching,
     isError: isTimeCardsError,
-    hasNextPage,
-    fetchNextPage,
-    isFetchingNextPage,
-    isFetchNextPageError,
   } = useSearchProjectCaseTimeCards({
     projectId,
     startDate,
     endDate,
     states: ["Approved"],
+    page,
+    pageSize,
     enabled: !!projectId,
   });
-
-  // Fetch the next page only once the current page needs data beyond what's loaded
-  useEffect(() => {
-    if (!data || !hasNextPage || isFetchingNextPage || isFetchNextPageError) return;
-    const loadedCount = data.pages.flatMap((p) => p.caseTimeCards).length;
-    if (page * pageSize > loadedCount) {
-      void fetchNextPage();
-    }
-  }, [page, pageSize, data, hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
 
   // Reset pagination when filters change
   useEffect(() => {
@@ -81,18 +69,8 @@ export default function ProjectTimeTracking({
     setPage(1);
   }, [projectId, startDate, endDate]);
 
-  const allTimeCards = useMemo(
-    () => data?.pages.flatMap((page) => page.caseTimeCards) ?? [],
-    [data],
-  );
-
-  const totalItems = data?.pages?.[0]?.totalRecords ?? allTimeCards.length;
-
-  const paginatedTimeCards = useMemo(
-    () => paginateList(allTimeCards, page, pageSize),
-    [allTimeCards, page, pageSize],
-  );
-
+  const paginatedTimeCards = data?.caseTimeCards ?? [];
+  const totalItems = data?.totalRecords ?? 0;
   const totalPages = Math.ceil(totalItems / pageSize);
 
   const handlePageChange = (_event: ChangeEvent<unknown>, value: number) => {
@@ -137,7 +115,7 @@ export default function ProjectTimeTracking({
             ...(endDate && { endDate }),
             states: ["Approved"],
           }}
-          prefetchedCards={allTimeCards}
+          prefetchedCards={paginatedTimeCards}
           totalRecords={totalItems}
           disabled={isTimeCardsLoading || isTimeCardsError || totalItems === 0}
         />
@@ -148,7 +126,7 @@ export default function ProjectTimeTracking({
       ) : (
         <>
           <Grid container spacing={3}>
-            {isTimeCardsLoading || isFetchingNextPage ? (
+            {isTimeCardsLoading || isTimeCardsFetching ? (
               Array.from({ length: 7 }).map((_, index) => (
                 <Grid key={`skeleton-${index}`} size={12}>
                   <TimeTrackingCardSkeleton />
