@@ -21,6 +21,7 @@ import RelativeTime from "@components/RelativeTime";
 import TimeCardStatusChip from "@features/csm-timecards/components/TimeCardStatusChip";
 import { billableLabel } from "@features/csm-timecards/constants/timeCardConstants";
 import { decisionSummary } from "@features/csm-timecards/utils/timeCardDecision";
+import { isBlankHtml, sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 import type { CsmTimeCard } from "@features/csm-timecards/types/timeCards";
 
 interface TimeCardDetailModalProps {
@@ -40,10 +41,42 @@ function Field({ label, value }: { label: string; value: JSX.Element | string })
 }
 
 /**
+ * The engineer's own work-log comment from submission — ServiceNow rich-text
+ * HTML, so it's sanitized and rendered as HTML (same policy as a case
+ * comment's body). Renders nothing when the card has none (e.g. logged
+ * before this field was mapped).
+ */
+function WorkLogComment({ html }: { html?: string }): JSX.Element | null {
+  if (!html || isBlankHtml(html)) return null;
+  const safeHtml = sanitizeRichTextHtml(html);
+  return (
+    <Field
+      label="Engineer's comment"
+      value={
+        <Box
+          sx={{
+            fontSize: "0.875rem",
+            lineHeight: 1.5,
+            wordBreak: "break-word",
+            "& p": { my: 0.5 },
+            "& p:first-of-type": { mt: 0 },
+            "& p:last-child": { mb: 0 },
+            "& ul, & ol": { my: 0.5, pl: 3 },
+            "& a": { color: "primary.main" },
+            "& img": { maxWidth: "100%", height: "auto" },
+          }}
+          dangerouslySetInnerHTML={{ __html: safeHtml }}
+        />
+      }
+    />
+  );
+}
+
+/**
  * Read-only detail view of a single time card, opened via the eye icon in
  * `TimeCardsTable`'s Actions column. Shows only what the backend actually
- * returns on read — issue complexity, work-log comment and the per-activity
- * minute breakdown are accepted on create but never echoed back, so (like
+ * returns on read — issue complexity and the per-activity minute breakdown
+ * are accepted on create but never echoed back, so (like
  * `TimeCardReviewDialog`) they aren't shown here.
  */
 export default function TimeCardDetailModal({ card, onClose }: TimeCardDetailModalProps): JSX.Element {
@@ -83,6 +116,8 @@ export default function TimeCardDetailModal({ card, onClose }: TimeCardDetailMod
           </Box>
 
           <Field label="State" value={<Box sx={{ mt: 0.5 }}><TimeCardStatusChip state={card.state} /></Box>} />
+
+          <WorkLogComment html={card.workLogComment} />
 
           {decision && (
             <Field

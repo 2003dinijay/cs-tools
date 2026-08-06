@@ -119,6 +119,7 @@ export function mapTimeCard(v: BeTimeCardView): CsmTimeCard {
     approvedByName: v.approvedBy?.name,
     rejectionReason: v.rejectionReason ?? undefined,
     approvers: v.approvers,
+    workLogComment: v.workLogComment ?? undefined,
   };
 }
 

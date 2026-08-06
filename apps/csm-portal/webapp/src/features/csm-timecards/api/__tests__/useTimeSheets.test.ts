@@ -83,6 +83,21 @@ describe("searchTimeCards", () => {
     expect(result.total).toBe(2);
   });
 
+  it("maps workLogComment through from the wire response, when present", async () => {
+    const withComment: BeTimeCardView = {
+      ...beCard("a", "submitted"),
+      workLogComment: "<p>Investigated the reported latency issue.</p>",
+    };
+    const { api } = mockApi(bePage([withComment, beCard("b", "submitted")], 2, 0, 20));
+
+    const result = await searchTimeCards(api, undefined, { page: 0, rowsPerPage: 20 });
+
+    expect(result.cards[0].workLogComment).toBe(
+      "<p>Investigated the reported latency issue.</p>",
+    );
+    expect(result.cards[1].workLogComment).toBeUndefined();
+  });
+
   // states used to be filtered client-side over one raw page (with a
   // walk-forward workaround for the 500 that combining it with projectIds
   // used to cause); both are fixed upstream now, so this just forwards.
