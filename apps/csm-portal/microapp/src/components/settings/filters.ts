@@ -30,7 +30,7 @@ export function countActiveUsersFilters(filters: UsersFilters): number {
 export function toUserSearchFilters(search: string, filters: UsersFilters): UserSearchFiltersDto {
   return {
     ...(search.length > 0 && { searchQuery: search }),
-    ...(filters.roles.length > 0 && { roles: filters.roles }),
+    ...(filters.roles.length > 0 && { roleIds: filters.roles }),
     ...(filters.active !== "all" && { active: filters.active === "active" }),
   };
 }
