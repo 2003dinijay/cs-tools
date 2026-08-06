@@ -287,6 +287,13 @@ export const timecards = {
       getNextPageParam,
       enabled: !!caseId,
       staleTime: 5_000,
-      select: (data) => data.pages.flatMap((p) => p.cards),
+      // Carries `total` (the backend's real count for the case, unaffected by
+      // client-side filtering — this query applies none) alongside the loaded
+      // cards, so the caller can tell "every card is in" from "more pages remain"
+      // instead of the loaded-so-far count silently reading as the whole total.
+      select: (data) => ({
+        cards: data.pages.flatMap((p) => p.cards),
+        total: data.pages[0]?.total ?? 0,
+      }),
     }),
 };

@@ -73,10 +73,11 @@ export function TimeTrackingTab({ caseId, caseNumber, caseSeverity, projectId, p
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { data, isLoading, isError, hasNextPage, isFetchingNextPage, fetchNextPage } = useInfiniteQuery(
+  const { data, isLoading, isError, hasNextPage, isFetching, isFetchingNextPage, fetchNextPage } = useInfiniteQuery(
     timecards.forCase(caseId),
   );
-  const cards = data ?? [];
+  const cards = data?.cards ?? [];
+  const totalCount = data?.total ?? cards.length;
   const total = cards.reduce((sum, c) => sum + c.totalMinutes, 0);
 
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -86,7 +87,11 @@ export function TimeTrackingTab({ caseId, caseNumber, caseSeverity, projectId, p
 
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry?.isIntersecting && hasNextPage && !isFetchingNextPage) {
+        // Also gated on `!isFetching` (not just `!isFetchingNextPage`) so the sentinel can't fire
+        // a next-page fetch while a *different* fetch is already in flight for this query — e.g.
+        // the background refetch invalidateQueries triggers right after logging time reloads the
+        // already-loaded pages, during which isFetchingNextPage is false but isFetching is true.
+        if (entry?.isIntersecting && hasNextPage && !isFetching) {
           void fetchNextPage();
         }
       },
@@ -94,7 +99,7 @@ export function TimeTrackingTab({ caseId, caseNumber, caseSeverity, projectId, p
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+  }, [hasNextPage, isFetching, fetchNextPage]);
 
   const handleSubmit = (input: CreateTimeCardInput) => {
     setIsSubmitting(true);
@@ -120,7 +125,11 @@ export function TimeTrackingTab({ caseId, caseNumber, caseSeverity, projectId, p
             {formatMinutes(total)}
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Across {cards.length} {cards.length === 1 ? "entry" : "entries"}
+            {/* While more pages are still to come, say so explicitly rather than letting the
+             * loaded-so-far count read as the case's whole total. */}
+            {hasNextPage
+              ? `${cards.length} of ${totalCount} ${totalCount === 1 ? "entry" : "entries"} loaded so far`
+              : `Across ${cards.length} ${cards.length === 1 ? "entry" : "entries"}`}
           </Typography>
         </Box>
         <Button variant="contained" size="small" startIcon={<Plus size={14} />} onClick={() => setLogTimeOpen(true)}>
