@@ -96,7 +96,7 @@ function ExitButton() {
         open={open}
         title="Return to Apps"
         description="Are you sure you want to leave this application?"
-        confirmColor="error"
+        confirmColor="primary"
         confirmLabel="Leave"
         onClose={() => setOpen(false)}
         onConfirm={goToMyAppsScreen}
