@@ -2615,13 +2615,18 @@ export interface BeTimeCardCaseRef {
 
 /**
  * A time card as returned by search and the mutation endpoints. The backend
- * never echoes back category / issue complexity / work-log comment / hour
- * breakdown / lead comment, even though those are accepted on write — see
- * {@link BeCreateTimeCardPayload}.
+ * never echoes back category / issue complexity / hour breakdown / lead
+ * comment, even though those are accepted on write — see
+ * {@link BeCreateTimeCardPayload}. `workLogComment` is the one write field
+ * that IS echoed back — confirmed live; it was previously assumed missing
+ * and left unmapped, but the wire response does include it.
  */
 export interface BeTimeCardView {
   id: string;
   totalTime: number;
+  /** ServiceNow rich-text HTML (same convention as the log-time form's
+   * editor) — sanitize with `sanitizeRichTextHtml` before rendering. */
+  workLogComment?: string;
   /**
    * The date the work was actually carried out (YYYY-MM-DD) — what the engineer
    * picked in the log form, so it can be in the past. This is the field to

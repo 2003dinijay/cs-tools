@@ -62,10 +62,11 @@ export type IssueComplexity = "N/A" | "Low" | "Medium" | "High";
 /**
  * A time card as returned by `POST /time-cards/search` and the mutation
  * endpoints (the backend's `TimeCardView`). This is the complete set of
- * fields the backend ever returns for a card — `issueComplexity`,
- * `workLogComment`, the per-activity minute breakdown, and any lead comment
- * are accepted on write but never read back, so editing an existing card
- * isn't supported (it would silently blank those fields).
+ * fields the backend ever returns for a card — `issueComplexity`, the
+ * per-activity minute breakdown, and any lead comment (other than
+ * {@link rejectionReason}) are accepted on write but never read back, so
+ * editing an existing card isn't supported (it would silently blank those
+ * fields). `workLogComment` IS read back — confirmed live.
  */
 export interface CsmTimeCard {
   id: string;
@@ -115,6 +116,10 @@ export interface CsmTimeCard {
    * needs this to know which ones the signed-in lead can actually decide.
    */
   approvers?: TimeCardApprover[];
+  /** The engineer's own comment entered when submitting the card, as
+   * ServiceNow rich-text HTML — sanitize with `sanitizeRichTextHtml` before
+   * rendering. Absent on a card logged before this field was mapped. */
+  workLogComment?: string;
 }
 
 /**
