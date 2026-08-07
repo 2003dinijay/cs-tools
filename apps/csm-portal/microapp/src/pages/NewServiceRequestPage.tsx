@@ -214,12 +214,20 @@ export default function NewServiceRequestPage() {
           Creating from case {fromCaseState.relatedCaseNumber ?? fromCaseState.relatedCaseId}
         </Typography>
       )}
+      {lockedProjectQuery.isError && (
+        <Typography variant="caption" color="error.main">
+          Could not load the case's project. Pick one below to continue.
+        </Typography>
+      )}
 
       <Stack gap={2}>
         <ProjectSelect
           value={project}
           onChange={handleProjectChange}
-          disabled={!!fromCaseState || createCase.isPending || isSubmitting}
+          // Stays locked only while the case's project is still expected to arrive — a failed
+          // lookup falls back to letting the engineer pick one manually instead of leaving the
+          // form permanently stuck on a null project with no way to proceed.
+          disabled={(!!fromCaseState && !lockedProjectQuery.isError) || createCase.isPending || isSubmitting}
         />
 
         <FormControl

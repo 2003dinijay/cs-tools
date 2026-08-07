@@ -187,7 +187,7 @@ function ChildCasesSection({ caseId }: { caseId: string }) {
     <LinkedItemsSection
       icon={<GitFork size={16} />}
       title="Child cases"
-      count={isLoading ? undefined : rows.length}
+      count={isLoading || isError ? undefined : rows.length}
       emptyMessage="No child cases linked to this case."
     >
       {isError ? (
