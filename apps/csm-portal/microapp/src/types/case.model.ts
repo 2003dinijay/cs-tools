@@ -19,6 +19,7 @@ import type {
   AssignedEngineerRefDto,
   CaseCommentDto,
   CaseCommentType,
+  CaseLinkRefDto,
   CaseNumberRefDto,
   CaseSearchViewDto,
   CaseSeverity,
@@ -106,6 +107,8 @@ export interface CaseDetail {
   parentCase: CaseNumberRefDto | null;
   relatedCase: CaseNumberRefDto | null;
   nextStates: CaseState[];
+  linkedServiceRequests: CaseLinkRefDto[];
+  linkedChangeRequests: CaseLinkRefDto[];
 }
 
 export interface Comment {
@@ -181,6 +184,8 @@ export function toCaseDetail(dto: CaseViewDto): CaseDetail {
     parentCase: dto.parentCase,
     relatedCase: dto.relatedCase,
     nextStates: dto.nextStates,
+    linkedServiceRequests: dto.linkedServiceRequests ?? [],
+    linkedChangeRequests: dto.linkedChangeRequests ?? [],
   };
 }
 function commentAuthorLabel(createdBy: CaseCommentDto["createdBy"] | null | undefined): string {

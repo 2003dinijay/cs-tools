@@ -15,7 +15,7 @@
 // under the License.
 
 import { Suspense, useRef, useState, type ReactNode } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { Card, Divider, Grid, Skeleton, Stack, Tab, Tabs, Typography, pxToRem } from "@wso2/oxygen-ui";
 import {
   Building2,
@@ -54,6 +54,8 @@ import { TYPE_CONFIG } from "@components/support/config";
 import { CaseActionBar } from "@components/case-detail/CaseActionBar";
 import { CaseMoreMenu } from "@components/case-detail/CaseMoreMenu";
 import { ChangeSeverityDialog } from "@components/case-detail/ChangeSeverityDialog";
+import { LinkCaseDialog, type CaseLinkType } from "@components/case-detail/LinkCaseDialog";
+import { LinkedItemsTab } from "@components/case-detail/LinkedItemsTab";
 import { LogTimeCardDialog } from "@components/case-detail/LogTimeCardDialog";
 import { ResolutionDialog } from "@components/case-detail/ResolutionDialog";
 import { CommentComposer } from "@components/case-detail/CommentComposer";
@@ -63,16 +65,18 @@ import { SlaTab } from "@components/case-detail/SlaTab";
 import { AttachmentsTab } from "@components/case-detail/AttachmentsTab";
 import { CallRequestsTab } from "@components/case-detail/CallRequestsTab";
 import { TimeTrackingTab } from "@components/case-detail/TimeTrackingTab";
+import type { CreateServiceRequestFromCaseNavState } from "@pages/NewServiceRequestPage";
 import { formatDate } from "@utils/dateTime";
 import { Logger } from "@utils/logger";
 import { toApiError } from "@utils/ApiError";
 import type { PendingAttachment } from "@utils/attachments";
 
-type CaseTabId = "activities" | "details" | "sla" | "attachments" | "time" | "call-requests";
+type CaseTabId = "activities" | "details" | "related" | "sla" | "attachments" | "time" | "call-requests";
 
 const TAB_DEFS: Array<{ id: CaseTabId; label: string }> = [
   { id: "activities", label: "Activities" },
   { id: "details", label: "Details" },
+  { id: "related", label: "Linked Items" },
   { id: "sla", label: "SLAs" },
   { id: "attachments", label: "Attachments" },
   { id: "time", label: "Time tracking" },
@@ -96,6 +100,7 @@ export default function CaseDetailPage() {
 }
 
 function CaseDetailContent({ id }: { id: string }) {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: caseDetail } = useSuspenseQuery(cases.get(id));
   const { data: comments } = useSuspenseQuery(cases.comments(id));
@@ -119,9 +124,12 @@ function CaseDetailContent({ id }: { id: string }) {
   const [logTimeOpen, setLogTimeOpen] = useState(false);
   const [isLoggingTime, setIsLoggingTime] = useState(false);
   const [logTimeError, setLogTimeError] = useState<string | null>(null);
+  const [linkCaseOpen, setLinkCaseOpen] = useState(false);
+  const [isLinkingCase, setIsLinkingCase] = useState(false);
 
+  const ANNOUNCEMENT_HIDDEN_TABS: CaseTabId[] = ["related", "sla", "time", "call-requests"];
   const visibleTabDefs = isAnnouncement
-    ? TAB_DEFS.filter((tab) => tab.id !== "sla" && tab.id !== "time" && tab.id !== "call-requests")
+    ? TAB_DEFS.filter((tab) => !ANNOUNCEMENT_HIDDEN_TABS.includes(tab.id))
     : TAB_DEFS;
   // If a case turns out to be an announcement (only knowable once caseDetail
   // loads) while a tab hidden for announcements is active, fall back to
@@ -336,6 +344,32 @@ function CaseDetailContent({ id }: { id: string }) {
       .finally(() => setIsLoggingTime(false));
   };
 
+  const handleLinkCase = (targetCaseId: string, linkType: CaseLinkType): void => {
+    setIsLinkingCase(true);
+    setMutationError(null);
+    cases
+      .patch(id, linkType === "parent" ? { parentId: targetCaseId } : { relatedCaseId: targetCaseId })
+      .then(() => {
+        setLinkCaseOpen(false);
+        invalidateCase();
+      })
+      .catch(() => setMutationError("Could not link the case. Please try again."))
+      .finally(() => setIsLinkingCase(false));
+  };
+
+  // Pre-fills the create-service-request form and links the new SR back to this case in one step
+  // (see CreateServiceRequestFromCaseNavState) — no separate create-then-link round trip.
+  const handleCreateServiceRequest = (): void => {
+    const navState: CreateServiceRequestFromCaseNavState = {
+      projectId: caseDetail.project.id,
+      relatedCaseId: caseDetail.id,
+      relatedCaseNumber: caseDetail.number,
+      deploymentId: caseDetail.deployment?.id,
+      deployedProductId: caseDetail.deployedProduct?.id,
+    };
+    navigate("/operations/service-requests/new", { state: navState });
+  };
+
   // Text and inline attachments upload as separate requests (the backend's comment payload has no
   // file field — see CaseCommentCreatePayloadDto), mirroring NewCasePage's create-then-attach
   // pattern. An empty comment with attachments still sends: the case gets the files with no
@@ -440,6 +474,16 @@ function CaseDetailContent({ id }: { id: string }) {
         </Stack>
       )}
 
+      {effectiveTab === "related" && (
+        <LinkedItemsTab
+          caseId={id}
+          caseDetail={caseDetail}
+          isClosed={caseDetail.state === "closed"}
+          onLinkCase={() => setLinkCaseOpen(true)}
+          onCreateServiceRequest={handleCreateServiceRequest}
+        />
+      )}
+
       {effectiveTab === "sla" && <SlaTab caseId={id} />}
 
       {effectiveTab === "attachments" && <AttachmentsTab caseId={id} />}
@@ -496,6 +540,14 @@ function CaseDetailContent({ id }: { id: string }) {
             }
           }}
           onSubmit={handleLogTimeSubmit}
+        />
+      )}
+      {linkCaseOpen && (
+        <LinkCaseDialog
+          currentCaseId={id}
+          isLinking={isLinkingCase}
+          onClose={() => setLinkCaseOpen(false)}
+          onLink={handleLinkCase}
         />
       )}
     </Stack>

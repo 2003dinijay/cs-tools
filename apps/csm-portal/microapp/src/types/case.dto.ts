@@ -103,6 +103,9 @@ export interface CaseSearchFiltersDto {
   engagementTypes?: EngagementType[];
   /** Product family names (e.g. "API Manager"); matches all versions of each. */
   productNames?: string[];
+  /** UUID of the case whose children (their own `parentId` pointing here) to find — the
+   * hierarchical major-case/child-case relationship. Mirrors the webapp's useSearchChildCases. */
+  parentId?: string;
 }
 
 export interface CaseSearchPayloadDto {
@@ -170,6 +173,15 @@ export interface CaseSearchResponseDto {
   hasMore: boolean;
 }
 
+// A linked case/service-request/change-request reference on the case-detail response — only
+// id/number/name are ever carried (mirrors the webapp's BeLinkedServiceRequestRef/
+// BeLinkedChangeRequestRef); `name` is the target's subject, nullable on records without one.
+export interface CaseLinkRefDto {
+  id: string;
+  number: string;
+  name: string | null;
+}
+
 export interface CaseViewDto {
   id: string;
   number: string;
@@ -201,6 +213,8 @@ export interface CaseViewDto {
   relatedCase: CaseNumberRefDto | null;
   account: AccountRefDto | null;
   nextStates: CaseState[];
+  linkedServiceRequests?: CaseLinkRefDto[] | null;
+  linkedChangeRequests?: CaseLinkRefDto[] | null;
 }
 
 export type CaseCommentType = "work_note" | "comment" | "activity";
@@ -248,9 +262,10 @@ export interface CaseCommentCreateResponseDto {
   };
 }
 
-// Backend's UpdateCaseRequest: exactly one of state/severity/workState/assigneeEmail must be
-// provided per PATCH call (they're mutually exclusive `oneOf` branches in openapi.yaml) —
-// resolutionCode/cause/closeNotes are the exception, allowed alongside `state` only.
+// Backend's UpdateCaseRequest: exactly one of state/severity/workState/assigneeEmail/parentId/
+// relatedCaseId must be provided per PATCH call (they're mutually exclusive `oneOf` branches in
+// openapi.yaml) — resolutionCode/cause/closeNotes are the exception, allowed alongside `state`
+// only.
 export interface CasePatchPayloadDto {
   state?: CaseState;
   severity?: CaseSeverity;
@@ -259,6 +274,12 @@ export interface CasePatchPayloadDto {
   resolutionCode?: CaseResolutionCode;
   cause?: CaseCause;
   closeNotes?: string;
+  /** Links this case to another as its parent (the hierarchical major-case/child-case
+   * relationship) — this case can't close while it has open children linked this way. */
+  parentId?: string;
+  /** Cross-links this case to another as a related case — looser than `parentId`, not subject to
+   * the child-case close restriction. */
+  relatedCaseId?: string;
 }
 
 export interface UpdateCaseResponseDto {
@@ -353,6 +374,9 @@ export interface ServiceRequestCreatePayloadDto {
   catalogId: string;
   catalogItemId: string;
   variables: CaseVariableDto[];
+  /** UUID of the case this service request is filed from — links the new request back to it in
+   * the same create call, mirroring the webapp's CreateServiceRequestFromCaseNavState flow. */
+  relatedCaseId?: string;
 }
 
 export interface CreatedCaseDto {

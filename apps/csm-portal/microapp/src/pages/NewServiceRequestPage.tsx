@@ -14,13 +14,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Button, FormControl, FormHelperText, InputLabel, MenuItem, Select, Stack, Typography } from "@wso2/oxygen-ui";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { cases } from "@src/services/cases";
 import { deployments } from "@src/services/deployments";
 import { catalogs } from "@src/services/catalogs";
+import { projects } from "@src/services/projects";
 import { attachments as attachmentsService } from "@src/services/attachments";
 import type { Project } from "@src/types";
 import { Logger } from "@utils/logger";
@@ -35,18 +36,32 @@ import {
 } from "@utils/catalogVariables";
 import type { PendingAttachment } from "@utils/attachments";
 
+// Router (`navigate(..., { state })`) payload carried from a case's "Create service request"
+// action (case detail's Linked Items tab) to this page, so the form can prefill from the
+// originating case and file the new SR as linked to it in one step. Mirrors the webapp's
+// CreateServiceRequestFromCaseNavState: `projectId` locks the Project field read-only;
+// `deploymentId`/`deployedProductId` are just starting values and stay fully editable.
+export interface CreateServiceRequestFromCaseNavState {
+  projectId: string;
+  relatedCaseId: string;
+  relatedCaseNumber?: string;
+  deploymentId?: string;
+  deployedProductId?: string;
+}
+
 // Ports the webapp's CreateServiceRequestPage.tsx (features/csm-operations/pages/): the same
 // cascading Project → Deployment → Deployed product → Catalog → Catalog item picker, driving a
 // dynamic form built from the chosen catalog item's ServiceNow variables. Layout follows this
-// app's own NewCasePage.tsx (single-column Stack, no locked-project entry point) rather than the
-// webapp's Grid/Card, and — like NewCasePage — the Description variable renders as a plain
-// multiline field rather than the rich-text editor (this app has no rich-text component).
+// app's own NewCasePage.tsx (single-column Stack) rather than the webapp's Grid/Card, and — like
+// NewCasePage — the Description variable renders as a plain multiline field rather than the
+// rich-text editor (this app has no rich-text component).
 export default function NewServiceRequestPage() {
   const navigate = useNavigate();
+  const fromCaseState = useLocation().state as CreateServiceRequestFromCaseNavState | undefined;
 
   const [project, setProject] = useState<Project | null>(null);
-  const [deploymentId, setDeploymentId] = useState("");
-  const [deployedProductId, setDeployedProductId] = useState("");
+  const [deploymentId, setDeploymentId] = useState(fromCaseState?.deploymentId ?? "");
+  const [deployedProductId, setDeployedProductId] = useState(fromCaseState?.deployedProductId ?? "");
   const [catalogId, setCatalogId] = useState("");
   const [catalogItemId, setCatalogItemId] = useState("");
   // Variable answers, keyed by variable id.
@@ -58,6 +73,16 @@ export default function NewServiceRequestPage() {
   // fire a duplicate submission. Tracks the whole handleSubmit lifecycle instead, same as
   // NewCasePage.tsx.
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Resolves the full Project (ProjectSelect needs more than the nav state's bare id) once, to
+  // seed the locked field below — never re-runs once `project` is set, so it doesn't fight a
+  // user's own pick on a page that arrived without a related case.
+  const lockedProjectId = fromCaseState?.projectId;
+  const lockedProjectQuery = useQuery({ ...projects.get(lockedProjectId ?? ""), enabled: !!lockedProjectId });
+  useEffect(() => {
+    if (lockedProjectQuery.data && !project) setProject(lockedProjectQuery.data);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lockedProjectQuery.data]);
 
   const deploymentsQuery = useQuery(deployments.byProject(project?.id ?? ""));
   const productsQuery = useQuery(deployments.productsByDeployment(deploymentId));
@@ -151,6 +176,7 @@ export default function NewServiceRequestPage() {
         catalogId,
         catalogItemId,
         variables: variablePayload,
+        ...(fromCaseState?.relatedCaseId ? { relatedCaseId: fromCaseState.relatedCaseId } : {}),
       });
 
       // The create endpoint doesn't attach files for service requests, so upload them to the new
@@ -183,9 +209,26 @@ export default function NewServiceRequestPage() {
   return (
     <Stack gap={2}>
       <Typography variant="h6">New Service Request</Typography>
+      {fromCaseState && (
+        <Typography variant="caption" color="text.secondary">
+          Creating from case {fromCaseState.relatedCaseNumber ?? fromCaseState.relatedCaseId}
+        </Typography>
+      )}
+      {lockedProjectQuery.isError && (
+        <Typography variant="caption" color="error.main">
+          Could not load the case's project. Pick one below to continue.
+        </Typography>
+      )}
 
       <Stack gap={2}>
-        <ProjectSelect value={project} onChange={handleProjectChange} disabled={createCase.isPending || isSubmitting} />
+        <ProjectSelect
+          value={project}
+          onChange={handleProjectChange}
+          // Stays locked only while the case's project is still expected to arrive — a failed
+          // lookup falls back to letting the engineer pick one manually instead of leaving the
+          // form permanently stuck on a null project with no way to proceed.
+          disabled={(!!fromCaseState && !lockedProjectQuery.isError) || createCase.isPending || isSubmitting}
+        />
 
         <FormControl
           size="small"
