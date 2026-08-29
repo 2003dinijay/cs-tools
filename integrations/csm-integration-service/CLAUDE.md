@@ -1,9 +1,10 @@
 # CSM Integration Service
 
 Go HTTP server (`net/http`, Go 1.26+) exposing Project/Account search and their
-Contacts sub-resource, plus a subset of Case operations, to third-party (M2M)
-consumers. It forwards requests to the entity service and returns responses
-as-is — it does not shape or authenticate on behalf of an end user.
+Contacts sub-resource, plus a subset of Case operations, plus incident creation,
+to third-party (M2M) consumers. It forwards requests to the entity service and
+returns responses as-is — it does not shape or authenticate on behalf of an end
+user.
 
 ## Why no `Auth` middleware
 
@@ -45,6 +46,15 @@ under an M2M-only model. **Every call to this endpoint currently receives a mapp
 401 from `mapUpstreamError`, unconditionally.** It's kept for API-shape
 completeness (a real caller has somewhere to point at, and the shape of the
 request/response is documented and stable), not because it works today.
+
+**`POST /incidents` (`CreateIncident`) is in the same state, for the same reason.**
+It proxies entity-service's incident-creation operation, which is ServiceNow-backed
+and also requires a forwarded end-user identity token. This service cannot supply
+one, so **every call to this endpoint currently receives a mapped 401 from
+`mapUpstreamError`, unconditionally** — same as `UpdateProject` above. It's kept
+for API-shape completeness so a real third-party caller has a stable, documented
+place to point at once the identity-forwarding groundwork (see the paragraph above)
+exists, not because it works today.
 
 Confirmed directly from the owning team's internal issue (written by the
 engineer who built this): the full HTTP path was "deferred pending a captured
@@ -114,7 +124,7 @@ handler so every `slog.*Context(r.Context(), …)` call automatically includes
 
 | Package | Upstream | Notes |
 |---------|----------|-------|
-| `entity` | Entity service | Account/Project + Contacts sub-resource, Case (patch + comment create), Opportunity/Invoice/ProjectOpportunityLink (read-only); raw `[]byte` passthrough |
+| `entity` | Entity service | Account/Project + Contacts sub-resource, Case (patch + comment create), Opportunity/Invoice/ProjectOpportunityLink (read-only), incident creation; raw `[]byte` passthrough |
 
 A new upstream service would get its own package under `internal/`, following the
 same `Config`/`Client`/`NewClient`/`do()` pattern as `internal/entity`.
