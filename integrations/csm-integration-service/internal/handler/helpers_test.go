@@ -252,12 +252,20 @@ func (m *mockEntityVulnerabilityClient) SyncProductVulnerabilities(ctx context.C
 // ----- mock entity incident client -----
 
 type mockEntityIncidentClient struct {
-	createIncidentFn func(ctx context.Context, body []byte) ([]byte, error)
+	createIncidentFn  func(ctx context.Context, body []byte) ([]byte, error)
+	searchIncidentsFn func(ctx context.Context, body []byte) ([]byte, error)
 }
 
 func (m *mockEntityIncidentClient) CreateIncident(ctx context.Context, body []byte) ([]byte, error) {
 	if m.createIncidentFn != nil {
 		return m.createIncidentFn(ctx, body)
+	}
+	return []byte(`{}`), nil
+}
+
+func (m *mockEntityIncidentClient) SearchIncidents(ctx context.Context, body []byte) ([]byte, error) {
+	if m.searchIncidentsFn != nil {
+		return m.searchIncidentsFn(ctx, body)
 	}
 	return []byte(`{}`), nil
 }

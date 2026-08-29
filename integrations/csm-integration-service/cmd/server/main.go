@@ -77,6 +77,7 @@ func main() {
 	mux.HandleFunc("GET /invoices/{id}", invoiceHandler.GetInvoice)
 	mux.HandleFunc("POST /project-opportunity-links/search", projectOpportunityLinkHandler.SearchProjectOpportunityLinks)
 	mux.HandleFunc("POST /incidents", incidentHandler.CreateIncident)
+	mux.HandleFunc("POST /incidents/search", incidentHandler.SearchIncidents)
 
 	addr := ":" + envOrDefault("PORT", "8080")
 
