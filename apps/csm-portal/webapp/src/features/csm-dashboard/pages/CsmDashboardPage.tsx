@@ -75,7 +75,7 @@ import { ALL_TEAMS_SENTINEL } from "@features/csm-dashboard/utils/teamFilterPlac
  * Dashboards are selected purely by dropdown — there is no other
  * per-dashboard scoping control. Every dashboard in the registry has at
  * least one real (config-driven) widget, so this always renders the real
- * widget grid.
+ * widget grid, via `AgentsLandingPagePilot`.
  */
 
 export default function CsmDashboardPage(): JSX.Element {
