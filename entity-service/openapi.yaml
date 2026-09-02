@@ -6144,6 +6144,28 @@ components:
         suspensionProcessState:
           type: object
           additionalProperties: true
+        onboardingStatus:
+          type: string
+          nullable: true
+          enum:
+            - Not-Started
+            - In-Progress
+            - OnHold
+            - Completed
+            - Expired
+            - Cancelled
+            - Not-Applicable
+          description: >
+            The project's onboarding engagement status. Null when the project
+            has no onboarding engagement at all.
+        onboardingOwner:
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
+          nullable: true
+          description: >
+            The person assigned to run this project's onboarding. Null when
+            no owner is assigned — most projects, since only
+            onboarding-enabled projects have one.
           nullable: true
           description: >
             Free-form, per-dimension Account Closure Process (ACP) suspension-process

@@ -466,6 +466,15 @@ type ProjectDetailsView struct {
 	// this project is eligible to raise service requests.
 	HasSr bool `json:"hasSr"`
 	ProjectClosureFields
+	// OnboardingStatus is the project's onboarding engagement status. Nil
+	// when the project has no onboarding engagement at all (the common
+	// case). Currently populated only from the ServiceNow data source.
+	OnboardingStatus *string `json:"onboardingStatus,omitempty"`
+	// OnboardingOwner is the person assigned to run this project's
+	// onboarding. Nil when no owner is assigned — most projects, since only
+	// onboarding-enabled projects have one. Currently populated only from
+	// the ServiceNow data source.
+	OnboardingOwner *PersonRef `json:"onboardingOwner,omitempty"`
 }
 
 // ProjectUpdateRequest is the input for PATCH /projects/{id} (ServiceNow data
