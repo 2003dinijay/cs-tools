@@ -8791,6 +8791,31 @@ components:
               description: >
                 Whether this project is eligible to raise service requests, per the
                 backing data source's own project classification.
+            onboardingStatus:
+              type: string
+              nullable: true
+              enum:
+                - Not-Started
+                - In-Progress
+                - OnHold
+                - Completed
+                - Expired
+                - Cancelled
+                - Not-Applicable
+              description: >
+                The project's onboarding engagement status. Null when the project has
+                no onboarding engagement at all. "Not-Applicable" (and null) both mean
+                there is no active onboarding to surface for this project; treat either
+                as "onboarding not enabled" when deciding whether to show
+                onboardingOwner. ServiceNow data source only.
+            onboardingOwner:
+              nullable: true
+              allOf:
+                - $ref: '#/components/schemas/PersonRef'
+              description: >
+                The WSO2 staff member assigned to lead this project's onboarding. Null
+                when no owner is assigned (most projects, since it is only set for
+                onboarding-enabled projects). ServiceNow data source only.
 
     ProjectAccountRef:
       type: object
