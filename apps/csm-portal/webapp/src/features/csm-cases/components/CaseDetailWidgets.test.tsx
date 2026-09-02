@@ -699,6 +699,50 @@ describe("CustomerContextWidget", () => {
     expect(screen.getByText("SRE Beta")).toBeInTheDocument();
     expect(screen.queryByText("CRE Alpha")).not.toBeInTheDocument();
   });
+
+  it("renders the onboarding owner row when onboarding is enabled and an owner is set", () => {
+    renderWithRouter(
+      <CustomerContextWidget
+        ctx={CTX}
+        project={{
+          ...PROJECT,
+          onboardingStatus: "In-Progress",
+          onboardingOwner: {
+            id: "user-1",
+            name: "Jane Doe",
+            email: "jane.doe@example.com",
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("Onboarding Owner")).toBeInTheDocument();
+    expect(screen.getByText("Jane Doe")).toBeInTheDocument();
+  });
+
+  it("hides the onboarding owner row when onboardingStatus is Not-Applicable", () => {
+    renderWithRouter(
+      <CustomerContextWidget
+        ctx={CTX}
+        project={{
+          ...PROJECT,
+          onboardingStatus: "Not-Applicable",
+          onboardingOwner: {
+            id: "user-1",
+            name: "Jane Doe",
+            email: "jane.doe@example.com",
+          },
+        }}
+      />,
+    );
+    expect(screen.queryByText("Onboarding Owner")).not.toBeInTheDocument();
+  });
+
+  it("hides the onboarding owner row when there is no onboarding engagement at all", () => {
+    renderWithRouter(
+      <CustomerContextWidget ctx={CTX} project={{ ...PROJECT }} />,
+    );
+    expect(screen.queryByText("Onboarding Owner")).not.toBeInTheDocument();
+  });
 });
 
 describe("RequestDetailsWidget", () => {

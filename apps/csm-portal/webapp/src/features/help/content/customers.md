@@ -28,7 +28,9 @@ state and start/end dates.
 Opening a project takes you to its detail page, with four tabs:
 
 - **Overview**: project key, closure state, subscription type, a link back to the owning
-  account, Salesforce ID, and the created/updated/start/end dates.
+  account, Salesforce ID, and the created/updated/start/end dates. An **Onboarding Owner**
+  field appears here too, but only for onboarding-enabled projects — it names the onboarding
+  consultant assigned to the project. It's absent for projects with no onboarding engagement.
 - **Deployments**: see below.
 - **Project contacts**: see below.
 - **Work items**: cases, service requests, and other work items filed against this project.

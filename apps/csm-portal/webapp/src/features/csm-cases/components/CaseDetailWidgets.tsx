@@ -312,6 +312,19 @@ export function CustomerContextWidget({
           </MetaRow>
           {/* No subscription-status field exists on the project record today
               (only start/end dates) — omitted rather than inferring one. */}
+          {project.onboardingStatus &&
+            project.onboardingStatus !== "Not-Applicable" &&
+            project.onboardingOwner && (
+              <MetaRow label="Onboarding Owner">
+                <Typography variant="body2">
+                  <UserRefLink
+                    name={project.onboardingOwner.name}
+                    email={project.onboardingOwner.email || undefined}
+                    userId={project.onboardingOwner.id}
+                  />
+                </Typography>
+              </MetaRow>
+            )}
         </>
       )}
     </WidgetCard>
