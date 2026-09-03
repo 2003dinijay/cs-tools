@@ -144,6 +144,25 @@ describe("WallboardDashboard", () => {
     expect(screen.getByTestId("stat-grid-fde")).toHaveAttribute("data-columns", "3");
   });
 
+  // Regression test (CodeRabbit): `section` is free-text, and
+  // groupWidgetsBySection preserves every distinct string as its own
+  // group — so two differently-named CRE sections must not silently
+  // drop one of them; both should merge into the one CRE panel.
+  it("merges widgets from every section string that maps to the same family, not just the first one found", () => {
+    useDashboardMock.mockReturnValue({
+      data: dashboardResult([
+        widget("w1", "Open", "CRE Operations"),
+        widget("w2", "Escalations", "CRE Escalations"),
+      ]),
+      isLoading: false,
+      isError: false,
+    });
+    render(<WallboardDashboard dashboardId="cs-overview" />);
+
+    expect(screen.getAllByTestId("panel-cre")).toHaveLength(1);
+    expect(screen.getByTestId("cre-section")).toHaveTextContent("Open,Escalations");
+  });
+
   it("resolves the live config's mismatched displayNames to the original's exact labels before any child ever sees them", () => {
     useDashboardMock.mockReturnValue({
       data: dashboardResult([

@@ -29,11 +29,19 @@ vi.mock("@api/backend/client", () => ({
 vi.mock("@config/apiConfig", () => ({
   apiConfig: { backendUrl: "https://example.test" },
 }));
+// Mutable so a single test can simulate an unresolved user profile — every
+// other test wants the default (an already-signed-in, resolved user).
+let mockCurrentUserId: string | undefined = "u1";
 vi.mock("@context/current-user/CurrentUserContext", () => ({
-  useCurrentUser: () => ({ user: { id: "u1" }, isLoading: false, isError: false }),
+  useCurrentUser: () => ({
+    user: mockCurrentUserId === undefined ? undefined : { id: mockCurrentUserId },
+    isLoading: mockCurrentUserId === undefined,
+    isError: false,
+  }),
 }));
 
 import WallboardSecondaryStat from "@features/csm-dashboard/components/WallboardSecondaryStat";
+import { CURRENT_USER_PLACEHOLDER } from "@features/csm-dashboard/utils/currentUserFilterPlaceholder";
 import { __resetWidgetFetchConcurrencyForTests } from "@features/csm-dashboard/utils/widgetFetchConcurrency";
 
 function renderWithClient(ui: ReactNode) {
@@ -48,6 +56,7 @@ function renderWithClient(ui: ReactNode) {
 describe("WallboardSecondaryStat", () => {
   beforeEach(() => {
     postMock.mockReset();
+    mockCurrentUserId = "u1";
     __resetWidgetFetchConcurrencyForTests();
   });
 
@@ -68,5 +77,23 @@ describe("WallboardSecondaryStat", () => {
     expect(screen.getByText("Being Fixed")).toBeInTheDocument();
     // Unlike WallboardStatTile, this tier is never glow-capable at all.
     expect(container.querySelector("[data-alert]")).toBeNull();
+  });
+
+  // Regression test (CodeRabbit): same underlying issue as
+  // WallboardStatTile's own test of the same name — a disabled query
+  // reports `isLoading` false, so the link-wrapping guard has to check
+  // `awaitingCurrentUser` too, not just `isLoading`.
+  it("does not wrap the tile in a link while awaiting the current user's own id", () => {
+    mockCurrentUserId = undefined;
+    postMock.mockReturnValue(new Promise(() => {}));
+    const { container } = renderWithClient(
+      <WallboardSecondaryStat
+        widgetId="mine"
+        displayName="My Cases"
+        resourceType="incident"
+        filters={{ assignedUserId: CURRENT_USER_PLACEHOLDER }}
+      />,
+    );
+    expect(container.querySelector("a")).toBeNull();
   });
 });

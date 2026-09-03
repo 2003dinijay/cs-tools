@@ -277,13 +277,21 @@ export default function WallboardDashboard({
         }}
       >
         {(["cre", "sre", "security", "fde"] as const).map((family) => {
-          const group = groups.find((g) => familyFor(g.section) === family);
-          if (!group) return null;
+          // `section` is free-text (see `groupWidgetsBySection`'s own doc
+          // comment — it preserves every distinct string as its own
+          // group), so two differently-named sections can both map to the
+          // same family here (e.g. "CRE Operations" and "CRE
+          // Escalations", both matched by `familyFor`'s "cre" pattern).
+          // Merge every matching group's widgets rather than taking only
+          // the first — a lone `.find()` would silently drop the rest.
+          const matchingGroups = groups.filter((g) => familyFor(g.section) === family);
+          if (matchingGroups.length === 0) return null;
+          const widgets = matchingGroups.flatMap((g) => g.widgets);
           return (
             <WallboardPanel key={family} section={family} title={SECTION_TITLE[family]} icon={SECTION_ICON[family]}>
               {renderSectionBody(
                 family,
-                group.widgets,
+                widgets,
                 selectedTeamCreGroupId,
                 selectedTeamSreGroupId,
                 selectedTeamLabel,

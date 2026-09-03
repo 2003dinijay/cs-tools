@@ -330,13 +330,25 @@ const FDE_SUFFIX_ALIASES: Record<string, string> = {
 };
 
 function resolveFdeAlias(name: string): string {
-  const bareName = name.replace(FDE_PREFIX, "").replace(TRAILING_CASES_SUFFIX, "").trim();
-  // Falls back to the STRIPPED name, not the original — a lookup miss
-  // (e.g. "Inprogress Onboarding", no hyphen) still needs the FDE prefix
-  // gone so the later MISSING_IN_PROGRESS_HYPHEN pipeline step can finish
-  // the job on it; falling back to the untouched original would leave
-  // that prefix stuck on permanently instead.
-  return FDE_SUFFIX_ALIASES[bareName.toLowerCase()] ?? bareName;
+  const withoutPrefix = name.replace(FDE_PREFIX, "").trim();
+  const bareName = withoutPrefix.replace(TRAILING_CASES_SUFFIX, "").trim();
+  // On a lookup miss, the fallback depends on whether an FDE prefix was
+  // actually present:
+  // - Prefix WAS present (`withoutPrefix !== name`, e.g. "FDE -
+  //   Inprogress Onboarding"): still fall back to the STRIPPED name, not
+  //   the original — the later MISSING_IN_PROGRESS_HYPHEN pipeline step
+  //   needs the FDE prefix gone to finish correcting a missing-hyphen
+  //   variant; falling back to the untouched original would leave that
+  //   prefix stuck on permanently instead.
+  // - No FDE prefix at all (`withoutPrefix === name`): the "Cases" strip
+  //   above was only ever meant for FDE's own known metric names (e.g.
+  //   "Active Engagement Cases", which DOES hit the lookup and never
+  //   reaches this fallback) — an unrelated, unrecognized widget that
+  //   merely happens to end in "Cases" must come back untouched, not
+  //   silently lose that word.
+  return (
+    FDE_SUFFIX_ALIASES[bareName.toLowerCase()] ?? (withoutPrefix === name ? name : bareName)
+  );
 }
 
 /** Resolves a widget's raw `displayName` to the exact label the original

@@ -206,6 +206,15 @@ describe("resolveDisplayNameAlias", () => {
   it("handles no FDE prefix at all, a trailing 'Cases' suffix, and a singular where the original is plural", () => {
     expect(resolveDisplayNameAlias("Active Engagement Cases")).toBe("Active Engagements");
   });
+
+  // Regression test (CodeRabbit): the "Cases" strip above is only ever
+  // meant for FDE's own known metric names. An unrelated, unrecognized
+  // widget that merely happens to end in "Cases" — no FDE prefix, no
+  // matching alias — must come back completely untouched, not have that
+  // word silently dropped.
+  it("preserves an unrecognized non-FDE metric name that happens to end in 'Cases', unchanged", () => {
+    expect(resolveDisplayNameAlias("Some Future Cases")).toBe("Some Future Cases");
+  });
 });
 
 describe("sortByFixedOrder", () => {

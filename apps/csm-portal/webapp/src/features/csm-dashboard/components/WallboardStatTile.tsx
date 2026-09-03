@@ -200,7 +200,13 @@ export default function WallboardStatTile({
     </Box>
   );
 
-  if (!href || isLoading || isError) return tileBody;
+  // `awaitingCurrentUser` here too, not just in the skeleton condition
+  // above: a disabled query (see `enabled: !awaitingCurrentUser` on
+  // useWidgetData) reports `isLoading` false — TanStack Query v5 reserves
+  // that for "actively fetching," not "disabled, never fetched" — so
+  // without this the skeleton could still get wrapped in a clickable link
+  // built from filters that still carry the unresolved placeholder.
+  if (!href || isLoading || isError || awaitingCurrentUser) return tileBody;
 
   return (
     <Box

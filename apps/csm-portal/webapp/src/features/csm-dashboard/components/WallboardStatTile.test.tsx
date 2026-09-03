@@ -29,11 +29,19 @@ vi.mock("@api/backend/client", () => ({
 vi.mock("@config/apiConfig", () => ({
   apiConfig: { backendUrl: "https://example.test" },
 }));
+// Mutable so a single test can simulate an unresolved user profile — every
+// other test wants the default (an already-signed-in, resolved user).
+let mockCurrentUserId: string | undefined = "u1";
 vi.mock("@context/current-user/CurrentUserContext", () => ({
-  useCurrentUser: () => ({ user: { id: "u1" }, isLoading: false, isError: false }),
+  useCurrentUser: () => ({
+    user: mockCurrentUserId === undefined ? undefined : { id: mockCurrentUserId },
+    isLoading: mockCurrentUserId === undefined,
+    isError: false,
+  }),
 }));
 
 import WallboardStatTile from "@features/csm-dashboard/components/WallboardStatTile";
+import { CURRENT_USER_PLACEHOLDER } from "@features/csm-dashboard/utils/currentUserFilterPlaceholder";
 import { __resetWidgetFetchConcurrencyForTests } from "@features/csm-dashboard/utils/widgetFetchConcurrency";
 
 function renderWithClient(ui: ReactNode) {
@@ -48,6 +56,7 @@ function renderWithClient(ui: ReactNode) {
 describe("WallboardStatTile", () => {
   beforeEach(() => {
     postMock.mockReset();
+    mockCurrentUserId = "u1";
     __resetWidgetFetchConcurrencyForTests();
   });
 
@@ -123,5 +132,27 @@ describe("WallboardStatTile", () => {
     );
     await screen.findByText("1");
     expect(container.querySelector('[data-alert="true"]')).toBeNull();
+  });
+
+  // Regression test (CodeRabbit): a disabled query (see `enabled:
+  // !awaitingCurrentUser` on useWidgetData) reports `isLoading` false —
+  // TanStack Query v5 reserves that for "actively fetching," not
+  // "disabled, never fetched" — so the link-wrapping guard has to check
+  // `awaitingCurrentUser` too, not just `isLoading`, or the still-loading
+  // skeleton could get wrapped in a clickable link built from filters
+  // that still carry the unresolved __current_user__ placeholder.
+  it("does not wrap the tile in a link while awaiting the current user's own id", () => {
+    mockCurrentUserId = undefined;
+    postMock.mockReturnValue(new Promise(() => {}));
+    const { container } = renderWithClient(
+      <WallboardStatTile
+        widgetId="mine"
+        displayName="My Open"
+        resourceType="incident"
+        filters={{ assignedUserId: CURRENT_USER_PLACEHOLDER }}
+        section="cre"
+      />,
+    );
+    expect(container.querySelector("a")).toBeNull();
   });
 });
