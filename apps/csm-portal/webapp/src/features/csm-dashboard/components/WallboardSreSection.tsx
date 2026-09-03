@@ -27,7 +27,8 @@ import {
 
 export interface WallboardSreSectionProps {
   widgets: BeDashboardWidget[];
-  selectedTeamGroupId?: string | string[];
+  selectedTeamCreGroupId?: string | string[];
+  selectedTeamSreGroupId?: string | string[];
   selectedTeamLabel?: string;
 }
 
@@ -41,7 +42,8 @@ export interface WallboardSreSectionProps {
  */
 export default function WallboardSreSection({
   widgets,
-  selectedTeamGroupId,
+  selectedTeamCreGroupId,
+  selectedTeamSreGroupId,
   selectedTeamLabel,
 }: WallboardSreSectionProps): JSX.Element {
   const groups = new Map<string, BeDashboardWidget[]>();
@@ -83,7 +85,8 @@ export default function WallboardSreSection({
                   filters={widget.query}
                   section="sre"
                   variant="sre"
-                  selectedTeamGroupId={selectedTeamGroupId}
+                  selectedTeamCreGroupId={selectedTeamCreGroupId}
+                  selectedTeamSreGroupId={selectedTeamSreGroupId}
                   selectedTeamLabel={selectedTeamLabel}
                 />
               ))}

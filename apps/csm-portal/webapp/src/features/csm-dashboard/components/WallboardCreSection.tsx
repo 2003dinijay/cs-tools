@@ -23,7 +23,8 @@ import { CRE_PRIMARY_ORDER, CRE_SECONDARY_ORDER, sortByFixedOrder } from "@featu
 
 export interface WallboardCreSectionProps {
   widgets: BeDashboardWidget[];
-  selectedTeamGroupId?: string | string[];
+  selectedTeamCreGroupId?: string | string[];
+  selectedTeamSreGroupId?: string | string[];
   selectedTeamLabel?: string;
 }
 
@@ -37,7 +38,8 @@ export interface WallboardCreSectionProps {
  */
 export default function WallboardCreSection({
   widgets,
-  selectedTeamGroupId,
+  selectedTeamCreGroupId,
+  selectedTeamSreGroupId,
   selectedTeamLabel,
 }: WallboardCreSectionProps): JSX.Element {
   const byName = new Map(widgets.map((w) => [w.displayName, w] as const));
@@ -56,7 +58,16 @@ export default function WallboardCreSection({
         widgets={primary}
         section="cre"
         columns={2}
-        selectedTeamGroupId={selectedTeamGroupId}
+        // A smaller gap than the default (8px) between the 4 tiles
+        // themselves, a larger gap between each tile's own value and
+        // label, and — the actual ask this time — more top/bottom padding
+        // inside each tile around that value/label block. All three per
+        // explicit request, in three separate follow-ups.
+        gap={0.5}
+        valueLabelGap={1.2}
+        paddingY={3}
+        selectedTeamCreGroupId={selectedTeamCreGroupId}
+        selectedTeamSreGroupId={selectedTeamSreGroupId}
         selectedTeamLabel={selectedTeamLabel}
       />
       <Box sx={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 0.75, flex: 1, minHeight: 0 }}>
@@ -67,7 +78,8 @@ export default function WallboardCreSection({
             displayName={widget.displayName}
             resourceType={widget.resourceType}
             filters={widget.query}
-            selectedTeamGroupId={selectedTeamGroupId}
+            selectedTeamCreGroupId={selectedTeamCreGroupId}
+            selectedTeamSreGroupId={selectedTeamSreGroupId}
             selectedTeamLabel={selectedTeamLabel}
           />
         ))}
