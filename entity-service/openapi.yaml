@@ -6242,6 +6242,14 @@ components:
             state (event type + action results) written by an existing ServiceNow
             suspension flow. This is opaque JSON passed through as-is — its shape is
             not defined or validated by this layer.
+        onboardingOwner:
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
+          nullable: true
+          description: >
+            The person assigned to run this project's onboarding. Null when
+            no owner is assigned — most projects, since only
+            onboarding-enabled projects have one.
 
     ProjectView:
       type: object

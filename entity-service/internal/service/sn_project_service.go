@@ -289,6 +289,10 @@ type snProjectDetailsResponse struct {
 	OnboardingStatus         *string  `json:"onboardingStatus"`
 	HasSr                    bool     `json:"hasSr"`
 	snProjectClosureFields
+	// OnboardingOwner is absent/empty for projects with no onboarding
+	// engagement at all, and detail-endpoint-only — never present on the
+	// search/list response.
+	OnboardingOwner *snPersonRef `json:"onboardingOwner"`
 }
 
 type snProjectAccount struct {
@@ -381,6 +385,15 @@ func (s *snProjectService) GetProjectByID(ctx context.Context, id string) (domai
 		return domain.ProjectDetailsView{}, err
 	}
 
+	var onboardingOwner *domain.PersonRef
+	if sn.OnboardingOwner != nil && sn.OnboardingOwner.ID != "" {
+		onboardingOwner = &domain.PersonRef{
+			ID:    sysidToUUID(sn.OnboardingOwner.ID),
+			Name:  sn.OnboardingOwner.Name,
+			Email: nilIfEmpty(sn.OnboardingOwner.Email),
+		}
+	}
+
 	return domain.ProjectDetailsView{
 		ID:               sysidToUUID(sn.ID),
 		SfID:             sn.SfID,
@@ -424,6 +437,7 @@ func (s *snProjectService) GetProjectByID(ctx context.Context, id string) (domai
 			OwnerEmail:          sn.Account.OwnerEmail,
 			TechnicalOwnerEmail: sn.Account.TechnicalOwnerEmail,
 		},
+		OnboardingOwner: onboardingOwner,
 	}, nil
 }
 
