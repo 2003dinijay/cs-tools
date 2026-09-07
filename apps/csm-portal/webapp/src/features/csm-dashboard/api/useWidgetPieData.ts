@@ -172,7 +172,7 @@ export function useWidgetPieData(
         // form.
         retry: (failureCount: number, error: Error) =>
           shouldRetryWidgetFetch(failureCount, error, isTeamIndependent),
-        staleTime: 60_000,
+        staleTime: 300_000,
       };
     }),
   });
