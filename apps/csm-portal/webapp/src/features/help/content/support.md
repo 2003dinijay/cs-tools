@@ -94,6 +94,12 @@ you're already watching, it becomes **Unfollow case updates** to take yourself o
 unless you were added automatically as the case's assigned engineer, in which case Unfollow is
 disabled with a tooltip explaining why.
 
+**Provide workaround** / **Recall workaround**, in the case's **More** menu, marks (or
+un-marks) that a workaround has been given to the customer — this pauses the case's Workaround
+SLA clock while marked, and resumes it on recall. The menu item's label and icon switch
+depending on whether a workaround has already been provided, and it's shown for every case
+regardless of who's assigned to it, disabled only once the case is closed.
+
 ## Comments
 
 The comment composer at the bottom of the timeline sends either a public reply visible to the
