@@ -76,7 +76,6 @@ import {
 } from "@features/csm-cases/utils/caseType";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
 import MultiSelectField from "@components/MultiSelectField";
-import TriStateMultiSelectField from "@components/TriStateMultiSelectField";
 import AsyncAssigneeMultiSelect from "@features/csm-cases/components/AsyncAssigneeMultiSelect";
 import ProductNameMultiSelect from "@features/csm-cases/components/ProductNameMultiSelect";
 import AdvancedFiltersBuilder from "@features/csm-cases/components/AdvancedFiltersBuilder";
@@ -118,9 +117,13 @@ export interface CasesFilters {
   states: CaseState[];
   /** States the case must NOT be in (`state` op:notIn). Not the inverse of
    * `states` — a distinct field so `in` and `notIn` can never be conflated
-   * on the round trip, same reasoning as `tags`/`excludeTags`. Has its own
-   * bar control (the State field's `TriStateMultiSelectField`, digiops-cs#2907
-   * follow-up) as well as being settable via a dashboard click-through. */
+   * on the round trip, same reasoning as `tags`/`excludeTags`. No dedicated
+   * Simple-mode bar control of its own (the State field's tri-state
+   * include/exclude toggle was removed — Simple mode's "State" control is
+   * now a plain include-only multi-select, matching every other Simple
+   * field); still settable via the Advanced-mode `state`/`notIn` row or a
+   * dashboard click-through, and surfaced as a removable chip when active
+   * (see `buildActiveFilterChips`). */
   excludeStates: CaseState[];
   /** Case-type filter (BE `typeKeys`). Empty = all types. */
   caseTypes: BeCaseType[];
@@ -306,7 +309,11 @@ interface ActiveFilterChip {
  * their bar controls were removed as clutter (they are advanced, rarely
  * hand-picked, and a better home for advanced filters is still to be
  * designed), so a chip is now the ONLY way a user can see or clear them
- * after arriving from a dashboard click-through. `csTeams`/
+ * after arriving from a dashboard click-through. `excludeStates` joins this
+ * group too: the State field's tri-state include/exclude toggle was removed
+ * (Simple mode's "State" control is now a plain include-only multi-select),
+ * so a chip is the only way to see/clear an exclusion that arrived via a
+ * saved view, a shared URL, or a dashboard click-through. `csTeams`/
  * `onboardingStatuses` has its own bar control (see the filter grid below)
  * and is deliberately NOT chipped here — every other bar-controlled field
  * (`states`, `severities`, ...) shows its selection inside its own control,
@@ -352,15 +359,26 @@ function buildActiveFilterChips(
     });
   });
 
-  // `states`/`excludeStates` has its own tri-state bar control
-  // (`TriStateMultiSelectField` on the State field -- see the filter grid
-  // below) -- not chipped here, same as `csTeams`/`onboardingStatuses`. A
-  // dashboard click-through (or a saved view) that seeds `excludeStates`
-  // still round-trips losslessly through the URL and shows up as that
-  // control's own "- " chip, same as any other exclusion a user picks by
-  // hand. `tags`/`excludeTags` are Advanced-mode-only now (see the mode
-  // toggle below) -- also not chipped, since any non-empty value forces
-  // Advanced mode, where the Tag row itself is the visible/removable UI.
+  // `states` still has its own bar control (a plain include-only
+  // multi-select on the State field -- see the filter grid below), so it is
+  // not chipped, same as `csTeams`/`onboardingStatuses`. `excludeStates` no
+  // longer has a bar control of its own (the tri-state include/exclude
+  // toggle that used to live on the State field was removed), so it gets a
+  // chip here -- the only way to see/clear it once it arrives via a saved
+  // view, a shared URL, or a dashboard click-through. `tags`/`excludeTags`
+  // are Advanced-mode-only now (see the mode toggle below) -- also not
+  // chipped, since any non-empty value forces Advanced mode, where the Tag
+  // row itself is the visible/removable UI.
+  filters.excludeStates.forEach((state) => {
+    chips.push({
+      key: `excludeState-${state}`,
+      label: `Excluding state: ${STATE_OPTIONS.find((o) => o.value === state)?.label ?? state}`,
+      onRemove: (f) => ({
+        ...f,
+        excludeStates: f.excludeStates.filter((s) => s !== state),
+      }),
+    });
+  });
 
   filters.workStates.forEach((workState) => {
     chips.push({
@@ -986,32 +1004,28 @@ export default function CasesFilterBar({
               </Grid>
             )}
             <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
-              {/* Tri-state (digiops-cs#2907 follow-up): `state` is one of
-                  only two fields (with `tag`) the search contract supports
-                  a real `notIn` on, so "State is not Closed" is now
-                  directly expressible here instead of only via a dashboard
-                  click-through's `excludeStates` chip. */}
-              <TriStateMultiSelectField
+              {/* Plain include-only multi-select, same as every other
+                  Simple-mode field. `state`/`notIn` is still expressible via
+                  the Advanced-mode "State" row (or a dashboard click-through
+                  seeding `excludeStates`, surfaced as a removable chip — see
+                  `buildActiveFilterChips`) — this control only ever writes
+                  `states`. */}
+              <MultiSelectField
                 id="cases-filter-state"
                 label="State"
-                includedValues={filters.states}
-                excludedValues={filters.excludeStates}
+                values={filters.states}
                 options={stateOptions}
                 // Work sub-state only applies when `work_in_progress` is the
-                // *sole* included state — with other states also included
-                // (or excluded — an exclusion doesn't narrow to a single
-                // work state either) the work-state filter can't be applied
+                // *sole* selected state — with any other state also
+                // selected, the work-state filter can't be applied
                 // server-side, so drop any selected work states as soon as
-                // the selection stops being exactly that one included state.
+                // the selection stops being exactly that one state.
                 onChange={(next) =>
                   handleSimpleFieldChange({
                     ...filters,
-                    states: next.included,
-                    excludeStates: next.excluded,
+                    states: next,
                     workStates:
-                      next.included.length === 1 &&
-                      next.included[0] === "work_in_progress" &&
-                      next.excluded.length === 0
+                      next.length === 1 && next[0] === "work_in_progress"
                         ? filters.workStates
                         : [],
                   })

@@ -365,23 +365,24 @@ export function normalizeCasesFilters(filters: CasesFilters): CasesFilters {
  * Fields the Simple grid's dedicated controls do NOT cover (after removing
  * Tags — it's Advanced-only now, see `CasesFilterBar.tsx`). Filters
  * expressible entirely within the Simple grid's fields (`severities`,
- * `states`, `excludeStates`, `caseTypes`, `assignees`, `workStates`,
- * `projects`, `engagementTypes`, `productNames`, `csTeams`,
- * `onboardingStatuses`) can still be represented in Simple mode regardless
- * of this check — those fields simply aren't in this list.
+ * `states`, `caseTypes`, `assignees`, `workStates`, `projects`,
+ * `engagementTypes`, `productNames`, `csTeams`, `onboardingStatuses`) can
+ * still be represented in Simple mode regardless of this check — those
+ * fields simply aren't in this list.
  *
- * `excludeStates` deliberately does NOT gate Simple mode, unlike `tags`/
- * `excludeTags`: the Simple grid's "State" control is already a tri-state
- * (`TriStateMultiSelectField`, digiops-cs#2907) that reads/writes both
- * `states` AND `excludeStates` directly — it's genuinely Simple-representable
- * today, not merely tolerated there. `tags`/`excludeTags` have no such
- * Simple-mode control any more (Tags moved to Advanced-only), which is why
- * they DO gate it.
+ * `excludeStates` DOES gate Simple mode now, same reasoning as `tags`/
+ * `excludeTags`: the Simple grid's "State" control used to be a tri-state
+ * toggle that read/wrote both `states` AND `excludeStates` directly, but
+ * that control was removed (Simple mode's "State" field is now a plain
+ * include-only multi-select, matching every other Simple field) — so an
+ * active `excludeStates` value is only representable via the Advanced-mode
+ * `state`/`notIn` row now, same as a `tag`/`notIn` value.
  */
 export function isSimpleRepresentable(filters: CasesFilters): boolean {
   return (
     filters.tags.length === 0 &&
     filters.excludeTags.length === 0 &&
+    filters.excludeStates.length === 0 &&
     filters.sreTeams.length === 0 &&
     filters.projectTypes.length === 0 &&
     filters.escalationLevels.length === 0 &&

@@ -36,7 +36,6 @@ describe("isSimpleRepresentable", () => {
       ...DEFAULT_CASES_FILTERS,
       severities: ["S1"],
       states: ["open"],
-      excludeStates: ["closed"],
       caseTypes: ["case"],
       assignees: ["@me"],
       workStates: ["ongoing"],
@@ -52,6 +51,11 @@ describe("isSimpleRepresentable", () => {
   const gatingOverrides: [string, Partial<CasesFilters>][] = [
     ["tags", { tags: ["urgent"] }],
     ["excludeTags", { excludeTags: ["spam"] }],
+    // The Simple-mode "State" control used to be a tri-state that read/wrote
+    // `excludeStates` directly (digiops-cs#2907); now that it's a plain
+    // include-only multi-select, `excludeStates` is only representable via
+    // the Advanced-mode "State"/"is not one of" row, same as `excludeTags`.
+    ["excludeStates", { excludeStates: ["closed"] }],
     ["sreTeams", { sreTeams: ["g1"] }],
     ["projectTypes", { projectTypes: ["Subscription"] }],
     ["escalationLevels", { escalationLevels: ["1"] }],
