@@ -451,6 +451,24 @@ export default function CsmTimeCardsPage(): JSX.Element {
     if (nextEngineers) setEngineerNameCache(nextEngineers);
   }
 
+  // `AsyncUserIdMultiSelect` resolves a name the moment a directory search
+  // result is picked — earlier than `engineerNamesIn` above could ever know
+  // it (that only learns from cards already loaded on screen). Without
+  // this, an engineer picked purely from the directory (no card of theirs
+  // on the current page) would render as a raw UUID on the next tab, since
+  // that tab mounts a fresh `AsyncUserIdMultiSelect` instance with no
+  // memory of the pick.
+  const handleEngineerNamesResolved = (entries: [string, string][]): void => {
+    let next: Map<string, string> | undefined;
+    for (const [id, name] of entries) {
+      if (engineerNameCache.get(id) !== name) {
+        next ??= new Map(engineerNameCache);
+        next.set(id, name);
+      }
+    }
+    if (next) setEngineerNameCache(next);
+  };
+
   // Filtered cards per tab, computed once and shared between the FilterBar's
   // export action and the table rendering below — rather than recomputing
   // (and risking drift) in two places. Engineer is already applied
@@ -642,6 +660,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 values={filterEngineer}
                 onChange={handleFilterEngineerChange}
                 nameSeed={engineerNameCache}
+                onNamesResolved={handleEngineerNamesResolved}
                 roleIds={INTERNAL_USER_ROLES}
                 active
               />
@@ -720,6 +739,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 values={filterEngineer}
                 onChange={handleFilterEngineerChange}
                 nameSeed={engineerNameCache}
+                onNamesResolved={handleEngineerNamesResolved}
                 roleIds={INTERNAL_USER_ROLES}
                 active
               />
