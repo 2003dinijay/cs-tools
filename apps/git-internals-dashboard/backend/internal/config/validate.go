@@ -126,8 +126,8 @@ func Validate(cfg *AppConfig) error {
 		seenPriority[b.Priority] = true
 	}
 
-	if cfg.Settings.PossibleThreshold <= 0 || cfg.Settings.PossibleThreshold >= 1 {
-		add("settings.possibleThreshold: must be strictly between 0 and 1")
+	if cfg.Settings.AtRiskThreshold <= 0 || cfg.Settings.AtRiskThreshold >= 1 {
+		add("settings.atRiskThreshold: must be strictly between 0 and 1")
 	}
 	if cfg.Settings.RecomputeIntervalMinutes <= 0 {
 		add("settings.recomputeIntervalMinutes: must be positive")

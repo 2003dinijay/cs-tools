@@ -70,8 +70,8 @@ func TestValidateAcceptsValidFixtureAndAppliesDefaults(t *testing.T) {
 	if cfg.Taxonomy.Statuses[0].SortOrder != 0 {
 		t.Errorf("expected default sortOrder=0")
 	}
-	if cfg.Settings.PossibleThreshold != 0.75 {
-		t.Errorf("expected default possibleThreshold=0.75, got %v", cfg.Settings.PossibleThreshold)
+	if cfg.Settings.AtRiskThreshold != 0.75 {
+		t.Errorf("expected default atRiskThreshold=0.75, got %v", cfg.Settings.AtRiskThreshold)
 	}
 	if cfg.Settings.RecomputeIntervalMinutes != 10 {
 		t.Errorf("expected default recomputeIntervalMinutes=10, got %v", cfg.Settings.RecomputeIntervalMinutes)

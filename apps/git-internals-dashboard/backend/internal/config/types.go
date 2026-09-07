@@ -103,7 +103,7 @@ type Taxonomy struct {
 // Defaults mirror schema.ts's zod defaults exactly (applied only when the
 // corresponding YAML key is entirely absent — see rawSettings in load.go).
 type Settings struct {
-	PossibleThreshold        float64
+	AtRiskThreshold          float64
 	RecomputeIntervalMinutes int
 	SyncOverlapMinutes       int
 	SnapshotHourUtc          int
@@ -114,7 +114,7 @@ type Settings struct {
 // defaultSettings mirrors Settings.default({}) field-by-field in schema.ts.
 func defaultSettings() Settings {
 	return Settings{
-		PossibleThreshold:        0.75,
+		AtRiskThreshold:          0.75,
 		RecomputeIntervalMinutes: 10,
 		SyncOverlapMinutes:       15,
 		SnapshotHourUtc:          0,

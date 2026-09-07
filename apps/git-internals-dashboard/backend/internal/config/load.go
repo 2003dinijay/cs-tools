@@ -31,7 +31,7 @@ import (
 // Validate rather than being silently replaced (port of zod's
 // z.number().default(...), which only substitutes on undefined).
 type rawSettings struct {
-	PossibleThreshold        *float64 `yaml:"possibleThreshold"`
+	AtRiskThreshold          *float64 `yaml:"atRiskThreshold"`
 	RecomputeIntervalMinutes *int     `yaml:"recomputeIntervalMinutes"`
 	SyncOverlapMinutes       *int     `yaml:"syncOverlapMinutes"`
 	SnapshotHourUtc          *int     `yaml:"snapshotHourUtc"`
@@ -41,8 +41,8 @@ type rawSettings struct {
 
 func (r rawSettings) resolve() Settings {
 	s := defaultSettings()
-	if r.PossibleThreshold != nil {
-		s.PossibleThreshold = *r.PossibleThreshold
+	if r.AtRiskThreshold != nil {
+		s.AtRiskThreshold = *r.AtRiskThreshold
 	}
 	if r.RecomputeIntervalMinutes != nil {
 		s.RecomputeIntervalMinutes = *r.RecomputeIntervalMinutes

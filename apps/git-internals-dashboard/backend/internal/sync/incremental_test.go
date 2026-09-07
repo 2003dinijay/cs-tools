@@ -68,7 +68,7 @@ var testAppConfig = &config.AppConfig{
 		Aliases: []config.AliasEntry{},
 	},
 	Budgets:  []config.BudgetEntry{{Priority: "Critical(P1)", BudgetHours: 24, Coverage: config.Coverage24x7, Rank: 1}},
-	Settings: config.Settings{PossibleThreshold: 0.75, RecomputeIntervalMinutes: 10, SyncOverlapMinutes: 15, SeedSnapshotDays: 90, SeedClosedLookbackDays: 90},
+	Settings: config.Settings{AtRiskThreshold: 0.75, RecomputeIntervalMinutes: 10, SyncOverlapMinutes: 15, SeedSnapshotDays: 90, SeedClosedLookbackDays: 90},
 }
 
 // stubClient is a hand-rolled GithubClient stub — search/detail behavior is

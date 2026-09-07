@@ -57,9 +57,24 @@ budgets:
   - { priority: "Medium(P3)",   budgetHours: 48, coverage: "12x5_ist", rank: 3 }
 
 settings:
-  possibleThreshold: 0.75
+  # Fraction of an issue's budget consumed (strictly between 0 and 1) above
+  # which its SLA state becomes AT_RISK; at/above 1.0 it's VIOLATED instead.
+  atRiskThreshold: 0.75
+  # How often the background scheduler re-runs a recompute tick, advancing
+  # issue_sla/sla_snapshots from already-synced state. Does not call GitHub.
   recomputeIntervalMinutes: 10
+  # Minutes subtracted from a repo's last_synced_at watermark before each
+  # incremental sync, so anything updated mid-previous-run is re-covered by
+  # the next sync instead of silently missed.
   syncOverlapMinutes: 15
+  # Hour of day (0-23, UTC) reserved for the daily SLA snapshot cutover.
+  # Currently validated only — the recompute tick snapshots today's UTC date
+  # on every run rather than gating on this hour.
   snapshotHourUtc: 0
+  # How many days of history the seed command backfills into sla_snapshots
+  # for synthetic/local data.
   seedSnapshotDays: 90
+  # How far back (days) a closed issue still counts as recent enough to
+  # seed/sync. Also incremental sync's fallback lookback window the first
+  # time a repo has no last_synced_at yet.
   seedClosedLookbackDays: 90

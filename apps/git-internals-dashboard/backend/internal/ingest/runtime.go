@@ -62,7 +62,7 @@ func BuildRuntimeConfig(app *config.AppConfig) *RuntimeConfig {
 		IsTerminal: func(status *string) bool {
 			return status != nil && terminalSet[*status]
 		},
-		PossibleThreshold: app.Settings.PossibleThreshold,
+		AtRiskThreshold: app.Settings.AtRiskThreshold,
 	}
 
 	return &RuntimeConfig{

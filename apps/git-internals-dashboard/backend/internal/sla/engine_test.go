@@ -46,7 +46,7 @@ var testCfg = Config{
 	IsTerminal: func(s *string) bool {
 		return s != nil && (*s == "Resolved" || *s == "Duplicate")
 	},
-	PossibleThreshold: 0.75,
+	AtRiskThreshold: 0.75,
 }
 
 func closeTo(t *testing.T, label string, got, want float64) {
@@ -132,11 +132,11 @@ func TestComputeSlaIgnoresEventsAfterNow(t *testing.T) {
 // 2026-01-05 is a Monday, 2026-01-09 a Friday, 2026-01-12 a Monday.
 
 var testCfg12x5 = Config{
-	Budgets:           testCfg.Budgets,
-	Coverage:          map[string]Coverage{"High(P2)": Coverage12x5Ist},
-	Accrues:           testCfg.Accrues,
-	IsTerminal:        testCfg.IsTerminal,
-	PossibleThreshold: testCfg.PossibleThreshold,
+	Budgets:         testCfg.Budgets,
+	Coverage:        map[string]Coverage{"High(P2)": Coverage12x5Ist},
+	Accrues:         testCfg.Accrues,
+	IsTerminal:      testCfg.IsTerminal,
+	AtRiskThreshold: testCfg.AtRiskThreshold,
 }
 
 var mon0105_09ist = time.Date(2026, 1, 5, 3, 30, 0, 0, time.UTC) // Mon 09:00 IST

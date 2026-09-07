@@ -64,7 +64,7 @@ var testAppConfig = &config.AppConfig{
 		{Priority: "Critical(P1)", BudgetHours: 24, Coverage: config.Coverage24x7, Rank: 1},
 	},
 	Settings: config.Settings{
-		PossibleThreshold:        0.75,
+		AtRiskThreshold:          0.75,
 		RecomputeIntervalMinutes: 10,
 		SyncOverlapMinutes:       15,
 		SnapshotHourUtc:          0,

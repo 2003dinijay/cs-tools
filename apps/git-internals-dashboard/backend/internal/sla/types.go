@@ -57,11 +57,11 @@ type StatusEvent struct {
 // kept as plain functions/maps so this package never imports internal/config
 // (SPEC §3: sla is a leaf, dependency-free package).
 type Config struct {
-	Budgets           map[string]float64  // priority -> budget hours
-	Coverage          map[string]Coverage // priority -> coverage window; absent => 24x7
-	Accrues           func(status *string) bool
-	IsTerminal        func(status *string) bool
-	PossibleThreshold float64
+	Budgets         map[string]float64  // priority -> budget hours
+	Coverage        map[string]Coverage // priority -> coverage window; absent => 24x7
+	Accrues         func(status *string) bool
+	IsTerminal      func(status *string) bool
+	AtRiskThreshold float64
 }
 
 // Result is computeSla's output.

@@ -167,7 +167,7 @@ func ComputeSla(priority *string, events []StatusEvent, currentStatus *string, c
 		state = Terminal
 	case pct >= 1.0:
 		state = Violated
-	case pct >= cfg.PossibleThreshold:
+	case pct >= cfg.AtRiskThreshold:
 		state = AtRisk
 	default:
 		state = Ok
