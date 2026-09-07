@@ -146,7 +146,17 @@ export default function App(): JSX.Element {
                   />
                   {/* Operations */}
                   <Route path="operations">
-                    <Route index element={<OperationsPage />} />
+                    <Route
+                      index
+                      element={
+                        <CustomerRoleGuard
+                          module="change_requests"
+                          action="read"
+                        >
+                          <OperationsPage />
+                        </CustomerRoleGuard>
+                      }
+                    />
                     <Route path="service-requests">
                       <Route index element={<ServiceRequestsPage />} />
                       <Route
