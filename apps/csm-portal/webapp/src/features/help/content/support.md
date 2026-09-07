@@ -89,10 +89,11 @@ each change, when, and their stated reason. **Escalate** and **De-escalate** but
 to the badge (whichever apply at the current level: neither shows past EL5, only "Escalate"
 shows at EL0). Either opens a short confirm dialog asking for a reason — required when
 escalating, optional when de-escalating — and posts a case work note recording the change
-automatically. Any signed-in engineer can escalate a case; de-escalating is restricted to a
-configured set of roles, so the **De-escalate** button may be rejected if your role isn't on
-that list. Escalation is a ServiceNow data source feature only; a non-ServiceNow-backed case
-shows no escalation level at all. The Cases list also has an optional **Escalation** column
+automatically. Any signed-in engineer can escalate a case. De-escalating is restricted to
+whoever was notified about the case's current escalation level — the **De-escalate** button
+only shows for you if you're on that notified list. Escalation is a ServiceNow data source
+feature only; a non-ServiceNow-backed case shows no escalation level at all. The Cases list
+also has an optional **Escalation** column
 (via **Customise columns**) that shows the level badge for escalated cases only, left blank for
 everything else.
 
