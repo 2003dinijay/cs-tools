@@ -290,12 +290,26 @@ describe("CasesFilterBar — removed bar controls fall back to chips", () => {
     expect(screen.queryByText(/^CS team:/)).not.toBeInTheDocument();
   });
 
-  // `excludeStates` now has its own "State" bar control (the tri-state
-  // `TriStateMultiSelectField`, digiops-cs#2907 follow-up), same as
-  // `excludeTags` above — no second, redundant chip.
-  it("does not render a chip for excludeStates — it has its own 'State' bar control now", () => {
-    renderBar({ ...DEFAULT_CASES_FILTERS, states: ["open"], excludeStates: ["closed"] });
-    expect(screen.queryByText(/^Excluding state:/)).not.toBeInTheDocument();
+  // The State field's tri-state include/exclude toggle was removed — Simple
+  // mode's "State" control is now a plain include-only multi-select, so
+  // `excludeStates` has no bar control of its own any more. Any active
+  // `excludeStates` value also forces Advanced mode on mount (see
+  // `isSimpleRepresentable`), where the "State"/"is not one of" row is the
+  // primary way to see/edit it while the panel is open — same reasoning as
+  // `sreTeams`/`workStates` above, a chip is still the only summary while the
+  // panel is collapsed (`activeFilterChips`'s own `effectiveMode`/
+  // `isFiltersOpen` gating), so it's asserted here with the panel collapsed.
+  it("renders a removable chip for excludeStates now that the tri-state 'State' control is gone", () => {
+    const { onChange } = renderBar(
+      { ...DEFAULT_CASES_FILTERS, states: ["open"], excludeStates: ["closed"] },
+      undefined,
+      { isFiltersOpen: false },
+    );
+    const chip = screen.getByText("Excluding state: Closed");
+    expect(chip).toBeInTheDocument();
+
+    fireEvent.click(chip.closest(".MuiChip-root")!.querySelector("svg")!);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ excludeStates: [] }));
   });
 
   it("does not render a chip for onboardingStatuses — it has its own 'Onboarding status' bar control", () => {
@@ -339,8 +353,13 @@ describe("CasesFilterBar — 'CRE Team' control (replaces the removed 'Work stat
   });
 });
 
-describe("CasesFilterBar — 'State' control (tri-state include/exclude, digiops-cs#2907 follow-up)", () => {
-  it("clicking an unselected state once includes it", async () => {
+// The tri-state include/exclude toggle (digiops-cs#2907) was removed —
+// Simple mode's "State" control is now a plain include-only multi-select,
+// same as every other Simple-mode field (Severity, Case type, ...).
+// Exclusion (`excludeStates`) is still expressible, just Advanced-mode-only
+// now (the "State"/"is not one of" row) — see `filterFieldAdapters.test.ts`.
+describe("CasesFilterBar — 'State' control (plain include-only multi-select)", () => {
+  it("selecting a state adds it to states, leaving excludeStates untouched", async () => {
     const { onChange } = renderBar({ ...DEFAULT_CASES_FILTERS });
 
     fireEvent.mouseDown(screen.getByRole("combobox", { name: "State" }));
@@ -351,19 +370,8 @@ describe("CasesFilterBar — 'State' control (tri-state include/exclude, digiops
     );
   });
 
-  it("clicking an included state a second time moves it to excluded", async () => {
+  it("deselecting an already-selected state removes it from states", async () => {
     const { onChange } = renderBar({ ...DEFAULT_CASES_FILTERS, states: ["closed"] });
-
-    fireEvent.mouseDown(screen.getByRole("combobox", { name: "State" }));
-    fireEvent.click(await screen.findByRole("option", { name: "Closed" }));
-
-    expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ states: [], excludeStates: ["closed"] }),
-    );
-  });
-
-  it("clicking an excluded state a third time clears it back to unselected", async () => {
-    const { onChange } = renderBar({ ...DEFAULT_CASES_FILTERS, excludeStates: ["closed"] });
 
     fireEvent.mouseDown(screen.getByRole("combobox", { name: "State" }));
     fireEvent.click(await screen.findByRole("option", { name: "Closed" }));
@@ -371,6 +379,14 @@ describe("CasesFilterBar — 'State' control (tri-state include/exclude, digiops
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({ states: [], excludeStates: [] }),
     );
+  });
+
+  it("has no exclude affordance any more — only a checkbox per option, no +/- icon", async () => {
+    renderBar({ ...DEFAULT_CASES_FILTERS });
+
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "State" }));
+    const option = await screen.findByRole("option", { name: "Closed" });
+    expect(option.querySelector('input[type="checkbox"]')).toBeInTheDocument();
   });
 });
 

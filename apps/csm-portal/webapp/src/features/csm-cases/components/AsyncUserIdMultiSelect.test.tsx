@@ -86,3 +86,34 @@ describe("AsyncUserIdMultiSelect — @me label", () => {
     expect(screen.getByText("Jane Doe")).toBeInTheDocument();
   });
 });
+
+describe("AsyncUserIdMultiSelect — server-side role scoping", () => {
+  it("forwards roleIds/active straight through to useInfiniteUserSearch's scope, not just the typed query", () => {
+    mockedUseInfiniteUserSearch.mockReturnValue(NO_RESULTS);
+
+    render(
+      <AsyncUserIdMultiSelect
+        values={[]}
+        onChange={vi.fn()}
+        roleIds={["internal", "agent"]}
+        active
+      />,
+    );
+
+    expect(mockedUseInfiniteUserSearch).toHaveBeenCalledWith("", false, {
+      roleIds: ["internal", "agent"],
+      active: true,
+    });
+  });
+
+  it("passes an unset scope through unchanged when roleIds/active aren't given", () => {
+    mockedUseInfiniteUserSearch.mockReturnValue(NO_RESULTS);
+
+    render(<AsyncUserIdMultiSelect values={[]} onChange={vi.fn()} />);
+
+    expect(mockedUseInfiniteUserSearch).toHaveBeenCalledWith("", false, {
+      roleIds: undefined,
+      active: undefined,
+    });
+  });
+});

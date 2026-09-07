@@ -58,6 +58,25 @@ interface AsyncUserIdMultiSelectProps {
    * values just render their raw UUID (or a `nameSeed` label) until it has.
    */
   currentUserId?: string;
+  /**
+   * Server-side role scoping passed straight through to
+   * {@link useInfiniteUserSearch}'s {@link UserSearchScope} — e.g. a picker
+   * that should only ever offer internal staff (time-card/case-assignment
+   * style filters), not a customer contact. Left unset, the search stays
+   * unscoped (this component's original behavior).
+   */
+  roleIds?: string[];
+  /** See {@link roleIds}; restrict to active accounts only. */
+  active?: boolean;
+  /**
+   * Called with every id -> name pair this instance resolves (from a
+   * directory search result or an existing selection), so a caller that
+   * persists its own id -> name cache across this component's unmount
+   * (e.g. a tab switch) can learn names this instance discovered but the
+   * caller's own data never would have — {@link nameSeed} alone only ever
+   * flows one way (caller to component).
+   */
+  onNamesResolved?: (entries: [string, string][]) => void;
 }
 
 /**
@@ -73,6 +92,9 @@ export default function AsyncUserIdMultiSelect({
   onChange,
   nameSeed,
   currentUserId,
+  roleIds,
+  active,
+  onNamesResolved,
 }: AsyncUserIdMultiSelectProps): JSX.Element {
   const [input, setInput] = useState("");
   const [open, setOpen] = useState(false);
@@ -80,7 +102,7 @@ export default function AsyncUserIdMultiSelect({
   const query = debounced.trim();
 
   const { users: searchResults, isFetching, isFetchingNextPage, hasNextPage, isError, fetchNextPage } =
-    useInfiniteUserSearch(query, open);
+    useInfiniteUserSearch(query, open, { roleIds, active });
   // `id` is optional on `UserSearchOption` (`POST /users/search` doesn't
   // guarantee it) — this picker filters on the id, so a row without one is
   // unusable here and dropped, unlike the email-keyed pickers.
@@ -159,6 +181,14 @@ export default function AsyncUserIdMultiSelect({
           });
           return m;
         });
+        // Bubble the picked name(s) up before the caller's `values` change
+        // takes effect, so a persistent id -> name cache the caller keeps
+        // (to survive this component unmounting on e.g. a tab switch)
+        // learns names this search just resolved, not only names the
+        // caller's own data already knew.
+        onNamesResolved?.(
+          next.filter((o) => o.id !== currentUserId).map((o) => [o.id, o.name]),
+        );
         onChange(next.map((o) => o.id));
       }}
       inputValue={input}
