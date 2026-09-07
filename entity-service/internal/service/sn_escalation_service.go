@@ -20,7 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -28,44 +28,37 @@ import (
 	integrationservice "github.com/wso2-open-operations/cs-tools/entity-service/internal/servicenow-integration-service"
 )
 
-// validEscalationAction is the set of accepted CreateEscalationRequest.Action
-// values. Mirrors the backing service's own default: an absent action means
-// ESCALATE.
-var validEscalationAction = map[domain.EscalationAction]bool{
-	domain.EscalationActionEscalate:   true,
-	domain.EscalationActionDeescalate: true,
-}
-
-// snEscalationCaseRef mirrors the case reference embedded in an escalation record.
-type snEscalationCaseRef struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-// snEscalationChoiceItem mirrors a ServiceNow choice-list {id, label} pair, used
-// for currentLevel/previousLevel. ID is one of validEscalationLevel's keys
-// ("0" through "5").
-type snEscalationChoiceItem struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-}
-
-// snEscalationNotifiedUser mirrors one entry of an escalation's
-// notificationSentTo list.
+// snEscalationNotifiedUser mirrors the Choreo notificationSentTo entry shape.
 type snEscalationNotifiedUser struct {
-	ID       *string `json:"id"`
+	ID       string  `json:"id"`
 	UserName string  `json:"userName"`
 	Name     *string `json:"name"`
 	Email    *string `json:"email"`
 }
 
-// snEscalation mirrors one record in the backing service's escalation
-// search/create responses.
+func (u snEscalationNotifiedUser) toDomain() domain.EscalationNotifiedUser {
+	return domain.EscalationNotifiedUser{
+		ID:       sysidToUUID(u.ID),
+		UserName: u.UserName,
+		Name:     u.Name,
+		Email:    u.Email,
+	}
+}
+
+func toDomainEscalationNotifiedUsers(users []snEscalationNotifiedUser) []domain.EscalationNotifiedUser {
+	out := make([]domain.EscalationNotifiedUser, 0, len(users))
+	for _, u := range users {
+		out = append(out, u.toDomain())
+	}
+	return out
+}
+
+// snEscalation mirrors the Choreo Escalation shape (search results).
 type snEscalation struct {
 	ID                 string                     `json:"id"`
-	Case               snEscalationCaseRef        `json:"case"`
-	CurrentLevel       snEscalationChoiceItem     `json:"currentLevel"`
-	PreviousLevel      snEscalationChoiceItem     `json:"previousLevel"`
+	Case               snReferenceTableItem       `json:"case"`
+	CurrentLevel       snChoiceOption             `json:"currentLevel"`
+	PreviousLevel      snChoiceOption             `json:"previousLevel"`
 	CreatedBy          string                     `json:"createdBy"`
 	CreatedOn          string                     `json:"createdOn"`
 	UpdatedOn          string                     `json:"updatedOn"`
@@ -73,241 +66,202 @@ type snEscalation struct {
 	NotificationSentTo []snEscalationNotifiedUser `json:"notificationSentTo"`
 }
 
-// snEscalationSearchFilters mirrors the POST /escalations/search request body's
-// filters object.
-type snEscalationSearchFilters struct {
+func (e snEscalation) toDomain() domain.Escalation {
+	return domain.Escalation{
+		ID:                 sysidToUUID(e.ID),
+		Case:               e.Case.toDomain(),
+		CurrentLevel:       e.CurrentLevel.toDomain(),
+		PreviousLevel:      e.PreviousLevel.toDomain(),
+		CreatedBy:          e.CreatedBy,
+		CreatedOn:          e.CreatedOn,
+		UpdatedOn:          e.UpdatedOn,
+		Reason:             e.Reason,
+		NotificationSentTo: toDomainEscalationNotifiedUsers(e.NotificationSentTo),
+	}
+}
+
+// snSearchEscalationsFilters mirrors the Choreo EscalationSearchPayload.filters shape.
+type snSearchEscalationsFilters struct {
 	CaseIDs       []string `json:"caseIds,omitempty"`
 	CurrentLevels []int    `json:"currentLevels,omitempty"`
 }
 
-// snEscalationSort mirrors the POST /escalations/search request body's sortBy object.
+// snEscalationSort mirrors the Choreo EscalationSearchPayload.sortBy shape.
 type snEscalationSort struct {
 	Field string `json:"field"`
 	Order string `json:"order"`
 }
 
-// snEscalationSearchPayload is the POST /escalations/search request body.
-type snEscalationSearchPayload struct {
-	Filters    *snEscalationSearchFilters `json:"filters,omitempty"`
-	SortBy     *snEscalationSort          `json:"sortBy,omitempty"`
-	Pagination snProjectPagination        `json:"pagination"`
+// snSearchEscalationsPayload mirrors the Choreo POST /escalations/search request body.
+type snSearchEscalationsPayload struct {
+	Filters    *snSearchEscalationsFilters `json:"filters,omitempty"`
+	SortBy     *snEscalationSort           `json:"sortBy,omitempty"`
+	Pagination snProjectPagination         `json:"pagination"`
 }
 
-// snEscalationSearchResponse is the POST /escalations/search response body.
-type snEscalationSearchResponse struct {
+// snSearchEscalationsResponse mirrors the Choreo POST /escalations/search response.
+type snSearchEscalationsResponse struct {
 	Escalations  []snEscalation `json:"escalations"`
 	TotalRecords int            `json:"totalRecords"`
-	Offset       int            `json:"offset"`
 	Limit        int            `json:"limit"`
+	Offset       int            `json:"offset"`
 }
 
-// snCreateEscalationPayload is the POST /escalations request body.
-type snCreateEscalationPayload struct {
-	CaseID string  `json:"caseId"`
-	Reason *string `json:"reason,omitempty"`
-	Action *string `json:"action,omitempty"`
+var validEscalationSortField = map[domain.EscalationSortField]bool{
+	domain.EscalationSortFieldCreatedOn: true,
+	domain.EscalationSortFieldUpdatedOn: true,
 }
 
-// snCreateEscalationResponse is the POST /escalations response body.
-type snCreateEscalationResponse struct {
-	Message    string       `json:"message"`
-	Escalation snEscalation `json:"escalation"`
-}
-
-// escalationSearchPageSize is the page size used internally when reading a
-// case's escalation history from the backing service. GET /cases/{id}/escalations
-// promises the case's FULL history (see domain.SearchEscalationsResponse's doc
-// comment), and repeated escalate/de-escalate actions can in principle produce
-// more than one page's worth of records, so SearchEscalations below pages
-// through every result rather than returning just the first page — a case with
-// a long escalation history must not silently lose its oldest records.
-const escalationSearchPageSize = 100
-
-func snEscalationToDomain(ctx context.Context, e snEscalation) (domain.Escalation, error) {
-	createdOn, err := parseSNDateTime(ctx, "SearchEscalations", "createdOn", e.CreatedOn)
-	if err != nil {
-		return domain.Escalation{}, fmt.Errorf("sn escalation: parse createdOn: %w", err)
-	}
-	updatedOn, err := parseSNDateTime(ctx, "SearchEscalations", "updatedOn", e.UpdatedOn)
-	if err != nil {
-		return domain.Escalation{}, fmt.Errorf("sn escalation: parse updatedOn: %w", err)
-	}
-
-	var notified []domain.EscalationNotifiedUser
-	for _, u := range e.NotificationSentTo {
-		ref := domain.EscalationNotifiedUser{
-			UserName: u.UserName,
-			Name:     u.Name,
-			Email:    u.Email,
-		}
-		if u.ID != nil && *u.ID != "" {
-			id := sysidToUUID(*u.ID)
-			ref.ID = &id
-		}
-		notified = append(notified, ref)
-	}
-
-	return domain.Escalation{
-		ID:            sysidToUUID(e.ID),
-		CaseID:        sysidToUUID(e.Case.ID),
-		CurrentLevel:  e.CurrentLevel.ID,
-		PreviousLevel: e.PreviousLevel.ID,
-		CreatedBy:     e.CreatedBy,
-		CreatedOn:     createdOn,
-		UpdatedOn:     updatedOn,
-		Reason:        e.Reason,
-		NotifiedUsers: notified,
-	}, nil
+var validEscalationSortOrder = map[domain.EscalationSortOrder]bool{
+	domain.EscalationSortOrderAsc:  true,
+	domain.EscalationSortOrderDesc: true,
 }
 
 type snEscalationService struct {
-	client  *integrationservice.Client
-	caseSvc CaseService
+	client *integrationservice.Client
 }
 
-// NewServiceNowEscalationService constructs an EscalationService backed by the
-// backing service's shared escalation endpoints (already deployed and unchanged
-// by this service — see /escalations and /escalations/search). caseSvc is used
-// to record a work note on the parent case after a successful escalation
-// create: verified live against SN dev data that creating an escalation record
-// does not itself produce any case activity/comment entry, so this service adds
-// the one the backing API doesn't.
-func NewServiceNowEscalationService(client *integrationservice.Client, caseSvc CaseService) EscalationService {
-	return &snEscalationService{client: client, caseSvc: caseSvc}
+// NewServiceNowEscalationService constructs an EscalationService backed by the Choreo API.
+func NewServiceNowEscalationService(client *integrationservice.Client) EscalationService {
+	return &snEscalationService{client: client}
 }
 
-// escalationWorkNoteContent builds the case work note text recorded after a
-// successful escalation create, e.g. "Case escalated from EL1 to EL2. Reason:
-// customer requested management involvement." or "Case de-escalated from EL2 to
-// EL1." (no reason line when none was given). Level wording comes straight from
-// the backing service's own choice-list labels rather than a hardcoded map, so
-// it can't drift from whatever SN's escalation_level choices actually say.
-func escalationWorkNoteContent(action domain.EscalationAction, e snEscalation) string {
-	verb := "escalated"
-	if action == domain.EscalationActionDeescalate {
-		verb = "de-escalated"
+func (s *snEscalationService) SearchEscalations(ctx context.Context, req domain.SearchEscalationsRequest) (domain.SearchEscalationsResponse, error) {
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchEscalationsResponse{}, err
+	}
+	if req.Filters != nil {
+		if err := validateUUIDs("caseIds", req.Filters.CaseIDs); err != nil {
+			return domain.SearchEscalationsResponse{}, err
+		}
+	}
+	if req.SortBy != nil {
+		if req.SortBy.Field != "" && !validEscalationSortField[req.SortBy.Field] {
+			return domain.SearchEscalationsResponse{}, &apierror.ValidationError{Msg: "sortBy.field contains invalid value: " + string(req.SortBy.Field)}
+		}
+		if req.SortBy.Order != "" && !validEscalationSortOrder[req.SortBy.Order] {
+			return domain.SearchEscalationsResponse{}, &apierror.ValidationError{Msg: "sortBy.order contains invalid value: " + string(req.SortBy.Order)}
+		}
 	}
 
-	content := fmt.Sprintf("Case %s from %s to %s.", verb, e.PreviousLevel.Label, e.CurrentLevel.Label)
-	if e.Reason != nil && *e.Reason != "" {
-		content += fmt.Sprintf(" Reason: %s.", *e.Reason)
-	}
-	return content
-}
-
-// SearchEscalations implements EscalationService. It pages through every
-// upstream result rather than returning only the first page — see
-// escalationSearchPageSize's doc comment for why.
-func (s *snEscalationService) SearchEscalations(ctx context.Context, caseID string) (domain.SearchEscalationsResponse, error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 
-	if err := validateUUIDs("caseId", []string{caseID}); err != nil {
+	payload := snSearchEscalationsPayload{
+		Pagination: snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
+	}
+	if req.Filters != nil {
+		payload.Filters = &snSearchEscalationsFilters{
+			CaseIDs:       uuidsToSysids(req.Filters.CaseIDs),
+			CurrentLevels: req.Filters.CurrentLevels,
+		}
+	}
+	if req.SortBy != nil {
+		payload.SortBy = &snEscalationSort{Field: string(req.SortBy.Field), Order: string(req.SortBy.Order)}
+	}
+
+	raw, err := s.client.Post(ctx, "/escalations/search", token, payload)
+	if err != nil {
 		return domain.SearchEscalationsResponse{}, err
 	}
 
-	sysid := uuidToSysid(caseID)
-	escalations := make([]domain.Escalation, 0, escalationSearchPageSize)
-	total := 0
+	var snResp snSearchEscalationsResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.SearchEscalationsResponse{}, fmt.Errorf("sn search escalations: parse response: %w", err)
+	}
 
-	for offset := 0; ; offset += escalationSearchPageSize {
-		payload := snEscalationSearchPayload{
-			Filters: &snEscalationSearchFilters{
-				CaseIDs: []string{sysid},
-			},
-			Pagination: snProjectPagination{Limit: escalationSearchPageSize, Offset: offset},
-		}
-
-		raw, err := s.client.Post(ctx, "/escalations/search", token, payload)
-		if err != nil {
-			return domain.SearchEscalationsResponse{}, err
-		}
-
-		var snResp snEscalationSearchResponse
-		if err := json.Unmarshal(raw, &snResp); err != nil {
-			return domain.SearchEscalationsResponse{}, fmt.Errorf("sn search escalations: parse response: %w", err)
-		}
-
-		for _, e := range snResp.Escalations {
-			view, err := snEscalationToDomain(ctx, e)
-			if err != nil {
-				return domain.SearchEscalationsResponse{}, err
-			}
-			escalations = append(escalations, view)
-		}
-
-		total = snResp.TotalRecords
-		if len(snResp.Escalations) == 0 || len(escalations) >= total {
-			break
-		}
+	escalations := make([]domain.Escalation, 0, len(snResp.Escalations))
+	for _, e := range snResp.Escalations {
+		escalations = append(escalations, e.toDomain())
 	}
 
 	return domain.SearchEscalationsResponse{
 		Escalations: escalations,
-		Total:       total,
-		Offset:      0,
-		Limit:       len(escalations),
+		Total:       snResp.TotalRecords,
+		Limit:       req.Pagination.Limit,
+		Offset:      req.Pagination.Offset,
 	}, nil
 }
 
-// CreateEscalation implements EscalationService.
-func (s *snEscalationService) CreateEscalation(ctx context.Context, caseID string, reason *string, action *domain.EscalationAction) (domain.Escalation, error) {
+// snCreateEscalationPayload mirrors the Choreo POST /escalations request body,
+// already normalized (action upper-cased and defaulted to ESCALATE, reason
+// defaulted to "") — mirrors the Ballerina reference's own normalizedPayload
+// construction in the resource function, done here in the service layer.
+type snCreateEscalationPayload struct {
+	CaseID string `json:"caseId"`
+	Reason string `json:"reason"`
+	Action string `json:"action"`
+}
+
+// snCreatedEscalation mirrors the Choreo EscalationCreateResponse.escalation
+// shape — notably it has no updatedOn, unlike snEscalation (search results).
+type snCreatedEscalation struct {
+	ID                 string                     `json:"id"`
+	Case               snReferenceTableItem       `json:"case"`
+	CurrentLevel       snChoiceOption             `json:"currentLevel"`
+	PreviousLevel      snChoiceOption             `json:"previousLevel"`
+	CreatedBy          string                     `json:"createdBy"`
+	CreatedOn          string                     `json:"createdOn"`
+	Reason             *string                    `json:"reason"`
+	NotificationSentTo []snEscalationNotifiedUser `json:"notificationSentTo"`
+}
+
+// snCreateEscalationResponse mirrors the Choreo POST /escalations response.
+type snCreateEscalationResponse struct {
+	Message    string              `json:"message"`
+	Escalation snCreatedEscalation `json:"escalation"`
+}
+
+func (s *snEscalationService) CreateEscalation(ctx context.Context, req domain.CreateEscalationRequest) (domain.CreateEscalationResponse, error) {
+	if err := validateUUIDs("caseId", []string{req.CaseID}); err != nil {
+		return domain.CreateEscalationResponse{}, err
+	}
+
+	action := domain.EscalationActionEscalate
+	if req.Action != nil {
+		action = domain.EscalationAction(strings.ToUpper(string(*req.Action)))
+	}
+	if action != domain.EscalationActionEscalate && action != domain.EscalationActionDeescalate {
+		return domain.CreateEscalationResponse{}, &apierror.ValidationError{
+			Msg: fmt.Sprintf("invalid action %q. Allowed actions: %s, %s", action, domain.EscalationActionEscalate, domain.EscalationActionDeescalate),
+		}
+	}
+	reason := ""
+	if req.Reason != nil {
+		reason = *req.Reason
+	}
+	if action == domain.EscalationActionEscalate && strings.TrimSpace(reason) == "" {
+		return domain.CreateEscalationResponse{}, &apierror.ValidationError{Msg: "reason is required when action is ESCALATE"}
+	}
+
 	token := middleware.UserIDTokenFromContext(ctx)
 
-	if err := validateUUIDs("caseId", []string{caseID}); err != nil {
-		return domain.Escalation{}, err
-	}
-
-	effectiveAction := domain.EscalationActionEscalate
-	if action != nil {
-		if !validEscalationAction[*action] {
-			return domain.Escalation{}, &apierror.ValidationError{Msg: "action contains invalid value: " + string(*action)}
-		}
-		effectiveAction = *action
-	}
-
-	if effectiveAction == domain.EscalationActionEscalate && (reason == nil || *reason == "") {
-		return domain.Escalation{}, &apierror.ValidationError{Msg: "reason is required when escalating"}
-	}
-
 	payload := snCreateEscalationPayload{
-		CaseID: uuidToSysid(caseID),
+		CaseID: uuidToSysid(req.CaseID),
 		Reason: reason,
-	}
-	if action != nil {
-		actionStr := string(effectiveAction)
-		payload.Action = &actionStr
+		Action: string(action),
 	}
 
 	raw, err := s.client.Post(ctx, "/escalations", token, payload)
 	if err != nil {
-		return domain.Escalation{}, err
+		return domain.CreateEscalationResponse{}, err
 	}
 
 	var snResp snCreateEscalationResponse
 	if err := json.Unmarshal(raw, &snResp); err != nil {
-		return domain.Escalation{}, fmt.Errorf("sn create escalation: parse response: %w", err)
+		return domain.CreateEscalationResponse{}, fmt.Errorf("sn create escalation: parse response: %w", err)
 	}
 
-	view, err := snEscalationToDomain(ctx, snResp.Escalation)
-	if err != nil {
-		return domain.Escalation{}, err
-	}
-
-	// The escalation record itself carries no case activity of its own (verified
-	// live against SN dev: creating sn_customerservice_case_escalation rows produces
-	// no sys_journal_field entry on the parent case). Record one here so the case's
-	// comment/work-note trail reflects the action. The escalation already happened
-	// by this point, so a failure here must not fail the request -- log and return
-	// the successful escalation instead of telling the caller their escalation failed
-	// when it didn't.
-	if _, err := s.caseSvc.CreateCaseComment(ctx, domain.CreateCaseCommentRequest{
-		CaseID:  caseID,
-		Type:    domain.CommentTypeWorkNote,
-		Content: escalationWorkNoteContent(effectiveAction, snResp.Escalation),
-	}); err != nil {
-		slog.ErrorContext(ctx, "sn create escalation: failed to record case work note",
-			"caseID", caseID, "escalationID", view.ID, "error", err)
-	}
-
-	return view, nil
+	return domain.CreateEscalationResponse{
+		Message: snResp.Message,
+		Escalation: domain.CreatedEscalation{
+			ID:                 sysidToUUID(snResp.Escalation.ID),
+			Case:               snResp.Escalation.Case.toDomain(),
+			CurrentLevel:       snResp.Escalation.CurrentLevel.toDomain(),
+			PreviousLevel:      snResp.Escalation.PreviousLevel.toDomain(),
+			CreatedBy:          snResp.Escalation.CreatedBy,
+			CreatedOn:          snResp.Escalation.CreatedOn,
+			Reason:             snResp.Escalation.Reason,
+			NotificationSentTo: toDomainEscalationNotifiedUsers(snResp.Escalation.NotificationSentTo),
+		},
+	}, nil
 }

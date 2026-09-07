@@ -21,10 +21,12 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"unicode/utf8"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
@@ -37,6 +39,39 @@ func validateUUIDs(field string, ids []string) error {
 			return &apierror.ValidationError{Msg: fmt.Sprintf("%s contains invalid UUID: %q", field, id)}
 		}
 	}
+	return nil
+}
+
+// validateDateRange enforces the same rules as the Ballerina reference's
+// shared validateDateRange helper: both dates must be exactly 10 characters
+// in YYYY-MM-DD format, startDate must be strictly before endDate, and the
+// span between them must not exceed one year.
+func validateDateRange(startDate, endDate string) error {
+	if len(startDate) != 10 || len(endDate) != 10 ||
+		startDate[4:5] != "-" || startDate[7:8] != "-" ||
+		endDate[4:5] != "-" || endDate[7:8] != "-" {
+		return &apierror.ValidationError{Msg: "invalid date format. Expected YYYY-MM-DD"}
+	}
+
+	startYear, errSY := strconv.Atoi(startDate[0:4])
+	startMonth, errSM := strconv.Atoi(startDate[5:7])
+	startDay, errSD := strconv.Atoi(startDate[8:10])
+	endYear, errEY := strconv.Atoi(endDate[0:4])
+	endMonth, errEM := strconv.Atoi(endDate[5:7])
+	endDay, errED := strconv.Atoi(endDate[8:10])
+	if errSY != nil || errSM != nil || errSD != nil || errEY != nil || errEM != nil || errED != nil {
+		return &apierror.ValidationError{Msg: "invalid date format. Expected YYYY-MM-DD"}
+	}
+
+	if startDate >= endDate {
+		return &apierror.ValidationError{Msg: "endDate must be after startDate"}
+	}
+
+	yearDiff := endYear - startYear
+	if yearDiff > 1 || (yearDiff == 1 && (endMonth > startMonth || (endMonth == startMonth && endDay > startDay))) {
+		return &apierror.ValidationError{Msg: "date range must not exceed 1 year"}
+	}
+
 	return nil
 }
 
@@ -138,5 +173,44 @@ func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersReq
 		Limit:   req.Pagination.Limit,
 		Offset:  req.Pagination.Offset,
 		HasMore: req.Pagination.Offset+len(users) < total,
+	}, nil
+}
+
+// GetMe implements UserService.
+//
+// The Postgres data source has no JWT validation of its own (that happens at
+// the BFF), so the caller's identity is resolved the same way the rest of
+// this package resolves an acting user from a forwarded token: decode the
+// (already-validated) x-user-id-token JWT's email claim and look up the
+// matching row. See case_service.go's identical pattern for CreateCase /
+// CreateCaseComment.
+//
+// Postgres users have no roles or group-membership tables (unlike the
+// ServiceNow data source), so Roles and Groups are always empty rather than
+// fabricated — the frontend's team/role resolution is simply a no-op for
+// this data source today.
+func (s *userService) GetMe(ctx context.Context) (domain.GetUserMeResponse, error) {
+	token := middleware.UserIDTokenFromContext(ctx)
+	if token == "" {
+		return domain.GetUserMeResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+	email, err := emailFromJWT(token)
+	if err != nil {
+		return domain.GetUserMeResponse{}, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
+	}
+	user, err := s.repo.GetUserByEmail(ctx, email)
+	if err != nil {
+		return domain.GetUserMeResponse{}, err
+	}
+
+	firstName := user.FirstName
+	return domain.GetUserMeResponse{
+		ID:        user.ID,
+		Email:     user.Email,
+		FirstName: &firstName,
+		LastName:  user.LastName,
+		TimeZone:  user.Timezone,
+		Roles:     []string{},
+		Groups:    []domain.UserGroupRef{},
 	}, nil
 }

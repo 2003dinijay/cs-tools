@@ -106,7 +106,7 @@ func TestSNCaseService_CreateCase_WatchListResolvedToEmails(t *testing.T) {
 		}`))
 	})
 
-	svc := NewServiceNowCaseService(newTestSNClient(t, mux), nil)
+	svc := NewServiceNowCaseService(newTestSNClient(t, mux), nil, nil)
 
 	req := domain.CreateCaseRequest{
 		Type:                  "engagement",
@@ -147,7 +147,7 @@ func TestSNCaseService_UpdateCase_WatchListResolvedToEmails(t *testing.T) {
 		}`))
 	})
 
-	svc := NewServiceNowCaseService(newTestSNClient(t, mux), nil)
+	svc := NewServiceNowCaseService(newTestSNClient(t, mux), nil, nil)
 
 	watchList := []string{testIncidentWatcherUUID1, testIncidentWatcherUUID2}
 	_, err := svc.UpdateCase(contextWithUserIDToken("token"), domain.UpdateCaseRequest{
@@ -183,7 +183,7 @@ func TestSNIncidentService_UpdateIncident_WatchListClearedByEmptyList(t *testing
 		}`))
 	})
 
-	svc := NewServiceNowIncidentService(newTestSNClient(t, mux))
+	svc := NewServiceNowIncidentService(newTestSNClient(t, mux), nil)
 
 	watchList := []string{}
 	_, err := svc.UpdateIncident(contextWithUserIDToken("token"), domain.UpdateIncidentRequest{
@@ -272,7 +272,7 @@ func TestSNCaseService_UpdateCase_WatchListAbsentVsEmpty(t *testing.T) {
 				}`))
 			})
 
-			svc := NewServiceNowCaseService(newTestSNClient(t, mux), nil)
+			svc := NewServiceNowCaseService(newTestSNClient(t, mux), nil, nil)
 			if _, err := svc.UpdateCase(contextWithUserIDToken("token"), tt.req); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -371,7 +371,7 @@ func TestSNCaseService_UpdateCase_EmptyWatchListFieldAccounting(t *testing.T) {
 				}`))
 			})
 
-			svc := NewServiceNowCaseService(newTestSNClient(t, mux), nil)
+			svc := NewServiceNowCaseService(newTestSNClient(t, mux), nil, nil)
 			_, err := svc.UpdateCase(contextWithUserIDToken("token"), tt.req)
 			if tt.wantErr {
 				if _, ok := err.(*apierror.ValidationError); !ok {
@@ -397,8 +397,8 @@ func TestWatchListResolution_UnknownUserID(t *testing.T) {
 	})
 	client := newTestSNClient(t, mux)
 
-	caseSvc := NewServiceNowCaseService(client, nil)
-	incidentSvc := NewServiceNowIncidentService(client)
+	caseSvc := NewServiceNowCaseService(client, nil, nil)
+	incidentSvc := NewServiceNowIncidentService(client, nil)
 	unknown := []string{testIncidentWatcherUUID1, testUnknownWatcherUUID}
 
 	tests := []struct {

@@ -20,6 +20,17 @@
 // Maximum allowed embedded image size in bytes (10MB for base64 images).
 export const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
 
+// MIME types accepted for inline images (paste or toolbar upload), mirroring
+// the backend's entity-service allow-list ("Unsupported inline image type"
+// error) — SVG is deliberately excluded there since it can carry scripts.
+export const ALLOWED_IMAGE_MIME_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+] as const;
+
+export const ALLOWED_IMAGE_TYPES_LABEL = "PNG, JPEG, or WEBP";
+
 export type RichTextBlockVariant =
   | "h1"
   | "h2"

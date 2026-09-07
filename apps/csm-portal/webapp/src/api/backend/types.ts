@@ -1091,42 +1091,71 @@ export interface BeCaseSearchResponse extends BeSearchResponseBase {
 export type BeEscalationAction = "ESCALATE" | "DEESCALATE";
 
 /** A compact reference to a user notified about an escalation-level change,
- * as returned inline on a {@link BeCaseEscalation}. `id` is null when the
+ * as returned inline on a {@link BeCaseEscalation}. `id` can be empty when the
  * backing data source could not resolve a platform user record for the
- * notified recipient. */
+ * notified recipient -- match by `email` in that case. */
 export interface BeCaseEscalationNotifiedUser {
-  id?: string | null;
+  id?: string;
   userName: string;
   name?: string | null;
   email?: string | null;
+}
+
+/** A `{id, label}` escalation-level choice, e.g. `{id: "2", label: "EL2"}`. */
+export interface BeCaseEscalationLevel {
+  id: string;
+  label: string;
+}
+
+/** A compact case reference, as returned inline on a {@link BeCaseEscalation}. */
+export interface BeCaseEscalationCaseRef {
+  id: string;
+  name: string;
 }
 
 /**
  * One escalation-level change recorded against a case: either an escalate or
  * a de-escalate step, with the level it moved from and to. `currentLevel` /
  * `previousLevel` are the same raw escalation-level id space (`"0"`-`"5"`) as
- * {@link BeCaseView.escalationLevel}. ServiceNow data source only.
+ * {@link BeCaseView.escalationLevel}, via their own `id` field. ServiceNow
+ * data source only.
  */
 export interface BeCaseEscalation {
   id: string;
-  caseId: string;
-  currentLevel: string;
-  previousLevel: string;
+  case: BeCaseEscalationCaseRef;
+  currentLevel: BeCaseEscalationLevel;
+  previousLevel: BeCaseEscalationLevel;
   createdBy: string;
   createdOn: string;
   updatedOn: string;
   reason?: string | null;
-  notifiedUsers?: BeCaseEscalationNotifiedUser[];
+  notificationSentTo?: BeCaseEscalationNotifiedUser[];
+}
+
+/** The response for `POST /cases/{id}/escalations` -- like {@link BeCaseEscalation}
+ * but with no `updatedOn` (the create response doesn't carry one). */
+export interface BeCreatedCaseEscalation {
+  id: string;
+  case: BeCaseEscalationCaseRef;
+  currentLevel: BeCaseEscalationLevel;
+  previousLevel: BeCaseEscalationLevel;
+  createdBy: string;
+  createdOn: string;
+  reason?: string | null;
+  notificationSentTo?: BeCaseEscalationNotifiedUser[];
 }
 
 /** Response for `GET /cases/{id}/escalations` -- the case's full escalation
- * history, newest first. Deliberately not `BeSearchResponseBase`: the wire
- * response carries no `hasMore` field. */
+ * history, newest first, plus who's authorized to de-escalate the current
+ * level. Deliberately not `BeSearchResponseBase`: the wire response carries
+ * no `offset`/`limit`/`hasMore` fields. */
 export interface BeCaseEscalationSearchResponse {
   escalations: BeCaseEscalation[];
   total: number;
-  offset: number;
-  limit: number;
+  /** The notified-users list of the case's most recent escalation record
+   * (empty/absent when the case has never been escalated). Only someone on
+   * this list is authorized to de-escalate the case's current level. */
+  currentNotifiedUsers?: BeCaseEscalationNotifiedUser[];
 }
 
 /**
@@ -1406,16 +1435,98 @@ export interface BeAttachmentSearchResponse extends BeSearchResponseBase {
 
 /**
  * Upload payload for `POST /attachments`. `referenceId` + `referenceType` link
- * the file to its owning entity; `file` is a base64 data URI (e.g.
- * `data:image/png;base64,...`); the BE caps the decoded size at 10 MB.
+ * the file to its owning entity.
+ *
+ * The two data sources populate mutually exclusive fields (see
+ * entity-service openapi.yaml's `CreateAttachmentRequest`): the default path
+ * sends `file`, a base64 data URI (e.g. `data:image/png;base64,...`), and the
+ * BE caps the decoded size at 10 MB. When the SFTPGo-backed attachment
+ * storage flag is on (`sftpgoAttachmentStorageEnabled` on `GET /users/me`),
+ * the file's bytes were already uploaded directly to SFTPGo out of band, so
+ * `storageKey` + `sizeBytes` are sent instead of `file` — see
+ * `usePostCsmCaseAttachment`.
  */
 export interface BeAttachmentCreatePayload {
   referenceId: string;
   referenceType: BeReferenceType;
   name: string;
   type: string;
-  file: string;
+  file?: string;
   description?: string | null;
+  /** Set instead of `file` when the attachment's bytes were uploaded directly
+   * to SFTPGo (see `POST /cases/{id}/attachments/upload-token`). */
+  storageKey?: string;
+  /** Required alongside `storageKey`; the entity service cannot compute this
+   * itself since it never sees the file's bytes on that path. */
+  sizeBytes?: number;
+}
+
+/**
+ * Request payload for `POST /cases/{id}/attachments/upload-token`. The
+ * backend never sees the file's bytes on this path, so this is the only
+ * source of truth for the attachment's metadata — it creates the
+ * attachment's row (in `"pending"` status) from exactly these fields before
+ * minting the upload share. All three of `filename`/`mimeType`/`sizeBytes`
+ * are required by the backend.
+ */
+export interface BeAttachmentUploadTokenRequest {
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  description?: string | null;
+}
+
+/**
+ * Response body of `POST /cases/{id}/attachments/upload-token`. Only
+ * reachable when `sftpgoAttachmentStorageEnabled` is on.
+ *
+ * `id` is the attachment's own id, already created server-side in `"pending"`
+ * status — it must be sent back as the path parameter to
+ * `POST /cases/{id}/attachments/{attachmentId}/confirm` once the browser's
+ * direct-to-SFTPGo upload succeeds.
+ *
+ * `shareId` is a write-scoped, passwordless SFTPGo share id restricted to
+ * `storageKey`'s parent directory. It is the entire upload credential — no
+ * bearer token is ever involved. The frontend embeds it as the `share_id` key
+ * in the TUS `Upload-Metadata` header sent to SFTPGo's
+ * `POST /shares-chunked-uploads`, and must send only `storageKey`'s final
+ * path segment (not the full `storageKey`) as the `path` key, since the
+ * share's own root already covers the directory portion.
+ *
+ * `storageKey` is the exact SFTPGo path the uploaded file must end up at.
+ */
+export interface BeAttachmentUploadTokenResponse {
+  id: string;
+  shareId: string;
+  sftpgoBaseUrl: string;
+  storageKey: string;
+}
+
+/**
+ * Response body of `POST /cases/{caseId}/attachments/{attachmentId}/confirm`,
+ * the second half of the two-step SFTPGo upload flow
+ * `BeAttachmentUploadTokenResponse` starts: called once the browser's direct
+ * TUS upload to SFTPGo has actually succeeded, transitioning the attachment
+ * row from `"pending"` to `"complete"`.
+ */
+export interface BeAttachmentConfirmResponse {
+  message?: string;
+  attachment?: BeAttachmentDetail & {
+    /** Upload lifecycle state; `"complete"` once this call succeeds. */
+    status?: "pending" | "complete";
+  };
+}
+
+/**
+ * Response body of `POST /attachments/{id}/share`. `shareUrl` is a public,
+ * short-lived (5 minute TTL) download URL for the attachment's stored file —
+ * see `AttachmentStorageHandler.CreateAttachmentShare` on the backend. Must
+ * be requested lazily (only when an inline image is actually rendered, or a
+ * specific attachment's download is actually clicked), never eagerly for a
+ * whole list.
+ */
+export interface BeAttachmentShareResponse {
+  shareUrl: string;
 }
 
 /** Thin ack returned by `POST /attachments`. */

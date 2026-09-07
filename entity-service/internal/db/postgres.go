@@ -60,13 +60,13 @@ func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-// NewPoolIfNeeded creates a Postgres connection pool when one is needed.
-// When DATA_SOURCE=servicenow all entity reads/writes go through the SN
-// integration service, so no pool is opened and (nil, nil) is returned.
-func NewPoolIfNeeded(cfg *config.Config) (*pgxpool.Pool, error) {
-	if cfg.DataSource == config.DataSourceServiceNow {
-		return nil, nil
-	}
+// NewPoolFromConfig creates a Postgres connection pool from cfg's DSN, with a
+// 10s connect timeout. Always required, regardless of cfg.DataSource: when
+// DATA_SOURCE=servicenow, case/account/etc. entity reads/writes go through
+// the SN integration service instead of this pool, but event_publish_failures
+// (see domain.EventPublishFailure) has no ServiceNow equivalent and is
+// always backed by Postgres, so a pool is always needed.
+func NewPoolFromConfig(cfg *config.Config) (*pgxpool.Pool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return NewPool(ctx, cfg.DSN())

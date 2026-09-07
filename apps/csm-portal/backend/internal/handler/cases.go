@@ -88,6 +88,13 @@ type entityCaseClient interface {
 	SearchCaseAttachments(ctx context.Context, body []byte) ([]byte, error)
 	GetCaseAttachmentContent(ctx context.Context, attachmentID string) ([]byte, string, error)
 	DeleteCaseAttachment(ctx context.Context, attachmentID string) ([]byte, error)
+	// GetCaseAttachment resolves a single attachment's metadata — used by the
+	// SFTPGo-backed share-creation path; see AttachmentStorageHandler.
+	GetCaseAttachment(ctx context.Context, attachmentID string) ([]byte, error)
+	// ConfirmCaseAttachment transitions a 'pending' attachment row (created by
+	// CreateCaseAttachment with status "pending") to 'complete' — used by the
+	// SFTPGo-backed upload-confirm path; see AttachmentStorageHandler.
+	ConfirmCaseAttachment(ctx context.Context, attachmentID string) ([]byte, error)
 	GetAttachment(ctx context.Context, attachmentID string) ([]byte, error)
 	UpdateAttachment(ctx context.Context, attachmentID string, body []byte) ([]byte, error)
 	CreateCallRequest(ctx context.Context, body []byte) ([]byte, error)
@@ -108,12 +115,12 @@ type entityCaseClient interface {
 // entity service for data access.
 type CaseHandler struct {
 	entity entityCaseClient
-	// deescalationAllowedRoles is the set of platform roles (lowercased)
-	// permitted to de-escalate a case, set via SetDeescalationAllowedRoles.
-	// nil/empty means none are configured, which CreateCaseEscalation treats
-	// as "de-escalation disabled for everyone" (fail closed) rather than
-	// "unrestricted" -- see SetDeescalationAllowedRoles's doc comment.
-	deescalationAllowedRoles map[string]bool
+	// inlineImages enables server-side inline-image extraction on
+	// CreateCaseComment when non-nil — see WithInlineImageProcessor. nil on
+	// every existing call site (including every test), which keeps
+	// CreateCaseComment's behavior completely unchanged from before this
+	// feature existed.
+	inlineImages *InlineImageProcessor
 }
 
 // NewCaseHandler creates a CaseHandler backed by the given entity client.
@@ -121,67 +128,18 @@ func NewCaseHandler(entity entityCaseClient) *CaseHandler {
 	return &CaseHandler{entity: entity}
 }
 
-// SetDeescalationAllowedRoles configures the platform roles permitted to
-// de-escalate a case (escalating stays open to any authenticated user; only
-// de-escalation is role-gated). Role names are matched case-insensitively
-// against the caller's own GET /users/me roles.
-//
-// Deliberately fails closed: an empty or never-called configuration means no
-// role passes the check, so de-escalation is refused for everyone rather than
-// silently left unrestricted -- the same "fail closed when unconfigured"
-// convention this file already uses (see resolveCurrentUserID). A deployment
-// that wants de-escalation enabled must configure it explicitly.
-func (h *CaseHandler) SetDeescalationAllowedRoles(roles []string) {
-	set := make(map[string]bool, len(roles))
-	for _, r := range roles {
-		r = strings.ToLower(strings.TrimSpace(r))
-		if r != "" {
-			set[r] = true
-		}
-	}
-	h.deescalationAllowedRoles = set
-}
-
-// isDeescalationAction reports whether a case-escalation request body's
-// "action" field is DEESCALATE (case-insensitive). A missing/empty action
-// defaults to ESCALATE per the entity service's own contract, so only an
-// explicit "DEESCALATE"/"deescalate"/etc. value counts.
-func isDeescalationAction(body []byte) bool {
-	var payload struct {
-		Action string `json:"action"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return false
-	}
-	return strings.EqualFold(payload.Action, "DEESCALATE")
-}
-
-// callerHasDeescalationRole resolves the caller's platform roles via
-// GET /users/me and checks them against the configured allow-list. Fails
-// closed (returns false) on any lookup/parse error, same convention as
-// resolveCurrentUserID.
-func (h *CaseHandler) callerHasDeescalationRole(r *http.Request, user *middleware.UserInfo) bool {
-	if len(h.deescalationAllowedRoles) == 0 {
-		return false
-	}
-	raw, err := h.entity.GetUserMe(r.Context())
-	if err != nil {
-		slog.ErrorContext(r.Context(), "entity GetUserMe failed while checking de-escalation authorization", "userID", user.UserID, "err", err)
-		return false
-	}
-	var me struct {
-		Roles []string `json:"roles"`
-	}
-	if err := json.Unmarshal(raw, &me); err != nil {
-		slog.ErrorContext(r.Context(), "entity GetUserMe: parse response failed while checking de-escalation authorization", "userID", user.UserID, "err", err)
-		return false
-	}
-	for _, role := range me.Roles {
-		if h.deescalationAllowedRoles[strings.ToLower(strings.TrimSpace(role))] {
-			return true
-		}
-	}
-	return false
+// WithInlineImageProcessor enables server-side inline-image extraction on
+// CreateCaseComment: a base64 data: URI embedded in a comment's rich-text
+// HTML is extracted, uploaded as a real SFTPGo-backed attachment, and the
+// HTML is rewritten to a ".iix" reference — mirroring ServiceNow's own
+// RichTextUtils.processInlineImages for SN-backed comments. Only wired up in
+// cmd/server/main.go when SFTPGO_ATTACHMENT_STORAGE_ENABLED is on; SN-backed
+// comment creation is untouched either way, since SN's own scripted API
+// already performs the equivalent extraction itself. Returns h for chaining
+// at the construction site.
+func (h *CaseHandler) WithInlineImageProcessor(p *InlineImageProcessor) *CaseHandler {
+	h.inlineImages = p
+	return h
 }
 
 // resolveCurrentUserID returns the caller's platform user id — the id
@@ -216,6 +174,77 @@ func (h *CaseHandler) resolveCurrentUserID(r *http.Request, user *middleware.Use
 		slog.ErrorContext(r.Context(), "entity GetUserMe returned an empty id while resolving the caller's platform user id", "userID", user.UserID)
 	}
 	return me.ID
+}
+
+// isDeescalationAction reports whether a case-escalation request body's
+// "action" field is DEESCALATE (case-insensitive). A missing/empty action
+// defaults to ESCALATE per the entity service's own contract, so only an
+// explicit "DEESCALATE"/"deescalate"/etc. value counts.
+func isDeescalationAction(body []byte) bool {
+	var payload struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	return strings.EqualFold(payload.Action, "DEESCALATE")
+}
+
+// callerIsNotifiedOnCurrentEscalation reports whether the caller is one of the
+// people notified about the case's current (most recent) escalation level --
+// the only people authorized to de-escalate it. Escalating stays open to any
+// authenticated user; only de-escalation is gated this way.
+//
+// Fails closed (returns false) on any lookup/parse error or when the case has
+// no escalation history at all (nothing to de-escalate, nobody was notified).
+// Matches by the caller's platform user id first (GET /users/me's own id
+// against a notified user's id, both platform UUIDs), falling back to a
+// case-insensitive email match when either id is empty -- the notified-user
+// id can be empty when the backing data source could not resolve a platform
+// record for that recipient.
+func (h *CaseHandler) callerIsNotifiedOnCurrentEscalation(r *http.Request, caseID string, user *middleware.UserInfo) bool {
+	raw, err := h.entity.SearchCaseEscalations(r.Context(), caseID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity SearchCaseEscalations failed while checking de-escalation authorization", "userID", user.UserID, "caseID", caseID, "err", err)
+		return false
+	}
+	var history struct {
+		CurrentNotifiedUsers []struct {
+			ID    string `json:"id"`
+			Email string `json:"email"`
+		} `json:"currentNotifiedUsers"`
+	}
+	if err := json.Unmarshal(raw, &history); err != nil {
+		slog.ErrorContext(r.Context(), "entity SearchCaseEscalations: parse response failed while checking de-escalation authorization", "userID", user.UserID, "caseID", caseID, "err", err)
+		return false
+	}
+	if len(history.CurrentNotifiedUsers) == 0 {
+		return false
+	}
+
+	callerRaw, err := h.entity.GetUserMe(r.Context())
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity GetUserMe failed while checking de-escalation authorization", "userID", user.UserID, "err", err)
+		return false
+	}
+	var caller struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+	}
+	if err := json.Unmarshal(callerRaw, &caller); err != nil {
+		slog.ErrorContext(r.Context(), "entity GetUserMe: parse response failed while checking de-escalation authorization", "userID", user.UserID, "err", err)
+		return false
+	}
+
+	for _, notified := range history.CurrentNotifiedUsers {
+		if caller.ID != "" && notified.ID != "" && caller.ID == notified.ID {
+			return true
+		}
+		if caller.Email != "" && notified.Email != "" && strings.EqualFold(caller.Email, notified.Email) {
+			return true
+		}
+	}
+	return false
 }
 
 // maxRequestBodyBytes caps incoming request bodies at 1 MiB to prevent memory DoS.
@@ -413,6 +442,21 @@ func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusConflict, ErrMsgWorkNoteOnClosedCase)
 			return
 		}
+	}
+
+	// Extract any base64 inline image embedded in the comment's rich-text
+	// HTML into a real SFTPGo-backed attachment before forwarding to the
+	// entity service — mirrors ServiceNow's own RichTextUtils processing for
+	// SN-backed comments (that path is untouched: it already runs inside the
+	// SN scripted API, not here). Only active when
+	// SFTPGO_ATTACHMENT_STORAGE_ENABLED is on; see WithInlineImageProcessor.
+	if h.inlineImages != nil {
+		newBody, ierr := h.processCommentInlineImages(r, user, caseID, body)
+		if ierr != nil {
+			ierr.write(w)
+			return
+		}
+		body = newBody
 	}
 
 	result, err := h.entity.CreateCaseComment(r.Context(), caseID, body)
@@ -1362,7 +1406,7 @@ func (h *CaseHandler) CreateCaseEscalation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if isDeescalationAction(body) && !h.callerHasDeescalationRole(r, user) {
+	if isDeescalationAction(body) && !h.callerIsNotifiedOnCurrentEscalation(r, caseID, user) {
 		writeError(w, http.StatusForbidden, ErrMsgForbidden)
 		return
 	}

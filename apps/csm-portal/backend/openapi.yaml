@@ -874,7 +874,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CaseEscalation'
+                $ref: '#/components/schemas/CreatedCaseEscalation'
         "400":
           description: BadRequest — an invalid action value, or reason missing while escalating.
           content:
@@ -9645,6 +9645,26 @@ components:
           type: string
           nullable: true
 
+    CaseEscalationCaseRef:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+
+    CaseEscalationLevel:
+      type: object
+      description: >
+        The escalation-level id ("0" through "5": EL0 "not escalated" through
+        EL5 "CEO") — the same id space the case search's escalationLevel
+        filter accepts and returns — with its display label.
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+
     CaseEscalation:
       type: object
       description: >
@@ -9654,16 +9674,12 @@ components:
       properties:
         id:
           type: string
-        caseId:
-          type: string
+        case:
+          $ref: '#/components/schemas/CaseEscalationCaseRef'
         currentLevel:
-          type: string
-          description: >
-            The escalation-level id ("0" through "5": EL0 "not escalated"
-            through EL5 "CEO") after this change — the same id space the case
-            search's escalationLevel filter accepts and returns.
+          $ref: '#/components/schemas/CaseEscalationLevel'
         previousLevel:
-          type: string
+          $ref: '#/components/schemas/CaseEscalationLevel'
         createdBy:
           type: string
         createdOn:
@@ -9675,7 +9691,34 @@ components:
         reason:
           type: string
           nullable: true
-        notifiedUsers:
+        notificationSentTo:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseEscalationNotifiedUser'
+
+    CreatedCaseEscalation:
+      type: object
+      description: >
+        The response for POST /cases/{id}/escalations. Like CaseEscalation but
+        with no updatedOn — the create response doesn't carry one.
+      properties:
+        id:
+          type: string
+        case:
+          $ref: '#/components/schemas/CaseEscalationCaseRef'
+        currentLevel:
+          $ref: '#/components/schemas/CaseEscalationLevel'
+        previousLevel:
+          $ref: '#/components/schemas/CaseEscalationLevel'
+        createdBy:
+          type: string
+        createdOn:
+          type: string
+          format: date-time
+        reason:
+          type: string
+          nullable: true
+        notificationSentTo:
           type: array
           items:
             $ref: '#/components/schemas/CaseEscalationNotifiedUser'
@@ -9690,10 +9733,14 @@ components:
             $ref: '#/components/schemas/CaseEscalation'
         total:
           type: integer
-        offset:
-          type: integer
-        limit:
-          type: integer
+        currentNotifiedUsers:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseEscalationNotifiedUser'
+          description: >-
+            The notified-users list of the case's most recent escalation record (empty when the
+            case has never been escalated). Only someone on this list is authorized to
+            de-escalate the case's current level.
 
     CaseEscalationCreatePayload:
       type: object

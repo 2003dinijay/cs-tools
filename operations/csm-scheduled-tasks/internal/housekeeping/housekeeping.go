@@ -1,0 +1,54 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+// Package housekeeping is this component's own first real sub-cron: it
+// deletes old resolved rows from entity-service's scheduled_task_run
+// table, so that table doesn't grow forever now that something is finally
+// registered to call DELETE /scheduled-tasks/attempts (see both
+// components' CLAUDE.md, "Housekeeping" / "Scheduled task runs" — this
+// endpoint existed from the start but nothing called it until this
+// package).
+package housekeeping
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+)
+
+// Client is the subset of *ledger.Client this package depends on —
+// declared here so a test can substitute a fake without importing the
+// real HTTP client.
+type Client interface {
+	DeleteResolvedBefore(ctx context.Context, cutoff time.Time) (int, error)
+}
+
+// CleanupResolvedRuns returns a registry.Task.Handler that deletes every
+// scheduled_task_run row that succeeded or was superseded ("fully omitted
+// after retrying") more than retention ago, by its own resolution time —
+// a row still open/failed is never touched, regardless of age.
+func CleanupResolvedRuns(client Client, retention time.Duration) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
+		cutoff := time.Now().Add(-retention)
+		deleted, err := client.DeleteResolvedBefore(ctx, cutoff)
+		if err != nil {
+			return fmt.Errorf("housekeeping: delete resolved runs before %s: %w", cutoff.Format(time.RFC3339), err)
+		}
+		slog.InfoContext(ctx, "housekeeping: deleted resolved scheduled_task_run rows", "cutoff", cutoff.Format(time.RFC3339), "deleted", deleted)
+		return nil
+	}
+}

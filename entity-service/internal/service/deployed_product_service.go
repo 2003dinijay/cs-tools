@@ -66,3 +66,13 @@ func (s *deployedProductService) CreateDeployedProduct(_ context.Context, _ doma
 func (s *deployedProductService) UpdateDeployedProduct(_ context.Context, _ domain.UpdateDeployedProductRequest) (domain.UpdateDeployedProductResponse, error) {
 	return domain.UpdateDeployedProductResponse{}, &apierror.ValidationError{Msg: "UpdateDeployedProduct is not supported for the PostgreSQL data source"}
 }
+
+// SearchDeployedProductMetrics is not supported for the PostgreSQL data source.
+func (s *deployedProductService) SearchDeployedProductMetrics(_ context.Context, _ string, _ domain.DeployedProductMetricsRequest) (domain.DeployedProductMetricsResponse, error) {
+	return domain.DeployedProductMetricsResponse{}, &apierror.ServiceUnavailableError{Msg: "deployed product metrics are only supported for the ServiceNow data source"}
+}
+
+// SearchDeployedProductUsageCounts is not supported for the PostgreSQL data source.
+func (s *deployedProductService) SearchDeployedProductUsageCounts(_ context.Context, _ string, _ domain.DeployedProductUsageCountsRequest) (domain.DeployedProductUsageCountsResponse, error) {
+	return domain.DeployedProductUsageCountsResponse{}, &apierror.ServiceUnavailableError{Msg: "deployed product metrics are only supported for the ServiceNow data source"}
+}

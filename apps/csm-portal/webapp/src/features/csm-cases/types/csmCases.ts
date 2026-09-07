@@ -140,6 +140,22 @@ export interface CaseEscalationRecord {
   reason?: string | null;
 }
 
+/** A user notified about the case's current escalation level -- the people
+ * authorized to de-escalate it. `id` can be empty when the backing data
+ * source couldn't resolve a platform user record; match by `email` then. */
+export interface CaseEscalationNotifiedUser {
+  id?: string;
+  name?: string | null;
+  email?: string | null;
+}
+
+/** The response for `GET /cases/{id}/escalations`: the case's full escalation
+ * history plus who's authorized to de-escalate its current level. */
+export interface CaseEscalationHistory {
+  escalations: CaseEscalationRecord[];
+  currentNotifiedUsers: CaseEscalationNotifiedUser[];
+}
+
 export interface CsmCasesListResponse {
   cases: CsmCaseRow[];
   /** Total rows matching the query across all pages (BE `total`). */

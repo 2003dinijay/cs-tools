@@ -43,14 +43,14 @@ describe("useGetCsmCaseEscalations", () => {
     postMock.mockReset();
   });
 
-  it("GETs /cases/{id}/escalations and maps the response to CaseEscalationRecord[]", async () => {
+  it("GETs /cases/{id}/escalations and maps the response to CaseEscalationHistory", async () => {
     getMock.mockResolvedValue({
       escalations: [
         {
           id: "esc-1",
-          caseId: "case-1",
-          currentLevel: "2",
-          previousLevel: "1",
+          case: { id: "case-1", name: "CASE-1" },
+          currentLevel: { id: "2", label: "EL2" },
+          previousLevel: { id: "1", label: "EL1" },
           createdBy: "jane.doe@example.com",
           createdOn: "2026-08-01T00:00:00Z",
           updatedOn: "2026-08-01T00:00:00Z",
@@ -58,8 +58,9 @@ describe("useGetCsmCaseEscalations", () => {
         },
       ],
       total: 1,
-      offset: 0,
-      limit: 20,
+      currentNotifiedUsers: [
+        { id: "u-1", userName: "jdoe", name: "Jane Doe", email: "jane.doe@example.com" },
+      ],
     });
 
     const { result } = renderHook(() => useGetCsmCaseEscalations("case-1"), {
@@ -69,19 +70,24 @@ describe("useGetCsmCaseEscalations", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(getMock).toHaveBeenCalledWith("/cases/case-1/escalations");
-    expect(result.current.data).toEqual([
-      {
-        id: "esc-1",
-        currentLevel: "2",
-        previousLevel: "1",
-        createdBy: "jane.doe@example.com",
-        createdOn: "2026-08-01T00:00:00Z",
-        reason: "Customer escalated via phone.",
-      },
-    ]);
+    expect(result.current.data).toEqual({
+      escalations: [
+        {
+          id: "esc-1",
+          currentLevel: "2",
+          previousLevel: "1",
+          createdBy: "jane.doe@example.com",
+          createdOn: "2026-08-01T00:00:00Z",
+          reason: "Customer escalated via phone.",
+        },
+      ],
+      currentNotifiedUsers: [
+        { id: "u-1", name: "Jane Doe", email: "jane.doe@example.com" },
+      ],
+    });
   });
 
-  it("returns an empty array, not undefined, when the response has no escalations key", async () => {
+  it("returns an empty history, not undefined, when the response has no escalations key", async () => {
     getMock.mockResolvedValue(null);
 
     const { result } = renderHook(() => useGetCsmCaseEscalations("case-1"), {
@@ -89,7 +95,10 @@ describe("useGetCsmCaseEscalations", () => {
     });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(result.current.data).toEqual([]);
+    expect(result.current.data).toEqual({
+      escalations: [],
+      currentNotifiedUsers: [],
+    });
   });
 
   it("does not call the backend without a case id", () => {

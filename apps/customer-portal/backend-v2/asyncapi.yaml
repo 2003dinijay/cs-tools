@@ -1,0 +1,392 @@
+# Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+#
+# WSO2 LLC. licenses this file to you under the Apache License,
+# Version 2.0 (the "License"); you may not use this file except
+# in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+asyncapi: '2.0.0'
+
+info:
+  title: Customer Portal AI Chat WebSocket API
+  version: '1.0.0'
+  description: >
+    Real-time proxy between the browser and the upstream AI chat agent (a
+    separate Python service — see CLAUDE.md's "The AI chat agent" section).
+    This server (internal/handler/websocket.go) forwards every message from
+    the upstream agent to the browser verbatim, so the message shapes below
+    mirror the upstream agent's own contract — with one deliberate
+    restriction: conversationId is REQUIRED on UserMessage here. This
+    connection only resumes an existing conversation (start a new one via
+    POST /projects/{id}/conversations first — see CLAUDE.md), so a
+    UserMessage with no conversationId gets an ErrorMessage back instead of
+    creating one.
+
+servers:
+  local:
+    url: localhost:8081
+    protocol: ws
+    description: >
+      Local server. The WebSocket runs on its own listener and port (WS_PORT,
+      default 8081), separate from the REST API's PORT (8080) — mirroring
+      apps/customer-portal/backend, which serves REST on 9090 and WebSocket on
+      9091. Authentication does NOT use the x-jwt-assertion header: a browser
+      cannot set custom headers on a WebSocket handshake, so the caller's
+      user-ID token is sent as the last Sec-WebSocket-Protocol value, after the
+      "cs-customer-portal" subprotocol name. Choreo's gateway consumes the
+      leading "choreo-oauth2-token, <accessToken>" pair and forwards the rest.
+      See CLAUDE.md's "The AI chat agent" section.
+
+channels:
+  /ws:
+    bindings:
+      ws:
+        query:
+          type: object
+          properties:
+            sessionId:
+              type: string
+              format: uuid
+              description: >
+                The project ID. Named sessionId for wire compatibility with
+                existing clients, even though it doesn't carry a
+                session/conversation value itself — the upstream agent's own
+                per-conversation session key is derived server-side as
+                "{projectId}:{conversationId}".
+          required:
+            - sessionId
+
+    # AsyncAPI 2.x's publish/subscribe are named from the client's
+    # perspective: "publish" is what the client sends (this application
+    # receives), "subscribe" is what the client receives (this application
+    # sends) — the opposite of what the operationId names might suggest.
+    publish:
+      operationId: SendMessage
+      summary: Messages sent from client to server
+      message:
+        oneOf:
+          - $ref: '#/components/messages/PingMessage'
+          - $ref: '#/components/messages/UserMessage'
+
+    subscribe:
+      operationId: ReceiveMessage
+      summary: Messages sent from server to client
+      message:
+        oneOf:
+          - $ref: '#/components/messages/PongMessage'
+          - $ref: '#/components/messages/ThinkingStartMessage'
+          - $ref: '#/components/messages/ThinkingStepMessage'
+          - $ref: '#/components/messages/TokenMessage'
+          - $ref: '#/components/messages/ThinkingEndMessage'
+          - $ref: '#/components/messages/FinalMessage'
+          - $ref: '#/components/messages/ErrorMessage'
+
+components:
+  messages:
+
+    PingMessage:
+      name: PingMessage
+      title: Ping
+      summary: Keepalive heartbeat, answered directly by this server (not forwarded upstream).
+      payload:
+        type: object
+        required:
+          - type
+        properties:
+          type:
+            type: string
+            enum:
+              - ping
+
+    UserMessage:
+      name: UserMessage
+      title: User Chat Message
+      summary: >
+        Send a user chat message on an existing conversation. Triggers a
+        stream of server events ending in FinalMessage or ErrorMessage.
+      payload:
+        type: object
+        required:
+          - message
+          - conversationId
+        properties:
+          message:
+            type: string
+            description: The user chat message text
+          conversationId:
+            type: string
+            format: uuid
+            description: >
+              Required — the ID of an existing conversation, obtained from
+              the response of POST /projects/{id}/conversations (which
+              starts a new conversation) or GET /conversations/{id}. This
+              WebSocket connection only resumes a conversation; it never
+              mints a new conversation ID itself. Omitting conversationId
+              returns an ErrorMessage.
+          envProducts:
+            type: object
+            nullable: true
+            description: Account products per environment
+            additionalProperties:
+              type: array
+              items:
+                type: string
+
+    PongMessage:
+      name: PongMessage
+      title: Pong
+      summary: Keepalive response to a client PingMessage.
+      payload:
+        type: object
+        required:
+          - type
+        properties:
+          type:
+            type: string
+            enum:
+              - pong
+          ts:
+            type: string
+            description: Unix epoch timestamp (seconds)
+
+    ThinkingStartMessage:
+      name: ThinkingStartMessage
+      title: Thinking Start
+      summary: Forwarded verbatim from the upstream agent when it starts processing. Show a loading indicator.
+      payload:
+        type: object
+        required:
+          - type
+          - agent
+        properties:
+          type:
+            type: string
+            enum:
+              - thinking_start
+          agent:
+            type: string
+          ts:
+            type: number
+
+    ThinkingStepMessage:
+      name: ThinkingStepMessage
+      title: Thinking Step
+      summary: Forwarded verbatim from the upstream agent when a tool is invoked.
+      payload:
+        type: object
+        required:
+          - type
+          - step
+          - label
+        properties:
+          type:
+            type: string
+            enum:
+              - thinking_step
+          step:
+            type: string
+            enum:
+              - tool_activity
+              - tool_info
+          label:
+            type: string
+          ts:
+            type: number
+
+    TokenMessage:
+      name: TokenMessage
+      title: Streaming Token
+      summary: Forwarded verbatim from the upstream agent — one streamed text chunk from the LLM.
+      payload:
+        type: object
+        required:
+          - type
+          - content
+        properties:
+          type:
+            type: string
+            enum:
+              - token
+          content:
+            type: string
+          ts:
+            type: number
+
+    ThinkingEndMessage:
+      name: ThinkingEndMessage
+      title: Thinking End
+      summary: Forwarded verbatim from the upstream agent after all tokens are streamed.
+      payload:
+        type: object
+        required:
+          - type
+          - agent
+        properties:
+          type:
+            type: string
+            enum:
+              - thinking_end
+          agent:
+            type: string
+          ts:
+            type: number
+
+    FinalMessage:
+      name: FinalMessage
+      title: Final Response
+      summary: >
+        Forwarded verbatim from the upstream agent — the complete structured
+        response sent once per user turn. After forwarding this event, this
+        server also saves the user's own message as an entity-service
+        comment (see CLAUDE.md — the agent's own reply is NOT saved as a
+        comment, and a resolved=true here does not update the conversation's
+        state; both are pending entity-service support).
+      payload:
+        type: object
+        required:
+          - type
+          - payload
+        properties:
+          type:
+            type: string
+            enum:
+              - final
+          payload:
+            type: object
+            required:
+              - message
+              - sessionId
+              - conversationId
+            properties:
+              message:
+                type: string
+                description: Full AI-generated response text
+              sessionId:
+                type: string
+                description: Upstream agent session key, "{projectId}:{conversationId}"
+              conversationId:
+                type: string
+              intent:
+                type: object
+                nullable: true
+                properties:
+                  intentId:
+                    type: string
+                  intentLabel:
+                    type: string
+                  confidence:
+                    type: number
+                  severity:
+                    type: string
+                  caseType:
+                    type: string
+              slotState:
+                type: object
+                nullable: true
+                properties:
+                  intentId:
+                    type: string
+                  filledSlots:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  missingSlots:
+                    type: array
+                    items:
+                      type: string
+                  isComplete:
+                    type: boolean
+                  slotOptions:
+                    type: array
+                    nullable: true
+                    items:
+                      type: object
+                      properties:
+                        slot:
+                          type: string
+                        label:
+                          type: string
+                        options:
+                          type: array
+                          items:
+                            type: string
+                        type:
+                          type: string
+              actions:
+                type: array
+                nullable: true
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    label:
+                      type: string
+                    style:
+                      type: string
+                      enum:
+                        - primary
+                        - danger
+                    payload:
+                      type: object
+                      additionalProperties: true
+              resolved:
+                type: boolean
+                nullable: true
+                description: >
+                  When true, this server marks the conversation resolved in
+                  entity-service (best-effort — a failure here is logged,
+                  not surfaced to the client).
+              kbReferences:
+                type: array
+                nullable: true
+                items:
+                  type: object
+                  properties:
+                    sysKbId:
+                      type: string
+                    title:
+                      type: string
+
+    ErrorMessage:
+      name: ErrorMessage
+      title: Error
+      summary: >
+        Sent when the server or the upstream agent cannot process the
+        client message — including this server's own synthesized error when
+        a UserMessage omits conversationId.
+      payload:
+        type: object
+        required:
+          - type
+          - message
+        properties:
+          type:
+            type: string
+            enum:
+              - error
+          message:
+            type: string
+          details:
+            type: array
+            nullable: true
+            items:
+              type: object
+              properties:
+                loc:
+                  type: array
+                  items:
+                    type: string
+                msg:
+                  type: string
+                type:
+                  type: string

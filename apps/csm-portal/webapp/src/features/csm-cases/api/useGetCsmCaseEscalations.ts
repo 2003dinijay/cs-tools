@@ -18,34 +18,47 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { ApiQueryKeys } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
 import type { BeCaseEscalationSearchResponse } from "@api/backend/types";
-import type { CaseEscalationRecord } from "@features/csm-cases/types/csmCases";
+import type { CaseEscalationHistory } from "@features/csm-cases/types/csmCases";
+
+const EMPTY_HISTORY: CaseEscalationHistory = {
+  escalations: [],
+  currentNotifiedUsers: [],
+};
 
 /**
- * A case's full escalation history, newest first. Calls
- * `GET /cases/{id}/escalations` (ServiceNow data source only — the backend
- * returns an empty list rather than an error for a non-ServiceNow case).
+ * A case's full escalation history, newest first, plus who's authorized to
+ * de-escalate its current level. Calls `GET /cases/{id}/escalations`
+ * (ServiceNow data source only — the backend returns an empty history rather
+ * than an error for a non-ServiceNow case).
  */
 export function useGetCsmCaseEscalations(
   caseId: string | undefined,
-): UseQueryResult<CaseEscalationRecord[], Error> {
+): UseQueryResult<CaseEscalationHistory, Error> {
   const api = useBackendApi();
 
-  return useQuery<CaseEscalationRecord[], Error>({
+  return useQuery<CaseEscalationHistory, Error>({
     queryKey: [ApiQueryKeys.CSM_CASE_ESCALATIONS, caseId ?? ""],
-    queryFn: async (): Promise<CaseEscalationRecord[]> => {
-      if (!caseId) return [];
+    queryFn: async (): Promise<CaseEscalationHistory> => {
+      if (!caseId) return EMPTY_HISTORY;
 
       const response = await api.get<BeCaseEscalationSearchResponse>(
         `/cases/${encodeURIComponent(caseId)}/escalations`,
       );
-      return (response?.escalations ?? []).map((e) => ({
-        id: e.id,
-        currentLevel: e.currentLevel,
-        previousLevel: e.previousLevel,
-        createdBy: e.createdBy,
-        createdOn: e.createdOn,
-        reason: e.reason,
-      }));
+      return {
+        escalations: (response?.escalations ?? []).map((e) => ({
+          id: e.id,
+          currentLevel: e.currentLevel.id,
+          previousLevel: e.previousLevel.id,
+          createdBy: e.createdBy,
+          createdOn: e.createdOn,
+          reason: e.reason,
+        })),
+        currentNotifiedUsers: (response?.currentNotifiedUsers ?? []).map((u) => ({
+          id: u.id,
+          name: u.name,
+          email: u.email,
+        })),
+      };
     },
     enabled: !!caseId,
     staleTime: 30_000,

@@ -82,6 +82,7 @@ vi.mock("@features/csm-cases/api/useCsmCaseAttachments", () => ({
   useGetCsmCaseAttachments: () => ({ data: [] }),
   usePostCsmCaseAttachment: () => ({ isPending: false, mutate: vi.fn() }),
   useDownloadCsmCaseAttachment: () => vi.fn(),
+  useGetCsmCaseAttachmentPreviewSource: () => vi.fn(),
   useGetCsmCaseAttachmentContent: () => vi.fn(),
   // Only reached by the reply composer's upload modal (`CsmUploadAttachmentModal`),
   // not exercised by this file's existing tests — the "reports its own draft

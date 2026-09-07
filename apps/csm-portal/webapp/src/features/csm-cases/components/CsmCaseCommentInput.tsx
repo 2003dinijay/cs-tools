@@ -43,6 +43,10 @@ import {
   type JSX,
 } from "react";
 import Editor from "@components/rich-text-editor/Editor";
+import {
+  ALLOWED_IMAGE_TYPES_LABEL,
+  MAX_IMAGE_SIZE_BYTES,
+} from "@components/rich-text-editor/richTextConstants";
 import { formatBytes } from "@utils/formatBytes";
 import { MAX_ATTACHMENT_SIZE_BYTES } from "@features/csm-cases/api/useCsmCaseAttachments";
 import CsmUploadAttachmentModal from "@features/csm-cases/components/CsmUploadAttachmentModal";
@@ -145,6 +149,13 @@ export default function CsmCaseCommentInput({
   }, []);
   const onAttachmentRemove = useCallback((index: number) => {
     setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+  const onPasteError = useCallback((reason: "size" | "type") => {
+    setError(
+      reason === "type"
+        ? `That image format isn't supported. Allowed formats: ${ALLOWED_IMAGE_TYPES_LABEL}.`
+        : `Pasted image exceeds the maximum allowed size of ${formatBytes(MAX_IMAGE_SIZE_BYTES)}.`,
+    );
   }, []);
 
   // Dropping files directly onto the composer, as an alternative to the
@@ -533,6 +544,7 @@ export default function CsmCaseCommentInput({
           onSubmitKeyDown={() => {
             void submit();
           }}
+          onPasteError={onPasteError}
         />
       )}
 

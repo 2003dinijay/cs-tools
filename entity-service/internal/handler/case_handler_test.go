@@ -46,7 +46,7 @@ type stubCaseService struct {
 
 	getAttachmentCalled bool
 	getAttachmentID     string
-	getAttachmentResp   domain.Attachment
+	getAttachmentResp   domain.AttachmentDetails
 	getAttachmentErr    error
 
 	updateAttachmentCalled bool
@@ -55,7 +55,7 @@ type stubCaseService struct {
 	updateAttachmentErr    error
 }
 
-func (s *stubCaseService) GetAttachment(_ context.Context, attachmentID string) (domain.Attachment, error) {
+func (s *stubCaseService) GetAttachmentByID(_ context.Context, attachmentID string) (domain.AttachmentDetails, error) {
 	s.getAttachmentCalled = true
 	s.getAttachmentID = attachmentID
 	return s.getAttachmentResp, s.getAttachmentErr
@@ -325,17 +325,17 @@ func TestSearchTagsQuery_NoParams(t *testing.T) {
 // owns UUID validation), and the response body must round-trip the service result.
 func TestGetAttachment_PassesPathIDToService(t *testing.T) {
 	const attachmentID = "11111111-1111-1111-1111-111111111111"
-	stub := &stubCaseService{getAttachmentResp: domain.Attachment{ID: attachmentID, Name: "logs.txt"}}
+	stub := &stubCaseService{getAttachmentResp: domain.AttachmentDetails{ID: attachmentID, Name: "logs.txt"}}
 	h := NewCaseHandler(stub)
 
 	req := httptest.NewRequest(http.MethodGet, "/attachments/"+attachmentID, nil)
 	req.SetPathValue("id", attachmentID)
 	rec := httptest.NewRecorder()
 
-	h.GetAttachment(rec, req)
+	h.GetAttachmentByID(rec, req)
 
 	if !stub.getAttachmentCalled {
-		t.Fatalf("expected GetAttachment to reach the service layer")
+		t.Fatalf("expected GetAttachmentByID to reach the service layer")
 	}
 	if stub.getAttachmentID != attachmentID {
 		t.Fatalf("service saw id %q, want %q", stub.getAttachmentID, attachmentID)

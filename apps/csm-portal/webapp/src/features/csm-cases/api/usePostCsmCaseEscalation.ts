@@ -22,7 +22,7 @@ import {
 import { ApiQueryKeys } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
 import type {
-  BeCaseEscalation,
+  BeCreatedCaseEscalation,
   BeCaseEscalationCreatePayload,
 } from "@api/backend/types";
 
@@ -42,16 +42,16 @@ import type {
  */
 export function usePostCsmCaseEscalation(
   caseId: string | undefined,
-): UseMutationResult<BeCaseEscalation, Error, BeCaseEscalationCreatePayload> {
+): UseMutationResult<BeCreatedCaseEscalation, Error, BeCaseEscalationCreatePayload> {
   const api = useBackendApi();
   const queryClient = useQueryClient();
 
-  return useMutation<BeCaseEscalation, Error, BeCaseEscalationCreatePayload>({
-    mutationFn: async (input): Promise<BeCaseEscalation> => {
+  return useMutation<BeCreatedCaseEscalation, Error, BeCaseEscalationCreatePayload>({
+    mutationFn: async (input): Promise<BeCreatedCaseEscalation> => {
       if (!caseId) {
         throw new Error("Cannot escalate a case without an id.");
       }
-      return api.post<BeCaseEscalationCreatePayload, BeCaseEscalation>(
+      return api.post<BeCaseEscalationCreatePayload, BeCreatedCaseEscalation>(
         `/cases/${encodeURIComponent(caseId)}/escalations`,
         input,
       );

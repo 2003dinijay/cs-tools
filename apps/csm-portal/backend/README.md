@@ -114,7 +114,7 @@ Copy `.env` and fill in the values:
 
 ### Shared OAuth2 client credentials
 
-Every upstream service client (customer entity, engineering entity, updates, SCIM, and future notification channels) authenticates as the same OAuth2 client-credentials app — only each service's base URL and scopes differ, so the credentials are configured once and reused.
+Every upstream service client (customer entity, engineering entity, updates, SCIM) authenticates as the same OAuth2 client-credentials app — only each service's base URL and scopes differ, so the credentials are configured once and reused.
 
 | Variable | Description |
 |---|---|
@@ -253,10 +253,6 @@ backend/
 │   ├── updates/
 │   │   ├── client.go           # OAuth2 HTTP client for the updates service
 │   │   └── updates.go          # Updates service operations
-│   ├── notifications/
-│   │   ├── doc.go               # Package overview — one config/client pair per channel
-│   │   ├── email.go             # EmailConfig/EmailClient/SendEmail (not yet wired into main.go — no caller)
-│   │   └── googlechat.go        # GoogleChatConfig/GoogleChatClient/SendIncidentAlert (per-product webhook routing)
 │   ├── middleware/
 │   │   ├── auth.go             # JWT validation; injects UserInfo into context
 │   │   ├── correlation.go      # X-CSM-Correlation-ID propagation + slog enrichment
@@ -274,7 +270,6 @@ backend/
 │       ├── projects.go                   # HTTP handlers for project endpoints
 │       ├── incidents.go                  # HTTP handlers for incident endpoints (ServiceNow only)
 │       ├── problems.go                   # HTTP handlers for problem endpoints (ServiceNow only)
-│       ├── notifications.go              # HTTP handlers for notification channels (Google Chat alert endpoint)
 │       ├── updates.go                    # HTTP handlers for updates endpoints
 │       └── users.go                      # HTTP handlers for user endpoints
 ├── .env                        # Local config (git-ignored)
@@ -379,10 +374,6 @@ backend/
 ### Problems
 
 - `POST /problems/search` — Search problems; optional `filters` (`searchQuery`) (ServiceNow data source only)
-
-### Notifications
-
-- `POST /notifications/google-chat/alerts` — Send an incident alert card message to the Google Chat space configured for `product`; body requires `product`, `title`, `shortDescription`, `caseId`. Triggered manually today, pending integration into real case/incident creation.
 
 ## Run Locally
 

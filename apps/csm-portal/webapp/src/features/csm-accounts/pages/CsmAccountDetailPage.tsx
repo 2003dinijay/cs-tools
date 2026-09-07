@@ -319,16 +319,16 @@ export default function CsmAccountDetailPage(): JSX.Element {
             <Chip
               size="small"
               variant="outlined"
-              color={a.agentEnabled ? "success" : "default"}
-              label={a.agentEnabled ? "Enabled" : "Disabled"}
+              color={a.hasAgent ? "success" : "default"}
+              label={a.hasAgent ? "Enabled" : "Disabled"}
             />
           </MetaCell>
           <MetaCell label="Smart KB Suggestions">
             <Chip
               size="small"
               variant="outlined"
-              color={a.kbReferencesEnabled ? "success" : "default"}
-              label={a.kbReferencesEnabled ? "Enabled" : "Disabled"}
+              color={a.hasKbReferences ? "success" : "default"}
+              label={a.hasKbReferences ? "Enabled" : "Disabled"}
             />
           </MetaCell>
           <MetaCell label="Created on">

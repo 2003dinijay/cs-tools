@@ -53,6 +53,23 @@ type Config struct {
 	ServiceNowIntegrationServiceClientID     string
 	ServiceNowIntegrationServiceClientSecret string
 	ServiceNowIntegrationServiceScopes       string
+	// EventHubBroker/EventHubConnectionString/EventHubTopic configure this
+	// service's EventPublisherService (internal/service/
+	// event_publisher_service.go). Optional — gated on EventHubBroker being
+	// set (see routes.go), not required by Validate, mirroring
+	// apps/csm-portal/backend's own optional Event Hub wiring: when unset,
+	// case.created/incident.created are simply never published and
+	// CreateCase/CreateIncident behave exactly as before this was wired in.
+	EventHubBroker           string
+	EventHubConnectionString string
+	EventHubTopic            string
+	// EventPublishingEnabled is a separate kill switch on top of
+	// EventHubBroker being set — it defaults to false (safe-by-default: an
+	// environment can have Event Hub fully configured and still not publish
+	// a single event until this is explicitly turned on). routes.go only
+	// constructs EventPublisherService when both this is true AND
+	// EventHubBroker is set.
+	EventPublishingEnabled bool
 }
 
 // Load reads configuration from environment variables and returns a populated
@@ -73,6 +90,10 @@ func Load() *Config {
 		ServiceNowIntegrationServiceClientID:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID"),
 		ServiceNowIntegrationServiceClientSecret: os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET"),
 		ServiceNowIntegrationServiceScopes:       os.Getenv("SERVICENOW_INTEGRATION_SERVICE_SCOPES"),
+		EventHubBroker:                           os.Getenv("EVENT_HUB_BROKER"),
+		EventHubConnectionString:                 os.Getenv("EVENT_HUB_CONNECTION_STRING"),
+		EventHubTopic:                            os.Getenv("EVENT_HUB_TOPIC"),
+		EventPublishingEnabled:                   os.Getenv("EVENT_PUBLISHING_ENABLED") == "true",
 	}
 }
 
@@ -84,14 +105,37 @@ func getEnvOrDefault(key, defaultVal string) string {
 }
 
 // Validate checks that the configuration is self-consistent. It returns an
-// error if DATA_SOURCE is an unrecognised value, or if SERVICENOW_INTEGRATION_SERVICE_BASE_URL is missing
-// when DATA_SOURCE=servicenow.
+// error if DATA_SOURCE is an unrecognised value, if DB_USER/DB_PASSWORD/DB_NAME
+// are missing (required regardless of DATA_SOURCE — see db.NewPoolFromConfig),
+// if SERVICENOW_INTEGRATION_SERVICE_BASE_URL is missing when
+// DATA_SOURCE=servicenow, or if EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/
+// EVENT_HUB_TOPIC are only partially set.
 func (c *Config) Validate() error {
 	switch c.DataSource {
 	case DataSourcePostgres, DataSourceServiceNow:
 		// valid
 	default:
 		return fmt.Errorf("invalid DATA_SOURCE %q: must be %q or %q", c.DataSource, DataSourcePostgres, DataSourceServiceNow)
+	}
+	// Postgres is required for every DataSource, not just DataSourcePostgres:
+	// event_publish_failures, sla_clocks, and scheduled_task_run have no
+	// ServiceNow equivalent, so routes.go wires their repositories
+	// unconditionally and cmd/api/main.go opens the pool before serving.
+	// Earlier versions skipped the pool in servicenow mode (the removed
+	// db.NewPoolIfNeeded), so a servicenow deployment that never had DB
+	// credentials fails here on upgrade — hence the explicit reason in each
+	// message rather than a bare "X is required".
+	const dbAlwaysRequired = "PostgreSQL is required for every DATA_SOURCE, " +
+		"including servicenow (event_publish_failures, sla_clocks, and " +
+		"scheduled_task_run have no ServiceNow equivalent)"
+	if c.DBUser == "" {
+		return fmt.Errorf("DB_USER is required: %s", dbAlwaysRequired)
+	}
+	if c.DBPassword == "" {
+		return fmt.Errorf("DB_PASSWORD is required: %s", dbAlwaysRequired)
+	}
+	if c.DBName == "" {
+		return fmt.Errorf("DB_NAME is required: %s", dbAlwaysRequired)
 	}
 	if c.DataSource == DataSourceServiceNow {
 		if c.ServiceNowIntegrationServiceBaseURL == "" {
@@ -106,6 +150,19 @@ func (c *Config) Validate() error {
 		if c.ServiceNowIntegrationServiceClientSecret == "" {
 			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET is required when DATA_SOURCE=servicenow")
 		}
+	}
+	// EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/EVENT_HUB_TOPIC are
+	// all-or-nothing (see EventHubBroker's own doc comment and routes.go's
+	// EventPublisherService wiring, which only checks EventHubBroker): a
+	// partial set would let EventPublisherService get constructed with an
+	// empty connection string or topic, so every publish attempt fails
+	// silently (logged, doesn't fail case/incident creation — see
+	// publishCaseCreated/publishIncidentCreated) while the deployment
+	// otherwise looks healthy. Reject that combination at startup instead.
+	eventHubSet := c.EventHubBroker != "" || c.EventHubConnectionString != "" || c.EventHubTopic != ""
+	eventHubComplete := c.EventHubBroker != "" && c.EventHubConnectionString != "" && c.EventHubTopic != ""
+	if eventHubSet && !eventHubComplete {
+		return fmt.Errorf("EVENT_HUB_BROKER, EVENT_HUB_CONNECTION_STRING, and EVENT_HUB_TOPIC must be set together or not at all")
 	}
 	return nil
 }

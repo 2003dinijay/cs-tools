@@ -21,12 +21,11 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
 
-// EscalationHandler handles HTTP requests for a case's escalation history.
+// EscalationHandler handles HTTP requests for the escalations resource.
 type EscalationHandler struct {
 	svc service.EscalationService
 }
@@ -36,15 +35,13 @@ func NewEscalationHandler(svc service.EscalationService) *EscalationHandler {
 	return &EscalationHandler{svc: svc}
 }
 
-// SearchCaseEscalations handles GET /cases/{caseId}/escalations.
-func (h *EscalationHandler) SearchCaseEscalations(w http.ResponseWriter, r *http.Request) {
-	caseID := r.PathValue("id")
-	if caseID == "" {
-		apierror.WriteJSON(w, http.StatusBadRequest, "case ID is required")
+// SearchEscalations handles POST /escalations/search.
+func (h *EscalationHandler) SearchEscalations(w http.ResponseWriter, r *http.Request) {
+	var req domain.SearchEscalationsRequest
+	if !decodeRequest(w, r, &req) {
 		return
 	}
-
-	resp, err := h.svc.SearchEscalations(r.Context(), caseID)
+	resp, err := h.svc.SearchEscalations(r.Context(), req)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
@@ -53,21 +50,13 @@ func (h *EscalationHandler) SearchCaseEscalations(w http.ResponseWriter, r *http
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// CreateCaseEscalation handles POST /cases/{caseId}/escalations.
-func (h *EscalationHandler) CreateCaseEscalation(w http.ResponseWriter, r *http.Request) {
-	caseID := r.PathValue("id")
-	if caseID == "" {
-		apierror.WriteJSON(w, http.StatusBadRequest, "case ID is required")
-		return
-	}
-
+// CreateEscalation handles POST /escalations.
+func (h *EscalationHandler) CreateEscalation(w http.ResponseWriter, r *http.Request) {
 	var req domain.CreateEscalationRequest
 	if !decodeRequest(w, r, &req) {
 		return
 	}
-	req.CaseID = caseID
-
-	resp, err := h.svc.CreateEscalation(r.Context(), req.CaseID, req.Reason, req.Action)
+	resp, err := h.svc.CreateEscalation(r.Context(), req)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

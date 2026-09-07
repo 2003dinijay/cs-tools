@@ -56,6 +56,34 @@ type CaseRepository interface {
 	// closed_at is set to NOW() when transitioning to closed.
 	// Returns a NotFoundError if no matching row exists.
 	UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, error)
+	// CreateCaseAttachment inserts a new attachment metadata row for the case
+	// identified by req.ReferenceID. req.StorageKey must be non-nil: this data
+	// source stores file bytes externally in SFTPGo, never inline in Postgres.
+	// Returns a ValidationError if req.ReferenceID does not match an existing case.
+	CreateCaseAttachment(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error)
+	// SearchCaseAttachments returns a paginated slice of attachments for the given
+	// case, most recently created first, together with the total matching count.
+	SearchCaseAttachments(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error)
+	// GetCaseAttachmentByID returns the attachment identified by id.
+	// Returns a NotFoundError if no matching row exists.
+	GetCaseAttachmentByID(ctx context.Context, id string) (domain.Attachment, error)
+	// DeleteCaseAttachment permanently removes the attachment metadata row
+	// identified by id. It does not delete the backing SFTPGo file -- that
+	// remains the downstream CSM backend's responsibility.
+	// Returns a NotFoundError if no matching row exists.
+	DeleteCaseAttachment(ctx context.Context, id string) error
+	// UpdateCaseAttachmentName renames the attachment identified by id and
+	// records who did it. Returns a NotFoundError if no matching row exists.
+	UpdateCaseAttachmentName(ctx context.Context, id, name, updatedBy string) (updatedOn time.Time, err error)
+	// ConfirmCaseAttachment atomically transitions the attachment identified
+	// by id from status 'pending' to 'complete'. The WHERE clause's
+	// "AND status = 'pending'" guard is the concurrency safety net: if two
+	// confirm calls race, only one affects a row. Returns a ConflictError
+	// (not a silent no-op) if the row is not currently 'pending' -- including
+	// when it doesn't exist, since by the time this is called the caller has
+	// already resolved the row via GetCaseAttachmentByID and any mismatch
+	// here means it changed state concurrently.
+	ConfirmCaseAttachment(ctx context.Context, id string) (domain.Attachment, error)
 }
 
 type caseRepo struct {
@@ -339,6 +367,213 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 		c.WorkState = &ws
 	}
 	return c, nil
+}
+
+// CreateCaseAttachment implements CaseRepository.
+func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error) {
+	const query = `
+		INSERT INTO case_attachments (case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_at, status`
+
+	var (
+		a            domain.Attachment
+		storageKey   string
+		uploadedByID string
+	)
+	err := r.db.QueryRow(ctx, query,
+		req.ReferenceID, req.StorageKey, req.Name, req.Type, req.SizeBytes, req.Description, req.CreatedBy, req.Status,
+	).Scan(
+		&a.ID, &a.ReferenceID, &storageKey, &a.Name, &a.Type, &a.SizeBytes, &a.Description,
+		&uploadedByID, &a.CreatedOn, &a.Status,
+	)
+	if err != nil {
+		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "23503": // foreign_key_violation — case_id or uploaded_by does not exist
+				return domain.Attachment{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
+			case "23514": // check_violation — e.g. size_bytes <= 0 or an invalid status
+				return domain.Attachment{}, &apierror.ValidationError{Msg: pgErr.Message}
+			}
+		}
+		return domain.Attachment{}, fmt.Errorf("create case attachment: %w", err)
+	}
+	a.ReferenceType = domain.ReferenceTypeCase
+	a.StorageKey = &storageKey
+	// The insert returns only the uploader's id; email and display name would
+	// need a further join, so the reference carries the id alone, same as
+	// CreateCaseComment above.
+	a.CreatedBy = domain.NewUserReference(uploadedByID, "", "")
+	return a, nil
+}
+
+// ConfirmCaseAttachment implements CaseRepository.
+func (r *caseRepo) ConfirmCaseAttachment(ctx context.Context, id string) (domain.Attachment, error) {
+	const query = `
+		UPDATE case_attachments
+		SET status = 'complete', updated_at = NOW()
+		WHERE id = $1 AND status = 'pending'
+		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_at, status`
+
+	var (
+		a            domain.Attachment
+		storageKey   string
+		uploadedByID string
+	)
+	err := r.db.QueryRow(ctx, query, id).Scan(
+		&a.ID, &a.ReferenceID, &storageKey, &a.Name, &a.Type, &a.SizeBytes, &a.Description,
+		&uploadedByID, &a.CreatedOn, &a.Status,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Attachment{}, &apierror.ConflictError{Msg: "attachment is not pending (it may already be confirmed, or was confirmed/deleted concurrently)"}
+	}
+	if err != nil {
+		return domain.Attachment{}, fmt.Errorf("confirm case attachment: %w", err)
+	}
+	a.ReferenceType = domain.ReferenceTypeCase
+	a.StorageKey = &storageKey
+	a.CreatedBy = domain.NewUserReference(uploadedByID, "", "")
+	return a, nil
+}
+
+// SearchCaseAttachments implements CaseRepository.
+//
+// Both queries filter to status = 'complete' -- see the doc comment on
+// CaseService.SearchCaseAttachments for why pending (still-uploading) rows
+// are excluded from the default list/search response rather than shown with
+// a visible status.
+func (r *caseRepo) SearchCaseAttachments(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error) {
+	const countQuery = `SELECT COUNT(*) FROM case_attachments WHERE case_id = $1 AND status = 'complete'`
+	const dataQuery = `
+		SELECT ca.id, ca.case_id, ca.filename, ca.mime_type, ca.size_bytes, ca.description,
+		       u.id, u.email, TRIM(u.first_name || ' ' || u.last_name) AS full_name,
+		       ca.created_at, ca.storage_key, ca.status
+		FROM case_attachments ca
+		JOIN users u ON u.id = ca.uploaded_by
+		WHERE ca.case_id = $1 AND ca.status = 'complete'
+		ORDER BY ca.created_at DESC, ca.id
+		LIMIT $2 OFFSET $3`
+
+	var total int
+	var attachments []domain.Attachment
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	eg.Go(func() error {
+		if err := r.db.QueryRow(egCtx, countQuery, caseID).Scan(&total); err != nil {
+			return fmt.Errorf("count case attachments: %w", err)
+		}
+		return nil
+	})
+
+	eg.Go(func() error {
+		rows, err := r.db.Query(egCtx, dataQuery, caseID, pagination.Limit, pagination.Offset)
+		if err != nil {
+			return fmt.Errorf("query case attachments: %w", err)
+		}
+		defer rows.Close()
+
+		result := make([]domain.Attachment, 0, pagination.Limit)
+		for rows.Next() {
+			var (
+				a                         domain.Attachment
+				uploaderID, uploaderEmail string
+				uploaderName, storageKey  string
+			)
+			if err := rows.Scan(
+				&a.ID, &a.ReferenceID, &a.Name, &a.Type, &a.SizeBytes, &a.Description,
+				&uploaderID, &uploaderEmail, &uploaderName, &a.CreatedOn, &storageKey, &a.Status,
+			); err != nil {
+				return fmt.Errorf("scan case attachment: %w", err)
+			}
+			a.ReferenceType = domain.ReferenceTypeCase
+			a.CreatedBy = domain.NewUserReference(uploaderID, uploaderEmail, uploaderName)
+			a.StorageKey = &storageKey
+			result = append(result, a)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate case attachments: %w", err)
+		}
+		attachments = result
+		return nil
+	})
+
+	if err := eg.Wait(); err != nil {
+		return nil, 0, err
+	}
+
+	return attachments, total, nil
+}
+
+// GetCaseAttachmentByID implements CaseRepository.
+//
+// Unlike SearchCaseAttachments, this intentionally does not filter by status:
+// a direct id lookup must return a 'pending' row too, since that's how the
+// confirm step resolves the row it's about to transition, and how an
+// uploader can check on their own in-flight upload. See the doc comment on
+// CaseService.SearchCaseAttachments for the read-path status decision.
+func (r *caseRepo) GetCaseAttachmentByID(ctx context.Context, id string) (domain.Attachment, error) {
+	const query = `
+		SELECT ca.id, ca.case_id, ca.filename, ca.mime_type, ca.size_bytes, ca.description,
+		       u.id, u.email, TRIM(u.first_name || ' ' || u.last_name) AS full_name,
+		       ca.created_at, ca.storage_key, ca.status
+		FROM case_attachments ca
+		JOIN users u ON u.id = ca.uploaded_by
+		WHERE ca.id = $1`
+
+	var (
+		a                         domain.Attachment
+		uploaderID, uploaderEmail string
+		uploaderName, storageKey  string
+	)
+	err := r.db.QueryRow(ctx, query, id).Scan(
+		&a.ID, &a.ReferenceID, &a.Name, &a.Type, &a.SizeBytes, &a.Description,
+		&uploaderID, &uploaderEmail, &uploaderName, &a.CreatedOn, &storageKey, &a.Status,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Attachment{}, &apierror.NotFoundError{Msg: "attachment not found"}
+	}
+	if err != nil {
+		return domain.Attachment{}, fmt.Errorf("get case attachment by id: %w", err)
+	}
+	a.ReferenceType = domain.ReferenceTypeCase
+	a.CreatedBy = domain.NewUserReference(uploaderID, uploaderEmail, uploaderName)
+	a.StorageKey = &storageKey
+	return a, nil
+}
+
+// DeleteCaseAttachment implements CaseRepository.
+func (r *caseRepo) DeleteCaseAttachment(ctx context.Context, id string) error {
+	tag, err := r.db.Exec(ctx, `DELETE FROM case_attachments WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete case attachment: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &apierror.NotFoundError{Msg: "attachment not found"}
+	}
+	return nil
+}
+
+// UpdateCaseAttachmentName implements CaseRepository.
+func (r *caseRepo) UpdateCaseAttachmentName(ctx context.Context, id, name, updatedBy string) (time.Time, error) {
+	const query = `
+		UPDATE case_attachments
+		SET filename = $2, updated_at = NOW(), updated_by = $3
+		WHERE id = $1
+		RETURNING updated_at`
+
+	var updatedOn time.Time
+	err := r.db.QueryRow(ctx, query, id, name, updatedBy).Scan(&updatedOn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, &apierror.NotFoundError{Msg: "attachment not found"}
+	}
+	if err != nil {
+		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return time.Time{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
+		}
+		return time.Time{}, fmt.Errorf("update case attachment name: %w", err)
+	}
+	return updatedOn, nil
 }
 
 // pgSortColMap maps domain CaseSortField values to Postgres column expressions.

@@ -47,6 +47,7 @@ import type {
   CaseTag,
 } from "@features/csm-cases/types/csmCases";
 import type { ProjectDetails } from "@features/csm-projects/types/csmProjects";
+import type { AttachmentPreviewSource } from "@features/csm-cases/utils/attachmentPreview";
 
 // `previewTarget`/`onPreviewTargetChange` (part of the widget's `preview`
 // prop) are lifted to the parent page (see CsmCaseDetailPage) so the preview
@@ -58,7 +59,9 @@ function AttachmentsWidgetHarness({
   onGetPreviewContent,
   ...props
 }: Omit<ComponentProps<typeof AttachmentsWidget>, "preview"> & {
-  onGetPreviewContent?: (attachment: CaseAttachment) => Promise<Blob>;
+  onGetPreviewContent?: (
+    attachment: CaseAttachment,
+  ) => Promise<AttachmentPreviewSource>;
 }): JSX.Element {
   const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(
     null,
@@ -623,7 +626,7 @@ describe("AttachmentsWidget — preview affordance", () => {
   it("opens the preview dialog, fetches content, and renders it as an image", async () => {
     const fetchContent = vi
       .fn()
-      .mockResolvedValue(new Blob(["fake"], { type: "image/png" }));
+      .mockResolvedValue({ url: "blob:mock-url", revoke: true });
     renderWithRouter(
       <AttachmentsWidgetHarness
         attachments={[IMAGE_ATTACHMENT]}
@@ -677,6 +680,63 @@ describe("AttachmentsWidget — preview affordance", () => {
     expect(
       screen.getByRole("button", { name: `Download ${ZIP_ATTACHMENT.filename}` }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("AttachmentsWidget — upload progress", () => {
+  it("shows an indeterminate bar with no percentage when uploadProgress is not supplied", () => {
+    renderWithRouter(
+      <AttachmentsWidgetHarness
+        attachments={[]}
+        uploading
+        onUpload={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Uploading…")).toBeInTheDocument();
+    const bar = document.querySelector(".MuiLinearProgress-root");
+    expect(bar).not.toHaveAttribute("aria-valuenow");
+  });
+
+  it("shows a determinate bar with the percentage when uploadProgress is a number", () => {
+    renderWithRouter(
+      <AttachmentsWidgetHarness
+        attachments={[]}
+        uploading
+        uploadProgress={42}
+        onUpload={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Uploading… 42%")).toBeInTheDocument();
+    const bar = document.querySelector(".MuiLinearProgress-root");
+    expect(bar).toHaveAttribute("aria-valuenow", "42");
+  });
+
+  it("only calls onDownload when a specific attachment's Download button is clicked, never on render", () => {
+    const onDownload = vi.fn();
+    const attachment: CaseAttachment = {
+      id: "att-1",
+      filename: "notes.txt",
+      size: 128,
+      contentType: "text/plain",
+      uploadedBy: "Jane Doe",
+      uploadedAt: "2026-01-01T00:00:00Z",
+    };
+    renderWithRouter(
+      <AttachmentsWidgetHarness
+        attachments={[attachment]}
+        onDownload={onDownload}
+      />,
+    );
+
+    // Rendering the list alone must never trigger a download resolution
+    // (e.g. a lazily-created SFTPGo share) — only an explicit click does.
+    expect(onDownload).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `Download ${attachment.filename}` }),
+    );
+    expect(onDownload).toHaveBeenCalledTimes(1);
+    expect(onDownload).toHaveBeenCalledWith(attachment);
   });
 });
 
