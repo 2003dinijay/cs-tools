@@ -121,6 +121,11 @@ export function resolveTeamPlaceholder(
   selectedTeamCreGroupId: string | string[] | undefined,
   selectedTeamSreGroupId: string | string[] | undefined,
 ): Record<string, unknown> {
+  // Callers pass widget/slice `filters` straight from backend-driven config
+  // (DASHBOARDS_CONFIG, a raw JSON env var not schema-validated beyond basic
+  // decoding) — genuinely absent at runtime is possible despite the wire
+  // type declaring it required.
+  filters ??= {};
   const withCaseFieldFiltersResolved = resolveCaseFieldFilterPlaceholder(
     filters,
     selectedTeamCreGroupId,

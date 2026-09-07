@@ -71,7 +71,7 @@ func TestSNIncidentService_CreateIncident_WatchListResolvedToEmails(t *testing.T
 	})
 
 	client := newTestSNClient(t, mux)
-	svc := NewServiceNowIncidentService(client)
+	svc := NewServiceNowIncidentService(client, nil)
 
 	req := validCreateIncidentRequest()
 	req.WatchList = []string{testIncidentWatcherUUID1, testIncidentWatcherUUID2}
@@ -99,7 +99,7 @@ func TestSNIncidentService_CreateIncident_WatchListResolvedToEmails(t *testing.T
 // watchList entry is rejected with a clean validation error before any SN call.
 func TestSNIncidentService_CreateIncident_WatchList_InvalidUUID(t *testing.T) {
 	// client is intentionally nil: validation must fail before touching it.
-	svc := NewServiceNowIncidentService(nil)
+	svc := NewServiceNowIncidentService(nil, nil)
 
 	req := validCreateIncidentRequest()
 	req.WatchList = []string{"not-a-uuid"}
@@ -133,7 +133,7 @@ func TestSNIncidentService_UpdateIncident_WatchListResolvedToUserNames(t *testin
 	})
 
 	client := newTestSNClient(t, mux)
-	svc := NewServiceNowIncidentService(client)
+	svc := NewServiceNowIncidentService(client, nil)
 
 	watchList := []string{testIncidentWatcherUUID1, testIncidentWatcherUUID2}
 	_, err := svc.UpdateIncident(contextWithUserIDToken("token"), domain.UpdateIncidentRequest{
@@ -163,7 +163,7 @@ func TestSNIncidentService_UpdateIncident_WatchListResolvedToUserNames(t *testin
 // watchList entry is rejected with a clean validation error before any SN call.
 func TestSNIncidentService_UpdateIncident_WatchList_InvalidUUID(t *testing.T) {
 	// client is intentionally nil: validation must fail before touching it.
-	svc := NewServiceNowIncidentService(nil)
+	svc := NewServiceNowIncidentService(nil, nil)
 
 	watchList := []string{"not-a-uuid"}
 	_, err := svc.UpdateIncident(contextWithUserIDToken("token"), domain.UpdateIncidentRequest{
@@ -193,7 +193,7 @@ func TestSNIncidentService_SearchIncidents_NumberFilterPassedThrough(t *testing.
 	})
 
 	client := newTestSNClient(t, mux)
-	svc := NewServiceNowIncidentService(client)
+	svc := NewServiceNowIncidentService(client, nil)
 
 	req := domain.SearchIncidentsRequest{
 		Filters: domain.SearchIncidentsFilters{Number: strPtr("INC0010001")},
@@ -234,7 +234,7 @@ func TestSNIncidentService_SearchIncidents_NewFiltersPassedThrough(t *testing.T)
 	})
 
 	client := newTestSNClient(t, mux)
-	svc := NewServiceNowIncidentService(client)
+	svc := NewServiceNowIncidentService(client, nil)
 
 	req := domain.SearchIncidentsRequest{
 		Filters: domain.SearchIncidentsFilters{
@@ -288,7 +288,7 @@ func TestSNIncidentService_SearchIncidents_SlaViolatedAndProductNamePassedThroug
 	})
 
 	client := newTestSNClient(t, mux)
-	svc := NewServiceNowIncidentService(client)
+	svc := NewServiceNowIncidentService(client, nil)
 
 	req := domain.SearchIncidentsRequest{
 		Filters: domain.SearchIncidentsFilters{
@@ -322,7 +322,7 @@ func TestSNIncidentService_SearchIncidents_SlaViolatedAndProductNamePassedThroug
 // error before any SN call.
 func TestSNIncidentService_SearchIncidents_SlaViolatedInvalidValue(t *testing.T) {
 	// client is intentionally nil: validation must fail before touching it.
-	svc := NewServiceNowIncidentService(nil)
+	svc := NewServiceNowIncidentService(nil, nil)
 
 	req := domain.SearchIncidentsRequest{
 		Filters: domain.SearchIncidentsFilters{
@@ -357,7 +357,7 @@ func TestSNIncidentService_SearchIncidents_MadeSlaPassedThrough(t *testing.T) {
 	})
 
 	client := newTestSNClient(t, mux)
-	svc := NewServiceNowIncidentService(client)
+	svc := NewServiceNowIncidentService(client, nil)
 
 	req := domain.SearchIncidentsRequest{
 		Filters: domain.SearchIncidentsFilters{
@@ -388,7 +388,7 @@ func TestSNIncidentService_SearchIncidents_MadeSlaPassedThrough(t *testing.T) {
 // before any SN call.
 func TestSNIncidentService_SearchIncidents_MadeSlaInvalidValue(t *testing.T) {
 	// client is intentionally nil: validation must fail before touching it.
-	svc := NewServiceNowIncidentService(nil)
+	svc := NewServiceNowIncidentService(nil, nil)
 
 	req := domain.SearchIncidentsRequest{
 		Filters: domain.SearchIncidentsFilters{
@@ -408,7 +408,7 @@ func TestSNIncidentService_SearchIncidents_MadeSlaInvalidValue(t *testing.T) {
 // before any SN call.
 func TestSNIncidentService_SearchIncidents_InvalidStateValue(t *testing.T) {
 	// client is intentionally nil: validation must fail before touching it.
-	svc := NewServiceNowIncidentService(nil)
+	svc := NewServiceNowIncidentService(nil, nil)
 
 	req := domain.SearchIncidentsRequest{
 		Filters: domain.SearchIncidentsFilters{
@@ -427,7 +427,7 @@ func TestSNIncidentService_SearchIncidents_InvalidStateValue(t *testing.T) {
 // unsupported filters[] field name is rejected before any SN call.
 func TestSNIncidentService_SearchIncidents_InvalidFilterField(t *testing.T) {
 	// client is intentionally nil: validation must fail before touching it.
-	svc := NewServiceNowIncidentService(nil)
+	svc := NewServiceNowIncidentService(nil, nil)
 
 	req := domain.SearchIncidentsRequest{
 		Filters: domain.SearchIncidentsFilters{
@@ -448,7 +448,7 @@ func TestSNIncidentService_SearchIncidents_InvalidFilterField(t *testing.T) {
 // as an empty (200) result indistinguishable from "no matching incidents".
 func TestSNIncidentService_SearchIncidents_RejectsInvertedCreatedOnRange(t *testing.T) {
 	// client is intentionally nil: validation must fail before touching it.
-	svc := NewServiceNowIncidentService(nil)
+	svc := NewServiceNowIncidentService(nil, nil)
 
 	req := domain.SearchIncidentsRequest{
 		Filters: domain.SearchIncidentsFilters{
@@ -469,7 +469,7 @@ func TestSNIncidentService_SearchIncidents_RejectsInvertedCreatedOnRange(t *test
 // validation error before any SN call.
 func TestSNIncidentService_SearchIncidents_BusinessServiceIdInvalidUUID(t *testing.T) {
 	// client is intentionally nil: validation must fail before touching it.
-	svc := NewServiceNowIncidentService(nil)
+	svc := NewServiceNowIncidentService(nil, nil)
 
 	req := domain.SearchIncidentsRequest{
 		Filters: domain.SearchIncidentsFilters{

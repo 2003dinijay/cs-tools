@@ -81,3 +81,33 @@ func (h *DeployedProductHandler) PatchDeployedProduct(w http.ResponseWriter, r *
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
 }
+
+// SearchDeployedProductMetrics handles POST /deployed-products/{id}/metrics/search.
+func (h *DeployedProductHandler) SearchDeployedProductMetrics(w http.ResponseWriter, r *http.Request) {
+	var req domain.DeployedProductMetricsRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.SearchDeployedProductMetrics(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// SearchDeployedProductUsageCounts handles POST /deployed-products/{id}/metrics/usage-counts/search.
+func (h *DeployedProductHandler) SearchDeployedProductUsageCounts(w http.ResponseWriter, r *http.Request) {
+	var req domain.DeployedProductUsageCountsRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.SearchDeployedProductUsageCounts(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}

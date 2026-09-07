@@ -62,8 +62,8 @@ const ACCOUNT: Account = {
   accountManager: { id: "u-1", name: "Jane Doe" },
   technicalOwner: { id: "u-2", name: "John Roe" },
   creTeam: { id: "team-1", name: "APAC CRE" },
-  agentEnabled: true,
-  kbReferencesEnabled: true,
+  hasAgent: true,
+  hasKbReferences: true,
   createdOn: "2024-01-01T00:00:00Z",
   updatedOn: "2024-01-01T00:00:00Z",
 };

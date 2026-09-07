@@ -22,6 +22,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/handler"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -31,11 +32,53 @@ import (
 
 // NewRouter builds the dependency graph (repository → service → handler),
 // registers all routes, and wraps the mux with the middleware chain:
-// CorrelationID → Recovery → Logger → UserIDToken → Timeout.
-func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
+// CorrelationID → Recovery → Logger → UserIDToken → Timeout. Also returns
+// the constructed EventPublisherService (nil if EVENT_HUB_BROKER is unset or
+// EVENT_PUBLISHING_ENABLED isn't "true") so the caller (server.New, then
+// cmd/api/main.go) can close it gracefully on shutdown.
+func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.EventPublisherService) {
 	userRepo := repository.NewUserRepository(db)
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userSvc)
+
+	// event_publish_failures has no ServiceNow equivalent — always backed by
+	// Postgres regardless of cfg.DataSource, same as the pool itself (see
+	// db.NewPool's call site in cmd/api/main.go).
+	eventPublishFailureRepo := repository.NewEventPublishFailureRepository(db)
+	eventPublishFailureSvc := service.NewEventPublishFailureService(eventPublishFailureRepo)
+	eventPublishFailureHandler := handler.NewEventPublishFailureHandler(eventPublishFailureSvc)
+
+	// EventPublisherService is optional, like every ServiceNow-only
+	// dependency below — gated on EventHubBroker rather than cfg.DataSource,
+	// since publishing is a distinct concern from which backend serves reads
+	// (see config.Config.EventHubBroker's doc comment). Also gated on
+	// EventPublishingEnabled, a separate safe-by-default kill switch: Event
+	// Hub can be fully configured and this still stays nil until that's
+	// explicitly turned on. nil when unset; every caller (snCaseService,
+	// snIncidentService) already handles that.
+	var eventPublisher service.EventPublisherService
+	if cfg.EventHubBroker != "" && cfg.EventPublishingEnabled {
+		eventPublisher = service.NewEventPublisherService(
+			eventbus.NewProducer(eventbus.Config{
+				Broker:           cfg.EventHubBroker,
+				ConnectionString: cfg.EventHubConnectionString,
+				Topic:            cfg.EventHubTopic,
+			}),
+			eventPublishFailureSvc,
+		)
+	}
+
+	// sla_clocks has no ServiceNow equivalent either — same reasoning as
+	// event_publish_failures above.
+	slaClockRepo := repository.NewSLAClockRepository(db)
+	slaClockHandler := handler.NewSLAClockHandler(service.NewSLAClockService(slaClockRepo))
+
+	// scheduled_task_run has no ServiceNow equivalent either — same
+	// reasoning as sla_clocks/event_publish_failures above. Backs
+	// operations/csm-scheduled-tasks; see that component's own CLAUDE.md
+	// and this service's CLAUDE.md ("Scheduled task runs").
+	scheduledTaskRunRepo := repository.NewScheduledTaskRunRepository(db)
+	scheduledTaskRunHandler := handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(scheduledTaskRunRepo))
 
 	accountRepo := repository.NewAccountRepository(db)
 	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
@@ -80,6 +123,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		projectUpdateHandler = handler.NewProjectUpdateHandler(service.NewServiceNowProjectUpdateService(serviceNowIntegrationServiceClient))
 	}
 
+	var projectStatsHandler *handler.ProjectStatsHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		projectStatsHandler = handler.NewProjectStatsHandler(service.NewServiceNowProjectStatsService(serviceNowIntegrationServiceClient))
+	}
+
 	productRepo := repository.NewProductRepository(db)
 	productSvc := service.NewProductService(productRepo)
 	productHandler := handler.NewProductHandler(productSvc)
@@ -93,7 +141,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	var snProductVersionHandler *handler.SNProductVersionHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		snProductVersionHandler = handler.NewSNProductVersionHandler(service.NewServiceNowProductVersionService(serviceNowIntegrationServiceClient))
-	} else if db != nil {
+	} else {
 		productVersionRepo := repository.NewProductVersionRepository(db)
 		productVersionSvc := service.NewProductVersionService(productVersionRepo)
 		productVersionHandler = handler.NewProductVersionHandler(productVersionSvc)
@@ -121,7 +169,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	pgCaseSvc := service.NewCaseService(caseRepo, userRepo)
 	var activeCaseSvc service.CaseService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseSvc)
+		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseSvc, eventPublisher)
 	} else {
 		activeCaseSvc = pgCaseSvc
 	}
@@ -164,7 +212,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 
 	var incidentHandler *handler.IncidentHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
-		incidentHandler = handler.NewIncidentHandler(service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient))
+		incidentHandler = handler.NewIncidentHandler(service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, eventPublisher))
 	}
 
 	var problemHandler *handler.ProblemHandler
@@ -190,6 +238,21 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	var conversationHandler *handler.ConversationHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		conversationHandler = handler.NewConversationHandler(service.NewServiceNowConversationService(serviceNowIntegrationServiceClient))
+	}
+
+	var globalHandler *handler.GlobalHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		globalHandler = handler.NewGlobalHandler(service.NewServiceNowGlobalService(serviceNowIntegrationServiceClient))
+	}
+
+	var escalationHandler *handler.EscalationHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		escalationHandler = handler.NewEscalationHandler(service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient))
+	}
+
+	var instanceHandler *handler.InstanceHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		instanceHandler = handler.NewInstanceHandler(service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient))
 	}
 
 	var itServiceHandler *handler.ITServiceHandler
@@ -243,12 +306,27 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handler.HealthCheck)
+
+	// event_publish_failures is not data-source specific, same rationale as
+	// the role catalogue and team registry below — registered unconditionally.
+	mux.HandleFunc("POST /event-publish-failures", eventPublishFailureHandler.CreateEventPublishFailure)
+	mux.HandleFunc("POST /event-publish-failures/search", eventPublishFailureHandler.SearchEventPublishFailures)
+	mux.HandleFunc("POST /event-publish-failures/{id}/resolve", eventPublishFailureHandler.ResolveEventPublishFailure)
+	mux.HandleFunc("POST /cases/{caseId}/sla-clocks", slaClockHandler.RegisterSLAClock)
+	mux.HandleFunc("GET /cases/{caseId}/sla-clocks/{clockType}", slaClockHandler.GetSLAClock)
+	mux.HandleFunc("PATCH /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}", slaClockHandler.SetSLAClockTierReached)
+	mux.HandleFunc("POST /scheduled-tasks/attempts", scheduledTaskRunHandler.AttemptScheduledTaskRun)
+	mux.HandleFunc("PATCH /scheduled-tasks/attempts/{id}", scheduledTaskRunHandler.UpdateScheduledTaskRunAttempt)
+	mux.HandleFunc("GET /scheduled-tasks/attempts", scheduledTaskRunHandler.ListScheduledTaskRuns)
+	mux.HandleFunc("DELETE /scheduled-tasks/attempts", scheduledTaskRunHandler.DeleteScheduledTaskRuns)
+
 	if snUserHandler != nil {
 		mux.HandleFunc("GET /users/{id}", snUserHandler.GetUser)
 		mux.HandleFunc("GET /users/me", snUserHandler.GetMe)
 		mux.HandleFunc("PATCH /users/me", snUserHandler.PatchMe)
 		mux.HandleFunc("POST /users/search", snUserHandler.SearchUsers)
 	} else {
+		mux.HandleFunc("GET /users/me", userHandler.GetMe)
 		mux.HandleFunc("POST /users/search", userHandler.SearchUsers)
 	}
 	if snAccountHandler != nil {
@@ -270,6 +348,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	if projectUpdateHandler != nil {
 		mux.HandleFunc("PATCH /projects/{id}", projectUpdateHandler.UpdateProject)
 	}
+	if projectStatsHandler != nil {
+		mux.HandleFunc("GET /projects/{id}/metadata", projectStatsHandler.GetProjectMetadata)
+		mux.HandleFunc("GET /projects/{id}/stats", projectStatsHandler.GetProjectStats)
+		mux.HandleFunc("GET /projects/{id}/cases/stats", projectStatsHandler.GetProjectCaseStats)
+		mux.HandleFunc("GET /projects/{id}/conversations/stats", projectStatsHandler.GetProjectConversationStats)
+		mux.HandleFunc("GET /projects/{id}/deployments/stats", projectStatsHandler.GetProjectDeploymentStats)
+		mux.HandleFunc("GET /projects/{id}/time-cards/stats", projectStatsHandler.GetProjectTimeCardStats)
+		mux.HandleFunc("GET /projects/{id}/change-requests/stats", projectStatsHandler.GetProjectChangeRequestStats)
+	}
 	if snProductHandler != nil {
 		mux.HandleFunc("POST /products/search", snProductHandler.SearchProducts)
 	} else {
@@ -286,6 +373,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	mux.HandleFunc("POST /deployed-products", deployedProductHandler.CreateDeployedProduct)
 	mux.HandleFunc("POST /deployed-products/search", deployedProductHandler.SearchDeployedProducts)
 	mux.HandleFunc("PATCH /deployed-products/{id}", deployedProductHandler.PatchDeployedProduct)
+	mux.HandleFunc("POST /deployed-products/{id}/metrics/search", deployedProductHandler.SearchDeployedProductMetrics)
+	mux.HandleFunc("POST /deployed-products/{id}/metrics/usage-counts/search", deployedProductHandler.SearchDeployedProductUsageCounts)
 	mux.HandleFunc("GET /cases/{id}", caseHandler.GetCase)
 	mux.HandleFunc("PATCH /cases/{id}", caseHandler.PatchCase)
 	mux.HandleFunc("POST /cases", caseHandler.CreateCase)
@@ -296,13 +385,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		mux.HandleFunc("POST /cases/feedback/aggregate", feedbackHandler.AggregateFeedback)
 	}
 	mux.HandleFunc("POST /cases/{id}/comments", caseHandler.CreateCaseComment)
+	mux.HandleFunc("POST /cases/{id}/comments/search", caseHandler.SearchCaseComments)
 	mux.HandleFunc("POST /cases/{id}/activities/search", caseHandler.SearchCaseActivities)
 	mux.HandleFunc("POST /attachments", caseHandler.CreateCaseAttachment)
+	mux.HandleFunc("POST /attachments/{id}/confirm", caseHandler.ConfirmCaseAttachment)
 	mux.HandleFunc("POST /attachments/search", caseHandler.SearchCaseAttachments)
 	mux.HandleFunc("GET /attachments/{id}/content", caseHandler.GetCaseAttachmentContent)
-	mux.HandleFunc("GET /attachments/{id}", caseHandler.GetAttachment)
+	mux.HandleFunc("GET /attachments/{id}", caseHandler.GetAttachmentByID)
 	mux.HandleFunc("PATCH /attachments/{id}", caseHandler.UpdateAttachment)
 	mux.HandleFunc("DELETE /attachments/{id}", caseHandler.DeleteCaseAttachment)
+	mux.HandleFunc("GET /cases/{id}/feedback", caseHandler.GetCaseFeedback)
+	mux.HandleFunc("POST /cases/{id}/feedback", caseHandler.SubmitCaseFeedback)
 	mux.HandleFunc("POST /cases/{id}/tags", caseHandler.AddCaseTag)
 	mux.HandleFunc("DELETE /cases/{id}/tags/{tagId}", caseHandler.RemoveCaseTag)
 	mux.HandleFunc("POST /tags/search", caseHandler.SearchTags)
@@ -337,6 +430,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 		mux.HandleFunc("POST /time-cards/search", timeCardHandler.SearchTimeCards)
 		mux.HandleFunc("POST /time-cards", timeCardHandler.CreateTimeCard)
 		mux.HandleFunc("PATCH /time-cards/{id}", timeCardHandler.UpdateTimeCard)
+		mux.HandleFunc("POST /cases/time-cards/search", timeCardHandler.SearchCaseTimeCards)
 		mux.HandleFunc("DELETE /time-cards/{id}", timeCardHandler.DeleteTimeCard)
 	}
 
@@ -348,6 +442,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 	if productVulnerabilityHandler != nil {
 		mux.HandleFunc("POST /products/vulnerabilities/search", productVulnerabilityHandler.SearchProductVulnerabilities)
 		mux.HandleFunc("GET /products/vulnerabilities/{id}", productVulnerabilityHandler.GetProductVulnerability)
+		mux.HandleFunc("GET /products/vulnerabilities/meta", productVulnerabilityHandler.GetVulnerabilityMeta)
 		mux.HandleFunc("POST /products/vulnerabilities/sync", productVulnerabilityHandler.SyncProductVulnerabilities)
 	}
 
@@ -418,6 +513,27 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 
 	if conversationHandler != nil {
 		mux.HandleFunc("POST /conversations/search", conversationHandler.SearchConversations)
+		mux.HandleFunc("GET /conversations/{id}", conversationHandler.GetConversation)
+		mux.HandleFunc("POST /conversations", conversationHandler.CreateConversation)
+		mux.HandleFunc("PATCH /conversations/{id}", conversationHandler.UpdateConversation)
+	}
+
+	if globalHandler != nil {
+		mux.HandleFunc("GET /metadata", globalHandler.GetSystemMetadata)
+		mux.HandleFunc("POST /search", globalHandler.GlobalSearch)
+	}
+
+	if escalationHandler != nil {
+		mux.HandleFunc("POST /escalations/search", escalationHandler.SearchEscalations)
+		mux.HandleFunc("POST /escalations", escalationHandler.CreateEscalation)
+	}
+
+	if instanceHandler != nil {
+		mux.HandleFunc("POST /instances/search", instanceHandler.SearchInstances)
+		mux.HandleFunc("POST /instances/metrics/search", instanceHandler.SearchInstanceMetrics)
+		mux.HandleFunc("POST /instances/usages/search", instanceHandler.SearchInstanceUsage)
+		mux.HandleFunc("POST /instances/metrics/stats/search", instanceHandler.SearchInstanceMetricsStats)
+		mux.HandleFunc("POST /instances/usages/stats/search", instanceHandler.SearchInstanceUsageStats)
 	}
 
 	return middleware.CorrelationID(
@@ -428,5 +544,5 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) http.Handler {
 				),
 			),
 		),
-	)
+	), eventPublisher
 }

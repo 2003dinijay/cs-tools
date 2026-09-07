@@ -20,6 +20,7 @@ type ViteTypeOptions = object;
 
 interface ImportMetaEnv {
   readonly VITE_BACKEND_URL: string;
+  readonly VITE_STREAM_URL?: string;
   readonly VITE_APP_ENV?: string;
 }
 

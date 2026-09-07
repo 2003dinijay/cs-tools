@@ -20,6 +20,15 @@ if (!BACKEND_URL) {
   throw new Error("VITE_BACKEND_URL is not defined");
 }
 
+// Base URL for the case-activity SSE stream — csm-portal-backend's dedicated
+// :9092 listener, exposed as its own Choreo REST endpoint (see that
+// backend's .choreo/component.yaml). Optional, unlike BACKEND_URL: the
+// backend only stands the stream listener up when Event Hub is configured,
+// so a build without it just has no value here. useCaseActivityStream
+// checks for that and no-ops rather than throwing — the Activities tab
+// falls back to its existing manual-refresh behaviour.
+export const STREAM_URL = import.meta.env.VITE_STREAM_URL;
+
 export const USERS_ME_ENDPOINT = "/users/me";
 export const USERS_SEARCH_ENDPOINT = "/users/search";
 

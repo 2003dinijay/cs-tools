@@ -30,9 +30,118 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	integrationservice "github.com/wso2-open-operations/cs-tools/entity-service/internal/servicenow-integration-service"
 )
+
+// publishCaseCreatedTimeout bounds publishCaseCreated's enrichment
+// (GetCaseByID) + publish, so a slow ServiceNow or Event Hub round trip
+// can't consume all of the request's own deadline (middleware.Timeout) —
+// see publishCaseCreated's doc comment for why this runs synchronously
+// rather than detached.
+const publishCaseCreatedTimeout = 5 * time.Second
+
+// publishCommentAddedTimeout bounds publishCommentAdded's enrichment
+// (GetCaseByID plus a bounded SearchCaseComments lookup for the comment
+// author's resolved display name) + publish — same reasoning as
+// publishCaseCreatedTimeout.
+const publishCommentAddedTimeout = 5 * time.Second
+
+// publishStatusChangedTimeout bounds two separate things that share the
+// same reasoning as publishCaseCreatedTimeout: UpdateCase's own pre-PATCH
+// GetCaseByID enrichment/no-op check, and publishStatusChanged's own
+// Publish call afterward.
+const publishStatusChangedTimeout = 5 * time.Second
+
+// publishCaseAssignedTimeout bounds the same two things as
+// publishStatusChangedTimeout, for UpdateCase's assigneeEmail path instead
+// of its state path.
+const publishCaseAssignedTimeout = 5 * time.Second
+
+// publishCaseAcknowledgedTimeout bounds publishCaseAcknowledged's own
+// GetCaseByID enrichment + publish call — see publishCaseCreatedTimeout's
+// doc comment for why.
+const publishCaseAcknowledgedTimeout = 5 * time.Second
+
+// publishSeverityChangedTimeout bounds publishSeverityChanged's own publish
+// call — see publishStatusChangedTimeout's doc comment for why. Unlike
+// publishCaseAcknowledgedTimeout, this doesn't need to also bound a
+// GetCaseByID call: UpdateCase's own pre-PATCH enrichment (mirroring its
+// status-change block) already supplies the "before" CaseView this publish
+// needs.
+const publishSeverityChangedTimeout = 5 * time.Second
+
+// watchListEmails extracts the non-empty emails from a case's watch list —
+// Recipients for every case.* event this file publishes is the case's
+// WatchList emails only (an explicit, deliberate decision — this service
+// has no other notion of who should be emailed for a case; see
+// publishCaseCreated's own doc comment).
+func watchListUserEmails(watchList []domain.WatchListUser) []string {
+	recipients := make([]string, 0, len(watchList))
+	for _, w := range watchList {
+		if w.Email != "" {
+			recipients = append(recipients, w.Email)
+		}
+	}
+	return recipients
+}
+
+// caseProductName returns cv's deployed product's display name (e.g. "WSO2
+// API Manager"), "" when the case has no deployed product. Shared by every
+// publisher that needs it for a case.* payload's Product field (Google
+// Chat space routing key and, for case.created, also a display line — see
+// events.CaseCreatedPayload.Product's own doc comment).
+func caseProductName(cv domain.CaseView) string {
+	if cv.DeployedProductDetails != nil && cv.DeployedProductDetails.Product != nil {
+		return cv.DeployedProductDetails.Product.Name
+	}
+	return ""
+}
+
+// caseTeamName returns cv's account's CRE team display name (e.g. "Team
+// Nova"), "" when the case has no account or the account has no CRE team.
+// Shared by every publisher that needs it for a case.* payload's Team
+// field — see events.CaseCreatedPayload.Team's own doc comment.
+//
+// Reads cv.AccountDetails.CreTeam, which GetCaseByID already resolves from
+// the case's own embedded account object (see snCaseAccount's doc comment)
+// — no extra lookup needed, unlike a fresh GET /accounts/{id} call. As of
+// this field's introduction, that embedded object's creTeam/sreTeam are
+// documented ("not yet available in the backing service") as not
+// guaranteed to be populated by the ServiceNow integration yet, even
+// though the standalone accounts endpoint does return them — this helper
+// simply passes through whatever GetCaseByID resolved, so Team may come
+// back empty in practice until that catches up. If it does, the fix is on
+// the backing service, not here.
+func caseTeamName(cv domain.CaseView) string {
+	if cv.AccountDetails != nil && cv.AccountDetails.CreTeam != nil {
+		return cv.AccountDetails.CreTeam.Name
+	}
+	return ""
+}
+
+// wso2EmailDomain is WSO2's own corporate domain — mirrors
+// apps/csm-portal/backend's own wso2EmailDomain constant (see that
+// package's user_external_account.go).
+const wso2EmailDomain = "@wso2.com"
+
+// filterWso2Emails returns only the emails in emails on wso2EmailDomain,
+// preserving order. Used for CommentTypeWorkNote (an internal note, never
+// meant for a customer's eyes) — a case's watch list can contain both
+// internal and customer emails, so publishing an internal note's
+// case.comment_added event with the full, unfiltered watch list would
+// notify customer watchers about a note that was never meant for them,
+// regardless of how that watch list was populated.
+func filterWso2Emails(emails []string) []string {
+	filtered := make([]string, 0, len(emails))
+	for _, e := range emails {
+		if strings.HasSuffix(strings.ToLower(e), wso2EmailDomain) {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered
+}
 
 // snCasesResponse mirrors the Choreo POST /cases/search response.
 type snCasesResponse struct {
@@ -43,31 +152,36 @@ type snCasesResponse struct {
 }
 
 type snCase struct {
-	ID                    string                      `json:"id"`
-	InternalID            string                      `json:"internalId"`
-	Number                string                      `json:"number"`
-	Title                 string                      `json:"title"`
-	Description           string                      `json:"description"`
-	CreatedOn             string                      `json:"createdOn"`
-	UpdatedOn             *string                     `json:"updatedOn"`
-	CreatedBy             string                      `json:"createdBy"`
-	CreatedByFullName     string                      `json:"createdByFullName"`
-	Project               snCaseProjectRef            `json:"project"`
-	Deployment            snCaseEntityRef             `json:"deployment"`
-	DeployedProduct       snCaseDeployedProduct       `json:"deployedProduct"`
-	Product               *snCaseEntityRef            `json:"product"`
-	State                 *snCaseState                `json:"state"`
-	WorkState             *snCaseLabel                `json:"workState"`
-	Severity              *snCaseLabel                `json:"severity"`
-	IssueType             *snCaseIssueType            `json:"issueType"`
-	EngagementType        *snCaseLabel                `json:"engagementType"`
-	CaseType              *snCaseEntityRef            `json:"caseType"`
-	Catalog               *snCaseEntityRef            `json:"catalog"`
-	CatalogItem           *snCaseEntityRef            `json:"catalogItem"`
-	AssignedTeam          *snCaseEntityRef            `json:"assignedTeam"`
-	Conversation          *snCaseEntityRef            `json:"conversation"`
-	AssignedEngineer      *snAssignedEngineerRef      `json:"assignedEngineer"`
-	AcknowledgedBy        *snAssignedEngineerRef      `json:"acknowledgedBy"`
+	ID                string                 `json:"id"`
+	InternalID        string                 `json:"internalId"`
+	Number            string                 `json:"number"`
+	Title             string                 `json:"title"`
+	Description       string                 `json:"description"`
+	CreatedOn         string                 `json:"createdOn"`
+	UpdatedOn         *string                `json:"updatedOn"`
+	CreatedBy         string                 `json:"createdBy"`
+	CreatedByFullName string                 `json:"createdByFullName"`
+	Project           snCaseProjectRef       `json:"project"`
+	Deployment        snCaseEntityRef        `json:"deployment"`
+	DeployedProduct   snCaseDeployedProduct  `json:"deployedProduct"`
+	Product           *snCaseEntityRef       `json:"product"`
+	State             *snCaseState           `json:"state"`
+	WorkState         *snCaseLabel           `json:"workState"`
+	Severity          *snCaseLabel           `json:"severity"`
+	IssueType         *snCaseIssueType       `json:"issueType"`
+	EngagementType    *snCaseLabel           `json:"engagementType"`
+	CaseType          *snCaseEntityRef       `json:"caseType"`
+	Catalog           *snCaseEntityRef       `json:"catalog"`
+	CatalogItem       *snCaseEntityRef       `json:"catalogItem"`
+	AssignedTeam      *snCaseEntityRef       `json:"assignedTeam"`
+	Conversation      *snCaseEntityRef       `json:"conversation"`
+	AssignedEngineer  *snAssignedEngineerRef `json:"assignedEngineer"`
+	AcknowledgedBy    *snAssignedEngineerRef `json:"acknowledgedBy"`
+	// WorkaroundProvidedOn/WorkaroundProvidedBy mirror AcknowledgedBy's shape:
+	// populated on the Choreo GET /cases/{id} response, null until the workaround
+	// is marked provided (and cleared again on recall).
+	WorkaroundProvidedOn  *string                     `json:"workaroundProvidedOn"`
+	WorkaroundProvidedBy  *snAssignedEngineerRef      `json:"workaroundProvidedBy"`
 	ParentCase            *snCaseRef                  `json:"parentCase"`
 	RelatedCase           *snCaseRef                  `json:"relatedCase"`
 	Account               *snCaseAccount              `json:"account"`
@@ -133,6 +247,24 @@ type snCase struct {
 	// request set includeExtendedFields — nil otherwise, so this must tolerate
 	// absence.
 	WorstCaseFixEta *string `json:"worstCaseFixEta"`
+	// Fields the Ballerina entity-service declares on CaseResponse that were
+	// not declared here, so encoding/json discarded them. All nullable: an
+	// absent key stays nil rather than becoming a zero value.
+	SLAResponseTime       *string          `json:"slaResponseTime"`
+	ClosedBy              *snCaseEntityRef `json:"closedBy"`
+	HasAutoClosed         *bool            `json:"hasAutoClosed"`
+	EngagementStartDate   *string          `json:"engagementStartDate"`
+	EngagementEndDate     *string          `json:"engagementEndDate"`
+	EngagementPaymentType *snCaseLabel     `json:"engagementPaymentType"`
+	// Duration/EscalationLevel/IsEscalated are response fields Choreo already
+	// sends. Note escalationLevel appears twice in this file for different
+	// purposes: as a []string request filter on the search payload, and as this
+	// single choice-list value on the response. Only the filter was declared, so
+	// encoding/json discarded all three on the way back and the portal had no
+	// escalation state or duration to render.
+	Duration        *string                `json:"duration"`
+	EscalationLevel *snCaseEscalationLevel `json:"escalationLevel"`
+	IsEscalated     *bool                  `json:"isEscalated"`
 }
 
 // snCaseVariableAnswer mirrors one answered catalog-item question on a service
@@ -218,6 +350,16 @@ type snCaseLabel struct {
 	Label string `json:"label"`
 }
 
+// snCaseEscalationLevel is the escalation-level choice list on a case response,
+// e.g. {"id": "0", "label": "EL0"}. snCaseLabel cannot be reused because it
+// carries no id, and the id is the part that round-trips into the
+// escalationLevel request filter. json.Number because Choreo has sent choice ids
+// both quoted and bare elsewhere in this API.
+type snCaseEscalationLevel struct {
+	ID    json.Number `json:"id"`
+	Label string      `json:"label"`
+}
+
 type snCaseIssueType struct {
 	ID    json.Number `json:"id"`
 	Label string      `json:"label"`
@@ -252,6 +394,28 @@ var snCaseTypeMap = map[string]string{
 	"hosting":                  "hosting",
 	"hosting_query":            "hosting_query",
 	"hosting_task":             "hosting_task",
+}
+
+// snEscalationLevelToDomain reduces Choreo's escalation-level choice list to the
+// plain nullable string this service exposes for enum-valued fields.
+//
+// It keeps the level id ("0".."5", the same vocabulary validEscalationLevel
+// accepts on the request side) rather than the display label ("EL0"), so the
+// value round-trips: a caller can feed what it reads back into the
+// escalationLevel filter. Building the {id, label} pair the portal renders is
+// the BFF's job, not this service's.
+//
+// An id outside the known set yields nil rather than passing an unrecognised
+// value through, matching how the other snXxxToEnum helpers here behave.
+func snEscalationLevelToDomain(l *snCaseEscalationLevel) *string {
+	if l == nil {
+		return nil
+	}
+	id := strings.TrimSpace(l.ID.String())
+	if id == "" || !validEscalationLevel[id] {
+		return nil
+	}
+	return &id
 }
 
 // snCaseTypeSysidMap maps ServiceNow caseType sysids to domain case type values.
@@ -349,7 +513,7 @@ var snSortFieldMap = map[domain.CaseSortField]string{
 var caseGroupByFieldValues = map[string][]string{
 	"state":          {"open", "work_in_progress", "waiting_on_wso2", "awaiting_info", "reopened", "solution_proposed", "closed"},
 	"severity":       {"catastrophic", "critical", "high", "medium", "low"},
-	"type":           {"case", "service_request", "security_report_analysis", "engagement"},
+	"type":           {"case", "service_request", "security_report_analysis", "announcement", "engagement"},
 	"engagementType": {"migration", "consultancy", "new_feature_improvement", "follow_up", "onboarding"},
 	"issueType":      {"error", "partial_outage", "performance_degradation", "question", "security_or_compliance", "total_outage"},
 	"workState":      {"ongoing", "paused"},
@@ -640,12 +804,17 @@ func validateDateOnly(field, value string) error {
 type snCaseService struct {
 	client     *integrationservice.Client
 	pgFallback CaseService
+	// publisher is nil when Event Hub is not configured (see
+	// config.Config.EventHubBroker) — every call site must check before
+	// using it. See publishCaseCreated.
+	publisher EventPublisherService
 }
 
 // NewSNCaseService constructs a CaseService that delegates SearchCases to the
-// Choreo API and all write/read-by-id operations to pgFallback.
-func NewServiceNowCaseService(client *integrationservice.Client, pgFallback CaseService) CaseService {
-	return &snCaseService{client: client, pgFallback: pgFallback}
+// Choreo API and all write/read-by-id operations to pgFallback. publisher may
+// be nil (see snCaseService.publisher's doc comment).
+func NewServiceNowCaseService(client *integrationservice.Client, pgFallback CaseService, publisher EventPublisherService) CaseService {
+	return &snCaseService{client: client, pgFallback: pgFallback, publisher: publisher}
 }
 
 // snIssueTypeID maps domain CaseIssueType to the ServiceNow issue-type choice-list value.
@@ -701,7 +870,7 @@ type snCreateCaseResponse struct {
 }
 
 func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
-	if err := validateCreateCaseRequest(req); err != nil {
+	if err := validateCreateCaseRequest(&req); err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
 
@@ -821,7 +990,7 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 		stateLabel = snResp.Case.State.Label
 	}
 
-	return domain.CreateCaseResponse{
+	resp := domain.CreateCaseResponse{
 		Message: snResp.Message,
 		Case: domain.CreateCaseDetails{
 			ID:         sysidToUUID(snResp.Case.ID),
@@ -831,7 +1000,422 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 			CreatedOn:  createdOn,
 			State:      stateLabel,
 		},
-	}, nil
+	}
+	s.publishCaseCreated(ctx, req, resp.Case.ID)
+	return resp, nil
+}
+
+// publishCaseCreated best-effort publishes a case.created event for a newly
+// created case. It re-fetches the case via GetCaseByID rather than building
+// the payload from snCreateCaseResponse/req alone: the create response
+// carries only a handful of fields (see snCreateCaseResponse), while
+// GetCaseByID's own SN response already resolves the reporter's display name,
+// the project's name, and each watcher's email — exactly what
+// events.CaseCreatedPayload needs and req/snCreateCaseResponse don't have.
+//
+// Recipients is the case's WatchList emails only (per explicit decision —
+// this service has no other notion of "who should be emailed" for a case).
+// A case created with no watchers is a real, expected state (watchers are
+// often added after creation), not an error — publishing is silently skipped
+// rather than sending a payload csm-notification-service's events.Validate
+// would reject anyway for an empty recipients list.
+//
+// Runs synchronously (not detached/async like apps/csm-portal/backend's own
+// publishAsync) so no goroutine-draining hook is needed on this service's
+// shutdown path — publishCaseCreatedTimeout bounds the added latency instead.
+// Any failure (enrichment or publish) is logged and does not fail CreateCase
+// itself: the case already exists in ServiceNow by this point, and a
+// notification-side hiccup must not be reported to the caller as a failed
+// case creation.
+func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.CreateCaseRequest, caseID string) {
+	if s.publisher == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, publishCaseCreatedTimeout)
+	defer cancel()
+
+	cv, err := s.GetCaseByID(ctx, caseID)
+	if err != nil {
+		// Not logging err itself: it can carry a raw ServiceNow response
+		// (potentially including response-body content), and this service's
+		// own convention is to log only ids and sanitised summaries (see
+		// CLAUDE.md's Security section).
+		slog.ErrorContext(ctx, "sn create case: enrich case for case.created publish failed", "caseId", caseID)
+		return
+	}
+
+	recipients := watchListUserEmails(cv.WatchList)
+	if len(recipients) == 0 {
+		slog.InfoContext(ctx, "sn create case: case.created not published, case has no watchers to email", "caseId", caseID)
+		return
+	}
+
+	reporterName := ""
+	if cv.CreatedBy != nil {
+		reporterName = cv.CreatedBy.Name
+	}
+	product := caseProductName(cv)
+
+	payload, err := json.Marshal(events.CaseCreatedPayload{
+		ReporterName: reporterName,
+		ProjectName:  cv.ProjectDetails.Name,
+		ProjectID:    cv.ProjectDetails.ID,
+		CaseID:       caseID,
+		CaseNumber:   cv.Number,
+		WSO2CaseID:   cv.InternalID,
+		CaseTitle:    cv.Subject,
+		CaseType:     strings.ToUpper(req.Type),
+		Priority:     strings.ToUpper(string(cv.Severity)),
+		Product:      product,
+		Team:         caseTeamName(cv),
+		CreatedAt:    cv.CreatedOn.Format(time.RFC3339),
+		Description:  cv.Description,
+		Recipients:   recipients,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "sn create case: encode case.created payload failed", "caseId", caseID, "error", err)
+		return
+	}
+	if err := s.publisher.Publish(ctx, events.TypeCaseCreated, caseID, payload); err != nil {
+		// Not logging err itself — see publishIncidentCreated's matching log
+		// line for why (same reasoning: a raw Event Hub client error, and
+		// the full error is already durably recorded in
+		// event_publish_failures by Publish itself).
+		slog.ErrorContext(ctx, "sn create case: publish case.created failed", "caseId", caseID)
+	}
+}
+
+// resolveCommentAuthorNameSearchLimit bounds resolveCommentAuthorName's
+// lookup — the new comment is essentially certain to be within this many
+// of the case's most recent comments regardless of SearchCaseComments' own
+// sort order (undocumented, not controllable by this service), since it
+// was just created moments before this call runs.
+const resolveCommentAuthorNameSearchLimit = 20
+
+// resolveCommentAuthorName looks up commentID's author display name via
+// SearchCaseComments — see publishCommentAdded's doc comment for why this
+// re-fetch is needed at all. Returns "" if the comment isn't found in the
+// first resolveCommentAuthorNameSearchLimit results, or if the search
+// itself fails; either way the caller logs and skips publishing rather
+// than sending an event with a fabricated or missing author name.
+func (s *snCaseService) resolveCommentAuthorName(ctx context.Context, caseID, commentID string) string {
+	pagination := domain.Pagination{Limit: resolveCommentAuthorNameSearchLimit}
+	if err := normalizePagination(&pagination); err != nil {
+		return ""
+	}
+	resp, err := s.SearchCaseComments(ctx, domain.SearchCaseCommentsRequest{
+		CaseID:     caseID,
+		Pagination: pagination,
+	})
+	if err != nil {
+		return ""
+	}
+	for _, c := range resp.Comments {
+		if c.ID == commentID && c.CreatedBy != nil {
+			return c.CreatedBy.Name
+		}
+	}
+	return ""
+}
+
+// publishCommentAdded best-effort publishes a case.comment_added event
+// after a new comment is created. Recipients is the case's WatchList
+// emails only — see publishCaseCreated's own doc comment for why, and why
+// an empty list silently skips publishing rather than sending a payload
+// csm-notification-service's events.Validate would reject anyway. When
+// req.Type is CommentTypeWorkNote (an internal note — never meant for a
+// customer to see), Recipients is filtered down to wso2.com addresses
+// only via filterWso2Emails, regardless of who else is on the case's
+// watch list.
+//
+// events.CommentAddedPayload.Name requires the comment author's resolved
+// display name, which snCreateCommentResponse doesn't carry (only a raw
+// CreatedBy string, unresolved — see snCreateCommentResponse) — every
+// other place in this file that needs a resolved author name gets it from
+// a GET/search response, never a bare create-acknowledgment response, so
+// this re-fetches via resolveCommentAuthorName (SearchCaseComments)
+// instead of trusting the create response, mirroring publishCaseCreated's
+// own "re-fetch rather than trust the create response" precedent. If the
+// author name can't be resolved that way, publishing is skipped (logged)
+// rather than sending an event with an empty or fabricated name — see
+// resolveCommentAuthorName's own doc comment for when that happens.
+//
+// Runs synchronously, bounded by publishCommentAddedTimeout — see
+// publishCaseCreated's own doc comment for why (same reasoning).
+func (s *snCaseService) publishCommentAdded(ctx context.Context, req domain.CreateCaseCommentRequest, commentID string) {
+	if s.publisher == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, publishCommentAddedTimeout)
+	defer cancel()
+
+	cv, err := s.GetCaseByID(ctx, req.CaseID)
+	if err != nil {
+		slog.ErrorContext(ctx, "sn create comment: enrich case for case.comment_added publish failed", "caseId", req.CaseID)
+		return
+	}
+
+	recipients := watchListUserEmails(cv.WatchList)
+	if req.Type == domain.CommentTypeWorkNote {
+		recipients = filterWso2Emails(recipients)
+	}
+	if len(recipients) == 0 {
+		slog.InfoContext(ctx, "sn create comment: case.comment_added not published, case has no watchers to email", "caseId", req.CaseID)
+		return
+	}
+
+	authorName := s.resolveCommentAuthorName(ctx, req.CaseID, commentID)
+	if authorName == "" {
+		slog.InfoContext(ctx, "sn create comment: case.comment_added not published, could not resolve comment author's display name", "caseId", req.CaseID)
+		return
+	}
+
+	payload, err := json.Marshal(events.CommentAddedPayload{
+		Name:           authorName,
+		ProjectID:      cv.ProjectDetails.ID,
+		CaseID:         req.CaseID,
+		CaseNumber:     cv.Number,
+		WSO2CaseID:     cv.InternalID,
+		CaseTitle:      cv.Subject,
+		CaseComment:    req.Content,
+		CommentID:      commentID,
+		IsInternalNote: req.Type == domain.CommentTypeWorkNote,
+		Recipients:     recipients,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "sn create comment: encode case.comment_added payload failed", "caseId", req.CaseID, "error", err)
+		return
+	}
+	if err := s.publisher.Publish(ctx, events.TypeCommentAdded, req.CaseID, payload); err != nil {
+		// Not logging err itself — see publishCaseCreated's matching log
+		// line for why.
+		slog.ErrorContext(ctx, "sn create comment: publish case.comment_added failed", "caseId", req.CaseID)
+	}
+}
+
+// publishStatusChanged best-effort publishes a case.status_changed event
+// after UpdateCase changes a case's state. newStatus is the raw SN state
+// label (e.g. "Open", "Work In Progress") rather than domain.CaseState's
+// own enum conversion — mirrors CreateCase's own stateLabel handling, and
+// is always available whenever snResp.Case.State is non-nil, unlike the
+// enum conversion (snCaseStateLabelToEnum), which silently leaves the
+// domain value unset on a label it doesn't recognize.
+//
+// before is the case as it was fetched by UpdateCase *before* issuing the
+// PATCH — the caller has already used it to confirm the case's state is
+// actually transitioning (a caller re-PATCHing the current state must not
+// trigger a false "status changed" notification to every watcher; see
+// UpdateCase's own comment at that fetch), and this reuses the exact same
+// enrichment for Recipients/ProjectID rather than issuing a second
+// GetCaseByID call after the PATCH: neither value depends on the update
+// that just happened.
+//
+// Recipients is the case's WatchList emails only — see publishCaseCreated's
+// own doc comment for why, and why an empty list silently skips
+// publishing.
+//
+// Runs synchronously, bounded by publishStatusChangedTimeout — see
+// publishCaseCreated's own doc comment for why (same reasoning).
+func (s *snCaseService) publishStatusChanged(ctx context.Context, caseID, newStatus string, before domain.CaseView) {
+	if s.publisher == nil || newStatus == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, publishStatusChangedTimeout)
+	defer cancel()
+
+	recipients := watchListUserEmails(before.WatchList)
+	if len(recipients) == 0 {
+		slog.InfoContext(ctx, "sn update case: case.status_changed not published, case has no watchers to email", "caseId", caseID)
+		return
+	}
+
+	payload, err := json.Marshal(events.StatusChangedPayload{
+		ProjectID:  before.ProjectDetails.ID,
+		CaseID:     caseID,
+		CaseNumber: before.Number,
+		WSO2CaseID: before.InternalID,
+		CaseTitle:  before.Subject,
+		NewStatus:  newStatus,
+		Recipients: recipients,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "sn update case: encode case.status_changed payload failed", "caseId", caseID, "error", err)
+		return
+	}
+	if err := s.publisher.Publish(ctx, events.TypeStatusChanged, caseID, payload); err != nil {
+		// Not logging err itself — see publishCaseCreated's matching log
+		// line for why.
+		slog.ErrorContext(ctx, "sn update case: publish case.status_changed failed", "caseId", caseID)
+	}
+}
+
+// publishSeverityChanged best-effort publishes a case.severity_changed
+// event after UpdateCase changes a case's severity — called only when the
+// PATCH's own req.Severity was set AND actually differs from the case's
+// prior severity (the same no-op guard as publishStatusChanged's own call
+// site: a caller re-PATCHing the case's current severity must not send
+// every watcher a false "severity changed" notification). Unlike
+// publishCaseAcknowledged, this has both an email reaction (Recipients,
+// same watch-list-emails audience as publishStatusChanged/
+// publishCaseAssigned) and a Google Chat alert (Product, same
+// caseProductName(before) reasoning as publishCaseCreated/
+// publishCaseAcknowledged) — csm-notification-service's dispatch package
+// decides how to route each.
+//
+// before is the case as it was fetched by UpdateCase *before* issuing the
+// PATCH — same reuse-the-enrichment reasoning as publishStatusChanged's own
+// doc comment.
+//
+// Recipients is the case's WatchList emails only — see publishCaseCreated's
+// own doc comment for why, and why an empty list silently skips publishing
+// (both the email AND the Chat alert — csm-notification-service has no
+// separate "chat only, no recipients" event type for this the way
+// case.acknowledged is; a severity change with no watchers has nobody to
+// notify by design).
+//
+// Runs synchronously, bounded by publishSeverityChangedTimeout — see
+// publishCaseCreated's own doc comment for why (same reasoning).
+func (s *snCaseService) publishSeverityChanged(ctx context.Context, caseID, oldSeverity, newSeverity string, before domain.CaseView) {
+	if s.publisher == nil || newSeverity == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, publishSeverityChangedTimeout)
+	defer cancel()
+
+	recipients := watchListUserEmails(before.WatchList)
+	if len(recipients) == 0 {
+		slog.InfoContext(ctx, "sn update case: case.severity_changed not published, case has no watchers to email", "caseId", caseID)
+		return
+	}
+
+	payload, err := json.Marshal(events.SeverityChangedPayload{
+		ProjectID:   before.ProjectDetails.ID,
+		CaseID:      caseID,
+		CaseNumber:  before.Number,
+		WSO2CaseID:  before.InternalID,
+		CaseTitle:   before.Subject,
+		OldSeverity: strings.ToUpper(oldSeverity),
+		NewSeverity: strings.ToUpper(newSeverity),
+		Product:     caseProductName(before),
+		Team:        caseTeamName(before),
+		Recipients:  recipients,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "sn update case: encode case.severity_changed payload failed", "caseId", caseID, "error", err)
+		return
+	}
+	if err := s.publisher.Publish(ctx, events.TypeSeverityChanged, caseID, payload); err != nil {
+		// Not logging err itself — see publishCaseCreated's matching log
+		// line for why.
+		slog.ErrorContext(ctx, "sn update case: publish case.severity_changed failed", "caseId", caseID)
+	}
+}
+
+// publishCaseAssigned best-effort publishes a case.assigned event after
+// UpdateCase changes a case's assignee. assigneeName/assigneeEmail
+// identify who the case is now assigned *to* — not who performed the
+// assignment: this service has no inbound identity layer (the
+// x-user-id-token header it forwards is opaque, not decodable), so it has
+// no way to resolve who made the request; the new assignee's own
+// email is directly available on req.AssigneeEmail with no extra lookup,
+// and assigneeName is ServiceNow's own resolved display name for that
+// assignee from the PATCH response, falling back to the email if
+// ServiceNow's response didn't carry one.
+//
+// before is the case as it was fetched by UpdateCase *before* issuing the
+// PATCH — same reuse-the-enrichment reasoning as publishStatusChanged's
+// own doc comment (the caller has already used it to confirm the assignee
+// actually changed).
+//
+// Recipients is the case's WatchList emails only — see publishCaseCreated's
+// own doc comment for why, and why an empty list silently skips
+// publishing.
+//
+// Runs synchronously, bounded by publishCaseAssignedTimeout — see
+// publishCaseCreated's own doc comment for why (same reasoning).
+func (s *snCaseService) publishCaseAssigned(ctx context.Context, caseID, assigneeName, assigneeEmail string, before domain.CaseView) {
+	if s.publisher == nil || assigneeEmail == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, publishCaseAssignedTimeout)
+	defer cancel()
+
+	recipients := watchListUserEmails(before.WatchList)
+	if len(recipients) == 0 {
+		slog.InfoContext(ctx, "sn update case: case.assigned not published, case has no watchers to email", "caseId", caseID)
+		return
+	}
+
+	payload, err := json.Marshal(events.CaseAssignedPayload{
+		AssigneeName:  assigneeName,
+		AssigneeEmail: assigneeEmail,
+		ProjectID:     before.ProjectDetails.ID,
+		CaseID:        caseID,
+		CaseNumber:    before.Number,
+		WSO2CaseID:    before.InternalID,
+		CaseTitle:     before.Subject,
+		Recipients:    recipients,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "sn update case: encode case.assigned payload failed", "caseId", caseID, "error", err)
+		return
+	}
+	if err := s.publisher.Publish(ctx, events.TypeCaseAssigned, caseID, payload); err != nil {
+		// Not logging err itself — see publishCaseCreated's matching log
+		// line for why.
+		slog.ErrorContext(ctx, "sn update case: publish case.assigned failed", "caseId", caseID)
+	}
+}
+
+// publishCaseAcknowledged best-effort publishes a case.acknowledged event
+// after UpdateCase's Acknowledge path successfully claims the case for the
+// first time — never for a repeat Acknowledge:true call that succeeded
+// without changing anything (AlreadyAcknowledged true; see the call site's
+// own comment). Chat-only: there is no email reaction for an
+// acknowledgment, unlike every other publisher in this file, so there's no
+// Recipients/watch-list concept here at all.
+//
+// Re-fetches the case via GetCaseByID rather than trusting the PATCH
+// response for CaseNumber/WSO2CaseID/Severity — snUpdateCaseResponse's
+// acknowledge path only ever echoes Number/AlreadyAcknowledged/
+// AcknowledgedBy, none of which cover what csm-notification-service's Chat
+// alert needs to display (mirrors publishCaseCreated's own "re-fetch
+// rather than trust a narrow create/update response" precedent).
+//
+// Runs synchronously, bounded by publishCaseAcknowledgedTimeout — see
+// publishCaseCreated's own doc comment for why (same reasoning).
+func (s *snCaseService) publishCaseAcknowledged(ctx context.Context, caseID, acknowledgerName string) {
+	if s.publisher == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, publishCaseAcknowledgedTimeout)
+	defer cancel()
+
+	cv, err := s.GetCaseByID(ctx, caseID)
+	if err != nil {
+		slog.ErrorContext(ctx, "sn update case: enrich case for case.acknowledged publish failed", "caseId", caseID)
+		return
+	}
+	product := caseProductName(cv)
+
+	payload, err := json.Marshal(events.CaseAcknowledgedPayload{
+		CaseID:           caseID,
+		CaseNumber:       cv.Number,
+		WSO2CaseID:       cv.InternalID,
+		Severity:         strings.ToUpper(string(cv.Severity)),
+		Product:          product,
+		Team:             caseTeamName(cv),
+		AcknowledgerName: acknowledgerName,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "sn update case: encode case.acknowledged payload failed", "caseId", caseID, "error", err)
+		return
+	}
+	if err := s.publisher.Publish(ctx, events.TypeCaseAcknowledged, caseID, payload); err != nil {
+		// Not logging err itself — see publishCaseCreated's matching log
+		// line for why.
+		slog.ErrorContext(ctx, "sn update case: publish case.acknowledged failed", "caseId", caseID)
+	}
 }
 
 func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
@@ -865,19 +1449,22 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	}
 
 	cv := domain.CaseView{
-		ID:             sysidToUUID(c.ID),
-		Number:         c.Number,
-		InternalID:     c.InternalID,
-		Subject:        c.Title,
-		Description:    c.Description,
-		Severity:       snSeverityToSeverity(c.Severity),
-		IssueType:      snIssueTypeToEnum(c.IssueType),
-		State:          state,
-		WorkState:      snWorkStateLabelToEnum(c.WorkState),
-		Type:           snCaseTypeToDomain(c.CaseType),
-		EngagementType: snLabelStr(c.EngagementType),
-		CreatedOn:      createdOn,
-		UpdatedOn:      updatedOn,
+		ID:              sysidToUUID(c.ID),
+		Number:          c.Number,
+		InternalID:      c.InternalID,
+		Subject:         c.Title,
+		Duration:        c.Duration,
+		EscalationLevel: snEscalationLevelToDomain(c.EscalationLevel),
+		IsEscalated:     c.IsEscalated,
+		Description:     c.Description,
+		Severity:        snSeverityToSeverity(c.Severity),
+		IssueType:       snIssueTypeToEnum(c.IssueType),
+		State:           state,
+		WorkState:       snWorkStateLabelToEnum(c.WorkState),
+		Type:            snCaseTypeToDomain(c.CaseType),
+		EngagementType:  snLabelStr(c.EngagementType),
+		CreatedOn:       createdOn,
+		UpdatedOn:       updatedOn,
 		// The case read carries no id for the creator, only the email and full
 		// name, so the canonical reference is emitted with a null id.
 		CreatedBy:      domain.NewUserReference("", c.CreatedBy, c.CreatedByFullName),
@@ -930,6 +1517,16 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	}
 	if c.AcknowledgedBy != nil {
 		cv.AcknowledgedBy = &domain.AssignedEngineerRef{ID: sysidToUUID(c.AcknowledgedBy.ID), Name: c.AcknowledgedBy.Name, Email: c.AcknowledgedBy.Email}
+	}
+	if c.WorkaroundProvidedOn != nil && *c.WorkaroundProvidedOn != "" {
+		workaroundProvidedOn, err := parseSNDateTime(ctx, "sn get case", "workaroundProvidedOn", *c.WorkaroundProvidedOn)
+		if err != nil {
+			return domain.CaseView{}, fmt.Errorf("sn get case: parse workaroundProvidedOn %q: %w", *c.WorkaroundProvidedOn, err)
+		}
+		cv.WorkaroundProvidedOn = &workaroundProvidedOn
+	}
+	if c.WorkaroundProvidedBy != nil {
+		cv.WorkaroundProvidedBy = &domain.AssignedEngineerRef{ID: sysidToUUID(c.WorkaroundProvidedBy.ID), Name: c.WorkaroundProvidedBy.Name, Email: c.WorkaroundProvidedBy.Email}
 	}
 	if c.ParentCase != nil {
 		cv.ParentCase = &domain.CaseNumberRef{ID: sysidToUUID(c.ParentCase.ID), Number: c.ParentCase.Number, Type: snParentCaseTypeToDomain(c.ParentCase.Type)}
@@ -1040,6 +1637,23 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	if c.WorstCaseFixEta != nil && *c.WorstCaseFixEta != "" {
 		cv.WorstCaseFixEta = c.WorstCaseFixEta
 	}
+
+	// Pass-through of the fields declared alongside the fix-ETA group above.
+	// Refs get sysidToUUID applied like every other inbound ID; the date fields
+	// are already date-only strings on both sides, so no reformatting.
+	// AcknowledgedBy is not re-assigned here — already populated above with the
+	// richer AssignedEngineerRef (including Email).
+	cv.SLAResponseTime = c.SLAResponseTime
+	cv.HasAutoClosed = c.HasAutoClosed
+	cv.EngagementStartDate = c.EngagementStartDate
+	cv.EngagementEndDate = c.EngagementEndDate
+	if c.ClosedBy != nil {
+		cv.ClosedBy = &domain.EntityRef{ID: sysidToUUID(c.ClosedBy.ID), Name: c.ClosedBy.Name}
+	}
+	if c.EngagementPaymentType != nil && c.EngagementPaymentType.Label != "" {
+		cv.EngagementPaymentType = &c.EngagementPaymentType.Label
+	}
+
 	// The Choreo GET /cases/{id} response (snCase above) still has no inline tags field,
 	// so the case's current tags are fetched separately via the case-scoped
 	// GET /cases/{id}/tags resource. A failure here must not fail the whole case read
@@ -1059,6 +1673,11 @@ type snCreateCommentPayload struct {
 	ReferenceType string `json:"referenceType"`
 	Type          string `json:"type"`
 	Content       string `json:"content"`
+	// CreatedBy is omitted unless a caller explicitly overrides the author —
+	// ServiceNow then falls back to resolving it from the caller's token, which
+	// is what the case-comment path here relies on. See
+	// domain.CreateCommentRequest.CreatedBy.
+	CreatedBy string `json:"createdBy,omitempty"`
 }
 
 type snCreateCommentResponse struct {
@@ -1107,14 +1726,16 @@ func (s *snCaseService) CreateCaseComment(ctx context.Context, req domain.Create
 		return domain.CreateCaseCommentResponse{}, fmt.Errorf("sn create comment: parse createdOn %q: %w", snResp.Comment.CreatedOn, err)
 	}
 
-	return domain.CreateCaseCommentResponse{
+	result := domain.CreateCaseCommentResponse{
 		Message: snResp.Message,
 		Comment: domain.CaseCommentDetail{
 			ID:        sysidToUUID(snResp.Comment.ID),
 			CreatedOn: createdOn,
 			CreatedBy: snResp.Comment.CreatedBy,
 		},
-	}, nil
+	}
+	s.publishCommentAdded(ctx, req, result.Comment.ID)
+	return result, nil
 }
 
 type snCommentFilters struct {
@@ -1142,6 +1763,22 @@ type snComment struct {
 	// author is not a real user (e.g. "system") and when the ServiceNow side
 	// predates the field. See snUserRef.
 	CreatedByUser *snUserRef `json:"createdByUser"`
+	// Inline attachments are the images embedded in a comment body. Declared
+	// here because ServiceNow sends them and this struct previously dropped
+	// them; shape follows the Ballerina entity-service InlineAttachment record.
+	HasInlineAttachments bool                 `json:"hasInlineAttachments"`
+	InlineAttachments    []snInlineAttachment `json:"inlineAttachments"`
+}
+
+// snInlineAttachment is an image embedded in a comment body, as ServiceNow
+// returns it. IDs are sysids and are converted with sysidToUUID on the way out.
+type snInlineAttachment struct {
+	ID          string `json:"id"`
+	FileName    string `json:"fileName"`
+	ContentType string `json:"contentType"`
+	DownloadURL string `json:"downloadUrl"`
+	CreatedOn   string `json:"createdOn"`
+	CreatedBy   string `json:"createdBy"`
 }
 
 type snSearchCommentsResponse struct {
@@ -1212,13 +1849,36 @@ func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.Searc
 		default:
 			commentType = domain.CommentTypeComment
 		}
+		// Inline attachments: sysid -> UUID like every other inbound ID, and the
+		// same createdOn layout. A parse failure on one image must not fail the
+		// whole comment page, so a bad timestamp leaves that entry's CreatedOn zero.
+		var inlineAttachments []domain.InlineAttachment
+		for _, ia := range c.InlineAttachments {
+			entry := domain.InlineAttachment{
+				ID:          sysidToUUID(ia.ID),
+				FileName:    ia.FileName,
+				ContentType: ia.ContentType,
+				DownloadURL: ia.DownloadURL,
+				CreatedBy:   ia.CreatedBy,
+			}
+			// Left nil for an empty or unparseable value: a zero time would render as
+			// "0001-01-01T00:00:00Z" and read as a genuine timestamp.
+			if ia.CreatedOn != "" {
+				if parsed, err := time.Parse(snCreatedOnLayout, ia.CreatedOn); err == nil {
+					entry.CreatedOn = &parsed
+				}
+			}
+			inlineAttachments = append(inlineAttachments, entry)
+		}
 		comments = append(comments, domain.CaseComment{
-			ID:        sysidToUUID(c.ID),
-			CaseID:    sysidToUUID(c.ReferenceID),
-			Type:      commentType,
-			Content:   c.Content,
-			CreatedBy: snUserReference(c.CreatedByUser, c.CreatedBy, c.CreatedByFullName),
-			CreatedOn: createdAt,
+			ID:                   sysidToUUID(c.ID),
+			CaseID:               sysidToUUID(c.ReferenceID),
+			Type:                 commentType,
+			Content:              c.Content,
+			CreatedBy:            snUserReference(c.CreatedByUser, c.CreatedBy, c.CreatedByFullName),
+			CreatedOn:            createdAt,
+			HasInlineAttachments: c.HasInlineAttachments,
+			InlineAttachments:    inlineAttachments,
 		})
 	}
 
@@ -1301,6 +1961,10 @@ type snUpdateCasePayload struct {
 	AddPublicComment *bool   `json:"addPublicComment,omitempty"`
 	Product          *string `json:"product,omitempty"`
 	PublicTicket     *string `json:"publicTicket,omitempty"`
+	// WorkaroundProvided marks (true) or recalls (false) the case's workaround
+	// (u_workaround_provided/u_workaround_provided_by). Same combinable pathway as
+	// the fix-ETA fields above -- not mutually exclusive with anything.
+	WorkaroundProvided *bool `json:"workaroundProvided,omitempty"`
 }
 
 // snResolutionStates are the state keys that allow resolution fields.
@@ -1524,9 +2188,12 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	if req.PublicTicket != nil {
 		combinableCount++
 	}
+	if req.WorkaroundProvided != nil {
+		combinableCount++
+	}
 	const fieldList = "state, severity, workState, watchList, assigneeEmail, parentId, acknowledge, type, " +
 		"relatedCaseId, autocloseHoldUntil, subject, description, deploymentId, deployedProductId, " +
-		"bestCaseFixEta, mostLikelyFixEta, or worstCaseFixEta"
+		"bestCaseFixEta, mostLikelyFixEta, worstCaseFixEta, or workaroundProvided"
 	if exclusiveCount == 0 && combinableCount == 0 {
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "at least one of " + fieldList + " must be provided"}
 	}
@@ -1801,6 +2468,87 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		payload.Product = req.Product
 		payload.PublicTicket = req.PublicTicket
 	}
+	if req.WorkaroundProvided != nil {
+		payload.WorkaroundProvided = req.WorkaroundProvided
+	}
+
+	// A state-change PATCH is only worth publishing case.status_changed for
+	// if the state is actually transitioning — a caller re-PATCHing the
+	// case's own current state (a no-op as far as ServiceNow is concerned)
+	// must not send every watcher a false "status changed" notification.
+	// Fetching the case's state now, before the PATCH below, both answers
+	// that question and supplies publishStatusChanged's own enrichment
+	// (ProjectID/Recipients) — a single GetCaseByID call either way, just
+	// moved earlier instead of adding a second one after the PATCH. Bounded
+	// by its own derived context (publishStatusChangedTimeout), same as
+	// every other publish helper's enrichment call, so a slow ServiceNow
+	// round trip here can't eat into this request's own deadline — unlike
+	// those helpers, this one sits in UpdateCase's critical path (before
+	// the PATCH, not fired off after success), so a failure here is caught
+	// and simply skips publishing rather than failing UpdateCase itself.
+	var caseBeforeUpdate domain.CaseView
+	publishStatusChange := false
+	if req.State != nil && s.publisher != nil {
+		enrichCtx, cancel := context.WithTimeout(ctx, publishStatusChangedTimeout)
+		cv, err := s.GetCaseByID(enrichCtx, req.ID)
+		cancel()
+		switch {
+		case err != nil:
+			slog.ErrorContext(ctx, "sn update case: enrich case for case.status_changed publish failed", "caseId", req.ID)
+		case cv.State == *req.State:
+			slog.InfoContext(ctx, "sn update case: case.status_changed not published, state is unchanged", "caseId", req.ID)
+		default:
+			caseBeforeUpdate = cv
+			publishStatusChange = true
+		}
+	}
+
+	// Same reasoning as the state-change block above, applied to severity
+	// instead: a caller re-PATCHing the case's current severity (a no-op as
+	// far as ServiceNow is concerned) must not send every watcher a false
+	// "severity changed" notification. req.State and req.Severity are
+	// mutually exclusive per request (see exclusiveCount above), so this and
+	// the block above never both fire for the same call.
+	var caseBeforeSeverity domain.CaseView
+	publishSeverityChange := false
+	if req.Severity != nil && s.publisher != nil {
+		enrichCtx, cancel := context.WithTimeout(ctx, publishSeverityChangedTimeout)
+		cv, err := s.GetCaseByID(enrichCtx, req.ID)
+		cancel()
+		switch {
+		case err != nil:
+			slog.ErrorContext(ctx, "sn update case: enrich case for case.severity_changed publish failed", "caseId", req.ID)
+		case cv.Severity == *req.Severity:
+			slog.InfoContext(ctx, "sn update case: case.severity_changed not published, severity is unchanged", "caseId", req.ID)
+		default:
+			caseBeforeSeverity = cv
+			publishSeverityChange = true
+		}
+	}
+
+	// Same reasoning as the state-change block above, applied to
+	// assigneeEmail instead: a caller re-PATCHing the case's current
+	// assignee (a no-op as far as ServiceNow is concerned) must not send
+	// every watcher a false "case assigned" notification. req.State and
+	// req.AssigneeEmail are mutually exclusive per request (see
+	// exclusiveCount above), so this and the block above never both fire
+	// for the same call.
+	var caseBeforeAssign domain.CaseView
+	publishCaseAssign := false
+	if req.AssigneeEmail != nil && s.publisher != nil {
+		enrichCtx, cancel := context.WithTimeout(ctx, publishCaseAssignedTimeout)
+		cv, err := s.GetCaseByID(enrichCtx, req.ID)
+		cancel()
+		switch {
+		case err != nil:
+			slog.ErrorContext(ctx, "sn update case: enrich case for case.assigned publish failed", "caseId", req.ID)
+		case cv.AssignedEngineer != nil && strings.EqualFold(cv.AssignedEngineer.Email, *req.AssigneeEmail):
+			slog.InfoContext(ctx, "sn update case: case.assigned not published, assignee is unchanged", "caseId", req.ID)
+		default:
+			caseBeforeAssign = cv
+			publishCaseAssign = true
+		}
+	}
 
 	raw, err := s.client.Patch(ctx, "/cases/"+uuidToSysid(req.ID), token, payload)
 	if err != nil {
@@ -1911,6 +2659,35 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		resp.Case.WorstCaseFixEta = snResp.Case.WorstCaseFixEta
 	}
 
+	if publishStatusChange && snResp.Case.State != nil {
+		s.publishStatusChanged(ctx, req.ID, snResp.Case.State.Label, caseBeforeUpdate)
+	}
+	if publishCaseAssign {
+		assigneeName := *req.AssigneeEmail
+		if snResp.Case.AssignedTo != nil && snResp.Case.AssignedTo.Name != "" {
+			assigneeName = snResp.Case.AssignedTo.Name
+		}
+		s.publishCaseAssigned(ctx, req.ID, assigneeName, *req.AssigneeEmail, caseBeforeAssign)
+	}
+	// AlreadyAcknowledged distinguishes a genuine first-time claim from a
+	// repeat Acknowledge:true call that succeeded without changing anything
+	// (see UpdateCaseRequest.Acknowledge's own doc comment) — only the
+	// former is a real event worth a Chat alert.
+	if req.Acknowledge != nil && *req.Acknowledge && (resp.Case.AlreadyAcknowledged == nil || !*resp.Case.AlreadyAcknowledged) && resp.Case.AcknowledgedBy != nil {
+		s.publishCaseAcknowledged(ctx, req.ID, resp.Case.AcknowledgedBy.Name)
+	}
+	// resp.Case.Severity != caseBeforeSeverity.Severity is a second guard on
+	// top of publishSeverityChange itself: that flag only confirms the
+	// PATCH *request* asked for a different severity than the pre-PATCH
+	// GetCaseByID observed — it says nothing about what the PATCH response
+	// actually echoes back. If ServiceNow's response reports the
+	// pre-update severity (e.g. a stale echo), publishing anyway would
+	// send a false case.severity_changed event with identical old/new
+	// values.
+	if publishSeverityChange && resp.Case.Severity != "" && resp.Case.Severity != caseBeforeSeverity.Severity {
+		s.publishSeverityChanged(ctx, req.ID, string(caseBeforeSeverity.Severity), string(resp.Case.Severity), caseBeforeSeverity)
+	}
+
 	return resp, nil
 }
 
@@ -2016,9 +2793,18 @@ func (s *snCaseService) CreateCaseAttachment(ctx context.Context, req domain.Cre
 			SizeBytes:   snResp.Attachment.SizeBytes,
 			CreatedOn:   createdOn,
 			CreatedBy:   snResp.Attachment.CreatedBy,
-			DownloadURL: snResp.Attachment.DownloadURL,
+			DownloadURL: &snResp.Attachment.DownloadURL,
+			Status:      domain.AttachmentStatusComplete,
 		},
 	}, nil
+}
+
+// ConfirmCaseAttachment implements CaseService. ServiceNow's /attachments API
+// only ever returns fully-uploaded files -- there is no pending/in-progress
+// upload state to confirm -- so this is a CSM-native (Postgres) data
+// source-only operation. See caseService.ConfirmCaseAttachment.
+func (s *snCaseService) ConfirmCaseAttachment(_ context.Context, _ string) (domain.ConfirmAttachmentResponse, error) {
+	return domain.ConfirmAttachmentResponse{}, &apierror.ServiceUnavailableError{Msg: "confirming an attachment is only supported for the CSM-native data source"}
 }
 
 var validReferenceTypes = map[domain.ReferenceType]struct{}{
@@ -2108,6 +2894,7 @@ func (s *snCaseService) SearchCaseAttachments(ctx context.Context, req domain.Se
 			CreatedOn:     createdOn,
 			DownloadURL:   a.DownloadURL,
 			PreviewURL:    a.PreviewURL,
+			Status:        domain.AttachmentStatusComplete,
 		})
 	}
 
@@ -2284,51 +3071,113 @@ func (s *snCaseService) DeleteCaseAttachment(ctx context.Context, req domain.Del
 	return domain.DeleteAttachmentResponse{Message: snResp.Message}, nil
 }
 
-// GetAttachment implements CaseService.GetAttachment for the ServiceNow data source.
-// The GET /attachments/{id} response does not carry referenceType (mirroring the
-// /attachments/search response's snAttachment shape), so the returned domain.Attachment's
-// ReferenceType is left as the zero value -- callers that need it already know it from
-// context (e.g. the request that led them to the attachment id).
-func (s *snCaseService) GetAttachment(ctx context.Context, attachmentID string) (domain.Attachment, error) {
-	if err := validateUUIDs("id", []string{attachmentID}); err != nil {
-		return domain.Attachment{}, err
+// snAttachmentDetails mirrors the Choreo GET /attachments/{id} response
+// (Ballerina's AttachmentResponse -- every Attachment field plus content).
+// The response does carry createdByUser/createdByFullName, but this lookup
+// does not resolve them: createdByUser arrives null, unlike the search path
+// (see snAttachment), so CreatedBy stays the bare string below. Do not
+// "align" this decode with the search path's UserReference shape on the
+// assumption the object is populated here -- it is not. referenceType is
+// genuinely absent from this response.
+type snAttachmentDetails struct {
+	ID          string  `json:"id"`
+	ReferenceID string  `json:"referenceId"`
+	Name        string  `json:"name"`
+	Type        string  `json:"type"`
+	SizeBytes   int     `json:"sizeBytes"`
+	Description *string `json:"description"`
+	CreatedBy   string  `json:"createdBy"`
+	CreatedOn   string  `json:"createdOn"`
+	DownloadURL *string `json:"downloadUrl"`
+	PreviewURL  *string `json:"previewUrl"`
+	Content     string  `json:"content"`
+}
+
+func (s *snCaseService) GetAttachmentByID(ctx context.Context, id string) (domain.AttachmentDetails, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.AttachmentDetails{}, err
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
 
-	raw, err := s.client.Get(ctx, "/attachments/"+uuidToSysid(attachmentID), token)
+	raw, err := s.client.Get(ctx, "/attachments/"+uuidToSysid(id), token)
 	if err != nil {
-		return domain.Attachment{}, err
+		return domain.AttachmentDetails{}, err
 	}
 
-	var a snAttachment
-	if err := json.Unmarshal(raw, &a); err != nil {
-		return domain.Attachment{}, fmt.Errorf("sn get attachment: parse response: %w", err)
+	var snResp snAttachmentDetails
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.AttachmentDetails{}, fmt.Errorf("sn get attachment: parse response: %w", err)
 	}
 
-	createdOn, err := time.Parse(snCreatedOnLayout, a.CreatedOn)
+	createdOn, err := time.Parse(snCreatedOnLayout, snResp.CreatedOn)
 	if err != nil {
-		return domain.Attachment{}, fmt.Errorf("sn get attachment: parse createdOn %q: %w", a.CreatedOn, err)
+		return domain.AttachmentDetails{}, fmt.Errorf("sn get attachment: parse createdOn %q: %w", snResp.CreatedOn, err)
 	}
 
-	return domain.Attachment{
-		ID:          sysidToUUID(a.ID),
-		ReferenceID: sysidToUUID(a.ReferenceID),
-		Name:        a.Name,
-		Type:        a.Type,
-		SizeBytes:   a.SizeBytes,
-		Description: a.Description,
-		CreatedBy:   snUserReference(a.CreatedByUser, a.CreatedBy, a.CreatedByFullName),
+	return domain.AttachmentDetails{
+		ID:          sysidToUUID(snResp.ID),
+		ReferenceID: sysidToUUID(snResp.ReferenceID),
+		Name:        snResp.Name,
+		Type:        snResp.Type,
+		SizeBytes:   snResp.SizeBytes,
+		Description: snResp.Description,
+		CreatedBy:   snResp.CreatedBy,
 		CreatedOn:   createdOn,
-		DownloadURL: a.DownloadURL,
-		PreviewURL:  a.PreviewURL,
+		DownloadURL: snResp.DownloadURL,
+		PreviewURL:  snResp.PreviewURL,
+		Content:     &snResp.Content,
+		Status:      domain.AttachmentStatusComplete,
 	}, nil
 }
 
-// snUpdateAttachmentPayload is the Choreo PATCH /attachments/{id} request body.
-// referenceType "deployment" requires at least one of name/description; referenceType "case"
-// requires name and forbids description -- both enforced upstream, not re-validated here.
-// Description is json.RawMessage so an explicit null can be distinguished from an omitted field.
+// validateAttachmentUpdate mirrors the Ballerina reference's
+// validateAttachmentUpdatePayload exactly: referenceType must be case or
+// deployment; case requires name and forbids description; deployment
+// requires at least one of name or description.
+// rawDescriptionPresent reports whether a json.RawMessage description carries
+// an actual value. Description is RawMessage so "absent", "explicitly null",
+// and "a value" stay distinguishable; only the last counts as present here.
+func rawDescriptionPresent(d json.RawMessage) bool {
+	if len(d) == 0 {
+		return false // absent -- the caller said nothing about description
+	}
+	if string(d) == "null" {
+		// An explicit null is an instruction to clear the description, so it
+		// counts as "provided" for the at-least-one-field rule. Collapsing it
+		// into "absent" would make clearing a description impossible.
+		return true
+	}
+	var s string
+	if err := json.Unmarshal(d, &s); err == nil {
+		return strings.TrimSpace(s) != ""
+	}
+	return true
+}
+
+func validateAttachmentUpdate(req domain.UpdateAttachmentRequest) error {
+	if req.ReferenceType != domain.ReferenceTypeCase && req.ReferenceType != domain.ReferenceTypeDeployment {
+		return &apierror.ValidationError{Msg: fmt.Sprintf("invalid reference type %q. Only 'case' and 'deployment' are allowed", req.ReferenceType)}
+	}
+	if req.ReferenceType == domain.ReferenceTypeCase {
+		if len(req.Description) > 0 {
+			return &apierror.ValidationError{Msg: "description field is not allowed for case reference type"}
+		}
+		if req.Name == nil || strings.TrimSpace(*req.Name) == "" {
+			return &apierror.ValidationError{Msg: "name field is required for case reference type"}
+		}
+	}
+	if req.ReferenceType == domain.ReferenceTypeDeployment {
+		hasName := req.Name != nil && strings.TrimSpace(*req.Name) != ""
+		hasDescription := rawDescriptionPresent(req.Description)
+		if !hasName && !hasDescription {
+			return &apierror.ValidationError{Msg: "at least one field (name or description) must be provided for deployment reference type"}
+		}
+	}
+	return nil
+}
+
+// snUpdateAttachmentPayload mirrors the Choreo PATCH /attachments/{id} request body.
 type snUpdateAttachmentPayload struct {
 	ReferenceID   string          `json:"referenceId"`
 	ReferenceType string          `json:"referenceType"`
@@ -2336,6 +3185,7 @@ type snUpdateAttachmentPayload struct {
 	Description   json.RawMessage `json:"description,omitempty"`
 }
 
+// snUpdateAttachmentResponse mirrors the Choreo PATCH /attachments/{id} response.
 type snUpdateAttachmentResponse struct {
 	Message    string `json:"message"`
 	Attachment struct {
@@ -2353,11 +3203,8 @@ func (s *snCaseService) UpdateAttachment(ctx context.Context, req domain.UpdateA
 	if err := validateUUIDs("referenceId", []string{req.ReferenceID}); err != nil {
 		return domain.UpdateAttachmentResponse{}, err
 	}
-	if _, ok := validReferenceTypes[req.ReferenceType]; !ok {
-		return domain.UpdateAttachmentResponse{}, &apierror.ValidationError{Msg: "referenceType is invalid: " + string(req.ReferenceType)}
-	}
-	if req.Name == nil && len(req.Description) == 0 {
-		return domain.UpdateAttachmentResponse{}, &apierror.ValidationError{Msg: "at least one of name or description must be provided"}
+	if err := validateAttachmentUpdate(req); err != nil {
+		return domain.UpdateAttachmentResponse{}, err
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
@@ -2392,6 +3239,125 @@ func (s *snCaseService) UpdateAttachment(ctx context.Context, req domain.UpdateA
 			ID:        sysidToUUID(snResp.Attachment.ID),
 			UpdatedOn: updatedOn,
 			UpdatedBy: snResp.Attachment.UpdatedBy,
+		},
+	}, nil
+}
+
+// snCaseFeedbackEmojiRef mirrors the emoji reference embedded in the Choreo
+// GET /cases/{id}/feedback response.
+type snCaseFeedbackEmojiRef struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	SelectedImage string `json:"selectedImage"`
+}
+
+// snCaseFeedbackGetResponse mirrors the Choreo GET /cases/{id}/feedback response.
+type snCaseFeedbackGetResponse struct {
+	ID                string                 `json:"id"`
+	Emoji             snCaseFeedbackEmojiRef `json:"emoji"`
+	Chips             []string               `json:"chips"`
+	AssessmentID      string                 `json:"assessmentId"`
+	CreatedBy         string                 `json:"createdBy"`
+	CreatedOn         string                 `json:"createdOn"`
+	AdditionalComment *string                `json:"additionalComment"`
+}
+
+func (s *snCaseService) GetCaseFeedback(ctx context.Context, id string) (domain.CaseEmojiFeedback, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.CaseEmojiFeedback{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	raw, err := s.client.Get(ctx, "/cases/"+uuidToSysid(id)+"/feedback", token)
+	if err != nil {
+		return domain.CaseEmojiFeedback{}, err
+	}
+
+	var snResp snCaseFeedbackGetResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.CaseEmojiFeedback{}, fmt.Errorf("sn get case feedback: parse response: %w", err)
+	}
+
+	chips := make([]string, 0, len(snResp.Chips))
+	for _, c := range snResp.Chips {
+		chips = append(chips, sysidToUUID(c))
+	}
+
+	return domain.CaseEmojiFeedback{
+		ID: sysidToUUID(snResp.ID),
+		Emoji: domain.CaseFeedbackEmojiRef{
+			ID:            sysidToUUID(snResp.Emoji.ID),
+			Name:          snResp.Emoji.Name,
+			SelectedImage: snResp.Emoji.SelectedImage,
+		},
+		ChipIDs:           chips,
+		AssessmentID:      sysidToUUID(snResp.AssessmentID),
+		CreatedBy:         snResp.CreatedBy,
+		CreatedOn:         snResp.CreatedOn,
+		AdditionalComment: snResp.AdditionalComment,
+	}, nil
+}
+
+// snSubmitCaseFeedbackPayload mirrors the Choreo POST /cases/{id}/feedback request body.
+type snSubmitCaseFeedbackPayload struct {
+	EmojiID           string   `json:"emojiId"`
+	ChipIDs           []string `json:"chipIds,omitempty"`
+	AdditionalComment *string  `json:"additionalComment,omitempty"`
+}
+
+// snCaseFeedbackResult mirrors the Choreo CaseFeedbackResult shape.
+type snCaseFeedbackResult struct {
+	ID           string `json:"id"`
+	AssessmentID string `json:"assessmentId"`
+	CaseID       string `json:"caseId"`
+	CreatedBy    string `json:"createdBy"`
+	CreatedOn    string `json:"createdOn"`
+}
+
+// snSubmitCaseFeedbackResponse mirrors the Choreo POST /cases/{id}/feedback response.
+type snSubmitCaseFeedbackResponse struct {
+	Message  string               `json:"message"`
+	Feedback snCaseFeedbackResult `json:"feedback"`
+}
+
+func (s *snCaseService) SubmitCaseFeedback(ctx context.Context, id string, req domain.SubmitCaseFeedbackRequest) (domain.SubmitCaseFeedbackResponse, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+	if err := validateUUIDs("emojiId", []string{req.EmojiID}); err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+	if err := validateUUIDs("chipIds", req.ChipIDs); err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	payload := snSubmitCaseFeedbackPayload{
+		EmojiID:           uuidToSysid(req.EmojiID),
+		ChipIDs:           uuidsToSysids(req.ChipIDs),
+		AdditionalComment: req.AdditionalComment,
+	}
+
+	raw, err := s.client.Post(ctx, "/cases/"+uuidToSysid(id)+"/feedback", token, payload)
+	if err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+
+	var snResp snSubmitCaseFeedbackResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, fmt.Errorf("sn submit case feedback: parse response: %w", err)
+	}
+
+	return domain.SubmitCaseFeedbackResponse{
+		Message: snResp.Message,
+		Feedback: domain.CaseFeedbackResult{
+			ID:           sysidToUUID(snResp.Feedback.ID),
+			AssessmentID: sysidToUUID(snResp.Feedback.AssessmentID),
+			CaseID:       sysidToUUID(snResp.Feedback.CaseID),
+			CreatedBy:    snResp.Feedback.CreatedBy,
+			CreatedOn:    snResp.Feedback.CreatedOn,
 		},
 	}, nil
 }

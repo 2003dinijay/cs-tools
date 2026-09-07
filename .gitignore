@@ -35,9 +35,11 @@ handoffs/
 # Local working docs (PR reply/decision drafts, etc.) — never committed/pushed
 local-docs/
 
-# Local Claude Code config — kept out of version control.
-# Note other CLAUDE.md files in this repo (csm-portal, entity-service,
-# integrations/*) are deliberately tracked, so these are ignored by path rather
-# than by a blanket CLAUDE.md pattern.
-.claude/agents/e2e-test-writer.md
+# Local Claude Code config and installed skills — kept out of version
+# control. Note other CLAUDE.md files in this repo (csm-portal,
+# entity-service, integrations/*) are deliberately tracked, so those are
+# ignored by exact path instead, unrelated to the .claude/ directory below.
+.claude/
+.agents/
+skills-lock.json
 apps/customer-portal/CLAUDE.md

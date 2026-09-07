@@ -45,6 +45,7 @@ import type {
   CaseTag,
 } from "@features/csm-cases/types/csmCases";
 import type { ProjectDetails } from "@features/csm-projects/types/csmProjects";
+import type { AttachmentPreviewSource } from "@features/csm-cases/utils/attachmentPreview";
 
 // `previewTarget`/`onPreviewTargetChange` (part of the widget's `preview`
 // prop) are lifted to the parent page (see CsmCaseDetailPage) so the preview
@@ -56,7 +57,9 @@ function AttachmentsWidgetHarness({
   onGetPreviewContent,
   ...props
 }: Omit<ComponentProps<typeof AttachmentsWidget>, "preview"> & {
-  onGetPreviewContent?: (attachment: CaseAttachment) => Promise<Blob>;
+  onGetPreviewContent?: (
+    attachment: CaseAttachment,
+  ) => Promise<AttachmentPreviewSource>;
 }): JSX.Element {
   const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(
     null,
@@ -344,6 +347,82 @@ describe("WatchersWidget", () => {
       screen.getByRole("combobox", { name: /add a watcher/i }),
     ).toBeDisabled();
   });
+
+  describe("self-subscribe", () => {
+    it("omits the Follow/Unfollow control when no currentUserId is supplied", () => {
+      renderWithRouter(
+        <WatchersWidget entityKind="case" watchers={WATCHERS} onReplace={vi.fn()} />,
+      );
+      expect(
+        screen.queryByRole("button", { name: /^follow case updates$/i }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /^unfollow case updates$/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("shows Follow when the signed-in engineer isn't a watcher, and adds them on click", () => {
+      const onReplace = vi.fn();
+      // Neither fixture watcher is flagged `isMe` here — CANDIDATE_ID (the
+      // signed-in engineer in this test) isn't on the list at all, matching
+      // how the caller would populate `isMe` for a real not-yet-following user.
+      renderWithRouter(
+        <WatchersWidget
+          entityKind="case"
+          watchers={ONE_WATCHER}
+          onReplace={onReplace}
+          currentUserId={CANDIDATE_ID}
+        />,
+      );
+      expect(
+        screen.queryByRole("button", { name: /^unfollow case updates$/i }),
+      ).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /^follow case updates$/i }));
+      expect(onReplace).toHaveBeenCalledWith([WATCHER_ONE_ID, CANDIDATE_ID], "add");
+    });
+
+    it("shows Unfollow when the signed-in engineer is already a watcher and not auto-added, and removes them on click", () => {
+      const onReplace = vi.fn();
+      renderWithRouter(
+        <WatchersWidget
+          entityKind="case"
+          watchers={WATCHERS}
+          onReplace={onReplace}
+          currentUserId={WATCHER_TWO_ID}
+        />,
+      );
+      expect(
+        screen.queryByRole("button", { name: /^follow case updates$/i }),
+      ).not.toBeInTheDocument();
+      const button = screen.getByRole("button", { name: /^unfollow case updates$/i });
+      expect(button).not.toHaveAttribute("aria-disabled");
+      fireEvent.click(button);
+      expect(onReplace).toHaveBeenCalledWith([WATCHER_ONE_ID], "remove");
+    });
+
+    it("blocks Unfollow, with the reason reachable by assistive tech, when the caller reports an auto-added membership (e.g. the case's assignee)", () => {
+      const onReplace = vi.fn();
+      renderWithRouter(
+        <WatchersWidget
+          entityKind="case"
+          watchers={WATCHERS}
+          onReplace={onReplace}
+          currentUserId={WATCHER_TWO_ID}
+          autoWatchingReason="You're on this case's watch list as its assigned engineer."
+        />,
+      );
+      const button = screen.getByRole("button", { name: /^unfollow case updates$/i });
+      expect(button).toHaveAttribute("aria-disabled", "true");
+      const reason = document.getElementById(
+        button.getAttribute("aria-describedby") ?? "",
+      );
+      expect(reason).toHaveTextContent(
+        "You're on this case's watch list as its assigned engineer.",
+      );
+      fireEvent.click(button);
+      expect(onReplace).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("AttachmentsWidget — preview affordance", () => {
@@ -413,7 +492,7 @@ describe("AttachmentsWidget — preview affordance", () => {
   it("opens the preview dialog, fetches content, and renders it as an image", async () => {
     const fetchContent = vi
       .fn()
-      .mockResolvedValue(new Blob(["fake"], { type: "image/png" }));
+      .mockResolvedValue({ url: "blob:mock-url", revoke: true });
     renderWithRouter(
       <AttachmentsWidgetHarness
         attachments={[IMAGE_ATTACHMENT]}
@@ -467,6 +546,63 @@ describe("AttachmentsWidget — preview affordance", () => {
     expect(
       screen.getByRole("button", { name: `Download ${ZIP_ATTACHMENT.filename}` }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("AttachmentsWidget — upload progress", () => {
+  it("shows an indeterminate bar with no percentage when uploadProgress is not supplied", () => {
+    renderWithRouter(
+      <AttachmentsWidgetHarness
+        attachments={[]}
+        uploading
+        onUpload={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Uploading…")).toBeInTheDocument();
+    const bar = document.querySelector(".MuiLinearProgress-root");
+    expect(bar).not.toHaveAttribute("aria-valuenow");
+  });
+
+  it("shows a determinate bar with the percentage when uploadProgress is a number", () => {
+    renderWithRouter(
+      <AttachmentsWidgetHarness
+        attachments={[]}
+        uploading
+        uploadProgress={42}
+        onUpload={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Uploading… 42%")).toBeInTheDocument();
+    const bar = document.querySelector(".MuiLinearProgress-root");
+    expect(bar).toHaveAttribute("aria-valuenow", "42");
+  });
+
+  it("only calls onDownload when a specific attachment's Download button is clicked, never on render", () => {
+    const onDownload = vi.fn();
+    const attachment: CaseAttachment = {
+      id: "att-1",
+      filename: "notes.txt",
+      size: 128,
+      contentType: "text/plain",
+      uploadedBy: "Jane Doe",
+      uploadedAt: "2026-01-01T00:00:00Z",
+    };
+    renderWithRouter(
+      <AttachmentsWidgetHarness
+        attachments={[attachment]}
+        onDownload={onDownload}
+      />,
+    );
+
+    // Rendering the list alone must never trigger a download resolution
+    // (e.g. a lazily-created SFTPGo share) — only an explicit click does.
+    expect(onDownload).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `Download ${attachment.filename}` }),
+    );
+    expect(onDownload).toHaveBeenCalledTimes(1);
+    expect(onDownload).toHaveBeenCalledWith(attachment);
   });
 });
 

@@ -42,10 +42,15 @@ type snDeployment struct {
 	Number      string          `json:"number"`
 	Name        string          `json:"name"`
 	Description *string         `json:"description"`
+	URL         *string         `json:"url"`
 	CreatedOn   string          `json:"createdOn"`
 	UpdatedOn   string          `json:"updatedOn"`
 	Project     snDeployProject `json:"project"`
 	Type        snDeployType    `json:"type"`
+	// DeployedProductCount is sent by ServiceNow on every deployment in the
+	// search response. It was previously not declared here and so silently
+	// discarded — see domain.DeploymentView.DeployedProductCount.
+	DeployedProductCount int `json:"deployedProductCount"`
 }
 
 type snDeployProject struct {
@@ -129,6 +134,9 @@ func (s *snDeploymentService) SearchDeployments(ctx context.Context, req domain.
 			Project:     domain.EntityRef{ID: sysidToUUID(d.Project.ID), Name: d.Project.Name},
 			CreatedOn:   createdOn,
 			UpdatedOn:   updatedOn,
+
+			URL:                  d.URL,
+			DeployedProductCount: d.DeployedProductCount,
 		})
 	}
 

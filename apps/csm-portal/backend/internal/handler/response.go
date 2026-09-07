@@ -40,6 +40,7 @@ const (
 	ErrMsgWorkNoteOnClosedCase    = "Work notes cannot be added to a closed case."
 	ErrMsgCommentOnClosedCase     = "Comments cannot be added to a closed case."
 	ErrMsgAttachmentOnClosedCase  = "Attachments cannot be added to a closed case."
+	ErrMsgAttachmentNotShareable  = "This attachment is not available for direct download."
 	ErrMsgRequestUpdateNotAllowed = "An update can only be requested while the case is awaiting info or has a proposed solution."
 	ErrMsgInvalidUUID             = "Invalid UUID format."
 	errMsgReadBody                = "Failed to read request body."

@@ -20,13 +20,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	integrationservice "github.com/wso2-open-operations/cs-tools/entity-service/internal/servicenow-integration-service"
 )
+
+// publishIncidentCreatedTimeout bounds publishIncidentCreated's publish call
+// — see that function's doc comment for why this runs synchronously rather
+// than detached.
+const publishIncidentCreatedTimeout = 5 * time.Second
 
 // snIncidentsResponse mirrors the Choreo POST /incidents/search response.
 type snIncidentsResponse struct {
@@ -190,11 +197,16 @@ var validIncidentSortOrder = map[domain.IncidentSortOrder]bool{
 
 type snIncidentService struct {
 	client *integrationservice.Client
+	// publisher is nil when Event Hub is not configured — every call site
+	// must check before using it. See publishIncidentCreated.
+	publisher EventPublisherService
 }
 
-// NewServiceNowIncidentService constructs an IncidentService backed by the Choreo API.
-func NewServiceNowIncidentService(client *integrationservice.Client) IncidentService {
-	return &snIncidentService{client: client}
+// NewServiceNowIncidentService constructs an IncidentService backed by the
+// Choreo API. publisher may be nil (see snIncidentService.publisher's doc
+// comment).
+func NewServiceNowIncidentService(client *integrationservice.Client, publisher EventPublisherService) IncidentService {
+	return &snIncidentService{client: client, publisher: publisher}
 }
 
 func (s *snIncidentService) SearchIncidents(ctx context.Context, req domain.SearchIncidentsRequest) (domain.SearchIncidentsResponse, error) {
@@ -756,7 +768,65 @@ func (s *snIncidentService) CreateIncident(ctx context.Context, req domain.Creat
 	resp.Incident.Number = snResp.Incident.Number
 	resp.Incident.CreatedOn = snResp.Incident.CreatedOn
 	resp.Incident.CreatedBy = snResp.Incident.CreatedBy
+	s.publishIncidentCreated(ctx, req, resp.Incident.ID)
 	return resp, nil
+}
+
+// publishIncidentCreated best-effort publishes an incident.created event for
+// a newly created incident. Unlike publishCaseCreated, no enrichment round
+// trip is needed: Title/ShortDescription come directly from req, which
+// already carries everything the notification needs (Subject, and
+// optionally AdditionalComments) without a follow-up GetIncidentByID call.
+//
+// ShortDescription falls back to req.Subject when req.AdditionalComments is
+// absent — a freshly created incident often has no additional comments yet,
+// and events.Validate on the receiving side requires ShortDescription
+// non-empty.
+//
+// Product/CallTo/IncidentLink are all left unset — this service only
+// publishes the fact that an incident was created; it has no
+// product→Chat-space mapping or on-call number of its own (Product/CallTo),
+// and doesn't know csm-notification-service's own portal URL configuration
+// either (IncidentLink, unlike an earlier version of this payload, isn't a
+// field at all — that service builds its own portal link from EntityID, the
+// same way it already does for case.created). csm-notification-service
+// substitutes its own configured Product/CallTo defaults when they're
+// absent — see events.IncidentCreatedPayload's doc comment.
+//
+// Runs synchronously, bounded by publishIncidentCreatedTimeout — see
+// publishCaseCreated's doc comment for why (same reasoning applies here).
+// Any failure is logged and does not fail CreateIncident itself: the
+// incident already exists in ServiceNow by this point.
+func (s *snIncidentService) publishIncidentCreated(ctx context.Context, req domain.CreateIncidentRequest, incidentID string) {
+	if s.publisher == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, publishIncidentCreatedTimeout)
+	defer cancel()
+
+	shortDescription := req.Subject
+	if req.AdditionalComments != nil && *req.AdditionalComments != "" {
+		shortDescription = *req.AdditionalComments
+	}
+
+	payload, err := json.Marshal(events.IncidentCreatedPayload{
+		Title:            req.Subject,
+		ShortDescription: shortDescription,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "sn create incident: encode incident.created payload failed", "incidentId", incidentID, "error", err)
+		return
+	}
+	if err := s.publisher.Publish(ctx, events.TypeIncidentCreated, incidentID, payload); err != nil {
+		// Not logging err itself: it can carry a raw Event Hub client error
+		// (potentially including connection/broker details), and this
+		// service's own convention is to log only ids and sanitised
+		// summaries (see CLAUDE.md's Security section). The full error is
+		// already durably recorded in event_publish_failures by Publish
+		// itself (see EventPublisherService's doc comment) for anyone who
+		// needs to debug this specific failure.
+		slog.ErrorContext(ctx, "sn create incident: publish incident.created failed", "incidentId", incidentID)
+	}
 }
 
 // snIncidentSubcategoryLabelMap maps SN subcategory string values to domain enum strings.

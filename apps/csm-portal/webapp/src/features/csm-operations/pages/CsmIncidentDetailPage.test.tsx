@@ -60,6 +60,17 @@ vi.mock("@features/csm-operations/api/usePatchIncident", () => ({
 vi.mock("@context/error-banner/ErrorBannerContext", () => ({
   useErrorBanner: () => ({ showError: showErrorMock }),
 }));
+vi.mock("@context/current-user/CurrentUserContext", () => ({
+  useCurrentUser: () => ({
+    user: { id: "00000000-0000-0000-0000-00000000000c", email: "jane.doe@example.com" },
+    isLoading: false,
+    isError: false,
+    error: null,
+  }),
+}));
+vi.mock("@hooks/useIdTokenClaims", () => ({
+  useIdTokenClaims: () => ({ email: "jane.doe@example.com", name: "Jane Doe" }),
+}));
 vi.mock("@features/csm-operations/api/useCsmIncidentComments", () => ({
   useGetCsmIncidentComments: () => ({ data: [] }),
   usePostCsmIncidentComment: () => ({ isPending: false, mutate: vi.fn() }),
@@ -71,6 +82,7 @@ vi.mock("@features/csm-cases/api/useCsmCaseAttachments", () => ({
   useGetCsmCaseAttachments: () => ({ data: [] }),
   usePostCsmCaseAttachment: () => ({ isPending: false, mutate: vi.fn() }),
   useDownloadCsmCaseAttachment: () => vi.fn(),
+  useGetCsmCaseAttachmentPreviewSource: () => vi.fn(),
   useGetCsmCaseAttachmentContent: () => vi.fn(),
   // Only reached by the reply composer's upload modal (`CsmUploadAttachmentModal`),
   // not exercised by this file's existing tests — the "reports its own draft

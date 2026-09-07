@@ -215,6 +215,17 @@ func (h *CaseHandler) CreateCaseAttachment(w http.ResponseWriter, r *http.Reques
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// ConfirmCaseAttachment handles POST /attachments/{id}/confirm.
+func (h *CaseHandler) ConfirmCaseAttachment(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.ConfirmCaseAttachment(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // SearchCaseAttachments handles POST /attachments/search.
 func (h *CaseHandler) SearchCaseAttachments(w http.ResponseWriter, r *http.Request) {
 	var req domain.SearchAttachmentsRequest
@@ -262,10 +273,9 @@ func (h *CaseHandler) DeleteCaseAttachment(w http.ResponseWriter, r *http.Reques
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// GetAttachment handles GET /attachments/{id}.
-func (h *CaseHandler) GetAttachment(w http.ResponseWriter, r *http.Request) {
-	attachmentID := r.PathValue("id")
-	resp, err := h.svc.GetAttachment(r.Context(), attachmentID)
+// GetAttachmentByID handles GET /attachments/{id}.
+func (h *CaseHandler) GetAttachmentByID(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.GetAttachmentByID(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
@@ -287,6 +297,33 @@ func (h *CaseHandler) UpdateAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// GetCaseFeedback handles GET /cases/{id}/feedback.
+func (h *CaseHandler) GetCaseFeedback(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.GetCaseFeedback(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// SubmitCaseFeedback handles POST /cases/{id}/feedback.
+func (h *CaseHandler) SubmitCaseFeedback(w http.ResponseWriter, r *http.Request) {
+	var req domain.SubmitCaseFeedbackRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.SubmitCaseFeedback(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(resp)
 }
 

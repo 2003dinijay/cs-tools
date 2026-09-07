@@ -49,6 +49,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { useLocation } from "react-router";
 import { useGetCsmCaseDetail } from "@features/csm-cases/api/useGetCsmCaseDetail";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import {
   usePatchCsmCase,
   usePatchCsmCaseById,
@@ -74,15 +75,18 @@ import {
 } from "@features/csm-cases/api/useCsmCaseComments";
 import { useGetCsmConversationMessages } from "@features/csm-cases/api/useCsmConversationMessages";
 import { useGetCsmCaseActivities } from "@features/csm-cases/api/useCsmCaseActivities";
+import { useCaseActivityStream } from "@features/csm-cases/api/useCaseActivityStream";
 import { useGetCsmCaseFeedback } from "@features/csm-cases/api/useCsmCaseFeedback";
 import {
   useGetCsmCaseAttachments,
   usePostCsmCaseAttachment,
   useDownloadCsmCaseAttachment,
   useDeleteCsmCaseAttachment,
-  useGetCsmCaseAttachmentContent,
+  useGetCsmCaseAttachmentPreviewSource,
 } from "@features/csm-cases/api/useCsmCaseAttachments";
-import CsmCaseCommentInput from "@features/csm-cases/components/CsmCaseCommentInput";
+import CsmCaseCommentInput, {
+  type CommentAttachmentDraft,
+} from "@features/csm-cases/components/CsmCaseCommentInput";
 import CaseActionBar, {
   canAcknowledge,
 } from "@features/csm-cases/components/CaseActionBar";
@@ -343,6 +347,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // route/location for the app as a whole. Without it, every background
   // tab's `useParams`/`useLocation` would resolve to whatever route is
   // CURRENTLY on-screen, not the case this particular instance represents.
+  // The signed-in engineer's platform UUID — the id the watch list's write
+  // side is keyed by — so the Watchers tab can self-subscribe/unsubscribe.
+  const { user: currentUser } = useCurrentUser();
   const routedCaseId = useNormalizedIdParam("caseId");
   const routedNavigate = useNavTransition();
   const routedLocation = useLocation();
@@ -487,6 +494,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
     refetch: refetchActivities,
     isFetching: isFetchingActivities,
   } = useGetCsmCaseActivities(caseId);
+  // Live updates: invalidates the two queries above whenever another viewer
+  // adds a comment or the case's status changes, so this tab doesn't rely
+  // solely on their own staleTime/a manual refresh to catch up.
+  useCaseActivityStream(caseId);
   // Case Feedback (CSAT survey) submissions for this case, if any — almost
   // always empty for an open case (the survey goes out after closure), which
   // is expected and renders no feedback lane rather than an error.
@@ -520,7 +531,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
   } = useGetCsmCaseAttachments(caseId);
   const postAttachment = usePostCsmCaseAttachment();
   const downloadAttachment = useDownloadCsmCaseAttachment();
-  const getAttachmentPreviewContent = useGetCsmCaseAttachmentContent();
+  const getAttachmentPreviewContent = useGetCsmCaseAttachmentPreviewSource();
   const deleteAttachment = useDeleteCsmCaseAttachment();
   // Fetched unconditionally (not just while their tab is active) purely for
   // the tab-label counts below; each widget still runs its own scoped query
@@ -612,6 +623,23 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // this case's tab from the tab strip can confirm first — see the hook's
   // own doc comment for what this signal does and doesn't guarantee.
   useReportCaseTabDraft(caseId, composerOpen);
+  // The reply composer's draft content, lifted out of CsmCaseCommentInput so
+  // it survives switching to another case-detail tab and back — the
+  // Activities tab body below (and the composer inside it) fully unmounts
+  // while a different tab is active. Cleared explicitly on Cancel and on a
+  // successful submit; a tab switch alone must not touch this.
+  const [draftHtml, setDraftHtml] = useState("");
+  const [draftAttachments, setDraftAttachments] = useState<
+    CommentAttachmentDraft[]
+  >([]);
+  const [draftInternal, setDraftInternal] = useState(false);
+  const [draftSourceMode, setDraftSourceMode] = useState(false);
+  const clearComposerDraft = useCallback(() => {
+    setDraftHtml("");
+    setDraftAttachments([]);
+    setDraftInternal(false);
+    setDraftSourceMode(false);
+  }, []);
   const [assignOpen, setAssignOpen] = useState(false);
   const [linkCaseOpen, setLinkCaseOpen] = useState(false);
   const [linkIncidentOpen, setLinkIncidentOpen] = useState(false);
@@ -678,6 +706,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
     setPrevCaseId(caseId);
     setFeedback(null);
     setComposerOpen(false);
+    // The lifted composer draft (see clearComposerDraft above) is per-case: a
+    // draft left over from the previous case must not appear — or be
+    // submittable — against the newly opened one.
+    clearComposerDraft();
     setAssignOpen(false);
     setResolutionDialog(null);
     setSeverityOpen(false);
@@ -1205,6 +1237,34 @@ export default function CsmCaseDetailPage(): JSX.Element {
         return;
       }
 
+      // Mark / recall the case's workaround via PATCH { workaroundProvided }.
+      // A single-field toggle, same shape as the plain "Pause work" branch
+      // above — no conflict check needed (unlike resuming work).
+      if (action.secondary === "toggle_workaround_provided") {
+        const providing = !data?.workaroundProvidedOn;
+        patchCase.mutate(
+          { workaroundProvided: providing },
+          {
+            onSuccess: () =>
+              setFeedback({
+                message: providing
+                  ? "Workaround marked as provided — the Workaround SLA clock is paused."
+                  : "Workaround recalled.",
+                severity: "success",
+                sticky: false,
+              }),
+            onError: (err) =>
+              showError(
+                providing
+                  ? "Could not mark the workaround as provided. Please try again."
+                  : "Could not recall the workaround. Please try again.",
+                err,
+              ),
+          },
+        );
+        return;
+      }
+
       // Request update opens the reminder-template dialog; the POST happens
       // in onRequestUpdate once a stage (or custom message) is confirmed.
       if (action.secondary === "request_update") {
@@ -1710,6 +1770,16 @@ export default function CsmCaseDetailPage(): JSX.Element {
 
   const attachmentList = useMemo(() => attachments ?? [], [attachments]);
 
+  // `postAttachment` is a single shared mutation object that stays mounted
+  // across `caseId` changes (this page doesn't remount on navigation between
+  // cases). Without this check, an upload still in flight for a previously
+  // viewed case would show its progress/disabled state on whichever case is
+  // open now. `variables` reflects whichever call is currently pending, so
+  // comparing its `caseId` to the page's current `caseId` scopes the
+  // in-flight state to the case it actually belongs to.
+  const isUploadingForThisCase =
+    postAttachment.isPending && postAttachment.variables?.caseId === caseId;
+
   // Case comments + the linked chat transcript, as one list for the activity
   // feed. Memoised so the feed's own sort doesn't rerun on every render.
   const mergedComments = useMemo(
@@ -2197,7 +2267,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   size="small"
                   variant="text"
                   color="inherit"
-                  onClick={() => setComposerOpen(false)}
+                  onClick={() => {
+                    setComposerOpen(false);
+                    clearComposerDraft();
+                  }}
                 >
                   Cancel
                 </Button>
@@ -2209,6 +2282,14 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 onResumeWork={() => onAction({ secondary: "toggle_work_state" })}
                 isResumingWork={patchCase.isPending}
                 autoFocus
+                draftHtml={draftHtml}
+                onDraftHtmlChange={setDraftHtml}
+                draftAttachments={draftAttachments}
+                onDraftAttachmentsChange={setDraftAttachments}
+                draftInternal={draftInternal}
+                onDraftInternalChange={setDraftInternal}
+                draftSourceMode={draftSourceMode}
+                onDraftSourceModeChange={setDraftSourceMode}
                 onSubmit={async (bodyHtml, internal, commentAttachments) => {
                   if (!caseId) return;
                   // Post the comment only when there's text; an attachment-only
@@ -2236,9 +2317,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
                       uploadedBy: engineerName,
                     });
                   }
-                  // Collapse only on success; on error the input keeps its
-                  // draft + files and surfaces the failure.
+                  // Collapse and clear the draft only on success; on error the
+                  // input keeps its draft + files and surfaces the failure.
                   setComposerOpen(false);
+                  clearComposerDraft();
                 }}
               />
             </Card>
@@ -2543,6 +2625,17 @@ export default function CsmCaseDetailPage(): JSX.Element {
             onRefresh={() => void refetchCaseDetail()}
             isRefreshing={isFetchingCaseDetail}
             refreshedAt={caseDetailUpdatedAt}
+            currentUserId={currentUser?.id}
+            // The account manager / technical owner are also auto-added to a
+            // case's watch list, but that data isn't on this response (see
+            // detailFromBeCase's account-ref comment) — only the assignee
+            // check is expressible without a new fetch, so Unfollow stays
+            // available to an AM/TO watcher until that's plumbed through.
+            autoWatchingReason={
+              c.assigneeIsMe
+                ? "You're on this case's watch list as its assigned engineer."
+                : undefined
+            }
           />
         </Box>
       )}
@@ -2560,9 +2653,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
             onRefresh={() => void refetchAttachments()}
             isRefreshing={isFetchingAttachments}
             refreshedAt={attachmentsUpdatedAt}
-            uploading={postAttachment.isPending}
+            uploading={isUploadingForThisCase}
+            uploadProgress={isUploadingForThisCase ? postAttachment.uploadProgress : null}
             uploadError={
-              postAttachment.isError
+              postAttachment.isError &&
+              postAttachment.variables?.caseId === caseId
                 ? (postAttachment.error?.message ??
                   "Could not upload the attachment.")
                 : null

@@ -109,6 +109,7 @@ vi.mock("@wso2/oxygen-ui-charts-react", () => ({
   ),
 }));
 
+import type { BeDashboardPieSlice } from "@api/backend/types";
 import DashboardWidgetTile from "@features/csm-dashboard/components/DashboardWidgetTile";
 import { CURRENT_TEAM_PLACEHOLDER } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
 import { CURRENT_USER_PLACEHOLDER } from "@features/csm-dashboard/utils/currentUserFilterPlaceholder";
@@ -1837,6 +1838,31 @@ describe("DashboardWidgetTile", () => {
     expect(screen.getByText("Cases by severity")).toBeInTheDocument();
     expect(screen.getByText("Nothing to show here right now")).toBeInTheDocument();
     expect(postMock).not.toHaveBeenCalled();
+  });
+
+  // Regression test: DASHBOARDS_CONFIG is a raw JSON env var, not
+  // schema-validated beyond basic decoding — a slice entry missing its own
+  // `filters` field entirely used to crash the whole tile with "Cannot read
+  // properties of undefined (reading 'filters')" inside mergeWidgetFilters,
+  // despite the wire type declaring it required.
+  it("shape pie: renders a slice whose config is missing its own `filters` instead of crashing", async () => {
+    postMock.mockResolvedValue({ total: 4 });
+
+    renderWithClient(
+      <DashboardWidgetTile
+        widgetId="cases-by-severity"
+        displayName="Cases by severity"
+        resourceType="case"
+        shape="pie"
+        filters={{ filters: [{ field: "state", op: "in", values: ["open"] }] }}
+        slices={[
+          // filters intentionally omitted
+          { label: "Critical" } as BeDashboardPieSlice,
+        ]}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("slice:Critical:4")).toBeInTheDocument());
   });
 
   it("resolves the {{currentTeam}} text token in displayName/description to the selected team's own label", async () => {

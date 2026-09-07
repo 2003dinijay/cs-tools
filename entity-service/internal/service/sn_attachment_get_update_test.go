@@ -21,6 +21,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -31,14 +32,17 @@ var (
 	testAttachmentRefSysid = sysid32('b')
 )
 
-// TestSNCaseService_GetAttachment_HappyPath proves a well-formed SN attachment
-// response decodes into domain.Attachment, including the reference id sysid->uuid
-// mapping and the download/preview URLs.
-func TestSNCaseService_GetAttachment_HappyPath(t *testing.T) {
+// TestSNCaseService_GetAttachment_NotFound verifies a 404 from the backing service
+// surfaces as a NotFoundError.
+// TestSNCaseService_GetAttachmentByID_HappyPath proves a well-formed response
+// decodes into domain.AttachmentDetails: the id/referenceId sysid->uuid
+// mapping, the base64 content, and the createdOn parse.
+//
+// That parse is why this test matters -- GetAttachmentByID returns an error for
+// the whole call if createdOn does not match snCreatedOnLayout, so an upstream
+// format change breaks the endpoint outright rather than degrading a field.
+func TestSNCaseService_GetAttachmentByID_HappyPath(t *testing.T) {
 	attachmentUUID := sysidToUUID(testAttachmentSysid)
-	description := "Diagnostic logs"
-	downloadURL := "https://example.com/download/1"
-	previewURL := "https://example.com/preview/1"
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/attachments/"+testAttachmentSysid, func(w http.ResponseWriter, r *http.Request) {
@@ -57,14 +61,14 @@ func TestSNCaseService_GetAttachment_HappyPath(t *testing.T) {
 			"createdByUser": null,
 			"createdOn": "2026-01-01 00:00:00",
 			"downloadUrl": "https://example.com/download/1",
-			"previewUrl": "https://example.com/preview/1"
+			"previewUrl": "https://example.com/preview/1",
+			"content": "bG9ncw=="
 		}`))
 	})
 
-	client := newTestSNClient(t, mux)
-	svc := NewServiceNowCaseService(client, nil)
+	svc := NewServiceNowCaseService(newTestSNClient(t, mux), nil, nil)
 
-	got, err := svc.GetAttachment(contextWithUserIDToken("token"), attachmentUUID)
+	got, err := svc.GetAttachmentByID(contextWithUserIDToken("token"), attachmentUUID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,39 +76,50 @@ func TestSNCaseService_GetAttachment_HappyPath(t *testing.T) {
 	if got.ID != attachmentUUID {
 		t.Errorf("ID = %q, want %q", got.ID, attachmentUUID)
 	}
-	if got.ReferenceID != sysidToUUID(testAttachmentRefSysid) {
-		t.Errorf("ReferenceID = %q, want %q", got.ReferenceID, sysidToUUID(testAttachmentRefSysid))
+	if want := sysidToUUID(testAttachmentRefSysid); got.ReferenceID != want {
+		t.Errorf("ReferenceID = %q, want %q", got.ReferenceID, want)
 	}
-	if got.Name != "logs.txt" {
-		t.Errorf("Name = %q, want logs.txt", got.Name)
+	if got.Name != "logs.txt" || got.Type != "text/plain" || got.SizeBytes != 1024 {
+		t.Errorf("name/type/size = %q/%q/%d, want logs.txt/text/plain/1024", got.Name, got.Type, got.SizeBytes)
 	}
-	if got.Type != "text/plain" {
-		t.Errorf("Type = %q, want text/plain", got.Type)
+	if got.Description == nil || *got.Description != "Diagnostic logs" {
+		t.Errorf("Description = %v, want \"Diagnostic logs\"", got.Description)
 	}
-	if got.SizeBytes != 1024 {
-		t.Errorf("SizeBytes = %d, want 1024", got.SizeBytes)
+	// createdByUser is null on this path, so the bare string is what survives.
+	if got.CreatedBy != "jane.doe@example.com" {
+		t.Errorf("CreatedBy = %q, want jane.doe@example.com", got.CreatedBy)
 	}
-	if got.Description == nil || *got.Description != description {
-		t.Errorf("Description = %v, want %q", got.Description, description)
+	if want := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC); !got.CreatedOn.Equal(want) {
+		t.Errorf("CreatedOn = %v, want %v", got.CreatedOn, want)
 	}
-	if got.CreatedBy == nil || got.CreatedBy.Email != "jane.doe@example.com" {
-		t.Errorf("CreatedBy = %+v, want email jane.doe@example.com", got.CreatedBy)
+	if got.Content == nil || *got.Content != "bG9ncw==" {
+		t.Errorf("Content = %v, want the base64 body", got.Content)
 	}
-	if got.DownloadURL == nil || *got.DownloadURL != downloadURL {
-		t.Errorf("DownloadURL = %v, want %q", got.DownloadURL, downloadURL)
+	if got.DownloadURL == nil || *got.DownloadURL != "https://example.com/download/1" {
+		t.Errorf("DownloadURL = %v", got.DownloadURL)
 	}
-	if got.PreviewURL == nil || *got.PreviewURL != previewURL {
-		t.Errorf("PreviewURL = %v, want %q", got.PreviewURL, previewURL)
-	}
-	// GetAttachment's response shape has no referenceType; the zero value must
-	// surface as-is rather than being guessed at.
-	if got.ReferenceType != "" {
-		t.Errorf("ReferenceType = %q, want empty (not carried by the GET response)", got.ReferenceType)
+	if got.PreviewURL == nil || *got.PreviewURL != "https://example.com/preview/1" {
+		t.Errorf("PreviewURL = %v", got.PreviewURL)
 	}
 }
 
-// TestSNCaseService_GetAttachment_NotFound verifies a 404 from the backing service
-// surfaces as a NotFoundError.
+// TestSNCaseService_GetAttachmentByID_RejectsUnparseableCreatedOn pins the
+// failure mode above: an unexpected createdOn format fails the call loudly
+// rather than yielding a zero timestamp the caller would render as 1 Jan 0001.
+func TestSNCaseService_GetAttachmentByID_RejectsUnparseableCreatedOn(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/attachments/"+testAttachmentSysid, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"` + testAttachmentSysid + `","createdOn":"2026-01-01T00:00:00Z"}`))
+	})
+
+	svc := NewServiceNowCaseService(newTestSNClient(t, mux), nil, nil)
+
+	_, err := svc.GetAttachmentByID(contextWithUserIDToken("token"), sysidToUUID(testAttachmentSysid))
+	if err == nil {
+		t.Fatal("expected an error for an RFC3339 createdOn, got nil")
+	}
+}
+
 func TestSNCaseService_GetAttachment_NotFound(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/attachments/"+testAttachmentSysid, func(w http.ResponseWriter, r *http.Request) {
@@ -114,9 +129,9 @@ func TestSNCaseService_GetAttachment_NotFound(t *testing.T) {
 	})
 
 	client := newTestSNClient(t, mux)
-	svc := NewServiceNowCaseService(client, nil)
+	svc := NewServiceNowCaseService(client, nil, nil)
 
-	_, err := svc.GetAttachment(contextWithUserIDToken("token"), sysidToUUID(testAttachmentSysid))
+	_, err := svc.GetAttachmentByID(contextWithUserIDToken("token"), sysidToUUID(testAttachmentSysid))
 	var notFound *apierror.NotFoundError
 	if !errors.As(err, &notFound) {
 		t.Fatalf("GetAttachment error = %v (%T), want NotFoundError", err, err)
@@ -129,9 +144,9 @@ func TestSNCaseService_GetAttachment_RejectsInvalidUUID(t *testing.T) {
 	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("unexpected call to backing service for an invalid attachment id")
 	}))
-	svc := NewServiceNowCaseService(client, nil)
+	svc := NewServiceNowCaseService(client, nil, nil)
 
-	_, err := svc.GetAttachment(contextWithUserIDToken("token"), "not-a-uuid")
+	_, err := svc.GetAttachmentByID(contextWithUserIDToken("token"), "not-a-uuid")
 	var ve *apierror.ValidationError
 	if !asValidationError(err, &ve) {
 		t.Fatalf("GetAttachment error = %v (%T), want ValidationError", err, err)
@@ -167,7 +182,7 @@ func TestSNCaseService_UpdateAttachment_HappyPath(t *testing.T) {
 	})
 
 	client := newTestSNClient(t, mux)
-	svc := NewServiceNowCaseService(client, nil)
+	svc := NewServiceNowCaseService(client, nil, nil)
 
 	req := domain.UpdateAttachmentRequest{
 		AttachmentID:  attachmentUUID,
@@ -275,7 +290,7 @@ func TestSNCaseService_UpdateAttachment_DescriptionThreeStates(t *testing.T) {
 			})
 
 			client := newTestSNClient(t, mux)
-			svc := NewServiceNowCaseService(client, nil)
+			svc := NewServiceNowCaseService(client, nil, nil)
 
 			if _, err := svc.UpdateAttachment(contextWithUserIDToken("token"), tc.req); err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -304,7 +319,7 @@ func TestSNCaseService_UpdateAttachment_ValidationErrors(t *testing.T) {
 	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("unexpected call to backing service for an invalid request")
 	}))
-	svc := NewServiceNowCaseService(client, nil)
+	svc := NewServiceNowCaseService(client, nil, nil)
 
 	cases := []struct {
 		name string

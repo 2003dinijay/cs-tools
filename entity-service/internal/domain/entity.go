@@ -247,34 +247,6 @@ type PatchUserMeResponse struct {
 	User    PatchUserMeUpdated `json:"user"`
 }
 
-// AccountTier represents the subscription tier of an account.
-type AccountTier string
-
-const (
-	// AccountTierBasic is the standard subscription tier.
-	AccountTierBasic AccountTier = "basic"
-	// AccountTierEnterprise is the premium subscription tier.
-	AccountTierEnterprise AccountTier = "enterprise"
-)
-
-// Account represents a customer account as stored in the database.
-// TechnicalOwnerID, Region, and DeactivationDate are optional.
-type Account struct {
-	ID                  string      `json:"id"`
-	SfID                string      `json:"sfId"`
-	Name                string      `json:"name"`
-	Tier                AccountTier `json:"tier"`
-	Region              *string     `json:"region"`
-	ActivationDate      time.Time   `json:"activationDate"`
-	DeactivationDate    *time.Time  `json:"deactivationDate"`
-	OwnerID             string      `json:"ownerId"`
-	TechnicalOwnerID    *string     `json:"technicalOwnerId"`
-	AgentEnabled        bool        `json:"agentEnabled"`
-	KbReferencesEnabled bool        `json:"kbReferencesEnabled"`
-	CreatedOn           time.Time   `json:"createdOn"`
-	UpdatedOn           time.Time   `json:"updatedOn"`
-}
-
 // SearchAccountsFilters holds the optional filter criteria for an account search.
 type SearchAccountsFilters struct {
 	SearchQuery    string `json:"searchQuery,omitempty"`
@@ -289,20 +261,12 @@ type SearchAccountsRequest struct {
 	Filters    SearchAccountsFilters `json:"filters,omitempty"`
 }
 
-// SearchAccountsResponse is the paginated result of an account search.
-// HasMore is true when additional pages are available beyond the current offset.
-type SearchAccountsResponse struct {
-	Accounts []Account `json:"accounts"`
-	Total    int       `json:"total"`
-	Limit    int       `json:"limit"`
-	Offset   int       `json:"offset"`
-	HasMore  bool      `json:"hasMore"`
-}
-
-// SNAccountView is the account view returned by the ServiceNow data source.
-// Timestamp fields are kept as strings to accommodate empty values from ServiceNow.
+// AccountView is the unified account search-result shape returned for all data
+// sources. Both Postgres and ServiceNow responses are mapped to this type so
+// callers receive the same fields regardless of which backend is active.
+// Fields not available from a given data source are left nil.
 // SupportTier is returned as a plain label string (no ID).
-type SNAccountView struct {
+type AccountView struct {
 	ID                    string     `json:"id"`
 	Name                  string     `json:"name"`
 	Classification        string     `json:"classification"`
@@ -316,11 +280,11 @@ type SNAccountView struct {
 	RenewalAccountManager *PersonRef `json:"renewalAccountManager"`
 	// CreTeam is the account's CRE (customer relationship engineering) team, resolved to a
 	// named group reference (ServiceNow data source only). Mirrors AccountRef.CreTeam.
-	CreTeam *EntityRef `json:"creTeam,omitempty"`
+	CreTeam *EntityRef `json:"creTeam"`
 	// SreTeam is the account's SRE team, resolved to a named group reference (ServiceNow
 	// data source only). Mirrors AccountRef.SreTeam.
-	SreTeam          *EntityRef `json:"sreTeam,omitempty"`
-	ActivationDate   string     `json:"activationDate"`
+	SreTeam          *EntityRef `json:"sreTeam"`
+	ActivationDate   *string    `json:"activationDate"`
 	DeactivationDate *string    `json:"deactivationDate"`
 	HasAgent         bool       `json:"hasAgent"`
 	HasKbReferences  bool       `json:"hasKbReferences"`
@@ -329,13 +293,14 @@ type SNAccountView struct {
 	UpdatedOn        string     `json:"updatedOn"`
 }
 
-// SearchSNAccountsResponse is the paginated result of a ServiceNow account search.
-type SearchSNAccountsResponse struct {
-	Accounts []SNAccountView `json:"accounts"`
-	Total    int             `json:"total"`
-	Limit    int             `json:"limit"`
-	Offset   int             `json:"offset"`
-	HasMore  bool            `json:"hasMore"`
+// SearchAccountsResponse is the paginated result of an account search, unified
+// across data sources.
+type SearchAccountsResponse struct {
+	Accounts []AccountView `json:"accounts"`
+	Total    int           `json:"total"`
+	Limit    int           `json:"limit"`
+	Offset   int           `json:"offset"`
+	HasMore  bool          `json:"hasMore"`
 }
 
 // SNSupportTierRef is a compact reference to a support tier carrying its label.
@@ -344,9 +309,10 @@ type SNSupportTierRef struct {
 	Label string `json:"label"`
 }
 
-// SNAccountDetail is the full account detail returned by the ServiceNow data source
-// for GET /accounts/{id}. SupportTier is returned as an {id, label} object.
-type SNAccountDetail struct {
+// AccountDetail is the unified account detail shape returned for all data
+// sources for GET /accounts/{id}. SupportTier is returned as an {id, label}
+// object. Fields not available from a given data source are left nil.
+type AccountDetail struct {
 	ID                    string            `json:"id"`
 	Name                  string            `json:"name"`
 	Classification        string            `json:"classification"`
@@ -360,11 +326,11 @@ type SNAccountDetail struct {
 	RenewalAccountManager *PersonRef        `json:"renewalAccountManager"`
 	// CreTeam is the account's CRE (customer relationship engineering) team, resolved to a
 	// named group reference (ServiceNow data source only). Mirrors AccountRef.CreTeam.
-	CreTeam *EntityRef `json:"creTeam,omitempty"`
+	CreTeam *EntityRef `json:"creTeam"`
 	// SreTeam is the account's SRE team, resolved to a named group reference (ServiceNow
 	// data source only). Mirrors AccountRef.SreTeam.
-	SreTeam          *EntityRef `json:"sreTeam,omitempty"`
-	ActivationDate   string     `json:"activationDate"`
+	SreTeam          *EntityRef `json:"sreTeam"`
+	ActivationDate   *string    `json:"activationDate"`
 	DeactivationDate *string    `json:"deactivationDate"`
 	HasAgent         bool       `json:"hasAgent"`
 	HasKbReferences  bool       `json:"hasKbReferences"`
@@ -424,6 +390,12 @@ type ProjectAccountRef struct {
 	Region              *string    `json:"region"`
 	AgentEnabled        bool       `json:"agentEnabled"`
 	KbReferencesEnabled bool       `json:"kbReferencesEnabled"`
+	DeactivationDate    *time.Time `json:"deactivationDate"`
+	// OwnerEmail/TechnicalOwnerEmail are the account's owning and technical
+	// contacts. They sit on the account rather than the project, matching
+	// Ballerina's ProjectResponse.account and the portal's ProjectDetailsAccount.
+	OwnerEmail          *string `json:"ownerEmail"`
+	TechnicalOwnerEmail *string `json:"technicalOwnerEmail"`
 }
 
 // ProjectClosureFields groups the ServiceNow-only closure-tracking fields
@@ -458,6 +430,26 @@ type ProjectClosureFields struct {
 // ProjectDetailsView is the enriched response shape for GET /projects/{id}.
 // It embeds the linked account and uses createdOn/updatedOn for consistency
 // with the ProjectView search result.
+// ProjectEngagementFields carries a project's query/onboarding entitlement
+// balances and onboarding milestones.
+//
+// Grouped and embedded like ProjectClosureFields so the JSON stays flat. Every
+// field is a pointer: ServiceNow may omit any of them, and a nil balance ("not
+// tracked for this project") is a different fact from a zero one ("tracked, none
+// remaining") — a customer seeing 0 of 0 hours is not the same as seeing nothing.
+type ProjectEngagementFields struct {
+	TotalQueryHours          *float64   `json:"totalQueryHours"`
+	ConsumedQueryHours       *float64   `json:"consumedQueryHours"`
+	RemainingQueryHours      *float64   `json:"remainingQueryHours"`
+	TotalOnboardingHours     *float64   `json:"totalOnboardingHours"`
+	ConsumedOnboardingHours  *float64   `json:"consumedOnboardingHours"`
+	RemainingOnboardingHours *float64   `json:"remainingOnboardingHours"`
+	GoLiveDate               *time.Time `json:"goLiveDate"`
+	GoLivePlanDate           *time.Time `json:"goLivePlanDate"`
+	OnboardingExpiryDate     *time.Time `json:"onboardingExpiryDate"`
+	OnboardingStatus         *string    `json:"onboardingStatus"`
+}
+
 type ProjectDetailsView struct {
 	ID               string            `json:"id"`
 	Account          ProjectAccountRef `json:"account"`
@@ -469,6 +461,7 @@ type ProjectDetailsView struct {
 	EndDate          time.Time         `json:"endDate"`
 	CreatedOn        time.Time         `json:"createdOn"`
 	UpdatedOn        time.Time         `json:"updatedOn"`
+	ProjectEngagementFields
 	// HasSr is the backing data source's own precomputed answer to whether
 	// this project is eligible to raise service requests.
 	HasSr bool `json:"hasSr"`
@@ -550,6 +543,9 @@ type ProjectView struct {
 	// for this project (e.g. ServiceNow leaves it blank).
 	EndDate   *time.Time `json:"endDate"`
 	CreatedOn time.Time  `json:"createdOn"`
+	// ActiveCasesCount is a plain int, not a pointer: the portal's
+	// ProjectListItem types it as a required number.
+	ActiveCasesCount int `json:"activeCasesCount"`
 	// Account is nil when the project has no linked account (ServiceNow data source only).
 	Account *EntityRef `json:"account"`
 	ProjectClosureFields
@@ -562,6 +558,174 @@ type SearchProjectsResponse struct {
 	Limit    int           `json:"limit"`
 	Offset   int           `json:"offset"`
 	HasMore  bool          `json:"hasMore"`
+}
+
+// --- project metadata/stats (ServiceNow data source only) ---
+
+// ChoiceListItem is one available option for a ServiceNow choice-list field —
+// used in metadata responses that enumerate the valid values for a field
+// (e.g. case states, severities) rather than classify a single record, and in
+// stats responses that report a count per option.
+type ChoiceListItem struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Count *int   `json:"count,omitempty"`
+}
+
+// ReferenceTableItem is a reference to a row in another ServiceNow table,
+// used in metadata/stats responses (e.g. case types) — richer than EntityRef:
+// adds an optional record number, WSO2-internal ID, and per-item count.
+type ReferenceTableItem struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Number     *string `json:"number,omitempty"`
+	InternalID *string `json:"internalId,omitempty"`
+	Count      *int    `json:"count,omitempty"`
+	// Abbreviation is the short reference name (e.g. "APIM" for "API Manager"),
+	// present when the backing record carries one.
+	Abbreviation *string `json:"abbreviation,omitempty"`
+}
+
+// ProjectFeatures is the feature-access configuration for a project.
+type ProjectFeatures struct {
+	ProjectType                    ReferenceTableItem `json:"projectType"`
+	AcceptedSeverityValues         []ChoiceListItem   `json:"acceptedSeverityValues"`
+	HasServiceRequestWriteAccess   bool               `json:"hasServiceRequestWriteAccess"`
+	HasServiceRequestReadAccess    bool               `json:"hasServiceRequestReadAccess"`
+	HasSraWriteAccess              bool               `json:"hasSraWriteAccess"`
+	HasSraReadAccess               bool               `json:"hasSraReadAccess"`
+	HasChangeRequestReadAccess     bool               `json:"hasChangeRequestReadAccess"`
+	HasEngagementsReadAccess       bool               `json:"hasEngagementsReadAccess"`
+	HasUpdatesReadAccess           bool               `json:"hasUpdatesReadAccess"`
+	HasTimeLogsReadAccess          bool               `json:"hasTimeLogsReadAccess"`
+	HasDeploymentWriteAccess       bool               `json:"hasDeploymentWriteAccess"`
+	HasDeploymentReadAccess        bool               `json:"hasDeploymentReadAccess"`
+	HasComponentAnalysisReadAccess bool               `json:"hasComponentAnalysisReadAccess"`
+	HasUsageMetricsReadAccess      bool               `json:"hasUsageMetricsReadAccess"`
+	// DefaultCaseProductCategories/SrProductCategories are plain strings, not a
+	// named Go enum type, matching this file's convention for enum-like fields.
+	DefaultCaseProductCategories []string `json:"defaultCaseProductCategories,omitempty"`
+	SrProductCategories          []string `json:"srProductCategories,omitempty"`
+}
+
+// ProjectMetadataResponse is the response for GET /projects/{id}/metadata —
+// reference data (choice lists, feature flags) for building the project's UI,
+// not project-specific field values.
+type ProjectMetadataResponse struct {
+	CaseStates                  []ChoiceListItem     `json:"caseStates"`
+	CallRequestStates           []ChoiceListItem     `json:"callRequestStates"`
+	ChangeRequestStates         []ChoiceListItem     `json:"changeRequestStates"`
+	ConversationStates          []ChoiceListItem     `json:"conversationStates"`
+	TimeCardStates              []ChoiceListItem     `json:"timeCardStates"`
+	ChangeRequestImpacts        []ChoiceListItem     `json:"changeRequestImpacts"`
+	Severities                  []ChoiceListItem     `json:"severities"`
+	SeverityBasedAllocationTime map[string]int       `json:"severityBasedAllocationTime"`
+	IssueTypes                  []ChoiceListItem     `json:"issueTypes"`
+	DeploymentTypes             []ChoiceListItem     `json:"deploymentTypes"`
+	CaseTypes                   []ReferenceTableItem `json:"caseTypes"`
+	EngagementTypes             []ChoiceListItem     `json:"engagementTypes"`
+	EngagementPaymentTypes      []ChoiceListItem     `json:"engagementPaymentTypes"`
+	Features                    ProjectFeatures      `json:"features"`
+}
+
+// ProjectStatsOutstandingCount groups the outstanding-work-item counts
+// embedded in ProjectStatsResponse.
+type ProjectStatsOutstandingCount struct {
+	CaseCount           int `json:"caseCount"`
+	ServiceRequestCount int `json:"serviceRequestCount"`
+	EngagementCount     int `json:"engagementCount"`
+	SraCount            int `json:"sraCount"`
+	ChangeRequestCount  int `json:"changeRequestCount"`
+	AnnouncementCount   int `json:"announcementCount"`
+}
+
+// ProjectStatsResponse is the response for GET /projects/{id}/stats.
+type ProjectStatsResponse struct {
+	TotalHours           float64                      `json:"totalHours"`
+	BillableHours        float64                      `json:"billableHours"`
+	SLAStatus            string                       `json:"slaStatus"`
+	DeploymentCount      int                          `json:"deploymentCount"`
+	DeployedProductCount int                          `json:"deployedProductCount"`
+	InstanceCount        int                          `json:"instanceCount"`
+	OutstandingCount     ProjectStatsOutstandingCount `json:"outstandingCount"`
+}
+
+// ResolvedCountBreakdown groups the resolved-count breakdown shared by case
+// and change-request stats responses.
+type ResolvedCountBreakdown struct {
+	Total          int `json:"total"`
+	CurrentMonth   int `json:"currentMonth"`
+	PastThirtyDays int `json:"pastThirtyDays"`
+}
+
+// ProjectCaseStatsChangeRate groups the period-over-period change-rate
+// figures embedded in ProjectCaseStatsResponse.
+type ProjectCaseStatsChangeRate struct {
+	ResolvedEngagements float64 `json:"resolvedEngagements"`
+	AverageResponseTime float64 `json:"averageResponseTime"`
+}
+
+// CasesTrend is the severity breakdown for a single time-unit bucket in a
+// case-count trend series.
+type CasesTrend struct {
+	Period     string           `json:"period"`
+	Severities []ChoiceListItem `json:"severities"`
+}
+
+// ProjectCaseStatsRequest is the input for GET /projects/{id}/cases/stats.
+type ProjectCaseStatsRequest struct {
+	// CaseTypes is a plain string slice, not a named Go enum type, matching
+	// this file's convention for enum-like fields.
+	CaseTypes []string
+	CreatedBy string
+}
+
+// ProjectCaseStatsResponse is the response for GET /projects/{id}/cases/stats.
+type ProjectCaseStatsResponse struct {
+	TotalCount                     int                        `json:"totalCount"`
+	ActiveCount                    int                        `json:"activeCount"`
+	OutstandingCount               int                        `json:"outstandingCount"`
+	ActionRequiredCount            int                        `json:"actionRequiredCount"`
+	AverageResponseTime            float64                    `json:"averageResponseTime"`
+	ResolvedCount                  ResolvedCountBreakdown     `json:"resolvedCount"`
+	ChangeRate                     ProjectCaseStatsChangeRate `json:"changeRate"`
+	StateCount                     []ChoiceListItem           `json:"stateCount"`
+	SeverityCount                  []ChoiceListItem           `json:"severityCount"`
+	OutstandingSeverityCount       []ChoiceListItem           `json:"outstandingSeverityCount"`
+	EngagementTypeCount            []ChoiceListItem           `json:"engagementTypeCount"`
+	OutstandingEngagementTypeCount []ChoiceListItem           `json:"outstandingEngagementTypeCount"`
+	CaseTypeCount                  []ReferenceTableItem       `json:"caseTypeCount"`
+	CasesTrend                     []CasesTrend               `json:"casesTrend"`
+}
+
+// ProjectConversationStatsResponse is the response for GET /projects/{id}/conversations/stats.
+type ProjectConversationStatsResponse struct {
+	TotalCount  int              `json:"totalCount"`
+	ActiveCount int              `json:"activeCount"`
+	StateCount  []ChoiceListItem `json:"stateCount"`
+}
+
+// ProjectDeploymentStatsResponse is the response for GET /projects/{id}/deployments/stats.
+type ProjectDeploymentStatsResponse struct {
+	TotalCount       int     `json:"totalCount"`
+	LastDeploymentOn *string `json:"lastDeploymentOn"`
+}
+
+// ProjectTimeCardStatsResponse is the response for GET /projects/{id}/time-cards/stats.
+type ProjectTimeCardStatsResponse struct {
+	TotalHours       float64 `json:"totalHours"`
+	BillableHours    float64 `json:"billableHours"`
+	NonBillableHours float64 `json:"nonBillableHours"`
+}
+
+// ProjectChangeRequestStatsResponse is the response for GET /projects/{id}/change-requests/stats.
+type ProjectChangeRequestStatsResponse struct {
+	TotalCount          int                    `json:"totalCount"`
+	ActiveCount         int                    `json:"activeCount"`
+	OutstandingCount    int                    `json:"outstandingCount"`
+	ActionRequiredCount int                    `json:"actionRequiredCount"`
+	StateCount          []ChoiceListItem       `json:"stateCount"`
+	ResolvedCount       ResolvedCountBreakdown `json:"resolvedCount"`
 }
 
 // ProductClass classifies a product as either a standalone software or a managed service.
@@ -718,10 +882,17 @@ type DeploymentView struct {
 	Name        string         `json:"name"`
 	Type        DeploymentType `json:"type"`
 	Description *string        `json:"description"`
+	URL         *string        `json:"url"`
 	CreatedBy   *EntityRef     `json:"createdBy"`
 	Project     EntityRef      `json:"project"`
 	CreatedOn   time.Time      `json:"createdOn"`
 	UpdatedOn   time.Time      `json:"updatedOn"`
+	// DeployedProductCount is the number of deployed products in this
+	// deployment, as reported by the upstream data source. Consumers rely on it
+	// to tell whether a deployment has any products at all without a second
+	// query — the customer portal's Usage & Metrics view filters on exactly
+	// this. Matches the Ballerina entity-service's Deployment.deployedProductCount.
+	DeployedProductCount int `json:"deployedProductCount"`
 }
 
 // SearchDeploymentsRequest is the input for a deployment search operation.
@@ -1275,9 +1446,16 @@ type CaseView struct {
 	// backing data source when the case's type or severity changes or it is
 	// reopened, so that a materially changed case has to be re-acknowledged.
 	AcknowledgedBy *AssignedEngineerRef `json:"acknowledgedBy"`
-	ParentCase     *CaseNumberRef       `json:"parentCase"`
-	RelatedCase    *CaseNumberRef       `json:"relatedCase"`
-	AccountDetails *AccountRef          `json:"account"`
+	// WorkaroundProvidedOn is when the case's workaround was marked provided, null
+	// until marked (and cleared again on recall). Pauses the case's Workaround SLA
+	// clock in the backing data source while set (ServiceNow data source only).
+	WorkaroundProvidedOn *time.Time `json:"workaroundProvidedOn"`
+	// WorkaroundProvidedBy is the engineer who marked the workaround as provided,
+	// null until marked.
+	WorkaroundProvidedBy *AssignedEngineerRef `json:"workaroundProvidedBy"`
+	ParentCase           *CaseNumberRef       `json:"parentCase"`
+	RelatedCase          *CaseNumberRef       `json:"relatedCase"`
+	AccountDetails       *AccountRef          `json:"account"`
 	// LinkedServiceRequests lists any service-request cases whose parent points to this
 	// case. Populated on every case detail response, not just high-severity cases.
 	LinkedServiceRequests []LinkedServiceRequestRef `json:"linkedServiceRequests"`
@@ -1322,6 +1500,24 @@ type CaseView struct {
 	// detail read still succeeds and this field is left nil rather than failing the
 	// whole read.
 	Tags []Tag `json:"tags"`
+	// Fields the upstream case response supplies that consumers read directly.
+	// Nullable throughout: nil means the source gave no value, not zero.
+	// Names mirror the Ballerina entity-service CaseResponse record.
+	SLAResponseTime       *string    `json:"slaResponseTime"`
+	ClosedBy              *EntityRef `json:"closedBy"`
+	HasAutoClosed         *bool      `json:"hasAutoClosed"`
+	EngagementStartDate   *string    `json:"engagementStartDate"`
+	EngagementEndDate     *string    `json:"engagementEndDate"`
+	EngagementPaymentType *string    `json:"engagementPaymentType"`
+	// Duration is the upstream's own humanised elapsed-time string
+	// (e.g. "247 Days 4 Hours 31 Minutes"), passed through rather than parsed —
+	// it is display text, not a computable interval.
+	Duration *string `json:"duration"`
+	// EscalationLevel is the level id ("0".."5"), the same vocabulary the
+	// escalationLevel request filter accepts, so the value round-trips. Rendering
+	// it as a label is the caller's concern.
+	EscalationLevel *string `json:"escalationLevel"`
+	IsEscalated     *bool   `json:"isEscalated"`
 }
 
 // Tag is a free-text label attached to a case via ServiceNow's generic
@@ -1780,6 +1976,12 @@ type UpdateCaseRequest struct {
 	// it cannot be combined with any other field in the same request. Requires an
 	// elevated support role (ServiceNow data source only).
 	Acknowledge *bool `json:"acknowledge"`
+	// WorkaroundProvided marks (true) or recalls (false) the case's workaround.
+	// Unlike Acknowledge, both true and false are meaningful and accepted -- this
+	// is a toggle, not a one-way claim. Marking it stamps the calling engineer as
+	// the provider and pauses the case's Workaround SLA clock in the backing data
+	// source; recalling clears both (ServiceNow data source only).
+	WorkaroundProvided *bool `json:"workaroundProvided"`
 }
 
 // UpdateCaseResponse is the response for PATCH /cases/{id}.
@@ -1843,6 +2045,11 @@ type UpdatedCase struct {
 	// request set it or found it already set. Present only when the update set
 	// acknowledge.
 	AcknowledgedBy *AssignedEngineerRef `json:"acknowledgedBy,omitempty"`
+	// WorkaroundProvidedOn/WorkaroundProvidedBy are not echoed here: ServiceNow's
+	// Update Case response only ever returns {id, updatedOn, updatedBy} for a plain
+	// field write like this one (same as Subject/Description/the fix-ETA fields
+	// above, none of which echo back either) -- the caller re-reads the case detail
+	// to see the new value, same as for those.
 }
 
 // CaseVariable is one answered question on a service request: Name is the
@@ -1939,6 +2146,19 @@ const (
 )
 
 // CaseComment represents a comment on a support case.
+// InlineAttachment is an image embedded in a comment body. IDs are converted
+// from ServiceNow sysids to UUIDs like every other inbound identifier.
+type InlineAttachment struct {
+	ID          string `json:"id"`
+	FileName    string `json:"fileName"`
+	ContentType string `json:"contentType"`
+	DownloadURL string `json:"downloadUrl"`
+	// CreatedOn is nil when the upstream supplied no parseable timestamp — never
+	// a zero time, which would serialise as a real-looking year-one date.
+	CreatedOn *time.Time `json:"createdOn,omitempty"`
+	CreatedBy string     `json:"createdBy"`
+}
+
 type CaseComment struct {
 	ID      string      `json:"id"`
 	CaseID  string      `json:"caseId"`
@@ -1950,6 +2170,11 @@ type CaseComment struct {
 	// automation or integration account that is not a user. See UserReference.
 	CreatedBy *UserReference `json:"createdBy"`
 	CreatedOn time.Time      `json:"createdOn"`
+	// HasInlineAttachments / InlineAttachments describe images embedded in the
+	// comment body. The upstream sends both; they were previously not decoded
+	// here at all. InlineAttachments is nil (not empty) when there are none.
+	HasInlineAttachments bool               `json:"hasInlineAttachments"`
+	InlineAttachments    []InlineAttachment `json:"inlineAttachments,omitempty"`
 }
 
 // CreateCaseCommentRequest is the input for creating a new case comment.
@@ -2003,6 +2228,15 @@ type CreateCommentRequest struct {
 	ReferenceType ReferenceType `json:"referenceType"`
 	Type          CommentType   `json:"type"`
 	Content       string        `json:"content"`
+	// CreatedBy optionally overrides the comment's author, which ServiceNow
+	// otherwise derives from the caller's own x-user-id-token. Its only current
+	// use is letting an AI-assistant reply be attributed to the assistant
+	// rather than to the customer whose token relayed it — pass "agent" for
+	// that, matching the digiops-cs entity-service contract
+	// (CommentCreatePayload.createdBy) the Ballerina customer-portal backend
+	// already uses. Omitted from the upstream payload when empty, so ordinary
+	// callers keep the caller-attributed default.
+	CreatedBy string `json:"createdBy,omitempty"`
 }
 
 // CreateCommentResponse is the response for POST /comments.
@@ -2203,6 +2437,28 @@ type CreateCaseGithubIssueResponse struct {
 	Issue   CaseGithubIssueDetail `json:"issue"`
 }
 
+// AttachmentStatus is the upload lifecycle state of a CSM-native (Postgres)
+// data source attachment. ServiceNow-sourced attachments have no such
+// lifecycle -- SN's /attachments API only ever returns fully-uploaded files --
+// so this is meaningful for the Postgres data source only, where the browser
+// uploads directly to SFTPGo and CSM's row can be registered before that
+// upload finishes.
+type AttachmentStatus string
+
+const (
+	// AttachmentStatusPending marks a row created before the browser has
+	// uploaded (or finished uploading) the file to SFTPGo. It exists so an
+	// orphan-file gap can't occur: if the upload never completes or the
+	// browser never calls back, CSM still has a record that something was
+	// started, for a future reconciliation job to find and clean up.
+	AttachmentStatusPending AttachmentStatus = "pending"
+	// AttachmentStatusComplete marks a row whose file is confirmed present in
+	// SFTPGo. This is the only state that has ever existed prior to this
+	// change, and remains the default for every caller that doesn't specify
+	// a status (the ServiceNow path, and any existing Postgres-path caller).
+	AttachmentStatusComplete AttachmentStatus = "complete"
+)
+
 // Attachment represents a file attachment linked to a reference entity.
 type Attachment struct {
 	ID            string        `json:"id"`
@@ -2219,29 +2475,82 @@ type Attachment struct {
 	CreatedOn   time.Time      `json:"createdOn"`
 	DownloadURL *string        `json:"downloadUrl"`
 	PreviewURL  *string        `json:"previewUrl"`
+	// StorageKey identifies the file's location in external object storage
+	// (SFTPGo) for CSM-native (Postgres) data source attachments. Nil for
+	// ServiceNow-sourced attachments, whose bytes are held by ServiceNow itself.
+	StorageKey *string `json:"storageKey,omitempty"`
+	// Status is the upload lifecycle state -- see AttachmentStatus. Always
+	// AttachmentStatusComplete for ServiceNow-sourced attachments.
+	Status AttachmentStatus `json:"status,omitempty"`
 }
 
 // CreateAttachmentRequest is the input for POST /attachments.
+//
+// The two data sources populate mutually exclusive fields: ServiceNow requires
+// File (a base64 data URI) and computes SizeBytes from the decoded bytes; the
+// CSM-native (Postgres) data source requires StorageKey (the file was already
+// uploaded to SFTPGo out of band) and SizeBytes, since this service never sees
+// the bytes themselves.
 type CreateAttachmentRequest struct {
 	ReferenceID   string        `json:"referenceId"`
 	ReferenceType ReferenceType `json:"referenceType"`
 	Name          string        `json:"name"`
 	Type          string        `json:"type"`
-	File          string        `json:"file"`
+	File          string        `json:"file,omitempty"`
 	Description   *string       `json:"description"`
+	// StorageKey references file bytes already uploaded to SFTPGo. Required
+	// for the CSM-native (Postgres) data source; ignored for ServiceNow.
+	StorageKey *string `json:"storageKey,omitempty"`
+	// SizeBytes is the file size in bytes. Required for the CSM-native
+	// (Postgres) data source (this service cannot compute it, since it never
+	// sees the file bytes); ignored for ServiceNow, which computes it from
+	// the decoded File payload.
+	SizeBytes int `json:"sizeBytes,omitempty"`
+	// Status requests the initial lifecycle state for a CSM-native
+	// (Postgres) data source attachment -- see AttachmentStatus. Empty
+	// defaults to AttachmentStatusComplete, preserving today's behavior for
+	// every existing caller (including the ServiceNow path, which ignores
+	// this field entirely). Callers that upload directly to SFTPGo should
+	// pass AttachmentStatusPending here *before* minting the upload
+	// credential, then call CaseService.ConfirmCaseAttachment once the
+	// browser reports the upload succeeded.
+	Status AttachmentStatus `json:"status,omitempty"`
+	// CreatedBy is the resolved actor user id, wired in by the Postgres-backed
+	// service from the request's auth token before it reaches the repository.
+	// Not part of the wire contract.
+	CreatedBy string `json:"-"`
 }
 
 // AttachmentDetail holds the core fields returned after creating an attachment.
 type AttachmentDetail struct {
-	ID          string    `json:"id"`
-	SizeBytes   int       `json:"sizeBytes"`
-	CreatedOn   time.Time `json:"createdOn"`
-	CreatedBy   string    `json:"createdBy"`
-	DownloadURL string    `json:"downloadUrl"`
+	ID        string    `json:"id"`
+	SizeBytes int       `json:"sizeBytes"`
+	CreatedOn time.Time `json:"createdOn"`
+	CreatedBy string    `json:"createdBy"`
+	// DownloadURL is nil for a CSM-native (Postgres) data source attachment:
+	// this service holds no download location for it, only its storage_key --
+	// resolving storage_key to an actual download location is the downstream
+	// CSM backend's job. Always non-nil for ServiceNow-sourced attachments.
+	DownloadURL *string `json:"downloadUrl"`
+	// StorageKey is set only for CSM-native (Postgres) data source attachments.
+	// See Attachment.StorageKey.
+	StorageKey *string `json:"storageKey,omitempty"`
+	// Status is the upload lifecycle state -- see AttachmentStatus. Always
+	// AttachmentStatusComplete for ServiceNow-sourced attachments.
+	Status AttachmentStatus `json:"status,omitempty"`
 }
 
 // CreateAttachmentResponse is the response for POST /cases/{id}/attachments.
 type CreateAttachmentResponse struct {
+	Message    string           `json:"message"`
+	Attachment AttachmentDetail `json:"attachment"`
+}
+
+// ConfirmAttachmentResponse is the response for POST /attachments/{id}/confirm.
+// It reports the same shape as CreateAttachmentResponse -- confirming is just
+// the second half of creating an attachment for the CSM-native (Postgres)
+// data source's two-step (pending -> complete) upload flow.
+type ConfirmAttachmentResponse struct {
 	Message    string           `json:"message"`
 	Attachment AttachmentDetail `json:"attachment"`
 }
@@ -2300,10 +2609,6 @@ type UpdateAttachmentRequest struct {
 }
 
 // UpdateAttachmentResponse is the response for PATCH /attachments/{attachmentId}.
-type UpdateAttachmentResponse struct {
-	Message    string            `json:"message"`
-	Attachment UpdatedAttachment `json:"attachment"`
-}
 
 // UpdatedAttachment carries the fields that may change after an attachment update.
 type UpdatedAttachment struct {
@@ -4179,7 +4484,12 @@ type IncidentTaskDetail struct {
 	ClosedOn        *string        `json:"closedOn"`
 }
 
-// ConversationState represents the state of a conversation.
+// ConversationState represents the state of a conversation. Only ACTIVE and
+// RESOLVED are accepted as SearchConversationsFilters.States values (the
+// search endpoint's own filter allow-list); all five values are accepted as
+// UpdateConversationRequest.State (the transition allow-list PATCH
+// /conversations/{id} enforces), matching the Ballerina reference's SN state
+// keys 2-6 respectively.
 type ConversationState string
 
 const (
@@ -4297,4 +4607,974 @@ type SearchConversationsResponse struct {
 	Total         int                      `json:"total"`
 	Offset        int                      `json:"offset"`
 	Limit         int                      `json:"limit"`
+}
+
+// ConversationDetails is the response for GET /conversations/{id}.
+type ConversationDetails struct {
+	ID             string     `json:"id"`
+	Number         *string    `json:"number"`
+	InitialMessage *string    `json:"initialMessage"`
+	MessageCount   int        `json:"messageCount"`
+	Project        *EntityRef `json:"project"`
+	Case           *EntityRef `json:"case"`
+	State          *string    `json:"state"`
+	CreatedOn      string     `json:"createdOn"`
+	CreatedBy      string     `json:"createdBy"`
+	UpdatedOn      string     `json:"updatedOn"`
+	UpdatedBy      string     `json:"updatedBy"`
+}
+
+// CreateConversationRequest is the request body for POST /conversations.
+type CreateConversationRequest struct {
+	ProjectID      string `json:"projectId"`
+	InitialMessage string `json:"initialMessage"`
+}
+
+// CreatedConversation is the conversation summary returned after creation.
+type CreatedConversation struct {
+	ID        string  `json:"id"`
+	Number    string  `json:"number"`
+	CreatedBy string  `json:"createdBy"`
+	CreatedOn string  `json:"createdOn"`
+	State     *string `json:"state"`
+}
+
+// CreateConversationResponse is the response for POST /conversations.
+type CreateConversationResponse struct {
+	Message      string              `json:"message"`
+	Conversation CreatedConversation `json:"conversation"`
+}
+
+// UpdateConversationRequest is the request body for PATCH /conversations/{id}.
+// State must be one of ACTIVE, RESOLVED, CONVERTED, ABANDONED, or CLOSED —
+// the same allow-list the Ballerina reference enforces inline (SN state keys
+// 2-6), translated here to this package's string-enum convention rather than
+// exposing the raw SN integer.
+type UpdateConversationRequest struct {
+	State ConversationState `json:"state"`
+}
+
+// UpdatedConversation is the conversation summary returned after an update.
+type UpdatedConversation struct {
+	ID        string  `json:"id"`
+	Number    *string `json:"number"`
+	UpdatedOn string  `json:"updatedOn"`
+	UpdatedBy string  `json:"updatedBy"`
+	State     *string `json:"state"`
+}
+
+// UpdateConversationResponse is the response for PATCH /conversations/{id}.
+type UpdateConversationResponse struct {
+	Message      string              `json:"message"`
+	Conversation UpdatedConversation `json:"conversation"`
+}
+
+// --- global metadata and search (ServiceNow data source only) ---
+
+// FeedbackEmojiChip is a selectable follow-up option shown under a feedback emoji.
+type FeedbackEmojiChip struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// FeedbackEmoji is one of the emoji choices offered on the case feedback form.
+type FeedbackEmoji struct {
+	ID              string              `json:"id"`
+	Name            string              `json:"name"`
+	Value           string              `json:"value"`
+	UnselectedImage string              `json:"unselectedImage"`
+	SelectedImage   string              `json:"selectedImage"`
+	Chips           []FeedbackEmojiChip `json:"chips"`
+}
+
+// SystemMetadataResponse is the response for GET /metadata — system-wide
+// reference data used across the frontend (not project- or case-scoped).
+type SystemMetadataResponse struct {
+	TimeZones      []ChoiceListItem     `json:"timeZones"`
+	ProjectTypes   []ReferenceTableItem `json:"projectTypes"`
+	FeedbackEmojis []FeedbackEmoji      `json:"feedbackEmojies"`
+}
+
+// GlobalSearchFilters holds the optional filter criteria for POST /search.
+// Tables restricts which entity types are searched; valid values are
+// "projects" and "cases" (both are searched when omitted).
+type GlobalSearchFilters struct {
+	SearchQuery string   `json:"searchQuery,omitempty"`
+	Tables      []string `json:"tables,omitempty"`
+}
+
+// GlobalSearchSort specifies the sort field/order for POST /search.
+type GlobalSearchSort struct {
+	Field string `json:"field,omitempty"`
+	Order string `json:"order,omitempty"`
+}
+
+// GlobalSearchRequest is the request body for POST /search. Every field is
+// optional — an empty request body is valid and searches both tables with
+// default pagination, matching the Ballerina reference.
+type GlobalSearchRequest struct {
+	Filters            *GlobalSearchFilters `json:"filters,omitempty"`
+	SortBy             *GlobalSearchSort    `json:"sortBy,omitempty"`
+	ProjectsPagination *Pagination          `json:"projectsPagination,omitempty"`
+	CasesPagination    *Pagination          `json:"casesPagination,omitempty"`
+}
+
+// GlobalSearchProject is a project row in a global search result.
+type GlobalSearchProject struct {
+	ID                  string             `json:"id"`
+	Name                string             `json:"name"`
+	Description         *string            `json:"description"`
+	Key                 string             `json:"key"`
+	Type                ReferenceTableItem `json:"type"`
+	CreatedOn           string             `json:"createdOn"`
+	StartDate           *string            `json:"startDate"`
+	EndDate             *string            `json:"endDate"`
+	HasPdpSubscription  bool               `json:"hasPdpSubscription"`
+	ClosureState        *string            `json:"closureState"`
+	Account             ReferenceTableItem `json:"account"`
+	ActiveChatsCount    int                `json:"activeChatsCount"`
+	ActionRequiredCount int                `json:"actionRequiredCount"`
+	OutstandingCount    int                `json:"outstandingCount"`
+}
+
+// GlobalSearchCase is a case row in a global search result.
+type GlobalSearchCase struct {
+	ID               string              `json:"id"`
+	InternalID       string              `json:"internalId"`
+	Number           string              `json:"number"`
+	Title            *string             `json:"title"`
+	Description      *string             `json:"description"`
+	CreatedOn        string              `json:"createdOn"`
+	CreatedBy        string              `json:"createdBy"`
+	UpdatedOn        string              `json:"updatedOn"`
+	Project          *ReferenceTableItem `json:"project"`
+	CaseType         *ReferenceTableItem `json:"caseType"`
+	State            *ChoiceListItem     `json:"state"`
+	Severity         *ChoiceListItem     `json:"severity"`
+	AssignedEngineer *ReferenceTableItem `json:"assignedEngineer"`
+	Account          ReferenceTableItem  `json:"account"`
+}
+
+// GlobalSearchResponse is the response for POST /search.
+type GlobalSearchResponse struct {
+	Query         string                `json:"query"`
+	ProjectsTotal int                   `json:"projectsTotal"`
+	CasesTotal    int                   `json:"casesTotal"`
+	Projects      []GlobalSearchProject `json:"projects"`
+	Cases         []GlobalSearchCase    `json:"cases"`
+}
+
+// VulnerabilityMetaResponse is the response for GET /products/vulnerabilities/meta.
+type VulnerabilityMetaResponse struct {
+	Severities []ChoiceListItem `json:"severities"`
+}
+
+// --- case feedback (ServiceNow data source only) ---
+
+// SubmitCaseFeedbackRequest is the request body for POST /cases/{id}/feedback.
+type SubmitCaseFeedbackRequest struct {
+	EmojiID           string   `json:"emojiId"`
+	ChipIDs           []string `json:"chipIds,omitempty"`
+	AdditionalComment *string  `json:"additionalComment,omitempty"`
+}
+
+// CaseFeedbackResult is the feedback record created by a submission.
+type CaseFeedbackResult struct {
+	ID           string `json:"id"`
+	AssessmentID string `json:"assessmentId"`
+	CaseID       string `json:"caseId"`
+	CreatedBy    string `json:"createdBy"`
+	CreatedOn    string `json:"createdOn"`
+}
+
+// SubmitCaseFeedbackResponse is the response for POST /cases/{id}/feedback.
+type SubmitCaseFeedbackResponse struct {
+	Message  string             `json:"message"`
+	Feedback CaseFeedbackResult `json:"feedback"`
+}
+
+// CaseFeedbackEmojiRef is the emoji reference embedded in GET /cases/{id}/feedback.
+type CaseFeedbackEmojiRef struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	SelectedImage string `json:"selectedImage"`
+}
+
+// CaseFeedback is the response for GET /cases/{id}/feedback.
+type CaseEmojiFeedback struct {
+	ID                string               `json:"id"`
+	Emoji             CaseFeedbackEmojiRef `json:"emoji"`
+	ChipIDs           []string             `json:"chips"`
+	AssessmentID      string               `json:"assessmentId"`
+	CreatedBy         string               `json:"createdBy"`
+	CreatedOn         string               `json:"createdOn"`
+	AdditionalComment *string              `json:"additionalComment"`
+}
+
+// --- attachment gaps (formerly ServiceNow data source only; the CSM-native
+// Postgres data source now implements GetAttachmentByID and UpdateAttachment
+// too, in caseService -- see its Content/StorageKey doc comments above for how
+// the two data sources differ) ---
+
+// AttachmentDetails is the response for GET /attachments/{id} — attachment
+// metadata plus its base64-encoded file content. The upstream response does
+// include a createdByUser key, but this lookup leaves it null rather than
+// resolving the uploader the way the search/comment paths do — so CreatedBy is
+// a bare string here. ReferenceType is genuinely absent from the upstream
+// response, so it is deliberately not modeled below.
+type AttachmentDetails struct {
+	ID          string    `json:"id"`
+	ReferenceID string    `json:"referenceId"`
+	Name        string    `json:"name"`
+	Type        string    `json:"type"`
+	SizeBytes   int       `json:"sizeBytes"`
+	Description *string   `json:"description"`
+	CreatedBy   string    `json:"createdBy"`
+	CreatedOn   time.Time `json:"createdOn"`
+	DownloadURL *string   `json:"downloadUrl"`
+	PreviewURL  *string   `json:"previewUrl"`
+	// Content is nil for CSM-native (Postgres) data source attachments: this
+	// service holds no bytes for them -- see CaseService.GetCaseAttachmentContent.
+	// Always non-nil for ServiceNow-sourced attachments.
+	Content *string `json:"content"`
+	// StorageKey is set only for CSM-native (Postgres) data source
+	// attachments, whose Content is always nil (see above).
+	StorageKey *string `json:"storageKey,omitempty"`
+	// Status is the upload lifecycle state -- see AttachmentStatus. Always
+	// AttachmentStatusComplete for ServiceNow-sourced attachments. A
+	// 'pending' row is still returned here (unlike the default search/list
+	// response, which excludes pending rows) since a direct id lookup is how
+	// the confirm step and an uploader checking their own in-flight upload
+	// both work.
+	Status AttachmentStatus `json:"status,omitempty"`
+}
+
+// UpdateAttachmentRequest is the request body for PATCH /attachments/{id}.
+// ReferenceType must be "case" or "deployment"; for "case" Name is required
+// and Description is not allowed; for "deployment" at least one of Name or
+// Description must be present.
+
+// UpdatedAttachment holds the fields returned after updating an attachment.
+
+// UpdateAttachmentResponse is the response for PATCH /attachments/{id}.
+type UpdateAttachmentResponse struct {
+	Message    string            `json:"message"`
+	Attachment UpdatedAttachment `json:"attachment"`
+}
+
+// --- deployed product metrics (ServiceNow data source only) ---
+
+// DeployedProductMetricsRequest is the request body for
+// POST /deployed-products/{id}/metrics/search. All fields are required;
+// StartDate/EndDate use YYYY-MM-DD format, must be strictly ordered, and must
+// not span more than one year (see validateDateRange in the service layer).
+type DeployedProductMetricsRequest struct {
+	DeploymentID string `json:"deploymentId"`
+	StartDate    string `json:"startDate"`
+	EndDate      string `json:"endDate"`
+}
+
+// DeployedProductMetricsInstance is a single instance's contribution to a
+// metrics chart entry.
+type DeployedProductMetricsInstance struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Cores int    `json:"cores"`
+}
+
+// DeployedProductMetricsChartEntry is one date's worth of core-count data.
+type DeployedProductMetricsChartEntry struct {
+	Date          string                           `json:"date"`
+	InstanceCount int                              `json:"instanceCount"`
+	TotalCores    int                              `json:"totalCores"`
+	MinCores      int                              `json:"minCores"`
+	MaxCores      int                              `json:"maxCores"`
+	AvgCores      float64                          `json:"avgCores"`
+	Instances     []DeployedProductMetricsInstance `json:"instances"`
+}
+
+// DeployedProductMetricsDateRange is the queried date range echoed back in a summary.
+type DeployedProductMetricsDateRange struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
+// DeployedProductMetricsSummary is the summary statistics for a metrics query.
+type DeployedProductMetricsSummary struct {
+	DateRange      DeployedProductMetricsDateRange `json:"dateRange"`
+	TotalInstances int                             `json:"totalInstances"`
+	MinCores       *int                            `json:"minCores"`
+	MaxCores       *int                            `json:"maxCores"`
+	AvgCores       *float64                        `json:"avgCores"`
+}
+
+// DeployedProductMetricsResponse is the response for
+// POST /deployed-products/{id}/metrics/search.
+type DeployedProductMetricsResponse struct {
+	DeployedProduct ReferenceTableItem                 `json:"deployedProduct"`
+	Summary         DeployedProductMetricsSummary      `json:"summary"`
+	ChartData       []DeployedProductMetricsChartEntry `json:"chartData"`
+}
+
+// DeployedProductUsageCountsRequest is the request body for
+// POST /deployed-products/{id}/metrics/usage-counts/search. Same shape and
+// date-range validation as DeployedProductMetricsRequest.
+type DeployedProductUsageCountsRequest struct {
+	DeployedProductMetricsRequest
+}
+
+// UsageCountInstance is a single instance's contribution to a usage-count entry.
+type UsageCountInstance struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Value float64 `json:"value"`
+}
+
+// UsageCountEntry is one count type's aggregated value on a single date.
+type UsageCountEntry struct {
+	Value       float64              `json:"value"`
+	Aggregation string               `json:"aggregation"`
+	Instances   []UsageCountInstance `json:"instances"`
+}
+
+// DeployedProductUsageCountsChartEntry is one date's worth of usage-count
+// data. Counts is keyed by count-type name — ServiceNow defines an open set
+// of count types, not a fixed enum, so this stays a map rather than a struct.
+type DeployedProductUsageCountsChartEntry struct {
+	Date   string                     `json:"date"`
+	Counts map[string]UsageCountEntry `json:"counts"`
+}
+
+// CountTypeAggregation is the summary statistics for a single count type over
+// the queried date range.
+type CountTypeAggregation struct {
+	Aggregation string  `json:"aggregation"`
+	Min         float64 `json:"min"`
+	Max         float64 `json:"max"`
+	Avg         float64 `json:"avg"`
+}
+
+// DeployedProductUsageCountsSummary is the summary statistics for a
+// usage-counts query. CountTypes is keyed by count-type name, same rationale
+// as DeployedProductUsageCountsChartEntry.Counts.
+type DeployedProductUsageCountsSummary struct {
+	DateRange  DeployedProductMetricsDateRange `json:"dateRange"`
+	CountTypes map[string]CountTypeAggregation `json:"countTypes"`
+}
+
+// DeployedProductUsageCountsResponse is the response for
+// POST /deployed-products/{id}/metrics/usage-counts/search.
+type DeployedProductUsageCountsResponse struct {
+	DeployedProduct ReferenceTableItem                     `json:"deployedProduct"`
+	Summary         DeployedProductUsageCountsSummary      `json:"summary"`
+	ChartData       []DeployedProductUsageCountsChartEntry `json:"chartData"`
+}
+
+// --- escalations (ServiceNow data source only) ---
+
+// EscalationAction identifies whether an escalation request escalates or
+// de-escalates a case.
+type EscalationAction string
+
+const (
+	EscalationActionEscalate   EscalationAction = "ESCALATE"
+	EscalationActionDeescalate EscalationAction = "DEESCALATE"
+)
+
+// CreateEscalationRequest is the request body for POST /escalations. Action
+// defaults to ESCALATE when omitted (matched case-insensitively); Reason is
+// required when the (defaulted) action is ESCALATE.
+type CreateEscalationRequest struct {
+	CaseID string            `json:"caseId"`
+	Reason *string           `json:"reason,omitempty"`
+	Action *EscalationAction `json:"action,omitempty"`
+}
+
+// EscalationNotifiedUser is a user notified about an escalation.
+type EscalationNotifiedUser struct {
+	ID       string  `json:"id"`
+	UserName string  `json:"userName"`
+	Name     *string `json:"name"`
+	Email    *string `json:"email"`
+}
+
+// CreatedEscalation holds the escalation details returned after creation.
+// Unlike Escalation (search results), it has no UpdatedOn — the create
+// response doesn't carry one, matching the Ballerina reference.
+type CreatedEscalation struct {
+	ID                 string                   `json:"id"`
+	Case               ReferenceTableItem       `json:"case"`
+	CurrentLevel       ChoiceListItem           `json:"currentLevel"`
+	PreviousLevel      ChoiceListItem           `json:"previousLevel"`
+	CreatedBy          string                   `json:"createdBy"`
+	CreatedOn          string                   `json:"createdOn"`
+	Reason             *string                  `json:"reason"`
+	NotificationSentTo []EscalationNotifiedUser `json:"notificationSentTo"`
+}
+
+// CreateEscalationResponse is the response for POST /escalations.
+type CreateEscalationResponse struct {
+	Message    string            `json:"message"`
+	Escalation CreatedEscalation `json:"escalation"`
+}
+
+// Escalation is a single escalation row in search results.
+type Escalation struct {
+	ID                 string                   `json:"id"`
+	Case               ReferenceTableItem       `json:"case"`
+	CurrentLevel       ChoiceListItem           `json:"currentLevel"`
+	PreviousLevel      ChoiceListItem           `json:"previousLevel"`
+	CreatedBy          string                   `json:"createdBy"`
+	CreatedOn          string                   `json:"createdOn"`
+	UpdatedOn          string                   `json:"updatedOn"`
+	Reason             *string                  `json:"reason"`
+	NotificationSentTo []EscalationNotifiedUser `json:"notificationSentTo"`
+}
+
+// SearchEscalationsFilters holds the optional filter criteria for POST /escalations/search.
+type SearchEscalationsFilters struct {
+	CaseIDs       []string `json:"caseIds,omitempty"`
+	CurrentLevels []int    `json:"currentLevels,omitempty"`
+}
+
+// EscalationSortField enumerates the columns available for sorting escalation search results.
+type EscalationSortField string
+
+const (
+	EscalationSortFieldCreatedOn EscalationSortField = "createdOn"
+	EscalationSortFieldUpdatedOn EscalationSortField = "updatedOn"
+)
+
+// EscalationSortOrder controls the sort direction for escalation search results.
+type EscalationSortOrder string
+
+const (
+	EscalationSortOrderAsc  EscalationSortOrder = "asc"
+	EscalationSortOrderDesc EscalationSortOrder = "desc"
+)
+
+// EscalationSort specifies the sort field/order for POST /escalations/search.
+type EscalationSort struct {
+	Field EscalationSortField `json:"field"`
+	Order EscalationSortOrder `json:"order"`
+}
+
+// SearchEscalationsRequest is the request body for POST /escalations/search.
+type SearchEscalationsRequest struct {
+	Filters    *SearchEscalationsFilters `json:"filters,omitempty"`
+	SortBy     *EscalationSort           `json:"sortBy,omitempty"`
+	Pagination Pagination                `json:"pagination"`
+}
+
+// SearchEscalationsResponse is the paginated result of an escalation search.
+type SearchEscalationsResponse struct {
+	Escalations []Escalation `json:"escalations"`
+	Total       int          `json:"total"`
+	Offset      int          `json:"offset"`
+	Limit       int          `json:"limit"`
+}
+
+// --- case-grouped time cards (ServiceNow data source only) ---
+
+// CaseTimeCardBillingInfo is a billable/non-billable time breakdown.
+type CaseTimeCardBillingInfo struct {
+	TotalTime float64 `json:"totalTime"`
+	Count     int     `json:"count"`
+}
+
+// CaseTimeCardCaseRef is the case reference embedded in a case time-card summary.
+type CaseTimeCardCaseRef struct {
+	ID        string     `json:"id"`
+	Number    string     `json:"number"`
+	Name      string     `json:"name"`
+	UpdatedOn string     `json:"updatedOn"`
+	Project   *EntityRef `json:"project"`
+	// Audit fields the upstream supplies for the case behind a time-card
+	// rollup. Nullable rather than empty-string per the optional-field
+	// convention; UpdatedOn above predates it and is left as-is.
+	CreatedOn *string `json:"createdOn"`
+	CreatedBy *string `json:"createdBy"`
+	UpdatedBy *string `json:"updatedBy"`
+}
+
+// CaseTimeCardSummary is the time-card rollup for a single case.
+type CaseTimeCardSummary struct {
+	Case        CaseTimeCardCaseRef     `json:"case"`
+	TotalTime   float64                 `json:"totalTime"`
+	TotalCount  int                     `json:"totalCount"`
+	Billable    CaseTimeCardBillingInfo `json:"billable"`
+	NonBillable CaseTimeCardBillingInfo `json:"nonBillable"`
+}
+
+// SearchCaseTimeCardsResponse is the response for POST /cases/time-cards/search
+// — time cards grouped and rolled up by case, rather than the flat
+// per-time-card rows POST /time-cards/search returns. Uses the same request
+// type as that endpoint (SearchTimeCardsRequest) since the upstream SN
+// payload shape is identical between the two.
+type SearchCaseTimeCardsResponse struct {
+	Cases  []CaseTimeCardSummary `json:"cases"`
+	Total  int                   `json:"total"`
+	Offset int                   `json:"offset"`
+	Limit  int                   `json:"limit"`
+}
+
+// --- instances / metrics (ServiceNow data source only) ---
+
+// InstanceSearchFilters holds the optional filter criteria for
+// POST /instances/search. ProjectIDs, DeploymentIDs, and DeployedProductIDs
+// are mutually exclusive — at most one may be non-empty.
+type InstanceSearchFilters struct {
+	StartDate          *string  `json:"startDate,omitempty"`
+	EndDate            *string  `json:"endDate,omitempty"`
+	ProjectIDs         []string `json:"projectIds,omitempty"`
+	DeploymentIDs      []string `json:"deploymentIds,omitempty"`
+	DeployedProductIDs []string `json:"deployedProductIds,omitempty"`
+}
+
+// SearchInstancesRequest is the request body for POST /instances/search.
+// Unlike the other 4 instance endpoints, Filters (including its dates) is
+// entirely optional.
+type SearchInstancesRequest struct {
+	Filters    *InstanceSearchFilters `json:"filters,omitempty"`
+	Pagination Pagination             `json:"pagination"`
+}
+
+// InstanceMetadata is the metadata block embedded in an Instance.
+type InstanceMetadata struct {
+	ID                 string         `json:"id"`
+	CoreCount          *int           `json:"coreCount"`
+	Updates            *int           `json:"updates"`
+	JDKVersion         *string        `json:"jdkVersion"`
+	DeploymentMetadata map[string]any `json:"deploymentMetadata"`
+	CreatedOn          string         `json:"createdOn"`
+	UpdatedOn          string         `json:"updatedOn"`
+	CustomCreatedOn    *string        `json:"customCreatedOn"`
+	CustomUpdatedOn    *string        `json:"customUpdatedOn"`
+}
+
+// Instance is a single instance row.
+type Instance struct {
+	ID              string              `json:"id"`
+	Key             string              `json:"key"`
+	Project         *ReferenceTableItem `json:"project"`
+	Deployment      *ReferenceTableItem `json:"deployment"`
+	Product         *ReferenceTableItem `json:"product"`
+	DeployedProduct *ReferenceTableItem `json:"deployedProduct"`
+	CreatedOn       string              `json:"createdOn"`
+	UpdatedOn       string              `json:"updatedOn"`
+	Metadata        *InstanceMetadata   `json:"metadata"`
+}
+
+// SearchInstancesResponse is the response for POST /instances/search.
+type SearchInstancesResponse struct {
+	Instances []Instance `json:"instances"`
+	Total     int        `json:"total"`
+	Offset    int        `json:"offset"`
+	Limit     int        `json:"limit"`
+}
+
+// InstanceDateRangeFilters is the shared filter shape for
+// POST /instances/metrics/search and POST /instances/usages/search.
+// StartDate/EndDate are required; ProjectIDs, DeploymentIDs, and
+// DeployedProductIDs are mutually exclusive — at most one may be non-empty.
+type InstanceDateRangeFilters struct {
+	StartDate          string   `json:"startDate"`
+	EndDate            string   `json:"endDate"`
+	ProjectIDs         []string `json:"projectIds,omitempty"`
+	DeploymentIDs      []string `json:"deploymentIds,omitempty"`
+	DeployedProductIDs []string `json:"deployedProductIds,omitempty"`
+}
+
+// InstanceMetricsRequest is the request body for POST /instances/metrics/search.
+type InstanceMetricsRequest struct {
+	Filters InstanceDateRangeFilters `json:"filters"`
+}
+
+// InstanceDataPoint is a single metric snapshot for an instance.
+type InstanceDataPoint struct {
+	Date               string         `json:"date"`
+	CreatedOn          string         `json:"createdOn"`
+	CoreCount          *int           `json:"coreCount"`
+	JDKVersion         *string        `json:"jdkVersion"`
+	Updates            *int           `json:"updates"`
+	DeploymentMetadata map[string]any `json:"deploymentMetadata"`
+}
+
+// InstanceMetric is one instance's metric time series, ordered newest to oldest.
+type InstanceMetric struct {
+	InstanceID      string              `json:"instanceId"`
+	InstanceKey     string              `json:"instanceKey"`
+	Project         *ReferenceTableItem `json:"project"`
+	Deployment      *ReferenceTableItem `json:"deployment"`
+	Product         *ReferenceTableItem `json:"product"`
+	DeployedProduct *ReferenceTableItem `json:"deployedProduct"`
+	DataPoints      []InstanceDataPoint `json:"dataPoints"`
+}
+
+// InstanceMetricsResponse is the response for POST /instances/metrics/search.
+type InstanceMetricsResponse struct {
+	Metrics        []InstanceMetric `json:"metrics"`
+	TotalInstances int              `json:"totalInstances"`
+	StartDate      string           `json:"startDate"`
+	EndDate        string           `json:"endDate"`
+}
+
+// InstanceUsageRequest is the request body for POST /instances/usages/search.
+type InstanceUsageRequest struct {
+	Filters InstanceDateRangeFilters `json:"filters"`
+}
+
+// InstanceSummary is one period's usage counts for an instance, keyed by an
+// open set of count-type names (e.g. "TOTAL_USERS", "TRANSACTION_COUNT").
+type InstanceSummary struct {
+	Period string         `json:"period"`
+	Counts map[string]int `json:"counts"`
+}
+
+// InstanceUsageEntry is one instance's usage time series.
+type InstanceUsageEntry struct {
+	InstanceID      string              `json:"instanceId"`
+	InstanceKey     string              `json:"instanceKey"`
+	Project         *ReferenceTableItem `json:"project"`
+	Deployment      *ReferenceTableItem `json:"deployment"`
+	Product         *ReferenceTableItem `json:"product"`
+	DeployedProduct *ReferenceTableItem `json:"deployedProduct"`
+	PeriodSummaries []InstanceSummary   `json:"periodSummaries"`
+}
+
+// InstanceUsageResponse is the response for POST /instances/usages/search.
+type InstanceUsageResponse struct {
+	Usages         []InstanceUsageEntry `json:"usages"`
+	TotalInstances int                  `json:"totalInstances"`
+	StartDate      string               `json:"startDate"`
+	EndDate        string               `json:"endDate"`
+}
+
+// InstanceStatsFilters extends InstanceDateRangeFilters with an optional
+// dataSource discriminator, used by the two .../stats/search endpoints only.
+type InstanceStatsFilters struct {
+	InstanceDateRangeFilters
+	// DataSource filters by how the data point was recorded: 1 = API Call, 2 = File Upload.
+	DataSource *int `json:"dataSource,omitempty"`
+}
+
+// InstanceMetricsStatsRequest is the request body for POST /instances/metrics/stats/search.
+type InstanceMetricsStatsRequest struct {
+	Filters InstanceStatsFilters `json:"filters"`
+}
+
+// InstanceMetricSummary is the current/min/max/avg summary for a
+// metrics-stats query.
+type InstanceMetricSummary struct {
+	Current float64 `json:"current"`
+	Min     float64 `json:"min"`
+	Max     float64 `json:"max"`
+	Avg     float64 `json:"avg"`
+}
+
+// InstanceMetricsStatsResponse is the response for
+// POST /instances/metrics/stats/search. Stats is keyed by date, then by
+// metric name (e.g. "TOTAL_CORES") — an open set defined by ServiceNow, not
+// a fixed enum.
+type InstanceMetricsStatsResponse struct {
+	Stats     map[string]map[string]int `json:"stats"`
+	Summary   InstanceMetricSummary     `json:"summary"`
+	Total     int                       `json:"total"`
+	StartDate string                    `json:"startDate"`
+	EndDate   string                    `json:"endDate"`
+}
+
+// InstanceUsageStatsRequest is the request body for POST /instances/usages/stats/search.
+type InstanceUsageStatsRequest struct {
+	Filters InstanceStatsFilters `json:"filters"`
+}
+
+// InstanceUsageStatsResponse is the response for POST /instances/usages/stats/search.
+// Stats is keyed by date, then by metric name, same rationale as
+// InstanceMetricsStatsResponse.Stats.
+type InstanceUsageStatsResponse struct {
+	Stats     map[string]map[string]int `json:"stats"`
+	Total     int                       `json:"total"`
+	StartDate string                    `json:"startDate"`
+	EndDate   string                    `json:"endDate"`
+}
+
+// EventPublishFailure is a durable record that a backend's publish to the
+// event bus was never acknowledged by Event Hub — e.g. csm-portal-backend
+// tried to publish a case.comment_added event and Event Hub didn't ack it.
+// It replaces what used to be called event_outbox: that table existed to
+// close a race between a caller's immediate-dispatch HTTP call to
+// csm-notification-service and that service's own polling fallback, both of
+// which could try to publish the same logical event. Neither exists anymore
+// — csm-notification-service is a pure Kafka consumer now, with no HTTP
+// ingest endpoint and no database client — so there is no contention here
+// at all: exactly one writer (the publishing backend) ever creates or
+// resolves a given row. This exists purely for visibility and manual
+// remediation of a publish that never made it onto the bus, not as a queue
+// anything polls.
+//
+// Unlike every other entity in this file, this has no ServiceNow equivalent
+// — it is this service's own operational bookkeeping, not platform data. It
+// is always backed by Postgres regardless of DATA_SOURCE (see
+// internal/db/postgres.go).
+type EventPublishFailure struct {
+	ID        string          `json:"id"`
+	EventType string          `json:"eventType"`
+	EntityID  string          `json:"entityId"`
+	Payload   json.RawMessage `json:"payload"`
+	// Error is the caller-supplied reason Event Hub didn't ack the publish
+	// (e.g. a timeout or broker error message) — for a human triaging this
+	// table, not machine-parsed by anything.
+	Error      string     `json:"error"`
+	CreatedOn  time.Time  `json:"createdOn"`
+	ResolvedOn *time.Time `json:"resolvedOn,omitempty"`
+}
+
+// CreateEventPublishFailureRequest is the request body for
+// POST /event-publish-failures.
+type CreateEventPublishFailureRequest struct {
+	EventType string          `json:"eventType"`
+	EntityID  string          `json:"entityId"`
+	Payload   json.RawMessage `json:"payload"`
+	Error     string          `json:"error"`
+}
+
+// SearchEventPublishFailuresFilters holds the optional filter criteria for
+// an event_publish_failures search. Resolved lets a caller ask for only the
+// unresolved backlog (false) or only resolved history (true); omitted,
+// every row matches regardless of resolution state.
+type SearchEventPublishFailuresFilters struct {
+	Resolved *bool `json:"resolved"`
+}
+
+// SearchEventPublishFailuresRequest is the input for
+// POST /event-publish-failures/search. Results are ordered newest-first
+// (createdOn descending) — this is an operator-triage view, not a work
+// queue, so the most recent failures are what's usually relevant first.
+type SearchEventPublishFailuresRequest struct {
+	Pagination Pagination                        `json:"pagination"`
+	Filters    SearchEventPublishFailuresFilters `json:"filters"`
+}
+
+// SearchEventPublishFailuresResponse is the paginated result of an
+// event_publish_failures search.
+type SearchEventPublishFailuresResponse struct {
+	Failures []EventPublishFailure `json:"failures"`
+	Total    int                   `json:"total"`
+	Limit    int                   `json:"limit"`
+	Offset   int                   `json:"offset"`
+	HasMore  bool                  `json:"hasMore"`
+}
+
+// SLAClock is the durable record of one SLA timer running against a case —
+// e.g. a "response" or "resolution" clock started when the case was created
+// (or last had its severity change reset it), due at a fixed point, with up
+// to three tier-crossing timestamps recorded as an SLA timer engine (see
+// integrations/csm-notification-service's internal/slaengine) observes 50%,
+// 75%, and 100% of the duration elapse. ClockType is a caller-defined string,
+// not a fixed enum here — which clock types exist, and what duration each
+// gets, is a policy decision made entirely by whatever publishes the
+// triggering sla.clock.register event; this service only stores the result.
+//
+// Like EventPublishFailure, this has no ServiceNow equivalent and is always
+// backed by Postgres regardless of DATA_SOURCE (see internal/db/postgres.go)
+// — CaseID is a plain string, not a foreign key to a local cases row, since a
+// ServiceNow-backed case has none.
+type SLAClock struct {
+	CaseID    string    `json:"caseId"`
+	ClockType string    `json:"clockType"`
+	StartedOn time.Time `json:"startedOn"`
+	DueOn     time.Time `json:"dueOn"`
+	// PausedOn is currently never set by any endpoint below — the column and
+	// this field exist so a future pause/resume feature has somewhere to
+	// land, and so SLATimerEngine's tier-scan can already skip a paused
+	// clock once one exists, without a schema change at that point. No
+	// omitempty: absent must serialize as JSON null, not be omitted.
+	PausedOn     *time.Time `json:"pausedOn"`
+	Reached50On  *time.Time `json:"reached50On"`
+	Reached75On  *time.Time `json:"reached75On"`
+	Reached100On *time.Time `json:"reached100On"`
+}
+
+// RegisterSLAClockRequest is the request body for
+// POST /cases/{caseId}/sla-clocks. CaseID is injected from the path, not
+// supplied in the body. Registering a clock that already exists for this
+// (caseId, clockType) pair resets it from scratch — started_at/due_at are
+// overwritten and paused_at/reached_*_at are all cleared — mirroring the
+// rule that a severity change (or any other reason to re-baseline a clock)
+// wipes and rebuilds it rather than adjusting it in place.
+type RegisterSLAClockRequest struct {
+	CaseID    string    `json:"-"`
+	ClockType string    `json:"clockType"`
+	StartedAt time.Time `json:"startedAt"`
+	DueAt     time.Time `json:"dueAt"`
+}
+
+// SLATierStatus is the value of SetSLAClockTierRequest.Status.
+// SLATierStatusReached is the only valid value today — modeled as an enum
+// rather than a bare boolean or an action verb in the URL so a future
+// status (e.g. a manual override) can be added without a breaking change
+// to this request's shape.
+type SLATierStatus string
+
+const SLATierStatusReached SLATierStatus = "reached"
+
+// SetSLAClockTierRequest is the request body for
+// PATCH /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}.
+type SetSLAClockTierRequest struct {
+	Status SLATierStatus `json:"status"`
+}
+
+// SetSLAClockTierReachedResponse is the response body for
+// PATCH /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}.
+// ReachedOn is the timestamp now stored for that tier — either just written
+// by this call, or the pre-existing value if the tier was already reached
+// (the operation is idempotent; see the repository's SetTierReachedIfUnset).
+// AlreadyReached distinguishes those two cases: false means this call is
+// the one that just wrote ReachedOn; true means it was already set by an
+// earlier call.
+//
+// AlreadyReached reflects only the database claim, not whether any
+// caller's downstream reaction to winning that claim (e.g. publishing a
+// notification) ever actually succeeded. Gating a reaction on
+// AlreadyReached being false is a real, valid choice when duplicate-free
+// behavior matters more than guaranteed delivery — integrations/csm-notification-service's
+// internal/slaengine.Engine does exactly this (see that repo's CLAUDE.md
+// for its full reasoning) — but it's a trade-off: a caller whose own
+// reaction failed after it won the claim will, on retry, see
+// AlreadyReached=true and skip the reaction forever, having never
+// completed it once. Only rely on this field to gate a reaction if that
+// residual risk is acceptable, or if the reaction's own completion is
+// tracked durably and separately instead.
+type SetSLAClockTierReachedResponse struct {
+	ReachedOn      time.Time `json:"reachedOn"`
+	AlreadyReached bool      `json:"alreadyReached"`
+}
+
+// ScheduledTaskRun is the durable record of one attempted period of a
+// registered sub-cron running inside operations/csm-scheduled-tasks — a
+// single Choreo Scheduled Task that internally fans out to any number of
+// independently-scheduled jobs. See that component's own CLAUDE.md for the
+// full design ("period keys", "supersede"); this service only stores the
+// result. Like SLAClock and EventPublishFailure, this has no ServiceNow
+// equivalent and is always backed by Postgres regardless of DATA_SOURCE.
+//
+// TaskName is a caller-defined registry key, not a fixed enum — same
+// reasoning as SLAClock.ClockType: which sub-crons exist, and on what
+// schedule, is a policy decision made entirely by operations/csm-scheduled-tasks'
+// own registry, not something this service tracks.
+//
+// There is no stored status column, the same choice SLAClock makes for the
+// same reason: status is always derivable from which timestamp is set, and
+// each timestamp is independently useful on its own:
+//   - SucceededOn set → done, forever, for this period.
+//   - SupersededOn set → abandoned: the next period came due before this
+//     one ever succeeded, so it stopped being retried.
+//   - Neither set, NextRetryOn set and not in the future → eligible for
+//     another attempt right now.
+//   - Neither set, NextRetryOn nil → currently claimed: some caller is
+//     either actively running the handler, or crashed before reporting
+//     back via Complete/Fail — see ClaimScheduledTaskRunRequest's own doc
+//     comment for how Attempt tells those two cases apart.
+//
+// By construction there is at most one row per TaskName with neither
+// SucceededOn nor SupersededOn set at any given time — ScheduledTaskRunRepository.Attempt
+// enforces this by superseding any such row before claiming a new period.
+//
+// Backed by the scheduled_task_run table (singular — the one intentional
+// exception to every other table in this schema being plural).
+type ScheduledTaskRun struct {
+	ID       string `json:"id"`
+	TaskName string `json:"taskName"`
+	// PeriodKey is the sub-cron's own most-recent-scheduled-firing time at
+	// the moment this row was created — not when the row was created
+	// itself. It stays fixed for the row's whole lifetime, which is what
+	// lets every retry (however many days it spans) resolve to this same
+	// row instead of a new one.
+	PeriodKey        time.Time  `json:"periodKey"`
+	AttemptCount     int        `json:"attemptCount"`
+	LastError        *string    `json:"lastError"`
+	NextRetryOn      *time.Time `json:"nextRetryOn"`
+	FirstAttemptedOn time.Time  `json:"firstAttemptedOn"`
+	LastAttemptedOn  time.Time  `json:"lastAttemptedOn"`
+	SucceededOn      *time.Time `json:"succeededOn"`
+	SupersededOn     *time.Time `json:"supersededOn"`
+}
+
+// ClaimScheduledTaskRunRequest is the request body for
+// POST /scheduled-task-runs/attempt.
+type ClaimScheduledTaskRunRequest struct {
+	TaskName  string    `json:"taskName"`
+	PeriodKey time.Time `json:"periodKey"`
+	// StaleClaimAfterSeconds bounds how long a row that looks
+	// currently-claimed (SucceededOn, SupersededOn, and NextRetryOn all
+	// unset) is trusted before Attempt treats it as an orphaned claim — the
+	// caller that made it crashed before ever calling Complete or Fail —
+	// and allows another attempt. Defaults to 3600 (1 hour) when zero. The
+	// caller (the scheduled task's own engine) knows its own driver cadence
+	// and should generally pass a small multiple of it, not a fixed value
+	// shared across every deployment.
+	StaleClaimAfterSeconds int `json:"staleClaimAfterSeconds,omitempty"`
+}
+
+// ClaimScheduledTaskRunResponse is the response body for
+// POST /scheduled-task-runs/attempt. Allowed is the actual decision the
+// caller must act on; Run is the row's resulting state either way, so a
+// denied caller can still tell *why* — already SucceededOn, already
+// SupersededOn, a NextRetryOn still in the future, or genuinely claimed by
+// another still-live attempt.
+type ClaimScheduledTaskRunResponse struct {
+	Allowed bool             `json:"allowed"`
+	Run     ScheduledTaskRun `json:"run"`
+}
+
+// ScheduledTaskRunAttemptStatus is the value of
+// UpdateScheduledTaskRunAttemptRequest.Status — the outcome the caller is
+// reporting for the attempt it claimed. Modeled as an enum, not a bare
+// boolean, so a future third outcome (if one is ever needed) doesn't force
+// a breaking change to this request's shape.
+type ScheduledTaskRunAttemptStatus string
+
+const (
+	ScheduledTaskRunAttemptSucceeded ScheduledTaskRunAttemptStatus = "succeeded"
+	ScheduledTaskRunAttemptFailed    ScheduledTaskRunAttemptStatus = "failed"
+)
+
+// UpdateScheduledTaskRunAttemptRequest is the request body for
+// PATCH /scheduled-tasks/attempts/{id} — the single endpoint reporting an
+// attempt's outcome, replacing what used to be two separate
+// action-style endpoints (POST .../complete and POST .../fail). Status
+// picks which outcome is being reported; Error/NextRetryOn are used (and
+// required) only when Status is "failed" — ignored otherwise.
+//
+// AttemptCount must match the value
+// ClaimScheduledTaskRunResponse.Run.AttemptCount reported when this
+// caller's own Attempt call claimed the run — see
+// ScheduledTaskRunRepository.Complete's own doc comment for why this binds
+// the report to that specific claim rather than to the row's identity
+// alone. NextRetryOn is supplied by the caller, not computed here — this
+// service has no opinion on backoff policy, the same way it has no opinion
+// on SLA clock durations.
+type UpdateScheduledTaskRunAttemptRequest struct {
+	AttemptCount int                           `json:"attemptCount"`
+	Status       ScheduledTaskRunAttemptStatus `json:"status"`
+	Error        string                        `json:"error,omitempty"`
+	NextRetryOn  *time.Time                    `json:"nextRetryOn,omitempty"`
+}
+
+// ListScheduledTaskRunsResponse is the response body for
+// GET /scheduled-task-runs. Unlike this file's SearchXxxResponse types,
+// this is a plain, unpaginated list — monitoring only, not used by the
+// engine's own claim/retry logic, and by construction there is at most one
+// open row per TaskName, so the result set stays small regardless of how
+// many sub-crons are registered.
+type ListScheduledTaskRunsResponse struct {
+	Runs []ScheduledTaskRun `json:"runs"`
+}
+
+// DeleteScheduledTaskRunsResponse is the response body for
+// DELETE /scheduled-task-runs?resolvedBefore=<RFC3339 timestamp>.
+type DeleteScheduledTaskRunsResponse struct {
+	DeletedCount int `json:"deletedCount"`
 }

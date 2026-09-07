@@ -199,6 +199,35 @@ describe("AgentsLandingPagePilot", () => {
     expect(screen.getByText("My Patches")).toBeInTheDocument();
   });
 
+  // Regression test: DASHBOARDS_CONFIG is a raw JSON env var, not
+  // schema-validated beyond basic decoding — a widget entry missing
+  // `filters` entirely (not `{}`, genuinely absent) used to crash the whole
+  // dashboard with "Cannot read properties of undefined (reading 'filters')"
+  // deep in resolveTeamPlaceholder, three calls below this component.
+  it("renders a widget whose config is missing `filters` instead of crashing", async () => {
+    getMock.mockResolvedValue({
+      id: "agents_pilot",
+      displayName: "Engineer overview",
+      isDefault: true,
+      widgets: [
+        {
+          widgetId: "malformed_widget",
+          displayName: "Malformed Widget",
+          resourceType: "case",
+          shape: "count",
+          gridWidth: 3,
+          // filters intentionally omitted
+        },
+      ],
+    });
+    postMock.mockResolvedValue(searchResponseFor(7));
+
+    renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
+
+    await waitFor(() => expect(screen.getByText("Malformed Widget")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("7")).toBeInTheDocument());
+  });
+
   it("groups widgets sharing a `section` under a titled heading, separate from unsectioned widgets", async () => {
     getMock.mockResolvedValue({
       id: "team_performance",

@@ -50,6 +50,21 @@ func (h *TimeCardHandler) SearchTimeCards(w http.ResponseWriter, r *http.Request
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// SearchCaseTimeCards handles POST /cases/time-cards/search.
+func (h *TimeCardHandler) SearchCaseTimeCards(w http.ResponseWriter, r *http.Request) {
+	var req domain.SearchTimeCardsRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.SearchCaseTimeCards(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // CreateTimeCard handles POST /time-cards.
 func (h *TimeCardHandler) CreateTimeCard(w http.ResponseWriter, r *http.Request) {
 	var req domain.CreateTimeCardRequest

@@ -47,13 +47,14 @@ func newDirectoryRouter(t *testing.T) http.Handler {
 	srv := httptest.NewServer(upstream)
 	t.Cleanup(srv.Close)
 
-	return NewRouter(nil, &config.Config{
+	router, _ := NewRouter(nil, &config.Config{
 		DataSource:                               config.DataSourceServiceNow,
 		ServiceNowIntegrationServiceBaseURL:      srv.URL,
 		ServiceNowIntegrationServiceTokenURL:     srv.URL + "/oauth2/token",
 		ServiceNowIntegrationServiceClientID:     "test-client",
 		ServiceNowIntegrationServiceClientSecret: "test-secret",
 	})
+	return router
 }
 
 func postDirectory(t *testing.T, router http.Handler, path, body string) *httptest.ResponseRecorder {

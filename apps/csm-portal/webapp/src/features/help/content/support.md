@@ -83,6 +83,17 @@ request** action is disabled in both places: closed cases are read-only.
 Service requests aren't available on every project. If the selected project isn't eligible,
 the create form shows a warning and blocks submission.
 
+## Watchers
+
+The **Watchers** tab lists everyone notified on updates to the case, and lets you add or
+remove people (a case must always keep at least one watcher, so the last one can't be
+removed).
+
+If you're not on the list, a **Follow case updates** button adds you with one click. If
+you're already watching, it becomes **Unfollow case updates** to take yourself off the list —
+unless you were added automatically as the case's assigned engineer, in which case Unfollow is
+disabled with a tooltip explaining why.
+
 **Provide workaround** / **Recall workaround**, in the case's **More** menu, marks (or
 un-marks) that a workaround has been given to the customer — this pauses the case's Workaround
 SLA clock while marked, and resumes it on recall. The menu item's label and icon switch

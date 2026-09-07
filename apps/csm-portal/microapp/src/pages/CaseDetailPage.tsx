@@ -35,6 +35,7 @@ import { currentUser } from "@src/services/currentUser";
 import { attachments as attachmentsService } from "@src/services/attachments";
 import { timecards } from "@src/services/timecards";
 import { useUserStore } from "@src/store/user";
+import { useCaseActivityStream } from "@utils/useCaseActivityStream";
 import type {
   CaseCause,
   CaseCommentType,
@@ -106,6 +107,10 @@ function CaseDetailContent({ id }: { id: string }) {
   const { data: comments } = useSuspenseQuery(cases.comments(id));
   const { data: currentUserId } = useSuspenseQuery(currentUser.id());
   const currentUserEmail = useUserStore((s) => s.user?.email);
+  // Live updates: invalidates the case's comments/activities queries
+  // whenever another viewer adds a comment or the case's status changes, so
+  // this page doesn't rely solely on their own staleTime/a manual refresh.
+  useCaseActivityStream(id);
 
   // Announcements are cases of type "announcement" — read-only, and the
   // SLA/time-tracking/call-request tabs don't apply. Mirrors the webapp's

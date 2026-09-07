@@ -20,8 +20,11 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 )
 
 // UserService defines the operations available on the user entity.
@@ -32,6 +35,12 @@ type UserService interface {
 	// req. A ValidationError is returned for invalid input (e.g. limit > 50);
 	// any other error indicates an infrastructure failure.
 	SearchUsers(ctx context.Context, req domain.SearchUsersRequest) (domain.SearchUsersResponse, error)
+	// GetMe returns the profile of the currently authenticated user, resolved
+	// from the Postgres users table by the email claim in the caller's
+	// x-user-id-token JWT. An UnauthorizedError is returned when that header
+	// is missing; a ValidationError when the token cannot be decoded; a
+	// NotFoundError when no user row matches the email.
+	GetMe(ctx context.Context) (domain.GetUserMeResponse, error)
 }
 
 // SNUserService defines the user operations backed by the ServiceNow data source.
@@ -58,16 +67,107 @@ type AccountService interface {
 	SearchAccounts(ctx context.Context, req domain.SearchAccountsRequest) (domain.SearchAccountsResponse, error)
 	// GetAccountByID returns the account with the given UUID. A ValidationError is
 	// returned for a malformed UUID; a NotFoundError if no account matches.
-	GetAccountByID(ctx context.Context, id string) (domain.Account, error)
+	GetAccountByID(ctx context.Context, id string) (domain.AccountDetail, error)
+}
+
+// EventPublishFailureService defines the operations available on the
+// event_publish_failures entity — see domain.EventPublishFailure's doc
+// comment for what it's for.
+type EventPublishFailureService interface {
+	// CreateEventPublishFailure inserts a new unresolved failure row. A
+	// ValidationError is returned if eventType, entityId, payload, or error
+	// is missing.
+	CreateEventPublishFailure(ctx context.Context, req domain.CreateEventPublishFailureRequest) (domain.EventPublishFailure, error)
+	// ResolveEventPublishFailure marks id resolved and returns the updated
+	// row. Idempotent — resolving an already-resolved row is a no-op
+	// success. A ValidationError is returned for a malformed UUID; a
+	// NotFoundError if id does not exist.
+	ResolveEventPublishFailure(ctx context.Context, id string) (domain.EventPublishFailure, error)
+	// SearchEventPublishFailures returns a paginated list of rows matching
+	// the filters in req, newest first.
+	SearchEventPublishFailures(ctx context.Context, req domain.SearchEventPublishFailuresRequest) (domain.SearchEventPublishFailuresResponse, error)
+}
+
+// EventPublisherService publishes domain events to the case-events Event Hub
+// topic for csm-notification-service (and any other future consumer) to
+// react to — see eventPublisherService's doc comment for the wire format and
+// failure handling. Constructed in internal/server/routes.go, gated on
+// config.Config.EventHubBroker being set (nil otherwise — every caller must
+// handle a nil EventPublisherService, matching every other optional
+// dependency in this service). Currently called only from
+// snCaseService.CreateCase (case.created) and
+// snIncidentService.CreateIncident (incident.created), both synchronously
+// and best-effort: a publish failure there is logged, not returned, since
+// the case/incident already exists in ServiceNow by that point and a
+// notification-side hiccup must not be reported as a failed create.
+type EventPublisherService interface {
+	// Publish builds the {type, entityId, payload} envelope for eventType/
+	// entityID/payload and publishes it to Event Hub, keyed by entityID so
+	// every event about the same entity stays ordered on the same
+	// partition. If the publish itself fails (Event Hub never acknowledges
+	// it), Publish makes a best-effort call to CreateEventPublishFailure to
+	// durably record the failure before returning the original publish
+	// error.
+	Publish(ctx context.Context, eventType events.Type, entityID string, payload json.RawMessage) error
+	// Close releases the underlying Kafka connection. Safe to call once
+	// during shutdown.
+	Close()
+}
+
+// SLAClockService defines the operations available on the sla_clocks
+// entity — see domain.SLAClock's doc comment for what it's for.
+type SLAClockService interface {
+	// RegisterSLAClock (re)creates the clock for req.CaseID/req.ClockType. A
+	// ValidationError is returned if caseId, clockType is missing, or dueAt
+	// is not after startedAt.
+	RegisterSLAClock(ctx context.Context, req domain.RegisterSLAClockRequest) (domain.SLAClock, error)
+	// GetSLAClock returns the clock for caseID/clockType. A NotFoundError is
+	// returned if no such clock has been registered.
+	GetSLAClock(ctx context.Context, caseID, clockType string) (domain.SLAClock, error)
+	// SetSLAClockTierReached marks tier ("50"/"75"/"100") reached for
+	// caseID/clockType if it isn't already (req.Status must be
+	// domain.SLATierStatusReached), and returns the (possibly pre-existing)
+	// reached timestamp. A ValidationError is returned for an unrecognized
+	// tier or status; a NotFoundError if no such clock has been registered.
+	SetSLAClockTierReached(ctx context.Context, caseID, clockType, tier string, req domain.SetSLAClockTierRequest) (domain.SetSLAClockTierReachedResponse, error)
+}
+
+// ScheduledTaskRunService defines the operations available on the
+// scheduled_task_run entity — see domain.ScheduledTaskRun's doc comment for
+// what it's for.
+type ScheduledTaskRunService interface {
+	// Attempt decides whether req.TaskName/req.PeriodKey may run right now,
+	// claiming it if so — see domain.ClaimScheduledTaskRunResponse's doc
+	// comment for how to read the result. A ValidationError is returned if
+	// taskName or periodKey is missing.
+	Attempt(ctx context.Context, req domain.ClaimScheduledTaskRunRequest) (domain.ClaimScheduledTaskRunResponse, error)
+	// UpdateAttempt reports the outcome of the attempt id — succeeded or
+	// failed, per req.Status — but only if req.AttemptCount still matches
+	// the active claim (see domain.UpdateScheduledTaskRunAttemptRequest's
+	// own doc comment). A ValidationError is returned if attemptCount is
+	// missing/non-positive, status isn't "succeeded"/"failed", or status is
+	// "failed" and error/nextRetryOn is missing; a NotFoundError if id
+	// doesn't exist or the claim is no longer active.
+	UpdateAttempt(ctx context.Context, id string, req domain.UpdateScheduledTaskRunAttemptRequest) (domain.ScheduledTaskRun, error)
+	// List returns every run matching statusFilter ("failed", "succeeded",
+	// "superseded"), or every run if statusFilter is empty. A
+	// ValidationError is returned for any other value.
+	List(ctx context.Context, statusFilter string) (domain.ListScheduledTaskRunsResponse, error)
+	// DeleteResolvedBefore deletes every run that succeeded or was
+	// superseded before cutoff (by its own resolution time, not when it
+	// was created — see the repository's own doc comment for why that
+	// distinction matters). A ValidationError is returned if cutoff is the
+	// zero time.
+	DeleteResolvedBefore(ctx context.Context, cutoff time.Time) (domain.DeleteScheduledTaskRunsResponse, error)
 }
 
 // SNAccountService defines the account operations backed by the ServiceNow data source.
 type SNAccountService interface {
 	// SearchAccounts returns a paginated list of ServiceNow accounts matching the
 	// filters in req.
-	SearchAccounts(ctx context.Context, req domain.SearchAccountsRequest) (domain.SearchSNAccountsResponse, error)
+	SearchAccounts(ctx context.Context, req domain.SearchAccountsRequest) (domain.SearchAccountsResponse, error)
 	// GetAccountByID returns the full account detail for the given UUID.
-	GetAccountByID(ctx context.Context, id string) (domain.SNAccountDetail, error)
+	GetAccountByID(ctx context.Context, id string) (domain.AccountDetail, error)
 }
 
 // ProjectService defines the operations available on the project entity.
@@ -89,6 +189,30 @@ type ProjectUpdateService interface {
 	// a NotFoundError if no project matches; an UnauthorizedError if the caller
 	// lacks the required SN role.
 	UpdateProject(ctx context.Context, id string, req domain.ProjectUpdateRequest) (domain.ProjectUpdateResponse, error)
+}
+
+// ProjectStatsService defines the project-scoped metadata and statistics
+// operations. All methods require the ServiceNow data source; there is no
+// Postgres fallback.
+type ProjectStatsService interface {
+	// GetProjectMetadata returns the reference data (choice lists, feature
+	// flags) needed to build the project's UI.
+	GetProjectMetadata(ctx context.Context, projectID string) (domain.ProjectMetadataResponse, error)
+	// GetProjectStats returns the project's overall statistics.
+	GetProjectStats(ctx context.Context, projectID string) (domain.ProjectStatsResponse, error)
+	// GetProjectCaseStats returns the project's case statistics, optionally
+	// filtered by case type and/or creator.
+	GetProjectCaseStats(ctx context.Context, projectID string, req domain.ProjectCaseStatsRequest) (domain.ProjectCaseStatsResponse, error)
+	// GetProjectConversationStats returns the project's conversation
+	// statistics, optionally filtered by creator.
+	GetProjectConversationStats(ctx context.Context, projectID, createdBy string) (domain.ProjectConversationStatsResponse, error)
+	// GetProjectDeploymentStats returns the project's deployment statistics.
+	GetProjectDeploymentStats(ctx context.Context, projectID string) (domain.ProjectDeploymentStatsResponse, error)
+	// GetProjectTimeCardStats returns the project's time-card statistics,
+	// optionally filtered by a startDate/endDate range (each yyyy-MM-dd).
+	GetProjectTimeCardStats(ctx context.Context, projectID, startDate, endDate string) (domain.ProjectTimeCardStatsResponse, error)
+	// GetProjectChangeRequestStats returns the project's change-request statistics.
+	GetProjectChangeRequestStats(ctx context.Context, projectID string) (domain.ProjectChangeRequestStatsResponse, error)
 }
 
 // ProjectContactService defines the operations available on project contacts.
@@ -170,6 +294,15 @@ type DeployedProductService interface {
 	// replace of the update-level history) or Active=false must be provided, but not both.
 	// Supported by the ServiceNow data source only.
 	UpdateDeployedProduct(ctx context.Context, req domain.UpdateDeployedProductRequest) (domain.UpdateDeployedProductResponse, error)
+	// SearchDeployedProductMetrics returns core-count metrics for the deployed product
+	// identified by id, charted over req's date range. A ValidationError is returned for
+	// invalid input (malformed UUID, invalid/unordered dates, or a range exceeding one year).
+	// Supported by the ServiceNow data source only.
+	SearchDeployedProductMetrics(ctx context.Context, id string, req domain.DeployedProductMetricsRequest) (domain.DeployedProductMetricsResponse, error)
+	// SearchDeployedProductUsageCounts returns usage-count metrics for the deployed product
+	// identified by id, charted over req's date range. Same validation as
+	// SearchDeployedProductMetrics. Supported by the ServiceNow data source only.
+	SearchDeployedProductUsageCounts(ctx context.Context, id string, req domain.DeployedProductUsageCountsRequest) (domain.DeployedProductUsageCountsResponse, error)
 }
 
 // CaseService defines the operations available on the cases entity.
@@ -205,8 +338,20 @@ type CaseService interface {
 	// open task that is visible to the customer (the authoritative case-close gate).
 	UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error)
 	// CreateCaseAttachment uploads a new attachment for the case identified by req.CaseID.
-	// A ValidationError is returned for invalid input.
+	// A ValidationError is returned for invalid input. For the CSM-native (Postgres) data
+	// source, req.Status controls the initial lifecycle state (see domain.AttachmentStatus):
+	// empty/omitted and "complete" behave exactly as before this field existed; "pending"
+	// registers the row before the caller has uploaded the file to SFTPGo, to be finished off
+	// later via ConfirmCaseAttachment. ServiceNow ignores this field.
 	CreateCaseAttachment(ctx context.Context, req domain.CreateAttachmentRequest) (domain.CreateAttachmentResponse, error)
+	// ConfirmCaseAttachment transitions the CSM-native (Postgres) data source attachment
+	// identified by id from status "pending" to "complete", once its file has finished
+	// uploading to SFTPGo. A NotFoundError is returned if it does not exist; a
+	// ForbiddenError if the caller did not create it; a ConflictError if it is not
+	// currently "pending" (including if it was already confirmed). Supported by the
+	// CSM-native (Postgres) data source only -- ServiceNow attachments have no such
+	// lifecycle, since SN's /attachments API only ever returns fully-uploaded files.
+	ConfirmCaseAttachment(ctx context.Context, id string) (domain.ConfirmAttachmentResponse, error)
 	// SearchCaseAttachments returns a paginated list of attachments for the case identified
 	// by req.CaseID. A ValidationError is returned for invalid input.
 	SearchCaseAttachments(ctx context.Context, req domain.SearchAttachmentsRequest) (domain.SearchAttachmentsResponse, error)
@@ -222,15 +367,6 @@ type CaseService interface {
 	// DeleteCaseAttachment removes the attachment identified by req.AttachmentID from the case.
 	// A NotFoundError is returned if the attachment does not exist.
 	DeleteCaseAttachment(ctx context.Context, req domain.DeleteAttachmentRequest) (domain.DeleteAttachmentResponse, error)
-	// GetAttachment returns the metadata for the attachment identified by attachmentID,
-	// regardless of which reference type (case, deployment, ...) it is linked to.
-	// The backing ServiceNow response for a single attachment fetch does not carry
-	// referenceType (unlike the search response, which echoes back the caller's
-	// request filter), so the returned domain.Attachment's ReferenceType field is
-	// always the zero value; callers that need it already know it from context
-	// (e.g. the request that led them to the attachment id).
-	// A NotFoundError is returned if the attachment does not exist.
-	GetAttachment(ctx context.Context, attachmentID string) (domain.Attachment, error)
 	// UpdateAttachment updates the name and/or description of the attachment identified by
 	// req.AttachmentID, regardless of which reference type it is linked to. At least one of
 	// Name or Description must be provided. A NotFoundError is returned if the attachment
@@ -247,6 +383,18 @@ type CaseService interface {
 	// query returns all known tags. req.Limit caps the number of results (<=0 means use the
 	// downstream default).
 	SearchTags(ctx context.Context, req domain.SearchTagsRequest) ([]domain.Tag, error)
+	// GetCaseFeedback returns the feedback previously submitted for the case identified
+	// by id. A NotFoundError is returned if none has been submitted.
+	// Supported by the ServiceNow data source only.
+	GetCaseFeedback(ctx context.Context, id string) (domain.CaseEmojiFeedback, error)
+	// SubmitCaseFeedback records feedback for the case identified by id. A ValidationError
+	// is returned for invalid input. Supported by the ServiceNow data source only.
+	SubmitCaseFeedback(ctx context.Context, id string, req domain.SubmitCaseFeedbackRequest) (domain.SubmitCaseFeedbackResponse, error)
+	// GetAttachmentByID returns the metadata and base64-encoded content of the attachment
+	// identified by id. A NotFoundError is returned if it does not exist. For the CSM-native
+	// (Postgres) data source, Content is always "" and StorageKey is populated instead: that
+	// data source holds no bytes, only a reference into external (SFTPGo) storage.
+	GetAttachmentByID(ctx context.Context, id string) (domain.AttachmentDetails, error)
 }
 
 // CaseGithubIssueService defines the operation for filing a GitHub issue from a case.
@@ -346,6 +494,10 @@ type TimeCardService interface {
 	// UpdateTimeCard edits an editable (submitted) time card, or transitions its
 	// state (approve/reject) when req.State is set. SN enforces authorization.
 	UpdateTimeCard(ctx context.Context, req domain.UpdateTimeCardRequest) (domain.TimeCardMutationResponse, error)
+	// SearchCaseTimeCards returns a paginated list of time cards grouped and rolled up by
+	// case, using the same filters as SearchTimeCards. Supported by the ServiceNow data
+	// source only.
+	SearchCaseTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) (domain.SearchCaseTimeCardsResponse, error)
 	// DeleteTimeCard permanently deletes a time card. Matches UpdateTimeCard's
 	// trust model exactly: this only validates the ID's shape and forwards the
 	// caller's token to SN, which enforces that only the submitter may delete
@@ -441,6 +593,9 @@ type ProductVulnerabilityService interface {
 	// A NotFoundError is returned if the vulnerability does not exist.
 	GetProductVulnerability(ctx context.Context, id string) (domain.ProductVulnerabilityView, error)
 
+	// GetVulnerabilityMeta returns the valid severity choices for product vulnerabilities.
+	// Supported by the ServiceNow data source only.
+	GetVulnerabilityMeta(ctx context.Context) (domain.VulnerabilityMetaResponse, error)
 	// SyncProductVulnerabilities replaces the full set of product vulnerabilities with the
 	// given items. This is a full-replace sync: ServiceNow deletes any existing record whose
 	// WSO2ID is not present in items and upserts everything that is. Callers MUST submit the
@@ -546,4 +701,61 @@ type ConversationService interface {
 	// project IDs, states, search query, and createdByMe. A ValidationError is returned
 	// for invalid input.
 	SearchConversations(ctx context.Context, req domain.SearchConversationsRequest) (domain.SearchConversationsResponse, error)
+	// GetConversation returns the detail of a single conversation by its UUID.
+	// A NotFoundError is returned if the conversation does not exist.
+	GetConversation(ctx context.Context, id string) (domain.ConversationDetails, error)
+	// CreateConversation starts a new conversation on the project identified by
+	// req.ProjectID. A ValidationError is returned for invalid input.
+	CreateConversation(ctx context.Context, req domain.CreateConversationRequest) (domain.CreateConversationResponse, error)
+	// UpdateConversation transitions the conversation identified by id to req.State. A
+	// ValidationError is returned if State is not one of ACTIVE, RESOLVED, CONVERTED,
+	// ABANDONED, or CLOSED.
+	UpdateConversation(ctx context.Context, id string, req domain.UpdateConversationRequest) (domain.UpdateConversationResponse, error)
+}
+
+// GlobalService serves system-wide metadata and cross-entity search that
+// isn't scoped to any single project or case.
+// All methods require the ServiceNow data source; there is no Postgres fallback.
+type GlobalService interface {
+	// GetSystemMetadata returns system-wide reference data (time zones, project types,
+	// and feedback emoji choices) used across the frontend.
+	GetSystemMetadata(ctx context.Context) (domain.SystemMetadataResponse, error)
+	// GlobalSearch searches projects and/or cases matching req's filters. Every field of
+	// req is optional; an empty request searches both tables with default pagination.
+	GlobalSearch(ctx context.Context, req domain.GlobalSearchRequest) (domain.GlobalSearchResponse, error)
+}
+
+// EscalationService defines the operations available on the escalations entity.
+// All methods require the ServiceNow data source; there is no Postgres fallback.
+type EscalationService interface {
+	// SearchEscalations returns a paginated list of escalations filtered by optional case
+	// IDs and current escalation levels. A ValidationError is returned for invalid input.
+	SearchEscalations(ctx context.Context, req domain.SearchEscalationsRequest) (domain.SearchEscalationsResponse, error)
+	// CreateEscalation escalates or de-escalates the case identified by req.CaseID.
+	// Action defaults to ESCALATE when omitted; Reason is required when the (defaulted)
+	// action is ESCALATE. A ValidationError is returned for invalid input.
+	CreateEscalation(ctx context.Context, req domain.CreateEscalationRequest) (domain.CreateEscalationResponse, error)
+}
+
+// InstanceService defines the operations available on the instances entity.
+// All methods require the ServiceNow data source; there is no Postgres fallback.
+type InstanceService interface {
+	// SearchInstances returns a paginated list of instances filtered by optional
+	// project/deployment/deployed-product IDs (mutually exclusive) and date range.
+	// A ValidationError is returned for invalid input.
+	SearchInstances(ctx context.Context, req domain.SearchInstancesRequest) (domain.SearchInstancesResponse, error)
+	// SearchInstanceMetrics returns per-instance metric time series over req's required
+	// date range, filtered by optional project/deployment/deployed-product IDs (mutually
+	// exclusive). A ValidationError is returned for invalid input.
+	SearchInstanceMetrics(ctx context.Context, req domain.InstanceMetricsRequest) (domain.InstanceMetricsResponse, error)
+	// SearchInstanceUsage returns per-instance usage time series over req's required date
+	// range. Same filter rules as SearchInstanceMetrics.
+	SearchInstanceUsage(ctx context.Context, req domain.InstanceUsageRequest) (domain.InstanceUsageResponse, error)
+	// SearchInstanceMetricsStats returns aggregated metric statistics over req's required
+	// date range. Same filter rules as SearchInstanceMetrics, plus an optional data-source
+	// filter.
+	SearchInstanceMetricsStats(ctx context.Context, req domain.InstanceMetricsStatsRequest) (domain.InstanceMetricsStatsResponse, error)
+	// SearchInstanceUsageStats returns aggregated usage statistics over req's required
+	// date range. Same filter rules as SearchInstanceMetricsStats.
+	SearchInstanceUsageStats(ctx context.Context, req domain.InstanceUsageStatsRequest) (domain.InstanceUsageStatsResponse, error)
 }

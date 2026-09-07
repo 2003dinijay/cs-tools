@@ -59,6 +59,20 @@ func TestParseCaseFieldFilters_NamedFieldTranslations(t *testing.T) {
 			},
 		},
 		{
+			// "default_case" is the production customer-portal frontend's
+			// actual value for this type (ServiceNow's own raw caseType wire
+			// value, predating this service's "case" enum) — see
+			// caseTypeAliases. It must normalize to "case" here, not pass
+			// through as-is.
+			name: "type in normalizes the default_case alias to case",
+			in:   []domain.CaseFieldFilter{{Field: "type", Op: "in", Values: []string{"default_case", "service_request"}}},
+			check: func(t *testing.T, p domain.ParsedCaseFilters) {
+				if len(p.Types) != 2 || p.Types[0] != "case" || p.Types[1] != "service_request" {
+					t.Fatalf("Types = %v, want [case service_request]", p.Types)
+				}
+			},
+		},
+		{
 			name: "accountId in maps to AccountIDs",
 			in: []domain.CaseFieldFilter{{
 				Field:  "accountId",
