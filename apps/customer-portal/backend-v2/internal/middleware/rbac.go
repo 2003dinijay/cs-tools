@@ -258,9 +258,15 @@ func (r *CachedRoleResolver) GetRoles(ctx context.Context) ([]CanonicalRole, err
 	roles := NormalizeRoles(resp.Roles)
 
 	r.mu.Lock()
+	now := time.Now()
+	for uid, e := range r.cache {
+		if now.After(e.expiresAt) {
+			delete(r.cache, uid)
+		}
+	}
 	r.cache[user.UserID] = cachedRoleEntry{
 		roles:     roles,
-		expiresAt: time.Now().Add(r.ttl),
+		expiresAt: now.Add(r.ttl),
 	}
 	r.mu.Unlock()
 
