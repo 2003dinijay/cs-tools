@@ -318,6 +318,16 @@ vi.mock("@features/csm-cases/api/useCaseTags", () => ({
 vi.mock("@features/csm-cases/api/useCsmCaseGithubIssue", () => ({
   usePostCaseGithubIssue: () => ({ mutate: vi.fn(), isPending: false }),
 }));
+vi.mock("@features/csm-cases/api/useGetCsmCaseEscalations", () => ({
+  useGetCsmCaseEscalations: () => ({
+    data: { escalations: [], currentNotifiedUsers: [] },
+    isLoading: false,
+    isError: false,
+  }),
+}));
+vi.mock("@features/csm-cases/api/usePostCsmCaseEscalation", () => ({
+  usePostCsmCaseEscalation: () => ({ mutate: vi.fn(), isPending: false }),
+}));
 vi.mock("@features/csm-cases/api/useRequestCaseUpdate", () => ({
   useRequestCaseUpdate: () => ({
     mutate: requestCaseUpdateMutateMock,
@@ -508,6 +518,7 @@ vi.mock("@features/csm-cases/components/CaseDetailWidgets", () => ({
     </div>
   ),
   CustomerContextWidget: () => null,
+  EscalationWidget: () => null,
   ProductContextWidget: () => null,
   // Stubbed to a probe rather than `null`: the tests below assert only that
   // the page mounts it for a service request and not for a plain case. The

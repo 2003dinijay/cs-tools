@@ -406,6 +406,25 @@ type CaseGithubIssueService interface {
 	CreateCaseGithubIssue(ctx context.Context, req domain.CreateCaseGithubIssueRequest) (domain.CreateCaseGithubIssueResponse, error)
 }
 
+// CaseEscalationService is a case-scoped convenience layer over
+// EscalationService (below): it's what backs GET/POST /cases/{id}/escalations,
+// delegating to EscalationService.SearchEscalations/CreateEscalation with the
+// case's own filter/CaseID rather than duplicating the SN adapter. All methods
+// require the ServiceNow data source; there is no Postgres fallback.
+type CaseEscalationService interface {
+	// SearchCaseEscalations returns the full escalation history for the given
+	// case, newest first, plus CurrentNotifiedUsers (the most recent record's
+	// notified-users list — who is authorized to de-escalate the case's
+	// current level). A ValidationError is returned for a malformed case UUID.
+	SearchCaseEscalations(ctx context.Context, caseID string) (domain.CaseEscalationHistory, error)
+	// CreateCaseEscalation escalates or de-escalates the given case, then
+	// records a work note on the case (verified live against SN dev data that
+	// the backing API does not do this itself). Action defaults to ESCALATE
+	// when nil; reason is required when escalating. A ValidationError is
+	// returned for invalid input; a NotFoundError if no case matches.
+	CreateCaseEscalation(ctx context.Context, caseID string, reason *string, action *domain.EscalationAction) (domain.CreatedEscalation, error)
+}
+
 // CatalogService defines the operations available on service catalogs.
 // All methods require the ServiceNow data source; there is no Postgres fallback.
 type CatalogService interface {

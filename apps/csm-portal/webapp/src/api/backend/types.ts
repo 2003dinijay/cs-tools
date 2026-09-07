@@ -434,6 +434,14 @@ export interface BeCaseView {
   worstCaseFixEta?: string | null;
   /** Free-text labels attached to the case. Null/absent when none are set. */
   tags?: BeTag[] | null;
+  /**
+   * The case's current escalation level: one of the raw escalation-level ids
+   * `"0"` through `"5"` (EL0 "not escalated" through EL5 "CEO") — the same id
+   * space `GET /cases/{id}/escalations` and `POST /cases/{id}/escalations`
+   * both use. Null when the backing case carries no escalation level (e.g.
+   * non-ServiceNow-backed cases).
+   */
+  escalationLevel?: string | null;
 }
 
 /** A free-text tag attached to a case (`GET /cases/{id}`, `POST /cases/{id}/tags`). */
@@ -1066,10 +1074,98 @@ export interface BeCaseSearchView {
   /** The case's customer account. Same shape as the GET view's own {@link
    * BeCaseAccountRef} -- populates the Cases list's optional Customer column. */
   account?: BeCaseAccountRef | null;
+  /** The case's current escalation level -- see {@link BeCaseView.escalationLevel}. */
+  escalationLevel?: string | null;
 }
 
 export interface BeCaseSearchResponse extends BeSearchResponseBase {
   cases: BeCaseSearchView[];
+}
+
+// ---------------------------------------------------------------------------
+// Case escalations
+// ---------------------------------------------------------------------------
+
+/** Whether a `POST /cases/{id}/escalations` call raises or lowers the case's
+ * escalation level. */
+export type BeEscalationAction = "ESCALATE" | "DEESCALATE";
+
+/** A compact reference to a user notified about an escalation-level change,
+ * as returned inline on a {@link BeCaseEscalation}. `id` can be empty when the
+ * backing data source could not resolve a platform user record for the
+ * notified recipient -- match by `email` in that case. */
+export interface BeCaseEscalationNotifiedUser {
+  id?: string | null;
+  userName: string;
+  name?: string | null;
+  email?: string | null;
+}
+
+/** A `{id, label}` escalation-level choice, e.g. `{id: "2", label: "EL2"}`. */
+export interface BeCaseEscalationLevel {
+  id: string;
+  label: string;
+}
+
+/** A compact case reference, as returned inline on a {@link BeCaseEscalation}. */
+export interface BeCaseEscalationCaseRef {
+  id: string;
+  name: string;
+}
+
+/**
+ * One escalation-level change recorded against a case: either an escalate or
+ * a de-escalate step, with the level it moved from and to. `currentLevel` /
+ * `previousLevel` are the same raw escalation-level id space (`"0"`-`"5"`) as
+ * {@link BeCaseView.escalationLevel}, via their own `id` field. ServiceNow
+ * data source only.
+ */
+export interface BeCaseEscalation {
+  id: string;
+  case: BeCaseEscalationCaseRef;
+  currentLevel: BeCaseEscalationLevel;
+  previousLevel: BeCaseEscalationLevel;
+  createdBy: string;
+  createdOn: string;
+  updatedOn: string;
+  reason?: string | null;
+  notificationSentTo?: BeCaseEscalationNotifiedUser[];
+}
+
+/** The response for `POST /cases/{id}/escalations` -- like {@link BeCaseEscalation}
+ * but with no `updatedOn` (the create response doesn't carry one). */
+export interface BeCreatedCaseEscalation {
+  id: string;
+  case: BeCaseEscalationCaseRef;
+  currentLevel: BeCaseEscalationLevel;
+  previousLevel: BeCaseEscalationLevel;
+  createdBy: string;
+  createdOn: string;
+  reason?: string | null;
+  notificationSentTo?: BeCaseEscalationNotifiedUser[];
+}
+
+/** Response for `GET /cases/{id}/escalations` -- the case's full escalation
+ * history, newest first, plus who's authorized to de-escalate the current
+ * level. Deliberately not `BeSearchResponseBase`: the wire response carries
+ * no `offset`/`limit`/`hasMore` fields. */
+export interface BeCaseEscalationSearchResponse {
+  escalations: BeCaseEscalation[];
+  total: number;
+  /** The notified-users list of the case's most recent escalation record
+   * (empty/absent when the case has never been escalated). Only someone on
+   * this list is authorized to de-escalate the case's current level. */
+  currentNotifiedUsers?: BeCaseEscalationNotifiedUser[];
+}
+
+/**
+ * Request body for `POST /cases/{id}/escalations`. `action` defaults to
+ * `"ESCALATE"` when omitted; `reason` is required when escalating and
+ * optional when de-escalating (enforced server-side).
+ */
+export interface BeCaseEscalationCreatePayload {
+  reason?: string;
+  action?: BeEscalationAction;
 }
 
 // ---------------------------------------------------------------------------

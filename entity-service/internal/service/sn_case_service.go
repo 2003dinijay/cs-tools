@@ -1653,6 +1653,10 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	if c.EngagementPaymentType != nil && c.EngagementPaymentType.Label != "" {
 		cv.EngagementPaymentType = &c.EngagementPaymentType.Label
 	}
+	// EscalationLevel: the single-case GET path (this function) was missing
+	// this assignment -- only SearchCases populated it. Case detail needs it
+	// too (the escalation widget renders off GET /cases/{id}).
+	cv.EscalationLevel = snEscalationLevelToDomain(c.EscalationLevel)
 
 	// The Choreo GET /cases/{id} response (snCase above) still has no inline tags field,
 	// so the case's current tags are fetched separately via the case-scoped
@@ -3761,6 +3765,7 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 			BestCaseFixEta:   c.BestCaseFixEta,
 			MostLikelyFixEta: c.MostLikelyFixEta,
 			WorstCaseFixEta:  c.WorstCaseFixEta,
+			EscalationLevel:  snEscalationLevelToDomain(c.EscalationLevel),
 		}
 		if c.Account != nil {
 			cv.AccountDetails = &domain.AccountRef{ID: sysidToUUID(c.Account.ID), Name: c.Account.Name, Type: c.Account.Type}
