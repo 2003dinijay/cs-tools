@@ -31,6 +31,7 @@ const (
 	errKindHTTPStatus errKind = iota // non-2xx HTTP response
 	errKindGraphQL                   // 200 OK but a GraphQL-level errors[] array
 	errKindTransport                 // request build/send/decode failure
+	errKindTruncated                 // search's 1,000-result cap cut off a query before issueCount
 )
 
 // APIError is returned by gql/doGQL for every GitHub GraphQL failure. Error()
@@ -67,6 +68,8 @@ func (e *APIError) Public() string {
 		return fmt.Sprintf("github http %d", e.StatusCode)
 	case errKindGraphQL:
 		return "github graphql error"
+	case errKindTruncated:
+		return "github search results truncated"
 	default:
 		return "github request failed"
 	}
@@ -100,4 +103,15 @@ func NewGraphQLError(messages []string) *APIError {
 // wrapper to things like context.DeadlineExceeded.
 func NewTransportError(detail string, wrapped error) *APIError {
 	return &APIError{Kind: errKindTransport, detail: detail, wrapped: wrapped}
+}
+
+// NewSearchTruncatedError builds an APIError for a search query whose
+// issueCount exceeds what SearchAll actually retrieved — GitHub Search never
+// exposes more than 1,000 results per query (SPEC: fail rather than silently
+// advance a sync watermark past unretrieved issues).
+func NewSearchTruncatedError(query string, issueCount, fetched int) *APIError {
+	return &APIError{
+		Kind:   errKindTruncated,
+		detail: fmt.Sprintf("github search: query matched %d issues but only %d were retrievable (1,000-result cap): %q", issueCount, fetched, query),
+	}
 }

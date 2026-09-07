@@ -49,6 +49,10 @@ type StatusEvent struct {
 	CreatedAt      string
 	PreviousStatus *string
 	Status         *string
+	// ProjectID is the id of the ProjectV2 board the status change happened
+	// on. An issue can sit on more than one project board, so ingest scopes
+	// events to the repo's configured GithubProjectID before computing SLA.
+	ProjectID string
 }
 
 // ProjectStatus is an issue's current status within one project board.

@@ -107,14 +107,14 @@ func hoursAgo(now time.Time, hours float64) string {
 	return now.Add(-time.Duration(hours * float64(time.Hour))).UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
-func buildEvents(now time.Time, transitions []transition) []github.StatusEvent {
+func buildEvents(now time.Time, transitions []transition, projectID string) []github.StatusEvent {
 	events := make([]github.StatusEvent, len(transitions))
 	for i, t := range transitions {
 		var previous *string
 		if i > 0 {
 			previous = strp(transitions[i-1].status)
 		}
-		events[i] = github.StatusEvent{CreatedAt: hoursAgo(now, t.hoursAgo), PreviousStatus: previous, Status: strp(t.status)}
+		events[i] = github.StatusEvent{CreatedAt: hoursAgo(now, t.hoursAgo), PreviousStatus: previous, Status: strp(t.status), ProjectID: projectID}
 	}
 	return events
 }
@@ -126,7 +126,7 @@ func syntheticRepoIssues(now time.Time, repo config.RepoEntry, repoIndex int) []
 	pairs := make([]ingest.Pair, len(scenarios))
 	for i, s := range scenarios {
 		number := (repoIndex+1)*1000 + (i + 1)
-		events := buildEvents(now, s.transitions)
+		events := buildEvents(now, s.transitions, repo.GithubProjectID)
 
 		createdAt := hoursAgo(now, 72)
 		if s.currentStatusAgo != nil {

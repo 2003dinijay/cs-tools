@@ -140,13 +140,19 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 
 	// Normalize formatting variants (e.g. "Re-Opened" -> "Reopened") before
 	// anything downstream sees them; canonical names are what gets persisted.
-	normalizedEvents := make([]normalizedEvent, len(detail.Events))
-	for i, e := range detail.Events {
-		normalizedEvents[i] = normalizedEvent{
+	// Scoped to THIS repo's configured project, same as currentStatus above —
+	// an issue can carry status-change events from other project boards it
+	// also sits on, and those must not affect this project's SLA.
+	normalizedEvents := make([]normalizedEvent, 0, len(detail.Events))
+	for _, e := range detail.Events {
+		if e.ProjectID != ictx.Repo.GithubProjectID {
+			continue
+		}
+		normalizedEvents = append(normalizedEvents, normalizedEvent{
 			CreatedAt:      e.CreatedAt,
 			PreviousStatus: normalize(e.PreviousStatus),
 			Status:         normalize(e.Status),
-		}
+		})
 	}
 
 	var unknownStatuses []string

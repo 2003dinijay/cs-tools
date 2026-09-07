@@ -51,11 +51,11 @@ func TestBuildRepoIssueQueries(t *testing.T) {
 	now := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC)
 	openQ, closedQ := buildRepoIssueQueries("wso2-enterprise", "wso2-iam-internal", `label:"Origin/CS" -label:"Type/Patch"`, 90, now)
 
-	wantOpen := `repo:wso2-enterprise/wso2-iam-internal label:"Origin/CS" -label:"Type/Patch" is:open sort:updated-desc`
+	wantOpen := `repo:wso2-enterprise/wso2-iam-internal is:issue label:"Origin/CS" -label:"Type/Patch" is:open sort:updated-desc`
 	if openQ != wantOpen {
 		t.Errorf("openQ:\n got:  %s\n want: %s", openQ, wantOpen)
 	}
-	wantClosed := `repo:wso2-enterprise/wso2-iam-internal label:"Origin/CS" -label:"Type/Patch" is:closed closed:>=2025-12-10 sort:updated-desc`
+	wantClosed := `repo:wso2-enterprise/wso2-iam-internal is:issue label:"Origin/CS" -label:"Type/Patch" is:closed closed:>=2025-12-10 sort:updated-desc`
 	if closedQ != wantClosed {
 		t.Errorf("closedQ:\n got:  %s\n want: %s", closedQ, wantClosed)
 	}
@@ -68,12 +68,12 @@ func TestSearchAllPaginatesUntilExhausted(t *testing.T) {
 		n := atomic.AddInt32(&calls, 1)
 		w.Header().Set("Content-Type", "application/json")
 		if n == 1 {
-			_, _ = w.Write([]byte(`{"data":{"search":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor1"},
+			_, _ = w.Write([]byte(`{"data":{"search":{"issueCount":2,"pageInfo":{"hasNextPage":true,"endCursor":"cursor1"},
 				"nodes":[{"number":1,"state":"OPEN","url":"https://x/1","createdAt":"2026-01-01T00:00:00Z",
 				"updatedAt":"2026-01-02T00:00:00Z","closedAt":null,"labels":{"nodes":[{"name":"Priority/High(P2)"}]}}]}}}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"data":{"search":{"pageInfo":{"hasNextPage":false,"endCursor":null},
+		_, _ = w.Write([]byte(`{"data":{"search":{"issueCount":2,"pageInfo":{"hasNextPage":false,"endCursor":null},
 			"nodes":[{"number":2,"state":"CLOSED","url":"https://x/2","createdAt":"2026-01-03T00:00:00Z",
 			"updatedAt":"2026-01-04T00:00:00Z","closedAt":"2026-01-05T00:00:00Z","labels":{"nodes":[]}}]}}}`))
 	})
@@ -93,6 +93,30 @@ func TestSearchAllPaginatesUntilExhausted(t *testing.T) {
 	}
 	if atomic.LoadInt32(&calls) != 2 {
 		t.Errorf("expected 2 HTTP calls (one per page), got %d", calls)
+	}
+}
+
+// TestSearchAllFailsOnTruncatedResults guards against silently advancing a
+// sync watermark past issues GitHub Search never returned: it caps results
+// at 1,000 per query regardless of how many actually match (issueCount), so
+// a query matching more than that must surface as an error, not a partial
+// result set.
+func TestSearchAllFailsOnTruncatedResults(t *testing.T) {
+	fastTimings(t)
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"search":{"issueCount":1200,"pageInfo":{"hasNextPage":false,"endCursor":null},
+			"nodes":[{"number":1,"state":"OPEN","url":"https://x/1","createdAt":"2026-01-01T00:00:00Z",
+			"updatedAt":"2026-01-02T00:00:00Z","closedAt":null,"labels":{"nodes":[]}}]}}}`))
+	})
+
+	_, err := client.SearchAll(context.Background(), `repo:acme/widgets is:issue`)
+	if err == nil {
+		t.Fatal("expected an error when issueCount exceeds the results actually returned")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != errKindTruncated {
+		t.Errorf("expected an errKindTruncated APIError, got: %v", err)
 	}
 }
 
@@ -315,6 +339,77 @@ func TestFetchIssueDetailParsesTimelineAndProjectStatus(t *testing.T) {
 	}
 	if reqBodies[1]["variables"].(map[string]any)["tlCursor"] != "tl1" {
 		t.Errorf("expected second request to carry the endCursor from the first page, got %+v", reqBodies[1]["variables"])
+	}
+}
+
+// TestFetchIssueDetailTagsStatusEventsWithProjectID guards against a status
+// event from one project board leaking into another project's SLA
+// computation: an issue tracked on two ProjectV2 boards gets a
+// ProjectV2ItemStatusChangedEvent per board, and FetchIssueDetail must keep
+// each event's originating project id so ingest can scope to the repo's
+// configured project.
+func TestFetchIssueDetailTagsStatusEventsWithProjectID(t *testing.T) {
+	fastTimings(t)
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"repository":{"issue":{"number":42,
+			"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},
+				"nodes":[
+					{"__typename":"ProjectV2ItemStatusChangedEvent","createdAt":"2026-01-01T00:00:00Z","previousStatus":null,"status":"Open","project":{"id":"PVT_1"}},
+					{"__typename":"ProjectV2ItemStatusChangedEvent","createdAt":"2026-01-02T00:00:00Z","previousStatus":"Open","status":"Triage","project":{"id":"PVT_2"}}
+				]},
+			"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}`))
+	})
+
+	detail, err := client.FetchIssueDetail(context.Background(), "acme", "widgets", 42)
+	if err != nil {
+		t.Fatalf("FetchIssueDetail: %v", err)
+	}
+	if len(detail.Events) != 2 {
+		t.Fatalf("expected 2 events across the two projects, got %d", len(detail.Events))
+	}
+	if detail.Events[0].ProjectID != "PVT_1" || detail.Events[1].ProjectID != "PVT_2" {
+		t.Errorf("expected events tagged with their originating project id, got %+v", detail.Events)
+	}
+}
+
+// TestFetchIssueDetailPaginatesProjectItems guards against silently
+// truncating an issue's project associations to the first page: an issue
+// sitting on more project boards than fit in one page must still have every
+// board's status captured, not just the first.
+func TestFetchIssueDetailPaginatesProjectItems(t *testing.T) {
+	fastTimings(t)
+	var calls int32
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			_, _ = w.Write([]byte(`{"data":{"repository":{"issue":{"number":42,
+				"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},
+				"projectItems":{"pageInfo":{"hasNextPage":true,"endCursor":"pi1"},
+					"nodes":[{"createdAt":"2026-01-01T00:00:00Z","project":{"id":"PVT_1"},
+						"fieldValueByName":{"name":"Open","updatedAt":"2026-01-01T00:00:00Z"}}]}}}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"repository":{"issue":{"number":42,
+			"timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},
+			"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},
+				"nodes":[{"createdAt":"2026-01-02T00:00:00Z","project":{"id":"PVT_2"},
+					"fieldValueByName":{"name":"Triage","updatedAt":"2026-01-02T00:00:00Z"}}]}}}}}`))
+	})
+
+	detail, err := client.FetchIssueDetail(context.Background(), "acme", "widgets", 42)
+	if err != nil {
+		t.Fatalf("FetchIssueDetail: %v", err)
+	}
+	if len(detail.ProjectStatuses) != 2 {
+		t.Fatalf("expected project statuses from both pages, got %d: %+v", len(detail.ProjectStatuses), detail.ProjectStatuses)
+	}
+	if detail.ProjectStatuses[0].ProjectID != "PVT_1" || detail.ProjectStatuses[1].ProjectID != "PVT_2" {
+		t.Errorf("unexpected project statuses: %+v", detail.ProjectStatuses)
+	}
+	if atomic.LoadInt32(&calls) != 2 {
+		t.Errorf("expected 2 HTTP calls (one per projectItems page), got %d", calls)
 	}
 }
 

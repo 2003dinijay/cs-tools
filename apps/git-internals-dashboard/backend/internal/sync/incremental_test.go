@@ -100,7 +100,7 @@ func fixtureDetail(number int, projectID string) *github.IssueDetail {
 	return &github.IssueDetail{
 		Number: number,
 		Events: []github.StatusEvent{
-			{CreatedAt: "2026-01-02T00:00:00.000Z", PreviousStatus: strp("Open"), Status: strp("In Progress")},
+			{CreatedAt: "2026-01-02T00:00:00.000Z", PreviousStatus: strp("Open"), Status: strp("In Progress"), ProjectID: projectID},
 		},
 		ProjectStatuses: []github.ProjectStatus{
 			{ProjectID: projectID, Status: strp("In Progress"), StatusUpdatedAt: strp("2026-01-02T00:00:00.000Z"), ItemCreatedAt: strp("2026-01-01T00:00:00.000Z")},

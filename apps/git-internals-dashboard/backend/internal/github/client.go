@@ -189,6 +189,7 @@ func parseRetryAfter(v string) time.Duration {
 const searchQuery = `
 query ($q: String!, $after: String) {
   search(type: ISSUE, query: $q, first: 50, after: $after) {
+    issueCount
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on Issue {
@@ -198,7 +199,7 @@ query ($q: String!, $after: String) {
         createdAt
         updatedAt
         closedAt
-        labels(first: 30) { nodes { name } }
+        labels(first: 100) { nodes { name } }
       }
     }
   }
@@ -207,7 +208,8 @@ query ($q: String!, $after: String) {
 
 type searchData struct {
 	Search struct {
-		PageInfo struct {
+		IssueCount int `json:"issueCount"`
+		PageInfo   struct {
 			HasNextPage bool    `json:"hasNextPage"`
 			EndCursor   *string `json:"endCursor"`
 		} `json:"pageInfo"`
@@ -228,16 +230,21 @@ type searchData struct {
 }
 
 // SearchAll runs q against GitHub's issue search, paginating until
-// exhausted. GitHub Search returns at most 1000 results per query; our
-// filters stay well under that.
+// exhausted. GitHub Search never exposes more than 1,000 results for a
+// single query, no matter how many actually match (issueCount) — if q
+// matches more than that, this returns a truncation error rather than
+// silently handing back a partial result set (callers must not advance a
+// sync watermark on a truncated search).
 func (c *httpClient) SearchAll(ctx context.Context, q string) ([]IssueNode, error) {
 	var out []IssueNode
 	var after *string
+	issueCount := 0
 	for {
 		data, err := gql[searchData](ctx, c, searchQuery, map[string]any{"q": q, "after": after})
 		if err != nil {
 			return nil, err
 		}
+		issueCount = data.Search.IssueCount
 		for _, n := range data.Search.Nodes {
 			if n.Number == nil {
 				continue
@@ -264,6 +271,9 @@ func (c *httpClient) SearchAll(ctx context.Context, q string) ([]IssueNode, erro
 			return nil, err
 		}
 	}
+	if len(out) < issueCount {
+		return nil, NewSearchTruncatedError(q, issueCount, len(out))
+	}
 	return out, nil
 }
 
@@ -271,7 +281,10 @@ func (c *httpClient) SearchAll(ctx context.Context, q string) ([]IssueNode, erro
 // FetchRepoIssues, factored out so the composition itself is directly
 // testable without a network call.
 func buildRepoIssueQueries(owner, name, issueQuery string, closedLookbackDays int, now time.Time) (openQ, closedQ string) {
-	base := fmt.Sprintf("repo:%s/%s %s", owner, name, issueQuery)
+	// is:issue excludes pull requests explicitly — GitHub's search(type:
+	// ISSUE, ...) still matches PRs unless the query text says otherwise, and
+	// a stray PR match would consume part of the 1,000-result search budget.
+	base := fmt.Sprintf("repo:%s/%s is:issue %s", owner, name, issueQuery)
 	openQ = base + " is:open sort:updated-desc"
 	since := now.Add(-time.Duration(closedLookbackDays) * 24 * time.Hour).UTC().Format("2006-01-02")
 	closedQ = fmt.Sprintf("%s is:closed closed:>=%s sort:updated-desc", base, since)
@@ -312,7 +325,7 @@ func (c *httpClient) FetchRepoIssues(ctx context.Context, owner, name, issueQuer
 // ---------------------------------------------------------------------------
 
 const detailQuery = `
-query ($owner: String!, $name: String!, $number: Int!, $tlCursor: String) {
+query ($owner: String!, $name: String!, $number: Int!, $tlCursor: String, $piCursor: String) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
       number
@@ -328,10 +341,12 @@ query ($owner: String!, $name: String!, $number: Int!, $tlCursor: String) {
             createdAt
             previousStatus
             status
+            project { id }
           }
         }
       }
-      projectItems(first: 20) {
+      projectItems(first: 20, after: $piCursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           createdAt
           project { id }
@@ -359,9 +374,16 @@ type detailData struct {
 					CreatedAt      *string `json:"createdAt"`
 					PreviousStatus *string `json:"previousStatus"`
 					Status         *string `json:"status"`
+					Project        *struct {
+						ID string `json:"id"`
+					} `json:"project"`
 				} `json:"nodes"`
 			} `json:"timelineItems"`
 			ProjectItems struct {
+				PageInfo struct {
+					HasNextPage bool    `json:"hasNextPage"`
+					EndCursor   *string `json:"endCursor"`
+				} `json:"pageInfo"`
 				Nodes []struct {
 					CreatedAt string `json:"createdAt"`
 					Project   struct {
@@ -378,15 +400,19 @@ type detailData struct {
 }
 
 // FetchIssueDetail returns one issue's status timeline and per-project
-// current status, or (nil, nil) if the issue does not exist.
+// current status, or (nil, nil) if the issue does not exist. timelineItems
+// and projectItems are paginated independently (their own cursor each, only
+// advanced while that connection still has more) since an issue can carry
+// more status events than project associations, or vice versa.
 func (c *httpClient) FetchIssueDetail(ctx context.Context, owner, name string, number int) (*IssueDetail, error) {
 	var events []StatusEvent
 	var projectStatuses []ProjectStatus
-	var tlCursor *string
+	var tlCursor, piCursor *string
+	tlDone, piDone := false, false
 
 	for {
 		data, err := gql[detailData](ctx, c, detailQuery, map[string]any{
-			"owner": owner, "name": name, "number": number, "tlCursor": tlCursor,
+			"owner": owner, "name": name, "number": number, "tlCursor": tlCursor, "piCursor": piCursor,
 		})
 		if err != nil {
 			return nil, err
@@ -396,19 +422,25 @@ func (c *httpClient) FetchIssueDetail(ctx context.Context, owner, name string, n
 		}
 		issue := data.Repository.Issue
 
-		for _, node := range issue.TimelineItems.Nodes {
-			if node.Typename != "ProjectV2ItemStatusChangedEvent" || node.CreatedAt == nil {
-				continue
+		if !tlDone {
+			for _, node := range issue.TimelineItems.Nodes {
+				if node.Typename != "ProjectV2ItemStatusChangedEvent" || node.CreatedAt == nil {
+					continue
+				}
+				var projectID string
+				if node.Project != nil {
+					projectID = node.Project.ID
+				}
+				events = append(events, StatusEvent{
+					CreatedAt:      *node.CreatedAt,
+					PreviousStatus: node.PreviousStatus,
+					Status:         node.Status,
+					ProjectID:      projectID,
+				})
 			}
-			events = append(events, StatusEvent{
-				CreatedAt:      *node.CreatedAt,
-				PreviousStatus: node.PreviousStatus,
-				Status:         node.Status,
-			})
 		}
 
-		// projectItems (first: 20) is plenty; capture it once on the first page.
-		if len(projectStatuses) == 0 {
+		if !piDone {
 			for _, p := range issue.ProjectItems.Nodes {
 				ps := ProjectStatus{ProjectID: p.Project.ID, ItemCreatedAt: strPtr(p.CreatedAt)}
 				if p.FieldValueByName != nil {
@@ -419,10 +451,20 @@ func (c *httpClient) FetchIssueDetail(ctx context.Context, owner, name string, n
 			}
 		}
 
-		if !issue.TimelineItems.PageInfo.HasNextPage {
+		if issue.TimelineItems.PageInfo.HasNextPage {
+			tlCursor = issue.TimelineItems.PageInfo.EndCursor
+		} else {
+			tlDone = true
+		}
+		if issue.ProjectItems.PageInfo.HasNextPage {
+			piCursor = issue.ProjectItems.PageInfo.EndCursor
+		} else {
+			piDone = true
+		}
+
+		if tlDone && piDone {
 			break
 		}
-		tlCursor = issue.TimelineItems.PageInfo.EndCursor
 		if err := SleepOrDone(ctx, detailPageDelay); err != nil {
 			return nil, err
 		}

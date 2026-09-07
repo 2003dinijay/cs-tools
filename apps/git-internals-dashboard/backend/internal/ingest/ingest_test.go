@@ -77,7 +77,7 @@ func testPair(withLeadingEvent bool) Pair {
 	events := []github.StatusEvent{}
 	if withLeadingEvent {
 		events = []github.StatusEvent{
-			{CreatedAt: "2026-01-05T00:00:00.000Z", PreviousStatus: strp("Open"), Status: strp("In Progress")},
+			{CreatedAt: "2026-01-05T00:00:00.000Z", PreviousStatus: strp("Open"), Status: strp("In Progress"), ProjectID: "PVT_test_ingest"},
 		}
 	}
 	return Pair{

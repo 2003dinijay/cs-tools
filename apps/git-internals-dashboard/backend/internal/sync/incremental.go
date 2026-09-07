@@ -146,7 +146,10 @@ func syncOneRepo(ctx context.Context, pool *pgxpool.Pool, client GithubClient, r
 		return 0, 0, fmt.Errorf("repository %s has no linked project — config sync should have set this", repoLabel)
 	}
 
-	q := fmt.Sprintf("repo:%s/%s %s updated:>=%s", repo.Owner, repo.Name, repo.IssueQuery, formatISO(since))
+	// is:issue excludes pull requests explicitly, matching FetchRepoIssues's
+	// queries — search(type: ISSUE, ...) still matches PRs unless the query
+	// text says otherwise.
+	q := fmt.Sprintf("repo:%s/%s is:issue %s updated:>=%s", repo.Owner, repo.Name, repo.IssueQuery, formatISO(since))
 	nodes, err := client.SearchAll(ctx, q)
 	if err != nil {
 		return 0, 0, fmt.Errorf("github search: %w", err)

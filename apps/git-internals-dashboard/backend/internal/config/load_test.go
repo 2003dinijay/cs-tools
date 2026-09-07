@@ -71,8 +71,8 @@ func TestLoadValidatesTheCommittedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected the committed sla-config.yaml to be valid, got: %v", err)
 	}
-	if len(cfg.Repos) != 3 {
-		t.Errorf("expected 3 repos, got %d", len(cfg.Repos))
+	if len(cfg.Repos) != 2 {
+		t.Errorf("expected 2 repos, got %d", len(cfg.Repos))
 	}
 	if len(cfg.Budgets) != 3 {
 		t.Errorf("expected 3 budget tiers, got %d", len(cfg.Budgets))

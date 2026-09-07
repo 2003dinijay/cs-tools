@@ -38,7 +38,7 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	defer cancel()
 	pool, err := NewPool(ctx, url)
 	if err != nil {
-		t.Skipf("skipping: postgres unreachable at %s: %v", url, err)
+		t.Skipf("skipping: postgres unreachable: %v", err)
 		return nil
 	}
 	t.Cleanup(pool.Close)
