@@ -1228,34 +1228,6 @@ func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The auto-closure hold work note (below) must only fire for an actual change in
-	// the hold date, not for a retry or a no-op PATCH that resends the existing value —
-	// otherwise every duplicate request pollutes the case's activity feed with an
-	// identical note. Read the prior value before the PATCH; after it, the case
-	// already reflects the new value and there'd be nothing to diff against.
-	var priorHoldDate string
-	if patchErr == nil && patch.AutocloseHoldUntil != nil {
-		if current, err := h.entity.GetCase(r.Context(), caseID); err != nil {
-			slog.WarnContext(r.Context(), "entity GetCase failed reading prior autoclose hold date; proceeding without dedup", "userID", user.UserID, "caseID", caseID, "err", err)
-		} else {
-			// autoclosureStateTime is only "the hold date" while the case is actually
-			// ON_HOLD — for every other autoclosureStep it's when that other stage next
-			// advances, a value unrelated to any hold. Without gating on the step, the
-			// very first hold on a case (whose autoclosureStateTime already holds some
-			// unrelated staged-advance date matching the FE's pre-filled picker default)
-			// gets misread as "unchanged" and its note silently skipped.
-			var currentCase struct {
-				AutoclosureStep      *string `json:"autoclosureStep"`
-				AutoclosureStateTime *string `json:"autoclosureStateTime"`
-			}
-			if err := json.Unmarshal(current, &currentCase); err == nil &&
-				currentCase.AutoclosureStep != nil && *currentCase.AutoclosureStep == "ON_HOLD" &&
-				currentCase.AutoclosureStateTime != nil {
-				priorHoldDate = formatHoldDate(*currentCase.AutoclosureStateTime)
-			}
-		}
-	}
-
 	result, err := h.entity.PatchCase(r.Context(), caseID, body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity PatchCase failed", "userID", user.UserID, "caseID", caseID, "err", err)
@@ -1266,14 +1238,20 @@ func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 	// Setting/extending the auto-closure hold has no visible trail of its own on the
 	// case (unlike the legacy ticketing UI's equivalent action, which records a work
 	// note). Record one here so CS engineers can see when a hold was set/extended and
-	// until when. Best-effort and fire-and-forget: the hold PATCH above already
-	// succeeded, so this secondary write must not delay the response or fail/roll back
-	// the request if it errors. context.WithoutCancel keeps the request-scoped values
-	// the entity client needs (x-user-id-token, correlation id) while detaching from
-	// the request's own cancellation, which fires as soon as the handler returns —
-	// a bare context.Background() would drop those values and the note would reach
-	// the entity service unattributed.
-	if patchErr == nil && patch.AutocloseHoldUntil != nil && formatHoldDate(*patch.AutocloseHoldUntil) != priorHoldDate {
+	// until when — every PATCH that carries autocloseHoldUntil gets one, with no
+	// no-op/dedup check: the field this would need to key off
+	// (autoclosureStep/autoclosureStateTime) isn't reliably populated on a case read,
+	// and the legacy ticketing UI's own equivalent action has the exact same
+	// behavior (it re-posts an identical note on every resend too), so this matches
+	// established behavior rather than deviating from it. Best-effort and
+	// fire-and-forget: the hold PATCH above already succeeded, so this secondary
+	// write must not delay the response or fail/roll back the request if it errors.
+	// context.WithoutCancel keeps the request-scoped values the entity client needs
+	// (x-user-id-token, correlation id) while detaching from the request's own
+	// cancellation, which fires as soon as the handler returns — a bare
+	// context.Background() would drop those values and the note would reach the
+	// entity service unattributed.
+	if patchErr == nil && patch.AutocloseHoldUntil != nil {
 		holdUntil := *patch.AutocloseHoldUntil
 		detached := context.WithoutCancel(r.Context())
 		go func() {

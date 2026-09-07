@@ -1464,46 +1464,14 @@ func TestPatchCase(t *testing.T) {
 		}
 	})
 
-	t.Run("autocloseHoldUntil PATCH does not record a duplicate work note when the hold date is unchanged", func(t *testing.T) {
-		var commentCalled atomic.Bool
-		client := &mockEntityCaseClient{
-			getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"id":"` + testCaseID + `","autoclosureStep":"ON_HOLD","autoclosureStateTime":"2026-08-01T00:00:00Z"}`), nil
-			},
-			patchCaseFn: func(_ context.Context, _ string, body []byte) ([]byte, error) {
-				return []byte(`{"message":"Case updated successfully","case":{"id":"` + testCaseID + `","updatedOn":"2026-07-23T10:00:00Z","autoclosureStep":"ON_HOLD","autoclosureStateTime":"2026-08-01T00:00:00Z"}}`), nil
-			},
-			createCaseCommentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
-				commentCalled.Store(true)
-				return []byte(`{"id":"wn-1"}`), nil
-			},
-		}
-		h := NewCaseHandler(client)
-		r := withUser(httptest.NewRequest(http.MethodPatch, "/cases/"+testCaseID, strings.NewReader(`{"autocloseHoldUntil":"2026-08-01T00:00:00Z"}`)))
-		r.SetPathValue("id", testCaseID)
-		w := httptest.NewRecorder()
-		h.PatchCase(w, r)
-
-		assertStatus(t, w, http.StatusOK)
-		// Give a would-be goroutine a moment to run; there should be none to wait for.
-		time.Sleep(100 * time.Millisecond)
-		if commentCalled.Load() {
-			t.Error("expected no work note for a PATCH that resends the existing hold date")
-		}
-	})
-
-	t.Run("autocloseHoldUntil PATCH records a work note on the first hold, even if autoclosureStateTime already held an unrelated staged-advance date", func(t *testing.T) {
-		// A case not currently on hold can still carry a non-nil autoclosureStateTime
-		// (e.g. when its autoclosureStep is FIRST_COMMENT) that happens to match the
-		// FE's pre-filled hold-date picker default. The dedup check must gate on
-		// autoclosureStep == ON_HOLD, not merely on the date matching, or this — the
-		// default "open dialog, accept the pre-filled date, click Hold" path — would
-		// wrongly be treated as a no-op and its note dropped.
+	t.Run("autocloseHoldUntil PATCH records a work note even when resent with the same hold date", func(t *testing.T) {
+		// Deliberately no dedup: ServiceNow's own case-read doesn't reliably surface
+		// autoclosureStep/autoclosureStateTime, so a dedup keyed on it can't be trusted,
+		// and the legacy ticketing UI's equivalent action has this exact same behavior
+		// (a resend posts another identical note too) — this matches established
+		// behavior rather than a regression.
 		commentCalled := make(chan struct{})
 		client := &mockEntityCaseClient{
-			getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"id":"` + testCaseID + `","autoclosureStep":"FIRST_COMMENT","autoclosureStateTime":"2026-08-01T00:00:00Z"}`), nil
-			},
 			patchCaseFn: func(_ context.Context, _ string, body []byte) ([]byte, error) {
 				return []byte(`{"message":"Case updated successfully","case":{"id":"` + testCaseID + `","updatedOn":"2026-07-23T10:00:00Z","autoclosureStep":"ON_HOLD","autoclosureStateTime":"2026-08-01T00:00:00Z"}}`), nil
 			},
@@ -1522,7 +1490,7 @@ func TestPatchCase(t *testing.T) {
 		select {
 		case <-commentCalled:
 		case <-time.After(2 * time.Second):
-			t.Fatal("expected CreateCaseComment to be called for the first hold, despite a matching prior autoclosureStateTime")
+			t.Fatal("expected CreateCaseComment to be called even for a resent hold date")
 		}
 	})
 
