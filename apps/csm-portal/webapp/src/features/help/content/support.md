@@ -97,8 +97,8 @@ disabled with a tooltip explaining why.
 **Provide workaround** / **Recall workaround**, in the case's **More** menu, marks (or
 un-marks) that a workaround has been given to the customer — this pauses the case's Workaround
 SLA clock while marked, and resumes it on recall. The menu item's label and icon switch
-depending on the case's current state, and it's shown for every case regardless of who's
-assigned to it, disabled only once the case is closed.
+depending on whether a workaround has already been provided, and it's shown for every case
+regardless of who's assigned to it, disabled only once the case is closed.
 
 ## Comments
 
