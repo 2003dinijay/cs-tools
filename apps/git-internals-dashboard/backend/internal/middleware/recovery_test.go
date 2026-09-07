@@ -77,6 +77,31 @@ func TestRecoveryRepanicsErrAbortHandler(t *testing.T) {
 	}
 }
 
+// TestRecoveryDoesNotWriteAfterResponseCommitted guards against corrupting an
+// already-started response: once a downstream handler has written a status
+// (or body) and then panics, net/http keeps what was already sent regardless
+// of anything written afterward, so Recovery must not attempt to append the
+// 500 envelope on top of it.
+func TestRecoveryDoesNotWriteAfterResponseCommitted(t *testing.T) {
+	handler := Recovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+		panic("boom after commit")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/issues", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected the original 200 to be preserved, got %d", rec.Code)
+	}
+	if rec.Body.String() != `{"ok":true}` {
+		t.Fatalf("expected the body to be untouched by the recovered panic, got %q", rec.Body.String())
+	}
+}
+
 func TestRecoveryPassesThroughWithoutPanic(t *testing.T) {
 	called := false
 	handler := Recovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

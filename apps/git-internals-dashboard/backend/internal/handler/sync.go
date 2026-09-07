@@ -90,7 +90,11 @@ func (h *SyncHandler) PostSyncRuns(w http.ResponseWriter, r *http.Request) {
 	// sync. Canceling mid-run is safe (the watermark only advances on
 	// success), but wasteful — it discards GitHub API calls already spent
 	// and leaves the repo needing a full retry on the next manual sync.
-	runCtx := context.WithoutCancel(r.Context())
+	// Still bounded by postSyncRunsDeadline: jobs.TryRun holds the job lock
+	// until its callback returns, so an unbounded detached context could
+	// wedge the lock past this handler's own deadline.
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), postSyncRunsDeadline)
+	defer cancel()
 
 	client := github.NewClient(h.githubToken)
 	summary, ran, err := jobs.TryRun(runCtx, h.lock, func(ctx context.Context) (sync.Summary, error) {

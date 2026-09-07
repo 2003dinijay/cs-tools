@@ -207,6 +207,13 @@ func BuildOverview(ctx context.Context, pool *pgxpool.Pool, cfg *config.AppConfi
 	if err != nil {
 		return Overview{}, fmt.Errorf("metrics: fetch overview issues: %w", err)
 	}
+	// Every enabled repo, independent of allIssues — Projects and Volume
+	// (SPEC §6.6) must include a repo with no current open non-terminal
+	// issue, which allIssues alone would never surface.
+	enabledRepos, err := fetchEnabledRepos(ctx, pool)
+	if err != nil {
+		return Overview{}, fmt.Errorf("metrics: fetch enabled repos: %w", err)
+	}
 	budgets := cfg.Budgets // priority -> budgetHours, in config file order
 
 	// Filter scopes: hero + spark honor repo + priority; priorities + matrix honor repo only.
@@ -272,21 +279,19 @@ func BuildOverview(ctx context.Context, pool *pgxpool.Pool, cfg *config.AppConfi
 	}
 
 	// ── 4. Projects (always all enabled repos; per-card counts honor priority) ─
-	repoOrder := make([]int32, 0)
-	repoMap := make(map[int32]*Project)
-	for _, issue := range allIssues {
-		if _, ok := repoMap[issue.RepositoryID]; !ok {
-			name := issue.RepoName
-			if issue.ProjectTitle != nil {
-				name = *issue.ProjectTitle
-			}
-			repoMap[issue.RepositoryID] = &Project{
-				RepoID: issue.RepositoryID,
-				Name:   name,
-				Repo:   issue.RepoOwner + "/" + issue.RepoName,
-			}
-			repoOrder = append(repoOrder, issue.RepositoryID)
+	repoOrder := make([]int32, 0, len(enabledRepos))
+	repoMap := make(map[int32]*Project, len(enabledRepos))
+	for _, r := range enabledRepos {
+		name := r.Name
+		if r.ProjectTitle != nil {
+			name = *r.ProjectTitle
 		}
+		repoMap[r.ID] = &Project{
+			RepoID: r.ID,
+			Name:   name,
+			Repo:   r.Owner + "/" + r.Name,
+		}
+		repoOrder = append(repoOrder, r.ID)
 	}
 
 	var projectScope []overviewIssue
@@ -500,6 +505,40 @@ func fetchOverviewIssues(ctx context.Context, pool *pgxpool.Pool) ([]overviewIss
 		issues = append(issues, i)
 	}
 	return issues, rows.Err()
+}
+
+// overviewRepo is one enabled repository, independent of whether it has any
+// current open non-terminal issue — the base set for Projects and Volume
+// (SPEC §6.6: both sections cover every enabled repo).
+type overviewRepo struct {
+	ID           int32
+	Owner        string
+	Name         string
+	ProjectTitle *string
+}
+
+func fetchEnabledRepos(ctx context.Context, pool *pgxpool.Pool) ([]overviewRepo, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT r.id, r.owner, r.name, p.title
+		FROM repositories r
+		LEFT JOIN projects p ON p.id = r.sla_project_id
+		WHERE r.enabled = true
+		ORDER BY r.id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var repos []overviewRepo
+	for rows.Next() {
+		var r overviewRepo
+		if err := rows.Scan(&r.ID, &r.Owner, &r.Name, &r.ProjectTitle); err != nil {
+			return nil, err
+		}
+		repos = append(repos, r)
+	}
+	return repos, rows.Err()
 }
 
 type sparkRow struct {

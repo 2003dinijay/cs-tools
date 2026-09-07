@@ -128,6 +128,34 @@ func seedMetricsFixture(t *testing.T, pool *pgxpool.Pool) (repositoryID int32) {
 	return repositoryID
 }
 
+const metricsQuietFixtureRepo = "test-owner/test-metrics-quiet"
+
+// seedQuietRepoFixture creates an enabled repository with no issues at all —
+// the case where a repo has no current open non-terminal issue and must
+// still show up in Projects/Volume (SPEC §6.6 covers every enabled repo).
+func seedQuietRepoFixture(t *testing.T, pool *pgxpool.Pool) (repositoryID int32) {
+	t.Helper()
+	ctx := context.Background()
+
+	var projectID int32
+	if err := pool.QueryRow(ctx, `INSERT INTO projects (github_project_id, title, enabled) VALUES ($1,$2,true) RETURNING id`,
+		"PVT_metrics_quiet_test", "Metrics Quiet Test").Scan(&projectID); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO repositories (owner, name, issue_query, sla_project_id, enabled)
+		VALUES ($1,$2,$3,$4,true) RETURNING id
+	`, "test-owner", "test-metrics-quiet", `label:"Origin/CS"`, projectID).Scan(&repositoryID); err != nil {
+		t.Fatalf("create repository: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		pool.Exec(bg, `DELETE FROM repositories WHERE id = $1`, repositoryID)
+		pool.Exec(bg, `DELETE FROM projects WHERE id = $1`, projectID)
+	})
+	return repositoryID
+}
+
 func findProject(projects []Project, repo string) *Project {
 	for i := range projects {
 		if projects[i].Repo == repo {
@@ -195,6 +223,45 @@ func TestBuildOverviewProjectsCard(t *testing.T) {
 	}
 	if p.AllClear {
 		t.Error("expected allClear=false (has violated/atRisk/cs issues)")
+	}
+}
+
+// TestBuildOverviewProjectsIncludesRepoWithNoOpenIssues guards against
+// Projects/Volume silently dropping an enabled repo just because it has no
+// current open non-terminal issue: allIssues (which both sections used to be
+// built from) would never surface such a repo at all.
+func TestBuildOverviewProjectsIncludesRepoWithNoOpenIssues(t *testing.T) {
+	pool := testPool(t)
+	seedMetricsFixture(t, pool)
+	seedQuietRepoFixture(t, pool)
+
+	overview, err := BuildOverview(context.Background(), pool, metricsTestConfig, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildOverview: %v", err)
+	}
+
+	p := findProject(overview.Projects, metricsQuietFixtureRepo)
+	if p == nil {
+		t.Fatalf("expected a project entry for %s (zero open issues), got %+v", metricsQuietFixtureRepo, overview.Projects)
+	}
+	if p.Violated != 0 || p.AtRisk != 0 || p.Cs != 0 || p.OnTrack != 0 || p.OpenTracked != 0 || p.Untracked != 0 {
+		t.Errorf("expected an all-zero project entry, got %+v", p)
+	}
+	if !p.AllClear {
+		t.Error("expected allClear=true for a repo with no issues")
+	}
+
+	found := false
+	for _, v := range overview.Volume {
+		if v.RepoID == p.RepoID {
+			found = true
+			if v.Total != 0 {
+				t.Errorf("expected zero volume for the quiet repo, got %+v", v)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a volume entry for %s, got %+v", metricsQuietFixtureRepo, overview.Volume)
 	}
 }
 

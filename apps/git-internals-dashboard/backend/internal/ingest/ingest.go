@@ -233,15 +233,25 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 		githubClosedAt = &t
 	}
 
+	// The issue upsert, its event log, and its SLA projection must land
+	// together: a failure partway through (e.g. the event batch or the SLA
+	// upsert) must not leave a new current_status committed with a stale or
+	// missing event log / SLA row behind it.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return Result{}, fmt.Errorf("ingest: begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx) // no-op once Commit succeeds
+
 	var existingID *int32
-	err = pool.QueryRow(ctx, `SELECT id FROM issues WHERE repository_id = $1 AND github_number = $2`,
+	err = tx.QueryRow(ctx, `SELECT id FROM issues WHERE repository_id = $1 AND github_number = $2`,
 		ictx.RepositoryID, node.Number).Scan(&existingID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Result{}, fmt.Errorf("ingest: check existing issue: %w", err)
 	}
 
 	var issueID int32
-	err = pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO issues (
 			repository_id, github_number, state, html_url, priority,
 			current_status, current_status_at, github_created_at, github_closed_at,
@@ -292,7 +302,7 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 			`, issueID, ictx.SlaProjectID, e.PreviousStatus, e.Status, occurredAt, source, key)
 		}
 
-		br := pool.SendBatch(ctx, batch)
+		br := tx.SendBatch(ctx, batch)
 		for range persistedEvents {
 			tag, err := br.Exec()
 			if err != nil {
@@ -308,7 +318,7 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 
 	// Current SLA projection.
 	r := sla.ComputeSla(priority, slaEvents, currentStatus, ictx.Runtime.Cfg, ictx.Now)
-	_, err = pool.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		INSERT INTO issue_sla (
 			issue_id, priority, budget_hours, consumed_hours, remaining_hours,
 			pct_consumed, sla_state, sla_running, computed_at, computed_through
@@ -320,6 +330,10 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 		r.PctConsumed, string(r.SlaState), r.SlaRunning, ictx.Now, ictx.Now)
 	if err != nil {
 		return Result{}, fmt.Errorf("ingest: upsert issue_sla: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Result{}, fmt.Errorf("ingest: commit transaction: %w", err)
 	}
 
 	return Result{

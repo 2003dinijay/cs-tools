@@ -23,11 +23,39 @@ import (
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/apierror"
 )
 
+// committedResponseWriter tracks whether the downstream handler has already
+// started writing a response (WriteHeader or Write), so Recovery knows
+// whether it's still safe to write the 500 envelope.
+type committedResponseWriter struct {
+	http.ResponseWriter
+	committed bool
+}
+
+func (w *committedResponseWriter) WriteHeader(code int) {
+	w.committed = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *committedResponseWriter) Write(b []byte) (int, error) {
+	w.committed = true
+	return w.ResponseWriter.Write(b)
+}
+
+// Unwrap exposes the underlying ResponseWriter so http.NewResponseController
+// (used by PostSyncRuns to extend its write deadline, AUDIT-FINDINGS A4) can
+// see through this wrapper — without it, SetWriteDeadline/SetReadDeadline
+// would silently no-op for every route, since Recovery is outermost in the
+// handler chain (cmd/server/main.go).
+func (w *committedResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // Recovery is an HTTP middleware that recovers from a panic in any downstream
 // handler, logs it, and writes the standard 500 error envelope instead of
 // letting net/http's own recovery kill the connection with no body.
 func Recovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cw := &committedResponseWriter{ResponseWriter: w}
 		defer func() {
 			if rec := recover(); rec != nil {
 				// net/http itself uses panic(http.ErrAbortHandler) as the
@@ -45,9 +73,17 @@ func Recovery(next http.Handler) http.Handler {
 					panic(rec)
 				}
 				slog.ErrorContext(r.Context(), "panic recovered", "panic", rec, "path", r.URL.Path)
-				apierror.Write(w, http.StatusInternalServerError, apierror.CodeInternal, "internal server error")
+				if cw.committed {
+					// The response already started: net/http keeps whatever
+					// status/headers/body the handler already wrote
+					// regardless of anything written here, so apierror.Write
+					// could only append a JSON error envelope onto a partial
+					// (possibly 200 OK) response. Log-and-terminate instead.
+					return
+				}
+				apierror.Write(cw, http.StatusInternalServerError, apierror.CodeInternal, "internal server error")
 			}
 		}()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(cw, r)
 	})
 }

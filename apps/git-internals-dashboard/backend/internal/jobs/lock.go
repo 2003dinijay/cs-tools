@@ -92,7 +92,12 @@ func (l *Lock) acquire(ctx context.Context) (bool, error) {
 // already has whatever result fn produced, and the session-scoped lock is
 // released automatically if this connection is ever dropped anyway.
 func (l *Lock) release() {
-	l.clearRunning()
+	// Keep `running` claimed until the unlock finishes below: it is the only
+	// thing serializing in-process access to the dedicated *pgx.Conn (not
+	// safe for concurrent use), and clearing it early would let acquire's
+	// fast path hand this same connection to another goroutine while the
+	// unlock Exec is still in flight.
+	defer l.clearRunning()
 
 	l.mu.Lock()
 	conn := l.conn
