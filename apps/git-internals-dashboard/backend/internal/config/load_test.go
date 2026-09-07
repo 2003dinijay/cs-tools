@@ -71,8 +71,12 @@ func TestLoadValidatesTheCommittedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected the committed sla-config.yaml to be valid, got: %v", err)
 	}
-	if len(cfg.Repos) != 2 {
-		t.Errorf("expected 2 repos, got %d", len(cfg.Repos))
+	// repos is deployment-specific and sensitive: the committed file carries
+	// sanitized placeholder entries, while the real orgs/repos are supplied
+	// out-of-band at deploy time (e.g. mounted over this file on Choreo).
+	// Assert only that at least one is configured, not a specific count.
+	if len(cfg.Repos) < 1 {
+		t.Errorf("expected at least 1 repo, got %d", len(cfg.Repos))
 	}
 	if len(cfg.Budgets) != 3 {
 		t.Errorf("expected 3 budget tiers, got %d", len(cfg.Budgets))
