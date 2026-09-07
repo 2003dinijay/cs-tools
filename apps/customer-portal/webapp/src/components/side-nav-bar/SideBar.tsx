@@ -23,6 +23,7 @@ import useGetProjectDetails from "@api/useGetProjectDetails";
 import useGetProjectFeatures from "@api/useGetProjectFeatures";
 import useGetMetadata from "@api/useGetMetadata";
 import { APP_SHELL_NAV_ITEMS } from "@features/project-hub/constants/appLayoutConstants";
+import type { AppShellNavItem } from "@features/project-hub/types/appLayout";
 import { getProjectPermissions } from "@utils/permission";
 import useCustomerPermissions from "@hooks/useCustomerPermissions";
 
