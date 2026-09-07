@@ -43,6 +43,16 @@ export interface UserSearchOption {
   email: string;
 }
 
+/** Optional server-side scoping beyond the typed search term — e.g. an
+ * id-keyed picker that should only ever offer internal staff (see
+ * `AsyncUserIdMultiSelect`'s own `roleIds`/`active` props). Left unset, the
+ * search is unscoped, matching this hook's original assignee/`createdBy`
+ * behavior. */
+export interface UserSearchScope {
+  roleIds?: string[];
+  active?: boolean;
+}
+
 /** Flattened, paginated result for the lazy-loaded assignee filter. */
 export interface InfiniteUserSearch {
   /** All matching users loaded so far, de-duplicated by email. */
@@ -64,21 +74,30 @@ export interface InfiniteUserSearch {
  * empty query lists the directory a page at a time; a typed query sends
  * `searchQuery` to `POST /users/search` so anyone is findable, not just the
  * first page of users. The `oneOf` PG/SN response is normalized so the picker
- * never branches on the live data source.
+ * never branches on the live data source. An optional {@link UserSearchScope}
+ * narrows the search server-side (e.g. internal-only, active-only) for a
+ * caller that should never offer, say, a customer contact — left unset, the
+ * search stays unscoped.
  */
 export function useInfiniteUserSearch(
   query: string,
   enabled: boolean,
+  scope?: UserSearchScope,
 ): InfiniteUserSearch {
   const api = useBackendApi();
   const q = query.trim();
 
   const result = useInfiniteQuery<NormalizedUserSearchResult, Error>({
-    queryKey: ["csm-users", "assignee-search", q],
+    queryKey: ["csm-users", "assignee-search", q, scope?.roleIds, scope?.active],
     queryFn: async ({ pageParam }) => {
+      const filters: SearchUsersRequest["filters"] = {
+        ...(q.length > 0 && { searchQuery: q }),
+        ...(scope?.roleIds && { roleIds: scope.roleIds }),
+        ...(scope?.active !== undefined && { active: scope.active }),
+      };
       const request: SearchUsersRequest = {
         pagination: { offset: pageParam as number, limit: USER_PAGE_SIZE },
-        ...(q.length > 0 ? { filters: { searchQuery: q } } : {}),
+        ...(Object.keys(filters ?? {}).length > 0 && { filters }),
       };
       const res = await api.post<SearchUsersRequest, SearchUsersResponse>(
         "/users/search",

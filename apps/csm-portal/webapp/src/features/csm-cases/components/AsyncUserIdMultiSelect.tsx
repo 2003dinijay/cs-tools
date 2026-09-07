@@ -58,6 +58,16 @@ interface AsyncUserIdMultiSelectProps {
    * values just render their raw UUID (or a `nameSeed` label) until it has.
    */
   currentUserId?: string;
+  /**
+   * Server-side role scoping passed straight through to
+   * {@link useInfiniteUserSearch}'s {@link UserSearchScope} — e.g. a picker
+   * that should only ever offer internal staff (time-card/case-assignment
+   * style filters), not a customer contact. Left unset, the search stays
+   * unscoped (this component's original behavior).
+   */
+  roleIds?: string[];
+  /** See {@link roleIds}; restrict to active accounts only. */
+  active?: boolean;
 }
 
 /**
@@ -73,6 +83,8 @@ export default function AsyncUserIdMultiSelect({
   onChange,
   nameSeed,
   currentUserId,
+  roleIds,
+  active,
 }: AsyncUserIdMultiSelectProps): JSX.Element {
   const [input, setInput] = useState("");
   const [open, setOpen] = useState(false);
@@ -80,7 +92,7 @@ export default function AsyncUserIdMultiSelect({
   const query = debounced.trim();
 
   const { users: searchResults, isFetching, isFetchingNextPage, hasNextPage, isError, fetchNextPage } =
-    useInfiniteUserSearch(query, open);
+    useInfiniteUserSearch(query, open, { roleIds, active });
   // `id` is optional on `UserSearchOption` (`POST /users/search` doesn't
   // guarantee it) — this picker filters on the id, so a row without one is
   // unusable here and dropped, unlike the email-keyed pickers.
