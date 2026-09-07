@@ -191,8 +191,8 @@ func TestServerRBACRouteGating(t *testing.T) {
 			resolver := middleware.NewCachedRoleResolver(&mockEntityClient{roles: tt.roles}, time.Minute)
 			handler := middleware.RequirePermission(resolver, tt.module, tt.action)(dummyHandler)
 
-			req := httptest.NewRequest(http.MethodGet, "/test", nil)
-			req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{UserID: "usr-test"}))
+			ctx := middleware.WithUserInfo(context.Background(), &middleware.UserInfo{UserID: "usr-test"})
+			req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/test", nil)
 			rr := httptest.NewRecorder()
 
 			handler.ServeHTTP(rr, req)
@@ -253,8 +253,8 @@ func TestContactManagementRoleGating(t *testing.T) {
 				middleware.RolePartnerAdmin,
 			)(dummyHandler)
 
-			req := httptest.NewRequest(http.MethodPost, "/projects/1/contacts", nil)
-			req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{UserID: "usr-test"}))
+			ctx := middleware.WithUserInfo(context.Background(), &middleware.UserInfo{UserID: "usr-test"})
+			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/projects/1/contacts", nil)
 			rr := httptest.NewRecorder()
 
 			handler.ServeHTTP(rr, req)
