@@ -161,7 +161,7 @@ export function useWidgetGroupByData(
     // same reason useWidgetData wraps it — react-query's own `retry` option
     // only calls the 2-arg form.
     retry: (failureCount, error) => shouldRetryWidgetFetch(failureCount, error, isTeamIndependent),
-    staleTime: 60_000,
+    staleTime: 300_000,
   });
 
   // Mirrors useWidgetPieData's own isLoading semantics: `!enabled` or a
