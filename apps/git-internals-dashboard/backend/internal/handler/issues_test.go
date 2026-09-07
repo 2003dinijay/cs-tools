@@ -115,6 +115,22 @@ func TestGetIssueValidation400ForNonIntegerID(t *testing.T) {
 	}
 }
 
+// TestGetIssueValidation400ForIDOutsideInt32Range guards against a
+// platform-width strconv.Atoi accepting an id like 2147483648 that overflows
+// issues.id's Postgres int4 column — pgx would reject it during Scan, which
+// the query-error branch maps to 500, not the 400 this out-of-range id
+// deserves.
+func TestGetIssueValidation400ForIDOutsideInt32Range(t *testing.T) {
+	h := NewIssuesHandler(nil, handlerTestConfig)
+	req := httptest.NewRequest(http.MethodGet, "/issues/2147483648", nil)
+	req.SetPathValue("id", "2147483648")
+	rec := httptest.NewRecorder()
+	h.GetIssue(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
 // --- DB-backed fixture ---
 
 type issueFixture struct {

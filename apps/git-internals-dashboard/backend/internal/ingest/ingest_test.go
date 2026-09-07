@@ -277,3 +277,17 @@ func TestIngestIssueDoesNotSynthesizeLeadingEventWhenTimelineEmpty(t *testing.T)
 		t.Errorf("expected 0 issue_status_events rows, got %d", got)
 	}
 }
+
+// TestDedupeKeyDoesNotCollideAcrossFieldBoundaries guards against the "|"
+// join delimiter letting a status name shift a field boundary: previously,
+// {prev: "a|b", status: "c"} and {prev: "a", status: "b|c"} produced the
+// identical joined string (and therefore key) for the same repo/timestamp,
+// which would make the ON CONFLICT clause silently drop one of two distinct
+// status transitions.
+func TestDedupeKeyDoesNotCollideAcrossFieldBoundaries(t *testing.T) {
+	k1 := dedupeKey("acme", "widgets", 42, "PVT_1", "2026-01-01T00:00:00Z", strp("a|b"), strp("c"))
+	k2 := dedupeKey("acme", "widgets", 42, "PVT_1", "2026-01-01T00:00:00Z", strp("a"), strp("b|c"))
+	if k1 == k2 {
+		t.Fatalf("expected distinct keys for distinct (prev, status) pairs, both got %q", k1)
+	}
+}

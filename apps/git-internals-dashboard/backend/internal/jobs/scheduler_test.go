@@ -18,6 +18,7 @@ package jobs
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -150,7 +151,7 @@ func seedIngestedIssues(t *testing.T, pool *pgxpool.Pool, n int) (issueIDs []int
 	for i := 1; i <= n; i++ {
 		result, err := ingest.IngestIssue(ctx, pool, ingest.Pair{
 			Node: github.IssueNode{
-				Number: i, State: "OPEN", URL: "https://github.com/test-owner/test-repo-page/issues/1",
+				Number: i, State: "OPEN", URL: fmt.Sprintf("https://github.com/test-owner/test-repo-page/issues/%d", i),
 				CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
 				Labels: []string{"Priority/Critical(P1)"},
 			},

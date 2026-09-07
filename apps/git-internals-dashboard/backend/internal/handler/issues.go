@@ -201,7 +201,10 @@ type issueDetailWire struct {
 // timeline, ascending, no actors. 404 not_found when absent or its
 // repository is disabled.
 func (h *IssuesHandler) GetIssue(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(r.PathValue("id"))
+	// issues.id is a Postgres int4; strconv.Atoi's platform-width int would
+	// accept e.g. 2147483648 on 64-bit builds and let pgx reject it during
+	// Scan, which the query-error branch below maps to 500 instead of 400.
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 32)
 	if err != nil {
 		apierror.ValidationFailed(w, "id must be an integer")
 		return
@@ -209,7 +212,7 @@ func (h *IssuesHandler) GetIssue(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	query := fmt.Sprintf("SELECT %s %s WHERE i.id = $1 AND r.enabled = true", issueListSelect, issueListFrom)
-	row, err := scanIssueRow(h.pool.QueryRow(ctx, query, id))
+	row, err := scanIssueRow(h.pool.QueryRow(ctx, query, int32(id)))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			apierror.NotFound(w, "issue not found")

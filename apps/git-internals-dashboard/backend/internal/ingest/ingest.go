@@ -17,12 +17,14 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1" // #nosec G505 -- not for security; a stable, short dedupe key over public GitHub-side identifiers
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/github"
@@ -89,7 +91,9 @@ func extractPriority(labels []string) *string {
 
 // dedupeKey is stable across reseeds/incremental syncs: keyed on GitHub-side
 // identifiers (repo/name/number/project + transition), not the local
-// autoincrement id.
+// autoincrement id. Each component is length-prefixed before hashing so a
+// "|" occurring inside a status name can't shift a field boundary and make
+// two distinct transitions collide on the same key.
 func dedupeKey(repoOwner, repoName string, githubNumber int, githubProjectID, occurredAt string, prev, status *string) string {
 	p, s := "", ""
 	if prev != nil {
@@ -98,7 +102,11 @@ func dedupeKey(repoOwner, repoName string, githubNumber int, githubProjectID, oc
 	if status != nil {
 		s = *status
 	}
-	sum := sha1.Sum([]byte(fmt.Sprintf("%s/%s#%d|%s|%s|%s|%s", repoOwner, repoName, githubNumber, githubProjectID, occurredAt, p, s))) // #nosec G401 -- not for security; a stable, short dedupe key over public GitHub-side identifiers
+	var buf bytes.Buffer
+	for _, part := range []string{repoOwner, repoName, strconv.Itoa(githubNumber), githubProjectID, occurredAt, p, s} {
+		fmt.Fprintf(&buf, "%d:%s", len(part), part)
+	}
+	sum := sha1.Sum(buf.Bytes()) // #nosec G401 -- not for security; a stable, short dedupe key over public GitHub-side identifiers
 	return hex.EncodeToString(sum[:])
 }
 
