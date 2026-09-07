@@ -354,6 +354,27 @@ func TestCachedRoleResolver(t *testing.T) {
 	if callCount != 2 {
 		t.Fatalf("expected 2 calls after TTL expiry, got %d", callCount)
 	}
+
+	t.Run("evicts expired entries on write", func(t *testing.T) {
+		r := NewCachedRoleResolver(mockClient, 20*time.Millisecond)
+		ctx1 := WithUserInfo(context.Background(), &UserInfo{UserID: "user-expire", Email: "expire@wso2.com"})
+		ctx2 := WithUserInfo(context.Background(), &UserInfo{UserID: "user-active", Email: "active@wso2.com"})
+
+		_, _ = r.GetRoles(ctx1)
+		time.Sleep(30 * time.Millisecond)
+
+		// Calling GetRoles for user2 triggers sweep on write, evicting user-expire
+		_, _ = r.GetRoles(ctx2)
+
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		if _, exists := r.cache["user-expire"]; exists {
+			t.Errorf("expected user-expire to be evicted from cache")
+		}
+		if _, exists := r.cache["user-active"]; !exists {
+			t.Errorf("expected user-active to be present in cache")
+		}
+	})
 }
 
 func TestRequirePermissionMiddleware(t *testing.T) {
