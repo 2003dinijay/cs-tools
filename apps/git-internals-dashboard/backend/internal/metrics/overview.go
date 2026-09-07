@@ -33,8 +33,19 @@ import (
 
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/config"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/taxonomy"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// querier is the subset of *pgxpool.Pool / pgx.Tx that fetchOverviewIssues
+// and fetchEnabledRepos need. BuildOverview runs both through the same
+// pgx.Tx so they observe one consistent enabled-repo snapshot — otherwise a
+// repo a concurrent config sync enables/disables between the two reads could
+// leave allIssues referencing a repository absent from repoMap, and the
+// per-issue aggregation below would nil-dereference it.
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
 
 var (
 	pCodeRe = regexp.MustCompile(`\((P[1-4])\)`)
@@ -203,14 +214,26 @@ func BuildOverview(ctx context.Context, pool *pgxpool.Pool, cfg *config.AppConfi
 	}
 
 	// ── 1. All open non-terminal issues from enabled repos (narrow select) ──
-	allIssues, err := fetchOverviewIssues(ctx, pool)
+	// Both reads run inside one REPEATABLE READ, read-only transaction so
+	// they see the same enabled-repo membership — otherwise a concurrent
+	// config sync enabling/disabling a repo between two separate READ
+	// COMMITTED queries could leave allIssues referencing a repository
+	// absent from repoMap (built from enabledRepos below), and the
+	// per-issue aggregation would nil-dereference it.
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Overview{}, fmt.Errorf("metrics: begin overview snapshot: %w", err)
+	}
+	defer tx.Rollback(ctx) // read-only snapshot; nothing to commit
+
+	allIssues, err := fetchOverviewIssues(ctx, tx)
 	if err != nil {
 		return Overview{}, fmt.Errorf("metrics: fetch overview issues: %w", err)
 	}
 	// Every enabled repo, independent of allIssues — Projects and Volume
 	// (SPEC §6.6) must include a repo with no current open non-terminal
 	// issue, which allIssues alone would never surface.
-	enabledRepos, err := fetchEnabledRepos(ctx, pool)
+	enabledRepos, err := fetchEnabledRepos(ctx, tx)
 	if err != nil {
 		return Overview{}, fmt.Errorf("metrics: fetch enabled repos: %w", err)
 	}
@@ -482,8 +505,8 @@ func BuildOverview(ctx context.Context, pool *pgxpool.Pool, cfg *config.AppConfi
 	}, nil
 }
 
-func fetchOverviewIssues(ctx context.Context, pool *pgxpool.Pool) ([]overviewIssue, error) {
-	rows, err := pool.Query(ctx, `
+func fetchOverviewIssues(ctx context.Context, q querier) ([]overviewIssue, error) {
+	rows, err := q.Query(ctx, `
 		SELECT i.priority, i.current_status, r.id, r.owner, r.name, p.title, s.sla_state
 		FROM issues i
 		JOIN repositories r ON r.id = i.repository_id
@@ -517,8 +540,8 @@ type overviewRepo struct {
 	ProjectTitle *string
 }
 
-func fetchEnabledRepos(ctx context.Context, pool *pgxpool.Pool) ([]overviewRepo, error) {
-	rows, err := pool.Query(ctx, `
+func fetchEnabledRepos(ctx context.Context, q querier) ([]overviewRepo, error) {
+	rows, err := q.Query(ctx, `
 		SELECT r.id, r.owner, r.name, p.title
 		FROM repositories r
 		LEFT JOIN projects p ON p.id = r.sla_project_id

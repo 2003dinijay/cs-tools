@@ -122,7 +122,7 @@ func TestGetIssueValidation400ForNonIntegerID(t *testing.T) {
 // deserves.
 func TestGetIssueValidation400ForIDOutsideInt32Range(t *testing.T) {
 	h := NewIssuesHandler(nil, handlerTestConfig)
-	req := httptest.NewRequest(http.MethodGet, "/issues/2147483648", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/issues/2147483648", nil)
 	req.SetPathValue("id", "2147483648")
 	rec := httptest.NewRecorder()
 	h.GetIssue(rec, req)
