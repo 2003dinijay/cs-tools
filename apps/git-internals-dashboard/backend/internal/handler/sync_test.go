@@ -42,6 +42,8 @@ func testDatabaseURL(t *testing.T) string {
 	return "postgres://gid:gid@localhost:5433/gid?sslmode=disable"
 }
 
+// TestPostSyncRunsReturns400WhenTokenMissing verifies POST /sync/runs
+// rejects with 400 sync_token_missing when GITHUB_TOKEN is unset.
 func TestPostSyncRunsReturns400WhenTokenMissing(t *testing.T) {
 	pool := testPool(t)
 	lock := jobs.NewLock(testDatabaseURL(t))
@@ -67,6 +69,9 @@ func TestPostSyncRunsReturns400WhenTokenMissing(t *testing.T) {
 	}
 }
 
+// TestPostSyncRunsReturns409WhenLockBusy verifies a request that arrives
+// while another goroutine holds the job lock gets 409 sync_in_progress
+// instead of blocking or double-running the sync.
 func TestPostSyncRunsReturns409WhenLockBusy(t *testing.T) {
 	pool := testPool(t)
 	url := testDatabaseURL(t)
@@ -111,6 +116,8 @@ func TestPostSyncRunsReturns409WhenLockBusy(t *testing.T) {
 	}
 }
 
+// TestGetSyncStatusReportsRunningAndWatermarks verifies GET /sync/status
+// reports running=false when no sync is in flight.
 func TestGetSyncStatusReportsRunningAndWatermarks(t *testing.T) {
 	pool := testPool(t)
 	lock := jobs.NewLock(testDatabaseURL(t))

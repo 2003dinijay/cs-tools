@@ -29,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// postTitles POSTs body to h.PostTitles and returns the recorded response.
 func postTitles(h *TitlesHandler, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/issues/titles", bytes.NewReader([]byte(body)))
 	rec := httptest.NewRecorder()
@@ -36,6 +37,9 @@ func postTitles(h *TitlesHandler, body string) *httptest.ResponseRecorder {
 	return rec
 }
 
+// TestPostTitlesValidation400s verifies every malformed request body
+// (invalid JSON, empty/too-many/non-positive ids, oversized body) is
+// rejected with 400.
 func TestPostTitlesValidation400s(t *testing.T) {
 	h := NewTitlesHandler(nil, "")
 
@@ -60,6 +64,9 @@ func TestPostTitlesValidation400s(t *testing.T) {
 	}
 }
 
+// TestPostTitlesNullsWhenNoGithubToken verifies a request with no
+// GITHUB_TOKEN configured returns 200 with every id's title null, rather
+// than erroring.
 func TestPostTitlesNullsWhenNoGithubToken(t *testing.T) {
 	pool := testPool(t)
 	repoID := seedTitlesFixture(t, pool)
@@ -82,6 +89,9 @@ func TestPostTitlesNullsWhenNoGithubToken(t *testing.T) {
 	}
 }
 
+// TestPostTitlesNullForUnknownID verifies an id with no matching row
+// resolves to a present-but-null title instead of erroring or being
+// omitted.
 func TestPostTitlesNullForUnknownID(t *testing.T) {
 	h := NewTitlesHandler(testPool(t), "")
 	rec := postTitles(h, `{"ids": [999999999]}`)
@@ -97,6 +107,8 @@ func TestPostTitlesNullForUnknownID(t *testing.T) {
 	}
 }
 
+// seedTitlesFixture inserts one project, repository, and issue for
+// PostTitles tests to resolve.
 func seedTitlesFixture(t *testing.T, pool *pgxpool.Pool) (repoID int32) {
 	t.Helper()
 	ctx := context.Background()

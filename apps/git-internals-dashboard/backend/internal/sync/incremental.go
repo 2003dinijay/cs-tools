@@ -141,6 +141,9 @@ func Run(ctx context.Context, pool *pgxpool.Pool, client GithubClient, cfg *conf
 	return Summary{StartedAt: startedAt, FinishedAt: time.Now().UTC(), Repos: results}, nil
 }
 
+// syncOneRepo searches repo for issues updated since the watermark and
+// ingests each one, returning how many issues/events were processed before
+// any error (so a mid-loop failure still reports partial progress).
 func syncOneRepo(ctx context.Context, pool *pgxpool.Pool, client GithubClient, runtime *ingest.RuntimeConfig, repo repoRow, repoLabel string, since, now time.Time) (issuesProcessed, eventsInserted int, err error) {
 	if repo.SlaProjectID == nil || repo.GithubProjectID == nil {
 		return 0, 0, fmt.Errorf("repository %s has no linked project — config sync should have set this", repoLabel)
@@ -220,6 +223,8 @@ func formatISO(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
+// fetchEnabledRepos returns every enabled repository, ordered by id, with
+// its linked project's githubProjectId.
 func fetchEnabledRepos(ctx context.Context, pool *pgxpool.Pool) ([]repoRow, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT r.id, r.owner, r.name, r.issue_query, r.sla_project_id, p.github_project_id, r.last_synced_at
@@ -244,11 +249,14 @@ func fetchEnabledRepos(ctx context.Context, pool *pgxpool.Pool) ([]repoRow, erro
 	return repos, rows.Err()
 }
 
+// advanceWatermark sets repositoryID's last_synced_at to syncStartedAt,
+// called only after that repo's sync succeeded.
 func advanceWatermark(ctx context.Context, pool *pgxpool.Pool, repositoryID int32, syncStartedAt time.Time) error {
 	_, err := pool.Exec(ctx, `UPDATE repositories SET last_synced_at = $2, updated_at = now() WHERE id = $1`, repositoryID, syncStartedAt)
 	return err
 }
 
+// insertSyncRun records one repo's sync outcome as a sync_runs row.
 func insertSyncRun(ctx context.Context, pool *pgxpool.Pool, repositoryID int32, since, startedAt time.Time, status string, issuesProcessed int, errMessage string) error {
 	var errArg *string
 	if errMessage != "" {

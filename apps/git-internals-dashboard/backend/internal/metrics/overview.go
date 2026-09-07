@@ -53,6 +53,8 @@ var (
 	priorityRank = map[string]int{"P1": 1, "P2": 2, "P3": 3, "P4": 4}
 )
 
+// pCode extracts the "P1".."P4" tier code from a priority label like
+// "Critical(P1)", or returns priority unchanged if it doesn't match.
 func pCode(priority string) string {
 	if m := pCodeRe.FindStringSubmatch(priority); m != nil {
 		return m[1]
@@ -62,6 +64,8 @@ func pCode(priority string) string {
 
 var pLabelSuffixRe = regexp.MustCompile(`\s*\(P[1-4]\)\s*$`)
 
+// pLabel strips the trailing "(P<n>)" tier code off a priority label,
+// leaving just its display name (e.g. "Critical(P1)" -> "Critical").
 func pLabel(priority string) string {
 	return strings.TrimSpace(pLabelSuffixRe.ReplaceAllString(priority, ""))
 }
@@ -186,6 +190,7 @@ type overviewIssue struct {
 	SlaState      *string
 }
 
+// statusOf returns *s, or "" for a nil (no current status) pointer.
 func statusOf(s *string) string {
 	if s == nil {
 		return ""
@@ -193,6 +198,7 @@ func statusOf(s *string) string {
 	return *s
 }
 
+// slaStateOf returns *s, or "NO_SLA" for a nil (untracked) pointer.
 func slaStateOf(s *string) string {
 	if s == nil {
 		return "NO_SLA"
@@ -505,6 +511,9 @@ func BuildOverview(ctx context.Context, pool *pgxpool.Pool, cfg *config.AppConfi
 	}, nil
 }
 
+// fetchOverviewIssues returns every open, non-terminal issue from enabled
+// repos — the base row set BuildOverview's other sections filter/aggregate
+// in memory.
 func fetchOverviewIssues(ctx context.Context, q querier) ([]overviewIssue, error) {
 	rows, err := q.Query(ctx, `
 		SELECT i.priority, i.current_status, r.id, r.owner, r.name, p.title, s.sla_state
@@ -540,6 +549,8 @@ type overviewRepo struct {
 	ProjectTitle *string
 }
 
+// fetchEnabledRepos returns every enabled repository, ordered by id, whether
+// or not it currently has any open non-terminal issue.
 func fetchEnabledRepos(ctx context.Context, q querier) ([]overviewRepo, error) {
 	rows, err := q.Query(ctx, `
 		SELECT r.id, r.owner, r.name, p.title
@@ -569,6 +580,8 @@ type sparkRow struct {
 	N            int
 }
 
+// sparkQuery returns the last 16 days' daily count of open issues in
+// slaState, optionally narrowed by repo/priority, for the hero sparkline.
 func sparkQuery(ctx context.Context, pool *pgxpool.Pool, slaState string, repo, priority *string) ([]sparkRow, error) {
 	sql := `
 		SELECT s.snapshot_date, COUNT(*)::int AS n
@@ -610,6 +623,9 @@ func productSideSparkQuery(ctx context.Context, pool *pgxpool.Pool, productSideS
 	return runSparkQuery(ctx, pool, sql, args)
 }
 
+// appendRepoAndPriorityFilters appends an optional "AND r.owner = ... AND
+// r.name = ..." and/or "AND s.priority = ..." clause to sql, returning the
+// extended query and its argument list.
 func appendRepoAndPriorityFilters(sql string, args []any, repo, priority *string) (string, []any) {
 	if repo != nil {
 		owner, name, _ := strings.Cut(*repo, "/")
@@ -623,6 +639,8 @@ func appendRepoAndPriorityFilters(sql string, args []any, repo, priority *string
 	return sql, args
 }
 
+// runSparkQuery executes a sql/args pair built by sparkQuery or
+// productSideSparkQuery and scans its (date, count) rows.
 func runSparkQuery(ctx context.Context, pool *pgxpool.Pool, sql string, args []any) ([]sparkRow, error) {
 	rows, err := pool.Query(ctx, sql, args...)
 	if err != nil {
@@ -664,6 +682,8 @@ type weekRow struct {
 	N            int
 }
 
+// fetchVolumeWeeks returns per-repo, per-priority issue-creation counts,
+// bucketed by UTC week, for the last 12 weeks — buildVolume's raw input.
 func fetchVolumeWeeks(ctx context.Context, pool *pgxpool.Pool) ([]weekRow, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT

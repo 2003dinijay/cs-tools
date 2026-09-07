@@ -131,11 +131,16 @@ func RunTickOnce(ctx context.Context, pool *pgxpool.Pool, runtime *ingest.Runtim
 	return TickSummary{Processed: processed, StateCounts: stateCounts, UnknownStatuses: unknownStatuses}, nil
 }
 
+// startOfUTCDay returns t truncated to 00:00:00.000 UTC on its own day —
+// RunTickOnce's snapshot_date bucket.
 func startOfUTCDay(t time.Time) time.Time {
 	u := t.UTC()
 	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
 }
 
+// fetchIssuePage returns up to limit enabled-repo issues with id > lastID
+// (keyset pagination, ascending), each with its full status-event timeline
+// attached.
 func fetchIssuePage(ctx context.Context, pool *pgxpool.Pool, limit int, lastID int32) ([]recomputeIssue, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT i.id, i.repository_id, i.priority, i.current_status, i.current_status_at
@@ -209,6 +214,7 @@ func queueUpdateIssueSla(batch *pgx.Batch, issueID int32, priority *string, r sl
 	`, issueID, priority, r.BudgetHours, r.ConsumedHours, r.RemainingHours, r.PctConsumed, string(r.SlaState), r.SlaRunning, now, now)
 }
 
+// queueUpsertSnapshot queues the day's sla_snapshots upsert for one issue.
 func queueUpsertSnapshot(batch *pgx.Batch, snapshotDate time.Time, issue recomputeIssue, currentStatus *string, r sla.Result) {
 	batch.Queue(`
 		INSERT INTO sla_snapshots (
@@ -289,6 +295,9 @@ func (s *Scheduler) Start(ctx context.Context) {
 	}()
 }
 
+// tick runs one recompute pass under the job lock, logging the outcome
+// (success, skipped because the lock is busy, or failure) rather than
+// propagating an error — there is no caller to return one to.
 func (s *Scheduler) tick(ctx context.Context) {
 	summary, ran, err := TryRun(ctx, s.lock, func(ctx context.Context) (TickSummary, error) {
 		return RunTickOnce(ctx, s.pool, s.runtime, time.Now())

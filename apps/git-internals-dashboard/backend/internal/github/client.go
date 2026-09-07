@@ -121,6 +121,8 @@ func gql[T any](ctx context.Context, c *httpClient, query string, variables map[
 	}
 }
 
+// doGQL sends one GraphQL request and decodes its response into T, with no
+// retry of its own — gql wraps this with the retry/backoff policy.
 func doGQL[T any](ctx context.Context, c *httpClient, query string, variables map[string]any) (T, error) {
 	var zero T
 
@@ -475,6 +477,7 @@ func (c *httpClient) FetchIssueDetail(ctx context.Context, owner, name string, n
 	return &IssueDetail{Number: number, Events: events, ProjectStatuses: projectStatuses}, nil
 }
 
+// strPtr returns a pointer to s.
 func strPtr(s string) *string { return &s }
 
 // SleepOrDone sleeps for d, or returns ctx.Err() early if ctx is canceled

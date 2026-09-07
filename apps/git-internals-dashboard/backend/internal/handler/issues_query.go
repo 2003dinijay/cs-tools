@@ -126,6 +126,7 @@ func parseIssuesQuery(v url.Values) (issuesQuery, string) {
 // it) leaves Postgres unable to infer that parameter's type at prepare time.
 type sqlArgs struct{ values []any }
 
+// add appends v and returns its "$N" placeholder.
 func (a *sqlArgs) add(v any) string {
 	a.values = append(a.values, v)
 	return fmt.Sprintf("$%d", len(a.values))

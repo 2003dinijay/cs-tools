@@ -157,6 +157,8 @@ func (h *SyncHandler) GetSyncStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, syncStatusWire{Running: h.lock.Running(), Repos: repos, LastRun: lastRun})
 }
 
+// fetchRepoWatermarks returns each enabled repo's last_synced_at watermark
+// for GET /sync/status.
 func (h *SyncHandler) fetchRepoWatermarks(ctx context.Context) ([]repoWatermarkWire, error) {
 	rows, err := h.pool.Query(ctx, `SELECT owner, name, last_synced_at FROM repositories WHERE enabled = true ORDER BY id`)
 	if err != nil {
@@ -176,6 +178,8 @@ func (h *SyncHandler) fetchRepoWatermarks(ctx context.Context) ([]repoWatermarkW
 	return repos, rows.Err()
 }
 
+// fetchLastRun returns the most recent sync_runs row, or nil if none exist
+// yet.
 func (h *SyncHandler) fetchLastRun(ctx context.Context) (*lastRunWire, error) {
 	var lr lastRunWire
 	err := h.pool.QueryRow(ctx, `

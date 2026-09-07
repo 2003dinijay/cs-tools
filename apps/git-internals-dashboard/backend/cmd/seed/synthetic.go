@@ -97,7 +97,10 @@ var scenarios = []scenario{
 	},
 }
 
-func strp(s string) *string   { return &s }
+// strp returns a pointer to s, for building literal *string fixture fields.
+func strp(s string) *string { return &s }
+
+// f64p returns a pointer to f, for building literal *float64 fixture fields.
 func f64p(f float64) *float64 { return &f }
 
 // hoursAgo formats an instant hoursAgo hours before now, matching
@@ -107,6 +110,10 @@ func hoursAgo(now time.Time, hours float64) string {
 	return now.Add(-time.Duration(hours * float64(time.Hour))).UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
+// buildEvents converts a scenario's declarative transitions into the
+// StatusEvent timeline FetchIssueDetail would have returned, each event's
+// PreviousStatus taken from the transition before it and tagged with
+// projectID (see StatusEvent.ProjectID).
 func buildEvents(now time.Time, transitions []transition, projectID string) []github.StatusEvent {
 	events := make([]github.StatusEvent, len(transitions))
 	for i, t := range transitions {

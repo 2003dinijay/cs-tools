@@ -143,6 +143,7 @@ func (h *MetricsHandler) GetTimeseries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// derefOr returns *s, or fallback if s is nil.
 func derefOr(s *string, fallback string) string {
 	if s == nil {
 		return fallback
@@ -150,6 +151,7 @@ func derefOr(s *string, fallback string) string {
 	return *s
 }
 
+// parseIntInRange parses raw as an int and rejects it if outside [lo, hi].
 func parseIntInRange(raw string, lo, hi int) (int, error) {
 	n, err := strconv.Atoi(raw)
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 	"testing"
 )
 
+// findSeries returns the series matching key, or nil if absent.
 func findSeries(series []Series, key string) *Series {
 	for i := range series {
 		if series[i].Key == key {
@@ -30,6 +31,9 @@ func findSeries(series []Series, key string) *Series {
 	return nil
 }
 
+// TestBuildTimeseriesGroupByPriorityGapFillsAndPreseedsAllTiers verifies
+// groupBy=priority pre-seeds all 3 canonical tiers (even ones with no
+// matching data) and gap-fills missing dates with zero.
 func TestBuildTimeseriesGroupByPriorityGapFillsAndPreseedsAllTiers(t *testing.T) {
 	pool := testPool(t)
 	seedMetricsFixture(t, pool)
@@ -85,6 +89,8 @@ func TestBuildTimeseriesGroupByPriorityGapFillsAndPreseedsAllTiers(t *testing.T)
 	}
 }
 
+// TestBuildTimeseriesMetricAtRisk verifies metric=at_risk counts the
+// fixture's AT_RISK issue on its own tier's series.
 func TestBuildTimeseriesMetricAtRisk(t *testing.T) {
 	pool := testPool(t)
 	seedMetricsFixture(t, pool)
@@ -100,6 +106,8 @@ func TestBuildTimeseriesMetricAtRisk(t *testing.T) {
 	}
 }
 
+// TestBuildTimeseriesGroupByNoneUsesSingleAllSeries verifies groupBy=none
+// collapses every priority into one "all" series.
 func TestBuildTimeseriesGroupByNoneUsesSingleAllSeries(t *testing.T) {
 	pool := testPool(t)
 	seedMetricsFixture(t, pool)

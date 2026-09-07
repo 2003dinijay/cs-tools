@@ -40,6 +40,8 @@ budgets:
   - { priority: "Critical(P1)", budgetHours: 24, coverage: "24x7", rank: 1 }
 `
 
+// TestLoadHonorsSlaConfigPathOverride verifies Load reads from
+// SLA_CONFIG_PATH instead of its default path when the env var is set.
 func TestLoadHonorsSlaConfigPathOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "custom.yaml")
@@ -83,6 +85,8 @@ func TestLoadValidatesTheCommittedConfig(t *testing.T) {
 	}
 }
 
+// TestLoadReturnsDescriptiveErrorWhenFileMissing verifies Load's error names
+// the missing path rather than surfacing a bare os.Open error.
 func TestLoadReturnsDescriptiveErrorWhenFileMissing(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SLA_CONFIG_PATH", filepath.Join(dir, "does-not-exist.yaml"))

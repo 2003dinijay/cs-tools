@@ -28,6 +28,8 @@ import (
 	"time"
 )
 
+// fastTimings shrinks every retry/pagination-pacing delay to ~1ms for the
+// duration of t, restoring the originals on cleanup.
 func fastTimings(t *testing.T) {
 	t.Helper()
 	origBackoff, origDelay1, origDelay2, origCap := gqlRetryBackoffUnit, searchPageDelay, detailPageDelay, gqlRetryAfterCap
@@ -40,6 +42,8 @@ func fastTimings(t *testing.T) {
 	})
 }
 
+// newTestClient returns an httpClient pointed at a local httptest.Server
+// running handler, closed automatically on test cleanup.
 func newTestClient(t *testing.T, handler http.HandlerFunc) *httpClient {
 	t.Helper()
 	srv := httptest.NewServer(handler)
@@ -47,6 +51,8 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *httpClient {
 	return &httpClient{token: "test-token", endpoint: srv.URL, hc: srv.Client()}
 }
 
+// TestBuildRepoIssueQueries verifies the composed open/closed search query
+// strings carry is:issue, the issueQuery filter, and the right date cutoff.
 func TestBuildRepoIssueQueries(t *testing.T) {
 	now := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC)
 	openQ, closedQ := buildRepoIssueQueries("wso2-enterprise", "wso2-iam-internal", `label:"Origin/CS" -label:"Type/Patch"`, 90, now)
@@ -61,6 +67,8 @@ func TestBuildRepoIssueQueries(t *testing.T) {
 	}
 }
 
+// TestSearchAllPaginatesUntilExhausted verifies SearchAll follows
+// pageInfo.hasNextPage across pages and concatenates every page's issues.
 func TestSearchAllPaginatesUntilExhausted(t *testing.T) {
 	fastTimings(t)
 	var calls int32
@@ -120,6 +128,8 @@ func TestSearchAllFailsOnTruncatedResults(t *testing.T) {
 	}
 }
 
+// TestGqlRetriesThenSucceeds verifies gql retries a transient failure and
+// returns success once a later attempt gets a 200.
 func TestGqlRetriesThenSucceeds(t *testing.T) {
 	fastTimings(t)
 	var calls int32
@@ -143,6 +153,8 @@ func TestGqlRetriesThenSucceeds(t *testing.T) {
 	}
 }
 
+// TestGqlGivesUpAfterMaxRetries verifies gql stops after gqlMaxRetries
+// attempts and returns the last error rather than retrying forever.
 func TestGqlGivesUpAfterMaxRetries(t *testing.T) {
 	fastTimings(t)
 	var calls int32
@@ -161,6 +173,8 @@ func TestGqlGivesUpAfterMaxRetries(t *testing.T) {
 	}
 }
 
+// TestGqlSurfacesGraphQLLevelErrors verifies a 200 OK response carrying a
+// GraphQL errors[] array surfaces that message rather than being ignored.
 func TestGqlSurfacesGraphQLLevelErrors(t *testing.T) {
 	fastTimings(t)
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -295,6 +309,9 @@ func TestGqlCapsRetryAfter(t *testing.T) {
 	}
 }
 
+// TestFetchIssueDetailParsesTimelineAndProjectStatus verifies
+// FetchIssueDetail paginates timelineItems into one ascending event list and
+// keeps the first page's project status.
 func TestFetchIssueDetailParsesTimelineAndProjectStatus(t *testing.T) {
 	fastTimings(t)
 	var reqBodies []map[string]any
@@ -413,6 +430,8 @@ func TestFetchIssueDetailPaginatesProjectItems(t *testing.T) {
 	}
 }
 
+// TestFetchIssueDetailReturnsNilForMissingIssue verifies a null issue in the
+// GraphQL response returns (nil, nil), not an error.
 func TestFetchIssueDetailReturnsNilForMissingIssue(t *testing.T) {
 	fastTimings(t)
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -429,6 +448,8 @@ func TestFetchIssueDetailReturnsNilForMissingIssue(t *testing.T) {
 	}
 }
 
+// TestFetchRepoIssuesDedupesOpenOverClosed verifies an issue matching both
+// the open and closed queries keeps its open copy, not the closed one.
 func TestFetchRepoIssuesDedupesOpenOverClosed(t *testing.T) {
 	fastTimings(t)
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

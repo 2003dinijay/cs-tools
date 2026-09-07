@@ -23,6 +23,8 @@ import (
 	"testing"
 )
 
+// validFixture returns a minimal AppConfig that passes Validate as-is, for
+// tests to mutate into an invalid shape.
 func validFixture() *AppConfig {
 	return &AppConfig{
 		Repos: []RepoEntry{
@@ -46,6 +48,8 @@ func validFixture() *AppConfig {
 	}
 }
 
+// hasIssueContaining reports whether err is a *ValidationError with at least
+// one issue string containing substr.
 func hasIssueContaining(err error, substr string) bool {
 	ve, ok := err.(*ValidationError)
 	if !ok {
@@ -59,6 +63,8 @@ func hasIssueContaining(err error, substr string) bool {
 	return false
 }
 
+// TestValidateAcceptsValidFixtureAndAppliesDefaults verifies a minimal valid
+// config passes and every omitted field receives its documented default.
 func TestValidateAcceptsValidFixtureAndAppliesDefaults(t *testing.T) {
 	cfg := validFixture()
 	if err := Validate(cfg); err != nil {
@@ -90,6 +96,8 @@ func TestValidateAcceptsValidFixtureAndAppliesDefaults(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsDuplicateRepoOwnerName verifies two repos with the same
+// owner/name fail validation with a "duplicate repo" issue.
 func TestValidateRejectsDuplicateRepoOwnerName(t *testing.T) {
 	cfg := validFixture()
 	cfg.Repos = append(cfg.Repos, cfg.Repos[0])
@@ -102,6 +110,8 @@ func TestValidateRejectsDuplicateRepoOwnerName(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsDuplicateGithubProjectID verifies two repos (even with
+// distinct owner/name) sharing one githubProjectId fail validation.
 func TestValidateRejectsDuplicateGithubProjectID(t *testing.T) {
 	cfg := validFixture()
 	dup := cfg.Repos[0]
@@ -117,6 +127,8 @@ func TestValidateRejectsDuplicateGithubProjectID(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsAliasToUnknownCanonical verifies an alias whose
+// canonical name isn't a declared status fails validation.
 func TestValidateRejectsAliasToUnknownCanonical(t *testing.T) {
 	cfg := validFixture()
 	cfg.Taxonomy.Aliases = append(cfg.Taxonomy.Aliases, AliasEntry{Alias: "Weird", Canonical: "Nonexistent Status"})
@@ -129,6 +141,8 @@ func TestValidateRejectsAliasToUnknownCanonical(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsBadCoverageValue verifies a budget entry naming a
+// coverage window outside SlaCoverage.valid's set fails validation.
 func TestValidateRejectsBadCoverageValue(t *testing.T) {
 	cfg := validFixture()
 	cfg.Budgets[0].Coverage = "9x5_utc"
@@ -137,6 +151,8 @@ func TestValidateRejectsBadCoverageValue(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsEmptyRepos verifies a config with no repos at all fails
+// validation.
 func TestValidateRejectsEmptyRepos(t *testing.T) {
 	cfg := validFixture()
 	cfg.Repos = nil

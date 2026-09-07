@@ -103,6 +103,8 @@ func isWithinCoverage(ms int64, coverage Coverage) bool {
 	return true
 }
 
+// statusEqual reports whether a and b are both nil or point to equal
+// strings.
 func statusEqual(a, b *string) bool {
 	if a == nil || b == nil {
 		return a == b

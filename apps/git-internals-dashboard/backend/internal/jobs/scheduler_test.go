@@ -30,6 +30,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// testPool connects to the docker-composed Postgres, skipping the test
+// (rather than failing) when it's unreachable.
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
@@ -61,6 +63,7 @@ var tickTestAppConfig = &config.AppConfig{
 	Settings: config.Settings{AtRiskThreshold: 0.75, RecomputeIntervalMinutes: 10, SyncOverlapMinutes: 15, SeedSnapshotDays: 90, SeedClosedLookbackDays: 90},
 }
 
+// strp returns a pointer to s, for building literal *string fixture fields.
 func strp(s string) *string { return &s }
 
 // seedIngestedIssue ingests one fixture issue via internal/ingest so the
@@ -216,6 +219,9 @@ func TestRunTickOnceWalksAllPagesViaKeysetPagination(t *testing.T) {
 	}
 }
 
+// TestRunTickOnceUpdatesIssueSlaAndSnapshot verifies a tick recomputes
+// issue_sla and upserts exactly one sla_snapshots row per day, idempotently
+// across repeated ticks on the same day.
 func TestRunTickOnceUpdatesIssueSlaAndSnapshot(t *testing.T) {
 	pool := testPool(t)
 	issueID, repositoryID := seedIngestedIssue(t, pool)

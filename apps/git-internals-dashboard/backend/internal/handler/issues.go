@@ -97,6 +97,8 @@ const issueListFrom = `
 	LEFT JOIN issue_sla s ON s.issue_id = i.id
 `
 
+// scanIssueRow scans one issueListSelect/issueListFrom result row into an
+// issueRow.
 func scanIssueRow(row pgx.Row) (issueRow, error) {
 	var r issueRow
 	err := row.Scan(
@@ -107,6 +109,8 @@ func scanIssueRow(row pgx.Row) (issueRow, error) {
 	return r, err
 }
 
+// toIssueWire maps a DB issueRow to its wire shape, including the nested SLA
+// projection only when issue_sla has a matching row.
 func toIssueWire(r issueRow) issueWire {
 	repo := r.Owner + "/" + r.Name
 	w := issueWire{
@@ -231,6 +235,8 @@ func (h *IssuesHandler) GetIssue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, issueDetailWire{issueWire: toIssueWire(row), Events: events})
 }
 
+// fetchIssueEvents returns issueID's status-change timeline, ascending, for
+// GetIssue's response.
 func fetchIssueEvents(ctx context.Context, pool *pgxpool.Pool, issueID int32) ([]eventWire, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT id, previous_status, status, occurred_at

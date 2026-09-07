@@ -32,6 +32,7 @@ const (
 	CategoryTransient   StatusCategory = "TRANSIENT"
 )
 
+// valid reports whether c is one of the four recognized categories.
 func (c StatusCategory) valid() bool {
 	switch c {
 	case CategoryProductSide, CategoryCSSide, CategoryOther, CategoryTransient:
@@ -49,6 +50,7 @@ const (
 	Coverage12x5Ist SlaCoverage = "12x5_ist"
 )
 
+// valid reports whether c is one of the two recognized coverage windows.
 func (c SlaCoverage) valid() bool {
 	switch c {
 	case Coverage24x7, Coverage12x5Ist:

@@ -31,6 +31,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// testPool connects to the docker-composed Postgres, skipping the test
+// (rather than failing) when it's unreachable.
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
@@ -73,6 +75,9 @@ var testAppConfig = &config.AppConfig{
 	},
 }
 
+// testPair returns a fixture Pair for issue #42, with a real timeline event
+// when withLeadingEvent is true (which also gives IngestIssue's leading
+// derived-event synthesis something to trigger on).
 func testPair(withLeadingEvent bool) Pair {
 	events := []github.StatusEvent{}
 	if withLeadingEvent {
@@ -147,6 +152,8 @@ func setupIngestFixture(t *testing.T, pool *pgxpool.Pool) Context {
 	}
 }
 
+// countRows runs a `SELECT count(*) ...`-shaped query and returns its
+// single int result.
 func countRows(t *testing.T, pool *pgxpool.Pool, query string, args ...any) int {
 	t.Helper()
 	var n int
@@ -156,6 +163,9 @@ func countRows(t *testing.T, pool *pgxpool.Pool, query string, args ...any) int 
 	return n
 }
 
+// TestIngestIssueIsIdempotentAcrossRepeatedRuns verifies re-ingesting the
+// same pair leaves exactly one issue row and dedupes its events instead of
+// inserting duplicates.
 func TestIngestIssueIsIdempotentAcrossRepeatedRuns(t *testing.T) {
 	pool := testPool(t)
 	ictx := setupIngestFixture(t, pool)
@@ -198,6 +208,8 @@ func TestIngestIssueIsIdempotentAcrossRepeatedRuns(t *testing.T) {
 	}
 }
 
+// TestIngestIssueCreatesLeadingDerivedEventWithStableDedupeKey verifies the
+// synthesized leading event's dedupe_key stays identical across re-ingests.
 func TestIngestIssueCreatesLeadingDerivedEventWithStableDedupeKey(t *testing.T) {
 	pool := testPool(t)
 	ictx := setupIngestFixture(t, pool)
@@ -261,6 +273,9 @@ func TestIngestIssueCreatesLeadingDerivedEventWithStableDedupeKey(t *testing.T) 
 	}
 }
 
+// TestIngestIssueDoesNotSynthesizeLeadingEventWhenTimelineEmpty verifies an
+// issue with no real timeline events gets no synthesized leading event
+// either.
 func TestIngestIssueDoesNotSynthesizeLeadingEventWhenTimelineEmpty(t *testing.T) {
 	pool := testPool(t)
 	ictx := setupIngestFixture(t, pool)

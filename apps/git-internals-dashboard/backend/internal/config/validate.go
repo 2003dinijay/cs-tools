@@ -29,6 +29,7 @@ type ValidationError struct {
 	Issues []string
 }
 
+// Error renders every collected issue as one multi-line message.
 func (e *ValidationError) Error() string {
 	return "invalid SLA config:\n  " + strings.Join(e.Issues, "\n  ")
 }

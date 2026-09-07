@@ -44,6 +44,9 @@ const dayMs = 24 * time.Hour
 
 var interIssueDelay = 150 * time.Millisecond // courtesy gap for the secondary rate limiter; overridable by tests
 
+// main runs one idempotent seed pass: reset, config sync, then ingest every
+// configured repo's issues (real GitHub data if GITHUB_TOKEN is set,
+// synthetic fixtures otherwise), backfilling daily sla_snapshots as it goes.
 func main() {
 	loadDotEnv(".env")
 
@@ -210,16 +213,20 @@ func gatherRepoIssues(ctx context.Context, client github.Client, now time.Time, 
 	return out, nil
 }
 
+// startOfUTCDay returns t truncated to 00:00:00.000 UTC on its own day.
 func startOfUTCDay(t time.Time) time.Time {
 	u := t.UTC()
 	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
 }
 
+// endOfUTCDay returns t's day at 23:59:59.999 UTC.
 func endOfUTCDay(t time.Time) time.Time {
 	u := t.UTC()
 	return time.Date(u.Year(), u.Month(), u.Day(), 23, 59, 59, 999_000_000, time.UTC)
 }
 
+// mustEnv returns the environment variable key's value, or calls fatal if it
+// is unset/empty.
 func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
@@ -228,6 +235,7 @@ func mustEnv(key string) string {
 	return v
 }
 
+// fatal logs msg and err to stderr and exits the process with status 1.
 func fatal(msg string, err error) {
 	fmt.Fprintf(os.Stderr, "[seed] FAILED: %s: %v\n", msg, err)
 	os.Exit(1)

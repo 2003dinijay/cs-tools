@@ -31,11 +31,13 @@ type committedResponseWriter struct {
 	committed bool
 }
 
+// WriteHeader marks the response committed before delegating.
 func (w *committedResponseWriter) WriteHeader(code int) {
 	w.committed = true
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// Write marks the response committed before delegating.
 func (w *committedResponseWriter) Write(b []byte) (int, error) {
 	w.committed = true
 	return w.ResponseWriter.Write(b)

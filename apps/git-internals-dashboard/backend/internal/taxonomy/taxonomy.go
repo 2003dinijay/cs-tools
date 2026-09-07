@@ -36,6 +36,7 @@ func SortedStatusDefs(cfg *config.AppConfig) []config.StatusEntry {
 	return statuses
 }
 
+// namesByCategory returns the sortOrder-ascending status names in category.
 func namesByCategory(cfg *config.AppConfig, category config.StatusCategory) []string {
 	names := make([]string, 0)
 	for _, s := range SortedStatusDefs(cfg) {

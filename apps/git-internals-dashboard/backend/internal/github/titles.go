@@ -51,6 +51,7 @@ type TitleRef struct {
 	Number int
 }
 
+// RefKey is r's map key in FetchTitles' result — "owner/name#number".
 func RefKey(r TitleRef) string {
 	return fmt.Sprintf("%s/%s#%d", r.Owner, r.Name, r.Number)
 }
@@ -98,6 +99,7 @@ func BuildTitlesQuery(refs []TitleRef) string {
 	return fmt.Sprintf("query IssueTitles {\n    %s\n  }", strings.Join(parts, "\n    "))
 }
 
+// jsonString renders s as a double-quoted, escaped GraphQL string literal.
 func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)

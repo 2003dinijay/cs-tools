@@ -144,6 +144,9 @@ func (h *TitlesHandler) PostTitles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, titlesResponseBody{Titles: result})
 }
 
+// resolveRefs looks up each of ids' (owner, name, github_number) from our
+// own DB, scoped to enabled repos — never trusting client-supplied identity
+// for the GitHub request FetchTitles makes next.
 func (h *TitlesHandler) resolveRefs(ctx context.Context, ids []int) ([]ghclient.TitleRef, error) {
 	rows, err := h.pool.Query(ctx, `
 		SELECT i.id, i.github_number, r.owner, r.name

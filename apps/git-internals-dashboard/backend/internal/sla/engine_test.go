@@ -26,14 +26,18 @@ import (
 
 var t0 = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
+// at returns the instant h hours after the fixed test epoch t0.
 func at(h int) time.Time {
 	return t0.Add(time.Duration(h) * time.Hour)
 }
 
+// strp returns a pointer to s, for building literal *string fixture values.
 func strp(s string) *string { return &s }
 
+// timep returns a pointer to t.
 func timep(t time.Time) *time.Time { return &t }
 
+// ev builds a StatusEvent for status occurring at at(h).
 func ev(status string, h int) StatusEvent {
 	return StatusEvent{Status: strp(status), OccurredAt: at(h)}
 }
@@ -49,6 +53,7 @@ var testCfg = Config{
 	AtRiskThreshold: 0.75,
 }
 
+// closeTo fails the test with label unless got is within 1e-5 of want.
 func closeTo(t *testing.T, label string, got, want float64) {
 	t.Helper()
 	if math.Abs(got-want) > 1e-5 {
@@ -56,6 +61,8 @@ func closeTo(t *testing.T, label string, got, want float64) {
 	}
 }
 
+// TestComputeSlaReturnsNoSlaWhenPriorityHasNoBudget verifies a priority
+// absent from Config.Budgets yields NO_SLA with a nil budget.
 func TestComputeSlaReturnsNoSlaWhenPriorityHasNoBudget(t *testing.T) {
 	r := ComputeSla(nil, []StatusEvent{ev("Open", 0)}, strp("Open"), testCfg, at(10))
 	if r.SlaState != NoSla {
@@ -66,6 +73,8 @@ func TestComputeSlaReturnsNoSlaWhenPriorityHasNoBudget(t *testing.T) {
 	}
 }
 
+// TestComputeSlaAccruesOnlyProductSideIntervalsAndPausesOnCsSide verifies
+// only product-side intervals accrue budget; a CS-side interval pauses it.
 func TestComputeSlaAccruesOnlyProductSideIntervalsAndPausesOnCsSide(t *testing.T) {
 	// Open 0-4h (accrues), WOC 4-10h (pauses), In Progress 10-14h (accrues) = 8h
 	events := []StatusEvent{ev("Open", 0), ev("WOC", 4), ev("In Progress", 10)}
@@ -79,6 +88,9 @@ func TestComputeSlaAccruesOnlyProductSideIntervalsAndPausesOnCsSide(t *testing.T
 	}
 }
 
+// TestComputeSlaOpenIntervalAccruesToNowOnlyWhenCurrentStatusIsProductSide
+// verifies the open (still-running) interval stops accruing once the
+// current status is CS-side.
 func TestComputeSlaOpenIntervalAccruesToNowOnlyWhenCurrentStatusIsProductSide(t *testing.T) {
 	paused := ComputeSla(strp("High(P2)"), []StatusEvent{ev("Open", 0), ev("WOC", 5)}, strp("WOC"), testCfg, at(100))
 	closeTo(t, "consumedHours", paused.ConsumedHours, 5)
@@ -87,6 +99,8 @@ func TestComputeSlaOpenIntervalAccruesToNowOnlyWhenCurrentStatusIsProductSide(t 
 	}
 }
 
+// TestComputeSlaCrossesAtRiskAt75AndViolatedAt100 verifies the SLA state
+// crosses to AT_RISK at the configured threshold and VIOLATED at 100%.
 func TestComputeSlaCrossesAtRiskAt75AndViolatedAt100(t *testing.T) {
 	atRisk := ComputeSla(strp("High(P2)"), []StatusEvent{ev("Open", 0)}, strp("Open"), testCfg, at(18)) // 18/24
 	if atRisk.SlaState != AtRisk {
@@ -98,6 +112,8 @@ func TestComputeSlaCrossesAtRiskAt75AndViolatedAt100(t *testing.T) {
 	}
 }
 
+// TestComputeSlaNeverResetsOnReopen verifies consumed time keeps
+// accumulating across a reopen rather than resetting to zero.
 func TestComputeSlaNeverResetsOnReopen(t *testing.T) {
 	// Open 0-4h, WOC 4-28h, Reopened 28h..52h => 4 + 24 = 28h > 24h budget
 	events := []StatusEvent{ev("Open", 0), ev("WOC", 4), ev("Reopened", 28)}
@@ -108,6 +124,9 @@ func TestComputeSlaNeverResetsOnReopen(t *testing.T) {
 	}
 }
 
+// TestComputeSlaTerminalStatusWinsRegardlessOfPctConsumed verifies a
+// terminal current status forces TERMINAL and slaRunning=false regardless of
+// how much budget was consumed.
 func TestComputeSlaTerminalStatusWinsRegardlessOfPctConsumed(t *testing.T) {
 	r := ComputeSla(strp("High(P2)"), []StatusEvent{ev("Open", 0), ev("Resolved", 30)}, strp("Resolved"), testCfg, at(40))
 	if r.SlaState != Terminal {
@@ -118,6 +137,8 @@ func TestComputeSlaTerminalStatusWinsRegardlessOfPctConsumed(t *testing.T) {
 	}
 }
 
+// TestComputeSlaIgnoresEventsAfterNow verifies an event later than `now`
+// (a historical snapshot replay) is excluded from accrual.
 func TestComputeSlaIgnoresEventsAfterNow(t *testing.T) {
 	events := []StatusEvent{ev("Open", 0), ev("Resolved", 50)}
 	r := ComputeSla(strp("High(P2)"), events, StatusAsOf(events, at(10)), testCfg, at(10))
@@ -141,6 +162,9 @@ var testCfg12x5 = Config{
 
 var mon0105_09ist = time.Date(2026, 1, 5, 3, 30, 0, 0, time.UTC) // Mon 09:00 IST
 
+// TestComputeSla12x5AccruesOnlyInsideWindow verifies a 12x5 IST-covered
+// priority only accrues the 09:00-21:00 IST business-hours portion of a
+// 24-hour span.
 func TestComputeSla12x5AccruesOnlyInsideWindow(t *testing.T) {
 	// Mon 09:00 IST -> Tue 09:00 IST: only Mon 09-21 counts = 12h.
 	open := StatusEvent{Status: strp("Open"), OccurredAt: mon0105_09ist}
@@ -148,6 +172,8 @@ func TestComputeSla12x5AccruesOnlyInsideWindow(t *testing.T) {
 	closeTo(t, "consumedHours", r.ConsumedHours, 12)
 }
 
+// TestComputeSla12x5BurnsZeroBudgetAcrossWeekend verifies the weekend
+// between Friday's window close and Monday's window open accrues nothing.
 func TestComputeSla12x5BurnsZeroBudgetAcrossWeekend(t *testing.T) {
 	fri21 := time.Date(2026, 1, 9, 15, 30, 0, 0, time.UTC) // Fri 21:00 IST (window just closed)
 	mon08 := time.Date(2026, 1, 12, 2, 30, 0, 0, time.UTC) // Mon 08:00 IST (before window opens)
@@ -155,6 +181,8 @@ func TestComputeSla12x5BurnsZeroBudgetAcrossWeekend(t *testing.T) {
 	closeTo(t, "consumedHours", r.ConsumedHours, 0)
 }
 
+// TestComputeSla12x5ClipsPartialWindow verifies an interval straddling the
+// business-hours boundary only counts its portion inside the window.
 func TestComputeSla12x5ClipsPartialWindow(t *testing.T) {
 	mon20 := time.Date(2026, 1, 5, 14, 30, 0, 0, time.UTC) // Mon 20:00 IST
 	mon22 := time.Date(2026, 1, 5, 16, 30, 0, 0, time.UTC) // Mon 22:00 IST
@@ -163,6 +191,8 @@ func TestComputeSla12x5ClipsPartialWindow(t *testing.T) {
 	closeTo(t, "consumedHours", r.ConsumedHours, 1)
 }
 
+// TestComputeSla12x5SlaRunningFalseOutsideWindow verifies slaRunning is
+// false when `now` falls outside the coverage window, even mid-accrual.
 func TestComputeSla12x5SlaRunningFalseOutsideWindow(t *testing.T) {
 	sat := time.Date(2026, 1, 10, 6, 0, 0, 0, time.UTC) // Saturday
 	r := ComputeSla(strp("High(P2)"), []StatusEvent{{Status: strp("Open"), OccurredAt: mon0105_09ist}}, strp("Open"), testCfg12x5, sat)
@@ -171,6 +201,8 @@ func TestComputeSla12x5SlaRunningFalseOutsideWindow(t *testing.T) {
 	}
 }
 
+// TestComputeSlaFallsBackTo24x7WhenNoCoverageEntry verifies a priority with
+// no Coverage map entry accrues wall-clock time with no business-hours mask.
 func TestComputeSlaFallsBackTo24x7WhenNoCoverageEntry(t *testing.T) {
 	// testCfg has no coverage map at all for High(P2).
 	open := StatusEvent{Status: strp("Open"), OccurredAt: mon0105_09ist}
@@ -180,6 +212,9 @@ func TestComputeSlaFallsBackTo24x7WhenNoCoverageEntry(t *testing.T) {
 
 // --- statusAsOf ---
 
+// TestStatusAsOfReturnsStatusActiveAtInstant verifies StatusAsOf returns nil
+// before the first event and each event's status thereafter, holding until
+// the next transition.
 func TestStatusAsOfReturnsStatusActiveAtInstant(t *testing.T) {
 	events := []StatusEvent{ev("Open", 5), ev("WOC", 10)}
 	if got := StatusAsOf(events, at(1)); got != nil {
@@ -198,6 +233,9 @@ func TestStatusAsOfReturnsStatusActiveAtInstant(t *testing.T) {
 
 // --- withCurrentStatusBoundary ---
 
+// TestWithCurrentStatusBoundaryDivergenceSplitsFinalInterval verifies a
+// current status that diverges from the last event appends a boundary event
+// at currentStatusAt, splitting the final interval correctly for accrual.
 func TestWithCurrentStatusBoundaryDivergenceSplitsFinalInterval(t *testing.T) {
 	events := []StatusEvent{ev("Open", 0), ev("WOC", 4)} // last event WOC@T4
 	out := WithCurrentStatusBoundary(events, strp("In Progress"), timep(at(10)), at(14))
@@ -216,6 +254,9 @@ func TestWithCurrentStatusBoundaryDivergenceSplitsFinalInterval(t *testing.T) {
 	}
 }
 
+// TestWithCurrentStatusBoundaryEmptyTimelineAccruesFromCurrentStatusAt
+// verifies an empty timeline still produces one boundary event at
+// currentStatusAt, so accrual starts from there.
 func TestWithCurrentStatusBoundaryEmptyTimelineAccruesFromCurrentStatusAt(t *testing.T) {
 	out := WithCurrentStatusBoundary([]StatusEvent{}, strp("Open"), timep(at(0)), at(5))
 	if len(out) != 1 || out[0].Status == nil || *out[0].Status != "Open" || !out[0].OccurredAt.Equal(at(0)) {
@@ -225,6 +266,9 @@ func TestWithCurrentStatusBoundaryEmptyTimelineAccruesFromCurrentStatusAt(t *tes
 	closeTo(t, "consumedHours", r.ConsumedHours, 5)
 }
 
+// TestWithCurrentStatusBoundaryClampsToLastEventWhenCurrentStatusAtIsEarlier
+// verifies a currentStatusAt earlier than the last event clamps the boundary
+// to the last event's time instead of going backwards.
 func TestWithCurrentStatusBoundaryClampsToLastEventWhenCurrentStatusAtIsEarlier(t *testing.T) {
 	events := []StatusEvent{ev("Open", 0), ev("WOC", 10)}
 	out := WithCurrentStatusBoundary(events, strp("In Progress"), timep(at(3)), at(20))
@@ -242,6 +286,8 @@ func TestWithCurrentStatusBoundaryClampsToLastEventWhenCurrentStatusAtIsEarlier(
 	}
 }
 
+// TestWithCurrentStatusBoundaryAgreementIsNoOp verifies a current status
+// that already agrees with the last event appends nothing.
 func TestWithCurrentStatusBoundaryAgreementIsNoOp(t *testing.T) {
 	events := []StatusEvent{ev("Open", 0), ev("In Progress", 5)}
 	out := WithCurrentStatusBoundary(events, strp("In Progress"), timep(at(5)), at(20))

@@ -29,8 +29,11 @@ var normalizeAliasesFixture = []config.AliasEntry{
 	{Alias: "On-Hold", Canonical: "On Hold"},
 }
 
+// strp returns a pointer to s, for building literal *string fixture values.
 func strp(s string) *string { return &s }
 
+// TestBuildStatusNormalizerMapsAliasToCanonicalName verifies a configured
+// alias normalizes to its canonical status name.
 func TestBuildStatusNormalizerMapsAliasToCanonicalName(t *testing.T) {
 	normalize := BuildStatusNormalizer(normalizeAliasesFixture)
 	if got := normalize(strp("Re-Opened")); got == nil || *got != "Reopened" {
@@ -41,6 +44,8 @@ func TestBuildStatusNormalizerMapsAliasToCanonicalName(t *testing.T) {
 	}
 }
 
+// TestBuildStatusNormalizerTrimsWhitespaceAroundNonAliasStatus verifies a
+// non-alias status still gets its surrounding whitespace trimmed.
 func TestBuildStatusNormalizerTrimsWhitespaceAroundNonAliasStatus(t *testing.T) {
 	normalize := BuildStatusNormalizer(normalizeAliasesFixture)
 	if got := normalize(strp("  Open  ")); got == nil || *got != "Open" {
@@ -48,6 +53,7 @@ func TestBuildStatusNormalizerTrimsWhitespaceAroundNonAliasStatus(t *testing.T) 
 	}
 }
 
+// TestBuildStatusNormalizerPassesNilThrough verifies a nil status stays nil.
 func TestBuildStatusNormalizerPassesNilThrough(t *testing.T) {
 	normalize := BuildStatusNormalizer(normalizeAliasesFixture)
 	if got := normalize(nil); got != nil {
@@ -55,6 +61,8 @@ func TestBuildStatusNormalizerPassesNilThrough(t *testing.T) {
 	}
 }
 
+// TestBuildStatusNormalizerPassesEmptyStringThroughUnchanged verifies an
+// empty (non-nil) status stays the empty string, not nil.
 func TestBuildStatusNormalizerPassesEmptyStringThroughUnchanged(t *testing.T) {
 	normalize := BuildStatusNormalizer(normalizeAliasesFixture)
 	if got := normalize(strp("")); got == nil || *got != "" {
@@ -62,6 +70,8 @@ func TestBuildStatusNormalizerPassesEmptyStringThroughUnchanged(t *testing.T) {
 	}
 }
 
+// TestBuildStatusNormalizerPassesUnrecognizedStatusThrough verifies a status
+// with no matching alias passes through unchanged.
 func TestBuildStatusNormalizerPassesUnrecognizedStatusThrough(t *testing.T) {
 	normalize := BuildStatusNormalizer(normalizeAliasesFixture)
 	if got := normalize(strp("Open")); got == nil || *got != "Open" {

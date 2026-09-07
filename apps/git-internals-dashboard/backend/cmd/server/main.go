@@ -39,6 +39,8 @@ import (
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/middleware"
 )
 
+// main wires up config, the DB pool, config→DB sync, the job lock/recompute
+// scheduler, and the HTTP handler chain, then serves until a signal arrives.
 func main() {
 	loadDotEnv(".env")
 	configureLogger()
@@ -231,6 +233,8 @@ func mustEnv(key string) string {
 	return v
 }
 
+// splitComma splits s on commas into trimmed, non-empty entries, or nil for
+// an empty/whitespace-only string.
 func splitComma(s string) []string {
 	if s == "" {
 		return nil

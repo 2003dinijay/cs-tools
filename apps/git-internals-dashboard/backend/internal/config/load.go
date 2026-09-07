@@ -39,6 +39,8 @@ type rawSettings struct {
 	SeedClosedLookbackDays   *int     `yaml:"seedClosedLookbackDays"`
 }
 
+// resolve builds a Settings from r, substituting defaultSettings' value for
+// each field r leaves nil (absent from the YAML).
 func (r rawSettings) resolve() Settings {
 	s := defaultSettings()
 	if r.AtRiskThreshold != nil {

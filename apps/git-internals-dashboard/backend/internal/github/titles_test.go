@@ -25,6 +25,9 @@ import (
 	"testing"
 )
 
+// TestBuildTitlesQueryGroupsByRepoWithAliasSafeNamesAndEscapedStrings
+// verifies refs across repos are grouped under distinct r<i>/n<number>
+// aliases with owner/name escaped as GraphQL string literals.
 func TestBuildTitlesQueryGroupsByRepoWithAliasSafeNamesAndEscapedStrings(t *testing.T) {
 	q := BuildTitlesQuery([]TitleRef{
 		{ID: 1, Owner: "wso2-enterprise", Name: "wso2-iam-internal", Number: 7366},
@@ -44,6 +47,9 @@ func TestBuildTitlesQueryGroupsByRepoWithAliasSafeNamesAndEscapedStrings(t *test
 	}
 }
 
+// TestFetchTitlesReturnsEmptyMapWithNoTokenOrNoRefs verifies FetchTitles
+// short-circuits to an empty map, nil error for a blank token or no refs,
+// without making a network call.
 func TestFetchTitlesReturnsEmptyMapWithNoTokenOrNoRefs(t *testing.T) {
 	out, err := FetchTitles(context.Background(), "", []TitleRef{{ID: 1, Owner: "o", Name: "n", Number: 1}})
 	if err != nil || len(out) != 0 {
@@ -56,6 +62,8 @@ func TestFetchTitlesReturnsEmptyMapWithNoTokenOrNoRefs(t *testing.T) {
 	}
 }
 
+// newTitlesTestServer points graphQLPath at a local httptest.Server running
+// handler for the duration of t, restoring it on cleanup.
 func newTitlesTestServer(t *testing.T, handler http.HandlerFunc) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
@@ -65,6 +73,9 @@ func newTitlesTestServer(t *testing.T, handler http.HandlerFunc) {
 	t.Cleanup(func() { graphQLPath = orig })
 }
 
+// TestFetchTitlesResolvesPerIssueNullsAndTitles verifies a resolved title
+// comes back non-nil while a deleted/missing issue resolves to a nil title,
+// without failing the whole batch.
 func TestFetchTitlesResolvesPerIssueNullsAndTitles(t *testing.T) {
 	newTitlesTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -86,6 +97,9 @@ func TestFetchTitlesResolvesPerIssueNullsAndTitles(t *testing.T) {
 	}
 }
 
+// TestFetchTitlesWholeBatchFailureOnNullData verifies an HTTP 200 with
+// data: null (e.g. missing scope) fails the whole batch with that GraphQL
+// error message, rather than caching per-issue nulls.
 func TestFetchTitlesWholeBatchFailureOnNullData(t *testing.T) {
 	newTitlesTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -98,6 +112,8 @@ func TestFetchTitlesWholeBatchFailureOnNullData(t *testing.T) {
 	}
 }
 
+// TestFetchTitlesHTTPErrorFails verifies a non-200 response returns an
+// error instead of a partial or empty result.
 func TestFetchTitlesHTTPErrorFails(t *testing.T) {
 	newTitlesTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

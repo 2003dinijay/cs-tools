@@ -27,6 +27,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// testPool connects to the docker-composed Postgres, skipping the test
+// (rather than failing) when it's unreachable.
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
@@ -156,6 +158,8 @@ func seedQuietRepoFixture(t *testing.T, pool *pgxpool.Pool) (repositoryID int32)
 	return repositoryID
 }
 
+// findProject returns the project entry matching repo ("owner/name"), or
+// nil if absent.
 func findProject(projects []Project, repo string) *Project {
 	for i := range projects {
 		if projects[i].Repo == repo {
@@ -165,6 +169,9 @@ func findProject(projects []Project, repo string) *Project {
 	return nil
 }
 
+// TestBuildOverviewHeroCountsAndSpark verifies the hero section's
+// violated/atRisk/cs/productSide counts match the seeded fixture when
+// scoped to one repo.
 func TestBuildOverviewHeroCountsAndSpark(t *testing.T) {
 	pool := testPool(t)
 	seedMetricsFixture(t, pool)
@@ -199,6 +206,8 @@ func TestBuildOverviewHeroCountsAndSpark(t *testing.T) {
 	}
 }
 
+// TestBuildOverviewProjectsCard verifies the fixture repo's Projects card
+// reports the expected violated/atRisk/cs/onTrack/tracked counts.
 func TestBuildOverviewProjectsCard(t *testing.T) {
 	pool := testPool(t)
 	seedMetricsFixture(t, pool)
@@ -265,6 +274,8 @@ func TestBuildOverviewProjectsIncludesRepoWithNoOpenIssues(t *testing.T) {
 	}
 }
 
+// TestBuildOverviewPrioritiesAndMatrix verifies all 3 canonical priority
+// tiers are present, correctly ranked, and the matrix totals match.
 func TestBuildOverviewPrioritiesAndMatrix(t *testing.T) {
 	pool := testPool(t)
 	seedMetricsFixture(t, pool)
@@ -303,6 +314,8 @@ func TestBuildOverviewPrioritiesAndMatrix(t *testing.T) {
 	}
 }
 
+// TestBuildOverviewPriorityFilterNarrowsHero verifies a priority filter
+// narrows the hero counts to just that priority tier.
 func TestBuildOverviewPriorityFilterNarrowsHero(t *testing.T) {
 	pool := testPool(t)
 	seedMetricsFixture(t, pool)

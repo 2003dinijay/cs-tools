@@ -23,6 +23,8 @@ import (
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/config"
 )
 
+// twoRepoConfig returns a minimal AppConfig with two distinct repos, for
+// SyncConfigToDB fixtures.
 func twoRepoConfig() *config.AppConfig {
 	return &config.AppConfig{
 		Repos: []config.RepoEntry{
@@ -32,6 +34,8 @@ func twoRepoConfig() *config.AppConfig {
 	}
 }
 
+// TestSyncConfigToDBCreatesProjectsAndRepos verifies a first sync creates one
+// enabled project and repository row per configured repo.
 func TestSyncConfigToDBCreatesProjectsAndRepos(t *testing.T) {
 	pool := testPool(t)
 	truncateAll(t, pool)
@@ -63,6 +67,8 @@ func TestSyncConfigToDBCreatesProjectsAndRepos(t *testing.T) {
 	}
 }
 
+// TestSyncConfigToDBIsIdempotent verifies running the same sync twice
+// leaves exactly one repository row per repo, not a duplicate.
 func TestSyncConfigToDBIsIdempotent(t *testing.T) {
 	pool := testPool(t)
 	truncateAll(t, pool)
@@ -85,6 +91,8 @@ func TestSyncConfigToDBIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestSyncConfigToDBDisablesRemovedRepos verifies a repo dropped from config
+// gets disabled (not deleted) on the next sync, preserving its history.
 func TestSyncConfigToDBDisablesRemovedRepos(t *testing.T) {
 	pool := testPool(t)
 	truncateAll(t, pool)
@@ -122,6 +130,8 @@ func TestSyncConfigToDBDisablesRemovedRepos(t *testing.T) {
 	}
 }
 
+// TestSyncConfigToDBNeverTouchesLastSyncedAt verifies a config re-sync
+// leaves an existing repo's last_synced_at watermark untouched.
 func TestSyncConfigToDBNeverTouchesLastSyncedAt(t *testing.T) {
 	pool := testPool(t)
 	truncateAll(t, pool)

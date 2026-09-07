@@ -128,12 +128,15 @@ func (l *Lock) Running() bool {
 	return l.running
 }
 
+// clearRunning releases the in-process fast-path flag.
 func (l *Lock) clearRunning() {
 	l.mu.Lock()
 	l.running = false
 	l.mu.Unlock()
 }
 
+// getConn returns the dedicated advisory-lock connection, connecting lazily
+// on first use (or after a previous connection was dropped).
 func (l *Lock) getConn(ctx context.Context) (*pgx.Conn, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -148,6 +151,8 @@ func (l *Lock) getConn(ctx context.Context) (*pgx.Conn, error) {
 	return conn, nil
 }
 
+// dropConn closes and clears the dedicated connection, so the next acquire
+// reconnects instead of reusing a possibly-broken session.
 func (l *Lock) dropConn(ctx context.Context) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

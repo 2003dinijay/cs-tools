@@ -22,6 +22,8 @@ import (
 	"testing"
 )
 
+// TestCORSPreflightDoesNotReachHandler verifies an OPTIONS preflight from an
+// allowed origin gets its CORS headers without reaching the wrapped handler.
 func TestCORSPreflightDoesNotReachHandler(t *testing.T) {
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +54,8 @@ func TestCORSPreflightDoesNotReachHandler(t *testing.T) {
 	}
 }
 
+// TestCORSRejectsDisallowedOrigin verifies a request from an origin not on
+// the allow list gets no Access-Control-Allow-Origin header.
 func TestCORSRejectsDisallowedOrigin(t *testing.T) {
 	handler := CORS([]string{"https://frontend.example.com"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -96,6 +100,9 @@ func TestCORSNeverSetsAllowCredentials(t *testing.T) {
 	}
 }
 
+// TestCORSActualRequestPassesThrough verifies CORS never blocks a non-OPTIONS
+// request from reaching the wrapped handler — it only ever sets response
+// headers, since enforcement is the browser's job.
 func TestCORSActualRequestPassesThrough(t *testing.T) {
 	// CORS only ever governs the Access-Control-Allow-Origin response
 	// header — it never blocks the request from reaching the wrapped

@@ -29,6 +29,7 @@ type responseWriter struct {
 	status int
 }
 
+// WriteHeader records code before delegating, so Logger can report it.
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)

@@ -26,6 +26,8 @@ import (
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/db"
 )
 
+// testDatabaseURL returns DATABASE_URL, or the local docker-composed
+// Postgres's default connection string if unset.
 func testDatabaseURL(t *testing.T) string {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")

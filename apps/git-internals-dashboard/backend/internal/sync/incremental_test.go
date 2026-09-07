@@ -40,6 +40,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// testPool connects to the docker-composed Postgres, skipping the test
+// (rather than failing) when it's unreachable.
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
@@ -57,6 +59,7 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// strp returns a pointer to s, for building literal *string fixture fields.
 func strp(s string) *string { return &s }
 
 var testAppConfig = &config.AppConfig{
@@ -79,14 +82,17 @@ type stubClient struct {
 	detail func(ctx context.Context, owner, name string, number int) (*github.IssueDetail, error)
 }
 
+// SearchAll delegates to s.search.
 func (s *stubClient) SearchAll(ctx context.Context, q string) ([]github.IssueNode, error) {
 	return s.search(ctx, q)
 }
 
+// FetchIssueDetail delegates to s.detail.
 func (s *stubClient) FetchIssueDetail(ctx context.Context, owner, name string, number int) (*github.IssueDetail, error) {
 	return s.detail(ctx, owner, name, number)
 }
 
+// fixtureNode returns a minimal open IssueNode for number.
 func fixtureNode(number int) github.IssueNode {
 	return github.IssueNode{
 		Number: number, State: "OPEN",
@@ -96,6 +102,8 @@ func fixtureNode(number int) github.IssueNode {
 	}
 }
 
+// fixtureDetail returns a minimal IssueDetail for number with one status
+// event and current status on projectID.
 func fixtureDetail(number int, projectID string) *github.IssueDetail {
 	return &github.IssueDetail{
 		Number: number,
@@ -137,6 +145,8 @@ func makeRepo(t *testing.T, pool *pgxpool.Pool, name, githubProjectID string, la
 
 var sinceRe = regexp.MustCompile(`updated:>=(.+)$`)
 
+// TestRunComputesWatermarkFromLastSyncedAtMinusOverlap verifies the search
+// query's updated:>= clause is last_synced_at minus syncOverlapMinutes.
 func TestRunComputesWatermarkFromLastSyncedAtMinusOverlap(t *testing.T) {
 	pool := testPool(t)
 	lastSyncedAt := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
@@ -173,6 +183,8 @@ func TestRunComputesWatermarkFromLastSyncedAtMinusOverlap(t *testing.T) {
 	}
 }
 
+// TestRunFallsBackToLookbackWindowWhenLastSyncedAtIsNil verifies a repo with
+// no prior watermark searches from seedClosedLookbackDays ago instead.
 func TestRunFallsBackToLookbackWindowWhenLastSyncedAtIsNil(t *testing.T) {
 	pool := testPool(t)
 	makeRepo(t, pool, "lookback-repo", "PVT_lookback", nil)
@@ -212,6 +224,9 @@ func TestRunFallsBackToLookbackWindowWhenLastSyncedAtIsNil(t *testing.T) {
 	}
 }
 
+// TestRunIsolatesPerRepoFailures verifies one repo's search failure leaves
+// its watermark untouched and records a sanitized sync_runs error, while a
+// second, healthy repo still succeeds in the same Run.
 func TestRunIsolatesPerRepoFailures(t *testing.T) {
 	pool := testPool(t)
 	repoAID, _ := makeRepo(t, pool, "fail-repo", "PVT_fail", nil)
@@ -290,6 +305,8 @@ func TestRunIsolatesPerRepoFailures(t *testing.T) {
 	}
 }
 
+// TestRunIsIdempotentAcrossRepeatedRuns verifies a second Run over the same
+// data inserts zero new events (dedupe) after the first run's real insert.
 func TestRunIsIdempotentAcrossRepeatedRuns(t *testing.T) {
 	pool := testPool(t)
 	makeRepo(t, pool, "idem-repo", "PVT_idem", nil)
@@ -326,6 +343,8 @@ func TestRunIsIdempotentAcrossRepeatedRuns(t *testing.T) {
 	}
 }
 
+// findRepoResult returns s's RepoResult for repo, or the zero value if
+// absent.
 func findRepoResult(s Summary, repo string) RepoResult {
 	for _, r := range s.Repos {
 		if r.Repo == repo {

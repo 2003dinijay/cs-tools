@@ -172,6 +172,8 @@ func BuildTimeseries(ctx context.Context, pool *pgxpool.Pool, cfg *config.AppCon
 	return Timeseries{Window: days, Metric: metric, GroupBy: groupBy, Dates: dates, Series: series}, nil
 }
 
+// sortSeriesByRank orders series P1 -> P2 -> P3 -> P4, with any
+// unrecognized label (e.g. "all") sorted last.
 func sortSeriesByRank(series []Series) {
 	rank := func(label string) int {
 		if r, ok := priorityRank[label]; ok {

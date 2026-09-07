@@ -84,6 +84,7 @@ func (c *TTLCache[K, V]) Set(key K, value V) {
 	c.values[key] = cacheEntry[V]{value: value, expiresAt: time.Now().Add(c.ttl)}
 }
 
+// deleteLocked removes key from both values and order. Caller must hold c.mu.
 func (c *TTLCache[K, V]) deleteLocked(key K) {
 	delete(c.values, key)
 	for i, k := range c.order {

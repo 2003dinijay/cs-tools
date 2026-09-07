@@ -46,6 +46,8 @@ type APIError struct {
 	wrapped    error         // original error (network/decode), nil for HTTP-status/GraphQL kinds
 }
 
+// Error returns the full-detail message (server-side logging only); falls
+// back to Public() when no detail was captured.
 func (e *APIError) Error() string {
 	if e.detail == "" {
 		return e.Public()

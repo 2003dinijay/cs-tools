@@ -22,6 +22,8 @@ import (
 	"time"
 )
 
+// TestTTLCacheGetMissReturnsFalse verifies Get on an empty cache reports a
+// miss.
 func TestTTLCacheGetMissReturnsFalse(t *testing.T) {
 	c := NewTTLCache[string, int](time.Minute, 10)
 	if _, ok := c.Get("x"); ok {
@@ -29,6 +31,7 @@ func TestTTLCacheGetMissReturnsFalse(t *testing.T) {
 	}
 }
 
+// TestTTLCacheSetThenGetHits verifies a value just Set is returned by Get.
 func TestTTLCacheSetThenGetHits(t *testing.T) {
 	c := NewTTLCache[string, int](time.Minute, 10)
 	c.Set("x", 42)
@@ -38,6 +41,8 @@ func TestTTLCacheSetThenGetHits(t *testing.T) {
 	}
 }
 
+// TestTTLCacheExpiresAfterTTL verifies an entry is no longer retrievable
+// once its TTL has elapsed.
 func TestTTLCacheExpiresAfterTTL(t *testing.T) {
 	c := NewTTLCache[string, int](10*time.Millisecond, 10)
 	c.Set("x", 1)
@@ -47,6 +52,8 @@ func TestTTLCacheExpiresAfterTTL(t *testing.T) {
 	}
 }
 
+// TestTTLCacheEvictsOldestWhenOverCapacity verifies inserting past maxEntries
+// evicts the oldest-inserted entry, keeping the rest.
 func TestTTLCacheEvictsOldestWhenOverCapacity(t *testing.T) {
 	c := NewTTLCache[string, int](time.Minute, 2)
 	c.Set("a", 1)
@@ -64,6 +71,8 @@ func TestTTLCacheEvictsOldestWhenOverCapacity(t *testing.T) {
 	}
 }
 
+// TestTTLCacheUpdatingExistingKeyDoesNotEvict verifies re-Setting an
+// existing key updates its value in place without triggering an eviction.
 func TestTTLCacheUpdatingExistingKeyDoesNotEvict(t *testing.T) {
 	c := NewTTLCache[string, int](time.Minute, 2)
 	c.Set("a", 1)
@@ -78,6 +87,8 @@ func TestTTLCacheUpdatingExistingKeyDoesNotEvict(t *testing.T) {
 	}
 }
 
+// TestTTLCacheGetOrSetComputesOnceOnHit verifies compute runs once and its
+// result is served from cache on a second GetOrSet for the same key.
 func TestTTLCacheGetOrSetComputesOnceOnHit(t *testing.T) {
 	c := NewTTLCache[string, int](time.Minute, 10)
 	calls := 0
@@ -99,6 +110,8 @@ func TestTTLCacheGetOrSetComputesOnceOnHit(t *testing.T) {
 	}
 }
 
+// TestTTLCacheGetOrSetPropagatesComputeError verifies a failed compute's
+// error propagates and nothing gets cached for that key.
 func TestTTLCacheGetOrSetPropagatesComputeError(t *testing.T) {
 	c := NewTTLCache[string, int](time.Minute, 10)
 	wantErr := errors.New("boom")

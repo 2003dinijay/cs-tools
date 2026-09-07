@@ -23,6 +23,8 @@ import (
 	"testing"
 )
 
+// TestRecoveryConvertsPanicToEnvelope verifies a panic in the wrapped
+// handler is recovered into a 500 JSON error envelope.
 func TestRecoveryConvertsPanicToEnvelope(t *testing.T) {
 	handler := Recovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("boom")
@@ -102,6 +104,8 @@ func TestRecoveryDoesNotWriteAfterResponseCommitted(t *testing.T) {
 	}
 }
 
+// TestRecoveryPassesThroughWithoutPanic verifies a handler that completes
+// normally is unaffected by Recovery.
 func TestRecoveryPassesThroughWithoutPanic(t *testing.T) {
 	called := false
 	handler := Recovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

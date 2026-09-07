@@ -33,6 +33,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// testPool connects to the docker-composed Postgres, skipping the test
+// (rather than failing) when it's unreachable.
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
@@ -64,6 +66,9 @@ var handlerTestConfig = &config.AppConfig{
 
 // --- Validation tests (no DB) ---
 
+// TestListIssuesValidation400s verifies every malformed query parameter
+// ListIssues accepts (bad repo/state/slaState/q/limit/bucket/order/priority)
+// is rejected with 400 validation_failed rather than reaching the DB.
 func TestListIssuesValidation400s(t *testing.T) {
 	h := NewIssuesHandler(nil, handlerTestConfig)
 
@@ -104,6 +109,8 @@ func TestListIssuesValidation400s(t *testing.T) {
 	}
 }
 
+// TestGetIssueValidation400ForNonIntegerID verifies a non-numeric path id
+// is rejected with 400 rather than reaching the DB.
 func TestGetIssueValidation400ForNonIntegerID(t *testing.T) {
 	h := NewIssuesHandler(nil, handlerTestConfig)
 	req := httptest.NewRequest(http.MethodGet, "/issues/abc", nil)
@@ -144,7 +151,10 @@ type issueFixture struct {
 	updatedAt     time.Time
 }
 
-func strp(s string) *string   { return &s }
+// strp returns a pointer to s, for building literal *string fixture fields.
+func strp(s string) *string { return &s }
+
+// f64p returns a pointer to f, for building literal *float64 fixture fields.
 func f64p(f float64) *float64 { return &f }
 
 // seedIssuesFixture inserts a project+repository and a hand-picked set of
@@ -206,6 +216,8 @@ func seedIssuesFixture(t *testing.T, pool *pgxpool.Pool) (repoID int32) {
 	return repoID
 }
 
+// decodeIssueList asserts rec is a 200 and decodes its body as a ListIssues
+// response.
 func decodeIssueList(t *testing.T, rec *httptest.ResponseRecorder) []issueWire {
 	t.Helper()
 	if rec.Code != http.StatusOK {
@@ -218,6 +230,7 @@ func decodeIssueList(t *testing.T, rec *httptest.ResponseRecorder) []issueWire {
 	return result
 }
 
+// numbersOf extracts each issue's GitHub number, in response order.
 func numbersOf(issues []issueWire) []int {
 	out := make([]int, len(issues))
 	for i, iss := range issues {
@@ -226,6 +239,9 @@ func numbersOf(issues []issueWire) []int {
 	return out
 }
 
+// TestListIssuesDefaultBucketExcludesTerminalAndClosed verifies the base
+// scope (no bucket/state/slaState param) excludes CLOSED and TERMINAL
+// issues.
 func TestListIssuesDefaultBucketExcludesTerminalAndClosed(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -239,6 +255,8 @@ func TestListIssuesDefaultBucketExcludesTerminalAndClosed(t *testing.T) {
 	assertSameSet(t, got, []int{101, 102, 103, 104, 107})
 }
 
+// TestListIssuesBucketViolated verifies bucket=violated returns only
+// VIOLATED issues.
 func TestListIssuesBucketViolated(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -251,6 +269,8 @@ func TestListIssuesBucketViolated(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{101})
 }
 
+// TestListIssuesBucketAtRisk verifies bucket=at_risk returns only AT_RISK
+// issues.
 func TestListIssuesBucketAtRisk(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -263,6 +283,8 @@ func TestListIssuesBucketAtRisk(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{102})
 }
 
+// TestListIssuesBucketOnTrackExcludesCsSideStatuses verifies bucket=on_track
+// returns only OK issues currently on a non-CS-side status.
 func TestListIssuesBucketOnTrackExcludesCsSideStatuses(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -276,6 +298,8 @@ func TestListIssuesBucketOnTrackExcludesCsSideStatuses(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{103})
 }
 
+// TestListIssuesBucketCsIncludesNoSlaOnCsSide verifies bucket=cs returns
+// every issue currently on a CS-side status, including NO_SLA ones.
 func TestListIssuesBucketCsIncludesNoSlaOnCsSide(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -289,6 +313,8 @@ func TestListIssuesBucketCsIncludesNoSlaOnCsSide(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{102, 107})
 }
 
+// TestListIssuesBucketCsNarrowedByStatusParam verifies bucket=cs combined
+// with an explicit status param narrows to just that status.
 func TestListIssuesBucketCsNarrowedByStatusParam(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -301,6 +327,8 @@ func TestListIssuesBucketCsNarrowedByStatusParam(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{102})
 }
 
+// TestListIssuesBucketTracked verifies bucket=tracked returns issues with a
+// non-nil priority, within the base OPEN/non-TERMINAL scope.
 func TestListIssuesBucketTracked(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -314,6 +342,8 @@ func TestListIssuesBucketTracked(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{101, 102, 103, 107})
 }
 
+// TestListIssuesBucketUntracked verifies bucket=untracked returns only
+// issues with a nil priority.
 func TestListIssuesBucketUntracked(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -326,6 +356,8 @@ func TestListIssuesBucketUntracked(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{104})
 }
 
+// TestListIssuesBucketAttention verifies bucket=attention returns the union
+// of VIOLATED, AT_RISK, and currently-CS-side issues.
 func TestListIssuesBucketAttention(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -339,6 +371,9 @@ func TestListIssuesBucketAttention(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{101, 102, 107})
 }
 
+// TestListIssuesSlaStateParamOverridesBaseTerminalExclusion verifies an
+// explicit slaState param (e.g. NO_SLA) replaces the base scope's implicit
+// "not TERMINAL" filter rather than being ANDed with it.
 func TestListIssuesSlaStateParamOverridesBaseTerminalExclusion(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -351,6 +386,9 @@ func TestListIssuesSlaStateParamOverridesBaseTerminalExclusion(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{104, 107})
 }
 
+// TestListIssuesStateParamOverridesBaseOpenFilter verifies an explicit
+// state=CLOSED param replaces the base scope's implicit OPEN filter, while
+// the base "not TERMINAL" sla filter still applies underneath it.
 func TestListIssuesStateParamOverridesBaseOpenFilter(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -366,6 +404,8 @@ func TestListIssuesStateParamOverridesBaseOpenFilter(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{108})
 }
 
+// TestListIssuesPriorityFilter verifies the priority param narrows results
+// to that exact priority label.
 func TestListIssuesPriorityFilter(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -378,6 +418,8 @@ func TestListIssuesPriorityFilter(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{102, 107})
 }
 
+// TestListIssuesQNumberFilter verifies q= filters to the issue whose GitHub
+// number matches the query string.
 func TestListIssuesQNumberFilter(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -390,6 +432,8 @@ func TestListIssuesQNumberFilter(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{103})
 }
 
+// TestListIssuesOrderBudgetDescNullsLast verifies order=budget_desc sorts by
+// pct_consumed descending, with null-budget issues sorted last.
 func TestListIssuesOrderBudgetDescNullsLast(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -406,6 +450,8 @@ func TestListIssuesOrderBudgetDescNullsLast(t *testing.T) {
 	}
 }
 
+// TestListIssuesOrderUpdatedDescIsDefault verifies the default (no order
+// param) sort is githubUpdatedAt descending.
 func TestListIssuesOrderUpdatedDescIsDefault(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -422,6 +468,9 @@ func TestListIssuesOrderUpdatedDescIsDefault(t *testing.T) {
 	}
 }
 
+// TestGetIssueReturnsEventsAscendingWithNoActors verifies GetIssue's event
+// timeline comes back ascending by occurredAt with no actor field on the
+// wire.
 func TestGetIssueReturnsEventsAscendingWithNoActors(t *testing.T) {
 	pool := testPool(t)
 	repoID := seedIssuesFixture(t, pool)
@@ -464,6 +513,8 @@ func TestGetIssueReturnsEventsAscendingWithNoActors(t *testing.T) {
 	// compile time by eventWire's field set (id/previousStatus/status/occurredAt only).
 }
 
+// TestGetIssue404WhenAbsent verifies a non-existent issue id returns 404
+// not_found.
 func TestGetIssue404WhenAbsent(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
@@ -490,6 +541,8 @@ func TestGetIssue404WhenAbsent(t *testing.T) {
 	}
 }
 
+// TestGetIssue404WhenRepositoryDisabled verifies an issue whose repository
+// was subsequently disabled returns 404, not its previously-visible data.
 func TestGetIssue404WhenRepositoryDisabled(t *testing.T) {
 	pool := testPool(t)
 	repoID := seedIssuesFixture(t, pool)
@@ -514,6 +567,8 @@ func TestGetIssue404WhenRepositoryDisabled(t *testing.T) {
 	}
 }
 
+// assertSameSet fails the test unless got and want contain the same issue
+// numbers, ignoring order.
 func assertSameSet(t *testing.T, got, want []int) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -534,6 +589,7 @@ func assertSameSet(t *testing.T, got, want []int) {
 	}
 }
 
+// sliceEqual reports whether a and b hold the same ints in the same order.
 func sliceEqual(a, b []int) bool {
 	if len(a) != len(b) {
 		return false
