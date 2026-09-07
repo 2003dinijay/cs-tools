@@ -15,7 +15,7 @@
 // under the License.
 
 import { render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import CustomerRoleGuard from "../CustomerRoleGuard";
 import { useCustomerPermissions } from "@hooks/useCustomerPermissions";
@@ -108,5 +108,73 @@ describe("CustomerRoleGuard", () => {
     );
 
     expect(screen.getByTestId("protected-content")).toBeInTheDocument();
+  });
+
+  it("blocks Operations index route when permission is denied while allowing unprotected child routes", () => {
+    vi.mocked(useCustomerPermissions).mockReturnValue({
+      isLoading: false,
+      isError: false,
+      can: vi.fn((module: string) => module !== "change_requests"),
+      hasAnyRole: vi.fn().mockReturnValue(true),
+    } as unknown as ReturnType<typeof useCustomerPermissions>);
+
+    const { unmount } = render(
+      <MemoryRouter initialEntries={["/projects/1/operations"]}>
+        <Routes>
+          <Route path="/projects/:projectId/operations">
+            <Route
+              index
+              element={
+                <CustomerRoleGuard module="change_requests" action="read">
+                  <div data-testid="operations-page">Operations Page</div>
+                </CustomerRoleGuard>
+              }
+            />
+            <Route
+              path="service-requests"
+              element={
+                <div data-testid="service-requests-page">
+                  Service Requests Page
+                </div>
+              }
+            />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByTestId("operations-page")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/You don't have permission to access this page/i),
+    ).toBeInTheDocument();
+
+    unmount();
+
+    render(
+      <MemoryRouter initialEntries={["/projects/1/operations/service-requests"]}>
+        <Routes>
+          <Route path="/projects/:projectId/operations">
+            <Route
+              index
+              element={
+                <CustomerRoleGuard module="change_requests" action="read">
+                  <div data-testid="operations-page">Operations Page</div>
+                </CustomerRoleGuard>
+              }
+            />
+            <Route
+              path="service-requests"
+              element={
+                <div data-testid="service-requests-page">
+                  Service Requests Page
+                </div>
+              }
+            />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("service-requests-page")).toBeInTheDocument();
   });
 });
