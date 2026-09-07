@@ -144,7 +144,7 @@ export interface CaseEscalationRecord {
  * authorized to de-escalate it. `id` can be empty when the backing data
  * source couldn't resolve a platform user record; match by `email` then. */
 export interface CaseEscalationNotifiedUser {
-  id?: string;
+  id?: string | null;
   name?: string | null;
   email?: string | null;
 }

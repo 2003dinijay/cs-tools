@@ -235,9 +235,23 @@ describe("EscalationWidget", () => {
     expect(screen.getByText("EL2 — Technology Unit Head")).toBeInTheDocument();
   });
 
-  it("renders 'Not escalated' when currentLevel is null", () => {
+  it("renders 'Not tracked', not EL0, when currentLevel is null", () => {
     render(<EscalationWidget currentLevel={null} history={[]} />);
-    expect(screen.getByText("Not escalated")).toBeInTheDocument();
+    expect(screen.getByText("Not tracked")).toBeInTheDocument();
+    expect(screen.queryByText("Not escalated")).not.toBeInTheDocument();
+  });
+
+  it("hides both action buttons when currentLevel is null, even if handlers are passed", () => {
+    render(
+      <EscalationWidget
+        currentLevel={null}
+        history={[]}
+        onEscalate={vi.fn()}
+        onDeescalate={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText("Escalate")).not.toBeInTheDocument();
+    expect(screen.queryByText("De-escalate")).not.toBeInTheDocument();
   });
 
   it("renders an empty state when there is no escalation history", () => {

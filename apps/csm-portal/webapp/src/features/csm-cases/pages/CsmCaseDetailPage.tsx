@@ -599,16 +599,22 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // De-escalating is restricted to whoever was notified on the case's
   // current escalation level (the backend enforces the same check -- this is
   // a client-side affordance only, matching every other role/permission
-  // check in this app). Matched by email against the signed-in user's own ID
-  // token claim, the same identity source `assigneeIsMe` already uses
-  // elsewhere on this page -- not a platform user id, since that would need
-  // an extra GET /users/me round trip this affordance doesn't warrant.
+  // check in this app). Matched by platform id first (currentUser.id against
+  // a notified user's own id, the same identity space the backend's own
+  // check uses), falling back to a case-insensitive email match against the
+  // signed-in user's ID token claim when either id is unavailable -- mirrors
+  // the BFF's own callerIsNotifiedOnCurrentEscalation exactly.
+  const callerId = currentUser?.id;
   const callerEmail = claims?.email?.toLowerCase();
-  const callerIsNotifiedOnCurrentEscalation =
-    !!callerEmail &&
-    (escalationHistory?.currentNotifiedUsers ?? []).some(
-      (u) => u.email?.toLowerCase() === callerEmail,
-    );
+  const callerIsNotifiedOnCurrentEscalation = (
+    escalationHistory?.currentNotifiedUsers ?? []
+  ).some((u) => {
+    if (callerId && u.id && callerId === u.id) return true;
+    if ((!callerId || !u.id) && callerEmail && u.email) {
+      return u.email.toLowerCase() === callerEmail;
+    }
+    return false;
+  });
   // Display name for comments authored in this session, resolved from the
   // signed-in user's ID token. Falls back to the email local part so a token
   // without name claims still attributes the comment to the right person.
@@ -2574,12 +2580,14 @@ export default function CsmCaseDetailPage(): JSX.Element {
             isHistoryLoading={isEscalationHistoryLoading}
             isHistoryError={isEscalationHistoryError}
             onEscalate={
-              !isClosed && canEscalateFurther(c.escalationLevel)
+              // Visibility is level-eligibility only -- isClosed disables
+              // via actionDisabledReason below instead of hiding the button,
+              // so its tooltip still has something to anchor to.
+              canEscalateFurther(c.escalationLevel)
                 ? () => setEscalationDialogAction("ESCALATE")
                 : undefined
             }
             onDeescalate={
-              !isClosed &&
               canDeescalate(c.escalationLevel) &&
               callerIsNotifiedOnCurrentEscalation
                 ? () => setEscalationDialogAction("DEESCALATE")

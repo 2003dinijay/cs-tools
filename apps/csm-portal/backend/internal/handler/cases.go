@@ -240,7 +240,13 @@ func (h *CaseHandler) callerIsNotifiedOnCurrentEscalation(r *http.Request, caseI
 		if caller.ID != "" && notified.ID != "" && caller.ID == notified.ID {
 			return true
 		}
-		if caller.Email != "" && notified.Email != "" && strings.EqualFold(caller.Email, notified.Email) {
+		// Only fall back to email when an id is unavailable on either side --
+		// two different platform users must never be treated as the same
+		// person just because both ids happen to be missing and their emails
+		// happen to match by coincidence or staleness on one side.
+		if (caller.ID == "" || notified.ID == "") &&
+			caller.Email != "" && notified.Email != "" &&
+			strings.EqualFold(caller.Email, notified.Email) {
 			return true
 		}
 	}

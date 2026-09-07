@@ -465,7 +465,10 @@ export function EscalationWidget({
   actionDisabledReason,
 }: {
   /** Raw escalation-level id ("0"-"5"), or null when the data source doesn't
-   * track it (e.g. non-ServiceNow-backed case). */
+   * track it (e.g. non-ServiceNow-backed case) -- rendered as "Not tracked",
+   * never coerced to "0"/EL0, since that would misrepresent "unknown" as a
+   * known, non-escalated case. Action buttons are hidden when null: there's
+   * nothing to escalate/de-escalate without a tracked level. */
   currentLevel: string | null;
   history: CaseEscalationRecord[];
   isHistoryLoading?: boolean;
@@ -480,16 +483,20 @@ export function EscalationWidget({
    * case is closed — it's read-only.") without hiding them. */
   actionDisabledReason?: string;
 }): JSX.Element {
-  const level = currentLevel ?? "0";
-
   return (
     <WidgetCard
       title="Escalation"
       icon={<ArrowUpRight size={16} />}
       action={
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <EscalationLevelChip level={level} />
-          {(onEscalate || onDeescalate) && (
+          {currentLevel === null ? (
+            <Typography variant="body2" color="text.secondary">
+              Not tracked
+            </Typography>
+          ) : (
+            <EscalationLevelChip level={currentLevel} />
+          )}
+          {currentLevel !== null && (onEscalate || onDeescalate) && (
             <Tooltip title={actionDisabledReason ?? ""}>
               <Box component="span" sx={{ display: "flex", gap: 0.5 }}>
                 {onDeescalate && (

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
@@ -76,8 +77,8 @@ func (s *caseEscalationService) SearchCaseEscalations(ctx context.Context, caseI
 		}
 	}
 
-	var currentNotifiedUsers []domain.EscalationNotifiedUser
-	if len(escalations) > 0 {
+	currentNotifiedUsers := []domain.EscalationNotifiedUser{}
+	if len(escalations) > 0 && escalations[0].NotificationSentTo != nil {
 		currentNotifiedUsers = escalations[0].NotificationSentTo
 	}
 
@@ -106,9 +107,13 @@ func (s *caseEscalationService) CreateCaseEscalation(ctx context.Context, caseID
 	// happened by this point, so a failure here must not fail the request --
 	// log and return the successful escalation instead of telling the caller
 	// their escalation failed when it didn't.
+	// Normalize the same way snEscalationService.CreateEscalation does before
+	// comparing -- a caller can send any case ("deescalate"), and this
+	// content string must agree with what was actually just recorded, not
+	// silently mismatch on an unnormalized case.
 	effectiveAction := domain.EscalationActionEscalate
 	if action != nil {
-		effectiveAction = *action
+		effectiveAction = domain.EscalationAction(strings.ToUpper(string(*action)))
 	}
 	if _, err := s.caseSvc.CreateCaseComment(ctx, domain.CreateCaseCommentRequest{
 		CaseID:  caseID,

@@ -2183,6 +2183,29 @@ func TestCreateCaseEscalation(t *testing.T) {
 		}
 	})
 
+	t.Run("de-escalation is rejected when ids differ, even if emails happen to match", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-2","email":"agent@example.com"}]}`), nil
+			},
+			getUserMeFn: func(_ context.Context) ([]byte, error) {
+				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
+			},
+			createCaseEscalationFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				t.Fatal("upstream CreateCaseEscalation should not be called when the ids differ, regardless of matching emails")
+				return nil, nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/"+testCaseID+"/escalations", strings.NewReader(`{"action":"DEESCALATE"}`)))
+		r.SetPathValue("id", testCaseID)
+		w := httptest.NewRecorder()
+		h.CreateCaseEscalation(w, r)
+		assertStatus(t, w, http.StatusForbidden)
+		assertErrorMessage(t, w, ErrMsgForbidden)
+		assertContentType(t, w, "application/json")
+	})
+
 	t.Run("escalation is never gated by the notified-users check", func(t *testing.T) {
 		var upstreamCalled bool
 		client := &mockEntityCaseClient{

@@ -5086,11 +5086,12 @@ type CaseEscalationHistory struct {
 	Total       int          `json:"total"`
 	// CurrentNotifiedUsers is the NotifiedUsers list of the most recent
 	// record in Escalations (i.e. who was notified about the case's current
-	// escalation level). Empty when the case has never been escalated. Only
-	// someone on this list is authorized to de-escalate the case's current
-	// level -- surfaced as its own field so callers don't each re-derive
-	// "the first record's notified list" independently.
-	CurrentNotifiedUsers []EscalationNotifiedUser `json:"currentNotifiedUsers,omitempty"`
+	// escalation level). Always present (an empty array, never omitted/null)
+	// when the case has never been escalated. Only someone on this list is
+	// authorized to de-escalate the case's current level -- surfaced as its
+	// own field so callers don't each re-derive "the first record's notified
+	// list" independently.
+	CurrentNotifiedUsers []EscalationNotifiedUser `json:"currentNotifiedUsers"`
 }
 
 // --- case-grouped time cards (ServiceNow data source only) ---

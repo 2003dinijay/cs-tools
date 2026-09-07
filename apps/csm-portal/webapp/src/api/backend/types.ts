@@ -1095,7 +1095,7 @@ export type BeEscalationAction = "ESCALATE" | "DEESCALATE";
  * backing data source could not resolve a platform user record for the
  * notified recipient -- match by `email` in that case. */
 export interface BeCaseEscalationNotifiedUser {
-  id?: string;
+  id?: string | null;
   userName: string;
   name?: string | null;
   email?: string | null;

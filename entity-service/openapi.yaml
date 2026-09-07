@@ -2123,6 +2123,7 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
           description: Case UUID.
       responses:
         "200":
@@ -2164,6 +2165,7 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
           description: Case UUID.
       requestBody:
         required: true
@@ -13612,7 +13614,7 @@ components:
 
     CaseEscalationHistory:
       type: object
-      required: [escalations, total]
+      required: [escalations, total, currentNotifiedUsers]
       properties:
         escalations:
           type: array
