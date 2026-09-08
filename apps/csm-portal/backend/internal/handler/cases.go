@@ -178,28 +178,50 @@ func (h *CaseHandler) resolveCurrentUserID(r *http.Request, user *middleware.Use
 
 // validateCaseEscalationBody decodes and validates a case-escalation request
 // body against the entity service's CaseEscalationCreateRequest contract:
-// unknown fields are rejected, "action" (if present) must be ESCALATE or
-// DEESCALATE case-insensitively (missing/empty defaults to ESCALATE), and
-// "reason" is required and non-blank unless the effective action is
-// DEESCALATE. Returns the normalized, upper-case effective action and
-// whether the body is valid.
+// unknown fields are rejected, "action" (if present) must be exactly one of
+// the four literal forms the schema enumerates -- "ESCALATE", "escalate",
+// "DEESCALATE", "deescalate" -- (missing key defaults to ESCALATE; an
+// explicit "action": null is rejected, since the contract only permits an
+// omitted key or a string value, never a null), and "reason" is required and
+// non-blank unless the effective action is DEESCALATE. Returns the
+// normalized, upper-case effective action and whether the body is valid.
+//
+// "action" is decoded as json.RawMessage rather than *string because a *string
+// cannot distinguish an omitted key from an explicit "action": null -- both
+// decode to a nil pointer. json.RawMessage stays nil only when the key is
+// absent; when the key is present its raw bytes are captured verbatim
+// (including the literal `null`), so the two cases can be told apart.
+// "reason" does not need the same treatment: {"reason": null, ...} is already
+// correctly rejected by the existing nil-check below (a null reason yields no
+// usable reason, same as an absent one), so *string is sufficient there.
 func validateCaseEscalationBody(body []byte) (action string, ok bool) {
 	var req struct {
-		Reason *string `json:"reason"`
-		Action *string `json:"action"`
+		Reason *string         `json:"reason"`
+		Action json.RawMessage `json:"action"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		return "", false
 	}
+	// Reject trailing data after the first JSON value (e.g. two concatenated
+	// JSON objects) -- json.Decoder.Decode only consumes the first value and
+	// silently leaves the rest unread.
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return "", false
+	}
 
 	action = "ESCALATE"
 	if req.Action != nil {
-		switch {
-		case strings.EqualFold(*req.Action, "ESCALATE"):
+		var actionStr string
+		if err := json.Unmarshal(req.Action, &actionStr); err != nil {
+			// Covers both an explicit "action": null and any non-string value.
+			return "", false
+		}
+		switch actionStr {
+		case "ESCALATE", "escalate":
 			action = "ESCALATE"
-		case strings.EqualFold(*req.Action, "DEESCALATE"):
+		case "DEESCALATE", "deescalate":
 			action = "DEESCALATE"
 		default:
 			return "", false

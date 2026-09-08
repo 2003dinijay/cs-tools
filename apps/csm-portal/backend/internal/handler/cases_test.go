@@ -2313,6 +2313,39 @@ func TestCreateCaseEscalation(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects an explicit null action", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/"+testCaseID+"/escalations", strings.NewReader(`{"reason":"needed","action":null}`)))
+		r.SetPathValue("id", testCaseID)
+		w := httptest.NewRecorder()
+		h.CreateCaseEscalation(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects trailing data after the JSON object", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/"+testCaseID+"/escalations", strings.NewReader(`{"reason":"needed"}{"action":"DEESCALATE"}`)))
+		r.SetPathValue("id", testCaseID)
+		w := httptest.NewRecorder()
+		h.CreateCaseEscalation(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("rejects an action value that is not one of the four enumerated forms", func(t *testing.T) {
+		h := NewCaseHandler(&mockEntityCaseClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/"+testCaseID+"/escalations", strings.NewReader(`{"reason":"needed","action":"DeEsCaLaTe"}`)))
+		r.SetPathValue("id", testCaseID)
+		w := httptest.NewRecorder()
+		h.CreateCaseEscalation(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, ErrMsgBadRequest)
+		assertContentType(t, w, "application/json")
+	})
+
 	t.Run("accepts a valid DEESCALATE request with no reason", func(t *testing.T) {
 		var upstreamCalled bool
 		client := &mockEntityCaseClient{
