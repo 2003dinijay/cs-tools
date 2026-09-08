@@ -470,7 +470,7 @@ type ProjectDetailsView struct {
 	// onboarding. Nil when no owner is assigned — most projects, since only
 	// onboarding-enabled projects have one. Currently populated only from
 	// the ServiceNow data source.
-	OnboardingOwner *PersonRef `json:"onboardingOwner,omitempty"`
+	OnboardingOwner *PersonRef `json:"onboardingOwner"`
 }
 
 // ProjectUpdateRequest is the input for PATCH /projects/{id} (ServiceNow data
