@@ -273,13 +273,25 @@ export default function AuthGuard({ bare = false }: AuthGuardProps): JSX.Element
     if (!isSignedIn) return;
     const redirect = sessionStorage.getItem(POST_LOGIN_REDIRECT_KEY);
     if (!redirect) return;
+    // A `bare` route is a fixed kiosk destination — it must never navigate
+    // away to a stored deep link, including a stale one left in
+    // `sessionStorage` by an abandoned sign-in elsewhere in the same
+    // browser session (a real risk on a shared kiosk machine: someone
+    // deep-links to `/cases/:id`, gets bounced to the IdP, walks away; the
+    // key outlives that tab's session and the next `/cs-monitor-dashboard`
+    // sign-in would restore it). Drop any such key and stay put —
+    // `SignInRedirect` only ever stores this exact path for a bare route.
+    if (bare) {
+      sessionStorage.removeItem(POST_LOGIN_REDIRECT_KEY);
+      return;
+    }
     // Compare (and restore) the full location including the hash, so anchor
     // permalinks like `/cases/:id#description` are honoured, not stripped.
     const here = location.pathname + location.search + location.hash;
     if (here !== redirect) {
       void navigate(redirect, { replace: true });
     }
-  }, [isSignedIn, navigate, location.pathname, location.search, location.hash]);
+  }, [bare, isSignedIn, navigate, location.pathname, location.search, location.hash]);
 
   // Once a session has been established at least once, never again let
   // `ProtectedRoute` hide the app behind its `loader` for a transient

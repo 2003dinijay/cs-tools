@@ -480,6 +480,37 @@ describe("AuthGuard bare mode", () => {
     expect(screen.queryByTestId("app-layout")).not.toBeInTheDocument();
   });
 
+  // Regression test (rksk review): a `bare` kiosk route must never follow a
+  // stale POST_LOGIN_REDIRECT_KEY left in sessionStorage by an abandoned
+  // sign-in elsewhere in the same browser session — it stays put and drops
+  // the key.
+  it("ignores and clears a stale post-login redirect key instead of navigating away from the kiosk route", async () => {
+    asgardeoState.isSignedIn = true;
+    sessionStorage.setItem("post_login_redirect", "/cases/999");
+    let rerender!: ReturnType<typeof renderBareAuthGuard>["rerender"];
+
+    await act(async () => {
+      ({ rerender } = renderBareAuthGuard());
+    });
+    await act(async () => {
+      rerender(
+        <MemoryRouter initialEntries={["/cs-monitor-dashboard"]}>
+          <Routes>
+            <Route element={<AuthGuard bare />}>
+              <Route
+                path="cs-monitor-dashboard"
+                element={<div data-testid="bare-route-content" />}
+              />
+            </Route>
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+
+    expect(screen.getByTestId("bare-route-content")).toBeInTheDocument();
+    expect(sessionStorage.getItem("post_login_redirect")).toBeNull();
+  });
+
   // Regression test: `bare` mode skips `AppLayout`, the only place
   // elsewhere in the app that wraps routed content in a `Suspense`
   // boundary. A lazily-loaded `bare` route element would have nothing to
