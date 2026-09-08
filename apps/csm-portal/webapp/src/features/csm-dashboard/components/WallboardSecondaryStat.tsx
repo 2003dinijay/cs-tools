@@ -18,17 +18,7 @@ import { Box, Skeleton, Typography } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
 import { Link as RouterLink } from "react-router";
 import type { BeWidgetResourceType } from "@api/backend/types";
-import { useCurrentUser } from "@context/current-user/CurrentUserContext";
-import { useWidgetData } from "@features/csm-dashboard/api/useWidgetData";
-import { WIDGET_RESOURCE_CONFIG } from "@features/csm-dashboard/config/widgetResourceConfig";
-import { resolveTeamPlaceholder } from "@features/csm-dashboard/utils/teamFilterPlaceholder";
-import { resolveRelativeDateFilters } from "@features/csm-dashboard/utils/resolveRelativeDateFilters";
-import {
-  hasCurrentUserPlaceholder,
-  resolveCurrentUserPlaceholder,
-} from "@features/csm-dashboard/utils/currentUserFilterPlaceholder";
-import { resolveWidgetText } from "@features/csm-dashboard/utils/widgetTextPlaceholder";
-import { CS_OVERVIEW_REFETCH_INTERVAL_MS } from "@features/csm-dashboard/utils/wallboardMetricStyle";
+import { useWallboardTileData } from "@features/csm-dashboard/api/useWallboardTileData";
 
 export interface WallboardSecondaryStatProps {
   widgetId: string;
@@ -62,36 +52,15 @@ export default function WallboardSecondaryStat({
   selectedTeamSreGroupId,
   selectedTeamLabel,
 }: WallboardSecondaryStatProps): JSX.Element {
-  const { user } = useCurrentUser();
-  const currentUserId = user?.id;
-  const awaitingCurrentUser = currentUserId === undefined && hasCurrentUserPlaceholder(filters);
-
-  const { data, isLoading, isError } = useWidgetData(
+  const { total, resolvedDisplayName, state, linkHref } = useWallboardTileData({
     widgetId,
+    displayName,
     resourceType,
     filters,
-    "count",
-    undefined,
-    0,
-    !awaitingCurrentUser,
     selectedTeamCreGroupId,
     selectedTeamSreGroupId,
-    undefined,
-    currentUserId,
-    CS_OVERVIEW_REFETCH_INTERVAL_MS,
-  );
-
-  const config = WIDGET_RESOURCE_CONFIG[resourceType];
-  const resolvedDisplayName = resolveWidgetText(displayName, selectedTeamLabel) ?? displayName;
-  const total = data?.total ?? 0;
-
-  const resolvedFilters = resolveCurrentUserPlaceholder(
-    resolveRelativeDateFilters(
-      resolveTeamPlaceholder(filters, selectedTeamCreGroupId, selectedTeamSreGroupId),
-    ),
-    currentUserId,
-  );
-  const href = config ? config.buildHref(resolvedFilters) : undefined;
+    selectedTeamLabel,
+  });
 
   const tileBody = (
     <Box
@@ -109,15 +78,12 @@ export default function WallboardSecondaryStat({
         bgcolor: "rgba(55,65,81,0.6)",
       }}
     >
-      {isLoading || awaitingCurrentUser ? (
+      {state === "loading" ? (
         // 1.9rem * 16 — matches WallboardStatTile's own value-font-size-based
         // skeleton height (its "primary" variant), now that this tier's
         // value text is that same size.
         <Skeleton variant="rounded" height={30.4} width="60%" sx={{ bgcolor: "rgba(255,255,255,0.08)" }} />
-      ) : isError && !data ? (
-        // Same as WallboardStatTile: only show a dash when nothing is
-        // cached. A transient failure on the 60s auto-refresh keeps the
-        // last-known count on screen rather than flickering it to "—".
+      ) : state === "error" ? (
         <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.5)" }}>
           —
         </Typography>
@@ -142,18 +108,15 @@ export default function WallboardSecondaryStat({
     </Box>
   );
 
-  // `awaitingCurrentUser` here too, not just in the skeleton condition
-  // above: a disabled query (see `enabled: !awaitingCurrentUser` on
-  // useWidgetData) reports `isLoading` false — TanStack Query v5 reserves
-  // that for "actively fetching," not "disabled, never fetched" — so
-  // without this the skeleton could still get wrapped in a clickable link
-  // built from filters that still carry the unresolved placeholder.
-  if (!href || isLoading || isError || awaitingCurrentUser) return tileBody;
+  // `linkHref` is already `undefined` while loading / errored / awaiting the
+  // current user (see `useWallboardTileData`), so a skeleton or dash is
+  // never wrapped in a navigating link.
+  if (!linkHref) return tileBody;
 
   return (
     <Box
       component={RouterLink}
-      to={href}
+      to={linkHref}
       sx={{ display: "flex", flex: 1, textDecoration: "none", color: "inherit", height: "100%" }}
     >
       {tileBody}

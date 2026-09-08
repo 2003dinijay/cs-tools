@@ -16,7 +16,7 @@
 
 import { Box, Skeleton, Typography } from "@wso2/oxygen-ui";
 import { Clock, Plane, Server, ShieldAlert, Users } from "@wso2/oxygen-ui-icons-react";
-import type { JSX, ReactNode } from "react";
+import { useEffect, type JSX, type ReactNode } from "react";
 import type { BeDashboardWidget } from "@api/backend/types";
 import { useDashboard } from "@features/csm-dashboard/api/useDashboard";
 import { groupWidgetsBySection, type WidgetGroup } from "@features/csm-dashboard/utils/dashboardWidgetGridLayout";
@@ -198,6 +198,27 @@ export default function WallboardDashboard({
   // own state — survives switching away to another dashboard and back
   // (which fully unmounts this component) without going blank in between.
   const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString() : undefined;
+
+  // The monitor dashboard is a fixed count-tile design (ported from the
+  // reference wallboard, which is all-count) — a non-count widget on
+  // `cs-overview` renders on the normal `/dashboard` page but has no place
+  // in this grid, so it's filtered out below. That's intentional, but warn
+  // in dev builds so a future config change that adds one doesn't just make
+  // it silently disappear from this view with no trace.
+  const droppedShapes = (data?.widgets ?? [])
+    .filter((w) => w.shape !== "count")
+    .map((w) => `"${w.displayName}" (${w.shape})`);
+  useEffect(() => {
+    if (import.meta.env.DEV && droppedShapes.length > 0) {
+      console.warn(
+        `[WallboardDashboard] ${droppedShapes.length} non-count widget(s) on "${dashboardId}" ` +
+          `are not shown on the monitor dashboard: ${droppedShapes.join(", ")}`,
+      );
+    }
+    // Re-warn only when the set of dropped widgets actually changes, not on
+    // every 60s poll re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboardId, droppedShapes.join("|")]);
 
   // Only fall back to the error / loading screens when there is nothing
   // cached to render. React Query keeps the last successful `data` through

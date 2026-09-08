@@ -210,6 +210,37 @@ describe("WallboardDashboard", () => {
     expect(screen.getByTestId("cre-section")).not.toHaveTextContent("Recent Cases");
   });
 
+  // Regression test (rksk review): dropping non-count widgets is intentional
+  // (the monitor dashboard is a fixed count-tile design), but it must not be
+  // silent — a config change that adds a list/chart widget to cs-overview
+  // should leave a dev-build trace, not just vanish from this view.
+  it("warns in dev when it drops a non-count widget the normal /dashboard would still render", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    useDashboardMock.mockReturnValue({
+      data: dashboardResult([
+        widget("w1", "Open", "CRE"),
+        widget("w2", "Recent Cases", "CRE", "case", "list"),
+      ]),
+      isLoading: false,
+      isError: false,
+    });
+    render(<WallboardDashboard dashboardId="cs-overview" />);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"Recent Cases" (list)'));
+    warn.mockRestore();
+  });
+
+  it("does not warn when every widget is a count tile", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    useDashboardMock.mockReturnValue({
+      data: dashboardResult([widget("w1", "Open", "CRE")]),
+      isLoading: false,
+      isError: false,
+    });
+    render(<WallboardDashboard dashboardId="cs-overview" />);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it("renders an unrecognized section as a fallback grid instead of silently dropping its widgets", () => {
     useDashboardMock.mockReturnValue({
       data: dashboardResult([widget("w1", "Some Metric", "Some Unrelated Section")]),
