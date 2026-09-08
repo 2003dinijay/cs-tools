@@ -13593,13 +13593,39 @@ components:
             de-escalate the case's current level.
 
     CaseEscalationCreateRequest:
-      type: object
-      properties:
-        reason:
-          type: string
-          description: Required (non-blank) when action is ESCALATE (the default); optional when DEESCALATE.
-        action:
-          $ref: '#/components/schemas/EscalationAction'
+      description: >
+        reason is required (non-blank) when action is ESCALATE or omitted (the
+        default); optional when action is DEESCALATE.
+      oneOf:
+        - description: Escalate the case, action omitted (defaults to ESCALATE). reason is required and must be non-blank.
+          type: object
+          required: [reason]
+          additionalProperties: false
+          properties:
+            reason:
+              type: string
+              minLength: 1
+        - description: Escalate the case, action given explicitly. reason is required and must be non-blank.
+          type: object
+          required: [reason, action]
+          additionalProperties: false
+          properties:
+            reason:
+              type: string
+              minLength: 1
+            action:
+              type: string
+              enum: [ESCALATE]
+        - description: De-escalate the case. reason is optional.
+          type: object
+          required: [action]
+          additionalProperties: false
+          properties:
+            reason:
+              type: string
+            action:
+              type: string
+              enum: [DEESCALATE]
 
     CreateEscalationRequest:
       type: object
