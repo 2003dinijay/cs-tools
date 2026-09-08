@@ -457,10 +457,14 @@ type ProjectDetailsView struct {
 	Name             string            `json:"name"`
 	Key              string            `json:"key"`
 	SubscriptionType SubscriptionType  `json:"subscriptionType"`
-	StartDate        time.Time         `json:"startDate"`
-	EndDate          time.Time         `json:"endDate"`
-	CreatedOn        time.Time         `json:"createdOn"`
-	UpdatedOn        time.Time         `json:"updatedOn"`
+	// StartDate/EndDate are pointers: ServiceNow may legitimately leave either
+	// unset on a project, and a nil date must round-trip as JSON null rather
+	// than a fabricated zero-value timestamp. Matches ProjectView's StartDate/
+	// EndDate, and the other optional dates on this struct (GoLiveDate, etc.).
+	StartDate *time.Time `json:"startDate"`
+	EndDate   *time.Time `json:"endDate"`
+	CreatedOn time.Time  `json:"createdOn"`
+	UpdatedOn time.Time  `json:"updatedOn"`
 	ProjectEngagementFields
 	// HasSr is the backing data source's own precomputed answer to whether
 	// this project is eligible to raise service requests.

@@ -405,3 +405,111 @@ func TestSNProjectService_GetProjectByID_OnboardingFieldsAbsent(t *testing.T) {
 		t.Errorf("GetProjectByID OnboardingOwner = %+v, want nil", got.OnboardingOwner)
 	}
 }
+
+// TestSNProjectService_GetProjectByID_MapsStartEndDate verifies that populated
+// startDate/endDate values are parsed into non-nil domain.ProjectDetailsView
+// dates, so the empty-string handling added below doesn't regress the normal
+// case.
+func TestSNProjectService_GetProjectByID_MapsStartEndDate(t *testing.T) {
+	projectSysid := sysid32('d')
+
+	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": projectSysid, "name": "Dated Project", "key": "DTD", "sfId": "sf-4",
+			"createdOn": "2026-01-01 00:00:00", "startDate": "2026-01-01", "endDate": "2026-12-31",
+			"type":    map[string]any{"name": "Subscription"},
+			"account": map[string]any{"id": "", "name": ""},
+		})
+	}))
+
+	svc := NewServiceNowProjectService(client, nil)
+	got, err := svc.GetProjectByID(contextWithUserIDToken("token"), sysidToUUID(projectSysid))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.StartDate == nil || !got.StartDate.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("GetProjectByID StartDate = %v, want 2026-01-01", got.StartDate)
+	}
+	if got.EndDate == nil || !got.EndDate.Equal(time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("GetProjectByID EndDate = %v, want 2026-12-31", got.EndDate)
+	}
+}
+
+// TestSNProjectService_GetProjectByID_EmptyStartEndDate is the regression guard
+// for the bug where ServiceNow legitimately returning "" for a project's
+// startDate/endDate (field genuinely not set on that record) crashed
+// GetProjectByID with a time.Parse error instead of mapping to nil — a project
+// read must return normally with the date fields absent, not 500.
+func TestSNProjectService_GetProjectByID_EmptyStartEndDate(t *testing.T) {
+	projectSysid := sysid32('e')
+
+	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": projectSysid, "name": "Undated Project", "key": "UND", "sfId": "sf-5",
+			"createdOn": "2026-01-01 00:00:00", "startDate": "", "endDate": "",
+			"type":    map[string]any{"name": "Subscription"},
+			"account": map[string]any{"id": "", "name": ""},
+		})
+	}))
+
+	svc := NewServiceNowProjectService(client, nil)
+	got, err := svc.GetProjectByID(contextWithUserIDToken("token"), sysidToUUID(projectSysid))
+	if err != nil {
+		t.Fatalf("GetProjectByID returned error for empty startDate/endDate (should map to nil, not error): %v", err)
+	}
+	if got.StartDate != nil {
+		t.Errorf("GetProjectByID StartDate = %v, want nil for empty upstream startDate", *got.StartDate)
+	}
+	if got.EndDate != nil {
+		t.Errorf("GetProjectByID EndDate = %v, want nil for empty upstream endDate", *got.EndDate)
+	}
+}
+
+// TestSNProjectService_GetProjectByID_EmptyOptionalDates is an audit-driven
+// regression guard for every other optional date on the project-detail
+// response — goLiveDate, goLivePlanDate, onboardingExpiryDate, and the
+// account's activationDate/deactivationDate. All five already routed through
+// optionalSNProjectDate before the startDate/endDate fix, so this pins that
+// they actually behave: empty string maps to nil, not a parse error or a
+// zero-value timestamp.
+func TestSNProjectService_GetProjectByID_EmptyOptionalDates(t *testing.T) {
+	projectSysid := sysid32('f')
+
+	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": projectSysid, "name": "No Optional Dates", "key": "NOD", "sfId": "sf-6",
+			"createdOn": "2026-01-01 00:00:00", "startDate": "2026-01-01", "endDate": "2026-12-31",
+			"type": map[string]any{"name": "Subscription"},
+			"account": map[string]any{
+				"id": "", "name": "", "activationDate": "", "deactivationDate": "",
+			},
+			"goLiveDate":           "",
+			"goLivePlanDate":       "",
+			"onboardingExpiryDate": "",
+		})
+	}))
+
+	svc := NewServiceNowProjectService(client, nil)
+	got, err := svc.GetProjectByID(contextWithUserIDToken("token"), sysidToUUID(projectSysid))
+	if err != nil {
+		t.Fatalf("GetProjectByID returned error for empty optional dates (should map to nil, not error): %v", err)
+	}
+	if got.GoLiveDate != nil {
+		t.Errorf("GetProjectByID GoLiveDate = %v, want nil for empty upstream goLiveDate", *got.GoLiveDate)
+	}
+	if got.GoLivePlanDate != nil {
+		t.Errorf("GetProjectByID GoLivePlanDate = %v, want nil for empty upstream goLivePlanDate", *got.GoLivePlanDate)
+	}
+	if got.OnboardingExpiryDate != nil {
+		t.Errorf("GetProjectByID OnboardingExpiryDate = %v, want nil for empty upstream onboardingExpiryDate", *got.OnboardingExpiryDate)
+	}
+	if got.Account.ActivationDate != nil {
+		t.Errorf("GetProjectByID Account.ActivationDate = %v, want nil for empty upstream activationDate", *got.Account.ActivationDate)
+	}
+	if got.Account.DeactivationDate != nil {
+		t.Errorf("GetProjectByID Account.DeactivationDate = %v, want nil for empty upstream deactivationDate", *got.Account.DeactivationDate)
+	}
+}

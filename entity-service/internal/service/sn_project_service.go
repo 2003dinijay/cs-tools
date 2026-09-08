@@ -349,14 +349,14 @@ func (s *snProjectService) GetProjectByID(ctx context.Context, id string) (domai
 		return domain.ProjectDetailsView{}, fmt.Errorf("sn projects: parse createdOn %q: %w", sn.CreatedOn, err)
 	}
 
-	startDate, err := time.Parse(snDateLayout, sn.StartDate)
+	startDate, err := optionalSNProjectDate("startDate", &sn.StartDate)
 	if err != nil {
-		return domain.ProjectDetailsView{}, fmt.Errorf("sn projects: parse startDate %q: %w", sn.StartDate, err)
+		return domain.ProjectDetailsView{}, err
 	}
 
-	endDate, err := time.Parse(snDateLayout, sn.EndDate)
+	endDate, err := optionalSNProjectDate("endDate", &sn.EndDate)
 	if err != nil {
-		return domain.ProjectDetailsView{}, fmt.Errorf("sn projects: parse endDate %q: %w", sn.EndDate, err)
+		return domain.ProjectDetailsView{}, err
 	}
 
 	subType, err := snTypeNameToSubscriptionType(sn.Type.Name)
