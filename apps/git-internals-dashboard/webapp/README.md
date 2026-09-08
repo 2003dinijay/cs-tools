@@ -20,7 +20,7 @@ to `backend/`'s API; no business logic lives here.
 ### Prerequisites
 
 - Node.js 24 (LTS)
-- pnpm 10
+- pnpm 10.26.0 or later (`allowBuilds` in `pnpm-workspace.yaml` requires it)
 - `backend/` running locally (see [`backend/README.md`](../backend/README.md)) — this app has
   nothing to render without it
 
