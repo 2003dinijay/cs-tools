@@ -74,6 +74,40 @@ func (c *Client) UpdateProject(ctx context.Context, id string, body []byte) ([]b
 	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/projects/%s", url.PathEscape(id)), body)
 }
 
+// PatchCase calls PATCH /cases/{id} on the entity service to update a case.
+// Unlike UpdateProject, this entity-service operation does NOT unconditionally
+// require a forwarded end-user identity token — whether it does depends on
+// entity-service's own DATA_SOURCE:
+//   - On a Postgres data source, a state/severity/workState update (optionally
+//     combined with resolutionCode/cause/closeNotes when state is closed or
+//     solution_proposed) succeeds for a pure M2M caller — no token check on
+//     this path. Every other field this request shape can carry (watchList,
+//     assigneeEmail, type and its companions, parentId, relatedCaseId,
+//     autocloseHoldUntil, subject, description, deploymentId,
+//     deployedProductId, the fix-ETA group, acknowledge, workaroundProvided)
+//     is ServiceNow-only and is rejected with 400 on this data source, not
+//     proxied through to any token check.
+//   - On a ServiceNow data source, every field this operation accepts —
+//     including a bare state/severity/workState update — requires a forwarded
+//     end-user identity token, so every call here is expected to 401 the same
+//     way UpdateProject always does, with no field combination that succeeds.
+//
+// Response is returned as raw JSON; typed response structs are deferred.
+func (c *Client) PatchCase(ctx context.Context, id string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/cases/%s", url.PathEscape(id)), body)
+}
+
+// CreateCaseComment calls POST /cases/{id}/comments on the entity service.
+// Unlike PatchCase, this entity-service operation requires a forwarded
+// end-user identity token unconditionally, on both data sources (the comment's
+// author is resolved from that token). This service is strictly M2M with no
+// mechanism to carry one, so this call is expected to always receive a mapped
+// 401 — kept for API-shape completeness, not because it currently succeeds.
+// Response is returned as raw JSON; typed response structs are deferred.
+func (c *Client) CreateCaseComment(ctx context.Context, caseID string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, fmt.Sprintf("/cases/%s/comments", url.PathEscape(caseID)), body)
+}
+
 // SyncProductVulnerabilities calls POST /products/vulnerabilities/sync on the entity
 // service. This is a full-replace sync: the caller must submit the complete current set
 // of product-vulnerability records on every call, not an incremental delta — the

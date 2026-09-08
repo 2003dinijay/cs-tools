@@ -341,6 +341,144 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /cases/{id}:
+    patch:
+      summary: Update a case's state, severity, or workState (or other fields on ServiceNow).
+      description: >
+        The request body is forwarded to the entity service verbatim; the
+        entity service enforces its own field-combination rules (e.g. exactly
+        one of state/severity/workState) and 400s otherwise. Unlike
+        PATCH /projects/{id}, whether this operation requires a forwarded
+        end-user identity token depends on entity-service's own data source.
+        On a Postgres data source, a state/severity/workState update (optionally
+        combined with resolutionCode/cause/closeNotes when state is closed or
+        solution_proposed) succeeds through this M2M-only service — no token
+        check on that path. Every other field this shape accepts (watchList,
+        assigneeEmail, type and its companions, parentId, relatedCaseId,
+        autocloseHoldUntil, subject, description, deploymentId,
+        deployedProductId, the fix-ETA group, acknowledge, workaroundProvided)
+        is Postgres-rejected with 400, not proxied through to a token check.
+        On a ServiceNow data source, every field this operation accepts —
+        including a bare state/severity/workState update — requires a
+        forwarded identity token this service cannot supply, so every call
+        currently receives a mapped 401 there, with no field combination that
+        succeeds.
+      operationId: patchCase
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        description: Case fields to update. Field-combination rules are enforced upstream.
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseUpdateRequest'
+      responses:
+        "200":
+          description: The case was updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseUpdateResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized (upstream reported a missing or invalid forwarded identity — always when entity-service runs a ServiceNow data source, given this service's M2M-only design; not returned on a Postgres data source, where an unsupported field is a 400 instead)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "413":
+          description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /cases/{id}/comments:
+    post:
+      summary: Add a comment to a case.
+      description: >
+        This entity-service operation requires a forwarded end-user identity
+        token unconditionally, on both data sources — the comment's author is
+        resolved from that token. This service is strictly M2M with no
+        mechanism to supply one, so calls here currently always receive a
+        mapped 401. Kept for API-shape completeness, not because it currently
+        succeeds. The request body is forwarded to the entity service
+        verbatim.
+      operationId: createCaseComment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseCommentCreateRequest'
+      responses:
+        "201":
+          description: The comment was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseCommentCreateResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized (upstream reported a missing or invalid forwarded identity — always, given this service's M2M-only design)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "413":
+          description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /vulnerabilities/sync:
     post:
       summary: Full-replace sync of product-vulnerability records.
@@ -686,6 +824,85 @@ components:
           type: string
         project:
           $ref: '#/components/schemas/ProjectUpdateResult'
+
+    CaseUpdateRequest:
+      type: object
+      minProperties: 1
+      description: >
+        state, severity, and workState are mutually exclusive of each other
+        and of every other field in this request — exactly one of them, or
+        one combination of the other (ServiceNow-only) fields, is required
+        per call. Only state/severity/workState succeed through this
+        M2M-only service; every other field requires a forwarded end-user
+        identity token this service cannot supply. See the entity service's
+        own OpenAPI spec for the full field set and combination rules — this
+        is deliberately not fully re-specified here.
+      properties:
+        state:
+          type: string
+        severity:
+          type: string
+        workState:
+          type: string
+      additionalProperties: true
+
+    CaseUpdateResult:
+      type: object
+      properties:
+        id:
+          type: string
+        updatedOn:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+        state:
+          type: string
+        severity:
+          type: string
+        workState:
+          type: string
+          nullable: true
+      additionalProperties: true
+
+    CaseUpdateResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        case:
+          $ref: '#/components/schemas/CaseUpdateResult'
+
+    CaseCommentCreateRequest:
+      type: object
+      required:
+        - type
+        - content
+      properties:
+        type:
+          type: string
+          description: Comment type, e.g. comment, work_note, or activity.
+        content:
+          type: string
+
+    CaseCommentCreateResult:
+      type: object
+      properties:
+        id:
+          type: string
+        createdOn:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+
+    CaseCommentCreateResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        comment:
+          $ref: '#/components/schemas/CaseCommentCreateResult'
 
     ProductVulnerabilitySyncPayload:
       type: array
