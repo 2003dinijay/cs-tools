@@ -1385,7 +1385,8 @@ func (h *CaseHandler) CreateCaseEscalation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if len(body) > 0 && !json.Valid(body) {
+	var escalationBody map[string]json.RawMessage
+	if len(body) == 0 || json.Unmarshal(body, &escalationBody) != nil || escalationBody == nil {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}
