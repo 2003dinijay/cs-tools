@@ -19,6 +19,8 @@
 import { useNavigate, useSearchParams } from "react-router";
 import { Box, Skeleton } from "@mui/material";
 import { useOverview, useTaxonomy, makeIsCsStatus } from "@api/hooks";
+import { ErrorState } from "@components/ErrorState";
+import { errorMessage } from "@lib/apiError";
 import { HeroCard, CsHeroCard } from "@components/HeroCard";
 import { ProjectCard } from "@components/ProjectCard";
 import { PriorityTierCard } from "@components/PriorityTierCard";
@@ -41,6 +43,8 @@ function buildDrillUrl(
   const base = new URLSearchParams(currentSearch);
   const next = new URLSearchParams();
   next.set("bucket", bucket);
+  // Carries repo/priority from the current URL unless opts explicitly sets
+  // or clears (null) them for this drill.
   const resolve = (key: "repo" | "priority") => {
     const v = opts[key] === undefined ? base.get(key) : opts[key];
     if (v) next.set(key, v);
@@ -60,6 +64,7 @@ const VOL_LEGEND = [
 
 const sectionLabelSx = { px: "2px", fontSize: 11, fontWeight: 600, textTransform: "uppercase" as const, letterSpacing: "0.1em", color: "var(--sla-fg3)" };
 
+/** The SLA overview page: hero metrics, per-project/priority breakdowns, trends, and volume. */
 export default function DashboardPage() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
@@ -67,10 +72,11 @@ export default function DashboardPage() {
   const repo = params.get("repo") ?? undefined;
   const priority = params.get("priority") ?? undefined;
 
-  const { data: overview, isLoading } = useOverview(repo, priority);
+  const { data: overview, isLoading, isError, error, refetch } = useOverview(repo, priority);
   const { data: taxonomy } = useTaxonomy();
   const isCsStatus = makeIsCsStatus(taxonomy?.csStatuses);
 
+  // Sets or clears (empty value) one global filter in the URL.
   const setFilter = (key: "repo" | "priority", value: string) => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value);
@@ -78,12 +84,17 @@ export default function DashboardPage() {
     setParams(next, { replace: true });
   };
 
+  // Navigates to /issues, pre-filtered to bucket plus any repo/priority/status override.
   const drill = (
     bucket: string,
     opts: { repo?: string | null; priority?: string | null; status?: string | null } = {},
   ) => {
     void navigate(buildDrillUrl(bucket, opts, params.toString()));
   };
+
+  if (isError && !overview) {
+    return <ErrorState message={errorMessage(error, "Failed to load the dashboard")} onRetry={() => void refetch()} />;
+  }
 
   if (isLoading || !overview) {
     return (
@@ -113,6 +124,7 @@ export default function DashboardPage() {
   const allClear = overview.hero.violated.n + overview.hero.atRisk.n + overview.hero.cs.n === 0;
   const worst = overview.projects.find((p) => p.worst);
   const volMax = Math.max(1, ...overview.volume.flatMap((v) => v.weeks.map((w) => w.total)));
+  // "owner/name" for a volume panel's repoId, to key the repo filter toggle.
   const repoForId = (id: number) => overview.projects.find((p) => p.repoId === id)?.repo;
 
   return (

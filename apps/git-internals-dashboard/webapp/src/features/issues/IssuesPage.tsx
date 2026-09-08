@@ -22,6 +22,8 @@ import { Box, MenuItem, Select, Skeleton, type SelectChangeEvent } from "@mui/ma
 import { useOverview, useIssues, useIssueTitles, useTaxonomy, makeIsCsStatus } from "@api/hooks";
 import type { BucketKey } from "@api/types";
 import { BackButton } from "@components/BackButton";
+import { ErrorState } from "@components/ErrorState";
+import { errorMessage } from "@lib/apiError";
 import { IssueTimelineRow } from "@components/IssueTimelineRow";
 import { gridTemplate } from "@lib/grid";
 import { acrylicSurfaceSx } from "@lib/surfaces";
@@ -78,6 +80,7 @@ function FilterSelect({
   );
 }
 
+/** The filtered/drill-down issue list page, URL-driven by repo/priority/bucket/status/q. */
 export default function IssuesPage() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
@@ -93,12 +96,19 @@ export default function IssuesPage() {
       const next = new URLSearchParams(params);
       if (qInput) next.set("q", qInput);
       else next.delete("q");
-      void navigate(`/issues?${next.toString()}`.replace(/\?$/, ""), { replace: true });
+      // Re-based on the current `params` every time this effect (re)runs, so
+      // a repo/priority change applied while this timer is pending is never
+      // clobbered by a stale `params` snapshot when it finally fires. Once
+      // the query string already matches (e.g. this same effect re-armed
+      // itself after its own earlier navigate), skip navigating again.
+      if (next.toString() !== params.toString()) {
+        void navigate(`/issues?${next.toString()}`.replace(/\?$/, ""), { replace: true });
+      }
     }, 300);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qInput]);
+  }, [qInput, navigate, params]);
 
+  // Sets or clears (empty value) one URL search param, replacing history.
   const setParam = (key: string, value: string) => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value);
@@ -118,7 +128,13 @@ export default function IssuesPage() {
   const { data: overview } = useOverview(repo, priority);
   const { data: taxonomy } = useTaxonomy();
   const isCsStatus = makeIsCsStatus(taxonomy?.csStatuses);
-  const { data: issues, isLoading } = useIssues({
+  const {
+    data: issues,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useIssues({
     bucket,
     repo,
     priority,
@@ -132,6 +148,7 @@ export default function IssuesPage() {
   const { data: titles, isPending: titlesPending } = useIssueTitles(issueIds);
 
   const repoOptions = overview?.projects ?? [];
+  // Friendly project name for "owner/name", falling back to the repo's own name part.
   const nameForRepo = (r: string | null) =>
     overview?.projects.find((p) => p.repo === r)?.name ?? r?.split("/")[1] ?? "—";
   const projName = repo ? nameForRepo(repo) : "All projects";
@@ -226,7 +243,9 @@ export default function IssuesPage() {
           <Box component="span" sx={{ textAlign: "right" }}>Age</Box>
         </Box>
 
-        {isLoading ? (
+        {isError && !issues ? (
+          <ErrorState message={errorMessage(error, "Failed to load issues")} onRetry={() => void refetch()} />
+        ) : isLoading ? (
           <Box sx={{ display: "flex", flexDirection: "column", gap: 1, p: 2 }}>
             {Array.from({ length: 8 }).map((_, i) => (
               <Skeleton key={i} variant="rounded" sx={{ height: 36, width: "100%" }} />

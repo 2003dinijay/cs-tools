@@ -19,6 +19,8 @@ import { useState } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { Box } from "@mui/material";
 import { useTimeseries } from "@api/hooks";
+import { ErrorState } from "@components/ErrorState";
+import { errorMessage } from "@lib/apiError";
 import { acrylicSurfaceSx } from "@lib/surfaces";
 
 const MONO = "var(--font-mono)";
@@ -35,7 +37,9 @@ const CODE_COLOR: Record<string, string> = {
   P3: "var(--sla-p3)",
   P4: "var(--sla-p4)",
 };
+/** Maps a series key (a priority label) to its short "P1".."P4" code. */
 const codeOf = (key: string) => P_CODE[key] ?? key;
+/** Maps a series key to its accent color, falling back for an unrecognized tier. */
 const colorOf = (key: string) => CODE_COLOR[codeOf(key)] ?? "var(--sla-fg2)";
 
 type Metric = "violated" | "at_risk" | "total";
@@ -58,6 +62,7 @@ interface TimeseriesChartProps {
   onPriorityFilter: (priority: string) => void;
 }
 
+/** A small pill-shaped single-select control (metric/window pickers above the chart). */
 function Segmented<T extends string | number>({
   options,
   value,
@@ -97,11 +102,12 @@ function Segmented<T extends string | number>({
   );
 }
 
+/** Per-priority SLA metric line chart, with metric/window toggles and a clickable legend. */
 export function TimeseriesChart({ repo, activePriority, onPriorityFilter }: TimeseriesChartProps) {
   const [metric, setMetric] = useState<Metric>("violated");
   const [days, setDays] = useState<number>(30);
 
-  const { data, isLoading } = useTimeseries({ repo, metric, days, groupBy: "priority" });
+  const { data, isLoading, isError, error, refetch } = useTimeseries({ repo, metric, days, groupBy: "priority" });
 
   const chartData =
     data?.dates.map((date, i) => {
@@ -110,6 +116,7 @@ export function TimeseriesChart({ repo, activePriority, onPriorityFilter }: Time
       return row;
     }) ?? [];
 
+  // Today's value for a series, for the legend's trailing number.
   const last = (key: string) => {
     const s = data?.series.find((x) => x.key === key);
     return s ? s.points[s.points.length - 1] ?? 0 : 0;
@@ -128,7 +135,11 @@ export function TimeseriesChart({ repo, activePriority, onPriorityFilter }: Time
       </Box>
 
       <Box sx={{ mt: 2, height: 188 }}>
-        {isLoading ? (
+        {isError && !data ? (
+          <Box sx={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center" }}>
+            <ErrorState compact message={errorMessage(error, "Failed to load the chart")} onRetry={() => void refetch()} />
+          </Box>
+        ) : isLoading ? (
           <Box sx={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", fontSize: 12, color: "var(--sla-fg3)" }}>
             Loading…
           </Box>

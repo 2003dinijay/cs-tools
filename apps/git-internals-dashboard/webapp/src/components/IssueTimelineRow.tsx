@@ -19,6 +19,8 @@ import { useState } from "react";
 import { Box, Skeleton } from "@mui/material";
 import { useIssue } from "@api/hooks";
 import type { IssueRow, SlaState } from "@api/types";
+import { ErrorState } from "@components/ErrorState";
+import { errorMessage } from "@lib/apiError";
 import { gridTemplate } from "@lib/grid";
 import { fmtAge, fmtDateTime, shortPriority, SLA_STATE_LABEL, SLA_STATE_COLOR } from "@lib/sla";
 import { safeHttpUrl } from "@lib/url";
@@ -44,6 +46,7 @@ interface IssueTimelineRowProps {
   isCsStatus: (status: string | null | undefined) => boolean;
 }
 
+/** One issue's row in a list, expandable to its status-event timeline. */
 export function IssueTimelineRow({
   issue,
   title = null,
@@ -53,7 +56,7 @@ export function IssueTimelineRow({
   isCsStatus,
 }: IssueTimelineRowProps) {
   const [open, setOpen] = useState(false);
-  const { data: detail } = useIssue(issue.id, open);
+  const { data: detail, isError, error, refetch } = useIssue(issue.id, open);
 
   const cols = gridTemplate(showSlaState);
   const cs = isCsStatus(issue.currentStatus);
@@ -179,7 +182,9 @@ export function IssueTimelineRow({
           <Box sx={{ mb: 1.5, fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--sla-fg3)" }}>
             Status-event timeline
           </Box>
-          {!detail ? (
+          {isError && !detail ? (
+            <ErrorState compact message={errorMessage(error, "Failed to load the timeline")} onRetry={() => void refetch()} />
+          ) : !detail ? (
             <Box component="p" sx={{ m: 0, fontSize: 12, color: "var(--sla-fg3)" }}>Loading timeline…</Box>
           ) : detail.events.length === 0 ? (
             <Box component="p" sx={{ m: 0, fontSize: 12, color: "var(--sla-fg3)" }}>No status events recorded.</Box>
