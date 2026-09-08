@@ -7096,11 +7096,11 @@ components:
           type: array
           items:
             type: string
-            format: uuid
           description: |
-            The full set of user identifiers to set as the case watch list, replacing
-            whatever is there (ServiceNow only). An empty array clears the watch list,
-            and counts as providing the field.
+            The full set of watchers to set on the case, replacing whatever is there
+            (ServiceNow only). Each item is a watcher email (Customer Portal) or a
+            platform user UUID (CSM); the list must be all emails or all UUIDs. An
+            empty array clears the watch list, and counts as providing the field.
         assigneeEmail:
           type: string
           format: email

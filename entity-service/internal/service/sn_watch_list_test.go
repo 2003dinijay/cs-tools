@@ -247,6 +247,43 @@ func TestSNCaseService_UpdateCase_WatchListResolvedToEmails(t *testing.T) {
 	assertWatchListPayload(t, gotBody, []string{testWatcherEmail1, testWatcherEmail2})
 }
 
+// TestSNCaseService_UpdateCase_WatchListEmailsForwarded verifies PATCH /cases
+// accepts watcher emails (service-request / case edit) without treating them
+// as user UUIDs.
+func TestSNCaseService_UpdateCase_WatchListEmailsForwarded(t *testing.T) {
+	var gotBody map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/search", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("email watch lists must not trigger a user lookup")
+	})
+	mux.HandleFunc("/cases/"+testWLCaseSysid, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("expected PATCH, got %s", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"message": "Case updated successfully",
+			"case": {"id": "` + testWLCaseSysid + `", "updatedOn": "2026-01-03 10:00:00", "updatedBy": "engineer@example.com"}
+		}`))
+	})
+
+	svc := NewServiceNowCaseService(newTestSNClient(t, mux), nil, nil)
+
+	watchList := []string{testWatcherEmail1, testWatcherEmail2}
+	_, err := svc.UpdateCase(contextWithUserIDToken("token"), domain.UpdateCaseRequest{
+		ID:        sysidToUUID(testWLCaseSysid),
+		WatchList: &watchList,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertWatchListPayload(t, gotBody, []string{testWatcherEmail1, testWatcherEmail2})
+}
+
 // TestSNIncidentService_UpdateIncident_WatchListClearedByEmptyList verifies an
 // explicitly empty watch list still reaches the backing service as an empty list.
 // The incident-update payload replaces the whole watch list, so an empty list is
