@@ -42,7 +42,7 @@ export interface WallboardSecondaryStatProps {
 
 /**
  * One CRE "secondary tier" stat card — the 3-column row below CRE's
- * primary 2x2 grid. Ported from `digiops-cs`'s `SecondaryStat`, which
+ * primary 2x2 grid. Ported from the reference wallboard's `SecondaryStat`, which
  * (unlike `StatCard`) has no `alertType`/glow concept at all: always plain
  * white value text on a neutral gray tile, regardless of count.
  * Deliberately a separate component from `WallboardStatTile` rather than
@@ -114,7 +114,10 @@ export default function WallboardSecondaryStat({
         // skeleton height (its "primary" variant), now that this tier's
         // value text is that same size.
         <Skeleton variant="rounded" height={30.4} width="60%" sx={{ bgcolor: "rgba(255,255,255,0.08)" }} />
-      ) : isError ? (
+      ) : isError && !data ? (
+        // Same as WallboardStatTile: only show a dash when nothing is
+        // cached. A transient failure on the 60s auto-refresh keeps the
+        // last-known count on screen rather than flickering it to "—".
         <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.5)" }}>
           —
         </Typography>

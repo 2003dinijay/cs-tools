@@ -93,6 +93,22 @@ describe("WallboardDashboard", () => {
     expect(screen.getByText(/Could not load the dashboard/)).toBeInTheDocument();
   });
 
+  // Regression test (rksk review): a single failed background refetch on
+  // the 60s auto-refresh must NOT blank the wall display — React Query
+  // keeps the last successful `data` through a refetch error, so keep
+  // rendering it (the "Last updated" stamp already shows how stale it is).
+  it("keeps rendering the last-known dashboard when a background refetch errors, instead of blanking to the error screen", () => {
+    useDashboardMock.mockReturnValue({
+      data: dashboardResult([widget("w1", "Open", "CRE")]),
+      isLoading: false,
+      isError: true,
+      dataUpdatedAt: new Date("2026-01-01T15:04:05").getTime(),
+    });
+    render(<WallboardDashboard dashboardId="cs-overview" />);
+    expect(screen.queryByText(/Could not load the dashboard/)).not.toBeInTheDocument();
+    expect(screen.getByTestId("panel-cre")).toBeInTheDocument();
+  });
+
   it("shows a dash for 'Last updated' before any fetch has resolved (dataUpdatedAt is 0)", () => {
     useDashboardMock.mockReturnValue({
       data: dashboardResult([]),
@@ -203,6 +219,25 @@ describe("WallboardDashboard", () => {
     render(<WallboardDashboard dashboardId="cs-overview" />);
     expect(screen.getByText("Some Unrelated Section")).toBeInTheDocument();
     expect(screen.getByText("Some Metric")).toBeInTheDocument();
+  });
+
+  // Regression test (rksk review): the fallback row for an unrecognized
+  // 5th+ section is natural-height and appended below the fixed 2x2 grid
+  // inside a `100dvh` frame — the grid container must carry an explicit
+  // scroll policy so that row scrolls rather than clipping off the kiosk
+  // screen.
+  it("gives the panel grid an explicit overflow policy so an extra unrecognized section can't clip off the fixed-height frame", () => {
+    useDashboardMock.mockReturnValue({
+      data: dashboardResult([
+        widget("w1", "Open", "CRE"),
+        widget("w2", "Some Metric", "Some Unrelated Section"),
+      ]),
+      isLoading: false,
+      isError: false,
+    });
+    render(<WallboardDashboard dashboardId="cs-overview" />);
+    const grid = screen.getByTestId("panel-cre").parentElement;
+    expect(grid).toHaveStyle({ overflowY: "auto" });
   });
 
   it("renders nothing for a section family with no widgets configured, rather than an empty panel", () => {

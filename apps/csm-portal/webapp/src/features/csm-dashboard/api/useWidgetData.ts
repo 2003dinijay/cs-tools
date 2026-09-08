@@ -99,8 +99,8 @@ export function useWidgetData(
    * default) means no auto-refetch at all, the behavior every existing
    * caller had before this parameter existed. Only the CS Overview
    * dashboard's own tiles (`WallboardStatTile`/`WallboardSecondaryStat`)
-   * pass a value here, to match `digiops-cs`'s own Wallboard.tsx 60s
-   * refresh; `DashboardWidgetTile` and every other caller leaves it
+   * pass a value here, to match the reference wallboard implementation's
+   * 60s refresh; `DashboardWidgetTile` and every other caller leaves it
    * unset. */
   refetchIntervalMs?: number,
 ): UseQueryResult<WidgetData, Error> {

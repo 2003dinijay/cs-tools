@@ -167,7 +167,12 @@ export default function WallboardStatTile({
           width="60%"
           sx={{ bgcolor: "rgba(255,255,255,0.08)" }}
         />
-      ) : isError ? (
+      ) : isError && !data ? (
+        // Only fall back to a dash when there's no cached count at all.
+        // React Query keeps the last successful `data` through a failed
+        // background refetch, so a single transient failure on the 60s
+        // auto-refresh must not flicker a real, glanceable number to "—"
+        // on the wall display — keep showing the last-known count.
         <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.5)" }}>
           —
         </Typography>

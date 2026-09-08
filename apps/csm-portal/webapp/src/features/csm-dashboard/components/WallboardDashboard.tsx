@@ -173,9 +173,9 @@ function renderSectionBody(
 }
 
 /**
- * The CS Overview dashboard's content — styled to match `digiops-cs`'s
- * `Wallboard.tsx` (see `CS_Dashboard.png`): a 2x2 grid of panels (CRE / SRE
- * / Security Report / FDE), each with its own accent color and internal
+ * The CS Overview dashboard's content — styled to match the reference
+ * wallboard implementation (see `CS_Dashboard.png`): a 2x2 grid of panels
+ * (CRE / SRE / Security Report / FDE), each with its own accent color and internal
  * layout. Data comes from the exact same config-driven `GET
  * /dashboards/{id}` + per-widget `useWidgetData` path every other CSM
  * Portal dashboard already uses — only the rendering is different.
@@ -186,7 +186,7 @@ export default function WallboardDashboard({
   selectedTeamSreGroupId,
   selectedTeamLabel,
 }: WallboardDashboardProps): JSX.Element {
-  const { data, isLoading, isError, dataUpdatedAt } = useDashboard(dashboardId, CS_OVERVIEW_REFETCH_INTERVAL_MS);
+  const { data, isError, dataUpdatedAt } = useDashboard(dashboardId, CS_OVERVIEW_REFETCH_INTERVAL_MS);
 
   // `dataUpdatedAt` (React Query's own cache timestamp, not component
   // state) — not "track when `data` last changed": React Query's default
@@ -199,17 +199,23 @@ export default function WallboardDashboard({
   // (which fully unmounts this component) without going blank in between.
   const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString() : undefined;
 
-  if (isError) {
-    return (
-      <WallboardPageFrame sx={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.7)" }}>
-          Could not load the dashboard.
-        </Typography>
-      </WallboardPageFrame>
-    );
-  }
-
-  if (isLoading || !data) {
+  // Only fall back to the error / loading screens when there is nothing
+  // cached to render. React Query keeps the last successful `data` through
+  // a *failed background refetch* (it clears `data` only on a first-fetch
+  // failure), so a single transient 5xx during the 60s auto-refresh must
+  // NOT blank a working wall display — keep showing the last-known
+  // dashboard, with the "Last updated" stamp already conveying how stale
+  // it is.
+  if (!data) {
+    if (isError) {
+      return (
+        <WallboardPageFrame sx={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.7)" }}>
+            Could not load the dashboard.
+          </Typography>
+        </WallboardPageFrame>
+      );
+    }
     return <LoadingSkeleton />;
   }
 
@@ -274,6 +280,13 @@ export default function WallboardDashboard({
           gap: 2,
           flex: 1,
           minHeight: 0,
+          // Explicit overflow policy: the four known families fit the 2x2
+          // grid, but an unrecognized 5th+ section renders as an
+          // unbounded, natural-height fallback row appended below it (see
+          // the `familyFor(...) === undefined` block). Inside this fixed
+          // `100dvh` frame that row has no height budget — scroll it
+          // rather than let it clip or push content off the kiosk screen.
+          overflowY: "auto",
         }}
       >
         {(["cre", "sre", "security", "fde"] as const).map((family) => {

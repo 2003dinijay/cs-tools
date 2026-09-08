@@ -24,8 +24,8 @@ const CS_OVERVIEW_DASHBOARD_ID = "cs-overview";
 
 /**
  * `/cs-monitor-dashboard` — a standalone, full-screen rendering of the
- * `cs-overview` dashboard, styled to match `digiops-cs`'s Wallboard.tsx
- * (see `CS_Dashboard.png`). Requires real sign-in (routed through
+ * `cs-overview` dashboard, styled to match the reference wallboard
+ * implementation (see `CS_Dashboard.png`). Requires real sign-in (routed through
  * `<AuthGuard bare />` in App.tsx) but renders NOTHING else — no header, no
  * sidebar, no banners, no "Dashboard" title, no dashboard/team switcher —
  * just this one component, edge to edge. `CsmDashboardPage.tsx` (the

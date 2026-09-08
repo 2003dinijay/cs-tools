@@ -26,7 +26,7 @@ interface PanelAccent {
   lineColor: string;
 }
 
-// Ported from `digiops-cs`'s `Wallboard.tsx`: each of the four panels has
+// Ported from the reference wallboard implementation: each of the four panels has
 // its own fixed accent color, independent of the emphasis colors used
 // inside its own stat tiles (`wallboardMetricStyle.ts`) — e.g. the SRE
 // panel's own icon/border is `emerald`, a color that never appears as a

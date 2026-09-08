@@ -14,8 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, LinearProgress } from "@wso2/oxygen-ui";
+import { Box } from "@wso2/oxygen-ui";
 import { type JSX } from "react";
+import RouteSuspenseFallback from "@components/route-fallback/RouteSuspenseFallback";
 
 /**
  * `AuthGuard`'s own `loader` for a `bare` route (see `AuthGuardProps`) while
@@ -24,24 +25,16 @@ import { type JSX } from "react";
  * matching what the route itself renders once signed in). Kept as its own
  * small component, not inlined in `AuthGuard`, so a `bare` route's loading
  * state can evolve independently of the normal `AppLayout` one.
+ *
+ * The centered progress bar itself is `RouteSuspenseFallback` — the same
+ * spinner every lazy route chunk shows inside the app shell — wrapped here
+ * in a full-viewport `Box` since a `bare` route has no app shell for it to
+ * fill. Reusing it keeps the two in sync if the spinner is ever restyled.
  */
 export default function BareAuthLoader(): JSX.Element {
   return (
-    <Box
-      sx={{
-        height: "100dvh",
-        width: "100%",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 2,
-      }}
-    >
-      <LinearProgress
-        color="inherit"
-        sx={{ color: "primary.main", width: "80%", maxWidth: 400, height: 4 }}
-      />
+    <Box sx={{ height: "100dvh", width: "100%", display: "flex", flexDirection: "column" }}>
+      <RouteSuspenseFallback />
     </Box>
   );
 }

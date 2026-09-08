@@ -42,7 +42,23 @@ export default function WallboardCreSection({
   selectedTeamSreGroupId,
   selectedTeamLabel,
 }: WallboardCreSectionProps): JSX.Element {
-  const byName = new Map(widgets.map((w) => [w.displayName, w] as const));
+  // Keyed by (already alias-resolved) displayName so each CRE_PRIMARY_ORDER
+  // slot can be looked up by name. `resolveDisplayNameAlias` is
+  // deliberately many-to-one (live backend naming keeps drifting), so two
+  // backend CRE widgets can collapse to the same displayName here — the
+  // later one wins the slot and the earlier silently drops out of the
+  // grid. Warn in dev builds so that collision shows up in testing rather
+  // than as a mystery missing tile in production.
+  const byName = new Map<string, BeDashboardWidget>();
+  for (const w of widgets) {
+    if (import.meta.env.DEV && byName.has(w.displayName)) {
+      console.warn(
+        `[WallboardCreSection] Two CRE widgets resolve to the display name "${w.displayName}"; ` +
+          "only the last one will render. Check the cs-overview dashboard config and DISPLAY_NAME_ALIASES.",
+      );
+    }
+    byName.set(w.displayName, w);
+  }
   const primary = CRE_PRIMARY_ORDER.map((name) => byName.get(name)).filter(
     (w): w is BeDashboardWidget => w !== undefined,
   );

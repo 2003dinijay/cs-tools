@@ -71,6 +71,18 @@ describe("WallboardCreSection", () => {
     expect(screen.getByTestId("primary-grid")).toHaveTextContent("Open,Escalations");
   });
 
+  // Regression test (rksk review): `byName` keys widgets by post-alias
+  // displayName, and `resolveDisplayNameAlias` is many-to-one — so two
+  // backend widgets can collapse to one slot, the earlier silently
+  // dropping out of the grid. A dev-only warning makes that surface in
+  // testing rather than as a mystery missing tile in production.
+  it("warns in dev when two CRE widgets collapse to the same display name", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(<WallboardCreSection widgets={[widget("w1", "Open"), widget("w2", "Open")]} />);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"Open"'));
+    warn.mockRestore();
+  });
+
   it("renders the secondary tier in CRE_SECONDARY_ORDER's own fixed order, regardless of input array order", () => {
     render(
       <WallboardCreSection

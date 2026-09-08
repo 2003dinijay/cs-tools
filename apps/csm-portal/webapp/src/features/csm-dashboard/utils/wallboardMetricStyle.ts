@@ -15,8 +15,8 @@
 // under the License.
 
 /** How often CS Overview auto-refetches its dashboard metadata and every
- * tile's own count, in milliseconds — matches `digiops-cs`'s own
- * Wallboard.tsx (`REFRESH_INTERVAL = 60` seconds), per Chamara's ask
+ * tile's own count, in milliseconds — matches the reference wallboard
+ * implementation (`REFRESH_INTERVAL = 60` seconds), per Chamara's ask
  * (confirmed 60s over his own initial 30s guess, once told what the
  * original reference actually uses). Passed explicitly by
  * `WallboardDashboard`/`WallboardStatTile`/`WallboardSecondaryStat` into
@@ -27,8 +27,9 @@ export const CS_OVERVIEW_REFETCH_INTERVAL_MS = 60_000;
 
 /**
  * Per-metric glow colors for the CS Overview dashboard, ported field-for-
- * field from `digiops-cs`'s `Wallboard.tsx` `StatCard` — read directly from
- * its source (not approximated) to get two easy-to-miss details right:
+ * field from the reference wallboard implementation's `StatCard` — read
+ * directly from its source (not approximated) to get two easy-to-miss
+ * details right:
  *
  * 1. The VALUE color is driven purely by `alertType` ("cyan"/"red"/"amber")
  *    and is always exactly one of three fixed Tailwind `-200` shades,

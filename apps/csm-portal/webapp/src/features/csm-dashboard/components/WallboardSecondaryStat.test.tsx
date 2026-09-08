@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -46,11 +46,14 @@ import { __resetWidgetFetchConcurrencyForTests } from "@features/csm-dashboard/u
 
 function renderWithClient(ui: ReactNode) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter>{ui}</MemoryRouter>
-    </QueryClientProvider>,
-  );
+  return {
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>{ui}</MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 describe("WallboardSecondaryStat", () => {
@@ -77,6 +80,25 @@ describe("WallboardSecondaryStat", () => {
     expect(screen.getByText("Being Fixed")).toBeInTheDocument();
     // Unlike WallboardStatTile, this tier is never glow-capable at all.
     expect(container.querySelector("[data-alert]")).toBeNull();
+  });
+
+  // Regression test (rksk review): same as WallboardStatTile — a failed
+  // background refetch keeps the last good count on screen rather than
+  // flickering it to "—".
+  it("keeps showing the last good count when a background refetch fails, instead of flipping to a dash", async () => {
+    postMock.mockResolvedValueOnce({ total: 12, incidents: [], limit: 1, offset: 0, hasMore: false });
+    const { queryClient } = renderWithClient(
+      <WallboardSecondaryStat widgetId="w1" displayName="Being Fixed" resourceType="incident" filters={{}} />,
+    );
+    expect(await screen.findByText("12")).toBeInTheDocument();
+
+    postMock.mockRejectedValue(new Error("transient 5xx"));
+    await queryClient.refetchQueries();
+
+    await waitFor(() => {
+      expect(screen.getByText("12")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
   });
 
   // Regression test (CodeRabbit): same underlying issue as

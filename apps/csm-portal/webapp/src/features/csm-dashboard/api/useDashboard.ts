@@ -33,7 +33,7 @@ import type { BeDashboard } from "@api/backend/types";
  * milliseconds — `undefined` (the default) means no auto-refetch at all,
  * the behavior every caller had before this parameter existed. Only the
  * CS Overview dashboard (`WallboardDashboard`) passes a value here, to
- * match `digiops-cs`'s own Wallboard.tsx 60s refresh; every other
+ * match the reference wallboard implementation's 60s refresh; every other
  * dashboard's own call site leaves it unset.
  */
 export function useDashboard(

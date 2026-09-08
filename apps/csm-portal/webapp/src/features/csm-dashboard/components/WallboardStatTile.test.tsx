@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -46,11 +46,14 @@ import { __resetWidgetFetchConcurrencyForTests } from "@features/csm-dashboard/u
 
 function renderWithClient(ui: ReactNode) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter>{ui}</MemoryRouter>
-    </QueryClientProvider>,
-  );
+  return {
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>{ui}</MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 describe("WallboardStatTile", () => {
@@ -141,6 +144,26 @@ describe("WallboardStatTile", () => {
   // `awaitingCurrentUser` too, not just `isLoading`, or the still-loading
   // skeleton could get wrapped in a clickable link built from filters
   // that still carry the unresolved __current_user__ placeholder.
+  // Regression test (rksk review): a failed background refetch on the 60s
+  // auto-refresh must keep the last good count on screen — React Query
+  // holds `data` through a refetch error — not flicker a real number to
+  // "—" on a display meant to be glanced at from across a room.
+  it("keeps showing the last good count when a background refetch fails, instead of flipping to a dash", async () => {
+    postMock.mockResolvedValueOnce({ total: 7, incidents: [], limit: 1, offset: 0, hasMore: false });
+    const { queryClient } = renderWithClient(
+      <WallboardStatTile widgetId="open" displayName="Open" resourceType="incident" filters={{}} section="cre" />,
+    );
+    expect(await screen.findByText("7")).toBeInTheDocument();
+
+    postMock.mockRejectedValue(new Error("transient 5xx"));
+    await queryClient.refetchQueries();
+
+    await waitFor(() => {
+      expect(screen.getByText("7")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
+  });
+
   it("does not wrap the tile in a link while awaiting the current user's own id", () => {
     mockCurrentUserId = undefined;
     postMock.mockReturnValue(new Promise(() => {}));
