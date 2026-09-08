@@ -32,6 +32,7 @@ declare global {
   }
 }
 
+/** Returns window.config[key], throwing a descriptive error if unset/empty. */
 function required(key: keyof Window["config"]): string {
   const value = window.config?.[key];
   if (!value) {
@@ -42,12 +43,36 @@ function required(key: keyof Window["config"]): string {
   return value;
 }
 
+// A bearer token from Asgardeo must never go out over cleartext HTTP except
+// to a loopback address during local development — anything else risks the
+// token leaking to a network eavesdropper or a misconfigured plain-HTTP
+// backend. client.ts's request() relies on backendBaseUrl() to enforce this
+// before it ever asks for a token.
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/** Returns url unchanged, or throws if it isn't https: (or http: on a loopback host). */
+function assertSecureBackendUrl(url: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Invalid GID_BACKEND_BASE_URL: ${url}`);
+  }
+  const isLoopbackHttp = parsed.protocol === "http:" && LOOPBACK_HOSTNAMES.has(parsed.hostname);
+  if (parsed.protocol !== "https:" && !isLoopbackHttp) {
+    throw new Error(
+      `GID_BACKEND_BASE_URL must use https: (http: is only permitted for localhost/127.0.0.1/::1 during development), got: ${url}`,
+    );
+  }
+  return url;
+}
+
 export const windowConfig = {
   authBaseUrl: (): string => required("GID_AUTH_BASE_URL"),
   authClientId: (): string => required("GID_AUTH_CLIENT_ID"),
   authSignInRedirectUrl: (): string => required("GID_AUTH_SIGN_IN_REDIRECT_URL"),
   authSignOutRedirectUrl: (): string => required("GID_AUTH_SIGN_OUT_REDIRECT_URL"),
   authScopes: (): string => window.config?.GID_AUTH_SCOPES || "openid profile",
-  backendBaseUrl: (): string => required("GID_BACKEND_BASE_URL"),
+  backendBaseUrl: (): string => assertSecureBackendUrl(required("GID_BACKEND_BASE_URL")),
   logLevel: (): string => window.config?.GID_LOG_LEVEL || "ERROR",
 };

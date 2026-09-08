@@ -39,9 +39,11 @@ export class ApiError extends Error {
 // AuthGuard's AuthBridge, which does have access to useAsgardeo().
 type TokenGetter = () => Promise<string>;
 let tokenGetter: TokenGetter | null = null;
+/** Wires (or clears, on `null`) the getter `request()` uses to attach a bearer token. */
 export function setAccessTokenGetter(fn: TokenGetter | null): void {
   tokenGetter = fn;
 }
+/** Resolves the current access token, or null if unset or the getter throws. */
 async function getAccessToken(): Promise<string | null> {
   if (!tokenGetter) return null;
   try {
@@ -53,6 +55,7 @@ async function getAccessToken(): Promise<string | null> {
 
 type UnauthorizedHandler = () => void;
 let unauthorizedHandler: UnauthorizedHandler | null = null;
+/** Wires (or clears, on `null`) the handler `request()` calls on a 401 response. */
 export function setUnauthorizedHandler(fn: UnauthorizedHandler | null): void {
   unauthorizedHandler = fn;
 }
@@ -61,9 +64,14 @@ interface ErrorEnvelope {
   error?: { code?: string; message?: string };
 }
 
+/** Fetches `${backendBaseUrl}${path}`, attaching a bearer token and parsing the D3 error envelope on failure. */
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // backendBaseUrl() throws for a non-HTTPS, non-loopback URL — checked
+  // before requesting a token so an insecure GID_BACKEND_BASE_URL can never
+  // result in a bearer token leaving the browser.
+  const baseUrl = windowConfig.backendBaseUrl();
   const token = await getAccessToken();
-  const res = await fetch(`${windowConfig.backendBaseUrl()}${path}`, {
+  const res = await fetch(`${baseUrl}${path}`, {
     ...init,
     headers: {
       // AUDIT-FINDINGS B8: only a request with a body has a body type to
@@ -90,6 +98,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** Renders params as a `?a=1&b=2` query string, dropping undefined/empty-string entries. */
 export function qs(params: Record<string, string | number | undefined>): string {
   const sp = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {

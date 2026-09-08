@@ -47,4 +47,25 @@ describe("windowConfig", () => {
     window.config = { GID_LOG_LEVEL: "DEBUG" };
     expect(windowConfig.logLevel()).toBe("DEBUG");
   });
+
+  it("accepts an https backend URL", () => {
+    // @ts-expect-error -- partial config is fine for this test
+    window.config = { GID_BACKEND_BASE_URL: "https://api.example.com" };
+    expect(windowConfig.backendBaseUrl()).toBe("https://api.example.com");
+  });
+
+  it.each(["http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080"])(
+    "accepts an http backend URL on a loopback host (%s)",
+    (url) => {
+      // @ts-expect-error -- partial config is fine for this test
+      window.config = { GID_BACKEND_BASE_URL: url };
+      expect(windowConfig.backendBaseUrl()).toBe(url);
+    },
+  );
+
+  it("rejects an http backend URL on a non-loopback host", () => {
+    // @ts-expect-error -- partial config is fine for this test
+    window.config = { GID_BACKEND_BASE_URL: "http://api.example.com" };
+    expect(() => windowConfig.backendBaseUrl()).toThrow(/https/);
+  });
 });
