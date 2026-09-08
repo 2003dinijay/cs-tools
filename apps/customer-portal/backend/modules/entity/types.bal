@@ -42,7 +42,8 @@ public type Pagination record {|
     int offset = DEFAULT_OFFSET;
     # Limit for pagination
     @constraint:Int {
-        minValue: 1
+        minValue: MIN_LIMIT,
+        maxValue: MAX_LIMIT
     }
     int 'limit = DEFAULT_LIMIT;
     json...;
