@@ -24,10 +24,19 @@
 import { type JSX, type ReactNode, useEffect, useRef, useState } from "react";
 import { useAsgardeo } from "@asgardeo/react";
 import { ProtectedRoute } from "@asgardeo/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { Box, CircularProgress } from "@mui/material";
 import { setAccessTokenGetter, setUnauthorizedHandler } from "@api/client";
 import AppShell from "./AppShell";
 
+// How long a false `isSignedIn` must persist before it's treated as a real
+// sign-out rather than AsgardeoProvider's known transient flip (see
+// hasSignedInOnce below) — long enough to absorb that flip, short enough
+// that a genuinely lost session doesn't keep rendering stale, unprotected
+// UI (and this session's cached query data) for long.
+const REAUTH_GRACE_MS = 2000;
+
+/** A full-viewport centered loading spinner. */
 function CenteredSpinner(): JSX.Element {
   return (
     <Box sx={{ display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center" }}>
@@ -80,14 +89,16 @@ function AuthBridge({ children }: { children: ReactNode }): JSX.Element {
   return <>{children}</>;
 }
 
+/** Redirects a signed-out visitor to sign-in; renders AppShell once signed in. */
 export default function AuthGuard(): JSX.Element {
   const { isSignedIn } = useAsgardeo();
+  const queryClient = useQueryClient();
 
-  // Latches true the first time `isSignedIn` is observed true, and never
-  // resets. Set directly in the render body (React's documented "adjusting
-  // state during rendering" pattern, not an effect) so the very same render
-  // that first sees `isSignedIn` also switches branches, instead of
-  // committing one extra render through `ProtectedRoute` first.
+  // Latches true the first time `isSignedIn` is observed true. Set directly
+  // in the render body (React's documented "adjusting state during
+  // rendering" pattern, not an effect) so the very same render that first
+  // sees `isSignedIn` also switches branches, instead of committing one
+  // extra render through `ProtectedRoute` first.
   //
   // Without this, `ProtectedRoute` swaps to `fallback` (unmounting
   // `AuthBridge`/`AppShell`) for as long as `isSignedIn` is false, however
@@ -100,10 +111,32 @@ export default function AuthGuard(): JSX.Element {
   // continuously, since `AsgardeoProvider`'s post-sign-in bookkeeping
   // re-fires from the remounted `SignInRedirect` every time, turning a
   // single flip into an unbounded loop.
+  //
+  // The latch is NOT permanent, though: a `false` reading that survives
+  // REAUTH_GRACE_MS (below) is treated as a real sign-out, not the transient
+  // bookkeeping flip — otherwise a stale/expired session could keep
+  // rendering `AppShell`, with a later session's sign-in doing nothing to
+  // reset it and this session's cached query data still sitting in the
+  // shared QueryClient for that later session to see.
   const [hasSignedInOnce, setHasSignedInOnce] = useState(false);
   if (isSignedIn && !hasSignedInOnce) {
     setHasSignedInOnce(true);
   }
+
+  useEffect(() => {
+    if (isSignedIn || !hasSignedInOnce) return;
+    // isSignedIn just went false while still latched in. If it flips back
+    // true before REAUTH_GRACE_MS elapses, this cleanup cancels the timer
+    // and nothing happens (the transient case above). Otherwise, this is a
+    // real sign-out: drop any cached data from this session before
+    // resetting the latch, so ProtectedRoute takes over again and a
+    // subsequent sign-in never renders through stale cache.
+    const timer = window.setTimeout(() => {
+      queryClient.clear();
+      setHasSignedInOnce(false);
+    }, REAUTH_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [isSignedIn, hasSignedInOnce, queryClient]);
 
   if (hasSignedInOnce) {
     return (
