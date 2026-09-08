@@ -176,18 +176,41 @@ func (h *CaseHandler) resolveCurrentUserID(r *http.Request, user *middleware.Use
 	return me.ID
 }
 
-// isDeescalationAction reports whether a case-escalation request body's
-// "action" field is DEESCALATE (case-insensitive). A missing/empty action
-// defaults to ESCALATE per the entity service's own contract, so only an
-// explicit "DEESCALATE"/"deescalate"/etc. value counts.
-func isDeescalationAction(body []byte) bool {
-	var payload struct {
-		Action string `json:"action"`
+// validateCaseEscalationBody decodes and validates a case-escalation request
+// body against the entity service's CaseEscalationCreateRequest contract:
+// unknown fields are rejected, "action" (if present) must be ESCALATE or
+// DEESCALATE case-insensitively (missing/empty defaults to ESCALATE), and
+// "reason" is required and non-blank unless the effective action is
+// DEESCALATE. Returns the normalized, upper-case effective action and
+// whether the body is valid.
+func validateCaseEscalationBody(body []byte) (action string, ok bool) {
+	var req struct {
+		Reason *string `json:"reason"`
+		Action *string `json:"action"`
 	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return false
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return "", false
 	}
-	return strings.EqualFold(payload.Action, "DEESCALATE")
+
+	action = "ESCALATE"
+	if req.Action != nil {
+		switch {
+		case strings.EqualFold(*req.Action, "ESCALATE"):
+			action = "ESCALATE"
+		case strings.EqualFold(*req.Action, "DEESCALATE"):
+			action = "DEESCALATE"
+		default:
+			return "", false
+		}
+	}
+
+	if action != "DEESCALATE" && (req.Reason == nil || strings.TrimSpace(*req.Reason) == "") {
+		return "", false
+	}
+
+	return action, true
 }
 
 // callerIsNotifiedOnCurrentEscalation reports whether the caller is one of the
@@ -1385,13 +1408,13 @@ func (h *CaseHandler) CreateCaseEscalation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var escalationBody map[string]json.RawMessage
-	if len(body) == 0 || json.Unmarshal(body, &escalationBody) != nil || escalationBody == nil {
+	action, valid := validateCaseEscalationBody(body)
+	if !valid {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}
 
-	if isDeescalationAction(body) && !h.callerIsNotifiedOnCurrentEscalation(r, caseID, user) {
+	if action == "DEESCALATE" && !h.callerIsNotifiedOnCurrentEscalation(r, caseID, user) {
 		writeError(w, http.StatusForbidden, ErrMsgForbidden)
 		return
 	}
