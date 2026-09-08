@@ -185,12 +185,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		caseGithubIssueHandler = handler.NewCaseGithubIssueHandler(service.NewServiceNowCaseGithubIssueService(serviceNowIntegrationServiceClient, activeCaseSvc))
 	}
 
-	var caseEscalationHandler *handler.CaseEscalationHandler
+	// Case escalations are a ServiceNow-only entity, but the routes are
+	// registered for both data sources -- see the taskHandler comment above
+	// for why an unregistered route (bare 404) is the wrong shape for a
+	// feature the OpenAPI spec documents a 503 ErrorResponse for. The
+	// Postgres stand-in supplies that 503.
+	var activeCaseEscalationSvc service.CaseEscalationService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		caseEscalationHandler = handler.NewCaseEscalationHandler(
-			service.NewCaseEscalationService(service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient), activeCaseSvc),
-		)
+		activeCaseEscalationSvc = service.NewCaseEscalationService(service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient), activeCaseSvc)
+	} else {
+		activeCaseEscalationSvc = service.NewUnavailableCaseEscalationService()
 	}
+	caseEscalationHandler := handler.NewCaseEscalationHandler(activeCaseEscalationSvc)
 
 	var changeRequestHandler *handler.ChangeRequestHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -423,10 +429,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /cases/{id}/github-issues", caseGithubIssueHandler.CreateCaseGithubIssue)
 	}
 
-	if caseEscalationHandler != nil {
-		mux.HandleFunc("GET /cases/{id}/escalations", caseEscalationHandler.SearchCaseEscalations)
-		mux.HandleFunc("POST /cases/{id}/escalations", caseEscalationHandler.CreateCaseEscalation)
-	}
+	// caseEscalationHandler is always non-nil (see its construction above);
+	// unavailableCaseEscalationService answers 503 when the data source
+	// doesn't support it.
+	mux.HandleFunc("GET /cases/{id}/escalations", caseEscalationHandler.SearchCaseEscalations)
+	mux.HandleFunc("POST /cases/{id}/escalations", caseEscalationHandler.CreateCaseEscalation)
 
 	if changeRequestHandler != nil {
 		mux.HandleFunc("POST /change-requests", changeRequestHandler.CreateChangeRequest)
