@@ -13615,6 +13615,9 @@ components:
               minLength: 1
             action:
               type: string
+              description: >
+                Matched case-insensitively by the service, but callers should send
+                the upper-case form.
               enum: [ESCALATE]
         - description: De-escalate the case. reason is optional.
           type: object
@@ -13625,6 +13628,9 @@ components:
               type: string
             action:
               type: string
+              description: >
+                Matched case-insensitively by the service, but callers should send
+                the upper-case form.
               enum: [DEESCALATE]
 
     CreateEscalationRequest:
