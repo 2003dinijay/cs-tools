@@ -1,9 +1,9 @@
 # CSM Integration Service
 
 Go HTTP server (`net/http`, Go 1.26+) exposing Project/Account search and their
-Contacts sub-resource to third-party (M2M) consumers. It forwards requests to the
-entity service and returns responses as-is — it does not shape or authenticate on
-behalf of an end user.
+Contacts sub-resource, plus a subset of Case operations, to third-party (M2M)
+consumers. It forwards requests to the entity service and returns responses
+as-is — it does not shape or authenticate on behalf of an end user.
 
 ## Why no `Auth` middleware
 
@@ -57,6 +57,25 @@ some other path with its own credential. Neither is solved by this service's own
 code — don't attempt to "fix" this endpoint locally without that groundwork
 existing first.
 
+**`PATCH /cases/{id}` (`PatchCase`) is a partial exception to "always 401" —
+know the difference before assuming every writable endpoint here behaves like
+`UpdateProject`.** Its entity-service handler accepts either a plain
+state/severity/workState update (Postgres-backed, no forwarded identity
+required) or a set of ServiceNow-only fields (watchList, assigneeEmail,
+subject, etc. — same forwarded-identity requirement as `UpdateProject`). A
+state/severity/workState-only call through this service **succeeds** when
+entity-service is running `DATA_SOURCE=postgres`; every other field on this
+same endpoint still gets a mapped 401, for the same structural reason as
+`UpdateProject`. Don't assume a 401 here means the endpoint is broken the way
+`UpdateProject` is — check which fields the caller actually sent first.
+
+**`POST /cases/{id}/comments` (`CreateCaseComment`) has no such exception —
+it is unconditionally "always 401" like `UpdateProject`, on both data
+sources.** entity-service resolves the comment's author from the forwarded
+`x-user-id-token` even on its Postgres-backed path, so there is no field
+combination that succeeds through this M2M-only service today. Kept for the
+same API-shape-completeness reason as `UpdateProject`.
+
 ## Middleware chain
 
 `SecurityHeaders → CorrelationID → Logger → Mux`
@@ -82,7 +101,7 @@ handler so every `slog.*Context(r.Context(), …)` call automatically includes
 
 | Package | Upstream | Notes |
 |---------|----------|-------|
-| `entity` | Entity service | Account/Project + Contacts sub-resource; raw `[]byte` passthrough |
+| `entity` | Entity service | Account/Project + Contacts sub-resource, Case (patch + comment create); raw `[]byte` passthrough |
 
 A new upstream service would get its own package under `internal/`, following the
 same `Config`/`Client`/`NewClient`/`do()` pattern as `internal/entity`.
