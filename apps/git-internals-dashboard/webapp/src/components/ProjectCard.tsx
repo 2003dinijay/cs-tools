@@ -38,6 +38,7 @@ interface StatCellProps {
   onClick: (e: MouseEvent) => void;
 }
 
+/** One clickable violated/at-risk/CS-side stat button on a ProjectCard. */
 function StatCell({ label, value, color, hoverBorder, onClick }: StatCellProps) {
   return (
     <Box
@@ -62,7 +63,9 @@ function StatCell({ label, value, color, hoverBorder, onClick }: StatCellProps) 
   );
 }
 
+/** One project's SLA summary card, on the dashboard's per-project comparison grid. */
 export function ProjectCard({ project, focused, dim, onFocus, onDrill }: ProjectCardProps) {
+  // Stops the click from also toggling this card's focus state.
   const drill = (bucket: string) => (e: MouseEvent) => {
     e.stopPropagation();
     onDrill(bucket);
@@ -81,11 +84,8 @@ export function ProjectCard({ project, focused, dim, onFocus, onDrill }: Project
 
   return (
     <Box
-      onClick={onFocus}
-      title="Focus this project"
       sx={{
         ...acrylicSurfaceSx,
-        cursor: "pointer",
         borderRadius: "14px",
         px: 2,
         pb: 0.25,
@@ -96,7 +96,32 @@ export function ProjectCard({ project, focused, dim, onFocus, onDrill }: Project
         opacity: dim ? 0.5 : 1,
       }}
     >
-      <Box sx={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px" }}>
+      {/* A native button, not the whole (non-focusable) card: the card also
+          contains the drill-down buttons below, and a button cannot itself
+          contain nested interactive controls. */}
+      <Box
+        component="button"
+        type="button"
+        onClick={onFocus}
+        title="Focus this project"
+        aria-pressed={focused}
+        aria-label={`Focus project ${project.name}`}
+        sx={{
+          display: "flex",
+          width: "100%",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: "10px",
+          background: "none",
+          border: "none",
+          p: 0,
+          m: 0,
+          font: "inherit",
+          color: "inherit",
+          textAlign: "left",
+          cursor: "pointer",
+        }}
+      >
         <Box sx={{ minWidth: 0 }}>
           <Box sx={{ fontSize: 14.5, fontWeight: 600, letterSpacing: "-0.01em" }}>{project.name}</Box>
           <Box

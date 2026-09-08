@@ -44,12 +44,15 @@ interface PriorityTierCardProps {
   onDrill: (bucket: string) => void;
 }
 
+/** One priority tier's SLA breakdown card, on the dashboard's priority-breakdown grid. */
 export function PriorityTierCard({ tier, focused, dim, onFocusToggle, onDrill }: PriorityTierCardProps) {
   const accent = P_ACCENT[tier.code] ?? "var(--sla-fg)";
   const tint = P_TINT[tier.code] ?? "color-mix(in srgb, var(--sla-fg) 8%, transparent)";
   const denom = Math.max(1, tier.total);
+  // Share of this tier's total, for the violated/atRisk/cs/onTrack progress bar segments.
   const pct = (n: number) => (n / denom) * 100;
 
+  // Stops the click from also toggling this card's focus state.
   const drill = (bucket: string) => (e: MouseEvent) => {
     e.stopPropagation();
     onDrill(bucket);
@@ -57,10 +60,8 @@ export function PriorityTierCard({ tier, focused, dim, onFocusToggle, onDrill }:
 
   return (
     <Box
-      onClick={onFocusToggle}
       sx={{
         ...acrylicSurfaceSx,
-        cursor: "pointer",
         borderRadius: "16px",
         px: "17px",
         pb: "15px",
@@ -74,7 +75,30 @@ export function PriorityTierCard({ tier, focused, dim, onFocusToggle, onDrill }:
         opacity: dim ? 0.5 : 1,
       }}
     >
-      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      {/* A native button, not the whole (non-focusable) card: the card also
+          contains the "Violated"/"At risk" drill-down buttons below, and a
+          button cannot itself contain nested interactive controls. */}
+      <Box
+        component="button"
+        type="button"
+        onClick={onFocusToggle}
+        aria-pressed={focused}
+        aria-label={`Toggle focus on ${tier.label}`}
+        sx={{
+          display: "flex",
+          width: "100%",
+          alignItems: "center",
+          justifyContent: "space-between",
+          background: "none",
+          border: "none",
+          p: 0,
+          m: 0,
+          font: "inherit",
+          color: "inherit",
+          textAlign: "left",
+          cursor: "pointer",
+        }}
+      >
         <Box sx={{ display: "flex", alignItems: "center", gap: "10px" }}>
           {/* White text: deliberate exception, same reasoning as
               PriorityStateMatrix's row badge — 4 rotating accent hues, no
