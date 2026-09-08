@@ -469,11 +469,14 @@ func TestHandleWebSocket_CreateConversation(t *testing.T) {
 		Subprotocols: []string{"cs-customer-portal", "good-token"},
 	}
 
-	conn, _, err := dialer.Dial(wsURL, nil)
+	conn, resp, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial failed: %v", err)
 	}
-	defer conn.Close()
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
+	defer func() { _ = conn.Close() }()
 
 	// 1. Send user_message with empty conversationId
 	msg := map[string]any{
@@ -592,11 +595,14 @@ func TestHandleWebSocket_EmptyMessageOnNewConversation(t *testing.T) {
 		Subprotocols: []string{"cs-customer-portal", "good-token"},
 	}
 
-	conn, _, err := dialer.Dial(wsURL, nil)
+	conn, resp, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial failed: %v", err)
 	}
-	defer conn.Close()
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
+	defer func() { _ = conn.Close() }()
 
 	msg := map[string]any{
 		"type":           "user_message",
@@ -622,8 +628,8 @@ func TestHandleWebSocket_EmptyMessageOnNewConversation(t *testing.T) {
 	if evt.Message != "Message is required to start a new conversation." {
 		t.Errorf("message = %q, want 'Message is required to start a new conversation.'", evt.Message)
 	}
-	if e.createConversationCalls != 0 {
-		t.Errorf("CreateConversation was called %d times, want 0", e.createConversationCalls)
+	if got := e.getCreateConversationCalls(); got != 0 {
+		t.Errorf("CreateConversation was called %d times, want 0", got)
 	}
 }
 
@@ -650,11 +656,14 @@ func TestHandleWebSocket_InvalidConversationID(t *testing.T) {
 		Subprotocols: []string{"cs-customer-portal", "good-token"},
 	}
 
-	conn, _, err := dialer.Dial(wsURL, nil)
+	conn, resp, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial failed: %v", err)
 	}
-	defer conn.Close()
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
+	defer func() { _ = conn.Close() }()
 
 	msg := map[string]any{
 		"type":           "user_message",
@@ -706,11 +715,14 @@ func TestHandleWebSocket_CreateConversationError(t *testing.T) {
 		Subprotocols: []string{"cs-customer-portal", "good-token"},
 	}
 
-	conn, _, err := dialer.Dial(wsURL, nil)
+	conn, resp, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial failed: %v", err)
 	}
-	defer conn.Close()
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
+	defer func() { _ = conn.Close() }()
 
 	msg := map[string]any{
 		"type":           "user_message",
