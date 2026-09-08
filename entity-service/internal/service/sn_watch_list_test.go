@@ -17,6 +17,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -118,6 +119,91 @@ func TestSNCaseService_CreateCase_WatchListResolvedToEmails(t *testing.T) {
 		EngagementType:        domain.EngagementTypeMigration,
 		EngagementPaymentType: domain.EngagementPaymentTypePaid,
 		WatchList:             []string{testIncidentWatcherUUID1, testIncidentWatcherUUID2},
+	}
+
+	if _, err := svc.CreateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertWatchListPayload(t, gotBody, []string{testWatcherEmail1, testWatcherEmail2})
+}
+
+// TestWatchListEmails_ForwardsEmailsWithoutLookup is the Customer Portal /
+// Ballerina contract: watchList is EmailString[], forwarded as-is. A user
+// lookup would 400 those values as invalid UUIDs (issues 3001 / 3002).
+func TestWatchListEmails_ForwardsEmailsWithoutLookup(t *testing.T) {
+	in := []string{testWatcherEmail1, testWatcherEmail2}
+	got, err := watchListEmails(context.Background(), nil, "token", "watchList", in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != len(in) {
+		t.Fatalf("got %d emails, want %d", len(got), len(in))
+	}
+	for i, w := range in {
+		if got[i] != w {
+			t.Fatalf("got[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+// TestWatchListEmails_RejectsNeitherEmailNorUUID covers the 400 the portal
+// used to hit with emails, now reserved for values that are neither.
+func TestWatchListEmails_RejectsNeitherEmailNorUUID(t *testing.T) {
+	_, err := watchListEmails(context.Background(), nil, "token", "watchList", []string{"not-an-email"})
+	verr, ok := err.(*apierror.ValidationError)
+	if !ok {
+		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+	}
+	if !strings.Contains(verr.Msg, "invalid email") {
+		t.Fatalf("error %q does not name an invalid email", verr.Msg)
+	}
+}
+
+// TestWatchListEmails_RejectsMixedEmailAndUUID keeps a single list in one
+// identity shape so CSM ids and portal emails cannot be interleaved.
+func TestWatchListEmails_RejectsMixedEmailAndUUID(t *testing.T) {
+	_, err := watchListEmails(context.Background(), nil, "token", "watchList", []string{
+		testWatcherEmail1, testIncidentWatcherUUID1,
+	})
+	if _, ok := err.(*apierror.ValidationError); !ok {
+		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+	}
+}
+
+// TestSNCaseService_CreateCase_WatchListEmailsForwarded verifies POST /cases
+// accepts watcher emails and sends them to the backing service without a
+// user-id lookup.
+func TestSNCaseService_CreateCase_WatchListEmailsForwarded(t *testing.T) {
+	var gotBody map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/search", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("email watch lists must not trigger a user lookup")
+	})
+	mux.HandleFunc("/cases", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"message": "Case created successfully",
+			"case": {"id": "` + testWLCaseSysid + `", "number": "CS0000010", "createdBy": "engineer@example.com", "createdOn": "2026-01-02 10:00:00", "state": {"id": 1, "label": "Open"}}
+		}`))
+	})
+
+	svc := NewServiceNowCaseService(newTestSNClient(t, mux), nil, nil)
+
+	req := domain.CreateCaseRequest{
+		Type:                  "engagement",
+		ProjectID:             testProjectUUID,
+		DeploymentID:          testDeploymentUUID,
+		DeployedProductID:     testDeployedProdID,
+		Subject:               "Migration planning",
+		Description:           "Plan the migration",
+		EngagementType:        domain.EngagementTypeMigration,
+		EngagementPaymentType: domain.EngagementPaymentTypePaid,
+		WatchList:             []string{testWatcherEmail1, testWatcherEmail2},
 	}
 
 	if _, err := svc.CreateCase(contextWithUserIDToken("token"), req); err != nil {

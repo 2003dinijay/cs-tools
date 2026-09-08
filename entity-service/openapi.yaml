@@ -7491,8 +7491,10 @@ components:
           type: array
           items:
             type: string
-            format: uuid
-          description: Optional list of identifiers of the users to add to the case watch list.
+            format: email
+          description: |
+            Optional list of watcher email addresses to add to the case watch list.
+            Platform user UUIDs are still accepted and resolved to emails.
 
     CreateCaseResponse:
       type: object

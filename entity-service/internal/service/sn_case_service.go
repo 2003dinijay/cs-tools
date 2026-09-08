@@ -946,8 +946,8 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 
 	if len(req.WatchList) > 0 {
 		// The backing service's case-create payload declares the watch list as
-		// email addresses, not user ids, so the incoming platform UUIDs are
-		// resolved to emails first.
+		// email addresses. Incoming emails are forwarded as-is; platform UUIDs
+		// are resolved to emails first.
 		emails, err := watchListEmails(ctx, s.client, token, "watchList", req.WatchList)
 		if err != nil {
 			return domain.CreateCaseResponse{}, err

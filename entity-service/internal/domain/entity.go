@@ -2134,9 +2134,11 @@ type CreateCaseRequest struct {
 	CatalogItemID string     `json:"catalogItemId"`
 	Variables     []Variable `json:"variables"`
 	// Optional fields
-	RelatedCaseID  string   `json:"relatedCaseId"`
-	ConversationID string   `json:"conversationId"`
-	WatchList      []string `json:"watchList"`
+	RelatedCaseID  string `json:"relatedCaseId"`
+	ConversationID string `json:"conversationId"`
+	// WatchList is watcher emails (Customer Portal / Ballerina). Platform user
+	// UUIDs are still accepted and resolved to emails for CSM callers.
+	WatchList []string `json:"watchList"`
 	// For security_report_analysis type
 	Attachments []CaseAttachment `json:"attachments"`
 	// For engagement type
