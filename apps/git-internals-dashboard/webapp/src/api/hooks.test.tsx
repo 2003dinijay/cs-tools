@@ -20,6 +20,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useIssueTitles, useTaxonomy } from "./hooks";
 
+/** Wraps a hook under test in its own fresh QueryClient. */
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
@@ -95,6 +96,8 @@ describe("api hooks", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // A single shared QueryClient across both renders below, so the second
+    // render can observe whether it hit the first render's cache entry.
     const localWrapper = ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );

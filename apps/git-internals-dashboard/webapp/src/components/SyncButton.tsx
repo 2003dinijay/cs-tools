@@ -22,6 +22,7 @@ import { Box, IconButton } from "@mui/material";
 import { useManualSync, useSyncStatus } from "@api/hooks";
 import { ApiError } from "@api/client";
 
+/** Formats an ISO timestamp as "just now"/"Nm ago"/"Nh ago"/"Nd ago", or "—" for null. */
 function fmtRelative(iso: string | null): string {
   if (!iso) return "—";
   const ms = Date.now() - new Date(iso).getTime();
@@ -34,12 +35,14 @@ function fmtRelative(iso: string | null): string {
   return `${days}d ago`;
 }
 
+/** Earliest lastSyncedAt across repos, or null if none have synced yet. */
 function oldestLastSynced(repos: Array<{ lastSyncedAt: string | null }>): string | null {
   const times = repos.map((r) => r.lastSyncedAt).filter((t): t is string => t != null);
   if (times.length === 0) return null;
   return times.reduce((oldest, t) => (t < oldest ? t : oldest));
 }
 
+/** Manual-sync trigger button, showing last-synced time and in-flight/error state. */
 export function SyncButton() {
   const { data: status } = useSyncStatus();
   const [transientMessage, setTransientMessage] = useState<string | null>(null);

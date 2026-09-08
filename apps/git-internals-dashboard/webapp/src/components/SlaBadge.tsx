@@ -19,6 +19,7 @@ import { Chip } from "@mui/material";
 import { SLA_BADGE_SX, SLA_STATE_LABEL } from "@lib/sla";
 import type { SlaState } from "@api/types";
 
+/** A colored chip for an SLA state, or an em dash for no state. */
 export function SlaBadge({ state }: { state: SlaState | null | undefined }) {
   if (!state) return <span style={{ color: "var(--sla-fg3)" }}>—</span>;
   const sx = SLA_BADGE_SX[state];

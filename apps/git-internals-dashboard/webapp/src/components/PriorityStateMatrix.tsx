@@ -43,6 +43,7 @@ const COLS = [
 
 type ColKey = (typeof COLS)[number]["key"];
 
+/** Converts a "#rrggbb" hex color plus alpha into an `rgba(...)` string. */
 function rgba(hex: string, a: number): string {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
@@ -53,6 +54,7 @@ interface MatrixProps {
   onDrill: (bucket: string, priority?: string) => void;
 }
 
+/** Priority × outcome heat-map grid, each cell drillable into its filtered issue list. */
 export function PriorityStateMatrix({ matrix, onDrill }: MatrixProps) {
   // Per-column max across the priority rows drives the heat-map intensity.
   const colMax: Record<ColKey, number> = { violated: 1, atRisk: 1, onTrack: 1, cs: 1 };
@@ -128,6 +130,7 @@ export function PriorityStateMatrix({ matrix, onDrill }: MatrixProps) {
   );
 }
 
+/** One priority tier's row of heat-mapped, drillable outcome cells. */
 function Row({
   row,
   colMax,

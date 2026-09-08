@@ -19,6 +19,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./endpoints";
 import type { IssueFilters } from "./types";
 
+/** GET /metrics/overview, optionally scoped to repo/priority; polls every 60s. */
 export function useOverview(repo?: string, priority?: string) {
   return useQuery({
     queryKey: ["overview", repo, priority],
@@ -42,6 +43,7 @@ export function makeIsCsStatus(csStatuses: string[] | undefined) {
   return (status: string | null | undefined): boolean => csStatuses != null && csStatuses.includes(status ?? "");
 }
 
+/** GET /metrics/timeseries for the given filters. */
 export function useTimeseries(params: { repo?: string; metric?: string; days?: number; groupBy?: string }) {
   return useQuery({
     queryKey: ["timeseries", params],
@@ -49,6 +51,7 @@ export function useTimeseries(params: { repo?: string; metric?: string; days?: n
   });
 }
 
+/** GET /issues for the given filters. */
 export function useIssues(filters: IssueFilters) {
   return useQuery({
     queryKey: ["issues", filters],
@@ -72,6 +75,7 @@ export function useIssueTitles(ids: number[]) {
   });
 }
 
+/** GET /sync/status; polls every 60s. */
 export function useSyncStatus() {
   return useQuery({
     queryKey: ["sync-status"],
@@ -80,6 +84,7 @@ export function useSyncStatus() {
   });
 }
 
+/** GET /issues/{id}; disabled until `enabled` (the row's timeline is expanded). */
 export function useIssue(id: number, enabled: boolean) {
   return useQuery({
     queryKey: ["issue", id],

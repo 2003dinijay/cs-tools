@@ -27,6 +27,7 @@ const PRIOS = [
   { code: "P4", color: "var(--sla-p4)" },
 ] as const;
 
+/** Formats a week-start date ("YYYY-MM-DD") as a short "Mon D" label, UTC. */
 function weekLabel(iso: string): string {
   return new Date(iso + "T00:00:00Z").toLocaleDateString("en-US", {
     month: "short",
@@ -41,6 +42,7 @@ interface VolumePanelProps {
   onFilter: () => void;
 }
 
+/** One project's 12-week new-issue volume bar chart, by priority. */
 export function VolumePanel({ item, maxWeek, onFilter }: VolumePanelProps) {
   const max = Math.max(1, maxWeek);
   const yTicks = [max, Math.round(max / 2), 0];

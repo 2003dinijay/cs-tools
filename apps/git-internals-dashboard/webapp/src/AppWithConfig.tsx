@@ -64,6 +64,7 @@ const queryClient = new QueryClient({
   },
 });
 
+/** Root component: Asgardeo/router/theme/QueryClient providers around App. */
 export default function AppWithConfig(): JSX.Element {
   const authConfig = getAuthConfig();
 

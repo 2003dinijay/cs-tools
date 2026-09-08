@@ -23,6 +23,7 @@ import AuthGuard from "@layouts/AuthGuard";
 import DashboardPage from "@features/dashboard/DashboardPage";
 import IssuesPage from "@features/issues/IssuesPage";
 
+/** The app's route table, gated behind AuthGuard. */
 export default function App() {
   return (
     <Routes>

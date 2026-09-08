@@ -40,9 +40,11 @@ interface ClosestToBreachProps {
   projects: OverviewProject[];
 }
 
+/** Top-9 tracked issues by budget consumed, shown only once one crosses 75%. */
 export function ClosestToBreach({ repo, priority, projects }: ClosestToBreachProps) {
   const { data: issues } = useIssues({ bucket: "tracked", order: "budget_desc", limit: 9, repo, priority });
 
+  // Friendly project name for "owner/name", falling back to the repo's own name part.
   const nameForRepo = (r: string | null) => projects.find((p) => p.repo === r)?.name ?? r?.split("/")[1] ?? "—";
 
   const pool = (issues ?? []).filter((i) => i.sla?.pctConsumed != null);

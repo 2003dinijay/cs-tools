@@ -55,6 +55,7 @@ function FilterSelect({
   );
 }
 
+/** The small square app-mark shown in the top nav bar. */
 function Logo() {
   return (
     <Box
@@ -76,6 +77,7 @@ function Logo() {
   );
 }
 
+/** The signed-in app frame: top nav with global repo/priority filters, routed content below. */
 export default function AppShell({ children }: { children?: ReactNode }) {
   const [params, setParams] = useSearchParams();
   const repo = params.get("repo") ?? undefined;
@@ -83,6 +85,7 @@ export default function AppShell({ children }: { children?: ReactNode }) {
 
   const { data: overview } = useOverview(repo, priority);
 
+  // Sets or clears (empty value) one global filter in the URL.
   const setFilter = (key: "repo" | "priority", v: string) => {
     const next = new URLSearchParams(params);
     if (v) next.set(key, v);

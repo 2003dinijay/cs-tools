@@ -87,21 +87,25 @@ export function fmtAge(iso: string | null | undefined): string {
   return `${Math.round(h / 24)}d`;
 }
 
+/** Formats a budget/consumed hours value to one decimal place, or "—" for null. */
 export function fmtHours(n: number | null | undefined): string {
   if (n == null) return "—";
   return `${Math.round(n * 10) / 10}h`;
 }
 
+/** Formats a 0-1 fraction as a whole-number percentage, or "—" for null. */
 export function fmtPct(n: number | null | undefined): string {
   if (n == null) return "—";
   return `${Math.round(n * 100)}%`;
 }
 
+/** Formats an ISO timestamp as "Mon D, YYYY" in the viewer's locale, or "—" for null. */
 export function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
+/** Formats an ISO timestamp as "Mon D, HH:MM" in the viewer's locale, or "—" for null. */
 export function fmtDateTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleString(undefined, {

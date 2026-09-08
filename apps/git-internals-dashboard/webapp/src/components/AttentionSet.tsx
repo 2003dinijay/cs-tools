@@ -41,6 +41,7 @@ interface AttentionSetProps {
   isCsStatus: (status: string | null | undefined) => boolean;
 }
 
+/** Filterable list of violated/at-risk/CS-side issues, with toggleable category chips. */
 export function AttentionSet({ hero, projects, repo, priority, isCsStatus }: AttentionSetProps) {
   const [active, setActive] = useState<Set<Category>>(new Set(["violated", "at_risk", "cs"]));
 
@@ -49,8 +50,10 @@ export function AttentionSet({ hero, projects, repo, priority, isCsStatus }: Att
   const issueIds = (issues ?? []).map((i) => i.id);
   const { data: titles, isPending: titlesPending } = useIssueTitles(issueIds);
 
+  // Friendly project name for "owner/name", falling back to the repo's own name part.
   const nameForRepo = (r: string | null) => projects.find((p) => p.repo === r)?.name ?? r?.split("/")[1] ?? "—";
 
+  // Flips a category chip's on/off membership in the active filter set.
   const toggle = (key: Category) =>
     setActive((prev) => {
       const next = new Set(prev);

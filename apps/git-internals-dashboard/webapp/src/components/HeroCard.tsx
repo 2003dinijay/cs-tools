@@ -48,6 +48,7 @@ function Delta({ delta }: { delta: number }) {
   );
 }
 
+/** One hero-bar stat tile: a big number, its spark line, and yesterday's delta. */
 export function HeroCard({ label, n, delta, spark, accent, onClick }: HeroCardProps) {
   const isZero = n === 0;
   const numColor = isZero ? "var(--sla-ok)" : accent;
@@ -123,6 +124,7 @@ interface CsHeroCardProps {
 // the original WOC/PPQ two-tile layout pixel-for-pixel.
 const CS_COLORS = ["var(--sla-cs)", "var(--sla-cs-lite)"];
 
+/** The hero bar's CS-side tile: one drill-down count per current CS status. */
 export function CsHeroCard({ n, byStatus, onDrill }: CsHeroCardProps) {
   const isZero = n === 0;
   const accent = isZero ? "var(--sla-ok)" : "var(--sla-cs)";
