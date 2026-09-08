@@ -6255,13 +6255,12 @@ components:
             suspension flow. This is opaque JSON passed through as-is — its shape is
             not defined or validated by this layer.
         onboardingOwner:
-          allOf:
-            - $ref: '#/components/schemas/PersonRef'
-          nullable: true
           description: >
             The person assigned to run this project's onboarding. Null when
             no owner is assigned — most projects, since only
             onboarding-enabled projects have one.
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
 
     ProjectView:
       type: object
@@ -7897,6 +7896,9 @@ components:
 
     PersonRef:
       type: object
+      # Nullable here rather than at each $ref: a sibling `nullable` next to a
+      # $ref is ignored in OpenAPI 3.0, and every use of this schema is nullable.
+      nullable: true
       description: >-
         A compact reference to a person (e.g. an account's manager or
         technical owner), carrying an optional email alongside id/name.
