@@ -35,9 +35,11 @@ Server starts at `http://localhost:8080`.
     /projects/{id}` and `POST /cases/{id}/comments` are known, deliberate
     exceptions: they're kept for API-shape completeness, but currently always
     401. `PATCH /cases/{id}` is a partial exception — a state/severity/
-    workState-only update succeeds when entity-service runs on a Postgres
-    data source, while every other field on that same endpoint still 401s.
-    See `CLAUDE.md` before adding any other endpoint that targets a
+    workState update succeeds when entity-service runs on a Postgres data
+    source; every other field that endpoint accepts is a 400 there instead
+    (rejected as ServiceNow-only), and on a ServiceNow data source every
+    field, including state/severity/workState, 401s the same as
+    `UpdateProject`. See `CLAUDE.md` before adding any other endpoint that targets a
     ServiceNow-backed operation.
 
 ## Prerequisites
@@ -141,7 +143,7 @@ csm-integration-service/
 - `POST /projects/search` — search projects
 - `POST /projects/{id}/contacts/search` — search a project's contacts
 - `PATCH /projects/{id}` — update project closure-state fields (ACP automation; currently always 401s, see Overview above)
-- `PATCH /cases/{id}` — update a case's state, severity, or workState (succeeds on a Postgres data source); other fields are ServiceNow-only and currently always 401 (see Overview above)
+- `PATCH /cases/{id}` — update a case's state, severity, or workState (succeeds on a Postgres data source; other fields 400 there, and every field 401s on a ServiceNow data source — see Overview above)
 - `POST /cases/{id}/comments` — add a comment to a case (currently always 401s, see Overview above)
 - `POST /vulnerabilities/sync` — full-replace sync of product-vulnerability records (submit the complete current set on every call, not a delta)
 

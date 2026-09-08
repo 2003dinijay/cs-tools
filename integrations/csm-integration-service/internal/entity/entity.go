@@ -74,16 +74,25 @@ func (c *Client) UpdateProject(ctx context.Context, id string, body []byte) ([]b
 	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/projects/%s", url.PathEscape(id)), body)
 }
 
-// PatchCase calls PATCH /cases/{id} on the entity service to update a case's
-// state, severity, or workState. Unlike UpdateProject, this entity-service
-// operation does NOT unconditionally require a forwarded end-user identity
-// token: on a Postgres data source, a state/severity/workState-only update
-// (the only fields this operation accepts there) succeeds for a pure M2M
-// caller. Every other field this request shape can carry (watchList,
-// assigneeEmail, subject, etc.) is ServiceNow-data-source-only and does
-// require a forwarded token this service cannot supply, so those calls are
-// expected to 401 the same way UpdateProject always does. Response is
-// returned as raw JSON; typed response structs are deferred.
+// PatchCase calls PATCH /cases/{id} on the entity service to update a case.
+// Unlike UpdateProject, this entity-service operation does NOT unconditionally
+// require a forwarded end-user identity token — whether it does depends on
+// entity-service's own DATA_SOURCE:
+//   - On a Postgres data source, a state/severity/workState update (optionally
+//     combined with resolutionCode/cause/closeNotes when state is closed or
+//     solution_proposed) succeeds for a pure M2M caller — no token check on
+//     this path. Every other field this request shape can carry (watchList,
+//     assigneeEmail, type and its companions, parentId, relatedCaseId,
+//     autocloseHoldUntil, subject, description, deploymentId,
+//     deployedProductId, the fix-ETA group, acknowledge, workaroundProvided)
+//     is ServiceNow-only and is rejected with 400 on this data source, not
+//     proxied through to any token check.
+//   - On a ServiceNow data source, every field this operation accepts —
+//     including a bare state/severity/workState update — requires a forwarded
+//     end-user identity token, so every call here is expected to 401 the same
+//     way UpdateProject always does, with no field combination that succeeds.
+//
+// Response is returned as raw JSON; typed response structs are deferred.
 func (c *Client) PatchCase(ctx context.Context, id string, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/cases/%s", url.PathEscape(id)), body)
 }

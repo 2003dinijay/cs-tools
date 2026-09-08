@@ -348,14 +348,21 @@ paths:
         The request body is forwarded to the entity service verbatim; the
         entity service enforces its own field-combination rules (e.g. exactly
         one of state/severity/workState) and 400s otherwise. Unlike
-        PATCH /projects/{id}, this operation does not unconditionally require
-        a forwarded end-user identity token: a state/severity/workState-only
-        update succeeds through this M2M-only service when the entity service
-        is running on a Postgres data source. Every other field this shape
-        accepts (watchList, assigneeEmail, subject, etc.) is
-        ServiceNow-data-source only and does require a forwarded identity
-        token this service cannot supply, so those calls currently receive a
-        mapped 401.
+        PATCH /projects/{id}, whether this operation requires a forwarded
+        end-user identity token depends on entity-service's own data source.
+        On a Postgres data source, a state/severity/workState update (optionally
+        combined with resolutionCode/cause/closeNotes when state is closed or
+        solution_proposed) succeeds through this M2M-only service — no token
+        check on that path. Every other field this shape accepts (watchList,
+        assigneeEmail, type and its companions, parentId, relatedCaseId,
+        autocloseHoldUntil, subject, description, deploymentId,
+        deployedProductId, the fix-ETA group, acknowledge, workaroundProvided)
+        is Postgres-rejected with 400, not proxied through to a token check.
+        On a ServiceNow data source, every field this operation accepts —
+        including a bare state/severity/workState update — requires a
+        forwarded identity token this service cannot supply, so every call
+        currently receives a mapped 401 there, with no field combination that
+        succeeds.
       operationId: patchCase
       parameters:
         - name: id
@@ -385,7 +392,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
-          description: Unauthorized (upstream reported a missing or invalid forwarded identity — always, for a ServiceNow-only field, given this service's M2M-only design)
+          description: Unauthorized (upstream reported a missing or invalid forwarded identity — always when entity-service runs a ServiceNow data source, given this service's M2M-only design; not returned on a Postgres data source, where an unsupported field is a 400 instead)
           content:
             application/json:
               schema:

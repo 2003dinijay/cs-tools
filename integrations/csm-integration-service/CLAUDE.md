@@ -59,15 +59,28 @@ existing first.
 
 **`PATCH /cases/{id}` (`PatchCase`) is a partial exception to "always 401" —
 know the difference before assuming every writable endpoint here behaves like
-`UpdateProject`.** Its entity-service handler accepts either a plain
-state/severity/workState update (Postgres-backed, no forwarded identity
-required) or a set of ServiceNow-only fields (watchList, assigneeEmail,
-subject, etc. — same forwarded-identity requirement as `UpdateProject`). A
-state/severity/workState-only call through this service **succeeds** when
-entity-service is running `DATA_SOURCE=postgres`; every other field on this
-same endpoint still gets a mapped 401, for the same structural reason as
-`UpdateProject`. Don't assume a 401 here means the endpoint is broken the way
-`UpdateProject` is — check which fields the caller actually sent first.
+`UpdateProject`, and know that its behavior depends on entity-service's own
+data source, not just on which fields are sent.**
+
+- On `DATA_SOURCE=postgres`, a state/severity/workState update (optionally
+  combined with resolutionCode/cause/closeNotes when state is closed or
+  solution_proposed) **succeeds** through this M2M-only service — that path in
+  entity-service's `case_service.go` never checks a forwarded identity token.
+  Every other field this request shape accepts (watchList, assigneeEmail,
+  type and its companions, parentId, relatedCaseId, autocloseHoldUntil,
+  subject, description, deploymentId, deployedProductId, the fix-ETA group,
+  acknowledge, workaroundProvided) is rejected there with a **400**, not a
+  401 — entity-service's Postgres path explicitly refuses them as
+  ServiceNow-only, without ever reaching a token check.
+- On `DATA_SOURCE=servicenow`, entity-service's `sn_case_service.go` requires
+  a forwarded identity token for every field this operation accepts,
+  including a bare state/severity/workState update — so on that data source,
+  every call through this service gets a mapped **401**, the same as
+  `UpdateProject`, with no field combination that succeeds.
+
+Don't assume a 401 here means the endpoint is broken the way `UpdateProject`
+is, and don't assume a 400 here means bad input from the caller — check both
+which fields were sent and which data source entity-service is running.
 
 **`POST /cases/{id}/comments` (`CreateCaseComment`) has no such exception —
 it is unconditionally "always 401" like `UpdateProject`, on both data
