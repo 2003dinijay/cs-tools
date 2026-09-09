@@ -5972,6 +5972,7 @@ components:
           format: int64
         limit:
           minimum: 1
+          maximum: 5000
           type: integer
           description: Limit for pagination
           format: int64
