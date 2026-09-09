@@ -7491,10 +7491,10 @@ components:
           type: array
           items:
             type: string
-            format: email
           description: |
-            Optional list of watcher email addresses to add to the case watch list.
-            Platform user UUIDs are still accepted and resolved to emails.
+            Optional initial watch list (ServiceNow only). Each item is a watcher
+            email (Customer Portal) or a platform user UUID (CSM); the list must be
+            all emails or all UUIDs.
 
     CreateCaseResponse:
       type: object
