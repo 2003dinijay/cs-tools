@@ -153,8 +153,8 @@ export default function ProjectSuspendedNoticePage({
             <Box sx={{ px: 3, py: 3, bgcolor: "action.hover", display: "flex", alignItems: "flex-start", gap: 1.5 }}>
               <AlertCircle size={18} style={{ marginTop: 2, flexShrink: 0, color: "var(--oxygen-palette-error-main, #f59e0b)" }} />
               <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.75 }}>
-                This project was suspended, please do not hesitate to reach out to your WSO2 Account
-                Manager. Send an email to{" "}
+                This project has been suspended. Please contact your WSO2 Account Manager for
+                assistance or reach our Billing team at{" "}
                 <Typography
                   component="a"
                   href="mailto:billing@wso2.com"
