@@ -20,6 +20,9 @@ const DEFAULT_LIMIT = 10;
 const MIN_LIMIT = 1;
 const MAX_LIMIT = 50;
 
+# Maximum pagination limit for product vulnerability bulk search.
+public const PRODUCT_VULNERABILITY_MAX_LIMIT = 5000;
+
 # Valid call request update state values.
 public const PENDING_ON_WSO2 = 2;
 const CUSTOMER_REJECTED = 4;
