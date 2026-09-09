@@ -58,7 +58,8 @@ public type ProductVulnerabilityPagination record {|
     int offset = DEFAULT_OFFSET;
     # Limit for pagination
     @constraint:Int {
-        minValue: MIN_LIMIT
+        minValue: MIN_LIMIT,
+        maxValue: PRODUCT_VULNERABILITY_MAX_LIMIT
     }
     int 'limit = DEFAULT_LIMIT;
     json...;
