@@ -2514,9 +2514,10 @@ func TestCaseService_SearchTags_ServiceUnavailable(t *testing.T) {
 }
 
 // TestSNCaseService_GetCaseByID_MapsLinkedChangeRequests covers the reverse side of the
-// service-request <-> change-request link. Upstream sends the list under `changeRequestsAll`
-// (unfiltered by change-request state, unlike the older `changeRequests` field) with 32-hex
-// ids; the domain exposes it as `linkedChangeRequests` with canonical UUIDs.
+// service-request <-> change-request link. Upstream sends customer-visible change requests
+// under `changeRequests` (filtered by change-request state, excluding New/Assess/Authorize)
+// and unfiltered change requests under `changeRequestsAll`. The domain exposes the customer-
+// visible list as `linkedChangeRequests` with canonical UUIDs.
 //
 // The cardinality cases matter: a service request can have several change requests (one per
 // environment the change is promoted to), so a single-value mapping would look correct
@@ -2525,7 +2526,7 @@ func TestSNCaseService_GetCaseByID_MapsLinkedChangeRequests(t *testing.T) {
 	crSysidA := sysid32('1')
 	crSysidB := sysid32('2')
 
-	newBody := func(changeRequests string) string {
+	newBody := func(changeRequests string, changeRequestsAll string) string {
 		return `{
 			"id": "` + testWLCaseSysid + `",
 			"internalId": "WSO2-001",
@@ -2539,15 +2540,16 @@ func TestSNCaseService_GetCaseByID_MapsLinkedChangeRequests(t *testing.T) {
 			"deployment": {"id": "", "name": ""},
 			"deployedProduct": {"id": "", "name": "", "version": ""},
 			"state": {"id": 1, "label": "Open"},
-			"changeRequestsAll": ` + changeRequests + `
+			"changeRequests": ` + changeRequests + `,
+			"changeRequestsAll": ` + changeRequestsAll + `
 		}`
 	}
 
-	get := func(t *testing.T, changeRequests string) domain.CaseView {
+	get := func(t *testing.T, changeRequests string, changeRequestsAll string) domain.CaseView {
 		t.Helper()
 		client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(newBody(changeRequests)))
+			_, _ = w.Write([]byte(newBody(changeRequests, changeRequestsAll)))
 		})
 		svc := NewServiceNowCaseService(client, nil, nil)
 
@@ -2559,14 +2561,21 @@ func TestSNCaseService_GetCaseByID_MapsLinkedChangeRequests(t *testing.T) {
 	}
 
 	t.Run("null stays empty", func(t *testing.T) {
-		cv := get(t, "null")
+		cv := get(t, "null", "null")
 		if len(cv.LinkedChangeRequests) != 0 {
 			t.Fatalf("expected no linked change requests, got %+v", cv.LinkedChangeRequests)
 		}
 	})
 
+	t.Run("null changeRequests filters out draft changes present in changeRequestsAll", func(t *testing.T) {
+		cv := get(t, "null", `[{"id": "`+crSysidA+`", "number": "CHG0000001", "name": "Draft change"}]`)
+		if len(cv.LinkedChangeRequests) != 0 {
+			t.Fatalf("expected draft change requests in changeRequestsAll to be filtered out, got %+v", cv.LinkedChangeRequests)
+		}
+	})
+
 	t.Run("single entry maps with a canonical UUID", func(t *testing.T) {
-		cv := get(t, `[{"id": "`+crSysidA+`", "number": "CHG0000001", "name": "Promote to dev"}]`)
+		cv := get(t, `[{"id": "`+crSysidA+`", "number": "CHG0000001", "name": "Promote to dev"}]`, `[{"id": "`+crSysidA+`", "number": "CHG0000001", "name": "Promote to dev"}]`)
 		if len(cv.LinkedChangeRequests) != 1 {
 			t.Fatalf("expected 1 linked change request, got %d", len(cv.LinkedChangeRequests))
 		}
@@ -2581,6 +2590,9 @@ func TestSNCaseService_GetCaseByID_MapsLinkedChangeRequests(t *testing.T) {
 
 	t.Run("several entries all map, order preserved", func(t *testing.T) {
 		cv := get(t, `[
+			{"id": "`+crSysidA+`", "number": "CHG0000001", "name": "Promote to dev"},
+			{"id": "`+crSysidB+`", "number": "CHG0000002", "name": ""}
+		]`, `[
 			{"id": "`+crSysidA+`", "number": "CHG0000001", "name": "Promote to dev"},
 			{"id": "`+crSysidB+`", "number": "CHG0000002", "name": ""}
 		]`)
