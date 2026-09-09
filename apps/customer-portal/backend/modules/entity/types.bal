@@ -208,6 +208,8 @@ public type ProjectResponse record {|
     Date? onboardingExpiryDate;
     # Onboarding status
     string? onboardingStatus;
+    # Date and time the project was suspended
+    string? suspendedOn?;
     json...;
 |};
 

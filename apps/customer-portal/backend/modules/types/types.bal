@@ -512,6 +512,8 @@ public type ProjectResponse record {|
     entity:Date? onboardingExpiryDate;
     # Onboarding status
     string? onboardingStatus;
+    # Date and time the project was suspended
+    string? suspendedOn?;
 |};
 
 # Projects response.

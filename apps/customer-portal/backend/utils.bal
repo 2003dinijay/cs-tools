@@ -1042,7 +1042,8 @@ public isolated function mapProjectResponse(entity:ProjectResponse response) ret
     totalOnboardingHours: response.totalOnboardingHours,
     remainingOnboardingHours: response.remainingOnboardingHours,
     onboardingExpiryDate: response.onboardingExpiryDate,
-    onboardingStatus: response.onboardingStatus
+    onboardingStatus: response.onboardingStatus,
+    suspendedOn: response?.suspendedOn
 };
 
 # Map metadata response to the desired structure.

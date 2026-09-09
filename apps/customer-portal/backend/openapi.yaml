@@ -6656,6 +6656,10 @@ components:
           type: string
           description: Onboarding status
           nullable: true
+        suspendedOn:
+          type: string
+          description: Date and time the project was suspended
+          nullable: true
       additionalProperties: false
       description: Project information.
     ProjectSearchPayload:
