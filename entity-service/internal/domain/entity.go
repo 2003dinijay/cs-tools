@@ -1916,10 +1916,11 @@ type UpdateCaseRequest struct {
 	// CreateCaseRequest.Variables. Optional even when transferring into
 	// service_request -- a catalog item with no questions has nothing to answer.
 	Variables []Variable `json:"variables"`
-	// WatchList replaces the case's watch list wholesale with the given platform
-	// user UUIDs. It is a pointer so an absent field and an explicitly empty list
-	// are distinguishable: nil leaves the watch list untouched, while an empty
-	// list clears it.
+	// WatchList replaces the case's watch list wholesale with the given watcher
+	// emails (Customer Portal / Ballerina). Platform user UUIDs are still
+	// accepted and resolved to emails for CSM callers. It is a pointer so an
+	// absent field and an explicitly empty list are distinguishable: nil leaves
+	// the watch list untouched, while an empty list clears it.
 	WatchList      *[]string           `json:"watchList"`
 	AssigneeEmail  *string             `json:"assigneeEmail"`
 	ResolutionCode *CaseResolutionCode `json:"resolutionCode"`
@@ -2134,9 +2135,11 @@ type CreateCaseRequest struct {
 	CatalogItemID string     `json:"catalogItemId"`
 	Variables     []Variable `json:"variables"`
 	// Optional fields
-	RelatedCaseID  string   `json:"relatedCaseId"`
-	ConversationID string   `json:"conversationId"`
-	WatchList      []string `json:"watchList"`
+	RelatedCaseID  string `json:"relatedCaseId"`
+	ConversationID string `json:"conversationId"`
+	// WatchList is watcher emails (Customer Portal / Ballerina). Platform user
+	// UUIDs are still accepted and resolved to emails for CSM callers.
+	WatchList []string `json:"watchList"`
 	// For security_report_analysis type
 	Attachments []CaseAttachment `json:"attachments"`
 	// For engagement type

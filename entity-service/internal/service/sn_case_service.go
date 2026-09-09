@@ -946,8 +946,8 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 
 	if len(req.WatchList) > 0 {
 		// The backing service's case-create payload declares the watch list as
-		// email addresses, not user ids, so the incoming platform UUIDs are
-		// resolved to emails first.
+		// email addresses. Incoming emails are forwarded as-is; platform UUIDs
+		// are resolved to emails first.
 		emails, err := watchListEmails(ctx, s.client, token, "watchList", req.WatchList)
 		if err != nil {
 			return domain.CreateCaseResponse{}, err
@@ -2369,7 +2369,8 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	}
 	if req.WatchList != nil {
 		// As on create, the backing service's case-update payload declares the
-		// watch list as email addresses, and it replaces the whole list, so an
+		// watch list as email addresses (incoming emails forwarded as-is;
+		// platform UUIDs resolved first), and it replaces the whole list, so an
 		// explicitly empty list must still be sent to clear it rather than be
 		// skipped.
 		emails, err := watchListEmails(ctx, s.client, token, "watchList", *req.WatchList)

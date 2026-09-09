@@ -690,8 +690,8 @@ func (s *snIncidentService) CreateIncident(ctx context.Context, req domain.Creat
 	token := middleware.UserIDTokenFromContext(ctx)
 
 	// The backing service's incident-create payload declares the watch list as
-	// email addresses, not user ids, so the incoming platform UUIDs are resolved
-	// to emails first.
+	// email addresses. Incoming emails are forwarded as-is; platform UUIDs are
+	// resolved to emails first.
 	watchList, err := watchListEmails(ctx, s.client, token, "watchList", req.WatchList)
 	if err != nil {
 		return domain.CreateIncidentResponse{}, err
