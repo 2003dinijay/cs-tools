@@ -65,7 +65,6 @@ function InfoRow({ label, value }: InfoRowProps): JSX.Element {
 export default function ProjectSuspendedNoticePage({
   project,
 }: ProjectSuspendedNoticePageProps): JSX.Element {
-  const suspendedOnLabel = project.suspendedOn ? formatDateLabel(project.suspendedOn) : null;
   const startDateLabel = formatDateLabel(project.startDate);
   const accountOwner = project.account?.ownerEmail ?? "—";
   const projectType = project.type?.label ?? "—";
@@ -154,17 +153,18 @@ export default function ProjectSuspendedNoticePage({
             <Box sx={{ px: 3, py: 3, bgcolor: "action.hover", display: "flex", alignItems: "flex-start", gap: 1.5 }}>
               <AlertCircle size={18} style={{ marginTop: 2, flexShrink: 0, color: "var(--oxygen-palette-error-main, #f59e0b)" }} />
               <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.75 }}>
-                {suspendedOnLabel ? (
-                  <>
-                    This project was suspended on{" "}
-                    <Typography component="span" variant="body2" fontWeight={600} color="text.primary">
-                      {suspendedOnLabel}
-                    </Typography>{" "}
-                    due to non renewal of the contracts upon the end of previous subscription period.
-                  </>
-                ) : (
-                  "This project was suspended due to non renewal of the contracts upon the end of previous subscription period."
-                )}
+                This project was suspended, please do not hesitate to reach out to your WSO2 Account
+                Manager. Send an email to{" "}
+                <Typography
+                  component="a"
+                  href="mailto:billing@wso2.com"
+                  variant="body2"
+                  fontWeight={600}
+                  color="text.primary"
+                >
+                  billing@wso2.com
+                </Typography>
+                .
               </Typography>
             </Box>
           </>
