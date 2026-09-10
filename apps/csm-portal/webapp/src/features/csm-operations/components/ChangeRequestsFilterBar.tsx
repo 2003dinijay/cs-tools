@@ -44,6 +44,12 @@ import {
   countActiveCRFilters,
   type ChangeRequestFilters,
 } from "@features/csm-operations/utils/changeRequests";
+import {
+  readChangeRequestFiltersFromUrl,
+  writeChangeRequestFiltersToUrl,
+} from "@features/csm-operations/utils/changeRequestsFiltersUrl";
+import { changeRequestsSavedViews } from "@features/csm-operations/utils/changeRequestsSavedViews";
+import SavedViewsMenu from "@features/csm-operations/components/SavedViewsMenu";
 import MultiSelectField from "@components/MultiSelectField";
 
 const { DatePicker, LocalizationProvider } = DatePickers;
@@ -154,6 +160,19 @@ export default function ChangeRequestsFilterBar({
             }}
           />
         </Box>
+
+        <SavedViewsMenu
+          currentQs={writeChangeRequestFiltersToUrl(filters).toString()}
+          canonicalizeQs={(qs) =>
+            writeChangeRequestFiltersToUrl(
+              readChangeRequestFiltersFromUrl(new URLSearchParams(qs)),
+            ).toString()
+          }
+          activeCount={activeCount}
+          hasSearch={filters.search.trim().length > 0}
+          onApply={(qs) => onChange(readChangeRequestFiltersFromUrl(new URLSearchParams(qs)))}
+          store={changeRequestsSavedViews}
+        />
 
         <Button
           variant="outlined"

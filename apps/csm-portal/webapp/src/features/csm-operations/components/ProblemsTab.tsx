@@ -29,8 +29,8 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, useState, type ChangeEvent, type JSX } from "react";
-import { useLocation } from "react-router";
+import { useCallback, useMemo, useState, type ChangeEvent, type JSX } from "react";
+import { useLocation, useSearchParams } from "react-router";
 import { useNavTransition } from "@hooks/useNavTransition";
 import QueryErrorState from "@components/QueryErrorState";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
@@ -42,6 +42,11 @@ import {
   problemStateLabel,
   type ProblemFilters,
 } from "@features/csm-operations/utils/problems";
+import {
+  PROBLEM_FILTER_PARAM_KEYS,
+  readProblemFiltersFromUrl,
+  writeProblemFiltersToUrl,
+} from "@features/csm-operations/utils/problemsFiltersUrl";
 import ProblemsFilterBar from "@features/csm-operations/components/ProblemsFilterBar";
 import RefreshButton from "@components/RefreshButton";
 
@@ -51,12 +56,19 @@ const ROWS_PER_PAGE_OPTIONS = [10, 20, 50];
 /**
  * Problems listing for the Operations → Problem management tab. Searches
  * `POST /problems/search` with server-side pagination, free-text search, and
- * a state filter.
+ * a state filter. Filter state lives in the URL (tab-prefixed `prob...`
+ * params) rather than local state, so a plain tab switch doesn't reset it and
+ * a filtered list can be bookmarked or shared — same pattern as the
+ * Incidents/Change Requests tabs.
  */
 export default function ProblemsTab(): JSX.Element {
   const navigate = useNavTransition();
   const location = useLocation();
-  const [filters, setFilters] = useState<ProblemFilters>(DEFAULT_PROBLEM_FILTERS);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filters = useMemo<ProblemFilters>(
+    () => readProblemFiltersFromUrl(searchParams),
+    [searchParams],
+  );
   const [isFiltersOpen, setIsFiltersOpen] = useState(true);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
@@ -76,14 +88,28 @@ export default function ProblemsTab(): JSX.Element {
   const problems = data?.problems ?? [];
   const total = data?.total ?? 0;
 
+  const setFilters = useCallback(
+    (next: ProblemFilters) => {
+      setPage(0);
+      // Preserve any non-filter params (e.g. the active operations tab) and
+      // any other tab's own filter params (e.g. the incidents tab's), rather
+      // than resetting the whole query string.
+      const merged = new URLSearchParams(searchParams);
+      PROBLEM_FILTER_PARAM_KEYS.forEach((k) => merged.delete(k));
+      writeProblemFiltersToUrl(next).forEach((v, k) => merged.set(k, v));
+      // `replace: true` so switching tabs / paging doesn't spam browser
+      // history — same rationale as the shared cases list view.
+      setSearchParams(merged, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
   const handleFiltersChange = (next: ProblemFilters): void => {
     setFilters(next);
-    setPage(0);
   };
 
   const handleReset = (): void => {
     setFilters(DEFAULT_PROBLEM_FILTERS);
-    setPage(0);
   };
 
   const handleChangeRowsPerPage = (e: ChangeEvent<HTMLInputElement>): void => {
