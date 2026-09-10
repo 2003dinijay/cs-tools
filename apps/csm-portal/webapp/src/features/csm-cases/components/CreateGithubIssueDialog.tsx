@@ -63,8 +63,9 @@ const SEVERITY_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "P3", label: "P3 - Medium" },
 ];
 
-// Cloud-case repositories. Fetched from GET /github-issue-repo-options
-// (useGetGithubIssueRepoOptions) rather than hardcoded here — each option
+// Cloud-case repositories. Fetched from GET /metadata's
+// githubIssueRepoOptions field (useGetGithubIssueRepoOptions) rather than
+// hardcoded here — each option
 // carries its own real owner/repo, sent as repoOverride to bypass the SN
 // product-unit routing (which only covers on-prem/product-unit-mapped cases).
 

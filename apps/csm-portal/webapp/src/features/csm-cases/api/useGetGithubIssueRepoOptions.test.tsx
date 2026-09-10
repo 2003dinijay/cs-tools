@@ -44,17 +44,19 @@ describe("useGetGithubIssueRepoOptions", () => {
   });
 
   it("fetches the repo option catalogue from a single call", async () => {
-    getMock.mockResolvedValue([
-      { value: "asgardeo", label: "Asgardeo", owner: "wso2-enterprise", repo: "wso2-iam-internal" },
-      { value: "choreo", label: "WSO2 Developer Platform (Choreo)", owner: "wso2-enterprise", repo: "choreo" },
-    ]);
+    getMock.mockResolvedValue({
+      githubIssueRepoOptions: [
+        { value: "asgardeo", label: "Asgardeo", owner: "wso2-enterprise", repo: "wso2-iam-internal" },
+        { value: "choreo", label: "WSO2 Developer Platform (Choreo)", owner: "wso2-enterprise", repo: "choreo" },
+      ],
+    });
 
     const { result } = renderHook(() => useGetGithubIssueRepoOptions(), { wrapper });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(getMock).toHaveBeenCalledTimes(1);
-    expect(getMock).toHaveBeenCalledWith("/github-issue-repo-options");
+    expect(getMock).toHaveBeenCalledWith("/metadata");
     expect(result.current.data).toEqual([
       { value: "asgardeo", label: "Asgardeo", owner: "wso2-enterprise", repo: "wso2-iam-internal" },
       { value: "choreo", label: "WSO2 Developer Platform (Choreo)", owner: "wso2-enterprise", repo: "choreo" },
@@ -62,7 +64,7 @@ describe("useGetGithubIssueRepoOptions", () => {
   });
 
   it("treats an empty array as zero configured options, not an error", async () => {
-    getMock.mockResolvedValue([]);
+    getMock.mockResolvedValue({ githubIssueRepoOptions: [] });
 
     const { result } = renderHook(() => useGetGithubIssueRepoOptions(), { wrapper });
 
@@ -80,10 +82,10 @@ describe("useGetGithubIssueRepoOptions", () => {
   });
 
   it("surfaces a query error rather than an empty list when the endpoint 404s", async () => {
-    // api.get resolves 404 to null; GET /github-issue-repo-options always
-    // returns 200 in practice (an empty array when unconfigured), so a null
-    // here means the endpoint itself is missing, not "zero options
-    // configured" — must not be silently treated as the latter.
+    // api.get resolves 404 to null; GET /metadata always returns 200 in
+    // practice (an empty array when unconfigured), so a null here means the
+    // endpoint itself is missing, not "zero options configured" — must not
+    // be silently treated as the latter.
     getMock.mockResolvedValue(null);
 
     const { result } = renderHook(() => useGetGithubIssueRepoOptions(), { wrapper });

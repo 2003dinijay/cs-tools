@@ -2156,8 +2156,16 @@ export interface BeGithubIssueRepoOption {
   repo: string;
 }
 
-/** `GET /github-issue-repo-options` response. Empty array when unconfigured. */
-export type BeGithubIssueRepoOptionsResponse = BeGithubIssueRepoOption[];
+/**
+ * `GET /metadata` response: a single growable bag of reference/config data
+ * the webapp fetches once, rather than a dedicated endpoint per field.
+ * `githubIssueRepoOptions` is the first field — more are expected to be
+ * added here over time as new frontend needs come up. Empty array when
+ * unconfigured.
+ */
+export interface BeMetadataResponse {
+  githubIssueRepoOptions: BeGithubIssueRepoOption[];
+}
 
 /** `POST /cases/{id}/call-requests/search` request body. */
 export interface BeSearchCallRequestsPayload {

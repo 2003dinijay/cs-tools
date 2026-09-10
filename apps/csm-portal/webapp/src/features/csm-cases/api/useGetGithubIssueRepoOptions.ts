@@ -17,7 +17,10 @@
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { ApiQueryKeys } from "@constants/apiConstants";
 import { useBackendApi } from "@api/backend/client";
-import type { BeGithubIssueRepoOptionsResponse } from "@api/backend/types";
+import type {
+  BeGithubIssueRepoOption,
+  BeMetadataResponse,
+} from "@api/backend/types";
 
 /**
  * The config-driven "repository" catalogue offered by
@@ -27,30 +30,31 @@ import type { BeGithubIssueRepoOptionsResponse } from "@api/backend/types";
  * hardcoded array carried a wrong Asgardeo owner/repo mapping that misrouted
  * a real filed issue, undetectable from the dropdown label alone.
  *
+ * Served off the portal's general `GET /metadata` bag rather than a
+ * dedicated endpoint — this hook only pulls its one field off that response.
+ *
  * An unconfigured deployment returns an empty array, not an error — the
  * dialog simply has nothing to offer under `showRepoField`, same contract as
  * `useDashboardList`.
  */
 export function useGetGithubIssueRepoOptions(): UseQueryResult<
-  BeGithubIssueRepoOptionsResponse,
+  BeGithubIssueRepoOption[],
   Error
 > {
   const api = useBackendApi();
 
-  return useQuery<BeGithubIssueRepoOptionsResponse, Error>({
+  return useQuery<BeGithubIssueRepoOption[], Error>({
     queryKey: [ApiQueryKeys.CSM_GITHUB_ISSUE_REPO_OPTIONS],
-    queryFn: async (): Promise<BeGithubIssueRepoOptionsResponse> => {
-      const res = await api.get<BeGithubIssueRepoOptionsResponse>(
-        "/github-issue-repo-options",
-      );
+    queryFn: async (): Promise<BeGithubIssueRepoOption[]> => {
+      const res = await api.get<BeMetadataResponse>("/metadata");
       // Always 200 (empty array when unconfigured) — `null` here means the
       // endpoint itself 404'd (a routing/deployment problem), not "no
       // options configured". Throw so the query enters its error state
       // instead of silently rendering an empty dropdown.
       if (res === null) {
-        throw new Error("GET /github-issue-repo-options returned 404");
+        throw new Error("GET /metadata returned 404");
       }
-      return res;
+      return res.githubIssueRepoOptions;
     },
     staleTime: 30_000,
   });
