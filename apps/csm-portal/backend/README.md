@@ -175,7 +175,7 @@ Backs `entity.EngineeringEntityClient.CreateGitIssue` (a separate internal engin
 
 ### "Open Git issue" dialog repository catalogue
 
-The webapp's "Open Git issue" dialog offers a CS engineer a list of destination repositories. That list used to be hardcoded in the frontend (`CreateGithubIssueDialog.tsx`) — which is how a real case filed with "Asgardeo" selected landed in the wrong GitHub repository, because the owner/repo mapping lived in code no config reviewer would think to check. It is now a config-driven catalogue, resolved once at startup and served by `GET /github-issue-repo-options`, same "JSON-array env var parsed at startup" shape as `DASHBOARDS_CONFIG` below.
+The webapp's "Open Git issue" dialog offers a CS engineer a list of destination repositories. That list used to be hardcoded in the frontend (`CreateGithubIssueDialog.tsx`) — which is how a real case filed with "Asgardeo" selected landed in the wrong GitHub repository, because the owner/repo mapping lived in code no config reviewer would think to check. It is now a config-driven catalogue, resolved once at startup and served as the `githubIssueRepoOptions` field of `GET /metadata`, same "JSON-array env var parsed at startup" shape as `DASHBOARDS_CONFIG` below.
 
 | Variable | Description |
 |---|---|
@@ -258,7 +258,7 @@ backend/
 │   │   └── engineering.go       # EngineeringEntityClient — CreateGitIssue (not yet wired into main.go — no caller)
 │   ├── githubissue/
 │   │   ├── options.go          # RepoOption + ParseRepoOptions (GITHUB_ISSUE_REPO_OPTIONS)
-│   │   └── registry.go         # Active/SetActive — the resolved catalogue GET /github-issue-repo-options serves
+│   │   └── registry.go         # Active/SetActive — the resolved catalogue GET /metadata's githubIssueRepoOptions field serves
 │   ├── scim/
 │   │   └── client.go           # OAuth2 HTTP client for the SCIM operations service
 │   ├── updates/
@@ -305,7 +305,10 @@ backend/
 - `POST /cases/{id}/call-requests/search` — Search call requests for a case (ServiceNow only)
 - `PATCH /cases/{id}/call-requests/{callRequestId}` — Update a call request (ServiceNow only)
 - `POST /cases/{id}/github-issues` — Create a GitHub issue from a case; `reason` selects target repo (`default`/`migration`/`rd_ticket`; ServiceNow only)
-- `GET /github-issue-repo-options` — List the "Open Git issue" dialog's repository dropdown options (`value`, `label`, `owner`, `repo`), from `GITHUB_ISSUE_REPO_OPTIONS` (see [Configuration](#open-git-issue-dialog-repository-catalogue) above). Independent of the `reason`-based repo selection above — this backs a different, user-facing repo picker
+
+### Metadata
+
+- `GET /metadata` — The portal's single config-driven metadata bag, fetched once by the webapp rather than per-field endpoints. Currently one field: `githubIssueRepoOptions` — the "Open Git issue" dialog's repository dropdown options (`value`, `label`, `owner`, `repo`), from `GITHUB_ISSUE_REPO_OPTIONS` (see [Configuration](#open-git-issue-dialog-repository-catalogue) above). Independent of the `reason`-based repo selection on `POST /cases/{id}/github-issues` above — this backs a different, user-facing repo picker. More fields will be added here over time
 
 ### Users
 

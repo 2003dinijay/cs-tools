@@ -18,9 +18,10 @@ package githubissue
 
 import "sync"
 
-// active is the option list GET /github-issue-repo-options serves. Installed
-// once at startup by cmd/server/main.go (and by tests); read on every
-// request. There is no hot-reload here — unlike the dashboard registry this
+// active is the option list served as the "githubIssueRepoOptions" field of
+// GET /metadata. Installed once at startup by cmd/server/main.go (and by
+// tests); read on every request. There is no hot-reload here — unlike the
+// dashboard registry this
 // catalogue has no directory to re-read, only the single
 // GITHUB_ISSUE_REPO_OPTIONS env var, which requires a process restart to
 // change anyway.

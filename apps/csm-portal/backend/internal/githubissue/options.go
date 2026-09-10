@@ -17,8 +17,8 @@
 // Package githubissue holds the config-driven catalogue of "repository"
 // choices the CSM webapp's "Open Git issue" dialog offers a CS engineer,
 // resolved once at startup from GITHUB_ISSUE_REPO_OPTIONS (see
-// ParseRepoOptions) and served verbatim by GET /github-issue-repo-options
-// (see internal/handler/github_issue_repo_options.go). This mirrors the
+// ParseRepoOptions) and served verbatim as the "githubIssueRepoOptions" field
+// of GET /metadata (see internal/handler/metadata.go). This mirrors the
 // dashboard package's DASHBOARDS_CONFIG shape — a JSON-array env var decoded
 // at startup into Go structs and exposed through a read endpoint — without
 // that package's directory/hot-reload/preset machinery, which this small,

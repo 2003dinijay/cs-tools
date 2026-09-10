@@ -3195,29 +3195,29 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /github-issue-repo-options:
+  /metadata:
     get:
-      summary: List the "Open Git issue" dialog's repository dropdown options.
+      summary: Get the portal's config-driven metadata bag.
       description: >
-        Returns the config-driven catalogue of repository choices the "Open
-        Git issue" dialog offers: for each option, its dropdown value/label
-        plus the actual GitHub owner/repo an issue filed against it is
-        created in. Resolved once at process startup from
+        Returns a single growable bag of reference/config data the webapp
+        fetches once, rather than a dedicated endpoint per field.
+        `githubIssueRepoOptions` is the first field: for each option, its
+        dropdown value/label plus the actual GitHub owner/repo an issue filed
+        against it is created in, resolved once at process startup from
         GITHUB_ISSUE_REPO_OPTIONS and held in memory; not user-configurable at
-        runtime. A deployment with this unset returns an empty array, not an
+        runtime. A deployment with that unset returns an empty array, not an
         error. Independent of the `reason`-based repo selection on
         POST /cases/{id}/github-issues above — this backs a different,
-        user-facing repo picker.
-      operationId: getGithubIssueRepoOptions
+        user-facing repo picker. More fields are expected to be added here
+        over time.
+      operationId: getMetadata
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GithubIssueRepoOption'
+                $ref: '#/components/schemas/MetadataResponse'
         "401":
           description: Unauthorized
           content:
@@ -7272,6 +7272,20 @@ components:
             query/filters. Not validated here; an unsupported field name for
             that resourceType is surfaced by that resource's own /search
             endpoint, not caught here.
+
+    MetadataResponse:
+      type: object
+      required:
+        - githubIssueRepoOptions
+      properties:
+        githubIssueRepoOptions:
+          type: array
+          description: >
+            The "Open Git issue" dialog's repository dropdown options, from
+            GITHUB_ISSUE_REPO_OPTIONS. Empty when that variable is unset — not
+            an error.
+          items:
+            $ref: '#/components/schemas/GithubIssueRepoOption'
 
     GithubIssueRepoOption:
       type: object

@@ -79,7 +79,7 @@ func main() {
 
 	caseHandler := handler.NewCaseHandler(customerEntityClient)
 	dashboardHandler := handler.NewDashboardHandler()
-	githubIssueRepoOptionsHandler := handler.NewGithubIssueRepoOptionsHandler()
+	metadataHandler := handler.NewMetadataHandler()
 	accountHandler := handler.NewAccountHandler(customerEntityClient)
 	projectHandler := handler.NewProjectHandler(customerEntityClient)
 	productHandler := handler.NewProductHandler(customerEntityClient)
@@ -189,7 +189,7 @@ func main() {
 	mux.HandleFunc("POST /call-requests/search", caseHandler.SearchAllCallRequests)
 	mux.HandleFunc("PATCH /cases/{caseId}/call-requests/{callRequestId}", caseHandler.PatchCallRequest)
 	mux.HandleFunc("POST /cases/{id}/github-issues", caseHandler.CreateCaseGithubIssue)
-	mux.HandleFunc("GET /github-issue-repo-options", githubIssueRepoOptionsHandler.GetOptions)
+	mux.HandleFunc("GET /metadata", metadataHandler.GetMetadata)
 	mux.HandleFunc("POST /cases/{id}/tags", caseHandler.AddCaseTag)
 	mux.HandleFunc("DELETE /cases/{id}/tags/{tagId}", caseHandler.RemoveCaseTag)
 	mux.HandleFunc("POST /tags/search", caseHandler.SearchTags)
