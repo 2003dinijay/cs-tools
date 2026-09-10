@@ -36,6 +36,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/dashboard"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/githubissue"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/handler"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/notifications"
@@ -49,6 +50,7 @@ func main() {
 	middleware.ConfigureLogger()
 
 	dashboard.SetActive(loadDashboards())
+	githubissue.SetActive(loadGithubIssueRepoOptions())
 
 	// Reference data is resolved once, here, and then only ever read from
 	// memory: the team registry (key <-> display name <-> backing group id <->
@@ -77,6 +79,7 @@ func main() {
 
 	caseHandler := handler.NewCaseHandler(customerEntityClient)
 	dashboardHandler := handler.NewDashboardHandler()
+	metadataHandler := handler.NewMetadataHandler()
 	accountHandler := handler.NewAccountHandler(customerEntityClient)
 	projectHandler := handler.NewProjectHandler(customerEntityClient)
 	productHandler := handler.NewProductHandler(customerEntityClient)
@@ -186,6 +189,7 @@ func main() {
 	mux.HandleFunc("POST /call-requests/search", caseHandler.SearchAllCallRequests)
 	mux.HandleFunc("PATCH /cases/{caseId}/call-requests/{callRequestId}", caseHandler.PatchCallRequest)
 	mux.HandleFunc("POST /cases/{id}/github-issues", caseHandler.CreateCaseGithubIssue)
+	mux.HandleFunc("GET /metadata", metadataHandler.GetMetadata)
 	mux.HandleFunc("POST /cases/{id}/tags", caseHandler.AddCaseTag)
 	mux.HandleFunc("DELETE /cases/{id}/tags/{tagId}", caseHandler.RemoveCaseTag)
 	mux.HandleFunc("POST /tags/search", caseHandler.SearchTags)
@@ -431,6 +435,28 @@ func loadDashboards() *dashboard.Registry {
 	}
 	slog.Info("loaded dashboard definitions", "dir", dir, "presetsFile", presetsFile, "count", len(registry.Dashboards()), "hotReload", hotReload)
 	return registry
+}
+
+// loadGithubIssueRepoOptions resolves the "Open Git issue" dialog's
+// repository catalogue from GITHUB_ISSUE_REPO_OPTIONS (a JSON array — see
+// githubissue.ParseRepoOptions for the shape and validation) and exits the
+// process on any failure to parse it.
+//
+// This used to be a hardcoded array in the frontend, which is how a real case
+// filed with "Asgardeo" selected landed in the wrong GitHub repository: the
+// owner/repo mapping lived in code no config reviewer would think to check.
+// Fatal on malformed content, same rationale as loadDashboards: an operator
+// error here should stop the deploy, not silently ship an empty or
+// half-populated dropdown. Unset is legal and yields no options — a
+// deployment that has not configured this yet must still start.
+func loadGithubIssueRepoOptions() []githubissue.RepoOption {
+	options, err := githubissue.ParseRepoOptions(os.Getenv("GITHUB_ISSUE_REPO_OPTIONS"))
+	if err != nil {
+		slog.Error("invalid GITHUB_ISSUE_REPO_OPTIONS", "err", err)
+		os.Exit(1)
+	}
+	slog.Info("loaded github issue repo options", "count", len(options))
+	return options
 }
 
 // loadDirectory resolves the reference catalogues from environment
