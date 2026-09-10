@@ -635,15 +635,14 @@ export default function CasesFilterBar({
   );
   // Same shape, keyed off `sreGroupId` instead — feeds the "Advanced
   // filters" builder's `sreTeam` row (a real multi-select now, not
-  // hand-typed team ids/UUIDs). Scoped to `cre-abt` family per explicit
-  // product instruction, not `sre-abt` -- see the "SRE Team" filter's
-  // family-scoping note in `advancedFilters.ts` for the caveat.
+  // hand-typed team ids/UUIDs). Scoped to the `sre-abt` family, matching
+  // `abtFamilyForDashboardType`, mirroring `teamOptions` above.
   const sreTeamOptions = useMemo(
     () =>
       (teams ?? [])
         .filter(
           (t): t is typeof t & { sreGroupId: string } =>
-            Boolean(t.sreGroupId) && t.family === "cre-abt",
+            Boolean(t.sreGroupId) && t.family === "sre-abt",
         )
         .map((t) => ({ value: t.sreGroupId, label: t.name })),
     [teams],
