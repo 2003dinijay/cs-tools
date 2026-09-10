@@ -366,6 +366,8 @@ func TestParseCaseFieldFilters_Rejections(t *testing.T) {
 		{name: "accountId notIn malformed UUID", in: []domain.CaseFieldFilter{{Field: "accountId", Op: "notIn", Values: []string{"not-a-uuid"}}}},
 		{name: "accountId unsupported op", in: []domain.CaseFieldFilter{{Field: "accountId", Op: "eq", Values: []string{"00000000-0000-0000-0000-000000000000"}}}},
 		{name: "projectId unsupported op", in: []domain.CaseFieldFilter{{Field: "projectId", Op: "eq", Values: []string{"00000000-0000-0000-0000-000000000000"}}}},
+		{name: "projectId malformed UUID", in: []domain.CaseFieldFilter{{Field: "projectId", Op: "in", Values: []string{"not-a-uuid"}}}},
+		{name: "projectId notIn malformed UUID", in: []domain.CaseFieldFilter{{Field: "projectId", Op: "notIn", Values: []string{"not-a-uuid"}}}},
 		{name: "slaBreached with unsupported op", in: []domain.CaseFieldFilter{{Field: "slaBreached", Op: "in", Values: []string{"true"}}}},
 		{name: "slaBreached with non-boolean value", in: []domain.CaseFieldFilter{{Field: "slaBreached", Op: "eq", Values: []string{"yes"}}}},
 		{name: "slaBreached with more than one value", in: []domain.CaseFieldFilter{{Field: "slaBreached", Op: "eq", Values: []string{"true", "false"}}}},

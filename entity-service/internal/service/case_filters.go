@@ -350,9 +350,15 @@ func ParseCaseFieldFilters(filters []domain.CaseFieldFilter, callerEmail string,
 				if err := requireCaseFilterValues(f); err != nil {
 					return domain.ParsedCaseFilters{}, err
 				}
+				if err := validateUUIDs("filters: projectId", f.Values); err != nil {
+					return domain.ParsedCaseFilters{}, err
+				}
 				p.ProjectIDs = append(p.ProjectIDs, f.Values...)
 			case "notIn":
 				if err := requireCaseFilterValues(f); err != nil {
+					return domain.ParsedCaseFilters{}, err
+				}
+				if err := validateUUIDs("filters: projectId", f.Values); err != nil {
 					return domain.ParsedCaseFilters{}, err
 				}
 				p.ExcludeProjectIDs = append(p.ExcludeProjectIDs, f.Values...)

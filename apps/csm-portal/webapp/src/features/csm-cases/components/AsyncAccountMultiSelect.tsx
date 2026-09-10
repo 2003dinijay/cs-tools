@@ -141,7 +141,14 @@ export default function AsyncAccountMultiSelect({
       onChange={(_event, next) => {
         setPickedNames((prev) => {
           const m = new Map(prev);
-          next.forEach((o) => m.set(o.id, o.name));
+          // A preselected id absent from both nameSeed and the current search
+          // results falls back to using its own id as `name` (see
+          // selectedOptions above) -- never cache that fallback here, or a
+          // later real name for the same id (from a fresh search) would be
+          // shadowed by the stale id-as-name value forever.
+          next.forEach((o) => {
+            if (o.name !== o.id) m.set(o.id, o.name);
+          });
           return m;
         });
         onChange(next.map((o) => o.id));
