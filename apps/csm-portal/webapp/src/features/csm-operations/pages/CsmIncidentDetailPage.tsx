@@ -83,6 +83,7 @@ import type {
   BeHandoffReasonCode,
   BeIncidentDetail,
   BeIncidentHandoffResult,
+  BeIncidentResolutionCode,
   BeIncidentState,
   BeUpdateIncidentPayload,
 } from "@api/backend/types";
@@ -363,7 +364,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   );
 
   const onResolutionSubmit = useCallback(
-    (fields: { resolutionCode: string; resolutionNotes: string }) => {
+    (fields: { resolutionCode: BeIncidentResolutionCode; resolutionNotes: string }) => {
       if (!id || !resolutionTarget) return;
       patchIncident.mutate(
         { id, patch: { state: resolutionTarget, ...fields } },
