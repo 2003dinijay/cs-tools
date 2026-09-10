@@ -436,6 +436,9 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	if err := validateUUIDs("projectId", parsed.ProjectIDs); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
+	if err := validateUUIDs("projectId", parsed.ExcludeProjectIDs); err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
 	if err := validateUUIDs("deploymentId", parsed.DeploymentIDs); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
@@ -531,6 +534,13 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	}
 	if len(parsed.SreTeamIDs) > 0 {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "sreTeam" is not supported by this data source`}
+	}
+	// accountId+in has no repository query support today either (see
+	// domain.ParsedCaseFilters.AccountIDs); accountId+notIn is rejected the
+	// same way rather than silently dropping the exclusion and widening the
+	// result set.
+	if len(parsed.ExcludeAccountIDs) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "accountId" (notIn) is not supported by this data source`}
 	}
 	if parsed.Unassigned {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "assignedUserId" (isEmpty) is not supported by this data source`}

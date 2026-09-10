@@ -7610,7 +7610,10 @@ components:
         - **tag** (in / notIn): free-text case tag labels. in matches cases
           carrying any of the given tags; notIn excludes cases carrying any of
           them.
-        - **projectId** (in): project UUIDs.
+        - **projectId** (in / notIn): project UUIDs. in matches cases whose
+          project is any of the given UUIDs; notIn matches cases whose
+          project is none of them. The two are independent and may be
+          combined. notIn is not supported inside an anyOf branch.
         - **deploymentId** (in): deployment UUIDs.
         - **assignedUserId** (in / isEmpty): in matches assigned-engineer user
           UUIDs; isEmpty (values ignored) matches cases with no assigned
@@ -7644,8 +7647,13 @@ components:
           Expansion) team, as team UUIDs.
         - **sreTeam** (in): the parent account's SRE (Site Reliability
           Engineering) team, as team UUIDs.
-        - **accountId** (in): the case's parent customer account, as account
-          UUIDs.
+        - **accountId** (in / notIn): the case's parent customer account, as
+          account UUIDs. in matches cases whose account is any of the given
+          UUIDs; notIn matches cases whose account is none of them. The two
+          are independent and may be combined. notIn is not supported inside
+          an anyOf branch, and not supported by the relational data source
+          (accountId+in has no relational-data-source query support today
+          either).
         - **resolutionNotes** (isEmpty): values ignored; matches cases with
           empty resolution notes. isNotEmpty is not supported: false and
           omitted were always treated identically for this filter, so there
