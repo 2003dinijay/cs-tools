@@ -2456,6 +2456,7 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
     # Submit feedback for a specific case.
     #
     # + id - ID of the case
+    # + payload - Submitted feedback payload
     # + return - Submitted feedback response or error response
     resource function post cases/[entity:IdString id]/feedback(http:RequestContext ctx,
             types:CaseFeedbackPayload payload)
@@ -2466,6 +2467,16 @@ service http:InterceptableService / on new http:Listener(9090, listenerConf) {
             return <http:InternalServerError>{
                 body: {
                     message: ERR_MSG_USER_INFO_HEADER_NOT_FOUND
+                }
+            };
+        }
+
+        entity:CaseResponse|error caseResponse = entity:getCase(userInfo.idToken, id);
+        if caseResponse is entity:CaseResponse && !isCaseClosed(caseResponse) {
+            log:printWarn(string `User: ${userInfo.userId} attempted to submit feedback for non-closed case: ${id}`);
+            return <http:BadRequest>{
+                body: {
+                    message: ERR_MSG_CASE_NOT_CLOSED_FOR_FEEDBACK
                 }
             };
         }

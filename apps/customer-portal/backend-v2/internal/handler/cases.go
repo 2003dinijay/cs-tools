@@ -374,7 +374,8 @@ func (h *CaseHandler) GetCaseFeedback(w http.ResponseWriter, r *http.Request) {
 	writeJSONValue(w, http.StatusOK, dto.MapCaseFeedback(result))
 }
 
-// SubmitCaseFeedback handles POST /cases/{id}/feedback.
+// SubmitCaseFeedback handles POST /cases/{id}/feedback. Rejected with 400
+// when the case is not in the closed state.
 func (h *CaseHandler) SubmitCaseFeedback(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -396,6 +397,12 @@ func (h *CaseHandler) SubmitCaseFeedback(w http.ResponseWriter, r *http.Request)
 	var req dto.SubmitCaseFeedbackRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	if caseView, err := h.entity.GetCase(r.Context(), id); err == nil && !dto.IsCaseStateClosed(caseView.State) {
+		slog.WarnContext(r.Context(), "rejected feedback submission on a non-closed case", "userID", user.UserID, "caseID", id, "state", caseView.State)
+		writeError(w, http.StatusBadRequest, ErrMsgCaseNotClosedForFeedback)
 		return
 	}
 
