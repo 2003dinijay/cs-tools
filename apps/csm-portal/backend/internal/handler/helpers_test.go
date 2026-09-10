@@ -481,6 +481,7 @@ func (m *mockEntityAccountClient) SearchAccountContacts(ctx context.Context, acc
 
 type mockEntityProjectClient struct {
 	getProjectFn            func(ctx context.Context, id string) ([]byte, error)
+	getProjectMetadataFn    func(ctx context.Context, id string) ([]byte, error)
 	searchProjectsFn        func(ctx context.Context, body []byte) ([]byte, error)
 	searchProjectContactsFn func(ctx context.Context, projectID string, body []byte) ([]byte, error)
 	getProjectContactFn     func(ctx context.Context, projectID, contactID string) ([]byte, error)
@@ -497,6 +498,13 @@ func (m *mockEntityProjectClient) GetProjectContact(ctx context.Context, project
 func (m *mockEntityProjectClient) GetProject(ctx context.Context, id string) ([]byte, error) {
 	if m.getProjectFn != nil {
 		return m.getProjectFn(ctx, id)
+	}
+	return []byte(`{}`), nil
+}
+
+func (m *mockEntityProjectClient) GetProjectMetadata(ctx context.Context, id string) ([]byte, error) {
+	if m.getProjectMetadataFn != nil {
+		return m.getProjectMetadataFn(ctx, id)
 	}
 	return []byte(`{}`), nil
 }

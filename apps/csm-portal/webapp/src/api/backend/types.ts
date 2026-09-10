@@ -1747,6 +1747,24 @@ export interface BeProjectSearchResponse extends BeSearchResponseBase {
 }
 
 /**
+ * `GET /projects/{id}/metadata` — reference data (choice lists, feature
+ * flags) for building the project's UI, not project-specific field values.
+ * Only the subset this webapp currently reads is typed; the entity service's
+ * response carries more (choice lists for case/change-request states, etc.).
+ */
+export interface BeProjectMetadata {
+  features?: {
+    /**
+     * Plain opaque category-code strings (not a named enum), matching the
+     * entity service's own convention. When present and non-empty, only
+     * deployed products whose `category` is in this list are eligible for a
+     * service request against this project.
+     */
+    srProductCategories?: string[] | null;
+  };
+}
+
+/**
  * A contact's attributes for one project, from `POST /projects/{id}/contacts/search`
  * (also the shape of `GET /projects/{id}/contacts/{contactId}`).
  */

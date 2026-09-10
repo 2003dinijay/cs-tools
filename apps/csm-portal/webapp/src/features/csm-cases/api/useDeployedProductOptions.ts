@@ -29,6 +29,13 @@ export interface DeployedProductOption {
   id: string;
   /** Human label: "{product name} {version}". */
   label: string;
+  /**
+   * Opaque category code carried straight through from `BeDeployedProduct.category`
+   * (e.g. "ms", "pc"), or `null`/`undefined` when the record has none. Used by
+   * callers (e.g. the service-request create page) that need to narrow the
+   * option list to a project's `srProductCategories`.
+   */
+  category?: string | null;
 }
 
 /**
@@ -59,7 +66,11 @@ export function useDeployedProductOptions(
         // products with missing names stay distinguishable in the selector.
         const name = d.product?.name || d.product?.id || "Product";
         const ver = d.version?.name ?? "";
-        return { id: d.id, label: ver ? `${name} ${ver}` : name };
+        return {
+          id: d.id,
+          label: ver ? `${name} ${ver}` : name,
+          category: d.category,
+        };
       });
     },
     enabled: !!deploymentId,
