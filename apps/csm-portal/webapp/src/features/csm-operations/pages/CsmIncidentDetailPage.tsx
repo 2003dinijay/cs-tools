@@ -417,6 +417,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
     <Button
       variant="text"
       size="small"
+      className="csm-print-hide"
       startIcon={<ArrowLeft size={16} />}
       onClick={back}
       sx={{ alignSelf: "flex-start" }}
@@ -524,7 +525,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
           <Typography variant="h5">{incident.subject || "Incident"}</Typography>
         </Box>
         <Box sx={{ flexShrink: 0, alignSelf: { xs: "stretch", md: "flex-start" } }}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Box className="csm-print-hide" sx={{ display: "flex", alignItems: "center", gap: 1 }}>
             <IncidentActionBar
               incident={incident}
               isPending={patchIncident.isPending}
@@ -606,7 +607,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
         </Box>
       </Card>
 
-      <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+      <Box className="csm-print-hide" sx={{ borderBottom: 1, borderColor: "divider" }}>
         <Tabs
           value={activeTab}
           onChange={(_, v) => setActiveTab(v as IncidentTabId)}
@@ -637,7 +638,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
       {activeTab === "activities" && (
         <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
           {composerOpen ? (
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+            <Box className="csm-print-hide" sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
               <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <Typography variant="subtitle2">Reply</Typography>
                 <Button
@@ -682,6 +683,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
               fullWidth
               variant="outlined"
               color="inherit"
+              className="csm-print-hide"
               startIcon={<MessageSquarePlus size={18} />}
               onClick={() => setComposerOpen(true)}
               sx={{ justifyContent: "flex-start", textTransform: "none", py: 1.5, px: 2 }}
