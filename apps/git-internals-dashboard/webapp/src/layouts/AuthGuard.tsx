@@ -72,19 +72,34 @@ function SignInRedirect(): JSX.Element {
 // i.e. only once ProtectedRoute has confirmed the caller is signed in.
 // Unwires on unmount so a stale getter/handler from a previous session
 // can never leak into a later one.
+//
+// The wiring itself happens directly in the render body, not in a
+// useEffect: `children` (AppShell and its data-fetching descendants —
+// useOverview, useSyncStatus, useTaxonomy, ...) renders right after this
+// component returns, in the same commit, and their useQuery hooks fetch
+// from *their own* mount effects. Effects fire child-first, parent-last
+// within a commit, so wiring in this component's effect would still run
+// after those children's effects — api/client's getAccessToken() would see
+// no tokenGetter yet and send their first request with no Authorization
+// header, a guaranteed 401 on every fresh sign-in. Wiring during render
+// instead guarantees it's set before React ever descends into `children`.
+// The setters are plain idempotent module-level assignments (no React
+// state), so re-running them on every render — including React's
+// StrictMode double-render — is harmless.
 function AuthBridge({ children }: { children: ReactNode }): JSX.Element {
   const { getAccessToken, signIn } = useAsgardeo();
 
+  setAccessTokenGetter(() => getAccessToken());
+  setUnauthorizedHandler(() => {
+    void signIn();
+  });
+
   useEffect(() => {
-    setAccessTokenGetter(() => getAccessToken());
-    setUnauthorizedHandler(() => {
-      void signIn();
-    });
     return () => {
       setAccessTokenGetter(null);
       setUnauthorizedHandler(null);
     };
-  }, [getAccessToken, signIn]);
+  }, []);
 
   return <>{children}</>;
 }
