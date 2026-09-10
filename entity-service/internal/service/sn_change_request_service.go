@@ -763,6 +763,24 @@ func (s *snChangeRequestService) CreateChangeRequest(ctx context.Context, req do
 	if req.DurationInput != nil && *req.DurationInput < 0 {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: "durationInput must be a non-negative integer"}
 	}
+	if req.DurationInput != nil {
+		if req.PlannedStartDate == nil || req.PlannedEndDate == nil {
+			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: "durationInput requires both plannedStartDate and plannedEndDate"}
+		}
+		start, err := time.Parse(snCreatedOnLayout, *req.PlannedStartDate)
+		if err != nil {
+			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: "plannedStartDate must follow the format: YYYY-MM-DD HH:mm:ss"}
+		}
+		end, err := time.Parse(snCreatedOnLayout, *req.PlannedEndDate)
+		if err != nil {
+			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: "plannedEndDate must follow the format: YYYY-MM-DD HH:mm:ss"}
+		}
+		if want := int(end.Sub(start).Seconds()); *req.DurationInput != want {
+			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{
+				Msg: fmt.Sprintf("durationInput (%d) must match plannedEndDate - plannedStartDate (%d)", *req.DurationInput, want),
+			}
+		}
+	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
 
@@ -1029,6 +1047,12 @@ func (s *snChangeRequestService) PatchChangeRequest(ctx context.Context, id stri
 	if req.DurationInput != nil && *req.DurationInput != nil && **req.DurationInput < 0 {
 		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "durationInput must be a non-negative integer"}
 	}
+	// Unlike CreateChangeRequest, this does not cross-check DurationInput against
+	// the effective planned window: PatchChangeRequestRequest.DurationInput's doc
+	// says the "effective" start/end falls back to the CR's stored value when not
+	// provided in this same request, which this handler cannot see without an
+	// extra GET before every PATCH that touches duration. Left to the backing
+	// data source for now.
 
 	uuidFields := map[string]*string{
 		"projectId":          req.ProjectID,

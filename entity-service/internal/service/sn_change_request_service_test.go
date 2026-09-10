@@ -617,6 +617,8 @@ func TestSNChangeRequestService_CreateChangeRequest_SendsNewCreateFields(t *test
 		CustomerGroupID:        strPtr(testCaseUUID),
 		EnvironmentIDs:         []string{testCaseUUID},
 		DeploymentProductIDs:   []string{testCaseUUID},
+		PlannedStartDate:       strPtr("2026-01-01 00:00:00"),
+		PlannedEndDate:         strPtr("2026-01-01 06:00:00"),
 		DurationInput:          &duration,
 	}
 
@@ -633,6 +635,39 @@ func TestSNChangeRequestService_CreateChangeRequest_SendsNewCreateFields(t *test
 	}
 	if gotBody["durationInput"] != float64(21600) {
 		t.Errorf("durationInput: got %v", gotBody["durationInput"])
+	}
+}
+
+func TestSNChangeRequestService_CreateChangeRequest_DurationInputMustMatchPlannedWindow(t *testing.T) {
+	svc := NewServiceNowChangeRequestService(nil)
+
+	duration := 3600
+	req := domain.CreateChangeRequestRequest{
+		Subject:          "subject",
+		PlannedStartDate: strPtr("2026-01-01 00:00:00"),
+		PlannedEndDate:   strPtr("2026-01-01 06:00:00"),
+		DurationInput:    &duration,
+	}
+
+	_, err := svc.CreateChangeRequest(contextWithUserIDToken("token"), req)
+	if _, ok := err.(*apierror.ValidationError); !ok {
+		t.Fatalf("expected *apierror.ValidationError for mismatched durationInput, got %T: %v", err, err)
+	}
+}
+
+func TestSNChangeRequestService_CreateChangeRequest_DurationInputRequiresBothPlannedDates(t *testing.T) {
+	svc := NewServiceNowChangeRequestService(nil)
+
+	duration := 21600
+	req := domain.CreateChangeRequestRequest{
+		Subject:          "subject",
+		PlannedStartDate: strPtr("2026-01-01 00:00:00"),
+		DurationInput:    &duration,
+	}
+
+	_, err := svc.CreateChangeRequest(contextWithUserIDToken("token"), req)
+	if _, ok := err.(*apierror.ValidationError); !ok {
+		t.Fatalf("expected *apierror.ValidationError when plannedEndDate is missing, got %T: %v", err, err)
 	}
 }
 
