@@ -120,7 +120,7 @@ export default function ProjectSuspendedNoticePage({
             <InfoRow label="Project Name:" value={project.name} />
             <InfoRow label="Project Key:" value={project.key} />
             <InfoRow label="Project Type:" value={projectType} />
-            <InfoRow label="Account Owner:" value={accountOwner} />
+            <InfoRow label="Account Manager:" value={accountOwner} />
             <InfoRow label="Subscription Start Date:" value={startDateLabel} />
           </Stack>
 
