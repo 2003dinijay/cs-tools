@@ -134,6 +134,7 @@ function BackButton({ onClick }: { onClick: () => void }): JSX.Element {
     <Button
       variant="text"
       size="small"
+      className="csm-print-hide"
       startIcon={<ArrowLeft size={16} />}
       onClick={onClick}
       sx={{ alignSelf: "flex-start" }}
@@ -237,6 +238,7 @@ export default function CsmProjectDetailPage(): JSX.Element {
             the wrong one. */}
         <Button
           variant="contained"
+          className="csm-print-hide"
           startIcon={<Plus size={16} />}
           endIcon={<ChevronDown size={16} />}
           onClick={(e: MouseEvent<HTMLElement>) => setCreateMenuAnchor(e.currentTarget)}
@@ -296,7 +298,7 @@ export default function CsmProjectDetailPage(): JSX.Element {
         </Menu>
       </Box>
 
-      <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+      <Box className="csm-print-hide" sx={{ borderBottom: 1, borderColor: "divider" }}>
         <Tabs value={activeTab} onChange={(_, v) => setActiveTab(v as ProjectTabId)}>
           <Tab value="overview" label="Overview" />
           <Tab value="deployments" label="Deployments" />
