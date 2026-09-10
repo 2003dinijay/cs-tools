@@ -12539,6 +12539,13 @@ components:
         resolutionCode:
           type: string
           nullable: true
+          enum:
+            - "Solved (Work Around)"
+            - "Solved (Permanently)"
+            - "Not Solved (Not Reproducible)"
+            - "False Alarm"
+            - "Duplicate"
+            - "Not Actionable Alert"
         parentId:
           type: string
           format: uuid
