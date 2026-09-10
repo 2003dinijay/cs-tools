@@ -46,7 +46,6 @@ const (
 	TypeCaseAssigned     Type = "case.assigned"
 	TypeCaseAcknowledged Type = "case.acknowledged"
 	TypeSeverityChanged  Type = "case.severity_changed"
-	TypeCaseMentioned    Type = "case.mentioned"
 	TypeIncidentCreated  Type = "incident.created"
 
 	// TypeSLAClockRegister and TypeSLATierReached belong to internal/slaengine,
@@ -62,7 +61,7 @@ const (
 // checked — used both for request validation and for generating docs/errors
 // that enumerate valid values.
 var KnownTypes = []Type{
-	TypeCaseCreated, TypeCommentAdded, TypeStatusChanged, TypeCaseAssigned, TypeCaseAcknowledged, TypeSeverityChanged, TypeCaseMentioned, TypeIncidentCreated,
+	TypeCaseCreated, TypeCommentAdded, TypeStatusChanged, TypeCaseAssigned, TypeCaseAcknowledged, TypeSeverityChanged, TypeIncidentCreated,
 	TypeSLAClockRegister, TypeSLATierReached,
 }
 
@@ -247,40 +246,6 @@ type SeverityChangedPayload struct {
 	Product     string   `json:"product,omitempty"`
 	Team        string   `json:"team,omitempty"`
 	Recipients  []string `json:"recipients"`
-}
-
-// CaseMentionedPayload is TypeCaseMentioned's payload — email only, sent to
-// the specific person(s) @mentioned in a case comment or work note, not the
-// case's watch list (contrast CommentAddedPayload's Recipients, which is the
-// watch list). The publisher (e.g. entity-service) is expected to have
-// already resolved the mention text to real recipient addresses before
-// publishing — this service has no notion of mention syntax or who a
-// mention resolves to, the same division of responsibility
-// CommentAddedPayload's own doc comment describes for its watch-list
-// Recipients. MentionerName is who wrote the comment (i.e. did the
-// mentioning), not who was mentioned — the recipient already knows who they
-// are from their own inbox. See CommentAddedPayload's doc comment for
-// ProjectID/CaseID/CaseNumber/WSO2CaseID/CaseComment/CommentID/
-// IsInternalNote — same fields, same reasoning, since dispatch.handleCaseMentioned
-// mirrors handleCommentAdded's shape (groupByLink/sendPerGroup, and the same
-// IsInternalNote branch between a public-facing and an internal-note-styled
-// template).
-type CaseMentionedPayload struct {
-	MentionerName string `json:"mentionerName"`
-	ProjectID     string `json:"projectId"`
-	CaseID        string `json:"caseId"`
-	// CaseNumber — see CaseCreatedPayload's own doc comment.
-	CaseNumber string `json:"caseNumber,omitempty"`
-	// WSO2CaseID — see CaseCreatedPayload's own doc comment.
-	WSO2CaseID  string `json:"wso2CaseId,omitempty"`
-	CaseTitle   string `json:"caseTitle,omitempty"`
-	CaseComment string `json:"caseComment"`
-	CommentID   string `json:"commentId"`
-	// IsInternalNote — see CommentAddedPayload's own doc comment; same
-	// meaning, same "publisher already restricted Recipients" trust
-	// boundary.
-	IsInternalNote bool     `json:"isInternalNote,omitempty"`
-	Recipients     []string `json:"recipients"`
 }
 
 // IncidentCreatedPayload is TypeIncidentCreated's payload. Unlike the case.*
