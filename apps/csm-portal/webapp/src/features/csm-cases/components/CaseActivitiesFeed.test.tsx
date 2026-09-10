@@ -41,6 +41,7 @@ import type {
   CaseFeedbackEntry,
   CsmCaseComment,
 } from "@features/csm-cases/types/csmCases";
+import type { AttachmentPreviewSource } from "@features/csm-cases/utils/attachmentPreview";
 
 vi.mock("@features/csm-cases/api/useSnLinkEntities", () => ({
   useGetAlert: vi.fn(),
@@ -75,7 +76,9 @@ function CaseActivitiesFeedHarness({
   onGetPreviewContent,
   ...props
 }: Omit<ComponentProps<typeof CaseActivitiesFeed>, "preview"> & {
-  onGetPreviewContent?: (attachment: CaseAttachment) => Promise<Blob>;
+  onGetPreviewContent?: (
+    attachment: CaseAttachment,
+  ) => Promise<AttachmentPreviewSource>;
 }): JSX.Element {
   const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(
     null,
@@ -617,7 +620,7 @@ describe("CaseActivitiesFeed — attachment preview affordance", () => {
   it("opens the fullscreen preview dialog with the fetched object URL and revokes it on close", async () => {
     const fetchContent = vi
       .fn()
-      .mockResolvedValue(new Blob(["fake"], { type: "image/png" }));
+      .mockResolvedValue({ url: "blob:mock-url", revoke: true });
     renderWithRouter(
       <CaseActivitiesFeedHarness
         comments={[]}

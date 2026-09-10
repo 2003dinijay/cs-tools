@@ -113,6 +113,47 @@ export interface CsmCaseRow {
   /** Falls back to {@link createdAt} when the backend hasn't returned
    * `updatedOn` for this row; rendered unprefixed either way. */
   updatedAt: string;
+  /**
+   * The case's current escalation level: one of the raw escalation-level ids
+   * `"0"` through `"5"` (EL0 "not escalated" through EL5 "CEO"), carried
+   * through unmapped from `BeCaseView.escalationLevel` /
+   * `BeCaseSearchView.escalationLevel` — see
+   * `features/csm-cases/utils/escalationLevel.ts` for the display label/color
+   * ramp. Null/absent when the backing case carries no escalation level (e.g.
+   * non-ServiceNow-backed cases) or is not escalated (`"0"`).
+   */
+  escalationLevel?: string | null;
+}
+
+/**
+ * One escalation-level change recorded against a case, as returned by
+ * `GET /cases/{id}/escalations` (newest first). Mirrors the wire shape
+ * (`BeCaseEscalation`) closely — this is a read-mostly history list, not
+ * something the rest of the app maps into a different shape.
+ */
+export interface CaseEscalationRecord {
+  id: string;
+  currentLevel: string;
+  previousLevel: string;
+  createdBy: string;
+  createdOn: string;
+  reason?: string | null;
+}
+
+/** A user notified about the case's current escalation level -- the people
+ * authorized to de-escalate it. `id` can be empty when the backing data
+ * source couldn't resolve a platform user record; match by `email` then. */
+export interface CaseEscalationNotifiedUser {
+  id?: string | null;
+  name?: string | null;
+  email?: string | null;
+}
+
+/** The response for `GET /cases/{id}/escalations`: the case's full escalation
+ * history plus who's authorized to de-escalate its current level. */
+export interface CaseEscalationHistory {
+  escalations: CaseEscalationRecord[];
+  currentNotifiedUsers: CaseEscalationNotifiedUser[];
 }
 
 export interface CsmCasesListResponse {
@@ -537,6 +578,14 @@ export interface CsmCaseDetail extends CsmCaseRow {
    * severity changes or it is reopened, so it can become absent again.
    */
   acknowledgedBy?: { name: string; email?: string };
+  /**
+   * When the case's workaround was marked provided (ISO date-time), or absent
+   * until marked (and cleared again on recall). Pauses the case's Workaround
+   * SLA clock while set.
+   */
+  workaroundProvidedOn?: string;
+  /** The engineer who marked the workaround as provided. Absent until marked. */
+  workaroundProvidedBy?: { name: string; email?: string };
   /** Category of issue reported, when set (e.g. "total_outage", "question"). */
   issueType?: BeCaseIssueType;
   /**

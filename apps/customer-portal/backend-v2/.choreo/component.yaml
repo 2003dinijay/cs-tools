@@ -1,0 +1,26 @@
+schemaVersion: 1.2
+
+endpoints:
+  - name: customer-portal-api
+    displayName: Customer Portal API
+    service:
+      basePath: /
+      port: 8080
+    type: REST
+    networkVisibilities:
+      - Public
+    schemaFilePath: openapi.yaml
+
+  # The WebSocket endpoint runs on its own listener and port (WS_PORT), not on
+  # 8080 alongside the REST API — matching apps/customer-portal/backend, which
+  # serves REST on 9090 and WebSocket on 9091. See the wsSrv block in
+  # cmd/server/main.go for why the two cannot share a listener.
+  - name: customer-portal-websocket
+    displayName: Customer Portal Websocket
+    service:
+      basePath: /
+      port: 8081
+    type: WS
+    networkVisibilities:
+      - Public
+    schemaFilePath: asyncapi.yaml

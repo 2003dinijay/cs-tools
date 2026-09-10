@@ -112,4 +112,23 @@ describe("DashboardWidgetGrid", () => {
       screen.getByRole("button", { name: "Refresh no_action_widget" }),
     ).toBeInTheDocument();
   });
+
+  it("renders a section's widgets in the config's own array order, not grouped/reordered by shape", () => {
+    // Deliberately lists a bar-shape widget ahead of a list-shape widget
+    // within the same (default/untitled) section — the old implementation
+    // hardcoded every list/count tile ahead of every pie/bar tile
+    // regardless of array position, so reordering this config array had no
+    // visible effect. This asserts the fix: DOM order follows array order.
+    renderGrid([
+      makeWidget({ widgetId: "trend_widget", shape: "bar", groupBy: { field: "status" } }),
+      makeWidget({ widgetId: "list_widget", shape: "list" }),
+      makeWidget({ widgetId: "count_widget", shape: "count" }),
+    ]);
+
+    const tileIds = screen
+      .getAllByTestId(/^tile-/)
+      .map((el) => el.getAttribute("data-testid"));
+
+    expect(tileIds).toEqual(["tile-trend_widget", "tile-list_widget", "tile-count_widget"]);
+  });
 });

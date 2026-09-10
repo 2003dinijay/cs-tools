@@ -1,0 +1,113 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package dto
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
+)
+
+// TestMapCaseDetails_ExposesFieldsTheFrontendDeclares covers the five fields
+// added because the frontend's CaseDetails type declares them
+// (features/support/types/cases.ts) while this backend never sent them —
+// entity-service was discarding them from the upstream case response.
+func TestMapCaseDetails_ExposesFieldsTheFrontendDeclares(t *testing.T) {
+	sla := "4 hours"
+	start, end := "2026-01-01", "2026-06-30"
+	auto := true
+
+	raw, err := json.Marshal(MapCaseDetails(entity.CaseView{
+		SLAResponseTime:     &sla,
+		ClosedBy:            &entity.EntityRef{ID: "user-1", Name: "Closer"},
+		HasAutoClosed:       &auto,
+		EngagementStartDate: &start,
+		EngagementEndDate:   &end,
+	}))
+	if err != nil {
+		t.Fatalf("marshal returned error: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	if got["slaResponseTime"] != sla {
+		t.Errorf("slaResponseTime = %v, want %q", got["slaResponseTime"], sla)
+	}
+	if got["engagementStartDate"] != start || got["engagementEndDate"] != end {
+		t.Errorf("engagement dates = %v/%v, want %q/%q",
+			got["engagementStartDate"], got["engagementEndDate"], start, end)
+	}
+	if got["hasAutoClosed"] != true {
+		t.Errorf("hasAutoClosed = %v, want true", got["hasAutoClosed"])
+	}
+	cb, ok := got["closedBy"].(map[string]any)
+	if !ok {
+		t.Fatalf("closedBy = %v, want an object", got["closedBy"])
+	}
+	if cb["id"] != "user-1" {
+		t.Errorf("closedBy.id = %v, want user-1", cb["id"])
+	}
+}
+
+// TestMapCaseDetails_TrimsFieldsWithNoConsumer pins the deliberate boundary:
+// acknowledgedBy and engagementPaymentType are decoded upstream for parity with
+// the Ballerina entity-service, but must NOT reach the customer-facing response
+// while no frontend consumer exists — per CLAUDE.md's "restrict, don't mirror"
+// rule. The fix-ETA quartet is trimmed for the stronger reason that it is
+// CSM-internal.
+func TestMapCaseDetails_TrimsFieldsWithNoConsumer(t *testing.T) {
+	raw, err := json.Marshal(MapCaseDetails(entity.CaseView{
+		AcknowledgedBy:        &entity.EntityRef{ID: "user-2", Name: "Acker"},
+		EngagementPaymentType: strPtr("Prepaid"),
+	}))
+	if err != nil {
+		t.Fatalf("marshal returned error: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	for _, k := range []string{"acknowledgedBy", "engagementPaymentType", "bestCaseFixEta", "mostLikelyFixEta", "worstCaseFixEta"} {
+		if _, present := got[k]; present {
+			t.Errorf("%q leaked into the customer-facing case response", k)
+		}
+	}
+}
+
+// TestMapCaseDetails_OmitsAbsentFields checks a case response carrying none of
+// these values omits the keys rather than emitting nulls or zero values.
+func TestMapCaseDetails_OmitsAbsentFields(t *testing.T) {
+	raw, err := json.Marshal(MapCaseDetails(entity.CaseView{}))
+	if err != nil {
+		t.Fatalf("marshal returned error: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	for _, k := range []string{"slaResponseTime", "closedBy", "hasAutoClosed", "engagementStartDate", "engagementEndDate"} {
+		if _, present := got[k]; present {
+			t.Errorf("%q present with no upstream value; want omitted", k)
+		}
+	}
+}
+
+func strPtr(s string) *string { return &s }

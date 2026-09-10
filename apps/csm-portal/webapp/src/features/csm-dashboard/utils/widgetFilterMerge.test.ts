@@ -15,20 +15,66 @@
 // under the License.
 
 import { describe, expect, it } from "vitest";
-
 import { mergeWidgetFilters } from "./widgetFilterMerge";
 
 describe("mergeWidgetFilters", () => {
-  it("merges the inner case `filters` array by field, keeping base fields the slice omits", () => {
+  it("merges non-case filters as a plain object spread, slice keys winning", () => {
+    const base = { states: ["open"], severities: ["critical"] };
+    const slice = { severities: ["catastrophic"] };
+
+    expect(mergeWidgetFilters(base, slice)).toEqual({
+      states: ["open"],
+      severities: ["catastrophic"],
+    });
+  });
+
+  it("merges case filter arrays by field, keeping base entries the slice doesn't override", () => {
+    const base = {
+      filters: [
+        { field: "state", op: "in", values: ["open", "work_in_progress"] },
+        { field: "severity", op: "in", values: ["critical"] },
+      ],
+    };
+    const slice = {
+      filters: [{ field: "severity", op: "in", values: ["catastrophic"] }],
+    };
+
+    expect(mergeWidgetFilters(base, slice)).toEqual({
+      filters: [
+        { field: "state", op: "in", values: ["open", "work_in_progress"] },
+        { field: "severity", op: "in", values: ["catastrophic"] },
+      ],
+    });
+  });
+
+  it("keeps the base's case filters when the slice's own filters array is empty", () => {
+    const base = { filters: [{ field: "state", op: "in", values: ["open"] }] };
+    const slice = { filters: [] };
+
+    expect(mergeWidgetFilters(base, slice)).toEqual({
+      filters: [{ field: "state", op: "in", values: ["open"] }],
+    });
+  });
+
+  // Regression test: DASHBOARDS_CONFIG is a raw JSON env var, not
+  // schema-validated beyond basic decoding — a widget's base `filters` or a
+  // pie/bar slice's own `filters` can be genuinely absent at runtime despite
+  // the wire type declaring both required. This used to crash with "Cannot
+  // read properties of undefined (reading 'filters')" three calls down from
+  // DashboardWidgetTile/useWidgetPieData.
+  it("treats an undefined base or slice as empty rather than throwing", () => {
+    expect(mergeWidgetFilters(undefined, { states: ["open"] })).toEqual({ states: ["open"] });
+    expect(mergeWidgetFilters({ states: ["open"] }, undefined)).toEqual({ states: ["open"] });
+    expect(mergeWidgetFilters(undefined, undefined)).toEqual({});
+  });
+
+  it("lets a slice override a base entry for the same field", () => {
     const merged = mergeWidgetFilters(
       { filters: [{ field: "state", op: "in", values: ["open"] }] },
-      { filters: [{ field: "severity", op: "in", values: ["critical"] }] },
+      { filters: [{ field: "state", op: "in", values: ["closed"] }] },
     );
 
-    expect(merged.filters).toEqual([
-      { field: "state", op: "in", values: ["open"] },
-      { field: "severity", op: "in", values: ["critical"] },
-    ]);
+    expect(merged.filters).toEqual([{ field: "state", op: "in", values: ["closed"] }]);
   });
 
   it("lets a slice override a base entry for the same field", () => {

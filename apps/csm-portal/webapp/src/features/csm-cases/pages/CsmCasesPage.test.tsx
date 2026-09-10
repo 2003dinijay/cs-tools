@@ -36,6 +36,7 @@ import CsmCasesPage from "@features/csm-cases/pages/CsmCasesPage";
 
 describe("CsmCasesPage — case-type filter visibility", () => {
   it("no longer passes hideTypeFilter, so the case-type control is shown", () => {
+    issuesViewSpy.mockClear();
     render(
       <MemoryRouter>
         <CsmCasesPage />
@@ -51,5 +52,36 @@ describe("CsmCasesPage — case-type filter visibility", () => {
     // visible, no longer pins the *query* -- see
     // CsmIssuesView.typeFilterLock.test.tsx for that behavior.
     expect(props.lockedFilters).toEqual({ caseTypes: ["case"] });
+  });
+});
+
+// digiops-cs#2914: a dashboard widget's click-through carries its own
+// displayName as the `wt` query param (see
+// `WIDGET_RESOURCE_CONFIG.case.buildHref`), which this page must render as
+// its heading instead of the hardcoded default -- but only when present, so
+// a normal left-nav visit (no `wt` param) is completely unaffected.
+describe("CsmCasesPage — title override from a dashboard widget click-through", () => {
+  it('defaults to "Cases" when no wt param is present (normal nav visit)', () => {
+    issuesViewSpy.mockClear();
+    render(
+      <MemoryRouter initialEntries={["/cases"]}>
+        <CsmCasesPage />
+      </MemoryRouter>,
+    );
+
+    const props = issuesViewSpy.mock.calls[0][0] as Record<string, unknown>;
+    expect(props.title).toBe("Cases");
+  });
+
+  it("uses the wt param as the title when present (widget click-through)", () => {
+    issuesViewSpy.mockClear();
+    render(
+      <MemoryRouter initialEntries={["/cases?wt=Total+Outstanding&states=open"]}>
+        <CsmCasesPage />
+      </MemoryRouter>,
+    );
+
+    const props = issuesViewSpy.mock.calls[0][0] as Record<string, unknown>;
+    expect(props.title).toBe("Total Outstanding");
   });
 });

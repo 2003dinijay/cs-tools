@@ -26,6 +26,7 @@ import {
   resolveAssignedUserIds,
 } from "@features/csm-cases/utils/caseSearchPayload";
 import { resolveRelativeDatePlaceholder } from "@utils/resolveRelativeDatePlaceholder";
+import { resolveAdvancedFilterDateValues } from "@features/csm-cases/utils/advancedFilters";
 import { ASSIGNEE_ME_TOKEN } from "@features/csm-cases/utils/assignee";
 import { classifyCaseQuery } from "@features/csm-cases/utils/caseQueryScope";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
@@ -140,6 +141,16 @@ export function useGetCsmCases(
       filters.updatedOnLte,
       filters.closedOnGte,
       filters.closedOnLte,
+      // JSON-stable-enough for a query key: row order is already
+      // user-controlled (add/remove), and every field/op/values combination
+      // that would otherwise collide is exactly the same shape the `/cases/
+      // search` payload itself carries — no separate normalization needed
+      // here beyond what `buildCaseSearchFilters` already applies.
+      JSON.stringify(filters.advancedFilters),
+      // Same reasoning as `advancedFilters` above — every field/values
+      // combination an OR-group row carries is already the exact shape the
+      // request payload itself sends.
+      JSON.stringify(filters.anyOfBranches),
       currentUserEmail ?? "",
       wantsMe ? (currentUserId ?? "") : "",
       page,
@@ -173,28 +184,33 @@ export function useGetCsmCases(
         assignedUserIds = resolved;
       }
 
-      // Resolve `createdOnGte`/`createdOnLte` relative-date placeholders
-      // (`__today__`, `__daysAgo:N__`, ... -- same grammar and resolver as
-      // the dashboard widgets' own `resolveRelativeDateFilters`) against the
-      // viewer's own browser-local "now", right here at query-build time --
-      // no backend change, and "today" correctly means whatever moment the
-      // link is opened, not a moment baked into the URL. Only `createdOn`
-      // is covered for now (`updatedOn`/`closedOn` get the same treatment
-      // later if wanted); anything that isn't a recognized placeholder
-      // (a literal `YYYY-MM-DD`, or garbage) passes through unchanged.
+      // Resolve `createdOnGte`/`createdOnLte`/`updatedOnGte`/`updatedOnLte`/
+      // `closedOnGte`/`closedOnLte` relative-date placeholders (`__today__`,
+      // `__daysAgo:N__`, ... -- same grammar and resolver as the dashboard
+      // widgets' own `resolveRelativeDateFilters`) against the viewer's own
+      // browser-local "now", right here at query-build time -- no backend
+      // change, and "today" correctly means whatever moment the link is
+      // opened, not a moment baked into the URL. Anything that isn't a
+      // recognized placeholder (a literal `YYYY-MM-DD`, or garbage) passes
+      // through unchanged.
       const now = new Date();
+      const resolveBound = (
+        raw: string | null,
+        op: "gte" | "lte",
+      ): string | null =>
+        raw === null ? null : (resolveRelativeDatePlaceholder(raw, op, now) ?? raw);
       const resolvedFilters: CasesFilters = {
         ...filters,
-        createdOnGte:
-          filters.createdOnGte === null
-            ? null
-            : (resolveRelativeDatePlaceholder(filters.createdOnGte, "gte", now) ??
-              filters.createdOnGte),
-        createdOnLte:
-          filters.createdOnLte === null
-            ? null
-            : (resolveRelativeDatePlaceholder(filters.createdOnLte, "lte", now) ??
-              filters.createdOnLte),
+        createdOnGte: resolveBound(filters.createdOnGte, "gte"),
+        createdOnLte: resolveBound(filters.createdOnLte, "lte"),
+        updatedOnGte: resolveBound(filters.updatedOnGte, "gte"),
+        updatedOnLte: resolveBound(filters.updatedOnLte, "lte"),
+        closedOnGte: resolveBound(filters.closedOnGte, "gte"),
+        closedOnLte: resolveBound(filters.closedOnLte, "lte"),
+        // Same relative-date resolution, extended to any `createdOn`/
+        // `updatedOn`/`closedOn` row from the "Advanced filters" builder —
+        // see `resolveAdvancedFilterDateValues`.
+        advancedFilters: resolveAdvancedFilterDateValues(filters.advancedFilters, now),
       };
 
       // One cross-project case search. No separate account/project directory

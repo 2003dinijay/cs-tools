@@ -109,6 +109,13 @@ function detailFromBeCase(
           email: c.acknowledgedBy.email ?? undefined,
         }
       : undefined,
+    workaroundProvidedOn: c.workaroundProvidedOn ?? undefined,
+    workaroundProvidedBy: c.workaroundProvidedBy
+      ? {
+          name: c.workaroundProvidedBy.name?.trim() || (c.workaroundProvidedBy.email ?? "—"),
+          email: c.workaroundProvidedBy.email ?? undefined,
+        }
+      : undefined,
     assignee,
     assigneeName,
     assigneeEmail,
@@ -156,6 +163,7 @@ function detailFromBeCase(
     watchers,
     linkedItems: [],
     tags: (c.tags ?? []).map((t) => ({ id: t.id, label: t.label })),
+    escalationLevel: c.escalationLevel ?? null,
     timeLogs: [],
     audit: [],
     attachments: [],

@@ -203,6 +203,6 @@ export function useWidgetData(
     // the 2-arg `(failureCount, error)` form, so `isTeamIndependent` has to
     // be closed over here instead of threaded through react-query itself.
     retry: (failureCount, error) => shouldRetryWidgetFetch(failureCount, error, isTeamIndependent),
-    staleTime: 60_000,
+    staleTime: 300_000,
   });
 }

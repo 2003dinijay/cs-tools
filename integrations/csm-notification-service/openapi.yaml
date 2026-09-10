@@ -1,0 +1,27 @@
+openapi: 3.0.1
+info:
+  title: CSM Notification Service API
+  version: 2.0.0
+  description: >
+    A background worker with no inbound API surface beyond a health check.
+    csm-portal-backend and customer-portal-backend publish domain events
+    (case created, comment added, status changed, case assigned, incident
+    created) directly to Azure Event Hub; this service's own consumers read
+    them back and react by sending email, Google Chat alerts, and voice
+    calls. See CLAUDE.md for the event schema and dead-letter-queue design —
+    there is nothing else here for an HTTP client to call.
+servers:
+  - url: "{server}:{port}/"
+    variables:
+      server:
+        default: http://localhost
+      port:
+        default: "8080"
+paths:
+  /health:
+    get:
+      summary: Health check endpoint, used by Choreo's liveness probe.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Ok

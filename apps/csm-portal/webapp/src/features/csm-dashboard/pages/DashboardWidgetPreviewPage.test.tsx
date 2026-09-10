@@ -212,6 +212,168 @@ describe("DashboardWidgetPreviewPage — case_feedback gets a real, editable rat
   });
 });
 
+/**
+ * `call_request`'s own "View more" landing: unlike the generic
+ * "Filtered by:" chip summary + free-text search box (which
+ * `/call-requests/search` doesn't even support — it has no `searchQuery`
+ * field), this gives a real, editable Simple-only filter bar (call state,
+ * case state, assignee, CRE team) seeded from the widget's own flat
+ * filters and feeding the same `useWidgetData` + `CallRequestWidgetList`
+ * the tile itself renders.
+ */
+describe("DashboardWidgetPreviewPage — call_request gets a real, editable filter bar", () => {
+  beforeEach(() => {
+    postMock.mockReset();
+    postMock.mockImplementation((url: string) => {
+      if (url === "/teams/search") {
+        return Promise.resolve({
+          teams: [
+            {
+              id: "castor",
+              name: "Team Castor",
+              family: "cre-abt",
+              creGroupId: "33333333-3333-3333-3333-333333333333",
+            },
+          ],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        });
+      }
+      if (url === "/call-requests/search") {
+        return Promise.resolve({
+          callRequests: [
+            {
+              id: "cr-1",
+              number: "CR-1",
+              reason: "Kickoff call",
+              state: { id: 3, label: "Scheduled" },
+              case: { id: "case-1", number: "CS-1" },
+            },
+          ],
+          total: 1,
+          limit: 10,
+          offset: 0,
+        });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it("renders the real filter bar (not the read-only chip summary), seeded from the widget's own flat filters", async () => {
+    renderAt(
+      buildWidgetPreviewHref({
+        previewSlug: "call-requests",
+        widgetId: "team_open_calls",
+        displayName: "Team Open Calls",
+        filters: { states: ["scheduled"], caseStates: ["open"] },
+      }),
+    );
+
+    await waitFor(() => expect(screen.getByText("CR-1")).toBeInTheDocument());
+    expect(screen.getByRole("combobox", { name: "Call state" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Case state" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "CRE Team" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Active filters" })).not.toBeInTheDocument();
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/call-requests/search",
+      expect.objectContaining({
+        filters: { states: ["scheduled"], caseStates: ["open"] },
+        pagination: { offset: 0, limit: 10 },
+      }),
+      { signal: expect.any(AbortSignal) },
+    );
+  });
+
+  it("re-queries /call-requests/search when the Call state filter is changed from the dropdown", async () => {
+    renderAt(
+      buildWidgetPreviewHref({
+        previewSlug: "call-requests",
+        widgetId: "team_open_calls",
+        displayName: "Team Open Calls",
+        filters: {},
+      }),
+    );
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/call-requests/search",
+        expect.objectContaining({ filters: {} }),
+        { signal: expect.any(AbortSignal) },
+      ),
+    );
+
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "Call state" }));
+    fireEvent.click(screen.getByRole("option", { name: "Concluded" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/call-requests/search",
+        expect.objectContaining({ filters: { states: ["concluded"] } }),
+        { signal: expect.any(AbortSignal) },
+      ),
+    );
+  });
+
+  it("Reset restores the widget's own starting filters after an edit", async () => {
+    renderAt(
+      buildWidgetPreviewHref({
+        previewSlug: "call-requests",
+        widgetId: "team_open_calls",
+        displayName: "Team Open Calls",
+        filters: { states: ["scheduled"] },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/call-requests/search",
+        expect.objectContaining({ filters: { states: ["scheduled"] } }),
+        { signal: expect.any(AbortSignal) },
+      ),
+    );
+
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "Call state" }));
+    fireEvent.click(screen.getByRole("option", { name: "Scheduled" }));
+    // Deselecting the only selected option clears the field.
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/call-requests/search",
+        expect.objectContaining({ filters: {} }),
+        { signal: expect.any(AbortSignal) },
+      ),
+    );
+    // The multi-select's menu stays open after a selection (multi-select UX);
+    // close it so the rest of the page isn't aria-hidden behind the popup.
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
+
+    fireEvent.click(screen.getByRole("button", { name: /^reset$/i }));
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/call-requests/search",
+        expect.objectContaining({ filters: { states: ["scheduled"] } }),
+        { signal: expect.any(AbortSignal) },
+      ),
+    );
+  });
+
+  it("offers the CRE-team-family teams loaded from /teams/search as CRE Team options", async () => {
+    renderAt(
+      buildWidgetPreviewHref({
+        previewSlug: "call-requests",
+        widgetId: "team_open_calls",
+        displayName: "Team Open Calls",
+        filters: {},
+      }),
+    );
+
+    await waitFor(() => expect(screen.getByText("CR-1")).toBeInTheDocument());
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "CRE Team" }));
+    expect(screen.getByRole("option", { name: "Team Castor" })).toBeInTheDocument();
+  });
+});
+
 describe("DashboardWidgetPreviewPage", () => {
   beforeEach(() => {
     postMock.mockReset();
@@ -512,7 +674,6 @@ describe("DashboardWidgetPreviewPage — case-family widgets get the real, edita
     await waitFor(() => expect(screen.getByText("CS-1")).toBeInTheDocument());
     expect(screen.getByRole("combobox", { name: "Severity" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "State" })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Tags" })).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Active filters" })).not.toBeInTheDocument();
 
     expect(postMock).toHaveBeenCalledWith(
@@ -599,11 +760,14 @@ describe("DashboardWidgetPreviewPage — case-family widgets get the real, edita
     expect(lastCall?.[1]).toMatchObject({ filters: { searchQuery: "disk" } });
   });
 
-  // The tri-state `TagsMultiSelect` (digiops-cs#2907) means a widget's
-  // `tag notIn [...]` seeds `excludeTags` directly now -- no more catalog
-  // fetch, no more display/query divergence. What's shown and what's
-  // queried are the same `CasesFilters` value from the start.
-  it("seeds a widget's tag notIn directly into excludeTags -- shown as an excluded chip and queried as the same notIn condition", async () => {
+  // `tag`/`excludeTags` is Advanced-mode-only now (see `CasesFilterBar.tsx`'s
+  // mode toggle): a widget's `tag notIn [...]` seeds `excludeTags` directly
+  // (no catalog fetch, no display/query divergence), which also means
+  // `isSimpleRepresentable` is false, so the preview mounts straight into
+  // Advanced mode with the `tag`/`notIn` row already showing that value --
+  // what's shown and what's queried are the same `CasesFilters` value from
+  // the start, same invariant as before, just via the unified builder now.
+  it("seeds a widget's tag notIn directly into excludeTags -- shown in the Advanced-mode tag row and queried as the same notIn condition", async () => {
     mockPost({ cases: { cases: [], total: 0, limit: 10, offset: 0 } });
 
     renderAt(
@@ -618,7 +782,8 @@ describe("DashboardWidgetPreviewPage — case-family widgets get the real, edita
     expect(postMock).not.toHaveBeenCalledWith("/tags/search", expect.anything());
 
     await waitFor(() => {
-      expect(screen.getByText("- s_dip")).toBeInTheDocument();
+      expect(screen.getByText("Advanced filters")).toBeInTheDocument();
+      expect(screen.getByText("s_dip")).toBeInTheDocument();
     });
 
     await waitFor(() => {
@@ -648,7 +813,7 @@ describe("DashboardWidgetPreviewPage — case-family widgets get the real, edita
       }),
     );
 
-    await waitFor(() => expect(screen.getByText("- s_dip")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("s_dip")).toBeInTheDocument());
 
     fireEvent.change(screen.getByPlaceholderText(/search by case #/i), {
       target: { value: "disk" },

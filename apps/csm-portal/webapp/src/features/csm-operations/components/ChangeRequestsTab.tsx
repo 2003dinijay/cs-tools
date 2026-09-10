@@ -43,6 +43,7 @@ import { useBackendApi } from "@api/backend/client";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { useSearchChangeRequests } from "@features/csm-operations/api/useSearchChangeRequests";
 import {
+  buildChangeRequestSearchFilters,
   changeRequestImpactColor,
   changeRequestImpactLabel,
   changeRequestStateColor,
@@ -122,16 +123,6 @@ function formatDate(value?: string | null): string {
   );
 }
 
-/** Convert a YYYY-MM-DD date picker value to an ISO 8601 string at midnight UTC. */
-function toISOStart(date: string): string {
-  return `${date}T00:00:00Z`;
-}
-
-/** Convert a YYYY-MM-DD date picker value to an ISO 8601 string at end-of-day UTC. */
-function toISOEnd(date: string): string {
-  return `${date}T23:59:59Z`;
-}
-
 /**
  * Change-requests listing for the Operations → Change requests tab. Searches
  * `POST /change-requests/search` with server-side pagination and filters
@@ -153,20 +144,10 @@ export default function ChangeRequestsTab(): JSX.Element {
 
   const payload = useMemo(
     () => ({
-      filters: {
-        ...(debouncedSearch.length > 0 && { searchQuery: debouncedSearch }),
-        ...(filters.states.length > 0 && { states: filters.states }),
-        ...(filters.impacts.length > 0 && { impacts: filters.impacts }),
-        ...(filters.closedStartDate && {
-          closedStartDate: toISOStart(filters.closedStartDate),
-        }),
-        ...(filters.closedEndDate && {
-          closedEndDate: toISOEnd(filters.closedEndDate),
-        }),
-      },
+      filters: buildChangeRequestSearchFilters(filters, debouncedSearch),
       pagination: { offset: page * rowsPerPage, limit: rowsPerPage },
     }),
-    [debouncedSearch, filters.states, filters.impacts, filters.closedStartDate, filters.closedEndDate, page, rowsPerPage],
+    [filters, debouncedSearch, page, rowsPerPage],
   );
 
   const { data, isLoading, isError, error, isFetching, refetch, dataUpdatedAt } =

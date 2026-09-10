@@ -193,18 +193,20 @@ func NewServiceNowTimeCardService(client *integrationservice.Client) TimeCardSer
 	return &snTimeCardService{client: client}
 }
 
-func (s *snTimeCardService) SearchTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) (domain.SearchTimeCardsResponse, error) {
+// buildTimeCardSearchPayload validates req and builds the SN request payload
+// shared by both POST /time-cards/search and POST /cases/time-cards/search —
+// the two endpoints take an identical request shape and differ only in
+// response shape (flat time-card rows vs. rolled up by case).
+func buildTimeCardSearchPayload(req domain.SearchTimeCardsRequest) (snTimeCardSearchPayload, error) {
 	if err := normalizePagination(&req.Pagination); err != nil {
-		return domain.SearchTimeCardsResponse{}, err
+		return snTimeCardSearchPayload{}, err
 	}
-
-	token := middleware.UserIDTokenFromContext(ctx)
 
 	var snSortBy *snTimeCardSort
 	if req.SortBy.Field != "" {
 		snField, ok := snTimeCardSortFieldMap[req.SortBy.Field]
 		if !ok {
-			return domain.SearchTimeCardsResponse{}, &apierror.ValidationError{Msg: "sortBy.field " + string(req.SortBy.Field) + " is not supported by ServiceNow"}
+			return snTimeCardSearchPayload{}, &apierror.ValidationError{Msg: "sortBy.field " + string(req.SortBy.Field) + " is not supported by ServiceNow"}
 		}
 		order := string(req.SortBy.Order)
 		if order == "" {
@@ -221,34 +223,34 @@ func (s *snTimeCardService) SearchTimeCards(ctx context.Context, req domain.Sear
 	if req.Filters != nil {
 		for _, state := range req.Filters.States {
 			if _, ok := validTimeCardStates[state]; !ok {
-				return domain.SearchTimeCardsResponse{}, &apierror.ValidationError{Msg: "states contains invalid value: " + string(state)}
+				return snTimeCardSearchPayload{}, &apierror.ValidationError{Msg: "states contains invalid value: " + string(state)}
 			}
 		}
 		if err := validateUUIDs("projectIds", req.Filters.ProjectIDs); err != nil {
-			return domain.SearchTimeCardsResponse{}, err
+			return snTimeCardSearchPayload{}, err
 		}
 		if req.Filters.CaseID != nil {
 			if err := validateUUIDs("caseId", []string{*req.Filters.CaseID}); err != nil {
-				return domain.SearchTimeCardsResponse{}, err
+				return snTimeCardSearchPayload{}, err
 			}
 		}
 		if req.Filters.UserID != nil {
 			if err := validateUUIDs("userId", []string{*req.Filters.UserID}); err != nil {
-				return domain.SearchTimeCardsResponse{}, err
+				return snTimeCardSearchPayload{}, err
 			}
 		}
 		if req.Filters.ApproverID != nil {
 			if err := validateUUIDs("approverId", []string{*req.Filters.ApproverID}); err != nil {
-				return domain.SearchTimeCardsResponse{}, err
+				return snTimeCardSearchPayload{}, err
 			}
 		}
 		if req.Filters.ApprovedByID != nil {
 			if err := validateUUIDs("approvedById", []string{*req.Filters.ApprovedByID}); err != nil {
-				return domain.SearchTimeCardsResponse{}, err
+				return snTimeCardSearchPayload{}, err
 			}
 		}
 		if err := validateUUIDs("userIds", req.Filters.UserIDs); err != nil {
-			return domain.SearchTimeCardsResponse{}, err
+			return snTimeCardSearchPayload{}, err
 		}
 
 		snStates := make([]string, 0, len(req.Filters.States))
@@ -284,6 +286,17 @@ func (s *snTimeCardService) SearchTimeCards(ctx context.Context, req domain.Sear
 		payload.Filters = &filters
 	}
 
+	return payload, nil
+}
+
+func (s *snTimeCardService) SearchTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) (domain.SearchTimeCardsResponse, error) {
+	payload, err := buildTimeCardSearchPayload(req)
+	if err != nil {
+		return domain.SearchTimeCardsResponse{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
 	raw, err := s.client.Post(ctx, "/time-cards/search", token, payload)
 	if err != nil {
 		return domain.SearchTimeCardsResponse{}, err
@@ -304,6 +317,95 @@ func (s *snTimeCardService) SearchTimeCards(ctx context.Context, req domain.Sear
 		Total:     snResp.TotalRecords,
 		Limit:     snResp.Limit,
 		Offset:    snResp.Offset,
+	}, nil
+}
+
+// snCaseTimeCardBillingInfo mirrors the Choreo CaseTimeCardBillingInfo shape.
+type snCaseTimeCardBillingInfo struct {
+	TotalTime float64 `json:"totalTime"`
+	Count     int     `json:"count"`
+}
+
+// snCaseTimeCardCaseRef mirrors the case reference embedded in the Choreo
+// CaseTimeCardSummary shape.
+type snCaseTimeCardCaseRef struct {
+	ID        string       `json:"id"`
+	Number    string       `json:"number"`
+	Name      string       `json:"name"`
+	UpdatedOn string       `json:"updatedOn"`
+	Project   *snEntityRef `json:"project"`
+	// Choreo sends these three alongside updatedOn; leaving them undeclared
+	// meant encoding/json discarded them, so the portal's time-tracking card had
+	// no author to render. Pointers per this service's optional-field convention:
+	// nil serialises as null rather than an empty string.
+	CreatedOn *string `json:"createdOn"`
+	CreatedBy *string `json:"createdBy"`
+	UpdatedBy *string `json:"updatedBy"`
+}
+
+// snCaseTimeCardSummary mirrors the Choreo CaseTimeCardSummary shape.
+type snCaseTimeCardSummary struct {
+	Case        snCaseTimeCardCaseRef     `json:"case"`
+	TotalTime   float64                   `json:"totalTime"`
+	TotalCount  int                       `json:"totalCount"`
+	Billable    snCaseTimeCardBillingInfo `json:"billable"`
+	NonBillable snCaseTimeCardBillingInfo `json:"nonBillable"`
+}
+
+// snCaseTimeCardsSearchResponse mirrors the Choreo POST /cases/time-cards/search response.
+type snCaseTimeCardsSearchResponse struct {
+	Cases        []snCaseTimeCardSummary `json:"cases"`
+	TotalRecords int                     `json:"totalRecords"`
+	Limit        int                     `json:"limit"`
+	Offset       int                     `json:"offset"`
+}
+
+func (s *snTimeCardService) SearchCaseTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) (domain.SearchCaseTimeCardsResponse, error) {
+	payload, err := buildTimeCardSearchPayload(req)
+	if err != nil {
+		return domain.SearchCaseTimeCardsResponse{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	raw, err := s.client.Post(ctx, "/cases/time-cards/search", token, payload)
+	if err != nil {
+		return domain.SearchCaseTimeCardsResponse{}, err
+	}
+
+	var snResp snCaseTimeCardsSearchResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.SearchCaseTimeCardsResponse{}, fmt.Errorf("sn case time cards: parse response: %w", err)
+	}
+
+	cases := make([]domain.CaseTimeCardSummary, 0, len(snResp.Cases))
+	for _, c := range snResp.Cases {
+		summary := domain.CaseTimeCardSummary{
+			Case: domain.CaseTimeCardCaseRef{
+				ID:        sysidToUUID(c.Case.ID),
+				Number:    c.Case.Number,
+				Name:      c.Case.Name,
+				UpdatedOn: c.Case.UpdatedOn,
+				CreatedOn: c.Case.CreatedOn,
+				CreatedBy: c.Case.CreatedBy,
+				UpdatedBy: c.Case.UpdatedBy,
+			},
+			TotalTime:   c.TotalTime,
+			TotalCount:  c.TotalCount,
+			Billable:    domain.CaseTimeCardBillingInfo{TotalTime: c.Billable.TotalTime, Count: c.Billable.Count},
+			NonBillable: domain.CaseTimeCardBillingInfo{TotalTime: c.NonBillable.TotalTime, Count: c.NonBillable.Count},
+		}
+		if c.Case.Project != nil {
+			summary.Case.Project = &domain.EntityRef{ID: sysidToUUID(c.Case.Project.ID), Name: c.Case.Project.Name}
+		}
+		cases = append(cases, summary)
+	}
+
+	return domain.SearchCaseTimeCardsResponse{
+		Cases:  cases,
+		Total:  snResp.TotalRecords,
+		Limit:  snResp.Limit,
+		Offset: snResp.Offset,
 	}, nil
 }
 

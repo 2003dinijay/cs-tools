@@ -32,6 +32,11 @@ import type {
 } from "@api/backend/types";
 import type { CasesFilters } from "@features/csm-cases/components/CasesFilterBar";
 import type { CsmCaseRow } from "@features/csm-cases/types/csmCases";
+import {
+  advancedFilterRowToFieldFilter,
+  isCompleteAdvancedFilterRow,
+} from "@features/csm-cases/utils/advancedFilters";
+import { anyOfBranchToPayload } from "@features/csm-cases/utils/anyOfFilters";
 
 /**
  * Builds the `/cases/search` `filters` object for the given UI filter state
@@ -214,6 +219,20 @@ export function buildCaseSearchFilters(
     fieldFilters.push({ field: "closedOn", op: "lte", values: [filters.closedOnLte] });
   }
 
+  // Ad-hoc rows from the "Advanced filters" builder (`AdvancedFiltersBuilder`)
+  // — each becomes one extra `BeCaseFieldFilter` entry. Only complete rows
+  // (see `isCompleteAdvancedFilterRow`) are emitted; an incomplete one (a
+  // field/op picked but no value where the op requires one) is silently
+  // skipped rather than sent as an empty predicate. `filters` here is the
+  // already relative-date-resolved copy the caller (`useGetCsmCases`) passes
+  // in — this function does no date resolution of its own, same as the
+  // dedicated `createdOnGte`/`createdOnLte` fields above.
+  for (const row of filters.advancedFilters) {
+    if (!isCompleteAdvancedFilterRow(row)) continue;
+    const ff = advancedFilterRowToFieldFilter(row);
+    if (ff) fieldFilters.push(ff);
+  }
+
   // A typed case number / WSO2 case id goes through as an exact-match field
   // filter rather than the free-text `searchQuery` scan, mirroring the global
   // quick-nav palette (see `classifyCaseQuery`, shared by both).
@@ -243,9 +262,19 @@ export function buildCaseSearchFilters(
   }
 
   const withFreeText = scope === "text" || !!options?.alsoFreeText;
+
+  // "OR groups" (`filters.anyOf`) — each branch with at least one complete
+  // condition becomes one `{filters: [...]}` entry; an empty branch (no
+  // complete conditions at all) is dropped rather than emitted, since the
+  // backend 400s on `anyOf: [{}]` (see `anyOfBranchToPayload`).
+  const anyOf = filters.anyOfBranches
+    .map(anyOfBranchToPayload)
+    .filter((b): b is { filters: BeCaseFieldFilter[] } => b !== undefined);
+
   return {
     ...(withFreeText && search.length > 0 && { searchQuery: search }),
     ...(fieldFilters.length > 0 && { filters: fieldFilters }),
+    ...(anyOf.length > 0 && { anyOf }),
   };
 }
 
@@ -331,5 +360,6 @@ export function mapCaseSearchViewToRow(
     hasSla: false,
     createdAt: c.createdOn ?? "",
     updatedAt: c.updatedOn ?? c.createdOn ?? "",
+    escalationLevel: c.escalationLevel ?? null,
   };
 }

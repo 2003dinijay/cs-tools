@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import type { BeProblemState } from "@api/backend/types";
+import type { BeProblemSearchFilters, BeProblemState } from "@api/backend/types";
 
 type ChipColor = "default" | "info" | "warning" | "success" | "error";
 
@@ -93,21 +93,48 @@ export function getNextProblemTransition(
 }
 
 /**
- * Filters for the problems list. Deliberately just search + state — see the
- * caveat on `BeProblemSearchFilters.states` in `api/backend/types.ts` (not yet
- * confirmed live against the backend).
+ * Filters for the problems list. Deliberately just search + state + SRE
+ * team — see the caveat on `BeProblemSearchFilters.states` in
+ * `api/backend/types.ts` (not yet confirmed live against the backend).
  */
 export interface ProblemFilters {
   search: string;
   states: BeProblemState[];
+  /** Selected SRE team `sreGroupId`s — sent as a generic
+   * `{ field: "assignmentGroupId", op: "in" }` filter entry (see
+   * `buildProblemSearchFilters`), not a named payload field. */
+  sreTeamIds: string[];
 }
 
 export const DEFAULT_PROBLEM_FILTERS: ProblemFilters = {
   search: "",
   states: [],
+  sreTeamIds: [],
 };
 
 /** Count active (non-search) filters, used for the badge on the Filters button. */
 export function countActiveProblemFilters(filters: ProblemFilters): number {
-  return filters.states.length > 0 ? 1 : 0;
+  return (
+    (filters.states.length > 0 ? 1 : 0) + (filters.sreTeamIds.length > 0 ? 1 : 0)
+  );
+}
+
+/**
+ * Build `ProblemSearchPayload.filters` from the UI's {@link ProblemFilters}
+ * plus the (separately debounced) search text — mirrors
+ * `buildIncidentSearchFilters` in `incidents.ts`.
+ */
+export function buildProblemSearchFilters(
+  filters: ProblemFilters,
+  debouncedSearch: string,
+): BeProblemSearchFilters {
+  return {
+    ...(debouncedSearch.length > 0 && { searchQuery: debouncedSearch }),
+    ...(filters.states.length > 0 && { states: filters.states }),
+    ...(filters.sreTeamIds.length > 0 && {
+      filters: [
+        { field: "assignmentGroupId" as const, op: "in" as const, values: filters.sreTeamIds },
+      ],
+    }),
+  };
 }

@@ -1,0 +1,127 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package stream
+
+import (
+	"sync"
+	"testing"
+)
+
+func TestBroadcastHub_PublishReachesSubscriber(t *testing.T) {
+	h := NewBroadcastHub()
+	ch := h.Register("case-1")
+	h.Publish("case-1", "hello")
+
+	select {
+	case got := <-ch:
+		if got != "hello" {
+			t.Errorf("got %q, want %q", got, "hello")
+		}
+	default:
+		t.Fatal("expected a message on the channel")
+	}
+}
+
+func TestBroadcastHub_PublishToDifferentCase_NotDelivered(t *testing.T) {
+	h := NewBroadcastHub()
+	ch := h.Register("case-1")
+	h.Publish("case-2", "hello")
+
+	select {
+	case got := <-ch:
+		t.Fatalf("unexpected message %q for an unrelated case", got)
+	default:
+	}
+}
+
+func TestBroadcastHub_PublishWithNoSubscribers_NoOp(t *testing.T) {
+	h := NewBroadcastHub()
+	h.Publish("case-1", "hello") // must not panic
+}
+
+func TestBroadcastHub_MultipleSubscribersAllReceive(t *testing.T) {
+	h := NewBroadcastHub()
+	ch1 := h.Register("case-1")
+	ch2 := h.Register("case-1")
+	h.Publish("case-1", "hello")
+
+	for _, ch := range []chan string{ch1, ch2} {
+		select {
+		case got := <-ch:
+			if got != "hello" {
+				t.Errorf("got %q, want %q", got, "hello")
+			}
+		default:
+			t.Fatal("expected a message on the channel")
+		}
+	}
+}
+
+func TestBroadcastHub_UnregisterClosesChannel(t *testing.T) {
+	h := NewBroadcastHub()
+	ch := h.Register("case-1")
+	h.Unregister("case-1", ch)
+
+	if _, ok := <-ch; ok {
+		t.Fatal("expected channel to be closed after Unregister")
+	}
+}
+
+func TestBroadcastHub_UnregisterThenPublish_NoOp(t *testing.T) {
+	h := NewBroadcastHub()
+	ch := h.Register("case-1")
+	h.Unregister("case-1", ch)
+	h.Publish("case-1", "hello") // must not panic (send on closed channel would)
+}
+
+func TestBroadcastHub_PublishDropsWhenBufferFull(t *testing.T) {
+	h := NewBroadcastHub()
+	ch := h.Register("case-1")
+
+	// Publish well past the buffer's capacity; must not block.
+	for i := 0; i < subscriberBuffer+5; i++ {
+		h.Publish("case-1", "msg")
+	}
+
+	count := 0
+	for {
+		select {
+		case <-ch:
+			count++
+		default:
+			if count > subscriberBuffer {
+				t.Errorf("received %d messages, want at most %d (buffer size)", count, subscriberBuffer)
+			}
+			return
+		}
+	}
+}
+
+func TestBroadcastHub_ConcurrentRegisterPublishUnregister(t *testing.T) {
+	h := NewBroadcastHub()
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ch := h.Register("case-1")
+			h.Publish("case-1", "x")
+			h.Unregister("case-1", ch)
+		}()
+	}
+	wg.Wait()
+}

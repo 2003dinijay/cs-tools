@@ -16,10 +16,13 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  appendWidgetTitleParam,
   buildWidgetPreviewHref,
   describeWidgetFilters,
   parseWidgetPreviewFilters,
+  readWidgetTitleParam,
   resolveCurrentUserSentinels,
+  WIDGET_TITLE_PARAM,
 } from "./widgetPreviewUrl";
 
 const CURRENT_USER_ID = "11111111-aaaa-bbbb-cccc-000000000001";
@@ -359,5 +362,41 @@ describe("describeWidgetFilters", () => {
 
   it("returns an empty list for empty/absent filters", () => {
     expect(describeWidgetFilters({})).toEqual([]);
+  });
+});
+
+describe("appendWidgetTitleParam / readWidgetTitleParam", () => {
+  it("appends the widget's displayName as WIDGET_TITLE_PARAM to a bare path", () => {
+    const href = appendWidgetTitleParam("/engagements", "Total Outstanding");
+    expect(href).toBe(`/engagements?${WIDGET_TITLE_PARAM}=Total+Outstanding`);
+  });
+
+  it("appends to a path that already has query params, without disturbing them", () => {
+    const href = appendWidgetTitleParam(
+      "/cases?states=open&severities=S1",
+      "My Critical & High Cases",
+    );
+    const params = new URLSearchParams(href.split("?")[1]);
+    expect(href.startsWith("/cases?")).toBe(true);
+    expect(params.get("states")).toBe("open");
+    expect(params.get("severities")).toBe("S1");
+    expect(params.get(WIDGET_TITLE_PARAM)).toBe("My Critical & High Cases");
+  });
+
+  it("is a no-op when displayName is absent or empty", () => {
+    expect(appendWidgetTitleParam("/engagements", undefined)).toBe("/engagements");
+    expect(appendWidgetTitleParam("/engagements", "")).toBe("/engagements");
+    expect(appendWidgetTitleParam("/cases?states=open", undefined)).toBe("/cases?states=open");
+  });
+
+  it("round-trips through readWidgetTitleParam", () => {
+    const href = appendWidgetTitleParam("/engagements?types=engagement", "Migration Summary");
+    const params = new URLSearchParams(href.split("?")[1]);
+    expect(readWidgetTitleParam(params)).toBe("Migration Summary");
+  });
+
+  it("readWidgetTitleParam returns undefined when the param is absent or empty", () => {
+    expect(readWidgetTitleParam(new URLSearchParams("states=open"))).toBeUndefined();
+    expect(readWidgetTitleParam(new URLSearchParams(`${WIDGET_TITLE_PARAM}=`))).toBeUndefined();
   });
 });

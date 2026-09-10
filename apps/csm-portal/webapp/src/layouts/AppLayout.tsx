@@ -73,11 +73,22 @@ interface AppLayoutProps {
    * the sidebar from flashing on screen for one frame before that context
    * update lands. */
   minimalHeader?: boolean;
+  /** Gates whether `<CaseTabsContentHost />` (below) renders at all. Defaults
+   * to `true` — every normal, signed-in render path has a
+   * `CurrentUserProvider` ancestor and case tabs are safe to mount
+   * immediately. Must be `false` wherever `AppLayout` is rendered WITHOUT
+   * that ancestor (see `AuthGuard.tsx`'s `AuthPendingShell`): a restored
+   * open case tab renders `CsmCaseDetailPage`, which calls `useCurrentUser`
+   * via `useFindMyOngoingCases`, and that throws outside the provider. Like
+   * `minimalHeader`, applied in the same render as `children`, not a render
+   * later via an effect. */
+  showCaseTabs?: boolean;
 }
 
 export default function AppLayout({
   children,
   minimalHeader = false,
+  showCaseTabs = true,
 }: AppLayoutProps): JSX.Element {
   const location = useLocation();
   const mainContentRef = useRef<HTMLDivElement>(null);
@@ -218,7 +229,25 @@ export default function AppLayout({
                   display: "flex",
                   flexDirection: "column",
                   overflow: "auto",
-                  ...(isAuthLoading ? { p: 0 } : { p: 3 }),
+                  // Zero padding only for the initial cold-boot loading spinner
+                  // below (centers it flush, no boxed inset). Gated on the
+                  // `hasInitialized` LATCH, not the live `isAuthLoading` flag
+                  // directly: once the app has initialized once, `isAuthLoading`
+                  // can still flip true again later — e.g. the recovery chain in
+                  // `useAuthApiClient.ts` calls `signIn()` for a forced
+                  // re-authentication redirect after a dead refresh token, and
+                  // the SDK sets its loading flag before that redirect actually
+                  // navigates away. Reading the live flag here made the padding
+                  // (and therefore the content width/position) collapse to 0 and
+                  // snap back for that whole window on every such recovery,
+                  // visible as the content area suddenly stretching edge-to-edge
+                  // and back — reproduced and measured via getBoundingClientRect
+                  // during a forced-expiry repro; see the task notes for the
+                  // exact before/after rects. `hasInitialized` already exists as
+                  // the one-way "have we ever finished initial auth" latch (see
+                  // its own effect above) and is the correct gate for a
+                  // one-time-only layout decision like this.
+                  ...(hasInitialized ? { p: 3 } : { p: 0 }),
                 }}
               >
                 {!hasInitialized ? (
@@ -251,7 +280,7 @@ export default function AppLayout({
                         own element now renders nothing itself once its tab
                         is open (see CaseDetailRouteSync), so there's no
                         double-render. */}
-                    <CaseTabsContentHost />
+                    {showCaseTabs && <CaseTabsContentHost />}
                     {children || <Outlet />}
                   </Suspense>
                 )}

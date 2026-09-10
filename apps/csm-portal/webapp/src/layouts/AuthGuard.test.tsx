@@ -67,11 +67,13 @@ vi.mock("@layouts/AppLayout", () => ({
   default: ({
     children,
     minimalHeader = false,
+    showCaseTabs = true,
   }: {
     children?: React.ReactNode;
     minimalHeader?: boolean;
+    showCaseTabs?: boolean;
   }) => {
-    appLayoutPropsMock({ minimalHeader });
+    appLayoutPropsMock({ minimalHeader, showCaseTabs });
     return <>{children}</>;
   },
 }));
@@ -295,7 +297,7 @@ describe("AuthGuard's response to a /users/me failure once signed in", () => {
     // synchronously from the same render as `children`, not settled a render
     // later via an effect, so the sidebar never flashes on screen first.
     for (const call of appLayoutPropsMock.mock.calls) {
-      expect(call[0]).toEqual({ minimalHeader: true });
+      expect(call[0]).toEqual({ minimalHeader: true, showCaseTabs: true });
     }
     expect(appLayoutPropsMock).toHaveBeenCalled();
   });
@@ -342,7 +344,13 @@ describe("AuthGuard's response to a /users/me failure once signed in", () => {
     ).not.toBeInTheDocument();
     // minimalHeader true here too: the routed page (and its sidebar) has no
     // business being reachable before we know this caller is authorized.
-    expect(appLayoutPropsMock).toHaveBeenCalledWith({ minimalHeader: true });
+    // showCaseTabs stays true (the default): CurrentUserProvider is still an
+    // ancestor here, just its data hasn't resolved yet, and useCurrentUser
+    // only throws with no provider at all, not while it's loading.
+    expect(appLayoutPropsMock).toHaveBeenCalledWith({
+      minimalHeader: true,
+      showCaseTabs: true,
+    });
   });
 
   it("does not show the not-authorized page for an unrelated /users/me failure (e.g. 500)", async () => {
@@ -364,6 +372,35 @@ describe("AuthGuard's response to a /users/me failure once signed in", () => {
     expect(
       screen.queryByText("You don't have access to this portal yet"),
     ).not.toBeInTheDocument();
-    expect(appLayoutPropsMock).toHaveBeenCalledWith({ minimalHeader: false });
+    expect(appLayoutPropsMock).toHaveBeenCalledWith({
+      minimalHeader: false,
+      showCaseTabs: true,
+    });
+  });
+});
+
+describe("AuthGuard's AppLayout showCaseTabs wiring while auth itself hasn't resolved", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionStorage.clear();
+    asgardeoState.isSignedIn = false;
+    currentUserState.isLoading = false;
+    currentUserState.isError = false;
+    currentUserState.error = null;
+    signInMock.mockResolvedValue(undefined);
+  });
+
+  it("passes showCaseTabs=false to AppLayout while signed out (no CurrentUserProvider ancestor), so a restored case tab can't crash on a cold reload", async () => {
+    signInSilentlyMock.mockResolvedValue(false);
+
+    await act(async () => {
+      renderAuthGuard();
+    });
+
+    await waitFor(() => expect(signInMock).toHaveBeenCalledTimes(1));
+    expect(appLayoutPropsMock).toHaveBeenCalled();
+    for (const call of appLayoutPropsMock.mock.calls) {
+      expect(call[0]).toMatchObject({ showCaseTabs: false });
+    }
   });
 });

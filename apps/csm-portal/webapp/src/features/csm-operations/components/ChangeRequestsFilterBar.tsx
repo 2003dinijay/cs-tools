@@ -35,6 +35,7 @@ import {
   X,
 } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, type JSX } from "react";
+import { useTeams } from "@features/csm-dashboard/api/useTeams";
 import {
   CHANGE_REQUEST_IMPACTS,
   CHANGE_REQUEST_STATES,
@@ -43,6 +44,12 @@ import {
   countActiveCRFilters,
   type ChangeRequestFilters,
 } from "@features/csm-operations/utils/changeRequests";
+import {
+  readChangeRequestFiltersFromUrl,
+  writeChangeRequestFiltersToUrl,
+} from "@features/csm-operations/utils/changeRequestsFiltersUrl";
+import { changeRequestsSavedViews } from "@features/csm-operations/utils/changeRequestsSavedViews";
+import SavedViewsMenu from "@features/csm-operations/components/SavedViewsMenu";
 import MultiSelectField from "@components/MultiSelectField";
 
 const { DatePicker, LocalizationProvider } = DatePickers;
@@ -101,6 +108,22 @@ export default function ChangeRequestsFilterBar({
     [],
   );
 
+  // Change requests are SRE-owned, so this control is scoped to the
+  // `sre-abt` team family — see `IncidentsFilterBar`'s equivalent note on
+  // why this isn't `cre-abt` (the cases list's own "SRE Team" control's
+  // family scoping).
+  const { data: teams } = useTeams(true, "sre-abt");
+  const sreTeamOptions = useMemo(
+    () =>
+      (teams ?? [])
+        .filter(
+          (t): t is typeof t & { sreGroupId: string } =>
+            Boolean(t.sreGroupId) && t.family === "sre-abt",
+        )
+        .map((t) => ({ value: t.sreGroupId, label: t.name })),
+    [teams],
+  );
+
   return (
     <Paper sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
       {/* Search bar + filters toggle */}
@@ -137,6 +160,19 @@ export default function ChangeRequestsFilterBar({
             }}
           />
         </Box>
+
+        <SavedViewsMenu
+          currentQs={writeChangeRequestFiltersToUrl(filters).toString()}
+          canonicalizeQs={(qs) =>
+            writeChangeRequestFiltersToUrl(
+              readChangeRequestFiltersFromUrl(new URLSearchParams(qs)),
+            ).toString()
+          }
+          activeCount={activeCount}
+          hasSearch={filters.search.trim().length > 0}
+          onApply={(qs) => onChange(readChangeRequestFiltersFromUrl(new URLSearchParams(qs)))}
+          store={changeRequestsSavedViews}
+        />
 
         <Button
           variant="outlined"
@@ -182,6 +218,15 @@ export default function ChangeRequestsFilterBar({
                 values={filters.impacts}
                 options={impactOptions}
                 onChange={(next) => onChange({ ...filters, impacts: next })}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <MultiSelectField
+                id="cr-filter-sre-team"
+                label="SRE Team"
+                values={filters.sreTeamIds}
+                options={sreTeamOptions}
+                onChange={(next) => onChange({ ...filters, sreTeamIds: next })}
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>

@@ -112,6 +112,17 @@ const FILTER_PARAM_KEYS = [
   "updatedTo",
   "closedFrom",
   "closedTo",
+  // Same class of bug as `workStates` above, found the same way while
+  // live-verifying the unified Advanced-mode row builder: removing the last
+  // `filters.advancedFilters` row (or the last `anyOfBranches` OR-group) —
+  // e.g. a "Created by is me" row with no typed `CasesFilters` slot to fall
+  // back to — silently did nothing, because `af`/`anyOf` were missing here.
+  // `writeCasesFiltersToUrl` only ever *sets* these two once there's at
+  // least one row/branch again; it never explicitly clears them, so without
+  // an explicit `delete` here first, the stale value from the previous URL
+  // just kept getting read back on the next render.
+  "af",
+  "anyOf",
 ] as const;
 
 interface CsmIssuesViewProps {
@@ -143,8 +154,30 @@ interface CsmIssuesViewProps {
   typeFilterLabel?: string;
   /** Hide the project filter control (use when the view is project-scoped). */
   hideProjectFilter?: boolean;
+  /**
+   * Hide the "Onboarding status"/"CRE Team" Simple-mode controls — see
+   * `CasesFilterBar`'s own doc comments. Pass when the view is already
+   * scoped to one project (both are per-project attributes, so filtering by
+   * them on a single-project view is a no-op).
+   */
+  hideOnboardingStatusFilter?: boolean;
+  hideCreTeamFilter?: boolean;
   /** Show the engagement-type sub-filter (pass when the view is locked to engagement cases). */
   showEngagementTypeFilter?: boolean;
+  /**
+   * Force the Severity filter/column on or off, overriding the default
+   * "only when `lockedFilters.caseTypes` is locked to `case`" rule below.
+   * For a caller whose type filter is *unlocked and visible* (e.g. the
+   * project Work items tab, which spans every case type but lets the user
+   * narrow it with the "Work item type" control) that default would always
+   * read false, permanently hiding Severity even once the user filters
+   * down to just Cases. Pass `true` there — Severity is still a genuinely
+   * useful control on a mixed list (non-case rows simply have no severity
+   * to match, so picking a value implicitly narrows to cases, same as
+   * picking "Case" in the type control would) — or `false` to force it off
+   * regardless of the lock.
+   */
+  showSeverityFilter?: boolean;
   /** Base path for row detail links. Defaults to "/cases". */
   detailBasePath?: string;
   /** Hide the Severity column in the list (severity is a support-case
@@ -191,7 +224,10 @@ export default function CsmIssuesView({
   defaultCaseTypes,
   typeFilterLabel,
   hideProjectFilter,
+  hideOnboardingStatusFilter,
+  hideCreTeamFilter,
   showEngagementTypeFilter,
+  showSeverityFilter: showSeverityFilterOverride,
   detailBasePath,
   hideSeverityColumn,
   hideBackButton,
@@ -267,13 +303,17 @@ export default function CsmIssuesView({
     [searchParams, setSearchParams],
   );
 
-  // Severity (S1-S4) is a support-case concept, so the severity filter is only
-  // shown on the support-cases list — i.e. when the surrounding view locks the
-  // record type to `case`. Every other list (service requests, engagements,
-  // security reports, mixed project issues) hides it.
+  // Severity (S1-S4) is a support-case concept, so the severity filter is by
+  // default only shown on the support-cases list — i.e. when the surrounding
+  // view locks the record type to `case`. Every other list (service
+  // requests, engagements, security reports) hides it, unless the caller
+  // overrides with `showSeverityFilter` (see its own doc comment — the
+  // project Work items tab does this since its type filter is unlocked and
+  // visible rather than fixed via `lockedFilters`).
   const showSeverityFilter =
-    lockedFilters?.caseTypes?.length === 1 &&
-    lockedFilters.caseTypes[0] === "case";
+    showSeverityFilterOverride ??
+    (lockedFilters?.caseTypes?.length === 1 &&
+      lockedFilters.caseTypes[0] === "case");
   // Service Requests don't carry a severity, so the column is redundant there.
   const isServiceRequestOnly =
     lockedFilters?.caseTypes?.length === 1 &&
@@ -378,6 +418,7 @@ export default function CsmIssuesView({
     "createdBy",
     "customer",
     "createdAt",
+    "escalationLevel",
   ];
   const defaultVisibleOptionalColumns: CaseOptionalColumnId[] = [
     "product",
@@ -584,6 +625,8 @@ export default function CsmIssuesView({
         hideTypeFilter={hideTypeFilter}
         typeFilterLabel={typeFilterLabel}
         hideProjectFilter={hideProjectFilter}
+        hideOnboardingStatusFilter={hideOnboardingStatusFilter}
+        hideCreTeamFilter={hideCreTeamFilter}
         showEngagementTypeFilter={showEngagementTypeFilter}
       />
 

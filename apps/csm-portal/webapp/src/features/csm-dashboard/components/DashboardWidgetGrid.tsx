@@ -227,12 +227,7 @@ export default function DashboardWidgetGrid({
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
       {groups.map((group, i) => {
-        // Chart-shaped widgets (pie/bar) are visually grouped into their
-        // own row below this group's count/list tiles, rather than sharing
-        // one undifferentiated grid with them.
-        const mainWidgets = group.widgets.filter((w) => w.shape !== "pie" && w.shape !== "bar");
-        const chartWidgets = group.widgets.filter((w) => w.shape === "pie" || w.shape === "bar");
-        if (mainWidgets.length === 0 && chartWidgets.length === 0) return null;
+        if (group.widgets.length === 0) return null;
 
         // Namespaced so a real section named e.g. `"__default_0"` can never
         // collide with the synthetic key generated for the unnamed section —
@@ -285,15 +280,11 @@ export default function DashboardWidgetGrid({
                   </Box>
                 </Box>
               </Box>
-              {mainWidgets.length > 0 && (
-                <Box sx={WIDGET_GRID_SX}>{mainWidgets.map(renderTile)}</Box>
-              )}
-              {chartWidgets.length > 0 && (
-                <>
-                  {mainWidgets.length > 0 && <Divider sx={{ my: 0.5 }} />}
-                  <Box sx={WIDGET_GRID_SX}>{chartWidgets.map(renderTile)}</Box>
-                </>
-              )}
+              {/* Rendered in the config's own array order — see this
+                  component's doc comment on why the widget grouping/order
+                  must follow `group.widgets` as-is, not a shape-based
+                  split. */}
+              <Box sx={WIDGET_GRID_SX}>{group.widgets.map(renderTile)}</Box>
             </Box>
           </Fragment>
         );

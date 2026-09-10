@@ -346,7 +346,7 @@ describe("useGetCsmCases — queryKey covers every manually-toggleable filter", 
   // Regression: `csTeams` (and, at the time, several other CasesFilters
   // fields) reached the search payload via `buildCaseSearchFilters` but had
   // no entry in the queryKey array below -- so picking a team from the bar's
-  // "Team" control changed `filters.csTeams` without changing the queryKey,
+  // "CRE Team" control changed `filters.csTeams` without changing the queryKey,
   // and React Query treated it as the identical query and never refetched.
   // Reported live: "when i select a team, no network call goes in the team
   // filter."

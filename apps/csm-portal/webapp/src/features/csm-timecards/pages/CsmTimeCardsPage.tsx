@@ -81,6 +81,10 @@ import TimeCardReviewDialog from "@features/csm-timecards/components/TimeCardRev
 import BulkApproveDialog from "@features/csm-timecards/components/BulkApproveDialog";
 import LogTimeCardDialog from "@features/csm-timecards/components/LogTimeCardDialog";
 import SearchableMultiSelect from "@components/SearchableMultiSelect";
+import AsyncUserIdMultiSelect from "@features/csm-cases/components/AsyncUserIdMultiSelect";
+import AsyncUserIdSingleSelect from "@features/csm-cases/components/AsyncUserIdSingleSelect";
+import { INTERNAL_USER_ROLES } from "@features/csm-users/types/csmUsers";
+import { TIMECARD_APPROVER_GROUP } from "@features/csm-timecards/constants/timeCardConstants";
 import { exportTimeCardsCsv } from "@features/csm-timecards/utils/timeCardCsvExport";
 import { cardActions, type TimecardAction, type TimecardRoleCtx } from "@features/csm-timecards/utils/timeSheetState";
 import type { TimeCardGroupBy } from "@features/csm-timecards/utils/timeCardGrouping";
@@ -90,23 +94,12 @@ import type {
   TimeCardState,
 } from "@features/csm-timecards/types/timeCards";
 
-/** Builds a `userId -> userName` lookup plus the option list a
- * `SearchableMultiSelect` engineer filter needs, scoped to whatever cards are
- * currently loaded for one tab (there's no engineer-search endpoint for time
- * cards, so — like the work-item filter — this only ever offers engineers
- * actually present on the current page, not the full directory). */
-function engineerOptionsFrom(cards: CsmTimeCard[] | undefined): {
-  ids: string[];
-  nameById: Map<string, string>;
-} {
-  const nameById = new Map<string, string>();
-  (cards ?? []).forEach((c) => nameById.set(c.userId, c.userName));
-  return { ids: [...nameById.keys()], nameById };
-}
-
 /** Distinct case numbers present in whatever cards are currently loaded for
- * one tab — the option list for the work-item filter. Same "current page
- * only" caveat as {@link engineerOptionsFrom}. */
+ * one tab — the option list for the work-item filter. There's no
+ * case-number search endpoint for time cards, so — unlike the Engineer
+ * filter (see `AsyncUserIdMultiSelect` below, which searches the real users
+ * directory) — this only ever offers case numbers actually present on the
+ * current page, not every case the viewer could filter by. */
 function workItemOptionsFrom(cards: CsmTimeCard[] | undefined): string[] {
   return Array.from(new Set((cards ?? []).map((c) => c.caseNumber)));
 }
@@ -117,6 +110,16 @@ function workItemOptionsFrom(cards: CsmTimeCard[] | undefined): string[] {
  * not a new fetch. */
 function projectNamesIn(cards: CsmTimeCard[] | undefined): [string, string][] {
   return (cards ?? []).map((c) => [c.projectId, c.projectName]);
+}
+
+/** `[userId, userName]` pairs present in a batch of cards — same role as
+ * {@link projectNamesIn}, but for the Engineer filter's chip-label cache
+ * (see `engineerNameCache` below): the filter itself now searches the real
+ * users directory via `AsyncUserIdMultiSelect`, but a selected engineer's
+ * name still needs a source before that search has run against the id
+ * already in the filter (e.g. right after switching tabs). */
+function engineerNamesIn(cards: CsmTimeCard[] | undefined): [string, string][] {
+  return (cards ?? []).map((c) => [c.userId, c.userName]);
 }
 
 const DEFAULT_ROWS_PER_PAGE = 20;
@@ -219,6 +222,22 @@ export default function CsmTimeCardsPage(): JSX.Element {
   const [filterWorkItem, setFilterWorkItem] = useState<string[]>([]);
   const [filterState, setFilterState] = useState<TimeCardState | "">("");
   const [filterEngineer, setFilterEngineer] = useState<string[]>([]);
+  // The All tab's own Approver filter — a single-select search over the
+  // timecard-approver directory (see filtersForAll below), wired to the
+  // backend's singular `approverId` search field. Distinct from Engineer
+  // (a real multi-select `userIds` filter): the backend has no plural
+  // `approverIds` search field, only this singular one, so this stays
+  // single-select rather than mirroring Engineer's shape.
+  const [filterApprover, setFilterApprover] = useState("");
+  // The Approvals tab's own State filter — independent of the shared
+  // `filterState` above (used by Mine/All), same isolation pattern as
+  // `filterEngineer`/`filtersWithEngineer`: a value picked here must never
+  // leak into Mine/All's queries, or vice versa. Defaults to "submitted",
+  // matching this tab's previous hardcoded behavior; "" here means "All
+  // states" (see approvalsStates below), not "unset".
+  const [filterApprovalsState, setFilterApprovalsState] = useState<TimeCardState | "">(
+    "submitted",
+  );
   // Date range (YYYY-MM-DD, inclusive) — `from`/`to` are already real
   // server-side filters (see TimeCardSearchFilters), just never had a UI
   // control wired to them until now.
@@ -247,6 +266,35 @@ export default function CsmTimeCardsPage(): JSX.Element {
     ? { ...baseFilters, userIds: filterEngineer }
     : baseFilters;
 
+  // All tab only: its own Approver filter, folded on top of
+  // filtersWithEngineer (not baseFilters directly) so All keeps stacking
+  // with Engineer the same way it already did. Kept out of baseFilters/
+  // filtersWithEngineer themselves so a value picked here can never leak
+  // into Mine's or Approvals' own queries.
+  const filtersForAll: TimeCardSearchFilters = filterApprover
+    ? { ...filtersWithEngineer, approverId: filterApprover }
+    : filtersWithEngineer;
+
+  // Approvals tab only: its own State filter (filterApprovalsState) replaces
+  // whatever `states` baseFilters/filtersWithEngineer would have carried from
+  // the shared `filterState` — Approvals never reads that shared value at
+  // all now that it has its own control. "" (All states) is sent as every
+  // reachable state explicitly, rather than omitted, so useApprovalQueue's
+  // "no states supplied" fallback (submitted-only) doesn't also swallow an
+  // explicit "show me everything" pick.
+  const approvalsStates: TimeCardState[] = filterApprovalsState
+    ? [filterApprovalsState]
+    : [...FILTER_STATES];
+  const approvalsBaseFilters: TimeCardSearchFilters = {
+    ...(scopeProjectIds.length && { projectIds: scopeProjectIds }),
+    ...(filterFrom && { from: filterFrom }),
+    ...(filterTo && { to: filterTo }),
+    states: approvalsStates,
+  };
+  const filtersForApprovals: TimeCardSearchFilters = filterEngineer.length
+    ? { ...approvalsBaseFilters, userIds: filterEngineer }
+    : approvalsBaseFilters;
+
   // Each tab pages independently — was previously fetching its *entire*
   // scope (up to 1,000 cards, sequential page-by-page requests) before
   // showing anything, confirmed live to take 30-60+ seconds and, with all
@@ -259,21 +307,33 @@ export default function CsmTimeCardsPage(): JSX.Element {
   const approvalsPagination = usePagination();
 
   const myCards = useMyTimeCards(activeTab === "mine", baseFilters, minePagination.pagination);
-  const allCards = useAllTimeCards(activeTab === "all", filtersWithEngineer, allPagination.pagination);
+  const allCards = useAllTimeCards(activeTab === "all", filtersForAll, allPagination.pagination);
   const queue = useApprovalQueue(
     activeTab === "approvals" && role.isApprover,
-    filtersWithEngineer,
+    filtersForApprovals,
     approvalsPagination.pagination,
   );
   const decideCard = useDecideCard();
 
-  const anyFilterActive =
-    filterProject.length > 0 ||
-    filterWorkItem.length > 0 ||
-    !!filterState ||
-    filterEngineer.length > 0 ||
-    !!filterFrom ||
-    !!filterTo;
+  // Per-tab "is any filter narrowing this tab's own query" predicates —
+  // deliberately not one shared flag. Mine, All, and Approvals each apply a
+  // different subset of these filters (see baseFilters/filtersForAll/
+  // filtersForApprovals above), so a single shared predicate would make a
+  // tab's empty-state message react to a filter it never actually sends —
+  // e.g. picking an All-only Approver would make Mine/Approvals show "No time
+  // cards match the current filters." despite querying exactly as before.
+  const sharedFiltersActive =
+    filterProject.length > 0 || filterWorkItem.length > 0 || !!filterFrom || !!filterTo;
+  const mineFilterActive = sharedFiltersActive || !!filterState;
+  const allFilterActive =
+    sharedFiltersActive || !!filterState || filterEngineer.length > 0 || !!filterApprover;
+  // Approvals' own State filter isn't folded into this predicate the same way
+  // as filterState is for Mine/All — "submitted" is this filter's default,
+  // matching its previous hardcoded behavior, so only a change away from it
+  // counts as the viewer actively narrowing the queue (see approvalsStateActive
+  // below, OR'd in separately at the Approvals empty-state check).
+  const approvalsFilterActive = sharedFiltersActive || filterEngineer.length > 0;
+  const approvalsStateActive = filterApprovalsState !== "submitted";
 
   // A filter change re-scopes the search for every tab, so every tab's page
   // position needs to reset too — otherwise "page 3" of a narrower result
@@ -306,6 +366,14 @@ export default function CsmTimeCardsPage(): JSX.Element {
     setFilterEngineer(v);
     resetAllPages();
   };
+  const handleFilterApproverChange = (v: string): void => {
+    setFilterApprover(v);
+    resetAllPages();
+  };
+  const handleFilterApprovalsStateChange = (v: TimeCardState | ""): void => {
+    setFilterApprovalsState(v);
+    resetAllPages();
+  };
   const handleFilterFromChange = (v: string): void => {
     setFilterFrom(v);
     // min/max on the date inputs only guide the picker UI — typing a date
@@ -323,6 +391,8 @@ export default function CsmTimeCardsPage(): JSX.Element {
     setFilterWorkItem([]);
     setFilterState("");
     setFilterEngineer([]);
+    setFilterApprover("");
+    setFilterApprovalsState("submitted");
     setFilterFrom("");
     setFilterTo("");
     resetAllPages();
@@ -386,21 +456,31 @@ export default function CsmTimeCardsPage(): JSX.Element {
     () => workItemOptionsFrom(queue.data?.cards),
     [queue.data],
   );
-  // Persistent projectId -> projectName cache for the Project filter's chip
-  // labels, accumulated across every tab's loaded cards over the page's
-  // lifetime and never shrunk. Unlike workItemOptions/engineerOptions above
-  // (deliberately scoped to one tab's current page), this can't be a per-tab
-  // derivation: each tab's FilterBar/AsyncProjectMultiSelect instance
-  // unmounts on tab switch (conditional rendering below), which would
-  // otherwise drop a selected project's name the moment the newly active
-  // tab's own cards don't happen to include it — or are empty — leaving the
-  // chip showing a raw id until the dropdown is reopened and re-searched.
+  // Persistent projectId -> projectName / userId -> userName caches for the
+  // Project and Engineer filters' chip labels, accumulated across every tab's
+  // loaded cards over the page's lifetime and never shrunk. Unlike
+  // workItemOptions above (deliberately scoped to one tab's current page),
+  // these can't be a per-tab derivation: each tab's FilterBar/
+  // AsyncProjectMultiSelect/AsyncUserIdMultiSelect instance unmounts on tab
+  // switch (conditional rendering below), which would otherwise drop a
+  // selected project/engineer's name the moment the newly active tab's own
+  // cards don't happen to include it — or are empty — leaving the chip
+  // showing a raw id until the dropdown is reopened and re-searched. (The
+  // Engineer filter's own search always finds the name eventually, since it
+  // now queries the real users directory rather than only the current page —
+  // this cache just avoids a raw-UUID flash in the meantime.) The Approver
+  // filter (All tab only) shares this same userId -> userName cache — it's
+  // just as generic a "known user names" lookup, and Approver is also
+  // directory-search-backed rather than derived from loaded cards.
   //
   // Reconciled during render (React's "adjusting state when data changes"
   // pattern: https://react.dev/reference/react/useState#storing-information-from-previous-renders)
-  // rather than in an effect, so a fresh name is available in the same
+  // rather than in an effect, so fresh names are available in the same
   // render the data arrived in instead of one render later.
   const [projectNameCache, setProjectNameCache] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  const [engineerNameCache, setEngineerNameCache] = useState<Map<string, string>>(
     () => new Map(),
   );
   const [lastSeenCards, setLastSeenCards] = useState<{
@@ -414,28 +494,59 @@ export default function CsmTimeCardsPage(): JSX.Element {
     lastSeenCards.queue !== queue.data
   ) {
     setLastSeenCards({ mine: myCards.data, all: allCards.data, queue: queue.data });
-    const learned = [
+    const learnedProjects = [
       ...projectNamesIn(myCards.data?.cards),
       ...projectNamesIn(allCards.data?.cards),
       ...projectNamesIn(queue.data?.cards),
     ];
-    let next: Map<string, string> | undefined;
-    for (const [id, name] of learned) {
+    let nextProjects: Map<string, string> | undefined;
+    for (const [id, name] of learnedProjects) {
       if (projectNameCache.get(id) !== name) {
-        next ??= new Map(projectNameCache);
+        nextProjects ??= new Map(projectNameCache);
+        nextProjects.set(id, name);
+      }
+    }
+    if (nextProjects) setProjectNameCache(nextProjects);
+
+    const learnedEngineers = [
+      ...engineerNamesIn(myCards.data?.cards),
+      ...engineerNamesIn(allCards.data?.cards),
+      ...engineerNamesIn(queue.data?.cards),
+    ];
+    let nextEngineers: Map<string, string> | undefined;
+    for (const [id, name] of learnedEngineers) {
+      if (engineerNameCache.get(id) !== name) {
+        nextEngineers ??= new Map(engineerNameCache);
+        nextEngineers.set(id, name);
+      }
+    }
+    if (nextEngineers) setEngineerNameCache(nextEngineers);
+  }
+
+  // `AsyncUserIdMultiSelect` resolves a name the moment a directory search
+  // result is picked — earlier than `engineerNamesIn` above could ever know
+  // it (that only learns from cards already loaded on screen). Without
+  // this, an engineer picked purely from the directory (no card of theirs
+  // on the current page) would render as a raw UUID on the next tab, since
+  // that tab mounts a fresh `AsyncUserIdMultiSelect` instance with no
+  // memory of the pick.
+  const handleEngineerNamesResolved = (entries: [string, string][]): void => {
+    let next: Map<string, string> | undefined;
+    for (const [id, name] of entries) {
+      if (engineerNameCache.get(id) !== name) {
+        next ??= new Map(engineerNameCache);
         next.set(id, name);
       }
     }
-    if (next) setProjectNameCache(next);
-  }
-  const allEngineerOptions = useMemo(
-    () => engineerOptionsFrom(allCards.data?.cards),
-    [allCards.data],
-  );
-  const approvalsEngineerOptions = useMemo(
-    () => engineerOptionsFrom(queue.data?.cards),
-    [queue.data],
-  );
+    if (next) setEngineerNameCache(next);
+  };
+
+  /** Single-pair adapter over {@link handleEngineerNamesResolved} for
+   * `AsyncUserIdSingleSelect`'s `onNameResolved` (one id/name pair at a
+   * time), which shares the same underlying cache — see the comment above
+   * `engineerNameCache`. */
+  const handleApproverNameResolved = (id: string, name: string): void =>
+    handleEngineerNamesResolved([[id, name]]);
 
   // Filtered cards per tab, computed once and shared between the FilterBar's
   // export action and the table rendering below — rather than recomputing
@@ -576,7 +687,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 roleFor={mineRole}
                 onCardAction={handleCardAction}
                 emptyText={
-                  anyFilterActive
+                  mineFilterActive
                     ? "No time cards match the current filters."
                     : "No time logged yet. Open a case and use its Time tracking tab to log time."
                 }
@@ -622,17 +733,32 @@ export default function CsmTimeCardsPage(): JSX.Element {
             setFilterTo={handleFilterToChange}
             onClear={clearFilters}
             engineerSlot={
-              <SearchableMultiSelect
+              <AsyncUserIdMultiSelect
                 id="timecards-filter-engineer-all"
                 label="Engineer"
-                placeholder="Search engineers…"
                 values={filterEngineer}
-                options={allEngineerOptions.ids}
-                formatOption={(id) => allEngineerOptions.nameById.get(id) ?? id}
                 onChange={handleFilterEngineerChange}
+                nameSeed={engineerNameCache}
+                onNamesResolved={handleEngineerNamesResolved}
+                roleIds={INTERNAL_USER_ROLES}
+                active
               />
             }
             engineerActive={filterEngineer.length > 0}
+            approverSlot={
+              <AsyncUserIdSingleSelect
+                id="timecards-filter-approver-all"
+                label="Approver"
+                placeholder="Search approvers…"
+                value={filterApprover}
+                onChange={handleFilterApproverChange}
+                nameSeed={engineerNameCache}
+                onNameResolved={handleApproverNameResolved}
+                roleIds={[TIMECARD_APPROVER_GROUP]}
+                active
+              />
+            }
+            approverActive={!!filterApprover}
           />
 
           <GroupByToggle value={groupBy} onChange={setGroupBy} />
@@ -663,7 +789,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 showEngineerColumn
                 roleFor={allRoleFor}
                 onCardAction={handleCardAction}
-                emptyText={anyFilterActive ? "No time cards match the current filters." : "No time logged yet."}
+                emptyText={allFilterActive ? "No time cards match the current filters." : "No time logged yet."}
               />
               <TablePagination
                 component="div"
@@ -691,23 +817,24 @@ export default function CsmTimeCardsPage(): JSX.Element {
             filterWorkItem={filterWorkItem}
             setFilterWorkItem={handleFilterWorkItemChange}
             workItemOptions={approvalsWorkItemOptions}
-            filterState={filterState}
-            setFilterState={handleFilterStateChange}
+            filterState={filterApprovalsState}
+            setFilterState={handleFilterApprovalsStateChange}
+            stateActive={approvalsStateActive}
             filterFrom={filterFrom}
             setFilterFrom={handleFilterFromChange}
             filterTo={filterTo}
             setFilterTo={handleFilterToChange}
             onClear={clearFilters}
-            hideStateFilter
             engineerSlot={
-              <SearchableMultiSelect
+              <AsyncUserIdMultiSelect
                 id="timecards-filter-engineer-approvals"
                 label="Engineer"
-                placeholder="Search engineers…"
                 values={filterEngineer}
-                options={approvalsEngineerOptions.ids}
-                formatOption={(id) => approvalsEngineerOptions.nameById.get(id) ?? id}
                 onChange={handleFilterEngineerChange}
+                nameSeed={engineerNameCache}
+                onNamesResolved={handleEngineerNamesResolved}
+                roleIds={INTERNAL_USER_ROLES}
+                active
               />
             }
             engineerActive={filterEngineer.length > 0}
@@ -766,7 +893,11 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 selectedIds={selectedApprovalCardIds}
                 onToggleSelect={toggleSelectCard}
                 onToggleSelectAll={toggleSelectAllCards}
-                emptyText={anyFilterActive ? "No time cards match the current filters." : "Nothing awaiting approval."}
+                emptyText={
+                  approvalsFilterActive || approvalsStateActive
+                    ? "No time cards match the current filters."
+                    : "Nothing awaiting approval."
+                }
               />
               <TablePagination
                 component="div"
@@ -973,7 +1104,9 @@ function FilterBar({
   onClear,
   engineerSlot,
   engineerActive,
-  hideStateFilter,
+  approverSlot,
+  approverActive,
+  stateActive,
 }: {
   /** `projectId -> projectName` lookup for already-selected chips — the
    * page-level, cross-tab accumulating cache (see `projectNameCache` in
@@ -988,6 +1121,12 @@ function FilterBar({
   /** Case numbers to offer in the work-item picker — scoped to whatever the
    * calling tab currently has loaded (see `workItemOptionsFrom`). */
   workItemOptions: string[];
+  /** The State control's own value for whichever tab renders this instance —
+   * Mine/All pass the shared `filterState` (default "", meaning unset); the
+   * Approvals tab passes its own `filterApprovalsState` (default
+   * "submitted") instead, since a value picked there must never leak into
+   * Mine/All's queries or vice versa (see `filterApprovalsState` in
+   * `CsmTimeCardsPage`). */
   filterState: TimeCardState | "";
   setFilterState: (v: TimeCardState | "") => void;
   /** Inclusive date range (YYYY-MM-DD), matched against a card's work date. */
@@ -1000,21 +1139,30 @@ function FilterBar({
   /** Whether the Engineer filter (only on the All/Approvals tabs) is active —
    * counted alongside the other fields for the toggle button's badge. */
   engineerActive?: boolean;
-  /** Approvals always forces `states: ["submitted"]` server-side (see
-   * `useApprovalQueue`), so the State control can't actually narrow anything
-   * there — hide it instead of showing a filter that silently does nothing. */
-  hideStateFilter?: boolean;
+  /** The Approver filter (All tab only) — a single-select search field, not
+   * a fixed shape like Engineer/State, so it's a caller-supplied slot the
+   * same way `engineerSlot` is. */
+  approverSlot?: JSX.Element;
+  /** Whether the Approver filter is active — counted alongside the other
+   * fields for the toggle button's badge, same role as `engineerActive`. */
+  approverActive?: boolean;
+  /** Whether `filterState` should count as an active filter for this tab's
+   * badge/"N filters active" caption. Left unset, defaults to `!!filterState`
+   * (Mine/All's own rule: "" is never active). The Approvals tab passes this
+   * explicitly instead, since its own default is "submitted", not "" — only
+   * a change *away from* that default should count as the viewer actively
+   * narrowing the queue (see `approvalsStateActive` in `CsmTimeCardsPage`). */
+  stateActive?: boolean;
 }): JSX.Element {
   const [isFiltersOpen, setIsFiltersOpen] = useState(true);
 
-  // filterState counts here even when this tab hides its own State control
-  // (hideStateFilter) — it's shared across tabs, so a value set elsewhere
-  // must still be clearable from this one, not just invisible and stuck.
+  const isStateActive = stateActive ?? !!filterState;
   const activeCount =
     (filterProject.length > 0 ? 1 : 0) +
     (filterWorkItem.length > 0 ? 1 : 0) +
     (engineerActive ? 1 : 0) +
-    (filterState ? 1 : 0) +
+    (approverActive ? 1 : 0) +
+    (isStateActive ? 1 : 0) +
     (filterFrom || filterTo ? 1 : 0);
   const hasActive = activeCount > 0;
 
@@ -1071,37 +1219,36 @@ function FilterBar({
               />
             </Box>
             {engineerSlot && <Box sx={{ flex: "1 1 0", minWidth: 160 }}>{engineerSlot}</Box>}
-            {!hideStateFilter && (
-              <Box sx={{ flex: "1 1 0", minWidth: 160 }}>
-                <TextField
-                  select
-                  fullWidth
-                  size="small"
-                  label="State"
-                  value={filterState}
-                  onChange={(e) => setFilterState(e.target.value as TimeCardState | "")}
-                  slotProps={{
-                    // oxygen-ui's own theme shifts an unshrunk label up by
-                    // `top: -7px` for any Select-backed field (see
-                    // `MultiSelectField.tsx`'s doc comment) -- tie `shrink`
-                    // to whether a state is actually picked, rather than
-                    // MUI's focus-driven default.
-                    inputLabel: {
-                      shrink: filterState !== "",
-                      sx: { top: "0px !important" },
-                    },
-                    select: { notched: filterState !== "" },
-                  }}
-                >
-                  <MenuItem value="">All states</MenuItem>
-                  {FILTER_STATES.map((s) => (
-                    <MenuItem key={s} value={s}>
-                      {TIME_CARD_STATE_META[s].label}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              </Box>
-            )}
+            {approverSlot && <Box sx={{ flex: "1 1 0", minWidth: 160 }}>{approverSlot}</Box>}
+            <Box sx={{ flex: "1 1 0", minWidth: 160 }}>
+              <TextField
+                select
+                fullWidth
+                size="small"
+                label="State"
+                value={filterState}
+                onChange={(e) => setFilterState(e.target.value as TimeCardState | "")}
+                slotProps={{
+                  // oxygen-ui's own theme shifts an unshrunk label up by
+                  // `top: -7px` for any Select-backed field (see
+                  // `MultiSelectField.tsx`'s doc comment) -- tie `shrink`
+                  // to whether a state is actually picked, rather than
+                  // MUI's focus-driven default.
+                  inputLabel: {
+                    shrink: filterState !== "",
+                    sx: { top: "0px !important" },
+                  },
+                  select: { notched: filterState !== "" },
+                }}
+              >
+                <MenuItem value="">All states</MenuItem>
+                {FILTER_STATES.map((s) => (
+                  <MenuItem key={s} value={s}>
+                    {TIME_CARD_STATE_META[s].label}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Box>
           </Box>
 
           {/* Row 2: the work-date range, its own full-width row — each

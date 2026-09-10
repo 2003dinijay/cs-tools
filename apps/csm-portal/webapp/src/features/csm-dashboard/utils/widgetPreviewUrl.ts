@@ -32,6 +32,50 @@ const ANY_OF_PARAM = "_anyOf";
 
 const RESERVED_PARAMS = new Set(["w", "n", CASE_FILTER_MARKER, ANY_OF_PARAM]);
 
+/**
+ * Query param carrying a dashboard widget's own `displayName`, appended to a
+ * click-through href for the two resourceTypes (`case`, `engagement`) whose
+ * `buildHref` lands on a real, permanent nav page (`/cases`, `/engagements`
+ * — see `caseFamilyBuildHref`'s fallback in `widgetResourceConfig.ts`)
+ * rather than the generic dashboard-widget preview page above. Those nav
+ * pages otherwise render a hardcoded heading ("Cases"/"Engagements"); this
+ * param lets them show the originating widget's own name instead, without
+ * affecting a plain nav visit (which never sets it).
+ *
+ * Deliberately a *different* param than `n` above: `n` belongs to the
+ * dashboard-widget preview page's own URL scheme (paired with `w`, and read
+ * by `parseWidgetPreviewFilters`'s caller, not this file). `wt` ("widget
+ * title") is scoped to this narrower, single-purpose use — a heading
+ * override, not a full preview-page identity — and deliberately excluded
+ * from `RESERVED_PARAMS`/`parseWidgetPreviewFilters`'s filter parsing since
+ * it never reaches that code path (`/cases`/`/engagements` have their own
+ * filter parsing in `casesFiltersUrl.ts`, which never reads this key either
+ * — purely cosmetic, heading-only).
+ */
+export const WIDGET_TITLE_PARAM = "wt";
+
+/** Appends `WIDGET_TITLE_PARAM` (the click-through widget's own
+ * `displayName`) to an already-built `/cases`/`/engagements` href, so that
+ * page's heading can show it instead of falling back to its hardcoded
+ * default. A no-op (returns `href` unchanged) when `displayName` is absent
+ * or empty — never emits `wt=` with nothing meaningful in it. */
+export function appendWidgetTitleParam(href: string, displayName: string | undefined): string {
+  if (!displayName) return href;
+  const [path, query = ""] = href.split("?");
+  const params = new URLSearchParams(query);
+  params.set(WIDGET_TITLE_PARAM, displayName);
+  return `${path}?${params.toString()}`;
+}
+
+/** Reads `WIDGET_TITLE_PARAM` back off a `/cases`/`/engagements` URL's own
+ * search params — the inverse of `appendWidgetTitleParam`. `undefined` when
+ * absent or empty, so a caller can cleanly fall back to that page's own
+ * default heading. */
+export function readWidgetTitleParam(searchParams: URLSearchParams): string | undefined {
+  const v = searchParams.get(WIDGET_TITLE_PARAM);
+  return v && v.length > 0 ? v : undefined;
+}
+
 /** Placeholder swapped in for the signed-in user's own id wherever a
  * widget's (opaque, backend-resolved) filters carry it — e.g. "My Cases"
  * resolves to `assignedUserIds: ["<real uuid>"]` — so a bookmarked/shared

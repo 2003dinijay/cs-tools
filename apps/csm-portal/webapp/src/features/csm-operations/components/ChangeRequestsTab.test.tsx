@@ -34,6 +34,13 @@ vi.mock("@features/csm-operations/api/useSearchChangeRequests", () => ({
   useSearchChangeRequests: vi.fn(),
 }));
 
+// The filter bar's SRE Team control goes through the shared team registry
+// query — stub it out so this test doesn't need a QueryClientProvider,
+// same rationale as the other mocks below.
+vi.mock("@features/csm-dashboard/api/useTeams", () => ({
+  useTeams: () => ({ data: [], isLoading: false }),
+}));
+
 // Only the column picker's storage key derives from the signed-in user.
 vi.mock("@context/current-user/CurrentUserContext", () => ({
   useCurrentUser: () => ({ user: { id: "user-1" }, isLoading: false, isError: false }),

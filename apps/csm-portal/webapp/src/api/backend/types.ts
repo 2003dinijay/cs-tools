@@ -339,6 +339,13 @@ export interface BeCaseView {
    * so a materially changed case has to be acknowledged afresh.
    */
   acknowledgedBy?: BeAssignedEngineerRef | null;
+  /**
+   * When the case's workaround was marked provided, or `null` until marked (and
+   * cleared again on recall). Pauses the case's Workaround SLA clock while set.
+   */
+  workaroundProvidedOn?: string | null;
+  /** The CS engineer who marked the workaround as provided, or `null` until marked. */
+  workaroundProvidedBy?: BeAssignedEngineerRef | null;
   account?: BeCaseAccountRef;
   project?: BeEntityRef;
   /** Nullable: ServiceNow-sourced cases may have no deployment / product. */
@@ -427,6 +434,14 @@ export interface BeCaseView {
   worstCaseFixEta?: string | null;
   /** Free-text labels attached to the case. Null/absent when none are set. */
   tags?: BeTag[] | null;
+  /**
+   * The case's current escalation level: one of the raw escalation-level ids
+   * `"0"` through `"5"` (EL0 "not escalated" through EL5 "CEO") — the same id
+   * space `GET /cases/{id}/escalations` and `POST /cases/{id}/escalations`
+   * both use. Null when the backing case carries no escalation level (e.g.
+   * non-ServiceNow-backed cases).
+   */
+  escalationLevel?: string | null;
 }
 
 /** A free-text tag attached to a case (`GET /cases/{id}`, `POST /cases/{id}/tags`). */
@@ -698,6 +713,7 @@ interface BeCaseUpdateNever {
   product?: never;
   publicTicket?: never;
   acknowledge?: never;
+  workaroundProvided?: never;
 }
 
 /**
@@ -798,6 +814,12 @@ export type BeCaseUpdatePayload =
    * `alreadyAcknowledged: true` with whoever claimed it first.
    */
   | (Omit<BeCaseUpdateNever, "acknowledge"> & { acknowledge: true })
+  /**
+   * Mark (`true`) or recall (`false`) the case's workaround (ServiceNow only).
+   * Marking it stamps the signed-in engineer as the provider and pauses the
+   * case's Workaround SLA clock; recalling clears both.
+   */
+  | (Omit<BeCaseUpdateNever, "workaroundProvided"> & { workaroundProvided: boolean })
   /**
    * Places the case on hold in the backing data source's staged auto-closure
    * sequence until this ISO date-time (ServiceNow only). The raw
@@ -981,6 +1003,19 @@ export interface BeCaseSearchFilters {
   /** The generic field/op/values filter array. Omit (or send `[]`) for an
    * unfiltered cross-project search. */
   filters?: BeCaseFieldFilter[];
+  /**
+   * Cross-field OR groups: each entry's own `filters` are ANDed, the entries
+   * themselves are OR'd together, then the whole `anyOf` result is ANDed
+   * with the top-level `filters` array above. Only a restricted field subset
+   * is accepted inside a branch (`type`, `state` `in`-only, `severity`,
+   * `engagementType`, `issueType`, `workState`, `projectId`, `deploymentId`,
+   * `assignedUserId` `in`-only, `escalationLevel`) — see
+   * `features/csm-cases/utils/anyOfFilters.ts`'s own doc comment for the
+   * FE-side allowlist this mirrors. An empty branch (`{filters: []}`/`{}`)
+   * is rejected by the backend (400) rather than silently OR-widening the
+   * result set — never emit one.
+   */
+  anyOf?: { filters: BeCaseFieldFilter[] }[];
 }
 
 export interface BeCaseSearchPayload {
@@ -1039,10 +1074,98 @@ export interface BeCaseSearchView {
   /** The case's customer account. Same shape as the GET view's own {@link
    * BeCaseAccountRef} -- populates the Cases list's optional Customer column. */
   account?: BeCaseAccountRef | null;
+  /** The case's current escalation level -- see {@link BeCaseView.escalationLevel}. */
+  escalationLevel?: string | null;
 }
 
 export interface BeCaseSearchResponse extends BeSearchResponseBase {
   cases: BeCaseSearchView[];
+}
+
+// ---------------------------------------------------------------------------
+// Case escalations
+// ---------------------------------------------------------------------------
+
+/** Whether a `POST /cases/{id}/escalations` call raises or lowers the case's
+ * escalation level. */
+export type BeEscalationAction = "ESCALATE" | "DEESCALATE";
+
+/** A compact reference to a user notified about an escalation-level change,
+ * as returned inline on a {@link BeCaseEscalation}. `id` can be empty when the
+ * backing data source could not resolve a platform user record for the
+ * notified recipient -- match by `email` in that case. */
+export interface BeCaseEscalationNotifiedUser {
+  id?: string | null;
+  userName: string;
+  name?: string | null;
+  email?: string | null;
+}
+
+/** A `{id, label}` escalation-level choice, e.g. `{id: "2", label: "EL2"}`. */
+export interface BeCaseEscalationLevel {
+  id: string;
+  label: string;
+}
+
+/** A compact case reference, as returned inline on a {@link BeCaseEscalation}. */
+export interface BeCaseEscalationCaseRef {
+  id: string;
+  name: string;
+}
+
+/**
+ * One escalation-level change recorded against a case: either an escalate or
+ * a de-escalate step, with the level it moved from and to. `currentLevel` /
+ * `previousLevel` are the same raw escalation-level id space (`"0"`-`"5"`) as
+ * {@link BeCaseView.escalationLevel}, via their own `id` field. ServiceNow
+ * data source only.
+ */
+export interface BeCaseEscalation {
+  id: string;
+  case: BeCaseEscalationCaseRef;
+  currentLevel: BeCaseEscalationLevel;
+  previousLevel: BeCaseEscalationLevel;
+  createdBy: string;
+  createdOn: string;
+  updatedOn: string;
+  reason?: string | null;
+  notificationSentTo?: BeCaseEscalationNotifiedUser[];
+}
+
+/** The response for `POST /cases/{id}/escalations` -- like {@link BeCaseEscalation}
+ * but with no `updatedOn` (the create response doesn't carry one). */
+export interface BeCreatedCaseEscalation {
+  id: string;
+  case: BeCaseEscalationCaseRef;
+  currentLevel: BeCaseEscalationLevel;
+  previousLevel: BeCaseEscalationLevel;
+  createdBy: string;
+  createdOn: string;
+  reason?: string | null;
+  notificationSentTo?: BeCaseEscalationNotifiedUser[];
+}
+
+/** Response for `GET /cases/{id}/escalations` -- the case's full escalation
+ * history, newest first, plus who's authorized to de-escalate the current
+ * level. Deliberately not `BeSearchResponseBase`: the wire response carries
+ * no `offset`/`limit`/`hasMore` fields. */
+export interface BeCaseEscalationSearchResponse {
+  escalations: BeCaseEscalation[];
+  total: number;
+  /** The notified-users list of the case's most recent escalation record
+   * (empty/absent when the case has never been escalated). Only someone on
+   * this list is authorized to de-escalate the case's current level. */
+  currentNotifiedUsers?: BeCaseEscalationNotifiedUser[];
+}
+
+/**
+ * Request body for `POST /cases/{id}/escalations`. `action` defaults to
+ * `"ESCALATE"` when omitted; `reason` is required when escalating and
+ * optional when de-escalating (enforced server-side).
+ */
+export interface BeCaseEscalationCreatePayload {
+  reason?: string;
+  action?: BeEscalationAction;
 }
 
 // ---------------------------------------------------------------------------
@@ -1312,16 +1435,98 @@ export interface BeAttachmentSearchResponse extends BeSearchResponseBase {
 
 /**
  * Upload payload for `POST /attachments`. `referenceId` + `referenceType` link
- * the file to its owning entity; `file` is a base64 data URI (e.g.
- * `data:image/png;base64,...`); the BE caps the decoded size at 10 MB.
+ * the file to its owning entity.
+ *
+ * The two data sources populate mutually exclusive fields (see
+ * entity-service openapi.yaml's `CreateAttachmentRequest`): the default path
+ * sends `file`, a base64 data URI (e.g. `data:image/png;base64,...`), and the
+ * BE caps the decoded size at 10 MB. When the SFTPGo-backed attachment
+ * storage flag is on (`sftpgoAttachmentStorageEnabled` on `GET /users/me`),
+ * the file's bytes were already uploaded directly to SFTPGo out of band, so
+ * `storageKey` + `sizeBytes` are sent instead of `file` — see
+ * `usePostCsmCaseAttachment`.
  */
 export interface BeAttachmentCreatePayload {
   referenceId: string;
   referenceType: BeReferenceType;
   name: string;
   type: string;
-  file: string;
+  file?: string;
   description?: string | null;
+  /** Set instead of `file` when the attachment's bytes were uploaded directly
+   * to SFTPGo (see `POST /cases/{id}/attachments/upload-token`). */
+  storageKey?: string;
+  /** Required alongside `storageKey`; the entity service cannot compute this
+   * itself since it never sees the file's bytes on that path. */
+  sizeBytes?: number;
+}
+
+/**
+ * Request payload for `POST /cases/{id}/attachments/upload-token`. The
+ * backend never sees the file's bytes on this path, so this is the only
+ * source of truth for the attachment's metadata — it creates the
+ * attachment's row (in `"pending"` status) from exactly these fields before
+ * minting the upload share. All three of `filename`/`mimeType`/`sizeBytes`
+ * are required by the backend.
+ */
+export interface BeAttachmentUploadTokenRequest {
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  description?: string | null;
+}
+
+/**
+ * Response body of `POST /cases/{id}/attachments/upload-token`. Only
+ * reachable when `sftpgoAttachmentStorageEnabled` is on.
+ *
+ * `id` is the attachment's own id, already created server-side in `"pending"`
+ * status — it must be sent back as the path parameter to
+ * `POST /cases/{id}/attachments/{attachmentId}/confirm` once the browser's
+ * direct-to-SFTPGo upload succeeds.
+ *
+ * `shareId` is a write-scoped, passwordless SFTPGo share id restricted to
+ * `storageKey`'s parent directory. It is the entire upload credential — no
+ * bearer token is ever involved. The frontend embeds it as the `share_id` key
+ * in the TUS `Upload-Metadata` header sent to SFTPGo's
+ * `POST /shares-chunked-uploads`, and must send only `storageKey`'s final
+ * path segment (not the full `storageKey`) as the `path` key, since the
+ * share's own root already covers the directory portion.
+ *
+ * `storageKey` is the exact SFTPGo path the uploaded file must end up at.
+ */
+export interface BeAttachmentUploadTokenResponse {
+  id: string;
+  shareId: string;
+  sftpgoBaseUrl: string;
+  storageKey: string;
+}
+
+/**
+ * Response body of `POST /cases/{caseId}/attachments/{attachmentId}/confirm`,
+ * the second half of the two-step SFTPGo upload flow
+ * `BeAttachmentUploadTokenResponse` starts: called once the browser's direct
+ * TUS upload to SFTPGo has actually succeeded, transitioning the attachment
+ * row from `"pending"` to `"complete"`.
+ */
+export interface BeAttachmentConfirmResponse {
+  message?: string;
+  attachment?: BeAttachmentDetail & {
+    /** Upload lifecycle state; `"complete"` once this call succeeds. */
+    status?: "pending" | "complete";
+  };
+}
+
+/**
+ * Response body of `POST /attachments/{id}/share`. `shareUrl` is a public,
+ * short-lived (5 minute TTL) download URL for the attachment's stored file —
+ * see `AttachmentStorageHandler.CreateAttachmentShare` on the backend. Must
+ * be requested lazily (only when an inline image is actually rendered, or a
+ * specific attachment's download is actually clicked), never eagerly for a
+ * whole list.
+ */
+export interface BeAttachmentShareResponse {
+  shareUrl: string;
 }
 
 /** Thin ack returned by `POST /attachments`. */
@@ -1935,6 +2140,38 @@ export interface BeCreateCaseGithubIssueResponse {
   };
 }
 
+/**
+ * One entry of the config-driven "repository" catalogue offered by the
+ * "Open Git issue" dialog's repo `Select` (cloud cases only — see
+ * `CreateGithubIssueDialog`'s `showRepoField`). `value` is an opaque dropdown
+ * key; `owner`/`repo` are the real GitHub org/repo an issue filed against
+ * this option is created in, and are what populates
+ * `BeCreateCaseGithubIssuePayload.repoOverride` — never derive owner/repo
+ * from `value` itself. `githubLabel` is the real GitHub issue label that
+ * should eventually be applied to an issue filed against this option
+ * (distinct from `displayLabel`, which is only this dropdown's display
+ * text) — not yet consumed anywhere on the frontend; the actual apply
+ * step is a separate, larger follow-up outside this webapp.
+ */
+export interface BeGithubIssueRepoOption {
+  value: string;
+  displayLabel: string;
+  owner: string;
+  repo: string;
+  githubLabel: string;
+}
+
+/**
+ * `GET /metadata` response: a single growable bag of reference/config data
+ * the webapp fetches once, rather than a dedicated endpoint per field.
+ * `githubIssueRepoOptions` is the first field — more are expected to be
+ * added here over time as new frontend needs come up. Empty array when
+ * unconfigured.
+ */
+export interface BeMetadataResponse {
+  githubIssueRepoOptions: BeGithubIssueRepoOption[];
+}
+
 /** `POST /cases/{id}/call-requests/search` request body. */
 export interface BeSearchCallRequestsPayload {
   filters?: {
@@ -2461,6 +2698,30 @@ export interface BePatchChangeRequestResponse {
   updatedBy?: string;
 }
 
+/**
+ * `field` enum accepted by a change-request search's generic `filters`
+ * array — mirrors the entity-service's `changeRequestFilterFieldSet` (see
+ * `change_request_filters.go`) exactly. This is separate from the
+ * pre-existing named fields below (`states`/`impacts`/`closedOn`/...),
+ * which stay outside this array.
+ */
+export type BeChangeRequestFieldFilterField =
+  | "createdOn"
+  | "assignmentGroupId"
+  | "approval";
+
+/** `op` enum accepted by a change-request search's generic `filters` array
+ * — mirrors `changeRequestFilterOpSet` in `change_request_filters.go`.
+ * Field/op compatibility is enforced only on the backend. */
+export type BeChangeRequestFieldFilterOp = "gte" | "lte" | "in" | "eq";
+
+/** One entry in a change-request search's generic `filters` array. */
+export interface BeChangeRequestFieldFilter {
+  field: BeChangeRequestFieldFilterField;
+  op: BeChangeRequestFieldFilterOp;
+  values?: string[];
+}
+
 export interface BeChangeRequestSearchPayload {
   filters?: {
     projectIds?: string[];
@@ -2475,6 +2736,13 @@ export interface BeChangeRequestSearchPayload {
      * searchQuery scan.
      */
     number?: string;
+    /**
+     * The generic field/op/values filter array (see
+     * {@link BeChangeRequestFieldFilter}) — additive alongside the named
+     * fields above. Only the SRE Team control (`assignmentGroupId`/`"in"`)
+     * populates this today.
+     */
+    filters?: BeChangeRequestFieldFilter[];
   };
   sortBy?: {
     field?: "createdOn" | "updatedOn";
@@ -2704,6 +2972,41 @@ export interface BePatchIncidentResponse {
   incident: BeIncidentDetail;
 }
 
+/**
+ * `field` enum accepted by an incident search's generic `filters` array —
+ * mirrors the entity-service's `incidentFilterFieldSet` (see
+ * `incident_filters.go`) exactly. Deliberately a superset of what this
+ * portal currently builds a control for (only `assignmentGroupId`, for the
+ * SRE Team filter, at present) — narrowing the FE type to just that one
+ * value would create a stale-type problem the moment another field gets a
+ * control.
+ */
+export type BeIncidentFieldFilterField =
+  | "state"
+  | "assignmentGroupId"
+  | "businessServiceId"
+  | "createdOn"
+  | "slaViolated"
+  | "madeSla"
+  | "productName";
+
+/**
+ * `op` enum accepted by an incident search's generic `filters` array,
+ * independent of `field` — mirrors `incidentFilterOpSet` in
+ * `incident_filters.go`. Field/op compatibility is enforced only on the
+ * backend, not narrowed here.
+ */
+export type BeIncidentFieldFilterOp = "in" | "gte" | "lte" | "eq";
+
+/** One entry in an incident search's generic `filters` array — same "field
+ * op values" shape as {@link BeCaseFieldFilter}, scoped to incidents' own
+ * field/op allow-list. */
+export interface BeIncidentFieldFilter {
+  field: BeIncidentFieldFilterField;
+  op: BeIncidentFieldFilterOp;
+  values?: string[];
+}
+
 export interface BeIncidentSearchPayload {
   filters?: {
     searchQuery?: string;
@@ -2734,6 +3037,13 @@ export interface BeIncidentSearchPayload {
      * scan.
      */
     number?: string;
+    /**
+     * The generic field/op/values filter array (see {@link BeIncidentFieldFilter}) —
+     * additive alongside the named fields above, not a replacement for them.
+     * Only the SRE Team control (`assignmentGroupId`/`"in"`) populates this
+     * today.
+     */
+    filters?: BeIncidentFieldFilter[];
   };
   sortBy?: {
     field?: "createdOn" | "updatedOn" | "openedOn";
@@ -2790,6 +3100,26 @@ export interface BeProblemSearchView {
   assignedTo?: BeEntityRef | null;
 }
 
+/**
+ * `field` enum accepted by a problem search's generic `filters` array —
+ * mirrors the entity-service's `problemFilterFieldSet` (see
+ * `problem_filters.go`) exactly. Notably smaller than incidents'/change
+ * requests' own field sets — don't assume parity across resources.
+ */
+export type BeProblemFieldFilterField = "state" | "assignmentGroupId";
+
+/** `op` enum accepted by a problem search's generic `filters` array —
+ * mirrors `problemFilterOpSet` in `problem_filters.go`; today every
+ * supported field only accepts `"in"`. */
+export type BeProblemFieldFilterOp = "in";
+
+/** One entry in a problem search's generic `filters` array. */
+export interface BeProblemFieldFilter {
+  field: BeProblemFieldFilterField;
+  op: BeProblemFieldFilterOp;
+  values?: string[];
+}
+
 export interface BeProblemSearchFilters {
   searchQuery?: string;
   /**
@@ -2804,6 +3134,12 @@ export interface BeProblemSearchFilters {
    * a first-class filter rather than through the free-text searchQuery scan.
    */
   number?: string;
+  /**
+   * The generic field/op/values filter array (see {@link BeProblemFieldFilter}) —
+   * additive alongside `states` above. Only the SRE Team control
+   * (`assignmentGroupId`/`"in"`) populates this today.
+   */
+  filters?: BeProblemFieldFilter[];
 }
 
 export interface BeProblemSearchPayload {

@@ -38,18 +38,18 @@ type snConversationsResponse struct {
 }
 
 type snConversation struct {
-	ID             *string                  `json:"id"`
-	Number         *string                  `json:"number"`
-	InitialMessage *string                  `json:"initialMessage"`
-	MessageCount   int                      `json:"messageCount"`
-	Project        *snConversationEntityRef `json:"project"`
-	Case           *snConversationEntityRef `json:"case"`
-	State          *snConversationIntLabel  `json:"state"`
-	CreatedOn      string                   `json:"createdOn"`
-	CreatedBy      string                   `json:"createdBy"`
+	ID             *string                 `json:"id"`
+	Number         *string                 `json:"number"`
+	InitialMessage *string                 `json:"initialMessage"`
+	MessageCount   int                     `json:"messageCount"`
+	Project        *snEntityRef            `json:"project"`
+	Case           *snEntityRef            `json:"case"`
+	State          *snConversationIntLabel `json:"state"`
+	CreatedOn      string                  `json:"createdOn"`
+	CreatedBy      string                  `json:"createdBy"`
 }
 
-type snConversationEntityRef struct {
+type snEntityRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
@@ -81,6 +81,9 @@ type snConversationFilters struct {
 }
 
 // snConversationStateKeyMap maps domain ConversationState enums to SN numeric state keys.
+// Covers all 5 transition states (used by UpdateConversation and to interpret
+// GetConversation's state, which may be any of them), though search filters
+// (validConversationState) only ever accept ACTIVE/RESOLVED.
 var snConversationStateKeyMap = map[domain.ConversationState]int{
 	domain.ConversationStateActive:    2,
 	domain.ConversationStateResolved:  3,
@@ -99,6 +102,17 @@ var snConversationStateLabelMap = map[int]string{
 }
 
 var validConversationState = map[domain.ConversationState]bool{
+	domain.ConversationStateActive:    true,
+	domain.ConversationStateResolved:  true,
+	domain.ConversationStateConverted: true,
+	domain.ConversationStateAbandoned: true,
+	domain.ConversationStateClosed:    true,
+}
+
+// validConversationUpdateState is the full transition allow-list PATCH
+// /conversations/{id} enforces — every state a conversation can be moved to,
+// not just the two the search endpoint allows filtering by.
+var validConversationUpdateState = map[domain.ConversationState]bool{
 	domain.ConversationStateActive:    true,
 	domain.ConversationStateResolved:  true,
 	domain.ConversationStateConverted: true,
@@ -280,5 +294,186 @@ func (s *snConversationService) SearchConversations(ctx context.Context, req dom
 		Total:         snResp.TotalRecords,
 		Limit:         req.Pagination.Limit,
 		Offset:        req.Pagination.Offset,
+	}, nil
+}
+
+// snConversationDetails mirrors the Choreo GET /conversations/{id} response
+// (Ballerina's ConversationResponse, which inclusion-copies every field of
+// Conversation and adds updatedOn/updatedBy — flattened here).
+type snConversationDetails struct {
+	ID             string                  `json:"id"`
+	Number         *string                 `json:"number"`
+	InitialMessage *string                 `json:"initialMessage"`
+	MessageCount   int                     `json:"messageCount"`
+	CreatedOn      string                  `json:"createdOn"`
+	CreatedBy      string                  `json:"createdBy"`
+	Project        *snEntityRef            `json:"project"`
+	Case           *snEntityRef            `json:"case"`
+	State          *snConversationIntLabel `json:"state"`
+	UpdatedOn      string                  `json:"updatedOn"`
+	UpdatedBy      string                  `json:"updatedBy"`
+}
+
+func (s *snConversationService) GetConversation(ctx context.Context, id string) (domain.ConversationDetails, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.ConversationDetails{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	raw, err := s.client.Get(ctx, "/conversations/"+uuidToSysid(id), token)
+	if err != nil {
+		return domain.ConversationDetails{}, err
+	}
+
+	var snResp snConversationDetails
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.ConversationDetails{}, fmt.Errorf("sn get conversation: parse response: %w", err)
+	}
+
+	details := domain.ConversationDetails{
+		ID:             sysidToUUID(snResp.ID),
+		Number:         snResp.Number,
+		InitialMessage: snResp.InitialMessage,
+		MessageCount:   snResp.MessageCount,
+		CreatedOn:      snResp.CreatedOn,
+		CreatedBy:      snResp.CreatedBy,
+		UpdatedOn:      snResp.UpdatedOn,
+		UpdatedBy:      snResp.UpdatedBy,
+	}
+	if snResp.Project != nil {
+		details.Project = &domain.EntityRef{ID: sysidToUUID(snResp.Project.ID), Name: snResp.Project.Name}
+	}
+	if snResp.Case != nil {
+		details.Case = &domain.EntityRef{ID: sysidToUUID(snResp.Case.ID), Name: snResp.Case.Name}
+	}
+	if snResp.State != nil {
+		if label, ok := snConversationStateLabelMap[snResp.State.ID]; ok {
+			details.State = &label
+		}
+	}
+
+	return details, nil
+}
+
+// snConversationCreatePayload mirrors the Choreo POST /conversations request body.
+type snConversationCreatePayload struct {
+	ProjectID      string `json:"projectId"`
+	InitialMessage string `json:"initialMessage"`
+}
+
+type snCreatedConversation struct {
+	ID        string                 `json:"id"`
+	Number    string                 `json:"number"`
+	CreatedBy string                 `json:"createdBy"`
+	CreatedOn string                 `json:"createdOn"`
+	State     snConversationIntLabel `json:"state"`
+}
+
+// snConversationCreateResponse mirrors the Choreo POST /conversations response.
+type snConversationCreateResponse struct {
+	Message      string                `json:"message"`
+	Conversation snCreatedConversation `json:"conversation"`
+}
+
+func (s *snConversationService) CreateConversation(ctx context.Context, req domain.CreateConversationRequest) (domain.CreateConversationResponse, error) {
+	if err := validateUUIDs("projectId", []string{req.ProjectID}); err != nil {
+		return domain.CreateConversationResponse{}, err
+	}
+	if req.InitialMessage == "" {
+		return domain.CreateConversationResponse{}, &apierror.ValidationError{Msg: "initialMessage is required"}
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	payload := snConversationCreatePayload{
+		ProjectID:      uuidToSysid(req.ProjectID),
+		InitialMessage: req.InitialMessage,
+	}
+
+	raw, err := s.client.Post(ctx, "/conversations", token, payload)
+	if err != nil {
+		return domain.CreateConversationResponse{}, err
+	}
+
+	var snResp snConversationCreateResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.CreateConversationResponse{}, fmt.Errorf("sn create conversation: parse response: %w", err)
+	}
+
+	state := snConversationStateLabelMap[snResp.Conversation.State.ID]
+	var statePtr *string
+	if state != "" {
+		statePtr = &state
+	}
+
+	return domain.CreateConversationResponse{
+		Message: snResp.Message,
+		Conversation: domain.CreatedConversation{
+			ID:        sysidToUUID(snResp.Conversation.ID),
+			Number:    snResp.Conversation.Number,
+			CreatedBy: snResp.Conversation.CreatedBy,
+			CreatedOn: snResp.Conversation.CreatedOn,
+			State:     statePtr,
+		},
+	}, nil
+}
+
+// snConversationUpdatePayload mirrors the Choreo PATCH /conversations/{id} request body.
+type snConversationUpdatePayload struct {
+	StateKey int `json:"stateKey"`
+}
+
+type snUpdatedConversation struct {
+	ID        string                 `json:"id"`
+	Number    *string                `json:"number"`
+	UpdatedOn string                 `json:"updatedOn"`
+	UpdatedBy string                 `json:"updatedBy"`
+	State     snConversationIntLabel `json:"state"`
+}
+
+// snConversationUpdateResponse mirrors the Choreo PATCH /conversations/{id} response.
+type snConversationUpdateResponse struct {
+	Message      string                `json:"message"`
+	Conversation snUpdatedConversation `json:"conversation"`
+}
+
+func (s *snConversationService) UpdateConversation(ctx context.Context, id string, req domain.UpdateConversationRequest) (domain.UpdateConversationResponse, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.UpdateConversationResponse{}, err
+	}
+	if !validConversationUpdateState[req.State] {
+		return domain.UpdateConversationResponse{}, &apierror.ValidationError{Msg: "state contains invalid value: " + string(req.State)}
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	payload := snConversationUpdatePayload{StateKey: snConversationStateKeyMap[req.State]}
+
+	raw, err := s.client.Patch(ctx, "/conversations/"+uuidToSysid(id), token, payload)
+	if err != nil {
+		return domain.UpdateConversationResponse{}, err
+	}
+
+	var snResp snConversationUpdateResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.UpdateConversationResponse{}, fmt.Errorf("sn update conversation: parse response: %w", err)
+	}
+
+	state := snConversationStateLabelMap[snResp.Conversation.State.ID]
+	var statePtr *string
+	if state != "" {
+		statePtr = &state
+	}
+
+	return domain.UpdateConversationResponse{
+		Message: snResp.Message,
+		Conversation: domain.UpdatedConversation{
+			ID:        sysidToUUID(snResp.Conversation.ID),
+			Number:    snResp.Conversation.Number,
+			UpdatedOn: snResp.Conversation.UpdatedOn,
+			UpdatedBy: snResp.Conversation.UpdatedBy,
+			State:     statePtr,
+		},
 	}, nil
 }

@@ -42,10 +42,6 @@
           background: #16181d;
         }
       }
-      #csm-boot-loader img {
-        width: 48px;
-        height: 48px;
-      }
       #csm-boot-loader .csm-boot-track {
         width: 220px;
         height: 4px;
@@ -91,11 +87,12 @@
     <div id="root"></div>
 
     <div id="csm-boot-loader" role="status" aria-live="polite">
-      <img src="/logo-dark.svg" alt="" />
       <div class="csm-boot-track" id="csm-boot-track">
         <div class="csm-boot-bar" id="csm-boot-bar"></div>
       </div>
-      <div class="csm-boot-label" id="csm-boot-label">Loading…</div>
+      <div class="csm-boot-label" id="csm-boot-label">
+        We're getting things ready…
+      </div>
     </div>
 
     <script>

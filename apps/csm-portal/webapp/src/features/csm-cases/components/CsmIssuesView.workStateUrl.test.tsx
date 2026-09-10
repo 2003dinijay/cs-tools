@@ -100,7 +100,7 @@ describe("CsmIssuesView + real CasesFilterBar — work state clears fully from t
   // the next render read the stale value straight back in.
   //
   // `workStates` no longer has its own bar control (see CasesFilterBar's
-  // "Team" control, which replaced it) -- the State control's own onChange
+  // "CRE Team" control, which replaced it) -- the State control's own onChange
   // is what clears a stale `workStates` now, when the selection widens past
   // "work_in_progress" alone. This exercises that same URL round trip
   // (not just the in-memory filter object CasesFilterBar.test.tsx already

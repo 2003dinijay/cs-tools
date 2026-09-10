@@ -46,7 +46,13 @@ import { isForbiddenError, isUnauthorizedError } from "@utils/ApiError";
  */
 function AuthPendingShell(): JSX.Element {
   return (
-    <AppLayout>
+    // showCaseTabs={false}: there is no CurrentUserProvider in scope here, and
+    // AppLayout's own CaseTabsContentHost renders a restored open case tab's
+    // page unconditionally (alongside, not instead of, these children) —
+    // that page calls useCurrentUser too (via useFindMyOngoingCases), which
+    // throws outside the provider. Same crash the children-suppression above
+    // already guards against, just via a different render path.
+    <AppLayout showCaseTabs={false}>
       <RouteSuspenseFallback />
     </AppLayout>
   );

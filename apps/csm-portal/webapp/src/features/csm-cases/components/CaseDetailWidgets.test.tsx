@@ -32,6 +32,7 @@ vi.mock("@api/backend/client", () => ({
 import {
   AttachmentsWidget,
   CustomerContextWidget,
+  EscalationWidget,
   RequestDetailsWidget,
   TagsWidget,
   WatchersWidget,
@@ -41,10 +42,12 @@ import type { WatchListMember } from "@features/csm-cases/components/CaseDetailW
 import type {
   CaseAttachment,
   CaseCustomerContext,
+  CaseEscalationRecord,
   CaseRequestVariable,
   CaseTag,
 } from "@features/csm-cases/types/csmCases";
 import type { ProjectDetails } from "@features/csm-projects/types/csmProjects";
+import type { AttachmentPreviewSource } from "@features/csm-cases/utils/attachmentPreview";
 
 // `previewTarget`/`onPreviewTargetChange` (part of the widget's `preview`
 // prop) are lifted to the parent page (see CsmCaseDetailPage) so the preview
@@ -56,7 +59,9 @@ function AttachmentsWidgetHarness({
   onGetPreviewContent,
   ...props
 }: Omit<ComponentProps<typeof AttachmentsWidget>, "preview"> & {
-  onGetPreviewContent?: (attachment: CaseAttachment) => Promise<Blob>;
+  onGetPreviewContent?: (
+    attachment: CaseAttachment,
+  ) => Promise<AttachmentPreviewSource>;
 }): JSX.Element {
   const [previewTarget, setPreviewTarget] = useState<CaseAttachment | null>(
     null,
@@ -205,6 +210,152 @@ describe("TagsWidget", () => {
   });
 });
 
+const ESCALATION_HISTORY: CaseEscalationRecord[] = [
+  {
+    id: "esc-2",
+    currentLevel: "2",
+    previousLevel: "1",
+    createdBy: "jane.doe@example.com",
+    createdOn: "2026-08-02T00:00:00Z",
+    reason: "Still unresolved after 24h.",
+  },
+  {
+    id: "esc-1",
+    currentLevel: "1",
+    previousLevel: "0",
+    createdBy: "john.smith@example.com",
+    createdOn: "2026-08-01T00:00:00Z",
+    reason: "Customer escalated via phone.",
+  },
+];
+
+describe("EscalationWidget", () => {
+  it("renders the current level badge", () => {
+    render(<EscalationWidget currentLevel="2" history={[]} />);
+    expect(screen.getByText("EL2 — Technology Unit Head")).toBeInTheDocument();
+  });
+
+  it("renders 'Not tracked', not EL0, when currentLevel is null", () => {
+    render(<EscalationWidget currentLevel={null} history={[]} />);
+    expect(screen.getByText("Not tracked")).toBeInTheDocument();
+    expect(screen.queryByText("Not escalated")).not.toBeInTheDocument();
+  });
+
+  it("hides both action buttons when currentLevel is null, even if handlers are passed", () => {
+    render(
+      <EscalationWidget
+        currentLevel={null}
+        history={[]}
+        onEscalate={vi.fn()}
+        onDeescalate={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText("Escalate")).not.toBeInTheDocument();
+    expect(screen.queryByText("De-escalate")).not.toBeInTheDocument();
+  });
+
+  it("renders an empty state when there is no escalation history", () => {
+    render(<EscalationWidget currentLevel="0" history={[]} />);
+    expect(screen.getByText("No escalations on this case.")).toBeInTheDocument();
+  });
+
+  it("renders every history entry with its level transition, actor, and reason", () => {
+    render(<EscalationWidget currentLevel="2" history={ESCALATION_HISTORY} />);
+    expect(screen.getByText("EL1 → EL2")).toBeInTheDocument();
+    expect(screen.getByText("Not escalated → EL1")).toBeInTheDocument();
+    expect(screen.getByText(/jane.doe@example.com/)).toBeInTheDocument();
+    expect(screen.getByText(/john.smith@example.com/)).toBeInTheDocument();
+    expect(screen.getByText("Still unresolved after 24h.")).toBeInTheDocument();
+    expect(screen.getByText("Customer escalated via phone.")).toBeInTheDocument();
+  });
+
+  it("shows a loading state instead of the history while isHistoryLoading", () => {
+    render(
+      <EscalationWidget
+        currentLevel="1"
+        history={[]}
+        isHistoryLoading
+      />,
+    );
+    expect(screen.getByText("Loading escalation history…")).toBeInTheDocument();
+  });
+
+  it("shows an error state instead of the history when isHistoryError", () => {
+    render(
+      <EscalationWidget currentLevel="1" history={[]} isHistoryError />,
+    );
+    expect(
+      screen.getByText("Could not load the escalation history."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows only Escalate at EL0", () => {
+    const onEscalate = vi.fn();
+    render(
+      <EscalationWidget
+        currentLevel="0"
+        history={[]}
+        onEscalate={onEscalate}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Escalate" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "De-escalate" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows only De-escalate at EL5", () => {
+    const onDeescalate = vi.fn();
+    render(
+      <EscalationWidget
+        currentLevel="5"
+        history={[]}
+        onDeescalate={onDeescalate}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "De-escalate" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Escalate" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows both actions between EL1 and EL4, each firing its own callback", () => {
+    const onEscalate = vi.fn();
+    const onDeescalate = vi.fn();
+    render(
+      <EscalationWidget
+        currentLevel="2"
+        history={[]}
+        onEscalate={onEscalate}
+        onDeescalate={onDeescalate}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Escalate" }));
+    expect(onEscalate).toHaveBeenCalledTimes(1);
+    expect(onDeescalate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "De-escalate" }));
+    expect(onDeescalate).toHaveBeenCalledTimes(1);
+    expect(onEscalate).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables both actions with a tooltip reason when actionDisabledReason is set", () => {
+    render(
+      <EscalationWidget
+        currentLevel="2"
+        history={[]}
+        onEscalate={vi.fn()}
+        onDeescalate={vi.fn()}
+        actionDisabledReason="This case is closed — it's read-only."
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Escalate" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "De-escalate" })).toBeDisabled();
+  });
+});
+
 /**
  * Opens the "Add a watcher" type-ahead and returns its listbox options. The
  * picker only queries once the dropdown is open, so a test has to open it
@@ -344,6 +495,82 @@ describe("WatchersWidget", () => {
       screen.getByRole("combobox", { name: /add a watcher/i }),
     ).toBeDisabled();
   });
+
+  describe("self-subscribe", () => {
+    it("omits the Follow/Unfollow control when no currentUserId is supplied", () => {
+      renderWithRouter(
+        <WatchersWidget entityKind="case" watchers={WATCHERS} onReplace={vi.fn()} />,
+      );
+      expect(
+        screen.queryByRole("button", { name: /^follow case updates$/i }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /^unfollow case updates$/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("shows Follow when the signed-in engineer isn't a watcher, and adds them on click", () => {
+      const onReplace = vi.fn();
+      // Neither fixture watcher is flagged `isMe` here — CANDIDATE_ID (the
+      // signed-in engineer in this test) isn't on the list at all, matching
+      // how the caller would populate `isMe` for a real not-yet-following user.
+      renderWithRouter(
+        <WatchersWidget
+          entityKind="case"
+          watchers={ONE_WATCHER}
+          onReplace={onReplace}
+          currentUserId={CANDIDATE_ID}
+        />,
+      );
+      expect(
+        screen.queryByRole("button", { name: /^unfollow case updates$/i }),
+      ).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /^follow case updates$/i }));
+      expect(onReplace).toHaveBeenCalledWith([WATCHER_ONE_ID, CANDIDATE_ID], "add");
+    });
+
+    it("shows Unfollow when the signed-in engineer is already a watcher and not auto-added, and removes them on click", () => {
+      const onReplace = vi.fn();
+      renderWithRouter(
+        <WatchersWidget
+          entityKind="case"
+          watchers={WATCHERS}
+          onReplace={onReplace}
+          currentUserId={WATCHER_TWO_ID}
+        />,
+      );
+      expect(
+        screen.queryByRole("button", { name: /^follow case updates$/i }),
+      ).not.toBeInTheDocument();
+      const button = screen.getByRole("button", { name: /^unfollow case updates$/i });
+      expect(button).not.toHaveAttribute("aria-disabled");
+      fireEvent.click(button);
+      expect(onReplace).toHaveBeenCalledWith([WATCHER_ONE_ID], "remove");
+    });
+
+    it("blocks Unfollow, with the reason reachable by assistive tech, when the caller reports an auto-added membership (e.g. the case's assignee)", () => {
+      const onReplace = vi.fn();
+      renderWithRouter(
+        <WatchersWidget
+          entityKind="case"
+          watchers={WATCHERS}
+          onReplace={onReplace}
+          currentUserId={WATCHER_TWO_ID}
+          autoWatchingReason="You're on this case's watch list as its assigned engineer."
+        />,
+      );
+      const button = screen.getByRole("button", { name: /^unfollow case updates$/i });
+      expect(button).toHaveAttribute("aria-disabled", "true");
+      const reason = document.getElementById(
+        button.getAttribute("aria-describedby") ?? "",
+      );
+      expect(reason).toHaveTextContent(
+        "You're on this case's watch list as its assigned engineer.",
+      );
+      fireEvent.click(button);
+      expect(onReplace).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("AttachmentsWidget — preview affordance", () => {
@@ -413,7 +640,7 @@ describe("AttachmentsWidget — preview affordance", () => {
   it("opens the preview dialog, fetches content, and renders it as an image", async () => {
     const fetchContent = vi
       .fn()
-      .mockResolvedValue(new Blob(["fake"], { type: "image/png" }));
+      .mockResolvedValue({ url: "blob:mock-url", revoke: true });
     renderWithRouter(
       <AttachmentsWidgetHarness
         attachments={[IMAGE_ATTACHMENT]}
@@ -467,6 +694,63 @@ describe("AttachmentsWidget — preview affordance", () => {
     expect(
       screen.getByRole("button", { name: `Download ${ZIP_ATTACHMENT.filename}` }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("AttachmentsWidget — upload progress", () => {
+  it("shows an indeterminate bar with no percentage when uploadProgress is not supplied", () => {
+    renderWithRouter(
+      <AttachmentsWidgetHarness
+        attachments={[]}
+        uploading
+        onUpload={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Uploading…")).toBeInTheDocument();
+    const bar = document.querySelector(".MuiLinearProgress-root");
+    expect(bar).not.toHaveAttribute("aria-valuenow");
+  });
+
+  it("shows a determinate bar with the percentage when uploadProgress is a number", () => {
+    renderWithRouter(
+      <AttachmentsWidgetHarness
+        attachments={[]}
+        uploading
+        uploadProgress={42}
+        onUpload={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Uploading… 42%")).toBeInTheDocument();
+    const bar = document.querySelector(".MuiLinearProgress-root");
+    expect(bar).toHaveAttribute("aria-valuenow", "42");
+  });
+
+  it("only calls onDownload when a specific attachment's Download button is clicked, never on render", () => {
+    const onDownload = vi.fn();
+    const attachment: CaseAttachment = {
+      id: "att-1",
+      filename: "notes.txt",
+      size: 128,
+      contentType: "text/plain",
+      uploadedBy: "Jane Doe",
+      uploadedAt: "2026-01-01T00:00:00Z",
+    };
+    renderWithRouter(
+      <AttachmentsWidgetHarness
+        attachments={[attachment]}
+        onDownload={onDownload}
+      />,
+    );
+
+    // Rendering the list alone must never trigger a download resolution
+    // (e.g. a lazily-created SFTPGo share) — only an explicit click does.
+    expect(onDownload).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `Download ${attachment.filename}` }),
+    );
+    expect(onDownload).toHaveBeenCalledTimes(1);
+    expect(onDownload).toHaveBeenCalledWith(attachment);
   });
 });
 
@@ -562,6 +846,50 @@ describe("CustomerContextWidget", () => {
     );
     expect(screen.getByText("SRE Beta")).toBeInTheDocument();
     expect(screen.queryByText("CRE Alpha")).not.toBeInTheDocument();
+  });
+
+  it("renders the onboarding owner row when onboarding is enabled and an owner is set", () => {
+    renderWithRouter(
+      <CustomerContextWidget
+        ctx={CTX}
+        project={{
+          ...PROJECT,
+          onboardingStatus: "In-Progress",
+          onboardingOwner: {
+            id: "user-1",
+            name: "Jane Doe",
+            email: "jane.doe@example.com",
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("Onboarding Owner")).toBeInTheDocument();
+    expect(screen.getByText("Jane Doe")).toBeInTheDocument();
+  });
+
+  it("hides the onboarding owner row when onboardingStatus is Not-Applicable", () => {
+    renderWithRouter(
+      <CustomerContextWidget
+        ctx={CTX}
+        project={{
+          ...PROJECT,
+          onboardingStatus: "Not-Applicable",
+          onboardingOwner: {
+            id: "user-1",
+            name: "Jane Doe",
+            email: "jane.doe@example.com",
+          },
+        }}
+      />,
+    );
+    expect(screen.queryByText("Onboarding Owner")).not.toBeInTheDocument();
+  });
+
+  it("hides the onboarding owner row when there is no onboarding engagement at all", () => {
+    renderWithRouter(
+      <CustomerContextWidget ctx={CTX} project={{ ...PROJECT }} />,
+    );
+    expect(screen.queryByText("Onboarding Owner")).not.toBeInTheDocument();
   });
 });
 

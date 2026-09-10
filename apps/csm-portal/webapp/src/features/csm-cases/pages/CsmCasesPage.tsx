@@ -17,17 +17,32 @@
 import { Button } from "@wso2/oxygen-ui";
 import { Plus } from "@wso2/oxygen-ui-icons-react";
 import { type JSX } from "react";
+import { useSearchParams } from "react-router";
 
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
+import { readWidgetTitleParam } from "@features/csm-dashboard/utils/widgetPreviewUrl";
 import { useNavTransition } from "@hooks/useNavTransition";
 
-/** All-cases list — the shared issues view across every case type. */
+/**
+ * All-cases list — the shared issues view across every case type.
+ *
+ * `title` defaults to "Cases", the page's own real identity for a normal
+ * left-nav visit, but is overridden by a dashboard widget's own
+ * `displayName` when this page was reached via a `case`-resourceType
+ * widget's tile click (see `WIDGET_RESOURCE_CONFIG.case.buildHref` in
+ * `widgetResourceConfig.ts`, and `appendWidgetTitleParam`'s own doc comment)
+ * — digiops-cs#2914: several dashboard widgets all drill through to this one
+ * page, and a hardcoded "Cases" heading made it unclear which widget's
+ * filtered result set was actually being shown.
+ */
 export default function CsmCasesPage(): JSX.Element {
   const navigate = useNavTransition();
+  const [searchParams] = useSearchParams();
+  const title = readWidgetTitleParam(searchParams) ?? "Cases";
 
   return (
     <CsmIssuesView
-      title="Cases"
+      title={title}
       entityNoun="cases"
       // Cases list defaults to support cases (`caseTypes: ["case"]`) on a
       // fresh visit, but, unlike the other issue-type pages (Operations/

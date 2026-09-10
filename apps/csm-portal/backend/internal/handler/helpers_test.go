@@ -99,6 +99,8 @@ type mockEntityCaseClient struct {
 	patchCaseFn                func(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	createCaseCommentFn        func(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	searchCommentsFn           func(ctx context.Context, body []byte) ([]byte, error)
+	searchCaseEscalationsFn    func(ctx context.Context, caseID string) ([]byte, error)
+	createCaseEscalationFn     func(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	searchCaseActivitiesFn     func(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	searchCasesFn              func(ctx context.Context, body []byte) ([]byte, error)
 	aggregateCasesFn           func(ctx context.Context, body []byte) ([]byte, error)
@@ -109,6 +111,8 @@ type mockEntityCaseClient struct {
 	searchCaseAttachmentsFn    func(ctx context.Context, body []byte) ([]byte, error)
 	getCaseAttachmentContentFn func(ctx context.Context, attachmentID string) ([]byte, string, error)
 	deleteCaseAttachmentFn     func(ctx context.Context, attachmentID string) ([]byte, error)
+	getCaseAttachmentFn        func(ctx context.Context, attachmentID string) ([]byte, error)
+	confirmCaseAttachmentFn    func(ctx context.Context, attachmentID string) ([]byte, error)
 	getAttachmentFn            func(ctx context.Context, attachmentID string) ([]byte, error)
 	updateAttachmentFn         func(ctx context.Context, attachmentID string, body []byte) ([]byte, error)
 	createCallRequestFn        func(ctx context.Context, body []byte) ([]byte, error)
@@ -158,6 +162,20 @@ func (m *mockEntityCaseClient) SearchComments(ctx context.Context, body []byte) 
 		return m.searchCommentsFn(ctx, body)
 	}
 	return []byte(`{"comments":[],"total":0,"limit":20,"offset":0,"hasMore":false}`), nil
+}
+
+func (m *mockEntityCaseClient) SearchCaseEscalations(ctx context.Context, caseID string) ([]byte, error) {
+	if m.searchCaseEscalationsFn != nil {
+		return m.searchCaseEscalationsFn(ctx, caseID)
+	}
+	return []byte(`{"escalations":[]}`), nil
+}
+
+func (m *mockEntityCaseClient) CreateCaseEscalation(ctx context.Context, caseID string, body []byte) ([]byte, error) {
+	if m.createCaseEscalationFn != nil {
+		return m.createCaseEscalationFn(ctx, caseID, body)
+	}
+	return []byte(`{}`), nil
 }
 
 func (m *mockEntityCaseClient) SearchCaseActivities(ctx context.Context, caseID string, body []byte) ([]byte, error) {
@@ -230,6 +248,12 @@ func (m *mockEntityCaseClient) DeleteCaseAttachment(ctx context.Context, attachm
 	return []byte(`{"message":"Attachment deleted successfully."}`), nil
 }
 
+func (m *mockEntityCaseClient) GetCaseAttachment(ctx context.Context, attachmentID string) ([]byte, error) {
+	if m.getCaseAttachmentFn != nil {
+		return m.getCaseAttachmentFn(ctx, attachmentID)
+	}
+	return []byte(`{}`), nil
+}
 func (m *mockEntityCaseClient) GetAttachment(ctx context.Context, attachmentID string) ([]byte, error) {
 	if m.getAttachmentFn != nil {
 		return m.getAttachmentFn(ctx, attachmentID)
@@ -237,6 +261,12 @@ func (m *mockEntityCaseClient) GetAttachment(ctx context.Context, attachmentID s
 	return []byte(`{}`), nil
 }
 
+func (m *mockEntityCaseClient) ConfirmCaseAttachment(ctx context.Context, attachmentID string) ([]byte, error) {
+	if m.confirmCaseAttachmentFn != nil {
+		return m.confirmCaseAttachmentFn(ctx, attachmentID)
+	}
+	return []byte(`{"message":"Attachment confirmed successfully","attachment":{"id":"` + attachmentID + `","status":"complete"}}`), nil
+}
 func (m *mockEntityCaseClient) UpdateAttachment(ctx context.Context, attachmentID string, body []byte) ([]byte, error) {
 	if m.updateAttachmentFn != nil {
 		return m.updateAttachmentFn(ctx, attachmentID, body)

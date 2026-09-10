@@ -1,0 +1,70 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package dto
+
+import "github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/productconsumption"
+
+// LicenseSubscriptionData carries the deployment's license/subscription
+// credentials. Every field here is deliberately included, unlike most
+// response DTOs in this package — this endpoint's entire purpose is handing
+// the customer their own deployment's license credentials.
+type LicenseSubscriptionData struct {
+	DeploymentID    string `json:"deploymentId"`
+	DeploymentName  string `json:"deploymentName"`
+	SubscriptionKey string `json:"subscriptionKey"`
+	ClientID        string `json:"clientId"`
+	ClientSecret    string `json:"clientSecret"`
+	Secrets         string `json:"secrets"`
+}
+
+// LicenseResponse is the portal's response for
+// POST /projects/{projectId}/deployments/{deploymentId}/license.
+type LicenseResponse struct {
+	SubscriptionData LicenseSubscriptionData `json:"subscriptionData"`
+	Signature        string                  `json:"signature"`
+}
+
+// MapLicense builds the portal response from the product-consumption service's License.
+func MapLicense(l productconsumption.License) LicenseResponse {
+	return LicenseResponse{
+		SubscriptionData: LicenseSubscriptionData{
+			DeploymentID:    l.SubscriptionData.DeploymentID,
+			DeploymentName:  l.SubscriptionData.DeploymentName,
+			SubscriptionKey: l.SubscriptionData.SubscriptionKey,
+			ClientID:        l.SubscriptionData.ClientID,
+			ClientSecret:    l.SubscriptionData.ClientSecret,
+			Secrets:         l.SubscriptionData.Secrets,
+		},
+		Signature: l.Signature,
+	}
+}
+
+// ImportDeploymentUsageResponse is the portal's response for POST /deployment-usages.
+type ImportDeploymentUsageResponse struct {
+	Message string `json:"message,omitempty"`
+	Result  any    `json:"result,omitempty"`
+}
+
+// MapImportDeploymentUsage builds the portal response from the
+// product-consumption service's ImportUsageResponse.
+func MapImportDeploymentUsage(r productconsumption.ImportUsageResponse) ImportDeploymentUsageResponse {
+	out := ImportDeploymentUsageResponse{Result: r.Result}
+	if r.Message != nil {
+		out.Message = *r.Message
+	}
+	return out
+}

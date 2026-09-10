@@ -49,7 +49,7 @@ export default function AccountDetailPage() {
           <Chip
             size="small"
             label={a.tier}
-            color={a.tier === "enterprise" ? "primary" : "default"}
+            color={a.tier?.toLowerCase() === "enterprise" ? "primary" : "default"}
             variant="outlined"
             sx={{ textTransform: "capitalize" }}
           />
@@ -92,7 +92,7 @@ export default function AccountDetailPage() {
             />
           </MetaRow>
           <Divider />
-          <MetaRow label="Account owner">
+          <MetaRow label="Account manager">
             <MetaValue>{a.ownerName || a.ownerId || "—"}</MetaValue>
           </MetaRow>
           <Divider />

@@ -75,6 +75,8 @@ import {
 } from "@wso2/oxygen-ui-icons-react";
 import { mergeRegister } from "@lexical/utils";
 import {
+  ALLOWED_IMAGE_MIME_TYPES,
+  ALLOWED_IMAGE_TYPES_LABEL,
   MAX_IMAGE_SIZE_BYTES,
   RICH_TEXT_BLOCK_TAGS,
 } from "@components/rich-text-editor/richTextConstants";
@@ -239,6 +241,17 @@ const Toolbar = ({
       const resetInput = () => {
         if (imageInputRef.current) imageInputRef.current.value = "";
       };
+      if (
+        !ALLOWED_IMAGE_MIME_TYPES.includes(
+          file.type as (typeof ALLOWED_IMAGE_MIME_TYPES)[number],
+        )
+      ) {
+        showError(
+          `Image "${file.name}" has an unsupported format${file.type ? ` (${file.type})` : ""}. Allowed formats: ${ALLOWED_IMAGE_TYPES_LABEL}.`,
+        );
+        resetInput();
+        return;
+      }
       if (file.size > MAX_IMAGE_SIZE_BYTES) {
         showError(
           `Image "${file.name}" exceeds the maximum allowed size of ${MAX_IMAGE_SIZE_BYTES / (1024 * 1024)}MB. Please choose a smaller file.`,
@@ -776,7 +789,7 @@ const Toolbar = ({
                     ref={imageInputRef}
                     type="file"
                     hidden
-                    accept="image/*"
+                    accept={ALLOWED_IMAGE_MIME_TYPES.join(",")}
                     onChange={onImageUpload}
                   />
                 </ToggleButton>

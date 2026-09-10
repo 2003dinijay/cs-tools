@@ -109,6 +109,62 @@ describe("CasesList row navigation", () => {
   });
 });
 
+// Regression: reported live — a single case with an unusually long subject
+// line forced the whole grid to scroll horizontally even with zero optional
+// columns turned on. `noWrap`'s ellipsis only clips paint; it never affects a
+// CSS grid item's max-content sizing contribution, which is what actually
+// drove the grid wider. A `maxWidth` on the Subject cell's wrapping Box is
+// what fixes it — this only guards that the style stays in place, since
+// jsdom doesn't perform real CSS Grid intrinsic-size layout.
+describe("CasesList — Subject cell has a capped width", () => {
+  it("does not let the wrapping cell grow unbounded for a long subject", () => {
+    const longSubject =
+      "A very long case subject line that goes on and on and would otherwise force this column, and the whole table, to grow far past a normal viewport width";
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/cases"
+          element={<CasesList cases={[{ ...CASE, subject: longSubject }]} isLoading={false} />}
+        />
+      </Routes>,
+      ["/cases"],
+    );
+
+    const subjectCell = screen.getByTitle(longSubject).parentElement;
+    expect(subjectCell).not.toBeNull();
+    expect(getComputedStyle(subjectCell!).maxWidth).toBe("360px");
+  });
+
+  // Regression: reported live for Security Reports' Product column, but the
+  // same shared CasesList renders Cases/Service Requests/Engagements too — an
+  // optional column's track is mechanically identical to Subject's
+  // (minmax(140px, 1fr) vs. Subject's minmax(280px, 3fr)), so it needed the
+  // same maxWidth treatment, not just Subject.
+  it("also caps an optional column's wrapping cell for a long value", () => {
+    const longCustomer =
+      "A very long customer account name that goes on and on and would otherwise force this optional column, and the whole table, to grow far past a normal viewport width";
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/cases"
+          element={
+            <CasesList
+              cases={[{ ...CASE, customer: longCustomer }]}
+              isLoading={false}
+              optionalColumns={["customer"]}
+            />
+          }
+        />
+      </Routes>,
+      ["/cases"],
+    );
+
+    const customerCell = screen.getByTitle(longCustomer).parentElement;
+    expect(customerCell).not.toBeNull();
+    expect(getComputedStyle(customerCell!).maxWidth).toBe("260px");
+  });
+});
+
 describe("CasesList quick preview", () => {
   it("opens the preview drawer instead of navigating when the preview action is clicked", () => {
     renderWithProviders(
@@ -337,6 +393,51 @@ describe("CasesList optional columns", () => {
 
     // `CASE` has no `issueType`/`createdBy` set.
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+
+  it("renders the escalation level chip for an escalated row", () => {
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/cases"
+          element={
+            <CasesList
+              cases={[{ ...CASE, escalationLevel: "2" }]}
+              isLoading={false}
+              optionalColumns={["escalationLevel"]}
+            />
+          }
+        />
+        <Route path="/cases/:id" element={<DetailStub />} />
+      </Routes>,
+      ["/cases"],
+    );
+
+    expect(screen.getByText("Escalation")).toBeInTheDocument();
+    expect(screen.getByText("EL2")).toBeInTheDocument();
+  });
+
+  it("renders nothing (not a placeholder chip) in the escalation column for a non-escalated row", () => {
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/cases"
+          element={
+            <CasesList
+              cases={[{ ...CASE, escalationLevel: "0" }]}
+              isLoading={false}
+              optionalColumns={["escalationLevel"]}
+            />
+          }
+        />
+        <Route path="/cases/:id" element={<DetailStub />} />
+      </Routes>,
+      ["/cases"],
+    );
+
+    expect(screen.getByText("Escalation")).toBeInTheDocument();
+    expect(screen.queryByText(/^EL/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Not escalated")).not.toBeInTheDocument();
   });
 
   it("keeps rendering the legacy fixed optional set when optionalColumns is omitted", () => {

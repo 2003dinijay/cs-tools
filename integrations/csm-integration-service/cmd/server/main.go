@@ -50,6 +50,8 @@ func main() {
 	entityClient := entity.NewClient(cfg)
 	accountHandler := handler.NewAccountHandler(entityClient)
 	projectHandler := handler.NewProjectHandler(entityClient)
+	vulnerabilityHandler := handler.NewVulnerabilityHandler(entityClient)
+	caseHandler := handler.NewCaseHandler(entityClient)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +64,9 @@ func main() {
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
 	mux.HandleFunc("POST /projects/{id}/contacts/search", projectHandler.SearchProjectContacts)
 	mux.HandleFunc("PATCH /projects/{id}", projectHandler.UpdateProject)
+	mux.HandleFunc("POST /vulnerabilities/sync", vulnerabilityHandler.SyncProductVulnerabilities)
+	mux.HandleFunc("PATCH /cases/{id}", caseHandler.PatchCase)
+	mux.HandleFunc("POST /cases/{id}/comments", caseHandler.CreateCaseComment)
 
 	addr := ":" + envOrDefault("PORT", "8080")
 

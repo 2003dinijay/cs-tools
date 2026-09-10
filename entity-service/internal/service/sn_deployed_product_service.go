@@ -416,3 +416,224 @@ func (s *snDeployedProductService) SearchDeployedProducts(ctx context.Context, r
 		HasMore:          req.Pagination.Offset+len(views) < total,
 	}, nil
 }
+
+// snDeployedProductMetricsInstance mirrors the Choreo
+// DeployedProductMetricsInstance shape.
+type snDeployedProductMetricsInstance struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Cores int    `json:"cores"`
+}
+
+// snDeployedProductMetricsChartEntry mirrors the Choreo
+// DeployedProductMetricsChartEntry shape.
+type snDeployedProductMetricsChartEntry struct {
+	Date          string                             `json:"date"`
+	InstanceCount int                                `json:"instanceCount"`
+	TotalCores    int                                `json:"totalCores"`
+	MinCores      int                                `json:"minCores"`
+	MaxCores      int                                `json:"maxCores"`
+	AvgCores      float64                            `json:"avgCores"`
+	Instances     []snDeployedProductMetricsInstance `json:"instances"`
+}
+
+// snDeployedProductMetricsDateRange mirrors the Choreo dateRange shape shared
+// by both metrics and usage-counts summaries.
+type snDeployedProductMetricsDateRange struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
+// snDeployedProductMetricsSummary mirrors the Choreo DeployedProductMetricsSummary shape.
+type snDeployedProductMetricsSummary struct {
+	DateRange      snDeployedProductMetricsDateRange `json:"dateRange"`
+	TotalInstances int                               `json:"totalInstances"`
+	MinCores       *int                              `json:"minCores"`
+	MaxCores       *int                              `json:"maxCores"`
+	AvgCores       *float64                          `json:"avgCores"`
+}
+
+// snDeployedProductMetricsResponse mirrors the Choreo
+// POST /deployed-products/{id}/metrics/search response.
+type snDeployedProductMetricsResponse struct {
+	DeployedProduct snReferenceTableItem                 `json:"deployedProduct"`
+	Summary         snDeployedProductMetricsSummary      `json:"summary"`
+	ChartData       []snDeployedProductMetricsChartEntry `json:"chartData"`
+}
+
+type snDeployedProductMetricsSearchPayload struct {
+	DeploymentID string `json:"deploymentId"`
+	StartDate    string `json:"startDate"`
+	EndDate      string `json:"endDate"`
+}
+
+func (s *snDeployedProductService) SearchDeployedProductMetrics(ctx context.Context, id string, req domain.DeployedProductMetricsRequest) (domain.DeployedProductMetricsResponse, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.DeployedProductMetricsResponse{}, err
+	}
+	if err := validateUUIDs("deploymentId", []string{req.DeploymentID}); err != nil {
+		return domain.DeployedProductMetricsResponse{}, err
+	}
+	if err := validateDateRange(req.StartDate, req.EndDate); err != nil {
+		return domain.DeployedProductMetricsResponse{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	payload := snDeployedProductMetricsSearchPayload{
+		DeploymentID: uuidToSysid(req.DeploymentID),
+		StartDate:    req.StartDate,
+		EndDate:      req.EndDate,
+	}
+
+	raw, err := s.client.Post(ctx, "/deployed-products/"+uuidToSysid(id)+"/metrics/search", token, payload)
+	if err != nil {
+		return domain.DeployedProductMetricsResponse{}, err
+	}
+
+	var snResp snDeployedProductMetricsResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.DeployedProductMetricsResponse{}, fmt.Errorf("sn deployed product metrics: parse response: %w", err)
+	}
+
+	chartData := make([]domain.DeployedProductMetricsChartEntry, 0, len(snResp.ChartData))
+	for _, e := range snResp.ChartData {
+		instances := make([]domain.DeployedProductMetricsInstance, 0, len(e.Instances))
+		for _, i := range e.Instances {
+			instances = append(instances, domain.DeployedProductMetricsInstance{ID: i.ID, Name: i.Name, Cores: i.Cores})
+		}
+		chartData = append(chartData, domain.DeployedProductMetricsChartEntry{
+			Date:          e.Date,
+			InstanceCount: e.InstanceCount,
+			TotalCores:    e.TotalCores,
+			MinCores:      e.MinCores,
+			MaxCores:      e.MaxCores,
+			AvgCores:      e.AvgCores,
+			Instances:     instances,
+		})
+	}
+
+	return domain.DeployedProductMetricsResponse{
+		DeployedProduct: snResp.DeployedProduct.toDomain(),
+		Summary: domain.DeployedProductMetricsSummary{
+			DateRange: domain.DeployedProductMetricsDateRange{
+				Start: snResp.Summary.DateRange.Start,
+				End:   snResp.Summary.DateRange.End,
+			},
+			TotalInstances: snResp.Summary.TotalInstances,
+			MinCores:       snResp.Summary.MinCores,
+			MaxCores:       snResp.Summary.MaxCores,
+			AvgCores:       snResp.Summary.AvgCores,
+		},
+		ChartData: chartData,
+	}, nil
+}
+
+// snUsageCountInstance mirrors the Choreo UsageCountInstance shape.
+type snUsageCountInstance struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Value float64 `json:"value"`
+}
+
+// snUsageCountEntry mirrors the Choreo UsageCountEntry shape.
+type snUsageCountEntry struct {
+	Value       float64                `json:"value"`
+	Aggregation string                 `json:"aggregation"`
+	Instances   []snUsageCountInstance `json:"instances"`
+}
+
+// snDeployedProductUsageCountsChartEntry mirrors the Choreo
+// DeployedProductUsageCountsChartEntry shape. Counts is keyed by count-type
+// name, an open set defined by ServiceNow, not a fixed enum.
+type snDeployedProductUsageCountsChartEntry struct {
+	Date   string                       `json:"date"`
+	Counts map[string]snUsageCountEntry `json:"counts"`
+}
+
+// snCountTypeAggregation mirrors the Choreo CountTypeAggregation shape.
+type snCountTypeAggregation struct {
+	Aggregation string  `json:"aggregation"`
+	Min         float64 `json:"min"`
+	Max         float64 `json:"max"`
+	Avg         float64 `json:"avg"`
+}
+
+// snDeployedProductUsageCountsSummary mirrors the Choreo
+// DeployedProductUsageCountsSummary shape.
+type snDeployedProductUsageCountsSummary struct {
+	DateRange  snDeployedProductMetricsDateRange `json:"dateRange"`
+	CountTypes map[string]snCountTypeAggregation `json:"countTypes"`
+}
+
+// snDeployedProductUsageCountsResponse mirrors the Choreo
+// POST /deployed-products/{id}/metrics/usage-counts/search response.
+type snDeployedProductUsageCountsResponse struct {
+	DeployedProduct snReferenceTableItem                     `json:"deployedProduct"`
+	Summary         snDeployedProductUsageCountsSummary      `json:"summary"`
+	ChartData       []snDeployedProductUsageCountsChartEntry `json:"chartData"`
+}
+
+func (s *snDeployedProductService) SearchDeployedProductUsageCounts(ctx context.Context, id string, req domain.DeployedProductUsageCountsRequest) (domain.DeployedProductUsageCountsResponse, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.DeployedProductUsageCountsResponse{}, err
+	}
+	if err := validateUUIDs("deploymentId", []string{req.DeploymentID}); err != nil {
+		return domain.DeployedProductUsageCountsResponse{}, err
+	}
+	if err := validateDateRange(req.StartDate, req.EndDate); err != nil {
+		return domain.DeployedProductUsageCountsResponse{}, err
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+
+	payload := snDeployedProductMetricsSearchPayload{
+		DeploymentID: uuidToSysid(req.DeploymentID),
+		StartDate:    req.StartDate,
+		EndDate:      req.EndDate,
+	}
+
+	raw, err := s.client.Post(ctx, "/deployed-products/"+uuidToSysid(id)+"/metrics/usage-counts/search", token, payload)
+	if err != nil {
+		return domain.DeployedProductUsageCountsResponse{}, err
+	}
+
+	var snResp snDeployedProductUsageCountsResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		return domain.DeployedProductUsageCountsResponse{}, fmt.Errorf("sn deployed product usage counts: parse response: %w", err)
+	}
+
+	toDomainUsageCountEntry := func(e snUsageCountEntry) domain.UsageCountEntry {
+		instances := make([]domain.UsageCountInstance, 0, len(e.Instances))
+		for _, i := range e.Instances {
+			instances = append(instances, domain.UsageCountInstance{ID: i.ID, Name: i.Name, Value: i.Value})
+		}
+		return domain.UsageCountEntry{Value: e.Value, Aggregation: e.Aggregation, Instances: instances}
+	}
+
+	chartData := make([]domain.DeployedProductUsageCountsChartEntry, 0, len(snResp.ChartData))
+	for _, e := range snResp.ChartData {
+		counts := make(map[string]domain.UsageCountEntry, len(e.Counts))
+		for k, v := range e.Counts {
+			counts[k] = toDomainUsageCountEntry(v)
+		}
+		chartData = append(chartData, domain.DeployedProductUsageCountsChartEntry{Date: e.Date, Counts: counts})
+	}
+
+	countTypes := make(map[string]domain.CountTypeAggregation, len(snResp.Summary.CountTypes))
+	for k, v := range snResp.Summary.CountTypes {
+		countTypes[k] = domain.CountTypeAggregation{Aggregation: v.Aggregation, Min: v.Min, Max: v.Max, Avg: v.Avg}
+	}
+
+	return domain.DeployedProductUsageCountsResponse{
+		DeployedProduct: snResp.DeployedProduct.toDomain(),
+		Summary: domain.DeployedProductUsageCountsSummary{
+			DateRange: domain.DeployedProductMetricsDateRange{
+				Start: snResp.Summary.DateRange.Start,
+				End:   snResp.Summary.DateRange.End,
+			},
+			CountTypes: countTypes,
+		},
+		ChartData: chartData,
+	}, nil
+}

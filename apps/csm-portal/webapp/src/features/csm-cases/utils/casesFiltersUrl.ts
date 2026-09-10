@@ -25,6 +25,17 @@ import type {
 } from "@api/backend/types";
 import type { CasesFilters } from "@features/csm-cases/components/CasesFilterBar";
 import { ALL_CASE_TYPES } from "@features/csm-cases/utils/caseType";
+import {
+  isCompleteAdvancedFilterRow,
+  parseAdvancedFiltersParam,
+  writeAdvancedFiltersParam,
+} from "@features/csm-cases/utils/advancedFilters";
+import {
+  isCompleteAnyOfBranch,
+  parseAnyOfBranchesParam,
+  writeAnyOfBranchesParam,
+} from "@features/csm-cases/utils/anyOfFilters";
+import { normalizeCasesFilters } from "@features/csm-cases/utils/filterFieldAdapters";
 
 export const DEFAULT_CASES_FILTERS: CasesFilters = {
   search: "",
@@ -53,6 +64,8 @@ export const DEFAULT_CASES_FILTERS: CasesFilters = {
   updatedOnLte: null,
   closedOnGte: null,
   closedOnLte: null,
+  advancedFilters: [],
+  anyOfBranches: [],
   // Note: `tags`/`excludeTags` are real, wired-through fields (round-trip
   // URL + `/cases/search` payload), both driven by the one tri-state
   // "Tags" bar control (`TagsMultiSelect`, digiops-cs#2907) — see its own
@@ -152,7 +165,11 @@ export function readCasesFiltersFromUrl(
     states.length === 1 && states[0] === "work_in_progress"
       ? parseCsv(params.get("workStates"), VALID_WORK_STATES)
       : [];
-  return {
+  // `normalizeCasesFilters` folds any `af` row targeting a field that now
+  // has its own typed `CasesFilters` slot (severity/state/tag/...) into that
+  // real property, so a legacy or hand-edited URL can never produce a
+  // dangling duplicate of the same predicate — see its own doc comment.
+  return normalizeCasesFilters({
     search: params.get("search") ?? "",
     severities: parseCsv(params.get("severities"), VALID_SEVERITIES),
     states,
@@ -179,7 +196,9 @@ export function readCasesFiltersFromUrl(
     updatedOnLte: parseFreeFormScalar(params.get("updatedTo")),
     closedOnGte: parseFreeFormScalar(params.get("closedFrom")),
     closedOnLte: parseFreeFormScalar(params.get("closedTo")),
-  };
+    advancedFilters: parseAdvancedFiltersParam(params.get("af")),
+    anyOfBranches: parseAnyOfBranchesParam(params.get("anyOf")),
+  });
 }
 
 /**
@@ -262,6 +281,20 @@ export function writeCasesFiltersToUrl(f: CasesFilters): URLSearchParams {
   if (f.updatedOnLte !== null) out.set("updatedTo", f.updatedOnLte);
   if (f.closedOnGte !== null) out.set("closedFrom", f.closedOnGte);
   if (f.closedOnLte !== null) out.set("closedTo", f.closedOnLte);
+  // `af` is the one exception to the "one param per field+op pair" rule this
+  // doc comment argues for above — it IS the generic escape hatch the
+  // comment calls out, so `field~op` (or here, a JSON `[field, op, values]`
+  // triple) is the right shape for it: each row already carries its own op
+  // explicitly, so there's no default-op fallback for a decode to silently
+  // mis-attribute a value to.
+  const af = writeAdvancedFiltersParam(f.advancedFilters);
+  if (af !== null) out.set("af", af);
+  // Same generic-escape-hatch reasoning as `af` above — `anyOf` already
+  // carries its own field per row (no op at all, since every branch field is
+  // `in`-only, see `anyOfFilters.ts`), so there is no default op for a
+  // decode to silently mis-attribute a value to here either.
+  const anyOf = writeAnyOfBranchesParam(f.anyOfBranches);
+  if (anyOf !== null) out.set("anyOf", anyOf);
   return out;
 }
 
@@ -299,6 +332,13 @@ export function countActiveFilters(f: CasesFilters): number {
   if (f.updatedOnLte !== null) n += 1;
   if (f.closedOnGte !== null) n += 1;
   if (f.closedOnLte !== null) n += 1;
+  // Each advanced-filter row is its own distinct predicate (unlike e.g.
+  // `tags`, where every selected tag is really one "tag in [...]" filter) —
+  // count complete rows individually rather than the whole array as one.
+  n += f.advancedFilters.filter(isCompleteAdvancedFilterRow).length;
+  // Same reasoning as advanced-filter rows: each OR group with at least one
+  // complete condition is its own distinct predicate.
+  n += f.anyOfBranches.filter(isCompleteAnyOfBranch).length;
   return n;
 }
 

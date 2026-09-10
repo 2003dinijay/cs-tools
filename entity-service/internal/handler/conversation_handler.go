@@ -49,3 +49,45 @@ func (h *ConversationHandler) SearchConversations(w http.ResponseWriter, r *http
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// GetConversation handles GET /conversations/{id}.
+func (h *ConversationHandler) GetConversation(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.GetConversation(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// CreateConversation handles POST /conversations.
+func (h *ConversationHandler) CreateConversation(w http.ResponseWriter, r *http.Request) {
+	var req domain.CreateConversationRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.CreateConversation(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// UpdateConversation handles PATCH /conversations/{id}.
+func (h *ConversationHandler) UpdateConversation(w http.ResponseWriter, r *http.Request) {
+	var req domain.UpdateConversationRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.UpdateConversation(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}

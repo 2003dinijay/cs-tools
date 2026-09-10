@@ -16,8 +16,11 @@
 
 import { describe, expect, it } from "vitest";
 import type { CasesFilters } from "@features/csm-cases/components/CasesFilterBar";
+import type { AdvancedFilterRow } from "@features/csm-cases/utils/advancedFilters";
+import type { AnyOfBranch } from "@features/csm-cases/utils/anyOfFilters";
 import {
   casesHref,
+  countActiveFilters,
   DEFAULT_CASES_FILTERS,
   readCasesFiltersFromUrl,
   writeCasesFiltersToUrl,
@@ -220,6 +223,177 @@ describe("op-awareness (regression: the widgetPreviewUrl field~op bug)", () => {
     const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
     expect(round.slaElapsedPctGte).toBe(90);
     expect(round.slaElapsedPctLte).toBeNull();
+  });
+});
+
+describe("advanced filters (`af` param)", () => {
+  it("round-trips a multi-value `in` row through the URL", () => {
+    const advancedFilters: AdvancedFilterRow[] = [
+      { field: "deploymentId", op: "in", values: ["dep-1", "dep-2"] },
+    ];
+    const filters: CasesFilters = { ...DEFAULT_CASES_FILTERS, advancedFilters };
+    const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
+    expect(round.advancedFilters).toEqual(advancedFilters);
+  });
+
+  // `escalation` now has a typed `CasesFilters` slot (`hasEscalation`, see
+  // `filterFieldAdapters.ts`'s typed-adapter registry) — an `af` row
+  // targeting it is folded (`normalizeCasesFilters`) into that real property
+  // on read rather than staying a dangling `advancedFilters` entry, so the
+  // round-trip is still lossless, just visible on a different property now.
+  it("round-trips a value-less op (`escalation isNotEmpty`) into the typed `hasEscalation` field, not a dangling `af` row", () => {
+    const advancedFilters: AdvancedFilterRow[] = [
+      { field: "escalation", op: "isNotEmpty", values: [] },
+    ];
+    const filters: CasesFilters = { ...DEFAULT_CASES_FILTERS, advancedFilters };
+    const href = writeCasesFiltersToUrl(filters);
+    expect(href.get("af")).not.toBeNull();
+    const round = readCasesFiltersFromUrl(href);
+    expect(round.hasEscalation).toBe(true);
+    expect(round.advancedFilters).toEqual([]);
+  });
+
+  // `createdOn`/`updatedOn`/`closedOn` also now have typed slots
+  // (`updatedOnGte`/`updatedOnLte`, ...) — same normalization as above.
+  it("round-trips a date `gte`/`lte` pair on the same field into the typed `updatedOnGte`/`updatedOnLte` fields", () => {
+    const advancedFilters: AdvancedFilterRow[] = [
+      { field: "updatedOn", op: "gte", values: ["2026-01-01"] },
+      { field: "updatedOn", op: "lte", values: ["2026-03-31"] },
+    ];
+    const filters: CasesFilters = { ...DEFAULT_CASES_FILTERS, advancedFilters };
+    const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
+    expect(round.updatedOnGte).toBe("2026-01-01");
+    expect(round.updatedOnLte).toBe("2026-03-31");
+    expect(round.advancedFilters).toEqual([]);
+  });
+
+  it("round-trips an in-progress row (field/op picked, no value yet) rather than dropping it", () => {
+    // Regression test for the "Add filter" bug: `CsmIssuesView` treats the
+    // URL as the single source of truth (`filters =
+    // readCasesFiltersFromUrl(searchParams)`), so a freshly-added row with no
+    // value yet used to vanish within the same tick — `writeAdvancedFiltersParam`
+    // filtered it out before it ever reached the URL, and the very next
+    // re-read from that URL then rendered zero rows. An incomplete row must
+    // survive this URL round trip (it's still correctly excluded from the
+    // `/cases/search` request payload — see `caseSearchPayload.test.ts`).
+    const advancedFilters: AdvancedFilterRow[] = [
+      { field: "number", op: "eq", values: [] },
+    ];
+    const filters: CasesFilters = { ...DEFAULT_CASES_FILTERS, advancedFilters };
+    const href = writeCasesFiltersToUrl(filters);
+    expect(href.get("af")).not.toBeNull();
+    const round = readCasesFiltersFromUrl(href);
+    expect(round.advancedFilters).toEqual(advancedFilters);
+  });
+
+  it("round-trips a row whose op takes a value but none has been typed yet (empty `values` array)", () => {
+    const advancedFilters: AdvancedFilterRow[] = [
+      { field: "internalId", op: "eq", values: [] },
+    ];
+    const filters: CasesFilters = { ...DEFAULT_CASES_FILTERS, advancedFilters };
+    const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
+    expect(round.advancedFilters).toEqual(advancedFilters);
+  });
+
+  it("does not count an in-progress (incomplete) row toward the active-filter badge, even though it now round-trips", () => {
+    const advancedFilters: AdvancedFilterRow[] = [
+      { field: "internalId", op: "eq", values: ["a"] },
+      { field: "number", op: "eq", values: [] },
+    ];
+    expect(
+      countActiveFilters({ ...DEFAULT_CASES_FILTERS, advancedFilters }),
+    ).toBe(1);
+  });
+
+  it("silently drops an unknown field/op on a hand-edited or stale `af` param instead of throwing", () => {
+    const params = new URLSearchParams();
+    params.set(
+      "af",
+      JSON.stringify([
+        ["not_a_real_field", "in", ["x"]],
+        ["internalId", "not_a_real_op", ["y"]],
+        ["internalId", "eq", ["ok"]],
+      ]),
+    );
+    expect(readCasesFiltersFromUrl(params).advancedFilters).toEqual([
+      { field: "internalId", op: "eq", values: ["ok"] },
+    ]);
+  });
+
+  it("silently returns no advanced filters for garbage JSON in `af`", () => {
+    const params = new URLSearchParams();
+    params.set("af", "not json{{{");
+    expect(readCasesFiltersFromUrl(params).advancedFilters).toEqual([]);
+  });
+
+  it("counts each complete advanced-filter row individually toward the active-filter count", () => {
+    const advancedFilters: AdvancedFilterRow[] = [
+      { field: "internalId", op: "eq", values: ["a"] },
+      { field: "number", op: "eq", values: ["CS0441174"] },
+    ];
+    expect(
+      countActiveFilters({ ...DEFAULT_CASES_FILTERS, advancedFilters }),
+    ).toBe(2);
+  });
+});
+
+describe("OR groups (`anyOf` param)", () => {
+  it("round-trips a two-branch, single-condition-each anyOf through the URL", () => {
+    const anyOfBranches: AnyOfBranch[] = [
+      { filters: [{ field: "type", values: ["case"] }] },
+      { filters: [{ field: "severity", values: ["critical"] }] },
+    ];
+    const filters: CasesFilters = { ...DEFAULT_CASES_FILTERS, anyOfBranches };
+    const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
+    expect(round.anyOfBranches).toEqual(anyOfBranches);
+  });
+
+  it("round-trips an in-progress branch (a row with field picked, no value yet) rather than dropping it", () => {
+    const anyOfBranches: AnyOfBranch[] = [{ filters: [{ field: "type", values: [] }] }];
+    const filters: CasesFilters = { ...DEFAULT_CASES_FILTERS, anyOfBranches };
+    const href = writeCasesFiltersToUrl(filters);
+    expect(href.get("anyOf")).not.toBeNull();
+    const round = readCasesFiltersFromUrl(href);
+    expect(round.anyOfBranches).toEqual(anyOfBranches);
+  });
+
+  it("round-trips a branch with multiple ANDed conditions", () => {
+    const anyOfBranches: AnyOfBranch[] = [
+      {
+        filters: [
+          { field: "type", values: ["case"] },
+          { field: "severity", values: ["critical", "high"] },
+        ],
+      },
+    ];
+    const filters: CasesFilters = { ...DEFAULT_CASES_FILTERS, anyOfBranches };
+    const round = readCasesFiltersFromUrl(writeCasesFiltersToUrl(filters));
+    expect(round.anyOfBranches).toEqual(anyOfBranches);
+  });
+
+  it("does not count a branch with no complete condition toward the active-filter badge, even though it round-trips", () => {
+    const anyOfBranches: AnyOfBranch[] = [
+      { filters: [{ field: "type", values: ["case"] }] },
+      { filters: [{ field: "severity", values: [] }] },
+    ];
+    expect(countActiveFilters({ ...DEFAULT_CASES_FILTERS, anyOfBranches })).toBe(1);
+  });
+
+  it("silently drops an unknown branch field on a hand-edited or stale `anyOf` param instead of throwing", () => {
+    const params = new URLSearchParams();
+    params.set(
+      "anyOf",
+      JSON.stringify([[["not_a_real_field", ["x"]], ["type", ["case"]]]]),
+    );
+    expect(readCasesFiltersFromUrl(params).anyOfBranches).toEqual([
+      { filters: [{ field: "type", values: ["case"] }] },
+    ]);
+  });
+
+  it("silently returns no OR groups for garbage JSON in `anyOf`", () => {
+    const params = new URLSearchParams();
+    params.set("anyOf", "not json{{{");
+    expect(readCasesFiltersFromUrl(params).anyOfBranches).toEqual([]);
   });
 });
 

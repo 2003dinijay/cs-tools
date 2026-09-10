@@ -114,7 +114,7 @@ Copy `.env` and fill in the values:
 
 ### Shared OAuth2 client credentials
 
-Every upstream service client (customer entity, engineering entity, updates, SCIM, and future notification channels) authenticates as the same OAuth2 client-credentials app — only each service's base URL and scopes differ, so the credentials are configured once and reused.
+Every upstream service client (customer entity, engineering entity, updates, SCIM) authenticates as the same OAuth2 client-credentials app — only each service's base URL and scopes differ, so the credentials are configured once and reused.
 
 | Variable | Description |
 |---|---|
@@ -172,6 +172,14 @@ Backs `entity.EngineeringEntityClient.CreateGitIssue` (a separate internal engin
 |---|---|
 | `NOTIFICATIONS_GOOGLE_CHAT_SPACES` | JSON array of `{"product","webhookUrl"}` objects, one per Google Chat space — e.g. `[{"product":"api-manager","webhookUrl":"https://chat.googleapis.com/..."}]`. Optional — left unset, malformed, Google Chat alerts are unavailable but startup and every other endpoint work normally |
 | `CSM_PORTAL_WEB_BASE_URL` | Base URL of the CSM portal webapp, used to build the "Open in CSM Portal" link at `/operations/incidents/{caseId}` (e.g. `http://localhost:3001` for local dev). Optional — only needed alongside `NOTIFICATIONS_GOOGLE_CHAT_SPACES` above |
+
+### "Open Git issue" dialog repository catalogue
+
+The webapp's "Open Git issue" dialog offers a CS engineer a list of destination repositories. That list used to be hardcoded in the frontend (`CreateGithubIssueDialog.tsx`) — which is how a real case filed with "Asgardeo" selected landed in the wrong GitHub repository, because the owner/repo mapping lived in code no config reviewer would think to check. It is now a config-driven catalogue, resolved once at startup and served as the `githubIssueRepoOptions` field of `GET /metadata`, same "JSON-array env var parsed at startup" shape as `DASHBOARDS_CONFIG` below.
+
+| Variable | Description |
+|---|---|
+| `GITHUB_ISSUE_REPO_OPTIONS` | JSON array of `{"value","displayLabel","owner","repo","githubLabel"}` objects, one per dropdown option — e.g. `[{"value":"choreo","displayLabel":"WSO2 Developer Platform (Choreo)","owner":"wso2-enterprise","repo":"choreo","githubLabel":"Choreo"}]`. `githubLabel` is the real GitHub issue label eventually applied to an issue filed against that option — stored/served only for now, not yet wired into issue creation. Optional — unset returns an empty catalogue; malformed content (bad JSON, a blank field, or a duplicate `value`) is fatal, naming the offending entry |
 
 ### Dashboards
 
@@ -248,15 +256,14 @@ backend/
 │   │   ├── customer_client.go   # OAuth2 HTTP client for the customer entity service (this repo's entity-service)
 │   │   ├── customer.go          # CustomerEntityClient operations (cases, accounts, projects, ...)
 │   │   └── engineering.go       # EngineeringEntityClient — CreateGitIssue (not yet wired into main.go — no caller)
+│   ├── githubissue/
+│   │   ├── options.go          # RepoOption + ParseRepoOptions (GITHUB_ISSUE_REPO_OPTIONS)
+│   │   └── registry.go         # Active/SetActive — the resolved catalogue GET /metadata's githubIssueRepoOptions field serves
 │   ├── scim/
 │   │   └── client.go           # OAuth2 HTTP client for the SCIM operations service
 │   ├── updates/
 │   │   ├── client.go           # OAuth2 HTTP client for the updates service
 │   │   └── updates.go          # Updates service operations
-│   ├── notifications/
-│   │   ├── doc.go               # Package overview — one config/client pair per channel
-│   │   ├── email.go             # EmailConfig/EmailClient/SendEmail (not yet wired into main.go — no caller)
-│   │   └── googlechat.go        # GoogleChatConfig/GoogleChatClient/SendIncidentAlert (per-product webhook routing)
 │   ├── middleware/
 │   │   ├── auth.go             # JWT validation; injects UserInfo into context
 │   │   ├── correlation.go      # X-CSM-Correlation-ID propagation + slog enrichment
@@ -274,7 +281,6 @@ backend/
 │       ├── projects.go                   # HTTP handlers for project endpoints
 │       ├── incidents.go                  # HTTP handlers for incident endpoints (ServiceNow only)
 │       ├── problems.go                   # HTTP handlers for problem endpoints (ServiceNow only)
-│       ├── notifications.go              # HTTP handlers for notification channels (Google Chat alert endpoint)
 │       ├── updates.go                    # HTTP handlers for updates endpoints
 │       └── users.go                      # HTTP handlers for user endpoints
 ├── .env                        # Local config (git-ignored)
@@ -299,6 +305,10 @@ backend/
 - `POST /cases/{id}/call-requests/search` — Search call requests for a case (ServiceNow only)
 - `PATCH /cases/{id}/call-requests/{callRequestId}` — Update a call request (ServiceNow only)
 - `POST /cases/{id}/github-issues` — Create a GitHub issue from a case; `reason` selects target repo (`default`/`migration`/`rd_ticket`; ServiceNow only)
+
+### Metadata
+
+- `GET /metadata` — The portal's single config-driven metadata bag, fetched once by the webapp rather than per-field endpoints. Currently one field: `githubIssueRepoOptions` — the "Open Git issue" dialog's repository dropdown options (`value`, `displayLabel`, `owner`, `repo`, `githubLabel`), from `GITHUB_ISSUE_REPO_OPTIONS` (see [Configuration](#open-git-issue-dialog-repository-catalogue) above). Independent of the `reason`-based repo selection on `POST /cases/{id}/github-issues` above — this backs a different, user-facing repo picker. More fields will be added here over time
 
 ### Users
 
@@ -379,10 +389,6 @@ backend/
 ### Problems
 
 - `POST /problems/search` — Search problems; optional `filters` (`searchQuery`) (ServiceNow data source only)
-
-### Notifications
-
-- `POST /notifications/google-chat/alerts` — Send an incident alert card message to the Google Chat space configured for `product`; body requires `product`, `title`, `shortDescription`, `caseId`. Triggered manually today, pending integration into real case/incident creation.
 
 ## Run Locally
 

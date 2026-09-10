@@ -27,12 +27,19 @@ import {
 import { ChevronDown, ChevronUp, ListFilter, Search, X } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, type JSX } from "react";
 import type { BeProblemState } from "@api/backend/types";
+import { useTeams } from "@features/csm-dashboard/api/useTeams";
 import {
   countActiveProblemFilters,
   PROBLEM_STATES,
   problemStateLabel,
   type ProblemFilters,
 } from "@features/csm-operations/utils/problems";
+import {
+  readProblemFiltersFromUrl,
+  writeProblemFiltersToUrl,
+} from "@features/csm-operations/utils/problemsFiltersUrl";
+import { problemsSavedViews } from "@features/csm-operations/utils/problemsSavedViews";
+import SavedViewsMenu from "@features/csm-operations/components/SavedViewsMenu";
 import MultiSelectField from "@components/MultiSelectField";
 
 interface ProblemsFilterBarProps {
@@ -44,9 +51,9 @@ interface ProblemsFilterBarProps {
 }
 
 /**
- * Search + State filter bar for the Problem management tab. Kept simple by
- * design (search + a single state control) — see the caveat on
- * `BeProblemSearchFilters.states` before adding more filter fields.
+ * Search + State + SRE Team filter bar for the Problem management tab. Kept
+ * simple by design — see the caveat on `BeProblemSearchFilters.states`
+ * before adding more filter fields.
  */
 export default function ProblemsFilterBar({
   filters,
@@ -70,6 +77,21 @@ export default function ProblemsFilterBar({
   const handleStateChange = (next: BeProblemState[]): void => {
     onChange({ ...filters, states: next });
   };
+
+  // Problems are SRE-owned, so this control is scoped to the `sre-abt` team
+  // family — see `IncidentsFilterBar`'s equivalent note on why this isn't
+  // `cre-abt` (the cases list's own "SRE Team" control's family scoping).
+  const { data: teams } = useTeams(true, "sre-abt");
+  const sreTeamOptions = useMemo(
+    () =>
+      (teams ?? [])
+        .filter(
+          (t): t is typeof t & { sreGroupId: string } =>
+            Boolean(t.sreGroupId) && t.family === "sre-abt",
+        )
+        .map((t) => ({ value: t.sreGroupId, label: t.name })),
+    [teams],
+  );
 
   return (
     <Paper sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
@@ -105,6 +127,17 @@ export default function ProblemsFilterBar({
           />
         </Box>
 
+        <SavedViewsMenu
+          currentQs={writeProblemFiltersToUrl(filters).toString()}
+          canonicalizeQs={(qs) =>
+            writeProblemFiltersToUrl(readProblemFiltersFromUrl(new URLSearchParams(qs))).toString()
+          }
+          activeCount={activeCount}
+          hasSearch={filters.search.trim().length > 0}
+          onApply={(qs) => onChange(readProblemFiltersFromUrl(new URLSearchParams(qs)))}
+          store={problemsSavedViews}
+        />
+
         <Button
           variant="outlined"
           size="small"
@@ -139,6 +172,15 @@ export default function ProblemsFilterBar({
                 values={filters.states}
                 options={stateOptions}
                 onChange={handleStateChange}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+              <MultiSelectField
+                id="problem-filter-sre-team"
+                label="SRE Team"
+                values={filters.sreTeamIds}
+                options={sreTeamOptions}
+                onChange={(next) => onChange({ ...filters, sreTeamIds: next })}
               />
             </Grid>
           </Grid>

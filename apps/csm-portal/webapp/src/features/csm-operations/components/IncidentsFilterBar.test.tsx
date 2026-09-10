@@ -32,6 +32,21 @@ vi.mock("@features/csm-operations/api/useIncidentProductNameOptions", () => ({
   useIncidentProductNameOptions: () => useIncidentProductNameOptionsMock(),
 }));
 
+// The SRE Team control's options come from the shared team registry query —
+// stub it out too, same rationale as the product options above.
+const useTeamsMock = vi.fn(() => ({
+  data: [
+    { id: "apollo", name: "Apollo SRE Team", family: "sre-abt", sreGroupId: "team-apollo" },
+    // Wrong family — must not surface as an SRE Team option here (that's
+    // the cases list's CRE Team control's job, not this one's).
+    { id: "atlas", name: "Atlas CRE Team", family: "cre-abt", creGroupId: "team-atlas" },
+  ],
+  isLoading: false,
+}));
+vi.mock("@features/csm-dashboard/api/useTeams", () => ({
+  useTeams: () => useTeamsMock(),
+}));
+
 /**
  * Render the filter bar over `DEFAULT_INCIDENT_FILTERS` with the given prop
  * overrides, returning the `onChange`/`onReset`/`onFiltersToggle` spies. The bar
@@ -119,6 +134,21 @@ describe("IncidentsFilterBar", () => {
     renderFilterBar();
     expect(screen.getByRole("button", { name: /^filters$/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /clear filters/i })).not.toBeInTheDocument();
+  });
+
+  it("offers only sre-abt-family teams as SRE Team options, keyed by sreGroupId", () => {
+    const { onChange } = renderFilterBar();
+
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "SRE Team" }));
+    expect(screen.getByRole("option", { name: "Apollo SRE Team" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Atlas CRE Team" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("option", { name: "Apollo SRE Team" }));
+
+    expect(onChange).toHaveBeenCalledWith({
+      ...DEFAULT_INCIDENT_FILTERS,
+      sreTeamIds: ["team-apollo"],
+    });
   });
 
   it("calls onReset when Clear filters is clicked", () => {

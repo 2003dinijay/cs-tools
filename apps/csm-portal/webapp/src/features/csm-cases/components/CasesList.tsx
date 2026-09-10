@@ -28,6 +28,7 @@ import { Eye } from "@wso2/oxygen-ui-icons-react";
 import { useState, type JSX, type ReactNode } from "react";
 import { Link as RouterLink, useLocation } from "react-router";
 import { useNavTransition } from "@hooks/useNavTransition";
+import EscalationLevelChip from "@components/EscalationLevelChip";
 import RelativeTime from "@components/RelativeTime";
 import SeverityChip from "@components/SeverityChip";
 import StateChip from "@components/StateChip";
@@ -167,6 +168,18 @@ function renderOptionalCell(id: CaseOptionalColumnId, c: CsmCaseRow): JSX.Elemen
         <Typography variant="caption" color="text.secondary" noWrap>
           <RelativeTime iso={c.createdAt} />
         </Typography>
+      );
+    case "escalationLevel":
+      // Blank (not a "not escalated" chip, not even a "—" dash) for a
+      // non-escalated row — matches the work-state column's "only render for
+      // the rows it's relevant to" precedent, so a mostly-empty column
+      // doesn't clutter every non-escalated row.
+      return (
+        <Box sx={{ justifySelf: "start" }}>
+          {c.escalationLevel && c.escalationLevel !== "0" && (
+            <EscalationLevelChip level={c.escalationLevel} short />
+          )}
+        </Box>
       );
   }
 }
@@ -468,8 +481,27 @@ export default function CasesList({
                         </Typography>
                       )}
                     </Box>
-                    {/* Subject (the widest column) + project for context. */}
-                    <Box sx={{ minWidth: 0 }}>
+                    {/* Subject (the widest column) + project for context.
+                        `maxWidth` here (not just `noWrap`'s ellipsis, which
+                        only clips paint — it doesn't affect intrinsic sizing)
+                        is what keeps one long subject line from blowing up
+                        this column's width, and via the grid's own
+                        `minWidth: "max-content"` above, the whole grid's: a
+                        grid item's max-content *contribution* to track sizing
+                        is clamped by its own specified max-width, so without
+                        one here a single unusually long subject forced this
+                        default, always-visible column to scroll horizontally
+                        even with zero optional columns turned on. 360 (not a
+                        more generous first attempt of 480) matches
+                        ChangeRequestsTab.tsx/IncidentsTab.tsx's own Subject
+                        column cap — a cap that's merely "bounded" instead of
+                        "small enough" still adds up: 480 (Subject) + 260
+                        (one default-visible optional column) + the other
+                        default columns' own floors summed to more than a
+                        normal viewport width, forcing horizontal scroll on
+                        the *default* view even with everyday-length values,
+                        not just pathologically long ones. */}
+                    <Box sx={{ minWidth: 0, maxWidth: 360 }}>
                       <Typography variant="body2" noWrap title={c.subject}>
                         {c.subject}
                       </Typography>
@@ -483,8 +515,17 @@ export default function CasesList({
                         {c.projectName}
                       </Typography>
                     </Box>
+                    {/* Same fix as Subject above, for the same reason: every
+                        optional column's own track is `minmax(140px, 1fr)`
+                        (see caseListColumns.ts) — mechanically identical to
+                        Subject's `minmax(280px, 3fr)` — so without a real
+                        max-width here too, one long product/customer/person
+                        name in an optional column can blow up the grid's
+                        width exactly like an unbounded Subject used to
+                        (reported live for Security Reports' Product column,
+                        but the bug is shared by every CasesList caller). */}
                     {effectiveOptionalColumns.map((id) => (
-                      <Box key={id} sx={{ minWidth: 0 }}>
+                      <Box key={id} sx={{ minWidth: 0, maxWidth: 260 }}>
                         {renderOptionalCell(id, c)}
                       </Box>
                     ))}

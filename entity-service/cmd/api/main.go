@@ -42,16 +42,14 @@ func main() {
 		log.Fatalf("invalid configuration: %v", err)
 	}
 
-	pool, err := db.NewPoolIfNeeded(cfg)
+	pool, err := db.NewPoolFromConfig(cfg)
 	if err != nil {
 		log.Fatalf("connect to database: %v", err)
 	}
-	if pool != nil {
-		defer pool.Close()
-	}
+	defer pool.Close()
 
 	addr := ":" + cfg.ServerPort
-	srv := server.New(addr, pool, cfg)
+	srv, eventPublisher := server.New(addr, pool, cfg)
 
 	go func() {
 		log.Printf("Customer Entity REST Service started in PORT : %s", cfg.ServerPort)
@@ -69,6 +67,9 @@ func main() {
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("graceful shutdown failed: %v", err)
+	}
+	if eventPublisher != nil {
+		eventPublisher.Close()
 	}
 	log.Println("server stopped")
 }

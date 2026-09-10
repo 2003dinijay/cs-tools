@@ -27,7 +27,10 @@ import {
 } from "@wso2/oxygen-ui";
 import {
   Activity,
+  ArrowDownRight,
   ArrowUpRight,
+  Bell,
+  BellOff,
   Building,
   CheckCircle,
   ClipboardList,
@@ -63,17 +66,22 @@ import DirectoryEntityChip from "@features/csm-admin/components/DirectoryEntityC
 import { useSearchUsersByName } from "@api/useSearchUsersByName";
 import { userLabel } from "@features/csm-operations/utils/incidentFormOptions";
 import AttachmentPreviewDialog from "@features/csm-cases/components/AttachmentPreviewDialog";
-import { getAttachmentPreviewKind } from "@features/csm-cases/utils/attachmentPreview";
+import {
+  getAttachmentPreviewKind,
+  type AttachmentPreviewSource,
+} from "@features/csm-cases/utils/attachmentPreview";
 import type {
   CaseAttachment,
   CaseAuditEntry,
   CaseCustomerContext,
+  CaseEscalationRecord,
   CaseProductContext,
   CaseRequestVariable,
   CaseTag,
   CaseTimeLogEntry,
 } from "@features/csm-cases/types/csmCases";
 import { tierColor, tierLabel } from "@features/csm-cases/utils/caseTier";
+import { escalationLevelLabel } from "@features/csm-cases/utils/escalationLevel";
 import {
   deploymentTypeLabel,
   formatDeploymentDate,
@@ -82,6 +90,7 @@ import type { ProjectDetails } from "@features/csm-projects/types/csmProjects";
 import type { BeDeployment, BeUser } from "@api/backend/types";
 import type { UserReference } from "@/types/userReference";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
+import EscalationLevelChip from "@components/EscalationLevelChip";
 import RelativeTime from "@components/RelativeTime";
 import UserRefLink from "@components/UserRefLink";
 import RefreshButton from "@components/RefreshButton";
@@ -307,6 +316,19 @@ export function CustomerContextWidget({
           </MetaRow>
           {/* No subscription-status field exists on the project record today
               (only start/end dates) — omitted rather than inferring one. */}
+          {project.onboardingStatus &&
+            project.onboardingStatus !== "Not-Applicable" &&
+            project.onboardingOwner && (
+              <MetaRow label="Onboarding Owner">
+                <Typography variant="body2">
+                  <UserRefLink
+                    name={project.onboardingOwner.name}
+                    email={project.onboardingOwner.email || undefined}
+                    userId={project.onboardingOwner.id}
+                  />
+                </Typography>
+              </MetaRow>
+            )}
         </>
       )}
     </WidgetCard>
@@ -424,7 +446,160 @@ export function TagsWidget({
 }
 
 // ---------------------------------------------------------------------------
-// 3b. Watchers
+// 3b. Escalation
+// ---------------------------------------------------------------------------
+
+/**
+ * Current escalation level (as a badge) plus a read-only history of past
+ * escalate/de-escalate steps. Each of `onEscalate` / `onDeescalate` renders
+ * its own clearly-labeled button ("Escalate" / "De-escalate") independently —
+ * both can show at once (e.g. EL2, which can go either way), or just one
+ * (EL0 has only "Escalate"; EL5 has only "De-escalate"). Two distinctly
+ * labeled buttons are unambiguous about which action a click performs, unlike
+ * a single button whose label/target silently changes with the case's
+ * current level would be.
+ *
+ * Escalating has no permission gate; de-escalating does -- only someone
+ * notified on the case's current escalation level may de-escalate it, which
+ * is why `onDeescalate` is the caller's decision to pass or omit (see
+ * `CsmCaseDetailPage.tsx`'s notified-user check), not something this widget
+ * decides itself. `onEscalate`/`onDeescalate` both open the caller's own
+ * confirm dialog (which collects the reason) rather than firing the mutation
+ * directly, so this widget never has to know the mutation's pending/error
+ * state itself.
+ */
+export function EscalationWidget({
+  currentLevel,
+  history,
+  isHistoryLoading,
+  isHistoryError,
+  onEscalate,
+  onDeescalate,
+  actionDisabledReason,
+}: {
+  /** Raw escalation-level id ("0"-"5"), or null when the data source doesn't
+   * track it (e.g. non-ServiceNow-backed case) -- rendered as "Not tracked",
+   * never coerced to "0"/EL0, since that would misrepresent "unknown" as a
+   * known, non-escalated case. Action buttons are hidden when null: there's
+   * nothing to escalate/de-escalate without a tracked level. */
+  currentLevel: string | null;
+  history: CaseEscalationRecord[];
+  isHistoryLoading?: boolean;
+  isHistoryError?: boolean;
+  /** Opens the escalate confirm dialog. Omit to hide the button entirely
+   * (e.g. already at EL5). */
+  onEscalate?: () => void;
+  /** Opens the de-escalate confirm dialog. Omit to hide the button entirely
+   * (e.g. already at EL0 / unset). */
+  onDeescalate?: () => void;
+  /** Disables both action buttons with an explanatory tooltip (e.g. "This
+   * case is closed — it's read-only.") without hiding them. */
+  actionDisabledReason?: string;
+}): JSX.Element {
+  return (
+    <WidgetCard
+      title="Escalation"
+      icon={<ArrowUpRight size={16} />}
+      action={
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          {currentLevel === null ? (
+            <Typography variant="body2" color="text.secondary">
+              Not tracked
+            </Typography>
+          ) : (
+            <EscalationLevelChip level={currentLevel} />
+          )}
+          {currentLevel !== null && (onEscalate || onDeescalate) && (
+            <Tooltip title={actionDisabledReason ?? ""}>
+              <Box component="span" sx={{ display: "flex", gap: 0.5 }}>
+                {onDeescalate && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={onDeescalate}
+                    disabled={!!actionDisabledReason}
+                  >
+                    De-escalate
+                  </Button>
+                )}
+                {onEscalate && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={onEscalate}
+                    disabled={!!actionDisabledReason}
+                  >
+                    Escalate
+                  </Button>
+                )}
+              </Box>
+            </Tooltip>
+          )}
+        </Box>
+      }
+    >
+      {isHistoryLoading ? (
+        <Typography variant="body2" color="text.secondary">
+          Loading escalation history…
+        </Typography>
+      ) : isHistoryError ? (
+        <Typography variant="body2" color="error">
+          Could not load the escalation history.
+        </Typography>
+      ) : history.length === 0 ? (
+        <Typography variant="body2" color="text.secondary">
+          No escalations on this case.
+        </Typography>
+      ) : (
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          {history.map((h) => {
+            const isEscalate =
+              Number(h.currentLevel) > Number(h.previousLevel);
+            return (
+              <Box
+                key={h.id}
+                sx={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 0.25,
+                  p: 0.75,
+                  borderRadius: 1,
+                  border: 1,
+                  borderColor: "divider",
+                }}
+              >
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+                  {isEscalate ? (
+                    <ArrowUpRight size={14} />
+                  ) : (
+                    <ArrowDownRight size={14} />
+                  )}
+                  <Typography variant="body2">
+                    {`${escalationLevelLabel(h.previousLevel, true)} → ${escalationLevelLabel(h.currentLevel, true)}`}
+                  </Typography>
+                </Box>
+                <Typography variant="caption" color="text.secondary">
+                  {h.createdBy} · <RelativeTime iso={h.createdOn} />
+                </Typography>
+                {h.reason && (
+                  <Typography
+                    variant="body2"
+                    sx={{ mt: 0.25, overflowWrap: "anywhere" }}
+                  >
+                    {h.reason}
+                  </Typography>
+                )}
+              </Box>
+            );
+          })}
+        </Box>
+      )}
+    </WidgetCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 3c. Watchers
 // ---------------------------------------------------------------------------
 
 /**
@@ -492,6 +667,8 @@ export function WatchersWidget({
   onRefresh,
   isRefreshing,
   refreshedAt,
+  currentUserId,
+  autoWatchingReason,
 }: {
   /** Which record's watch list this is. Drives the copy and the rules. */
   entityKind: WatchedEntityKind;
@@ -509,16 +686,37 @@ export function WatchersWidget({
   onRefresh?: () => void;
   isRefreshing?: boolean;
   refreshedAt?: number;
+  /**
+   * Platform UUID of the signed-in engineer. Drives the self-subscribe
+   * Follow/Unfollow control: without it there is no id to add on Follow, so
+   * the button is omitted entirely rather than rendered disabled.
+   */
+  currentUserId?: string;
+  /**
+   * Non-empty when the signed-in engineer is on this watch list only because
+   * of an automatic, role-based add (e.g. they're the record's assigned
+   * engineer) rather than having chosen to self-subscribe. The widget has no
+   * visibility into role assignment, so the caller supplies this; when set,
+   * Unfollow is blocked with this as the reason, same treatment as
+   * {@link removalBlockedReason} above.
+   */
+  autoWatchingReason?: string;
 }): JSX.Element {
   const rules = WATCH_LIST_RULES[entityKind];
   const reasonId = useId();
+  const followReasonId = useId();
   const watcherIds = useMemo(() => watchers.map((w) => w.id), [watchers]);
+  // Keyed on the UUID, not `isMe`: both page callers derive `isMe` from an
+  // email match, which is unreliable when email data is missing, whereas
+  // `currentUserId` is the same UUID the watch list itself is keyed by.
+  const isFollowing = !!currentUserId && watcherIds.includes(currentUserId);
 
   // Below the floor the record type allows, removal isn't expressible at all
   // (see WATCH_LIST_RULES), so the control is blocked with the reason rather
   // than firing a request that is known to be rejected.
   const belowFloorAfterRemoval = watchers.length <= rules.minWatchers;
   const removalBlockedReason = belowFloorAfterRemoval ? rules.minWatchersReason : "";
+  const unfollowBlockedReason = autoWatchingReason || removalBlockedReason;
 
   const addWatcher = useCallback(
     (userId: string) => {
@@ -542,6 +740,21 @@ export function WatchersWidget({
     [onReplace, isSaving, belowFloorAfterRemoval, watcherIds],
   );
 
+  // Self-subscribe: the same add/remove path as the per-watcher controls
+  // below, just always targeting the signed-in engineer's own id rather than
+  // a picked-from-search or a listed watcher.
+  const onFollowClick = useCallback(() => {
+    if (currentUserId) addWatcher(currentUserId);
+  }, [addWatcher, currentUserId]);
+  const onUnfollowClick = useCallback(() => {
+    if (!currentUserId || unfollowBlockedReason) return;
+    if (!onReplace || isSaving) return;
+    onReplace(
+      watcherIds.filter((id) => id !== currentUserId),
+      "remove",
+    );
+  }, [currentUserId, unfollowBlockedReason, onReplace, isSaving, watcherIds]);
+
   return (
     <WidgetCard
       title="Watchers"
@@ -557,6 +770,56 @@ export function WatchersWidget({
         )
       }
     >
+      {onReplace && currentUserId && (
+        <Box sx={{ mb: 1.5 }}>
+          {isFollowing ? (
+            <Tooltip title={unfollowBlockedReason}>
+              {/* aria-disabled, not disabled, so the reason stays reachable
+                  via aria-describedby — same reasoning as the per-watcher
+                  remove control below. */}
+              <span>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<BellOff size={14} />}
+                  aria-disabled={!!unfollowBlockedReason || isSaving || undefined}
+                  aria-describedby={unfollowBlockedReason ? followReasonId : undefined}
+                  onClick={onUnfollowClick}
+                  sx={{ opacity: unfollowBlockedReason ? 0.6 : 1 }}
+                >
+                  {`Unfollow ${rules.noun} updates`}
+                </Button>
+              </span>
+            </Tooltip>
+          ) : (
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<Bell size={14} />}
+              disabled={isSaving}
+              onClick={onFollowClick}
+            >
+              {`Follow ${rules.noun} updates`}
+            </Button>
+          )}
+          {unfollowBlockedReason && (
+            <Box
+              component="span"
+              id={followReasonId}
+              sx={{
+                position: "absolute",
+                width: 1,
+                height: 1,
+                overflow: "hidden",
+                clip: "rect(0 0 0 0)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {unfollowBlockedReason}
+            </Box>
+          )}
+        </Box>
+      )}
       {watchers.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
           {`No one is watching this ${rules.noun}.`}
@@ -755,6 +1018,7 @@ export function AttachmentsWidget({
   error = false,
   onRetry,
   uploading = false,
+  uploadProgress = null,
   uploadError,
   onUpload,
   onDownloadAll,
@@ -774,6 +1038,13 @@ export function AttachmentsWidget({
   onRetry?: () => void;
   /** An upload is in flight. */
   uploading?: boolean;
+  /**
+   * 0-100 while a direct-to-SFTPGo upload is in flight (see
+   * `usePostCsmCaseAttachment`'s `uploadProgress`), `null`/omitted otherwise
+   * — including for the default upload path, which has no granular
+   * progress and falls back to an indeterminate bar.
+   */
+  uploadProgress?: number | null;
   /** Message shown when the last upload failed (size, network, 413, …). */
   uploadError?: string | null;
   onUpload?: (file: File) => void;
@@ -792,8 +1063,10 @@ export function AttachmentsWidget({
    * only some of the fields.
    */
   preview?: {
-    /** Fetch an attachment's raw bytes for inline preview. */
-    onGetPreviewContent: (attachment: CaseAttachment) => Promise<Blob>;
+    /** Resolve a previewable URL for an attachment's inline preview. */
+    onGetPreviewContent: (
+      attachment: CaseAttachment,
+    ) => Promise<AttachmentPreviewSource>;
     /**
      * Attachment currently shown in the preview dialog, lifted to the parent
      * page so it can be reset on case-to-case navigation (this widget stays
@@ -844,7 +1117,11 @@ export function AttachmentsWidget({
                 onClick={pickFile}
                 disabled={uploading}
               >
-                {uploading ? "Uploading…" : "Upload"}
+                {uploading
+                  ? uploadProgress != null
+                    ? `Uploading… ${uploadProgress}%`
+                    : "Uploading…"
+                  : "Upload"}
               </Button>
             )}
             <Button
@@ -868,7 +1145,13 @@ export function AttachmentsWidget({
             aria-hidden
           />
         )}
-        {uploading && <LinearProgress sx={{ mb: 1 }} />}
+        {uploading && (
+          <LinearProgress
+            sx={{ mb: 1 }}
+            variant={uploadProgress != null ? "determinate" : "indeterminate"}
+            value={uploadProgress ?? undefined}
+          />
+        )}
         {uploadError && (
           <Typography variant="body2" color="error" sx={{ mb: 1 }}>
             {uploadError}

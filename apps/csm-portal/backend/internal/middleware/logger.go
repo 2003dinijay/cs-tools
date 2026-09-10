@@ -34,6 +34,19 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// Flush implements http.Flusher by delegating to the underlying
+// ResponseWriter if it supports it. Embedding http.ResponseWriter as an
+// interface field only promotes that interface's own methods, not the
+// concrete writer's full method set, so without this a handler behind
+// Logger that type-asserts w.(http.Flusher) — e.g. a long-lived SSE
+// connection — would fail the assertion and never be able to flush
+// partial writes to the client.
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // Logger is an HTTP middleware that logs each completed request via slog. The
 // correlation ID is included automatically in every record when ConfigureLogger
 // has been called (it is attached by the ctxHandler from the context).

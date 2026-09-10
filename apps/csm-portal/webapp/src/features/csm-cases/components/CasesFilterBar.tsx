@@ -33,6 +33,7 @@ import {
   MenuItem,
   Paper,
   TextField,
+  Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
 import {
@@ -46,14 +47,14 @@ import {
   Trash2,
   X,
 } from "@wso2/oxygen-ui-icons-react";
-import { useMemo, useState, type JSX } from "react";
+import { useCallback, useMemo, useState, type JSX } from "react";
 import type {
   CaseState,
   Severity,
 } from "@features/csm-dashboard/types/abtDashboard";
-import { STATE_LABEL } from "@features/csm-dashboard/utils/abtDashboard";
 import {
   countActiveFilters,
+  DEFAULT_CASES_FILTERS,
   readCasesFiltersFromUrl,
   writeCasesFiltersToUrl,
 } from "@features/csm-cases/utils/casesFiltersUrl";
@@ -74,15 +75,32 @@ import {
   CASE_TYPE_LABEL,
 } from "@features/csm-cases/utils/caseType";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
-import {
-  ALL_ONBOARDING_STATUSES,
-  ONBOARDING_STATUS_LABEL,
-} from "@features/csm-cases/utils/onboardingStatus";
 import MultiSelectField from "@components/MultiSelectField";
-import TriStateMultiSelectField from "@components/TriStateMultiSelectField";
 import AsyncAssigneeMultiSelect from "@features/csm-cases/components/AsyncAssigneeMultiSelect";
 import ProductNameMultiSelect from "@features/csm-cases/components/ProductNameMultiSelect";
-import TagsMultiSelect from "@features/csm-cases/components/TagsMultiSelect";
+import AdvancedFiltersBuilder from "@features/csm-cases/components/AdvancedFiltersBuilder";
+import AnyOfGroupsBuilder from "@features/csm-cases/components/AnyOfGroupsBuilder";
+import {
+  getAdvancedFilterFieldMeta,
+  getAdvancedFilterOpMeta,
+  isCompleteAdvancedFilterRow,
+  type AdvancedFilterRow,
+} from "@features/csm-cases/utils/advancedFilters";
+import { isCompleteAnyOfBranch, type AnyOfBranch } from "@features/csm-cases/utils/anyOfFilters";
+import {
+  ENGAGEMENT_TYPE_OPTIONS,
+  ONBOARDING_STATUS_OPTIONS,
+  SEVERITY_OPTIONS,
+  STATE_OPTIONS,
+} from "@features/csm-cases/utils/caseFilterOptions";
+import {
+  addBlankUnifiedRow,
+  filtersToAdvancedRows,
+  isSimpleRepresentable,
+  removeUnifiedRow,
+  updateUnifiedRow,
+  type UnifiedFilterRow,
+} from "@features/csm-cases/utils/filterFieldAdapters";
 
 
 /**
@@ -99,9 +117,13 @@ export interface CasesFilters {
   states: CaseState[];
   /** States the case must NOT be in (`state` op:notIn). Not the inverse of
    * `states` — a distinct field so `in` and `notIn` can never be conflated
-   * on the round trip, same reasoning as `tags`/`excludeTags`. Has its own
-   * bar control (the State field's `TriStateMultiSelectField`, digiops-cs#2907
-   * follow-up) as well as being settable via a dashboard click-through. */
+   * on the round trip, same reasoning as `tags`/`excludeTags`. No dedicated
+   * Simple-mode bar control of its own (the State field's tri-state
+   * include/exclude toggle was removed — Simple mode's "State" control is
+   * now a plain include-only multi-select, matching every other Simple
+   * field); still settable via the Advanced-mode `state`/`notIn` row or a
+   * dashboard click-through, and surfaced as a removable chip when active
+   * (see `buildActiveFilterChips`). */
   excludeStates: CaseState[];
   /** Case-type filter (BE `typeKeys`). Empty = all types. */
   caseTypes: BeCaseType[];
@@ -161,6 +183,33 @@ export interface CasesFilters {
   /** `closedOn` range bounds — same shape as `createdOnGte`/`createdOnLte`. */
   closedOnGte: string | null;
   closedOnLte: string | null;
+  /**
+   * Ad-hoc field/op/value rows from the "Advanced filters" builder — the
+   * escape hatch for `/cases/search` fields the dedicated bar controls above
+   * don't cover (`projectType`, `sreTeam`, `deploymentId`, `number`,
+   * `internalId`, `resolutionNotes`, `parentId`,
+   * `taskSLABusinessElapsedPercent`, `escalationLevel`, `escalation`,
+   * `createdBy`, and the `createdOn`/`updatedOn`/`closedOn` date ranges) —
+   * see `advancedFilters.ts`'s field catalogue. Fields that already have a
+   * dedicated bar control of their own (`tag`, `projectOnboardingStatus`,
+   * `creTeam`) are deliberately NOT offered here — see that catalogue's own
+   * doc comment. Each row maps to one extra `BeCaseFieldFilter` entry
+   * (`caseSearchPayload.ts`); an incomplete row (a field/op picked but no
+   * value where one is required) is never emitted — see
+   * `isCompleteAdvancedFilterRow`.
+   */
+  advancedFilters: AdvancedFilterRow[];
+  /**
+   * Cross-field OR groups from the "OR groups" builder — each branch's own
+   * rows are ANDed, the branches themselves are OR'd, and the whole `anyOf`
+   * result is ANDed with everything else (`filters.anyOf`, see
+   * `anyOfFilters.ts`). Only a restricted field subset may appear inside a
+   * branch — a real, backend-enforced allowlist distinct from (and narrower
+   * than) `advancedFilters`' own field catalogue. A branch with no complete
+   * conditions is never emitted into the request payload — see
+   * `isCompleteAnyOfBranch`.
+   */
+  anyOfBranches: AnyOfBranch[];
 }
 
 /**
@@ -203,23 +252,23 @@ interface CasesFilterBarProps {
   hideProjectFilter?: boolean;
   /** Show the engagement-type multi-select (only relevant when type is locked to engagement). */
   showEngagementTypeFilter?: boolean;
+  /**
+   * Hide the "Onboarding status" Simple-mode control. `onboardingStatuses` is
+   * a per-project attribute, not a per-case one — on a view already scoped to
+   * a single project (e.g. that project's own Work items tab), every case
+   * shown shares the same value, so the control is a no-op that only adds
+   * clutter. The field itself stays in the Advanced-mode catalogue; this only
+   * hides the dedicated Simple control.
+   */
+  hideOnboardingStatusFilter?: boolean;
+  /**
+   * Hide the "CRE Team" Simple-mode control. Same reasoning as
+   * {@link hideOnboardingStatusFilter}: the CS team a case's project is
+   * scoped to is a per-project attribute, a no-op filter on a
+   * single-project-scoped view. Advanced mode still offers the field.
+   */
+  hideCreTeamFilter?: boolean;
 }
-
-const ALL_ENGAGEMENT_TYPES: BeEngagementType[] = [
-  "migration",
-  "consultancy",
-  "new_feature_improvement",
-  "follow_up",
-  "onboarding",
-];
-
-const ENGAGEMENT_TYPE_LABEL: Record<BeEngagementType, string> = {
-  migration: "Migration",
-  consultancy: "Consultancy",
-  new_feature_improvement: "New feature / improvement",
-  follow_up: "Follow-up",
-  onboarding: "Onboarding",
-};
 
 // Work state has no bar control of its own (see `buildActiveFilterChips`'s
 // doc comment) -- this only labels its chip now.
@@ -227,24 +276,6 @@ const WORK_STATE_LABEL: Record<BeCaseWorkState, string> = {
   ongoing: "Ongoing",
   paused: "Paused",
 };
-
-const ALL_SEVERITIES: Severity[] = ["S0", "S1", "S2", "S3", "S4"];
-
-// The fixed ServiceNow choice list for `projectOnboardingStatus`, shared with
-// `translateCaseDashboardFilters` (see `onboardingStatus.ts`).
-const ONBOARDING_STATUS_OPTIONS: { value: string; label: string }[] =
-  ALL_ONBOARDING_STATUSES.map((value) => ({
-    value,
-    label: ONBOARDING_STATUS_LABEL[value],
-  }));
-const PRIMARY_STATES: CaseState[] = [
-  "open",
-  "work_in_progress",
-  "awaiting_info",
-  "solution_proposed",
-  "waiting_on_wso2",
-  "closed",
-];
 
 /** Formats a `createdOn`/`updatedOn`/`closedOn` bound for a chip label — a
  * locale date when parseable, the raw string otherwise (never throws on a
@@ -278,16 +309,35 @@ interface ActiveFilterChip {
  * their bar controls were removed as clutter (they are advanced, rarely
  * hand-picked, and a better home for advanced filters is still to be
  * designed), so a chip is now the ONLY way a user can see or clear them
- * after arriving from a dashboard click-through. `csTeams`/
- * `onboardingStatuses`/`tags`/`excludeTags` each have their own bar control
- * (see the filter grid below) and are deliberately NOT chipped here too —
- * every other bar-controlled field (`states`, `severities`, ...) shows its
- * selection inside its own control, not as a second, redundant chip.
- * `excludeTags` moved into this group once `TagsMultiSelect` became a
- * tri-state include/exclude control (digiops-cs#2907): its own excluded-tag
- * chips already render inside that control, so a second "Excluding tag: X"
- * chip here would just duplicate the same information right next to it.
+ * after arriving from a dashboard click-through. `excludeStates` joins this
+ * group too: the State field's tri-state include/exclude toggle was removed
+ * (Simple mode's "State" control is now a plain include-only multi-select),
+ * so a chip is the only way to see/clear an exclusion that arrived via a
+ * saved view, a shared URL, or a dashboard click-through. `csTeams`/
+ * `onboardingStatuses` has its own bar control (see the filter grid below)
+ * and is deliberately NOT chipped here — every other bar-controlled field
+ * (`states`, `severities`, ...) shows its selection inside its own control,
+ * not as a second, redundant chip. `tags`/`excludeTags` moved out of Simple
+ * mode entirely (Tags is Advanced-only now — see the mode toggle below): any
+ * value in either one forces `isSimpleRepresentable` to false, so the Tag
+ * row itself is what a user sees (in Advanced mode), never a chip alongside
+ * an invisible control.
  */
+// All of the reasoning above is Simple-mode only. In Advanced mode every
+// field this function chips (`sreTeams`, `workStates`, the SLA/escalation/
+// project-type/date-range fields, plus `advancedFilters` and
+// `anyOfBranches`) already has its own always-visible, always-editable,
+// always-clearable row: `filtersToAdvancedRows` (`filterFieldAdapters.ts`)
+// turns every typed field, and every `advancedFilters` entry, into a row
+// `AdvancedFiltersBuilder` renders; `anyOfBranches` gets its own bordered
+// box per branch from `AnyOfGroupsBuilder`, unconditionally, whenever it's
+// mounted. Advanced mode only ever shows this function's output *alongside*
+// those two builders (see the call site below), so a chip there would be a
+// redundant, un-synced second rendering of a value the row/branch above it
+// already owns -- hence the caller only invokes this function in Simple
+// mode now. Simple mode has no row list at all, so a chip stays the only
+// way to see/clear an Advanced-only value that arrived via URL/dashboard
+// click-through while looking at the Simple grid -- that part is unchanged.
 function buildActiveFilterChips(
   filters: CasesFilters,
   /** groupId -> team display name, so a team chip never shows a raw UUID.
@@ -309,13 +359,26 @@ function buildActiveFilterChips(
     });
   });
 
-  // `tags`/`excludeTags` and `states`/`excludeStates` each have their own
-  // tri-state bar control now (`TagsMultiSelect`, `TriStateMultiSelectField`
-  // on the State field -- see the filter grid below) -- not chipped here,
-  // same as `csTeams`/`onboardingStatuses`. A dashboard click-through (or a
-  // saved view) that seeds `excludeTags`/`excludeStates` still round-trips
-  // losslessly through the URL and shows up as that control's own "- "
-  // chip, same as any other exclusion a user picks by hand.
+  // `states` still has its own bar control (a plain include-only
+  // multi-select on the State field -- see the filter grid below), so it is
+  // not chipped, same as `csTeams`/`onboardingStatuses`. `excludeStates` no
+  // longer has a bar control of its own (the tri-state include/exclude
+  // toggle that used to live on the State field was removed), so it gets a
+  // chip here -- the only way to see/clear it once it arrives via a saved
+  // view, a shared URL, or a dashboard click-through. `tags`/`excludeTags`
+  // are Advanced-mode-only now (see the mode toggle below) -- also not
+  // chipped, since any non-empty value forces Advanced mode, where the Tag
+  // row itself is the visible/removable UI.
+  filters.excludeStates.forEach((state) => {
+    chips.push({
+      key: `excludeState-${state}`,
+      label: `Excluding state: ${STATE_OPTIONS.find((o) => o.value === state)?.label ?? state}`,
+      onRemove: (f) => ({
+        ...f,
+        excludeStates: f.excludeStates.filter((s) => s !== state),
+      }),
+    });
+  });
 
   filters.workStates.forEach((workState) => {
     chips.push({
@@ -404,6 +467,47 @@ function buildActiveFilterChips(
     }
   }
 
+  // Advanced-filter rows (see `AdvancedFiltersBuilder`) each get their own
+  // chip too — same reasoning as the SLA/escalation/date-range group above:
+  // they're an ad-hoc escape hatch with no bar control of their own, so a
+  // chip is the only way to see or clear one once the filter grid is
+  // collapsed (e.g. after a saved view or a shared URL sets one). Only
+  // *complete* rows are chipped; an in-progress row (no value yet) is only
+  // ever visible inside the open builder itself.
+  filters.advancedFilters.forEach((row, index) => {
+    if (!isCompleteAdvancedFilterRow(row)) return;
+    const fieldMeta = getAdvancedFilterFieldMeta(row.field);
+    const opMeta = getAdvancedFilterOpMeta(row.field, row.op);
+    const valueText = row.values.length > 0 ? ` ${row.values.join(", ")}` : "";
+    chips.push({
+      key: `advanced-${row.field}-${row.op}-${index}`,
+      label: `${fieldMeta?.label ?? row.field} ${opMeta?.label ?? row.op}${valueText}`,
+      onRemove: (f) => ({
+        ...f,
+        advancedFilters: f.advancedFilters.filter((_, i) => i !== index),
+      }),
+    });
+  });
+
+  // Each OR-branch is a distinct predicate too — chipped by its position
+  // (not its contents, which can be several conditions long) so it stays
+  // visible/removable even once the "OR groups" builder is collapsed. Only
+  // a branch with at least one complete condition is chipped; a branch
+  // that's still being edited (no complete rows yet) is only ever visible
+  // inside the open builder itself, same as an in-progress advanced-filter
+  // row.
+  filters.anyOfBranches.forEach((branch, index) => {
+    if (!isCompleteAnyOfBranch(branch)) return;
+    chips.push({
+      key: `any-of-branch-${index}`,
+      label: `OR group ${index + 1}`,
+      onRemove: (f) => ({
+        ...f,
+        anyOfBranches: f.anyOfBranches.filter((_, i) => i !== index),
+      }),
+    });
+  });
+
   return chips;
 }
 
@@ -417,12 +521,87 @@ export default function CasesFilterBar({
   availableProjects,
   showSeverityFilter = true,
   hideTypeFilter = false,
+  hideOnboardingStatusFilter = false,
+  hideCreTeamFilter = false,
   typeFilterLabel = "Case type",
   hideProjectFilter = false,
   showEngagementTypeFilter = false,
 }: CasesFilterBarProps): JSX.Element {
   const activeCount = countActiveFilters(filters);
   const hasActive = activeCount > 0;
+
+  // Simple/Advanced mode. Lazily initialized from the *filters this
+  // component mounted with* — mount-time-only, deliberately never
+  // recomputed on every `filters` change (that would silently flip the user
+  // out of the mode they're actively editing in, e.g. the instant they add
+  // an Advanced-only field while in Advanced mode, or clear the last
+  // Advanced-only field while reviewing a URL in Simple-representable
+  // territory). `CasesFilterBar` remounts on real navigation (a fresh
+  // `/cases?...` load, a saved view's own page), which is the only time this
+  // should re-derive.
+  const [mode, setMode] = useState<"simple" | "advanced">(() =>
+    isSimpleRepresentable(filters) ? "simple" : "advanced",
+  );
+  const canShowSimple = isSimpleRepresentable(filters);
+  // A filter Simple mode cannot render must never sit silently active behind
+  // the Simple grid with nothing on screen showing it — e.g. applying a
+  // saved view that carries `tags` while already in Simple mode: `onChange`
+  // updates `filters` without remounting this component, so the mount-time
+  // `mode` state above never re-derives on its own. This only ever pushes
+  // Simple -> Advanced (never the reverse), so it doesn't touch the
+  // mount-time-only guarantee `mode`'s own comment describes for the
+  // Advanced-authoring case.
+  const effectiveMode = mode === "simple" && !canShowSimple ? "advanced" : mode;
+
+  // Holds the Advanced-only filter state a "Quick filters" click had to move
+  // out of the way (see handleSwitchToSimple below) so it can be restored if
+  // the user comes right back to Advanced without having changed anything in
+  // Quick filters meanwhile — protects against a stray/accidental click
+  // losing real filter criteria, without reintroducing the "Simple mode
+  // silently still filtering by something it can't display" bug the
+  // disabled-button guard above was originally written to prevent.
+  const [stashedAdvancedFilters, setStashedAdvancedFilters] =
+    useState<CasesFilters | null>(null);
+
+  // Every Quick-filters-grid field routes its edits through this instead of
+  // `onChange` directly, so making a real edit while a stash is pending
+  // drops it — restoring stale Advanced criteria over a filter the user just
+  // deliberately changed would be its own kind of surprising data loss.
+  const handleSimpleFieldChange = useCallback(
+    (next: CasesFilters) => {
+      if (stashedAdvancedFilters) setStashedAdvancedFilters(null);
+      onChange(next);
+    },
+    [onChange, stashedAdvancedFilters],
+  );
+
+  const handleSwitchToSimple = (): void => {
+    if (!canShowSimple) {
+      // Preserve search text (not part of what Simple/Advanced toggles)
+      // while resetting every actual filter field to empty — Quick filters
+      // must never silently keep an Advanced-only criterion applied behind
+      // a grid that can't show it.
+      setStashedAdvancedFilters(filters);
+      onChange({ ...DEFAULT_CASES_FILTERS, search: filters.search });
+    }
+    setMode("simple");
+  };
+
+  const handleSwitchToAdvanced = (): void => {
+    if (stashedAdvancedFilters) {
+      // Preserve whatever search text is current, not the stash's own
+      // (possibly now-stale) copy — search stays live across both modes, so
+      // it can have changed while the stash sat unused.
+      onChange({ ...stashedAdvancedFilters, search: filters.search });
+      setStashedAdvancedFilters(null);
+    }
+    setMode("advanced");
+  };
+
+  const unifiedRows: UnifiedFilterRow[] = useMemo(
+    () => filtersToAdvancedRows(filters),
+    [filters],
+  );
 
   // Team is a fixed, small enough list to fetch in full (same endpoint/hook
   // the team-based dashboards use -- see AbtDashboardHeader) rather than a
@@ -441,17 +620,54 @@ export default function CasesFilterBar({
   // `creGroupId` (not the registry `id`) is what a `creTeam`/`csTeams` filter
   // entry actually matches on; only teams with one configured are
   // selectable here (an id-less team has nothing such a filter could hold).
+  // Also scoped to the `cre-abt` family, matching `abtFamilyForDashboardType`
+  // -- a team of a different family (e.g. plain `cre`) may still carry a
+  // `creGroupId` but isn't one of the CRE Team filter's intended options.
   const teamOptions = useMemo(
     () =>
       (teams ?? [])
-        .filter((t): t is typeof t & { creGroupId: string } => Boolean(t.creGroupId))
+        .filter(
+          (t): t is typeof t & { creGroupId: string } =>
+            Boolean(t.creGroupId) && t.family === "cre-abt",
+        )
         .map((t) => ({ value: t.creGroupId, label: t.name })),
     [teams],
   );
+  // Same shape, keyed off `sreGroupId` instead — feeds the "Advanced
+  // filters" builder's `sreTeam` row (a real multi-select now, not
+  // hand-typed team ids/UUIDs). Scoped to `cre-abt` family per explicit
+  // product instruction, not `sre-abt` -- see the "SRE Team" filter's
+  // family-scoping note in `advancedFilters.ts` for the caveat.
+  const sreTeamOptions = useMemo(
+    () =>
+      (teams ?? [])
+        .filter(
+          (t): t is typeof t & { sreGroupId: string } =>
+            Boolean(t.sreGroupId) && t.family === "cre-abt",
+        )
+        .map((t) => ({ value: t.sreGroupId, label: t.name })),
+    [teams],
+  );
 
+  // Suppressed only when Advanced mode's own row list/OR-groups are ALSO on
+  // screen (`effectiveMode === "advanced" && isFiltersOpen`) -- that's the
+  // only situation where a chip would duplicate something already visible
+  // and editable (via `AdvancedFiltersBuilder`/`AnyOfGroupsBuilder`). While
+  // the panel is collapsed, neither the Simple grid nor the Advanced builder
+  // renders, so chips are the ONLY way to see what's active regardless of
+  // mode -- this list itself renders outside the `isFiltersOpen` gate below,
+  // by design (see that render site's own doc comment), so this memo must
+  // not silently empty itself out just because the mode happens to be
+  // Advanced. Uses `effectiveMode`, not `mode`, so a non-simple-representable
+  // value that arrives without a remount (e.g. an applied saved view)
+  // doesn't sit chip-less behind a Simple grid that no longer matches
+  // reality.
   const activeFilterChips = useMemo(
-    () => buildActiveFilterChips(filters, teamLabels),
-    [filters, teamLabels],
+    () =>
+      effectiveMode === "simple" || !isFiltersOpen
+        ? buildActiveFilterChips(filters, teamLabels)
+        : [],
+    [filters, teamLabels, effectiveMode, isFiltersOpen],
   );
 
   // ── Saved views ──────────────────────────────────────────────────────────
@@ -476,7 +692,18 @@ export default function CasesFilterBar({
 
   const applyView = (qs: string): void => {
     setSavedAnchor(null);
+    // A pending stash is about to be replaced wholesale by this saved view —
+    // if left in place, clicking Advanced afterward would resurrect the
+    // pre-Quick-filters criteria instead of the view the user just applied.
+    setStashedAdvancedFilters(null);
     onChange(readCasesFiltersFromUrl(new URLSearchParams(qs)));
+  };
+
+  // Same reasoning as applyView above: a reset must not be silently undoable
+  // via a later "Advanced" click restoring what was just cleared.
+  const handleReset = (): void => {
+    setStashedAdvancedFilters(null);
+    onReset();
   };
 
   const handleSaveView = (): void => {
@@ -487,22 +714,17 @@ export default function CasesFilterBar({
     setSavedAnchor(null);
   };
 
-  const severityOptions = useMemo(
-    () => ALL_SEVERITIES.map((s) => ({ value: s, label: s })),
-    [],
-  );
-  const stateOptions = useMemo(
-    () => PRIMARY_STATES.map((s) => ({ value: s, label: STATE_LABEL[s] })),
-    [],
-  );
+  // Fixed enums — shared with `advancedFilters.ts`'s catalogue
+  // (`caseFilterOptions.ts` is the one source of truth for each), so a value
+  // picked in either mode renders identically in the other. Plain constants,
+  // not `useMemo`'d, since they're static imports, not derived from props.
+  const severityOptions = SEVERITY_OPTIONS;
+  const stateOptions = STATE_OPTIONS;
   const caseTypeOptions = useMemo(
     () => ALL_CASE_TYPES.map((t) => ({ value: t, label: CASE_TYPE_LABEL[t] })),
     [],
   );
-  const engagementTypeOptions = useMemo(
-    () => ALL_ENGAGEMENT_TYPES.map((t) => ({ value: t, label: ENGAGEMENT_TYPE_LABEL[t] })),
-    [],
-  );
+  const engagementTypeOptions = ENGAGEMENT_TYPE_OPTIONS;
 
   // Project filter loads the first page of projects on open and pages through
   // the rest on scroll (and narrows as you type) rather than loading the whole
@@ -534,7 +756,7 @@ export default function CasesFilterBar({
           <TextField
             fullWidth
             size="small"
-            placeholder="Search by case #, subject, customer, project, assignee…"
+            placeholder="Search by case #, subject or internal ID…"
             value={filters.search}
             onChange={(e) => onChange({ ...filters, search: e.target.value })}
             slotProps={{
@@ -654,7 +876,7 @@ export default function CasesFilterBar({
         <Button
           variant="outlined"
           size="small"
-          onClick={hasActive ? onReset : onFiltersToggle}
+          onClick={hasActive ? handleReset : onFiltersToggle}
           startIcon={hasActive ? <X size={16} /> : <ListFilter size={16} />}
           endIcon={
             !hasActive &&
@@ -731,6 +953,44 @@ export default function CasesFilterBar({
       {isFiltersOpen && (
         <>
           <Divider />
+          <Box
+            role="group"
+            aria-label="Filter mode"
+            sx={{ display: "flex", alignSelf: "flex-start" }}
+          >
+            <Tooltip
+              title={
+                canShowSimple
+                  ? ""
+                  : "One or more active filters is only representable in Advanced mode — " +
+                    "switching to Quick filters clears them (Advanced remembers them until you change anything here)."
+              }
+            >
+              <span>
+                <Button
+                  size="small"
+                  variant={effectiveMode === "simple" ? "contained" : "outlined"}
+                  color={effectiveMode === "simple" ? "primary" : "inherit"}
+                  aria-pressed={effectiveMode === "simple"}
+                  onClick={handleSwitchToSimple}
+                  sx={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+                >
+                  Quick filters
+                </Button>
+              </span>
+            </Tooltip>
+            <Button
+              size="small"
+              variant={effectiveMode === "advanced" ? "contained" : "outlined"}
+              color={effectiveMode === "advanced" ? "primary" : "inherit"}
+              aria-pressed={effectiveMode === "advanced"}
+              onClick={handleSwitchToAdvanced}
+              sx={{ borderTopLeftRadius: 0, borderBottomLeftRadius: 0, ml: "-1px" }}
+            >
+              Advanced
+            </Button>
+          </Box>
+          {effectiveMode === "simple" ? (
           <Grid container spacing={2} sx={{ mt: 0 }}>
             {showSeverityFilter && (
               <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
@@ -739,60 +999,58 @@ export default function CasesFilterBar({
                   label="Severity"
                   values={filters.severities}
                   options={severityOptions}
-                  onChange={(next) => onChange({ ...filters, severities: next })}
+                  onChange={(next) => handleSimpleFieldChange({ ...filters, severities: next })}
                 />
               </Grid>
             )}
             <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
-              {/* Tri-state (digiops-cs#2907 follow-up): `state` is one of
-                  only two fields (with `tag`) the search contract supports
-                  a real `notIn` on, so "State is not Closed" is now
-                  directly expressible here instead of only via a dashboard
-                  click-through's `excludeStates` chip. */}
-              <TriStateMultiSelectField
+              {/* Plain include-only multi-select, same as every other
+                  Simple-mode field. `state`/`notIn` is still expressible via
+                  the Advanced-mode "State" row (or a dashboard click-through
+                  seeding `excludeStates`, surfaced as a removable chip — see
+                  `buildActiveFilterChips`) — this control only ever writes
+                  `states`. */}
+              <MultiSelectField
                 id="cases-filter-state"
                 label="State"
-                includedValues={filters.states}
-                excludedValues={filters.excludeStates}
+                values={filters.states}
                 options={stateOptions}
                 // Work sub-state only applies when `work_in_progress` is the
-                // *sole* included state — with other states also included
-                // (or excluded — an exclusion doesn't narrow to a single
-                // work state either) the work-state filter can't be applied
+                // *sole* selected state — with any other state also
+                // selected, the work-state filter can't be applied
                 // server-side, so drop any selected work states as soon as
-                // the selection stops being exactly that one included state.
+                // the selection stops being exactly that one state.
                 onChange={(next) =>
-                  onChange({
+                  handleSimpleFieldChange({
                     ...filters,
-                    states: next.included,
-                    excludeStates: next.excluded,
+                    states: next,
                     workStates:
-                      next.included.length === 1 &&
-                      next.included[0] === "work_in_progress" &&
-                      next.excluded.length === 0
+                      next.length === 1 && next[0] === "work_in_progress"
                         ? filters.workStates
                         : [],
                   })
                 }
               />
             </Grid>
-            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
-              {/* CS team the case's project is scoped to (`creTeam`). Options
-                  are `creGroupId`s (what the filter actually matches on);
-                  labels are team display names, never the raw group-id
-                  UUID. `workStates` has no bar control of its own now (it's
-                  a narrow, rarely hand-picked sub-filter of "state") -- it
-                  still round-trips losslessly via the URL/a saved view/a
-                  dashboard click-through, surfaced as a removable chip
-                  instead (see `buildActiveFilterChips`). */}
-              <MultiSelectField
-                id="cases-filter-cs-team"
-                label="Team"
-                values={filters.csTeams}
-                options={teamOptions}
-                onChange={(next) => onChange({ ...filters, csTeams: next })}
-              />
-            </Grid>
+            {!hideCreTeamFilter && (
+              <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
+                {/* CS team the case's project is scoped to (`creTeam`). Options
+                    are `creGroupId`s (what the filter actually matches on);
+                    labels are team display names, never the raw group-id
+                    UUID. `workStates` has no bar control of its own now (it's
+                    a narrow, rarely hand-picked sub-filter of "state") -- it
+                    still round-trips losslessly via the URL/a saved view/a
+                    dashboard click-through, surfaced as a removable chip
+                    instead (see `buildActiveFilterChips`). */}
+                <MultiSelectField
+                  id="cases-filter-cs-team"
+                  label="CRE Team"
+                  values={filters.csTeams}
+                  options={teamOptions}
+                  onChange={(next) => handleSimpleFieldChange({ ...filters, csTeams: next })}
+                />
+              </Grid>
+            )}
             {showEngagementTypeFilter && (
               <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
                 <MultiSelectField
@@ -800,7 +1058,7 @@ export default function CasesFilterBar({
                   label="Engagement type"
                   values={filters.engagementTypes}
                   options={engagementTypeOptions}
-                  onChange={(next) => onChange({ ...filters, engagementTypes: next })}
+                  onChange={(next) => handleSimpleFieldChange({ ...filters, engagementTypes: next })}
                 />
               </Grid>
             )}
@@ -811,7 +1069,7 @@ export default function CasesFilterBar({
                   label={typeFilterLabel}
                   values={filters.caseTypes}
                   options={caseTypeOptions}
-                  onChange={(next) => onChange({ ...filters, caseTypes: next })}
+                  onChange={(next) => handleSimpleFieldChange({ ...filters, caseTypes: next })}
                 />
               </Grid>
             )}
@@ -822,7 +1080,7 @@ export default function CasesFilterBar({
                   `/users/search`). Searches the directory as you type. */}
               <AsyncAssigneeMultiSelect
                 values={filters.assignees}
-                onChange={(next) => onChange({ ...filters, assignees: next })}
+                onChange={(next) => handleSimpleFieldChange({ ...filters, assignees: next })}
                 nameSeed={assigneeNameSeed}
               />
             </Grid>
@@ -831,30 +1089,20 @@ export default function CasesFilterBar({
                   `productNames` (SN matches product.name, all versions). */}
               <ProductNameMultiSelect
                 values={filters.productNames}
-                onChange={(next) => onChange({ ...filters, productNames: next })}
+                onChange={(next) => handleSimpleFieldChange({ ...filters, productNames: next })}
               />
             </Grid>
-            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
-              <MultiSelectField
-                id="cases-filter-onboarding-status"
-                label="Onboarding status"
-                values={filters.onboardingStatuses}
-                options={ONBOARDING_STATUS_OPTIONS}
-                onChange={(next) => onChange({ ...filters, onboardingStatuses: next })}
-              />
-            </Grid>
-            <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
-              {/* One tri-state control drives both `tags` (include) and
-                  `excludeTags` (exclude) -- see `TagsMultiSelect`'s own doc
-                  comment for the cycling model. */}
-              <TagsMultiSelect
-                includedValues={filters.tags}
-                excludedValues={filters.excludeTags}
-                onChange={(next) =>
-                  onChange({ ...filters, tags: next.included, excludeTags: next.excluded })
-                }
-              />
-            </Grid>
+            {!hideOnboardingStatusFilter && (
+              <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>
+                <MultiSelectField
+                  id="cases-filter-onboarding-status"
+                  label="Onboarding status"
+                  values={filters.onboardingStatuses}
+                  options={ONBOARDING_STATUS_OPTIONS}
+                  onChange={(next) => handleSimpleFieldChange({ ...filters, onboardingStatuses: next })}
+                />
+              </Grid>
+            )}
             {!hideProjectFilter && (
               // Last, and wider than every other control: selected project
               // names render as one ellipsized line (see
@@ -867,12 +1115,31 @@ export default function CasesFilterBar({
               <Grid size={{ xs: 12, sm: 12, md: 6, lg: 4 }}>
                 <AsyncProjectMultiSelect
                   values={filters.projects}
-                  onChange={(next) => onChange({ ...filters, projects: next })}
+                  onChange={(next) => handleSimpleFieldChange({ ...filters, projects: next })}
                   nameSeed={projectNameSeed}
                 />
               </Grid>
             )}
           </Grid>
+          ) : (
+            <>
+              <AdvancedFiltersBuilder
+                rows={unifiedRows}
+                onUpdateRow={(row, next) => onChange(updateUnifiedRow(filters, row, next))}
+                onRemoveRow={(row) => onChange(removeUnifiedRow(filters, row))}
+                onAddRow={() => onChange(addBlankUnifiedRow(filters))}
+                creTeamOptions={teamOptions}
+                sreTeamOptions={sreTeamOptions}
+                assigneeNameSeed={assigneeNameSeed}
+                projectNameSeed={projectNameSeed}
+              />
+              <Divider />
+              <AnyOfGroupsBuilder
+                branches={filters.anyOfBranches}
+                onChange={(next) => onChange({ ...filters, anyOfBranches: next })}
+              />
+            </>
+          )}
           {activeCount > 0 && (
             <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
               <Typography variant="caption" color="text.secondary">

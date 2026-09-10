@@ -39,6 +39,7 @@ import {
   useColumnPreferences,
 } from "@hooks/useColumnPreferences";
 import { useWidgetData } from "@features/csm-dashboard/api/useWidgetData";
+import { useTeams } from "@features/csm-dashboard/api/useTeams";
 import ColumnCustomizerButton from "@components/column-customizer/ColumnCustomizerButton";
 import RefreshButton from "@components/RefreshButton";
 import { WIDGET_LIST_RENDERERS } from "@features/csm-dashboard/config/widgetListConfig";
@@ -47,8 +48,12 @@ import {
   type CaseOptionalColumnId,
 } from "@features/csm-cases/utils/caseListColumns";
 import {
+  callRequestWidgetFiltersToQuery,
+  DEFAULT_CALL_REQUEST_WIDGET_FILTERS,
   resourceTypeForPreviewSlug,
+  translateCallRequestDashboardFilters,
   translateCaseDashboardFilters,
+  type CallRequestWidgetFilters,
 } from "@features/csm-dashboard/config/widgetResourceConfig";
 import {
   describeWidgetFilters,
@@ -65,6 +70,14 @@ import { DEFAULT_CASES_FILTERS } from "@features/csm-cases/utils/casesFiltersUrl
 import DateRangeFilter, {
   type DateRangeFilterValue,
 } from "@features/csm-dashboard/components/DateRangeFilter";
+import MultiSelectField from "@components/MultiSelectField";
+import TriStateMultiSelectField from "@components/TriStateMultiSelectField";
+import AsyncUserIdMultiSelect from "@features/csm-cases/components/AsyncUserIdMultiSelect";
+import { STATE_OPTIONS } from "@features/csm-cases/utils/caseFilterOptions";
+import {
+  ALL_CALL_REQUEST_STATES,
+  CALL_REQUEST_STATE_LABEL,
+} from "@features/csm-cases/utils/callRequestState";
 
 const DEFAULT_ROWS_PER_PAGE = 10;
 const ROWS_PER_PAGE_OPTIONS = [10, 20, BE_MAX_PAGE_LIMIT];
@@ -184,6 +197,17 @@ export default function DashboardWidgetPreviewPage(): JSX.Element {
         filters={filters}
         backButton={backButton}
         resourceType={resourceType}
+      />
+    );
+  }
+
+  if (resourceType === "call_request") {
+    return (
+      <CallRequestWidgetPreview
+        widgetId={widgetId}
+        displayName={displayName}
+        filters={filters}
+        backButton={backButton}
       />
     );
   }
@@ -372,6 +396,211 @@ function CaseFamilyWidgetPreview({
                 label={`Customise ${displayName} columns`}
               />
             }
+          />
+          <TablePagination
+            component="div"
+            count={data?.total ?? 0}
+            page={page}
+            onPageChange={(_, newPage) => setPage(newPage)}
+            rowsPerPage={rowsPerPage}
+            onRowsPerPageChange={handleRowsPerPageChange}
+            rowsPerPageOptions={ROWS_PER_PAGE_OPTIONS}
+            showFirstButton
+            showLastButton
+          />
+        </>
+      )}
+    </Box>
+  );
+}
+
+interface CallRequestWidgetPreviewProps {
+  widgetId: string;
+  displayName: string;
+  filters: Record<string, unknown>;
+  backButton: JSX.Element;
+}
+
+/**
+ * The call-requests "View more" landing: a real, editable filter bar seeded
+ * from the widget's own filters (`translateCallRequestDashboardFilters` —
+ * see `widgetResourceConfig.ts`), feeding the same `useWidgetData` +
+ * `CallRequestWidgetList` renderer the widget tile itself already uses —
+ * not the generic, read-only "Filtered by:" chip summary + search box
+ * every other flat-filter resourceType falls back to (`call_request` isn't
+ * in `CASE_FAMILY_RESOURCE_TYPES`: it queries `/call-requests/search`, a
+ * different, much smaller field set than the case-search DSL).
+ *
+ * Deliberately Simple-only — no Simple/Advanced toggle like
+ * `CaseFamilyWidgetPreview`'s. Confirmed directly against
+ * `apps/csm-portal/backend/openapi.yaml`'s `SearchAllCallRequestsPayload`:
+ * this endpoint's filters are `assignedUserIds` (plain UUID list, no op
+ * choice), `states` (plain enum list, no op choice), `assignmentTeamIds`
+ * (plain UUID list, no op choice), and `caseStates`/`excludeCaseStates` —
+ * the ONE field here with an in/notIn distinction at all, and that's
+ * already fully expressible via the Case state control's own tri-state
+ * (include/exclude) cycle, the same `TriStateMultiSelectField` pattern
+ * `CasesFilterBar`'s State control uses for the identical shape. With zero
+ * fields left over that a toggle would add anything for, an Advanced mode
+ * here would just be an empty second tab — busywork, not a feature, for a
+ * 4-field contract this much smaller than the case-search DSL
+ * `AdvancedFiltersBuilder` exists for.
+ */
+function CallRequestWidgetPreview({
+  widgetId,
+  displayName,
+  filters,
+  backButton,
+}: CallRequestWidgetPreviewProps): JSX.Element {
+  // Frozen once at mount, same rationale as `CaseFamilyWidgetPreview`'s own
+  // `initial` — a Reset must restore what the widget actually linked here
+  // with, not whatever the viewer has since edited.
+  const [initial] = useState<CallRequestWidgetFilters>(() => ({
+    ...DEFAULT_CALL_REQUEST_WIDGET_FILTERS,
+    ...translateCallRequestDashboardFilters(filters),
+  }));
+  const [crFilters, setCrFilters] = useState<CallRequestWidgetFilters>(initial);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
+
+  const handleReset = (): void => {
+    setCrFilters(initial);
+    setPage(0);
+  };
+
+  // So the Assignee control can render a selected value equal to the
+  // signed-in user's own id as "Me" instead of its raw UUID — see
+  // `AsyncUserIdMultiSelect`'s `currentUserId` doc comment. `filters` (this
+  // component's own prop) already had any `__current_user__`/`@me`
+  // sentinel resolved to this same id upstream, before this component ever
+  // saw it (`resolveCurrentUserSentinels`, above) — this is only needed to
+  // recognize that resolved id again for display/re-selection.
+  const currentUserId = useCurrentUser().user?.id;
+
+  // Same CRE-team sourcing/scoping `CasesFilterBar`'s own "CRE Team" control
+  // uses (`useTeams(true)`, filtered to `family === "cre-abt"`, keyed by
+  // `creGroupId` — what `assignmentTeamIds` actually matches on, not the
+  // registry `id`). This endpoint's `assignmentTeamIds` is CRE-only per
+  // digiops-cs#2732 ("Calls To Attend") — no SRE-team equivalent exists on
+  // this contract, so there is no second team control to add here.
+  const { data: teams } = useTeams(true);
+  const creTeamOptions = useMemo(
+    () =>
+      (teams ?? [])
+        .filter(
+          (t): t is typeof t & { creGroupId: string } =>
+            Boolean(t.creGroupId) && t.family === "cre-abt",
+        )
+        .map((t) => ({ value: t.creGroupId, label: t.name })),
+    [teams],
+  );
+
+  const callStateOptions = useMemo(
+    () =>
+      ALL_CALL_REQUEST_STATES.map((s) => ({ value: s, label: CALL_REQUEST_STATE_LABEL[s] })),
+    [],
+  );
+
+  const queriedFilters = useMemo(
+    () => callRequestWidgetFiltersToQuery(crFilters),
+    [crFilters],
+  );
+
+  const { data, isLoading, isError, isFetching, refetch, dataUpdatedAt } = useWidgetData(
+    widgetId,
+    "call_request",
+    queriedFilters,
+    "list",
+    rowsPerPage,
+    page * rowsPerPage,
+  );
+  const ListRenderer = WIDGET_LIST_RENDERERS.call_request;
+
+  const handleRowsPerPageChange = (e: ChangeEvent<HTMLInputElement>): void => {
+    setRowsPerPage(parseInt(e.target.value, 10));
+    setPage(0);
+  };
+
+  return (
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      {backButton}
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+        <Typography variant="h5">{displayName}</Typography>
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          isFetching={isFetching}
+          updatedAt={dataUpdatedAt}
+          label={`Refresh ${displayName}`}
+        />
+      </Box>
+      <Box sx={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 2 }}>
+        <Box sx={{ minWidth: 220 }}>
+          <MultiSelectField
+            id="call-request-filter-state"
+            label="Call state"
+            values={crFilters.states}
+            options={callStateOptions}
+            onChange={(next) => {
+              setCrFilters({ ...crFilters, states: next });
+              setPage(0);
+            }}
+          />
+        </Box>
+        <Box sx={{ minWidth: 220 }}>
+          <TriStateMultiSelectField
+            id="call-request-filter-case-state"
+            label="Case state"
+            includedValues={crFilters.caseStates}
+            excludedValues={crFilters.excludeCaseStates}
+            options={STATE_OPTIONS}
+            onChange={(next) => {
+              setCrFilters({
+                ...crFilters,
+                caseStates: next.included,
+                excludeCaseStates: next.excluded,
+              });
+              setPage(0);
+            }}
+          />
+        </Box>
+        <Box sx={{ minWidth: 220 }}>
+          <AsyncUserIdMultiSelect
+            id="call-request-filter-assignee"
+            label="Assignee"
+            values={crFilters.assignedUserIds}
+            onChange={(next) => {
+              setCrFilters({ ...crFilters, assignedUserIds: next });
+              setPage(0);
+            }}
+            currentUserId={currentUserId}
+          />
+        </Box>
+        <Box sx={{ minWidth: 220 }}>
+          <MultiSelectField
+            id="call-request-filter-team"
+            label="CRE Team"
+            values={crFilters.assignmentTeamIds}
+            options={creTeamOptions}
+            onChange={(next) => {
+              setCrFilters({ ...crFilters, assignmentTeamIds: next });
+              setPage(0);
+            }}
+          />
+        </Box>
+        <Button variant="text" size="small" onClick={handleReset}>
+          Reset
+        </Button>
+      </Box>
+      {isError ? (
+        <Typography variant="body2" color="text.secondary">
+          Could not load this widget.
+        </Typography>
+      ) : (
+        <>
+          <ListRenderer
+            items={data?.items ?? []}
+            isLoading={isLoading}
+            resourceType="call_request"
           />
           <TablePagination
             component="div"

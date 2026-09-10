@@ -18,6 +18,7 @@ import type {
   BeChangeRequestApproval,
   BeChangeRequestDetail,
   BeChangeRequestImpact,
+  BeChangeRequestSearchPayload,
   BeChangeRequestState,
   BeChangeRequestType,
 } from "@api/backend/types";
@@ -259,6 +260,10 @@ export interface ChangeRequestFilters {
   closedStartDate: string;
   /** YYYY-MM-DD local date string, or empty. */
   closedEndDate: string;
+  /** Selected SRE team `sreGroupId`s — sent as a generic
+   * `{ field: "assignmentGroupId", op: "in" }` filter entry (see
+   * `buildChangeRequestSearchFilters`), not a named payload field. */
+  sreTeamIds: string[];
 }
 
 export const DEFAULT_CR_FILTERS: ChangeRequestFilters = {
@@ -267,6 +272,7 @@ export const DEFAULT_CR_FILTERS: ChangeRequestFilters = {
   impacts: [],
   closedStartDate: "",
   closedEndDate: "",
+  sreTeamIds: [],
 };
 
 /** Count non-search active filters (used for the badge on the Filters button). */
@@ -275,8 +281,46 @@ export function countActiveCRFilters(filters: ChangeRequestFilters): number {
     (filters.states.length > 0 ? 1 : 0) +
     (filters.impacts.length > 0 ? 1 : 0) +
     (filters.closedStartDate ? 1 : 0) +
-    (filters.closedEndDate ? 1 : 0)
+    (filters.closedEndDate ? 1 : 0) +
+    (filters.sreTeamIds.length > 0 ? 1 : 0)
   );
+}
+
+/** Convert a YYYY-MM-DD date picker value to an ISO 8601 string at midnight UTC. */
+export function crDateOnlyToISOStart(date: string): string {
+  return `${date}T00:00:00Z`;
+}
+
+/** Convert a YYYY-MM-DD date picker value to an ISO 8601 string at end-of-day UTC. */
+export function crDateOnlyToISOEnd(date: string): string {
+  return `${date}T23:59:59Z`;
+}
+
+/**
+ * Build `ChangeRequestSearchPayload.filters` from the UI's
+ * {@link ChangeRequestFilters} plus the (separately debounced) search text
+ * — mirrors `buildIncidentSearchFilters` in `incidents.ts`.
+ */
+export function buildChangeRequestSearchFilters(
+  filters: ChangeRequestFilters,
+  debouncedSearch: string,
+): NonNullable<BeChangeRequestSearchPayload["filters"]> {
+  return {
+    ...(debouncedSearch.length > 0 && { searchQuery: debouncedSearch }),
+    ...(filters.states.length > 0 && { states: filters.states }),
+    ...(filters.impacts.length > 0 && { impacts: filters.impacts }),
+    ...(filters.closedStartDate && {
+      closedStartDate: crDateOnlyToISOStart(filters.closedStartDate),
+    }),
+    ...(filters.closedEndDate && {
+      closedEndDate: crDateOnlyToISOEnd(filters.closedEndDate),
+    }),
+    ...(filters.sreTeamIds.length > 0 && {
+      filters: [
+        { field: "assignmentGroupId" as const, op: "in" as const, values: filters.sreTeamIds },
+      ],
+    }),
+  };
 }
 
 // ---------------------------------------------------------------------------

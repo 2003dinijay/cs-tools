@@ -13,6 +13,22 @@ window.config = {
   // CSM_PORTAL_BACKEND_BASE_URL: "https://<choreo-org-id>-az-stg.prod.wdt.choreoapis.dev/<key>/csm-portal-backend/v1.0",
   CSM_PORTAL_BACKEND_BASE_URL: "<your-backend-base-url>",
 
+  // Base URL for the case-activity SSE stream — csm-portal-backend's
+  // dedicated :9092 listener, exposed as its own Choreo REST endpoint (see
+  // that backend's .choreo/component.yaml). Optional: leave unset in an
+  // environment where Event Hub isn't configured on the backend, or to keep
+  // the Activities tab on manual-refresh/staleTime polling.
+  // CSM_PORTAL_STREAM_BASE_URL: "<your-stream-base-url>",
+  // Master on/off switch for the stream, independent of the URL above —
+  // case detail pages only open a live connection when this is explicitly
+  // true AND CSM_PORTAL_STREAM_BASE_URL is set. Defaults to false so an
+  // environment doesn't get the feature live just because the URL happens
+  // to be configured; flip to true once you've verified it end-to-end.
+  CSM_PORTAL_STREAM_ENABLED: false,
+
+  // Default Oxygen UI theme. One of: "acrylicOrange", "acrylicPurple",
+  // "choreo", "classic", "highContrast". Users can override this at runtime via
+  // the header theme dropdown (the choice is persisted per browser).
   // Default Oxygen UI theme. Derived at build time from whatever
   // @wso2/oxygen-ui exports as a theme (see src/config/themeConfig.ts) --
   // this list is illustrative, not exhaustive, and can grow on an

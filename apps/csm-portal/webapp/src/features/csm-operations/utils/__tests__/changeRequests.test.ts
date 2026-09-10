@@ -16,8 +16,11 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  buildChangeRequestSearchFilters,
   buildCloneChangeRequestNavState,
   changeRequestBlockingReason,
+  countActiveCRFilters,
+  DEFAULT_CR_FILTERS,
 } from "@features/csm-operations/utils/changeRequests";
 import type { BeChangeRequestApproval, BeChangeRequestDetail } from "@api/backend/types";
 
@@ -218,5 +221,59 @@ describe("changeRequestBlockingReason", () => {
     expect(
       changeRequestBlockingReason([approval({ stage: "Assess", status: "requested" })]),
     ).toBe("Awaiting Assess approval");
+  });
+});
+
+describe("countActiveCRFilters", () => {
+  it("is 0 for the default filters", () => {
+    expect(countActiveCRFilters(DEFAULT_CR_FILTERS)).toBe(0);
+  });
+
+  it("is 1 when an SRE team filter is set", () => {
+    expect(
+      countActiveCRFilters({ ...DEFAULT_CR_FILTERS, sreTeamIds: ["team-apollo"] }),
+    ).toBe(1);
+  });
+});
+
+describe("buildChangeRequestSearchFilters", () => {
+  it("returns an empty object for the defaults with no search text", () => {
+    expect(buildChangeRequestSearchFilters(DEFAULT_CR_FILTERS, "")).toEqual({});
+  });
+
+  it("includes states/impacts/closed-date bounds when set", () => {
+    expect(
+      buildChangeRequestSearchFilters(
+        {
+          ...DEFAULT_CR_FILTERS,
+          states: ["implement"],
+          impacts: ["high"],
+          closedStartDate: "2026-01-01",
+          closedEndDate: "2026-01-31",
+        },
+        "rollback",
+      ),
+    ).toEqual({
+      searchQuery: "rollback",
+      states: ["implement"],
+      impacts: ["high"],
+      closedStartDate: "2026-01-01T00:00:00Z",
+      closedEndDate: "2026-01-31T23:59:59Z",
+    });
+  });
+
+  it("sends selected SRE teams as an assignmentGroupId/in generic filter entry", () => {
+    expect(
+      buildChangeRequestSearchFilters(
+        { ...DEFAULT_CR_FILTERS, sreTeamIds: ["team-apollo", "team-atlas"] },
+        "",
+      ),
+    ).toEqual({
+      filters: [{ field: "assignmentGroupId", op: "in", values: ["team-apollo", "team-atlas"] }],
+    });
+  });
+
+  it("omits the generic filters array entirely when no SRE team is selected", () => {
+    expect(buildChangeRequestSearchFilters(DEFAULT_CR_FILTERS, "")).not.toHaveProperty("filters");
   });
 });

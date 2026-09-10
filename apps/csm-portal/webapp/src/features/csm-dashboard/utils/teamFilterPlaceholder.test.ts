@@ -255,6 +255,21 @@ describe("resolveTeamPlaceholder", () => {
     });
   });
 
+  // Regression test: DASHBOARDS_CONFIG is a raw JSON env var, not
+  // schema-validated beyond basic decoding — a widget/slice entry missing
+  // `filters` entirely used to crash here with "Cannot read properties of
+  // undefined (reading 'filters')" despite the wire type declaring it
+  // required.
+  it("treats an undefined filters argument as empty rather than throwing", () => {
+    // Runtime-only case: DASHBOARDS_CONFIG is a raw JSON env var, not
+    // schema-validated beyond basic decoding, so a genuinely-absent filters
+    // value is possible despite the type declaring it required — forcing it
+    // through here (rather than widening the signature) is what actually
+    // pins the defensive runtime behavior.
+    const undefinedFilters = undefined as unknown as Record<string, unknown>;
+    expect(resolveTeamPlaceholder(undefinedFilters, "team-group-id", undefined)).toEqual({});
+    expect(resolveTeamPlaceholder(undefinedFilters, undefined, undefined)).toEqual({});
+  });
   describe("the flat assignmentTeamIds shape (e.g. the call_request resourceType)", () => {
     it("substitutes the placeholder in assignmentTeamIds with the selected team's creGroupId", () => {
       const filters = {

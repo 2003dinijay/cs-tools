@@ -23,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
 
 const (
@@ -32,13 +33,16 @@ const (
 )
 
 // New creates an http.Server listening on addr with production-safe timeouts
-// and the full middleware/router chain wired up via NewRouter.
-func New(addr string, db *pgxpool.Pool, cfg *config.Config) *http.Server {
+// and the full middleware/router chain wired up via NewRouter. Also returns
+// NewRouter's constructed EventPublisherService (nil if not configured) so
+// cmd/api/main.go can close it gracefully on shutdown.
+func New(addr string, db *pgxpool.Pool, cfg *config.Config) (*http.Server, service.EventPublisherService) {
+	handler, eventPublisher := NewRouter(db, cfg)
 	return &http.Server{
 		Addr:         addr,
-		Handler:      NewRouter(db, cfg),
+		Handler:      handler,
 		ReadTimeout:  serverReadTimeout,
 		WriteTimeout: serverWriteTimeout,
 		IdleTimeout:  serverIdleTimeout,
-	}
+	}, eventPublisher
 }
