@@ -3195,6 +3195,42 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /github-issue-repo-options:
+    get:
+      summary: List the "Open Git issue" dialog's repository dropdown options.
+      description: >
+        Returns the config-driven catalogue of repository choices the "Open
+        Git issue" dialog offers: for each option, its dropdown value/label
+        plus the actual GitHub owner/repo an issue filed against it is
+        created in. Resolved once at process startup from
+        GITHUB_ISSUE_REPO_OPTIONS and held in memory; not user-configurable at
+        runtime. A deployment with this unset returns an empty array, not an
+        error. Independent of the `reason`-based repo selection on
+        POST /cases/{id}/github-issues above — this backs a different,
+        user-facing repo picker.
+      operationId: getGithubIssueRepoOptions
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GithubIssueRepoOption'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /cases/{id}/tags:
     post:
       summary: Add a free-text tag to a case (ServiceNow data source only).
@@ -7236,6 +7272,29 @@ components:
             query/filters. Not validated here; an unsupported field name for
             that resourceType is surfaced by that resource's own /search
             endpoint, not caught here.
+
+    GithubIssueRepoOption:
+      type: object
+      required:
+        - value
+        - label
+        - owner
+        - repo
+      properties:
+        value:
+          type: string
+          description: >
+            Opaque dropdown selection key. Not itself a repo name — owner/repo
+            below carry the actual destination.
+        label:
+          type: string
+          description: Human-readable option text shown in the dropdown.
+        owner:
+          type: string
+          description: GitHub organization/owner an issue filed against this option is created in.
+        repo:
+          type: string
+          description: GitHub repository name an issue filed against this option is created in.
 
     DashboardListItem:
       type: object

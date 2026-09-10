@@ -173,6 +173,14 @@ Backs `entity.EngineeringEntityClient.CreateGitIssue` (a separate internal engin
 | `NOTIFICATIONS_GOOGLE_CHAT_SPACES` | JSON array of `{"product","webhookUrl"}` objects, one per Google Chat space — e.g. `[{"product":"api-manager","webhookUrl":"https://chat.googleapis.com/..."}]`. Optional — left unset, malformed, Google Chat alerts are unavailable but startup and every other endpoint work normally |
 | `CSM_PORTAL_WEB_BASE_URL` | Base URL of the CSM portal webapp, used to build the "Open in CSM Portal" link at `/operations/incidents/{caseId}` (e.g. `http://localhost:3001` for local dev). Optional — only needed alongside `NOTIFICATIONS_GOOGLE_CHAT_SPACES` above |
 
+### "Open Git issue" dialog repository catalogue
+
+The webapp's "Open Git issue" dialog offers a CS engineer a list of destination repositories. That list used to be hardcoded in the frontend (`CreateGithubIssueDialog.tsx`) — which is how a real case filed with "Asgardeo" selected landed in the wrong GitHub repository, because the owner/repo mapping lived in code no config reviewer would think to check. It is now a config-driven catalogue, resolved once at startup and served by `GET /github-issue-repo-options`, same "JSON-array env var parsed at startup" shape as `DASHBOARDS_CONFIG` below.
+
+| Variable | Description |
+|---|---|
+| `GITHUB_ISSUE_REPO_OPTIONS` | JSON array of `{"value","label","owner","repo"}` objects, one per dropdown option — e.g. `[{"value":"choreo","label":"WSO2 Developer Platform (Choreo)","owner":"wso2-enterprise","repo":"choreo"}]`. Optional — unset returns an empty catalogue; malformed content (bad JSON, a blank field, or a duplicate `value`) is fatal, naming the offending entry |
+
 ### Dashboards
 
 Dashboard definitions are files, one JSON file per dashboard, read once at startup and held in
@@ -248,6 +256,9 @@ backend/
 │   │   ├── customer_client.go   # OAuth2 HTTP client for the customer entity service (this repo's entity-service)
 │   │   ├── customer.go          # CustomerEntityClient operations (cases, accounts, projects, ...)
 │   │   └── engineering.go       # EngineeringEntityClient — CreateGitIssue (not yet wired into main.go — no caller)
+│   ├── githubissue/
+│   │   ├── options.go          # RepoOption + ParseRepoOptions (GITHUB_ISSUE_REPO_OPTIONS)
+│   │   └── registry.go         # Active/SetActive — the resolved catalogue GET /github-issue-repo-options serves
 │   ├── scim/
 │   │   └── client.go           # OAuth2 HTTP client for the SCIM operations service
 │   ├── updates/
@@ -294,6 +305,7 @@ backend/
 - `POST /cases/{id}/call-requests/search` — Search call requests for a case (ServiceNow only)
 - `PATCH /cases/{id}/call-requests/{callRequestId}` — Update a call request (ServiceNow only)
 - `POST /cases/{id}/github-issues` — Create a GitHub issue from a case; `reason` selects target repo (`default`/`migration`/`rd_ticket`; ServiceNow only)
+- `GET /github-issue-repo-options` — List the "Open Git issue" dialog's repository dropdown options (`value`, `label`, `owner`, `repo`), from `GITHUB_ISSUE_REPO_OPTIONS` (see [Configuration](#open-git-issue-dialog-repository-catalogue) above). Independent of the `reason`-based repo selection above — this backs a different, user-facing repo picker
 
 ### Users
 
