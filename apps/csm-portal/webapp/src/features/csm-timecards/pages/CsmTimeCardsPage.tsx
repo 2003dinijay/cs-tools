@@ -315,19 +315,24 @@ export default function CsmTimeCardsPage(): JSX.Element {
   );
   const decideCard = useDecideCard();
 
-  const anyFilterActive =
-    filterProject.length > 0 ||
-    filterWorkItem.length > 0 ||
-    !!filterState ||
-    filterEngineer.length > 0 ||
-    !!filterApprover ||
-    !!filterFrom ||
-    !!filterTo;
-  // Approvals' own State filter isn't part of the shared `anyFilterActive`
-  // above (that would make Mine/All's "no cards match filters" messaging
-  // react to an Approvals-only pick) — "submitted" is this filter's default,
+  // Per-tab "is any filter narrowing this tab's own query" predicates —
+  // deliberately not one shared flag. Mine, All, and Approvals each apply a
+  // different subset of these filters (see baseFilters/filtersForAll/
+  // filtersForApprovals above), so a single shared predicate would make a
+  // tab's empty-state message react to a filter it never actually sends —
+  // e.g. picking an All-only Approver would make Mine/Approvals show "No time
+  // cards match the current filters." despite querying exactly as before.
+  const sharedFiltersActive =
+    filterProject.length > 0 || filterWorkItem.length > 0 || !!filterFrom || !!filterTo;
+  const mineFilterActive = sharedFiltersActive || !!filterState;
+  const allFilterActive =
+    sharedFiltersActive || !!filterState || filterEngineer.length > 0 || !!filterApprover;
+  // Approvals' own State filter isn't folded into this predicate the same way
+  // as filterState is for Mine/All — "submitted" is this filter's default,
   // matching its previous hardcoded behavior, so only a change away from it
-  // counts as the viewer actively narrowing the queue.
+  // counts as the viewer actively narrowing the queue (see approvalsStateActive
+  // below, OR'd in separately at the Approvals empty-state check).
+  const approvalsFilterActive = sharedFiltersActive || filterEngineer.length > 0;
   const approvalsStateActive = filterApprovalsState !== "submitted";
 
   // A filter change re-scopes the search for every tab, so every tab's page
@@ -682,7 +687,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 roleFor={mineRole}
                 onCardAction={handleCardAction}
                 emptyText={
-                  anyFilterActive
+                  mineFilterActive
                     ? "No time cards match the current filters."
                     : "No time logged yet. Open a case and use its Time tracking tab to log time."
                 }
@@ -784,7 +789,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 showEngineerColumn
                 roleFor={allRoleFor}
                 onCardAction={handleCardAction}
-                emptyText={anyFilterActive ? "No time cards match the current filters." : "No time logged yet."}
+                emptyText={allFilterActive ? "No time cards match the current filters." : "No time logged yet."}
               />
               <TablePagination
                 component="div"
@@ -889,7 +894,7 @@ export default function CsmTimeCardsPage(): JSX.Element {
                 onToggleSelect={toggleSelectCard}
                 onToggleSelectAll={toggleSelectAllCards}
                 emptyText={
-                  anyFilterActive || approvalsStateActive
+                  approvalsFilterActive || approvalsStateActive
                     ? "No time cards match the current filters."
                     : "Nothing awaiting approval."
                 }
