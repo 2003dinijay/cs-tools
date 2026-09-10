@@ -1510,6 +1510,7 @@ type CaseView struct {
 	// Names mirror the Ballerina entity-service CaseResponse record.
 	SLAResponseTime       *string    `json:"slaResponseTime"`
 	ClosedBy              *EntityRef `json:"closedBy"`
+	CloseNotes            *string    `json:"closeNotes"`
 	HasAutoClosed         *bool      `json:"hasAutoClosed"`
 	EngagementStartDate   *string    `json:"engagementStartDate"`
 	EngagementEndDate     *string    `json:"engagementEndDate"`

@@ -248,7 +248,9 @@ type snCase struct {
 	// not declared here, so encoding/json discarded them. All nullable: an
 	// absent key stays nil rather than becoming a zero value.
 	SLAResponseTime       *string          `json:"slaResponseTime"`
+	ClosedOn              *string          `json:"closedOn"`
 	ClosedBy              *snCaseEntityRef `json:"closedBy"`
+	CloseNotes            *string          `json:"closeNotes"`
 	HasAutoClosed         *bool            `json:"hasAutoClosed"`
 	EngagementStartDate   *string          `json:"engagementStartDate"`
 	EngagementEndDate     *string          `json:"engagementEndDate"`
@@ -1593,6 +1595,13 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		}
 		cv.ResolvedOn = &resolvedOn
 	}
+	if c.ClosedOn != nil && *c.ClosedOn != "" {
+		closedOn, err := parseSNDateTime(ctx, "sn get case", "closedOn", *c.ClosedOn)
+		if err != nil {
+			return domain.CaseView{}, fmt.Errorf("sn get case: parse closedOn %q: %w", *c.ClosedOn, err)
+		}
+		cv.ClosedOn = &closedOn
+	}
 	if len(c.WatchList) > 0 {
 		wl := make([]domain.WatchListUser, 0, len(c.WatchList))
 		for _, u := range c.WatchList {
@@ -1647,6 +1656,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	if c.ClosedBy != nil {
 		cv.ClosedBy = &domain.EntityRef{ID: sysidToUUID(c.ClosedBy.ID), Name: c.ClosedBy.Name}
 	}
+	cv.CloseNotes = c.CloseNotes
 	if c.EngagementPaymentType != nil && c.EngagementPaymentType.Label != "" {
 		cv.EngagementPaymentType = &c.EngagementPaymentType.Label
 	}

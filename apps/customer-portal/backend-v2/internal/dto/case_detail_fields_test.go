@@ -31,10 +31,12 @@ func TestMapCaseDetails_ExposesFieldsTheFrontendDeclares(t *testing.T) {
 	sla := "4 hours"
 	start, end := "2026-01-01", "2026-06-30"
 	auto := true
+	notes := "Resolved successfully"
 
 	raw, err := json.Marshal(MapCaseDetails(entity.CaseView{
 		SLAResponseTime:     &sla,
 		ClosedBy:            &entity.EntityRef{ID: "user-1", Name: "Closer"},
+		CloseNotes:          &notes,
 		HasAutoClosed:       &auto,
 		EngagementStartDate: &start,
 		EngagementEndDate:   &end,
@@ -63,6 +65,9 @@ func TestMapCaseDetails_ExposesFieldsTheFrontendDeclares(t *testing.T) {
 	}
 	if cb["id"] != "user-1" {
 		t.Errorf("closedBy.id = %v, want user-1", cb["id"])
+	}
+	if got["closeNotes"] != notes {
+		t.Errorf("closeNotes = %v, want %q", got["closeNotes"], notes)
 	}
 }
 
@@ -103,7 +108,7 @@ func TestMapCaseDetails_OmitsAbsentFields(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("result is not valid JSON: %v", err)
 	}
-	for _, k := range []string{"slaResponseTime", "closedBy", "hasAutoClosed", "engagementStartDate", "engagementEndDate"} {
+	for _, k := range []string{"slaResponseTime", "closedBy", "closeNotes", "hasAutoClosed", "engagementStartDate", "engagementEndDate"} {
 		if _, present := got[k]; present {
 			t.Errorf("%q present with no upstream value; want omitted", k)
 		}
