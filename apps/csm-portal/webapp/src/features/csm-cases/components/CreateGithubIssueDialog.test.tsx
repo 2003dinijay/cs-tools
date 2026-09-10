@@ -265,6 +265,50 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
       "true",
     );
   });
+
+  it("keeps Create issue disabled while repo options are still loading, even with every other field filled", () => {
+    mockUseGetGithubIssueRepoOptions.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    render(
+      <CreateGithubIssueDialog
+        open
+        submitting={false}
+        error={null}
+        showRepoField
+        onClose={() => {}}
+        onSubmit={() => {}}
+      />,
+    );
+    fillRequiredFields();
+    // No repo can be selected yet — the select itself is disabled — so
+    // submitting now would silently omit repoOverride for a cloud case.
+    expect(screen.getByRole("button", { name: /create issue/i })).toBeDisabled();
+  });
+
+  it("keeps Create issue disabled when the repo options fetch has failed", () => {
+    mockUseGetGithubIssueRepoOptions.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    render(
+      <CreateGithubIssueDialog
+        open
+        submitting={false}
+        error={null}
+        showRepoField
+        onClose={() => {}}
+        onSubmit={() => {}}
+      />,
+    );
+    fillRequiredFields();
+    expect(screen.getByRole("button", { name: /create issue/i })).toBeDisabled();
+  });
 });
 
 describe("CreateGithubIssueDialog — confirm step before filing a real issue", () => {

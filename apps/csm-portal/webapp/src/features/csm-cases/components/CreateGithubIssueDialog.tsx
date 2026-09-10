@@ -155,9 +155,21 @@ export function CreateGithubIssueDialog({
   // CsmCaseDetailPage.tsx's `githubIssueOpen &&` guard), so this only fires
   // per open, not on every case detail page load. `repoOptions` itself is
   // only ever rendered when `showRepoField` is true.
-  const { data: repoOptionsData, isLoading: repoOptionsLoading } =
-    useGetGithubIssueRepoOptions();
+  const {
+    data: repoOptionsData,
+    isLoading: repoOptionsLoading,
+    isError: repoOptionsError,
+  } = useGetGithubIssueRepoOptions();
   const repoOptions = repoOptionsData ?? [];
+  // Until this resolves (success or a confirmed-empty catalogue), a cloud
+  // case's submission must not be allowed through: handleSubmit only sets
+  // repoOverride when a repo is actually selected, and no repo can be
+  // selected before repoOptions is populated. Letting canSubmit go true in
+  // that window would silently fall back to product-unit routing — which
+  // this dialog's own doc comment above says only applies to non-cloud
+  // projects — for a case where the engineer never got the chance to choose.
+  const repoOptionsUnavailable =
+    showRepoField && (repoOptionsLoading || repoOptionsError);
   const repoSelectOptions = repoOptions.map((o) => ({
     value: o.value,
     label: o.label,
@@ -195,7 +207,8 @@ export function CreateGithubIssueDialog({
     description.trim().length > 0 &&
     (!requireSeverity || !!priorityLevel) &&
     (!requireUpdateLevel || updateLevel.trim().length > 0) &&
-    (!requirePublicIssueUrl || publicIssueUrl.trim().length > 0);
+    (!requirePublicIssueUrl || publicIssueUrl.trim().length > 0) &&
+    !repoOptionsUnavailable;
 
   const selectedRepoOption = repoOptions.find((o) => o.value === repo);
 
