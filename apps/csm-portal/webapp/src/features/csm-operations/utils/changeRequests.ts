@@ -264,6 +264,10 @@ export interface ChangeRequestFilters {
    * `{ field: "assignmentGroupId", op: "in" }` filter entry (see
    * `buildChangeRequestSearchFilters`), not a named payload field. */
   sreTeamIds: string[];
+  /** Selected project ids — sent as the named `projectIds` payload field
+   * (see `buildChangeRequestSearchFilters`), matching the entity-service's
+   * own field name for this search. */
+  projectIds: string[];
 }
 
 export const DEFAULT_CR_FILTERS: ChangeRequestFilters = {
@@ -273,6 +277,7 @@ export const DEFAULT_CR_FILTERS: ChangeRequestFilters = {
   closedStartDate: "",
   closedEndDate: "",
   sreTeamIds: [],
+  projectIds: [],
 };
 
 /** Count non-search active filters (used for the badge on the Filters button). */
@@ -282,7 +287,8 @@ export function countActiveCRFilters(filters: ChangeRequestFilters): number {
     (filters.impacts.length > 0 ? 1 : 0) +
     (filters.closedStartDate ? 1 : 0) +
     (filters.closedEndDate ? 1 : 0) +
-    (filters.sreTeamIds.length > 0 ? 1 : 0)
+    (filters.sreTeamIds.length > 0 ? 1 : 0) +
+    (filters.projectIds.length > 0 ? 1 : 0)
   );
 }
 
@@ -320,6 +326,7 @@ export function buildChangeRequestSearchFilters(
         { field: "assignmentGroupId" as const, op: "in" as const, values: filters.sreTeamIds },
       ],
     }),
+    ...(filters.projectIds.length > 0 && { projectIds: filters.projectIds }),
   };
 }
 
