@@ -2147,13 +2147,18 @@ export interface BeCreateCaseGithubIssueResponse {
  * key; `owner`/`repo` are the real GitHub org/repo an issue filed against
  * this option is created in, and are what populates
  * `BeCreateCaseGithubIssuePayload.repoOverride` — never derive owner/repo
- * from `value` itself.
+ * from `value` itself. `githubLabel` is the real GitHub issue label that
+ * should eventually be applied to an issue filed against this option
+ * (distinct from `displayLabel`, which is only this dropdown's display
+ * text) — not yet consumed anywhere on the frontend; the actual apply
+ * step is a separate, larger follow-up outside this webapp.
  */
 export interface BeGithubIssueRepoOption {
   value: string;
   displayLabel: string;
   owner: string;
   repo: string;
+  githubLabel: string;
 }
 
 /**
