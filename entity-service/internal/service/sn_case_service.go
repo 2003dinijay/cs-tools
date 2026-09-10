@@ -520,6 +520,9 @@ type snCaseFilters struct {
 	CaseTypes          []string `json:"caseTypes"`
 	SearchQuery        string   `json:"searchQuery,omitempty"`
 	ProjectIDs         []string `json:"projectIds,omitempty"`
+	// ExcludeProjectIDs is the inverse of ProjectIDs: cases whose project is
+	// none of these. See domain.ParsedCaseFilters.ExcludeProjectIDs.
+	ExcludeProjectIDs  []string `json:"excludeProjectIds,omitempty"`
 	DeploymentIDs      []string `json:"deploymentIds,omitempty"`
 	DeployedProductIDs []string `json:"deployedProductIds,omitempty"`
 	StateKeys          []int    `json:"stateKeys,omitempty"`
@@ -590,7 +593,10 @@ type snCaseFilters struct {
 	CreTeamIDs []string `json:"integrationCsTeamIds,omitempty"`
 	SreTeamIDs []string `json:"sreTeamIds,omitempty"`
 	// AccountIDs: see domain.ParsedCaseFilters.AccountIDs doc comment.
-	AccountIDs           []string `json:"accountIds,omitempty"`
+	AccountIDs []string `json:"accountIds,omitempty"`
+	// ExcludeAccountIDs is the inverse of AccountIDs: cases whose parent
+	// account is none of these. See domain.ParsedCaseFilters.ExcludeAccountIDs.
+	ExcludeAccountIDs    []string `json:"excludeAccountIds,omitempty"`
 	Unassigned           bool     `json:"unassigned,omitempty"`
 	ResolutionNotesEmpty bool     `json:"resolutionNotesEmpty,omitempty"`
 	// TaskSLAFilter: SN-side join on Task SLA table, filtering by businessElapsedPercent
@@ -3472,6 +3478,7 @@ func buildSNCaseFilters(parsed domain.ParsedCaseFilters, searchQuery string) snC
 		CaseTypes:                        snCaseTypes,
 		SearchQuery:                      searchQuery,
 		ProjectIDs:                       uuidsToSysids(parsed.ProjectIDs),
+		ExcludeProjectIDs:                uuidsToSysids(parsed.ExcludeProjectIDs),
 		DeploymentIDs:                    uuidsToSysids(parsed.DeploymentIDs),
 		StateKeys:                        domainStatesToSNIDs(parsed.States),
 		ExcludeStates:                    domainStatesToSNIDs(parsed.ExcludeStates),
@@ -3502,6 +3509,7 @@ func buildSNCaseFilters(parsed domain.ParsedCaseFilters, searchQuery string) snC
 		CreTeamIDs:                       uuidsToSysids(parsed.CreTeamIDs),
 		SreTeamIDs:                       uuidsToSysids(parsed.SreTeamIDs),
 		AccountIDs:                       uuidsToSysids(parsed.AccountIDs),
+		ExcludeAccountIDs:                uuidsToSysids(parsed.ExcludeAccountIDs),
 		Unassigned:                       parsed.Unassigned,
 		ResolutionNotesEmpty:             parsed.ResolutionNotesEmpty,
 		TaskSLAFilter:                    buildSNTaskSLAFilter(parsed.TaskSLAFilter),
@@ -3575,6 +3583,9 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		return domain.SearchCasesResponse{}, err
 	}
 	if err := validateUUIDs("accountId", req.Parsed.AccountIDs); err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+	if err := validateUUIDs("accountId", req.Parsed.ExcludeAccountIDs); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
 
@@ -3896,6 +3907,9 @@ func (s *snCaseService) AggregateCases(ctx context.Context, req domain.Aggregate
 		return domain.AggregateResponse{}, err
 	}
 	if err := validateUUIDs("accountId", parsed.AccountIDs); err != nil {
+		return domain.AggregateResponse{}, err
+	}
+	if err := validateUUIDs("accountId", parsed.ExcludeAccountIDs); err != nil {
 		return domain.AggregateResponse{}, err
 	}
 	for _, t := range parsed.Types {

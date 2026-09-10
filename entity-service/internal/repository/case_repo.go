@@ -603,6 +603,12 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
+	if len(req.Parsed.ExcludeProjectIDs) > 0 {
+		where += fmt.Sprintf(" AND c.project_id != ALL($%d::uuid[])", argIdx)
+		filterArgs = append(filterArgs, req.Parsed.ExcludeProjectIDs)
+		argIdx++
+	}
+
 	if len(req.Parsed.DeploymentIDs) > 0 {
 		where += fmt.Sprintf(" AND c.deployment_id = ANY($%d::uuid[])", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.DeploymentIDs)

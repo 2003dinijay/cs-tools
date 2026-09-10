@@ -930,6 +930,7 @@ export type BeCaseFieldFilterField =
   | "workState"
   | "tag"
   | "projectId"
+  | "accountId"
   | "deploymentId"
   | "assignedUserId"
   | "createdBy"

@@ -1582,6 +1582,10 @@ type ParsedCaseFilters struct {
 	Types             []string
 	ProjectIDs        []string
 	DeploymentIDs     []string
+	// ExcludeProjectIDs filters to cases whose project is NOT one of these
+	// project UUIDs (optional). Inverse of ProjectIDs, and the two are
+	// independent: a request may carry either, both, or neither.
+	ExcludeProjectIDs []string
 	States            []CaseState
 	Severities        []CaseSeverity
 	IssueTypes        []CaseIssueType
@@ -1654,6 +1658,10 @@ type ParsedCaseFilters struct {
 	SreTeamIDs []string
 	// AccountIDs filters to cases belonging to one of these customer_account UUIDs (optional).
 	AccountIDs []string
+	// ExcludeAccountIDs filters to cases whose parent account is NOT one of
+	// these customer_account UUIDs (optional). Inverse of AccountIDs, and the
+	// two are independent: a request may carry either, both, or neither.
+	ExcludeAccountIDs []string
 	// Unassigned, when true, filters to cases with no assigned engineer. false and
 	// omitted are treated identically (optional).
 	Unassigned bool
