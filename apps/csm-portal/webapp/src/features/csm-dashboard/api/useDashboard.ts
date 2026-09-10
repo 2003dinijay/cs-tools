@@ -41,6 +41,6 @@ export function useDashboard(
       return api.get<BeDashboard>(`/dashboards/${dashboardId}`);
     },
     enabled: dashboardId !== undefined,
-    staleTime: 300_000,
+    staleTime: 0,
   });
 }
