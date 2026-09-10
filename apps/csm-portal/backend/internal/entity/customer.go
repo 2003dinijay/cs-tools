@@ -167,6 +167,12 @@ func (c *CustomerEntityClient) GetProject(ctx context.Context, id string) ([]byt
 	return c.do(ctx, http.MethodGet, fmt.Sprintf("/projects/%s", url.PathEscape(id)), nil)
 }
 
+// GetProjectMetadata calls GET /projects/{id}/metadata on the entity service.
+// Response is returned as raw JSON; typed response structs are deferred.
+func (c *CustomerEntityClient) GetProjectMetadata(ctx context.Context, id string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, fmt.Sprintf("/projects/%s/metadata", url.PathEscape(id)), nil)
+}
+
 // SearchProjects calls POST /projects/search on the entity service.
 // Response is returned as raw JSON; field filtering to the portal shape is deferred.
 func (c *CustomerEntityClient) SearchProjects(ctx context.Context, body []byte) ([]byte, error) {

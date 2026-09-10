@@ -222,6 +222,7 @@ func main() {
 	mux.HandleFunc("POST /accounts/search", accountHandler.SearchAccounts)
 	mux.HandleFunc("POST /accounts/{id}/contacts/search", accountHandler.SearchAccountContacts)
 	mux.HandleFunc("GET /projects/{id}", projectHandler.GetProject)
+	mux.HandleFunc("GET /projects/{id}/metadata", projectHandler.GetProjectMetadata)
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
 	mux.HandleFunc("POST /projects/{id}/contacts/search", projectHandler.SearchProjectContacts)
 	mux.HandleFunc("GET /projects/{id}/contacts/{contactId}", projectHandler.GetProjectContact)
