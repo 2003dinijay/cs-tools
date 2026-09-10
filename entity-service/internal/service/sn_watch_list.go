@@ -117,9 +117,11 @@ func resolveWatchListIdentities(
 
 // watchListEmails returns the email addresses the backing service's case
 // create, case update, and incident create payloads declare. Incoming emails
-// (Customer Portal) are forwarded in the caller's order with no lookup.
+// (Customer Portal) are forwarded in the caller's order with no lookup and
+// no length cap (Ballerina; existing SN cases often exceed 50 watchers).
 // Incoming platform UUIDs (CSM) are resolved to emails first — forwarding
-// ids verbatim is silently accepted upstream and drops every watcher.
+// ids verbatim is silently accepted upstream and drops every watcher — and
+// are capped at maxUserLimit because resolution is one /users/search page.
 // A mixed list, or a value that is neither an email nor a UUID, is a
 // validation error. The returned slice is non-nil and in the caller's order.
 func watchListEmails(
@@ -127,11 +129,6 @@ func watchListEmails(
 ) ([]string, error) {
 	if len(values) == 0 {
 		return []string{}, nil
-	}
-	if len(values) > maxUserLimit {
-		return nil, &apierror.ValidationError{
-			Msg: fmt.Sprintf("%s cannot contain more than %d values", field, maxUserLimit),
-		}
 	}
 
 	allEmail := true
@@ -152,6 +149,10 @@ func watchListEmails(
 	}
 
 	if allEmail {
+		// Emails are forwarded as-is (Ballerina / Customer Portal). The 50-item
+		// cap below exists only because UUID resolution is a single
+		// /users/search page; it must not reject an existing SN watch list that
+		// is already larger than that page size.
 		out := make([]string, len(values))
 		copy(out, values)
 		return out, nil
@@ -164,6 +165,12 @@ func watchListEmails(
 		}
 		return nil, &apierror.ValidationError{
 			Msg: fmt.Sprintf("%s items must all be email addresses or all be user identifiers", field),
+		}
+	}
+
+	if len(values) > maxUserLimit {
+		return nil, &apierror.ValidationError{
+			Msg: fmt.Sprintf("%s cannot contain more than %d values", field, maxUserLimit),
 		}
 	}
 

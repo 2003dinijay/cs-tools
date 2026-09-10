@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -144,6 +145,24 @@ func TestWatchListEmails_ForwardsEmailsWithoutLookup(t *testing.T) {
 		if got[i] != w {
 			t.Fatalf("got[%d] = %q, want %q", i, got[i], w)
 		}
+	}
+}
+
+// TestWatchListEmails_ForwardsMoreThan50Emails pins that the /users/search
+// page cap must not reject a portal email list. Existing SN cases routinely
+// carry more than 50 watchers; PATCH replaces the whole list, so a 50 cap
+// made every save of those cases fail.
+func TestWatchListEmails_ForwardsMoreThan50Emails(t *testing.T) {
+	in := make([]string, maxUserLimit+1)
+	for i := range in {
+		in[i] = fmt.Sprintf("watcher%03d@example.com", i)
+	}
+	got, err := watchListEmails(context.Background(), nil, "token", "watchList", in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != len(in) {
+		t.Fatalf("got %d emails, want %d", len(got), len(in))
 	}
 }
 
