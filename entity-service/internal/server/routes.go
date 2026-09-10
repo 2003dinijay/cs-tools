@@ -253,6 +253,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		conversationHandler = handler.NewConversationHandler(service.NewServiceNowConversationService(serviceNowIntegrationServiceClient))
 	}
 
+	var outageHandler *handler.OutageHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		outageHandler = handler.NewOutageHandler(service.NewServiceNowOutageService(serviceNowIntegrationServiceClient))
+	}
 	var globalHandler *handler.GlobalHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		globalHandler = handler.NewGlobalHandler(service.NewServiceNowGlobalService(serviceNowIntegrationServiceClient))
@@ -506,6 +510,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /incidents/search", incidentHandler.SearchIncidents)
 		mux.HandleFunc("POST /incidents/aggregate", incidentHandler.AggregateIncidents)
 		mux.HandleFunc("POST /incidents/{id}/activities/search", incidentHandler.SearchIncidentActivities)
+		mux.HandleFunc("POST /incidents/{id}/specialist-handoffs", incidentHandler.HandOffIncidentToSpecialist)
+	}
+
+	if outageHandler != nil {
+		mux.HandleFunc("POST /outages", outageHandler.CreateOutage)
+		mux.HandleFunc("POST /outages/search", outageHandler.SearchOutages)
+		mux.HandleFunc("GET /outages/metadata", outageHandler.GetOutageMetadata)
+		mux.HandleFunc("GET /outages/{id}", outageHandler.GetOutage)
+		mux.HandleFunc("PATCH /outages/{id}", outageHandler.PatchOutage)
+		mux.HandleFunc("POST /outages/{id}/communications", outageHandler.AddOutageCommunication)
+		mux.HandleFunc("POST /outages/{id}/communications/search", outageHandler.SearchOutageCommunications)
 	}
 
 	if problemHandler != nil {
