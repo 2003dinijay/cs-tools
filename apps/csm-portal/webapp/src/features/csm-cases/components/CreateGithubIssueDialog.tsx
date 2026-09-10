@@ -172,7 +172,7 @@ export function CreateGithubIssueDialog({
     showRepoField && (repoOptionsLoading || repoOptionsError);
   const repoSelectOptions = repoOptions.map((o) => ({
     value: o.value,
-    label: o.label,
+    label: o.displayLabel,
   }));
 
   // Type drives which fields apply — see the component doc comment above.
@@ -450,7 +450,7 @@ export function CreateGithubIssueDialog({
               <Typography variant="body2">
                 This files a real issue in{" "}
                 {selectedRepoOption
-                  ? `${selectedRepoOption.owner}/${selectedRepoOption.repo} (${selectedRepoOption.label})`
+                  ? `${selectedRepoOption.owner}/${selectedRepoOption.repo} (${selectedRepoOption.displayLabel})`
                   : "a WSO2 product repository, routed automatically by the case's product"}
                 . Make sure no sensitive information is included.
               </Typography>

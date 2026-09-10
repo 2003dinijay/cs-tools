@@ -46,8 +46,8 @@ describe("useGetGithubIssueRepoOptions", () => {
   it("fetches the repo option catalogue from a single call", async () => {
     getMock.mockResolvedValue({
       githubIssueRepoOptions: [
-        { value: "asgardeo", label: "Asgardeo", owner: "wso2-enterprise", repo: "wso2-iam-internal" },
-        { value: "choreo", label: "WSO2 Developer Platform (Choreo)", owner: "wso2-enterprise", repo: "choreo" },
+        { value: "asgardeo", displayLabel: "Asgardeo", owner: "wso2-enterprise", repo: "wso2-iam-internal" },
+        { value: "choreo", displayLabel: "WSO2 Developer Platform (Choreo)", owner: "wso2-enterprise", repo: "choreo" },
       ],
     });
 
@@ -58,8 +58,8 @@ describe("useGetGithubIssueRepoOptions", () => {
     expect(getMock).toHaveBeenCalledTimes(1);
     expect(getMock).toHaveBeenCalledWith("/metadata");
     expect(result.current.data).toEqual([
-      { value: "asgardeo", label: "Asgardeo", owner: "wso2-enterprise", repo: "wso2-iam-internal" },
-      { value: "choreo", label: "WSO2 Developer Platform (Choreo)", owner: "wso2-enterprise", repo: "choreo" },
+      { value: "asgardeo", displayLabel: "Asgardeo", owner: "wso2-enterprise", repo: "wso2-iam-internal" },
+      { value: "choreo", displayLabel: "WSO2 Developer Platform (Choreo)", owner: "wso2-enterprise", repo: "choreo" },
     ]);
   });
 

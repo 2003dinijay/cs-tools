@@ -2151,7 +2151,7 @@ export interface BeCreateCaseGithubIssueResponse {
  */
 export interface BeGithubIssueRepoOption {
   value: string;
-  label: string;
+  displayLabel: string;
   owner: string;
   repo: string;
 }

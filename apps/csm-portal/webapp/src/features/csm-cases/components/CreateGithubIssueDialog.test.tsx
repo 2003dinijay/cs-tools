@@ -31,10 +31,10 @@ vi.mock("@features/csm-cases/api/useGetGithubIssueRepoOptions", () => ({
 const mockUseGetGithubIssueRepoOptions = vi.mocked(useGetGithubIssueRepoOptions);
 
 const REPO_OPTIONS_FIXTURE = [
-  { value: "asgardeo", label: "Asgardeo", owner: "wso2-enterprise", repo: "wso2-iam-internal" },
+  { value: "asgardeo", displayLabel: "Asgardeo", owner: "wso2-enterprise", repo: "wso2-iam-internal" },
   {
     value: "choreo",
-    label: "WSO2 Developer Platform (Choreo)",
+    displayLabel: "WSO2 Developer Platform (Choreo)",
     owner: "wso2-enterprise",
     repo: "choreo",
   },
