@@ -175,6 +175,12 @@ export function CaseTabsContentHost(): JSX.Element | null {
   // un-tabbed real content.
   return (
     <div
+      // Only applied while this host is actually the visible content (see
+      // `CaseTabIsolatedRouter`'s own note on the same pattern, and
+      // `print.css`) — otherwise this print-only rule would force an
+      // otherwise `display: none` host visible on a printed page that isn't
+      // showing any case tab at all.
+      className={activeRouteHasTab ? "csm-print-expand" : undefined}
       style={{
         display: activeRouteHasTab ? "flex" : "none",
         flexDirection: "column",
