@@ -2010,6 +2010,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
     return (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
         <Button
+          className="csm-print-hide"
           variant="text"
           size="small"
           startIcon={<ArrowLeft size={16} />}
@@ -2030,6 +2031,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
     return (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
         <Button
+          className="csm-print-hide"
           variant="text"
           size="small"
           startIcon={<ArrowLeft size={16} />}
