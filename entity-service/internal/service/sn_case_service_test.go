@@ -424,6 +424,58 @@ func TestSNCaseService_GetCaseByID_BallerinaBlockedFieldsAbsent(t *testing.T) {
 	if len(cv.WatchList) != 0 {
 		t.Fatalf("expected no watchers, got %+v", cv.WatchList)
 	}
+	if cv.ClosedOn != nil {
+		t.Fatalf("expected closedOn nil when the key is absent, got %+v", cv.ClosedOn)
+	}
+	if cv.CloseNotes != nil {
+		t.Fatalf("expected closeNotes nil when the key is absent, got %+v", cv.CloseNotes)
+	}
+}
+
+// TestSNCaseService_GetCaseByID_MapsClosedOn pins that Ballerina/SN closedOn
+// (space-separated UTC) is decoded onto CaseView so the portal can render
+// Closed On. The field used to be undeclared on snCase, so encoding/json
+// discarded it and GetCaseByID left CaseView.ClosedOn nil.
+func TestSNCaseService_GetCaseByID_MapsClosedOn(t *testing.T) {
+	body := `{
+		"id": "` + testWLCaseSysid + `",
+		"internalId": "WSO2-001",
+		"number": "CS0001001",
+		"title": "Case subject",
+		"description": "Case description",
+		"createdOn": "2026-01-01 10:00:00",
+		"updatedOn": "2026-02-20 01:34:44",
+		"closedOn": "2026-02-20 01:34:44",
+		"closeNotes": "Resolved successfully",
+		"createdBy": "reporter@example.com",
+		"project": {"id": "` + testProjectSysid + `", "name": "Project A"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"state": {"id": 3, "label": "Closed"}
+	}`
+
+	client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	})
+
+	svc := NewServiceNowCaseService(client, nil, nil)
+
+	cv, err := svc.GetCaseByID(contextWithUserIDToken("token"), sysidToUUID(testWLCaseSysid))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantClosedOn, err := time.Parse(snCreatedOnLayout, "2026-02-20 01:34:44")
+	if err != nil {
+		t.Fatalf("parse want closedOn: %v", err)
+	}
+	if cv.ClosedOn == nil || !cv.ClosedOn.Equal(wantClosedOn) {
+		t.Fatalf("expected closedOn=%v, got %+v", wantClosedOn, cv.ClosedOn)
+	}
+	if cv.CloseNotes == nil || *cv.CloseNotes != "Resolved successfully" {
+		t.Fatalf("expected closeNotes=%q, got %+v", "Resolved successfully", cv.CloseNotes)
+	}
 }
 
 // TestSNCaseService_UpdateCase_ExactlyOneFieldValidation exercises the exactly-one-field

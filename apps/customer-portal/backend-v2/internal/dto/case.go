@@ -317,13 +317,9 @@ type CaseWatchListUser struct {
 //
 // Deliberately excludes entity-service's AutoclosureStep/AutoclosureStateTime
 // and BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta — genuinely
-// CSM-engineer-facing only. SlaResponseTime, CsManager, ClosedBy,
-// CloseNotes (on this read path — it does exist on the PATCH response),
-// HasAutoClosed, FindingsResolved/FindingsTotal, EscalationLevel/
-// IsEscalated, Duration, EngagementStartDate/EngagementEndDate, and
-// Variables are all present on the frontend's type but have no
-// entity-service equivalent at all on CaseView — not fixable in this dto
-// layer alone.
+// CSM-engineer-facing only. CsManager and FindingsResolved/FindingsTotal
+// have no entity-service equivalent on CaseView. CloseNotes is on the
+// GET path (Ballerina CaseResponse.closeNotes) as well as PATCH.
 type CaseDetails struct {
 	ID                    string                       `json:"id"`
 	InternalID            string                       `json:"internalId"`
@@ -367,6 +363,7 @@ type CaseDetails struct {
 	// no frontend consumer, so per CLAUDE.md they stay trimmed until one exists.
 	SLAResponseTime     *string   `json:"slaResponseTime,omitempty"`
 	ClosedBy            *Ref      `json:"closedBy,omitempty"`
+	CloseNotes          *string   `json:"closeNotes,omitempty"`
 	HasAutoClosed       *bool     `json:"hasAutoClosed,omitempty"`
 	EngagementStartDate *string   `json:"engagementStartDate,omitempty"`
 	EngagementEndDate   *string   `json:"engagementEndDate,omitempty"`
@@ -469,6 +466,7 @@ func MapCaseDetails(c entity.CaseView) CaseDetails {
 		FixEta:                c.FixEta,
 		SLAResponseTime:       c.SLAResponseTime,
 		ClosedBy:              mapRef(c.ClosedBy),
+		CloseNotes:            c.CloseNotes,
 		HasAutoClosed:         c.HasAutoClosed,
 		EngagementStartDate:   c.EngagementStartDate,
 		EngagementEndDate:     c.EngagementEndDate,

@@ -785,6 +785,7 @@ type CaseView struct {
 	// Nullable throughout — nil means the upstream gave no value.
 	SLAResponseTime       *string    `json:"slaResponseTime"`
 	ClosedBy              *EntityRef `json:"closedBy"`
+	CloseNotes            *string    `json:"closeNotes"`
 	HasAutoClosed         *bool      `json:"hasAutoClosed"`
 	EngagementStartDate   *string    `json:"engagementStartDate"`
 	EngagementEndDate     *string    `json:"engagementEndDate"`
