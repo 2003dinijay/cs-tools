@@ -105,6 +105,19 @@ func TestConfig_Validate_RequiresDBFields(t *testing.T) {
 	}
 }
 
+func TestConfig_Validate_ServiceNowDoesNotRequireDBFields(t *testing.T) {
+	c := Config{
+		DataSource:                               DataSourceServiceNow,
+		ServiceNowIntegrationServiceBaseURL:      "https://example.com",
+		ServiceNowIntegrationServiceTokenURL:     "https://example.com/token",
+		ServiceNowIntegrationServiceClientID:     "client-id",
+		ServiceNowIntegrationServiceClientSecret: "client-secret",
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil when DATA_SOURCE=servicenow has no DB credentials", err)
+	}
+}
+
 func TestConfig_Validate_ServiceNowRequiresIntegrationServiceFields(t *testing.T) {
 	base := func() Config {
 		c := baseValidConfig()
