@@ -73,6 +73,11 @@ const (
 	ErrMsgInternal     = "An internal server error occurred. Please try again later."
 	ErrMsgInvalidUUID  = "Invalid UUID format."
 	errMsgReadBody     = "Failed to read request body."
+
+	// Closed-case feedback guard. Matches the Ballerina backend's
+	// ERR_MSG_CASE_NOT_CLOSED_FOR_FEEDBACK constant so both backends reject
+	// non-closed cases with the same message.
+	ErrMsgCaseNotClosedForFeedback = "Cannot submit feedback for a case that is not closed."
 )
 
 // errorBody is the JSON error payload format matching the customer-portal pattern.
