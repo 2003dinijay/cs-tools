@@ -169,6 +169,7 @@ export default function ChangeRequestsFilterBar({
             ).toString()
           }
           activeCount={activeCount}
+          hasSearch={filters.search.trim().length > 0}
           onApply={(qs) => onChange(readChangeRequestFiltersFromUrl(new URLSearchParams(qs)))}
           store={changeRequestsSavedViews}
         />

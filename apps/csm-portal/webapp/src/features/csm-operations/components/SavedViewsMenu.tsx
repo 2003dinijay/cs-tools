@@ -55,6 +55,12 @@ interface SavedViewsMenuProps {
   canonicalizeQs: (qs: string) => string;
   /** Active (non-search) filter count, shown in the save dialog's helper text. */
   activeCount: number;
+  /** Whether a search term is currently active. `activeCount` deliberately
+   * excludes search (see each tab's `countActive*Filters`), but a saved
+   * view's `qs` still captures it — the save dialog's "will show all
+   * records" message must only appear when neither is set, or applying that
+   * view would silently restore a search the message said wasn't there. */
+  hasSearch: boolean;
   /** Apply a saved view's `qs` — the caller parses it back into its own
    * filter shape and feeds it through the same `onChange` the filter bar
    * already has. */
@@ -78,6 +84,7 @@ export default function SavedViewsMenu({
   currentQs,
   canonicalizeQs,
   activeCount,
+  hasSearch,
   onApply,
   store,
 }: SavedViewsMenuProps): JSX.Element {
@@ -215,9 +222,11 @@ export default function SavedViewsMenu({
               }
             }}
             helperText={
-              activeCount === 0
+              activeCount === 0 && !hasSearch
                 ? "Tip: no filters are active — this view will show all records."
-                : `Captures the ${activeCount} active filter${activeCount === 1 ? "" : "s"}.`
+                : `Captures the ${activeCount} active filter${activeCount === 1 ? "" : "s"}${
+                    hasSearch ? " and the current search" : ""
+                  }.`
             }
           />
         </DialogContent>

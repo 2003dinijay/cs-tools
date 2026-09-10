@@ -133,6 +133,7 @@ export default function ProblemsFilterBar({
             writeProblemFiltersToUrl(readProblemFiltersFromUrl(new URLSearchParams(qs))).toString()
           }
           activeCount={activeCount}
+          hasSearch={filters.search.trim().length > 0}
           onApply={(qs) => onChange(readProblemFiltersFromUrl(new URLSearchParams(qs)))}
           store={problemsSavedViews}
         />

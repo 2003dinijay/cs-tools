@@ -214,6 +214,7 @@ export default function IncidentsFilterBar({
             writeIncidentFiltersToUrl(readIncidentFiltersFromUrl(new URLSearchParams(qs))).toString()
           }
           activeCount={activeCount}
+          hasSearch={filters.search.trim().length > 0}
           onApply={(qs) => onChange(readIncidentFiltersFromUrl(new URLSearchParams(qs)))}
           store={incidentsSavedViews}
         />

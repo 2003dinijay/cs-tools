@@ -32,6 +32,7 @@ function renderMenu(overrides: Partial<React.ComponentProps<typeof SavedViewsMen
       currentQs="q=hello"
       canonicalizeQs={canonicalizeQs}
       activeCount={1}
+      hasSearch={false}
       onApply={onApply}
       store={store}
       {...overrides}
@@ -111,6 +112,28 @@ describe("SavedViewsMenu", () => {
       .filter((el) => el.textContent?.match(/First|Second/));
     expect(items[0]).toHaveTextContent("First");
     expect(items[1]).toHaveTextContent("Second");
+  });
+
+  it("does not claim 'all records' in the save dialog when only a search term is active", () => {
+    // activeCount excludes search (see each tab's countActive*Filters), but a
+    // search-only view still restores that search on apply — the helper text
+    // must not tell the user it will show everything.
+    renderMenu({ activeCount: 0, hasSearch: true });
+
+    fireEvent.click(screen.getByRole("button", { name: /saved views/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /save current view/i }));
+
+    expect(screen.queryByText(/will show all records/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/captures the 0 active filters and the current search/i)).toBeInTheDocument();
+  });
+
+  it("shows the 'all records' tip only when there is neither an active filter nor a search", () => {
+    renderMenu({ activeCount: 0, hasSearch: false });
+
+    fireEvent.click(screen.getByRole("button", { name: /saved views/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /save current view/i }));
+
+    expect(screen.getByText(/will show all records/i)).toBeInTheDocument();
   });
 
   it("deletes a saved view via its delete icon button", () => {
