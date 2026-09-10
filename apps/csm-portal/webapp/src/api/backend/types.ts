@@ -2140,6 +2140,25 @@ export interface BeCreateCaseGithubIssueResponse {
   };
 }
 
+/**
+ * One entry of the config-driven "repository" catalogue offered by the
+ * "Open Git issue" dialog's repo `Select` (cloud cases only — see
+ * `CreateGithubIssueDialog`'s `showRepoField`). `value` is an opaque dropdown
+ * key; `owner`/`repo` are the real GitHub org/repo an issue filed against
+ * this option is created in, and are what populates
+ * `BeCreateCaseGithubIssuePayload.repoOverride` — never derive owner/repo
+ * from `value` itself.
+ */
+export interface BeGithubIssueRepoOption {
+  value: string;
+  label: string;
+  owner: string;
+  repo: string;
+}
+
+/** `GET /github-issue-repo-options` response. Empty array when unconfigured. */
+export type BeGithubIssueRepoOptionsResponse = BeGithubIssueRepoOption[];
+
 /** `POST /cases/{id}/call-requests/search` request body. */
 export interface BeSearchCallRequestsPayload {
   filters?: {
