@@ -44,11 +44,19 @@ import (
 // Repo carry that), DisplayLabel is the human-readable option text, and
 // Owner/Repo are the actual GitHub org/repo an issue filed against this
 // option is created in.
+//
+// GithubLabel is the real GitHub issue label that should eventually be
+// applied to an issue filed against this option — distinct from
+// DisplayLabel, which is dropdown text only and never sent to GitHub. It is
+// stored and served here only: nothing in this backend applies it yet, since
+// doing so requires a separate, larger change to the actual issue-filing
+// path, which lives outside this backend.
 type RepoOption struct {
 	Value        string `json:"value"`
 	DisplayLabel string `json:"displayLabel"`
 	Owner        string `json:"owner"`
 	Repo         string `json:"repo"`
+	GithubLabel  string `json:"githubLabel"`
 }
 
 // ParseRepoOptions decodes GITHUB_ISSUE_REPO_OPTIONS, a JSON array of
@@ -98,6 +106,9 @@ func ParseRepoOptions(raw string) ([]RepoOption, error) {
 		}
 		if strings.TrimSpace(o.Repo) == "" {
 			return nil, fmt.Errorf("GITHUB_ISSUE_REPO_OPTIONS[%d] (value %q): %q is empty", i, o.Value, "repo")
+		}
+		if strings.TrimSpace(o.GithubLabel) == "" {
+			return nil, fmt.Errorf("GITHUB_ISSUE_REPO_OPTIONS[%d] (value %q): %q is empty", i, o.Value, "githubLabel")
 		}
 	}
 

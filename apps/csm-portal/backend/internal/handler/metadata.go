@@ -30,6 +30,7 @@ type metadataGithubIssueRepoOptionView struct {
 	DisplayLabel string `json:"displayLabel"`
 	Owner        string `json:"owner"`
 	Repo         string `json:"repo"`
+	GithubLabel  string `json:"githubLabel"`
 }
 
 // MetadataResponse is the portal's response for GET /metadata: a single
@@ -76,6 +77,7 @@ func (h *MetadataHandler) GetMetadata(w http.ResponseWriter, r *http.Request) {
 			DisplayLabel: o.DisplayLabel,
 			Owner:        o.Owner,
 			Repo:         o.Repo,
+			GithubLabel:  o.GithubLabel,
 		})
 	}
 

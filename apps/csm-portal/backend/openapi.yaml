@@ -7312,6 +7312,7 @@ components:
         - displayLabel
         - owner
         - repo
+        - githubLabel
       properties:
         value:
           type: string
@@ -7327,6 +7328,13 @@ components:
         repo:
           type: string
           description: GitHub repository name an issue filed against this option is created in.
+        githubLabel:
+          type: string
+          description: >
+            The real GitHub issue label that should eventually be applied to
+            an issue filed against this option — distinct from displayLabel,
+            which is dropdown text only. Stored and served here only; not yet
+            applied anywhere.
 
     DashboardListItem:
       type: object
