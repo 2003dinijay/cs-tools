@@ -63,10 +63,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// EventPublishingEnabled, a separate safe-by-default kill switch: Event
 	// Hub can be fully configured and this still stays nil until that's
 	// explicitly turned on. nil when unset; every caller (snCaseService,
-	// snIncidentService) already handles that. A pool is also required so
-	// publish failures can be recorded.
+	// snIncidentService) already handles that. eventPublishFailureSvc is
+	// nil without a pool; Publish then skips durable recording.
 	var eventPublisher service.EventPublisherService
-	if db != nil && cfg.EventHubBroker != "" && cfg.EventPublishingEnabled {
+	if cfg.EventHubBroker != "" && cfg.EventPublishingEnabled {
 		eventPublisher = service.NewEventPublisherService(
 			eventbus.NewProducer(eventbus.Config{
 				Broker:           cfg.EventHubBroker,
