@@ -3111,11 +3111,10 @@ export interface BePatchIncidentResponse {
 /**
  * `field` enum accepted by an incident search's generic `filters` array —
  * mirrors the entity-service's `incidentFilterFieldSet` (see
- * `incident_filters.go`) exactly. Deliberately a superset of what this
- * portal currently builds a control for (only `assignmentGroupId`, for the
- * SRE Team filter, at present) — narrowing the FE type to just that one
- * value would create a stale-type problem the moment another field gets a
- * control.
+ * `incident_filters.go`) exactly. This portal currently builds controls for
+ * `assignmentGroupId` (SRE Team), `slaViolated`, `createdOn`, and
+ * `productName` — the remaining values (`state`, `businessServiceId`,
+ * `madeSla`) are included for completeness/future controls, not dead code.
  */
 export type BeIncidentFieldFilterField =
   | "state"
@@ -3149,35 +3148,21 @@ export interface BeIncidentSearchPayload {
     priorities?: BeIncidentPriority[];
     parentIds?: string[];
     /**
-     * At least one breached SLA record (optional). `false` and omitted are
-     * identical to the backend — it applies no SLA restriction either way,
-     * `false` does NOT mean "SLA met" — so callers should omit this key
-     * entirely rather than send `false`.
-     */
-    slaViolated?: boolean;
-    /** Inclusive UTC bound on the creation timestamp: `YYYY-MM-DDTHH:MM:SSZ`. */
-    startCreatedDate?: string;
-    /** Inclusive UTC bound on the creation timestamp: `YYYY-MM-DDTHH:MM:SSZ`. */
-    endCreatedDate?: string;
-    /**
-     * Union match on the name of the service the incident relates to
-     * (optional). Incidents carry no product dimension of their own, so this
-     * resolves against the related service's name, which is only ~43%
-     * populated and mixes real products with customer names and service
-     * categories — filtering by this misses roughly half of all incidents.
-     */
-    productNames?: string[];
-    /**
      * A single incident number (e.g. "INC0090472"); matches exactly. Routed
      * as a first-class filter rather than through the free-text searchQuery
      * scan.
      */
     number?: string;
     /**
-     * The generic field/op/values filter array (see {@link BeIncidentFieldFilter}) —
-     * additive alongside the named fields above, not a replacement for them.
-     * Only the SRE Team control (`assignmentGroupId`/`"in"`) populates this
-     * today.
+     * The generic field/op/values filter array (see {@link BeIncidentFieldFilter}).
+     * This is the ONLY way to express `state`, `assignmentGroupId`,
+     * `businessServiceId`, `createdOn`, `slaViolated`, `madeSla`, and
+     * `productName` — the backend's `SearchIncidentsRequest.filters` has no
+     * flat named keys for any of these (there used to be `slaViolated`/
+     * `startCreatedDate`/`endCreatedDate`/`productNames` scalars here, but
+     * the backend now rejects them as unknown fields; always route through
+     * this array instead). `searchQuery`/`priorities`/`parentIds`/`number`
+     * above remain flat — only those four.
      */
     filters?: BeIncidentFieldFilter[];
   };
