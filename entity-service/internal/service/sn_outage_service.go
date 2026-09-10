@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -179,7 +180,7 @@ func (s *snOutageService) CreateOutage(ctx context.Context, req domain.CreateOut
 	if strings.TrimSpace(req.ShortDescription) == "" {
 		return domain.CreateOutageResponse{}, &apierror.ValidationError{Msg: "shortDescription is required"}
 	}
-	if len(req.ShortDescription) > 160 {
+	if utf8.RuneCountInString(req.ShortDescription) > 160 {
 		return domain.CreateOutageResponse{}, &apierror.ValidationError{Msg: "shortDescription must be 160 characters or fewer"}
 	}
 	if req.ConfigurationItemID != nil {
@@ -477,8 +478,9 @@ func (s *snOutageService) UpdateOutage(ctx context.Context, req domain.PatchOuta
 
 // snAddOutageCommunicationPayload is the Choreo POST /outages/{id}/communications request body.
 type snAddOutageCommunicationPayload struct {
-	Channel string `json:"channel"`
-	Body    string `json:"body"`
+	Channel                      string `json:"channel"`
+	Body                         string `json:"body"`
+	AcknowledgePublicPublication *bool  `json:"acknowledgePublicPublication,omitempty"`
 }
 
 // snOutageCommunication mirrors a single Choreo outage communication entry.
@@ -525,7 +527,11 @@ func (s *snOutageService) AddOutageCommunication(ctx context.Context, req domain
 
 	token := middleware.UserIDTokenFromContext(ctx)
 
-	payload := snAddOutageCommunicationPayload{Channel: string(req.Channel), Body: req.Body}
+	payload := snAddOutageCommunicationPayload{
+		Channel:                      string(req.Channel),
+		Body:                         req.Body,
+		AcknowledgePublicPublication: req.AcknowledgePublicPublication,
+	}
 
 	raw, err := s.client.Post(ctx, "/outages/"+uuidToSysid(req.OutageID)+"/communications", token, payload)
 	if err != nil {

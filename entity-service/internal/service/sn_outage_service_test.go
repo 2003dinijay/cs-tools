@@ -19,6 +19,7 @@ package service
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -55,6 +56,58 @@ func TestSNOutageService_CreateOutage_ValidatesRequiredFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSNOutageService_CreateOutage_ShortDescriptionRuneLimit verifies the 160
+// character limit is enforced by rune count, not byte length, so a
+// shortDescription made of multibyte characters is not wrongly rejected (or
+// wrongly accepted) relative to an ASCII one of the same length.
+func TestSNOutageService_CreateOutage_ShortDescriptionRuneLimit(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/outages", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"message": "Outage created successfully",
+			"outage": {
+				"id": "` + testOutageSysid + `", "number": "OUT0001883",
+				"type": "outage", "status": "in_progress",
+				"begin": "2026-08-18 09:00:00", "end": null, "duration": null,
+				"shortDescription": "test outage",
+				"configurationItem": null, "incident": null,
+				"affectedConfigurationItems": [],
+				"publishesToStatusPage": false, "statusPageCloud": null,
+				"createdOn": "2026-08-18 09:00:00", "createdBy": "engineer@example.com",
+				"updatedOn": "2026-08-18 09:00:00", "updatedBy": "engineer@example.com"
+			}
+		}`))
+	})
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowOutageService(client)
+
+	// "é" is 2 bytes in UTF-8 but 1 rune, so 160 of them is 320 bytes.
+	exactly160 := strings.Repeat("é", 160)
+	over160 := strings.Repeat("é", 161)
+
+	t.Run("160 multibyte characters passes", func(t *testing.T) {
+		req := domain.CreateOutageRequest{
+			Type: domain.OutageTypeOutage, Begin: "2026-08-18 09:00:00", ShortDescription: exactly160,
+		}
+		if _, err := svc.CreateOutage(contextWithUserIDToken("token"), req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("161 multibyte characters is rejected", func(t *testing.T) {
+		req := domain.CreateOutageRequest{
+			Type: domain.OutageTypeOutage, Begin: "2026-08-18 09:00:00", ShortDescription: over160,
+		}
+		_, err := svc.CreateOutage(contextWithUserIDToken("token"), req)
+		var ve *apierror.ValidationError
+		if !isValidationError(err, &ve) {
+			t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+		}
+	})
 }
 
 // isValidationError is a small helper so the table test above stays readable.
@@ -254,6 +307,44 @@ func TestSNOutageService_AddOutageCommunication_ExternalIsPublic(t *testing.T) {
 	}
 	if !resp.Communication.IsPublic {
 		t.Error("expected external channel communication to be public")
+	}
+}
+
+// TestSNOutageService_AddOutageCommunication_AcknowledgePublicPublicationPassThrough
+// verifies the same publication-acknowledgement gate used on outage creation
+// can also be supplied on an external communication and is forwarded to the
+// backing service unchanged.
+func TestSNOutageService_AddOutageCommunication_AcknowledgePublicPublicationPassThrough(t *testing.T) {
+	var gotBody map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/outages/"+testOutageSysid+"/communications", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"message": "Communication added successfully",
+			"communication": {
+				"id": "` + testOutageSysid + `", "channel": "external", "body": "status update",
+				"isPublic": true, "createdOn": "2026-08-18 09:00:00", "createdBy": "engineer@example.com"
+			}
+		}`))
+	})
+
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowOutageService(client)
+
+	ack := true
+	req := domain.AddOutageCommunicationRequest{
+		OutageID: testOutageUUID, Channel: domain.OutageCommunicationChannelExternal, Body: "status update",
+		AcknowledgePublicPublication: &ack,
+	}
+	if _, err := svc.AddOutageCommunication(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotAck, _ := gotBody["acknowledgePublicPublication"].(bool); !gotAck {
+		t.Errorf("sent acknowledgePublicPublication: got %v, want true", gotBody["acknowledgePublicPublication"])
 	}
 }
 

@@ -5047,10 +5047,14 @@ type SearchOutagesResponse struct {
 }
 
 // AddOutageCommunicationRequest is the input for POST /outages/{id}/communications.
+// AcknowledgePublicPublication mirrors the same gate CreateOutageRequest uses:
+// it is required only when Channel is external and the outage is publicly
+// visible; the backing data source enforces that, not this layer.
 type AddOutageCommunicationRequest struct {
-	OutageID string                     `json:"-"`
-	Channel  OutageCommunicationChannel `json:"channel"`
-	Body     string                     `json:"body"`
+	OutageID                     string                     `json:"-"`
+	Channel                      OutageCommunicationChannel `json:"channel"`
+	Body                         string                     `json:"body"`
+	AcknowledgePublicPublication *bool                      `json:"acknowledgePublicPublication,omitempty"`
 }
 
 // OutageCommunication is a single communication journal entry on an outage.

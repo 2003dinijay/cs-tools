@@ -9452,14 +9452,16 @@ components:
               nullable: true
             priority:
               type: string
-              enum: [critical, high, moderate, low]
               nullable: true
+              description: >-
+                Normally one of critical/high/moderate/low. An unmapped upstream
+                choice is passed through as its raw label.
             category:
               type: string
-              enum: [hardware, software, service, system_software, applications_software,
-                     network, telecom, documentation, other, regular_release_cloud,
-                     hotfix_release_cloud, devops, cloud_computing]
               nullable: true
+              description: >-
+                Normally one of the 13 known category values. An unmapped upstream
+                choice is passed through as its raw label.
             requestedBy:
               $ref: '#/components/schemas/EntityRef'
               nullable: true
@@ -12400,9 +12402,12 @@ components:
     HandOffIncidentToSpecialistRequest:
       type: object
       description: >-
-        Hands an incident off to its specialist group in one atomic call: moves the incident
-        to the specialist group for its business service, clears the assignee, opens a
-        runbook-gap task, and (by default) files an internal issue for the receiving team.
+        Hands an incident off to its specialist group in one call: moves the incident to the
+        specialist group for its business service, clears the assignee, opens a runbook-gap
+        task, and (by default) files an internal issue for the receiving team. Filing the
+        internal issue is best-effort, not atomic with the rest of the handoff -- a
+        successful response means the handoff itself succeeded even if the issue could not
+        be created; see githubIssueError on the response.
       required: [reasonCode]
       properties:
         reasonCode:
@@ -14059,6 +14064,10 @@ components:
           enum: [external, internal, additional]
         body:
           type: string
+        acknowledgePublicPublication:
+          type: boolean
+          nullable: true
+          description: Required when channel is external and the outage is publicly visible.
 
     AddOutageCommunicationResponse:
       type: object

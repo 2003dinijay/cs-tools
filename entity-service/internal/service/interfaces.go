@@ -666,12 +666,15 @@ type IncidentService interface {
 	SearchIncidentActivities(ctx context.Context, req domain.SearchIncidentActivitiesRequest) (domain.SearchIncidentActivitiesResponse, error)
 
 	// HandOffIncidentToSpecialist hands an incident off to its specialist group in one
-	// atomic call: moves the incident to the specialist group for its business service,
-	// clears the assignee, opens a runbook-gap task, and (by default) files an internal
-	// issue for the receiving team. A ValidationError is returned for invalid input, a
-	// NotFoundError if the incident does not exist, and a ConflictError if the incident is
-	// not eligible (wrong business service, not in progress, or already with the specialist
-	// group for this service).
+	// call: moves the incident to the specialist group for its business service, clears
+	// the assignee, opens a runbook-gap task, and (by default) files an internal issue for
+	// the receiving team. The internal issue filing is best-effort, not atomic with the
+	// rest of the handoff: a 200 response means the handoff itself succeeded even if the
+	// issue could not be created, in which case the response's GithubIssueError is set and
+	// callers must check it rather than assume all-or-nothing. A ValidationError is
+	// returned for invalid input, a NotFoundError if the incident does not exist, and a
+	// ConflictError if the incident is not eligible (wrong business service, not in
+	// progress, or already with the specialist group for this service).
 	HandOffIncidentToSpecialist(ctx context.Context, req domain.HandOffIncidentToSpecialistRequest) (domain.HandOffIncidentToSpecialistResponse, error)
 }
 
