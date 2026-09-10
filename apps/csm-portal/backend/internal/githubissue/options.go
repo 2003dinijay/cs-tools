@@ -71,6 +71,15 @@ func ParseRepoOptions(raw string) ([]RepoOption, error) {
 	if err := json.Unmarshal([]byte(raw), &options); err != nil {
 		return nil, fmt.Errorf("GITHUB_ISSUE_REPO_OPTIONS: parse: %w", err)
 	}
+	// JSON "null" unmarshals into a nil slice with no error, which would
+	// otherwise be indistinguishable from an unset env var (the empty-string
+	// case above, which is a legitimate "not configured yet" signal). "null"
+	// is not: a set-but-null config value should fail loudly, not silently
+	// install an empty catalogue. "[]" is fine — json.Unmarshal leaves the
+	// slice non-nil for an empty array, so it never trips this check.
+	if options == nil {
+		return nil, fmt.Errorf("GITHUB_ISSUE_REPO_OPTIONS: must not be JSON null")
+	}
 
 	seen := make(map[string]bool, len(options))
 	for i, o := range options {

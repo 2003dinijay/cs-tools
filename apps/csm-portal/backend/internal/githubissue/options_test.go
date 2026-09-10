@@ -1,0 +1,71 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package githubissue
+
+import "testing"
+
+func TestParseRepoOptions(t *testing.T) {
+	t.Run("empty string yields no options and no error", func(t *testing.T) {
+		got, err := ParseRepoOptions("")
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if got != nil {
+			t.Errorf("options = %+v, want nil", got)
+		}
+	})
+
+	t.Run("JSON null is rejected, not treated as unset", func(t *testing.T) {
+		if _, err := ParseRepoOptions("null"); err == nil {
+			t.Fatal("err = nil, want an error for a JSON null value")
+		}
+	})
+
+	t.Run("JSON empty array yields no options and no error", func(t *testing.T) {
+		got, err := ParseRepoOptions("[]")
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("options = %+v, want empty", got)
+		}
+	})
+
+	t.Run("valid options parse verbatim", func(t *testing.T) {
+		got, err := ParseRepoOptions(`[{"value":"asgardeo","label":"Asgardeo","owner":"wso2-enterprise","repo":"wso2-iam-internal"}]`)
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if len(got) != 1 || got[0] != (RepoOption{Value: "asgardeo", Label: "Asgardeo", Owner: "wso2-enterprise", Repo: "wso2-iam-internal"}) {
+			t.Errorf("options = %+v, want the single parsed entry", got)
+		}
+	})
+
+	t.Run("duplicate value is rejected", func(t *testing.T) {
+		_, err := ParseRepoOptions(`[{"value":"a","label":"A","owner":"o","repo":"r"},{"value":"a","label":"B","owner":"o","repo":"r"}]`)
+		if err == nil {
+			t.Fatal("err = nil, want an error for a duplicate value")
+		}
+	})
+
+	t.Run("blank field is rejected", func(t *testing.T) {
+		_, err := ParseRepoOptions(`[{"value":"a","label":"","owner":"o","repo":"r"}]`)
+		if err == nil {
+			t.Fatal("err = nil, want an error for a blank label")
+		}
+	})
+}
