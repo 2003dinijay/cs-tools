@@ -38,7 +38,7 @@ func TestMetadataHandler_GetMetadata(t *testing.T) {
 		defer githubissue.SetActive(original)
 
 		githubissue.SetActive([]githubissue.RepoOption{
-			{Value: "choreo", Label: "WSO2 Developer Platform (Choreo)", Owner: "wso2-enterprise", Repo: "choreo"},
+			{Value: "choreo", DisplayLabel: "WSO2 Developer Platform (Choreo)", Owner: "wso2-enterprise", Repo: "choreo"},
 		})
 
 		h := NewMetadataHandler()
@@ -52,7 +52,7 @@ func TestMetadataHandler_GetMetadata(t *testing.T) {
 			t.Fatalf("githubIssueRepoOptions = %+v, want exactly the one configured option", got.GithubIssueRepoOptions)
 		}
 		opt := got.GithubIssueRepoOptions[0]
-		if opt.Value != "choreo" || opt.Label != "WSO2 Developer Platform (Choreo)" || opt.Owner != "wso2-enterprise" || opt.Repo != "choreo" {
+		if opt.Value != "choreo" || opt.DisplayLabel != "WSO2 Developer Platform (Choreo)" || opt.Owner != "wso2-enterprise" || opt.Repo != "choreo" {
 			t.Errorf("option = %+v, want it to match the configured entry verbatim", opt)
 		}
 	})

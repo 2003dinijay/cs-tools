@@ -179,7 +179,7 @@ The webapp's "Open Git issue" dialog offers a CS engineer a list of destination 
 
 | Variable | Description |
 |---|---|
-| `GITHUB_ISSUE_REPO_OPTIONS` | JSON array of `{"value","label","owner","repo"}` objects, one per dropdown option — e.g. `[{"value":"choreo","label":"WSO2 Developer Platform (Choreo)","owner":"wso2-enterprise","repo":"choreo"}]`. Optional — unset returns an empty catalogue; malformed content (bad JSON, a blank field, or a duplicate `value`) is fatal, naming the offending entry |
+| `GITHUB_ISSUE_REPO_OPTIONS` | JSON array of `{"value","displayLabel","owner","repo"}` objects, one per dropdown option — e.g. `[{"value":"choreo","displayLabel":"WSO2 Developer Platform (Choreo)","owner":"wso2-enterprise","repo":"choreo"}]`. Optional — unset returns an empty catalogue; malformed content (bad JSON, a blank field, or a duplicate `value`) is fatal, naming the offending entry |
 
 ### Dashboards
 
@@ -308,7 +308,7 @@ backend/
 
 ### Metadata
 
-- `GET /metadata` — The portal's single config-driven metadata bag, fetched once by the webapp rather than per-field endpoints. Currently one field: `githubIssueRepoOptions` — the "Open Git issue" dialog's repository dropdown options (`value`, `label`, `owner`, `repo`), from `GITHUB_ISSUE_REPO_OPTIONS` (see [Configuration](#open-git-issue-dialog-repository-catalogue) above). Independent of the `reason`-based repo selection on `POST /cases/{id}/github-issues` above — this backs a different, user-facing repo picker. More fields will be added here over time
+- `GET /metadata` — The portal's single config-driven metadata bag, fetched once by the webapp rather than per-field endpoints. Currently one field: `githubIssueRepoOptions` — the "Open Git issue" dialog's repository dropdown options (`value`, `displayLabel`, `owner`, `repo`), from `GITHUB_ISSUE_REPO_OPTIONS` (see [Configuration](#open-git-issue-dialog-repository-catalogue) above). Independent of the `reason`-based repo selection on `POST /cases/{id}/github-issues` above — this backs a different, user-facing repo picker. More fields will be added here over time
 
 ### Users
 

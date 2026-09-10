@@ -3202,7 +3202,7 @@ paths:
         Returns a single growable bag of reference/config data the webapp
         fetches once, rather than a dedicated endpoint per field.
         `githubIssueRepoOptions` is the first field: for each option, its
-        dropdown value/label plus the actual GitHub owner/repo an issue filed
+        dropdown value/display label plus the actual GitHub owner/repo an issue filed
         against it is created in, resolved once at process startup from
         GITHUB_ISSUE_REPO_OPTIONS and held in memory; not user-configurable at
         runtime. A deployment with that unset returns an empty array, not an
@@ -7309,7 +7309,7 @@ components:
       type: object
       required:
         - value
-        - label
+        - displayLabel
         - owner
         - repo
       properties:
@@ -7318,7 +7318,7 @@ components:
           description: >
             Opaque dropdown selection key. Not itself a repo name — owner/repo
             below carry the actual destination.
-        label:
+        displayLabel:
           type: string
           description: Human-readable option text shown in the dropdown.
         owner:

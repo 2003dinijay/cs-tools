@@ -26,10 +26,10 @@ import (
 // metadataGithubIssueRepoOptionView is one entry of the "repository" catalogue
 // the "Open Git issue" dialog offers — see githubissue.RepoOption.
 type metadataGithubIssueRepoOptionView struct {
-	Value string `json:"value"`
-	Label string `json:"label"`
-	Owner string `json:"owner"`
-	Repo  string `json:"repo"`
+	Value        string `json:"value"`
+	DisplayLabel string `json:"displayLabel"`
+	Owner        string `json:"owner"`
+	Repo         string `json:"repo"`
 }
 
 // MetadataResponse is the portal's response for GET /metadata: a single
@@ -72,10 +72,10 @@ func (h *MetadataHandler) GetMetadata(w http.ResponseWriter, r *http.Request) {
 	views := make([]metadataGithubIssueRepoOptionView, 0, len(options))
 	for _, o := range options {
 		views = append(views, metadataGithubIssueRepoOptionView{
-			Value: o.Value,
-			Label: o.Label,
-			Owner: o.Owner,
-			Repo:  o.Repo,
+			Value:        o.Value,
+			DisplayLabel: o.DisplayLabel,
+			Owner:        o.Owner,
+			Repo:         o.Repo,
 		})
 	}
 

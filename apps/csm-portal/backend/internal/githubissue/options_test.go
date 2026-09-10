@@ -46,26 +46,26 @@ func TestParseRepoOptions(t *testing.T) {
 	})
 
 	t.Run("valid options parse verbatim", func(t *testing.T) {
-		got, err := ParseRepoOptions(`[{"value":"asgardeo","label":"Asgardeo","owner":"wso2-enterprise","repo":"wso2-iam-internal"}]`)
+		got, err := ParseRepoOptions(`[{"value":"asgardeo","displayLabel":"Asgardeo","owner":"wso2-enterprise","repo":"wso2-iam-internal"}]`)
 		if err != nil {
 			t.Fatalf("err = %v, want nil", err)
 		}
-		if len(got) != 1 || got[0] != (RepoOption{Value: "asgardeo", Label: "Asgardeo", Owner: "wso2-enterprise", Repo: "wso2-iam-internal"}) {
+		if len(got) != 1 || got[0] != (RepoOption{Value: "asgardeo", DisplayLabel: "Asgardeo", Owner: "wso2-enterprise", Repo: "wso2-iam-internal"}) {
 			t.Errorf("options = %+v, want the single parsed entry", got)
 		}
 	})
 
 	t.Run("duplicate value is rejected", func(t *testing.T) {
-		_, err := ParseRepoOptions(`[{"value":"a","label":"A","owner":"o","repo":"r"},{"value":"a","label":"B","owner":"o","repo":"r"}]`)
+		_, err := ParseRepoOptions(`[{"value":"a","displayLabel":"A","owner":"o","repo":"r"},{"value":"a","displayLabel":"B","owner":"o","repo":"r"}]`)
 		if err == nil {
 			t.Fatal("err = nil, want an error for a duplicate value")
 		}
 	})
 
 	t.Run("blank field is rejected", func(t *testing.T) {
-		_, err := ParseRepoOptions(`[{"value":"a","label":"","owner":"o","repo":"r"}]`)
+		_, err := ParseRepoOptions(`[{"value":"a","displayLabel":"","owner":"o","repo":"r"}]`)
 		if err == nil {
-			t.Fatal("err = nil, want an error for a blank label")
+			t.Fatal("err = nil, want an error for a blank displayLabel")
 		}
 	})
 }

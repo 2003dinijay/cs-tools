@@ -41,14 +41,14 @@ import (
 
 // RepoOption is a single "repository" choice the "Open Git issue" dialog
 // offers. Value is an opaque dropdown key (not itself a repo name — Owner and
-// Repo carry that), Label is the human-readable option text, and Owner/Repo
-// are the actual GitHub org/repo an issue filed against this option is
-// created in.
+// Repo carry that), DisplayLabel is the human-readable option text, and
+// Owner/Repo are the actual GitHub org/repo an issue filed against this
+// option is created in.
 type RepoOption struct {
-	Value string `json:"value"`
-	Label string `json:"label"`
-	Owner string `json:"owner"`
-	Repo  string `json:"repo"`
+	Value        string `json:"value"`
+	DisplayLabel string `json:"displayLabel"`
+	Owner        string `json:"owner"`
+	Repo         string `json:"repo"`
 }
 
 // ParseRepoOptions decodes GITHUB_ISSUE_REPO_OPTIONS, a JSON array of
@@ -90,8 +90,8 @@ func ParseRepoOptions(raw string) ([]RepoOption, error) {
 			return nil, fmt.Errorf("GITHUB_ISSUE_REPO_OPTIONS[%d]: duplicate \"value\" %q", i, o.Value)
 		}
 		seen[o.Value] = true
-		if strings.TrimSpace(o.Label) == "" {
-			return nil, fmt.Errorf("GITHUB_ISSUE_REPO_OPTIONS[%d] (value %q): %q is empty", i, o.Value, "label")
+		if strings.TrimSpace(o.DisplayLabel) == "" {
+			return nil, fmt.Errorf("GITHUB_ISSUE_REPO_OPTIONS[%d] (value %q): %q is empty", i, o.Value, "displayLabel")
 		}
 		if strings.TrimSpace(o.Owner) == "" {
 			return nil, fmt.Errorf("GITHUB_ISSUE_REPO_OPTIONS[%d] (value %q): %q is empty", i, o.Value, "owner")
