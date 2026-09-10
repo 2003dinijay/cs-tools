@@ -12073,6 +12073,16 @@ components:
           items:
             $ref: '#/components/schemas/LinkedServiceRequestRef'
           description: Service-request cases whose parent points to this incident.
+        specialistHandoff:
+          allOf:
+            - $ref: '#/components/schemas/IncidentSpecialistHandoffSummary'
+          nullable: true
+          description: >-
+            Derived summary of a specialist-group handoff, null when the incident has
+            never been handed off. Nothing is persisted for it: it is recomputed at
+            read time, so a handoff performed through the backing data source's own
+            native UI reads identically to one performed through
+            POST /incidents/{id}/specialist-handoffs.
 
     UpdateIncidentPayload:
       type: object
@@ -12270,6 +12280,56 @@ components:
                 this rather than report a clean success when it is non-null.
             incident:
               $ref: '#/components/schemas/IncidentDetail'
+
+    IncidentSpecialistHandoffSummaryTask:
+      type: object
+      required: [number, subject]
+      properties:
+        number:
+          type: string
+        subject:
+          type: string
+        state:
+          type: string
+          nullable: true
+
+    IncidentSpecialistHandoffSummary:
+      type: object
+      description: >-
+        Derived summary of a specialist handoff, surfaced on the incident detail
+        response. Nothing is persisted for it -- it is recomputed at read time from
+        the incident's own journal, assignment group, and linked runbook task.
+      required:
+        - reasonCode
+        - reasonDescription
+        - escalationTeam
+        - handedOffAt
+        - handedOffBy
+        - assignmentGroup
+        - task
+        - githubIssueUrl
+      properties:
+        reasonCode:
+          type: string
+          enum: [no-runbook, runbook-not-working]
+        reasonDescription:
+          type: string
+        escalationTeam:
+          type: string
+          nullable: true
+          enum: [choreo-runtime-team, choreo-apim-team]
+        handedOffAt:
+          type: string
+        handedOffBy:
+          type: string
+          nullable: true
+        assignmentGroup:
+          $ref: '#/components/schemas/EntityRef'
+        task:
+          $ref: '#/components/schemas/IncidentSpecialistHandoffSummaryTask'
+        githubIssueUrl:
+          type: string
+          nullable: true
 
     UpdateProblemPayload:
       type: object
