@@ -2208,6 +2208,16 @@ type CreateCaseCommentRequest struct {
 	CreatedBy string      `json:"-"`
 	Type      CommentType `json:"type"`
 	Content   string      `json:"content"`
+	// MentionedUserIDs are the user ids (this service's own UUID form of a
+	// ServiceNow sys_id — the same id GET /users/{id} accepts, see
+	// snUserReference's doc comment) the comment's author @mentioned in
+	// Content, as sent by the caller's mention-typeahead. Optional: absent
+	// or empty means no mentions, and the case.mentioned event isn't
+	// published at all (see snCaseService.publishCaseMentioned). A mentioned
+	// id that ServiceNow doesn't resolve to a user is silently skipped
+	// rather than failing the comment write — see
+	// snCaseService.resolveMentionedUserEmails's own doc comment.
+	MentionedUserIDs []string `json:"mentionedUserIds,omitempty"`
 }
 
 // AddCaseTagRequest is the request body for POST /cases/{id}/tags. SN's tagging is

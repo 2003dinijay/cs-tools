@@ -48,6 +48,12 @@ const publishCaseCreatedTimeout = 5 * time.Second
 // publishCaseCreatedTimeout.
 const publishCommentAddedTimeout = 5 * time.Second
 
+// publishCaseMentionedTimeout bounds publishCaseMentioned's enrichment
+// (GetCaseByID plus the /users/search lookup resolveMentionedUserEmails
+// issues to resolve the mentioned ids) + publish — same reasoning as
+// publishCaseCreatedTimeout.
+const publishCaseMentionedTimeout = 5 * time.Second
+
 // publishStatusChangedTimeout bounds two separate things that share the
 // same reasoning as publishCaseCreatedTimeout: UpdateCase's own pre-PATCH
 // GetCaseByID enrichment/no-op check, and publishStatusChanged's own
@@ -1138,17 +1144,25 @@ func (s *snCaseService) resolveCommentAuthorName(ctx context.Context, caseID, co
 // CreatedBy string, unresolved — see snCreateCommentResponse) — every
 // other place in this file that needs a resolved author name gets it from
 // a GET/search response, never a bare create-acknowledgment response, so
-// this re-fetches via resolveCommentAuthorName (SearchCaseComments)
+// the caller resolves it via resolveCommentAuthorName (SearchCaseComments)
 // instead of trusting the create response, mirroring publishCaseCreated's
-// own "re-fetch rather than trust the create response" precedent. If the
-// author name can't be resolved that way, publishing is skipped (logged)
-// rather than sending an event with an empty or fabricated name — see
-// resolveCommentAuthorName's own doc comment for when that happens.
+// own "re-fetch rather than trust the create response" precedent, and
+// passes it in as authorName rather than this method resolving it itself —
+// publishCaseMentioned needs the exact same name for the exact same
+// comment, and re-issuing SearchCaseComments a second time just to resolve
+// it again would be wasted work. If the author name couldn't be resolved
+// (authorName == ""), publishing is skipped (logged) rather than sending
+// an event with an empty or fabricated name — see resolveCommentAuthorName's
+// own doc comment for when that happens.
 //
 // Runs synchronously, bounded by publishCommentAddedTimeout — see
 // publishCaseCreated's own doc comment for why (same reasoning).
-func (s *snCaseService) publishCommentAdded(ctx context.Context, req domain.CreateCaseCommentRequest, commentID string) {
+func (s *snCaseService) publishCommentAdded(ctx context.Context, req domain.CreateCaseCommentRequest, commentID, authorName string) {
 	if s.publisher == nil {
+		return
+	}
+	if authorName == "" {
+		slog.InfoContext(ctx, "sn create comment: case.comment_added not published, could not resolve comment author's display name", "caseId", req.CaseID)
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, publishCommentAddedTimeout)
@@ -1166,12 +1180,6 @@ func (s *snCaseService) publishCommentAdded(ctx context.Context, req domain.Crea
 	}
 	if len(recipients) == 0 {
 		slog.InfoContext(ctx, "sn create comment: case.comment_added not published, case has no watchers to email", "caseId", req.CaseID)
-		return
-	}
-
-	authorName := s.resolveCommentAuthorName(ctx, req.CaseID, commentID)
-	if authorName == "" {
-		slog.InfoContext(ctx, "sn create comment: case.comment_added not published, could not resolve comment author's display name", "caseId", req.CaseID)
 		return
 	}
 
@@ -1195,6 +1203,129 @@ func (s *snCaseService) publishCommentAdded(ctx context.Context, req domain.Crea
 		// Not logging err itself — see publishCaseCreated's matching log
 		// line for why.
 		slog.ErrorContext(ctx, "sn create comment: publish case.comment_added failed", "caseId", req.CaseID)
+	}
+}
+
+// resolveMentionedUserEmails resolves each of ids (this service's own UUID
+// form of a ServiceNow user sys_id — see domain.CreateCaseCommentRequest.
+// MentionedUserIDs's own doc comment) to that user's email via a single
+// ServiceNow user search. There is no get-by-id endpoint upstream, so this
+// mirrors snUserService.GetUser's own "search filtered by the userIds
+// filter" approach (see that method's doc comment) rather than issuing one
+// request per id.
+//
+// An id that fails UUID validation, or that the search doesn't resolve to a
+// user with a non-empty email (e.g. a stale id for a deactivated or deleted
+// user), is silently dropped rather than failing the whole lookup — a
+// mention must never fail the comment write (see publishCaseMentioned's own
+// doc comment), and the ids that did resolve are still worth notifying.
+func (s *snCaseService) resolveMentionedUserEmails(ctx context.Context, caseID string, ids []string) []string {
+	sysIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if err := validateUUIDs("mentionedUserIds", []string{id}); err != nil {
+			slog.WarnContext(ctx, "sn create comment: skipping malformed mentioned user id", "caseId", caseID, "id", id)
+			continue
+		}
+		sysIDs = append(sysIDs, uuidToSysid(id))
+	}
+	if len(sysIDs) == 0 {
+		return nil
+	}
+
+	token := middleware.UserIDTokenFromContext(ctx)
+	payload := snUserSearchPayload{
+		Filters:    snUserFilters{UserIDs: sysIDs},
+		Pagination: snProjectPagination{Limit: len(sysIDs), Offset: 0},
+	}
+	raw, err := s.client.Post(ctx, "/users/search", token, payload)
+	if err != nil {
+		slog.ErrorContext(ctx, "sn create comment: resolve mentioned users failed", "caseId", caseID, "error", err)
+		return nil
+	}
+	var snResp snUsersResponse
+	if err := json.Unmarshal(raw, &snResp); err != nil {
+		slog.ErrorContext(ctx, "sn create comment: parse mentioned users response failed", "caseId", caseID, "error", err)
+		return nil
+	}
+
+	emails := make([]string, 0, len(snResp.Users))
+	for _, u := range snResp.Users {
+		if u.Email == "" {
+			slog.WarnContext(ctx, "sn create comment: skipping mentioned user with no resolved email", "caseId", caseID, "id", u.ID)
+			continue
+		}
+		emails = append(emails, u.Email)
+	}
+	return emails
+}
+
+// publishCaseMentioned best-effort publishes a case.mentioned event when a
+// new comment carries at least one resolved @mention
+// (req.MentionedUserIDs). This is deliberately a separate event from
+// case.comment_added rather than an extra field on it: case.comment_added's
+// audience is always the case's watch list, regardless of who (if anyone)
+// was mentioned, while case.mentioned's audience is exactly the mentioned
+// users and only them — conflating the two would either spam the watch
+// list with mention emails or silently drop the mention notification for a
+// mentioned user who isn't a watcher.
+//
+// mentionerName is the comment author's resolved display name, passed in
+// by the caller rather than resolved here — see publishCommentAdded's own
+// doc comment for why. Skips publishing (logged) when mentionerName is
+// empty, req.MentionedUserIDs resolves to no recipients (see
+// resolveMentionedUserEmails), or — for a work note — none of the resolved
+// recipients survive filterWso2Emails, the same convention
+// publishCommentAdded uses for an empty watch list; a mention must never
+// fail the comment write itself.
+//
+// Runs synchronously, bounded by publishCaseMentionedTimeout — see
+// publishCaseCreated's own doc comment for why (same reasoning).
+func (s *snCaseService) publishCaseMentioned(ctx context.Context, req domain.CreateCaseCommentRequest, commentID, mentionerName string) {
+	if s.publisher == nil || len(req.MentionedUserIDs) == 0 {
+		return
+	}
+	if mentionerName == "" {
+		slog.InfoContext(ctx, "sn create comment: case.mentioned not published, could not resolve mentioner's display name", "caseId", req.CaseID)
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, publishCaseMentionedTimeout)
+	defer cancel()
+
+	cv, err := s.GetCaseByID(ctx, req.CaseID)
+	if err != nil {
+		slog.ErrorContext(ctx, "sn create comment: enrich case for case.mentioned publish failed", "caseId", req.CaseID)
+		return
+	}
+
+	recipients := s.resolveMentionedUserEmails(ctx, req.CaseID, req.MentionedUserIDs)
+	if req.Type == domain.CommentTypeWorkNote {
+		recipients = filterWso2Emails(recipients)
+	}
+	if len(recipients) == 0 {
+		slog.InfoContext(ctx, "sn create comment: case.mentioned not published, no mentioned user resolved to a recipient", "caseId", req.CaseID)
+		return
+	}
+
+	payload, err := json.Marshal(events.CaseMentionedPayload{
+		MentionerName:  mentionerName,
+		ProjectID:      cv.ProjectDetails.ID,
+		CaseID:         req.CaseID,
+		CaseNumber:     cv.Number,
+		WSO2CaseID:     cv.InternalID,
+		CaseTitle:      cv.Subject,
+		CaseComment:    req.Content,
+		CommentID:      commentID,
+		IsInternalNote: req.Type == domain.CommentTypeWorkNote,
+		Recipients:     recipients,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "sn create comment: encode case.mentioned payload failed", "caseId", req.CaseID, "error", err)
+		return
+	}
+	if err := s.publisher.Publish(ctx, events.TypeCaseMentioned, req.CaseID, payload); err != nil {
+		// Not logging err itself — see publishCaseCreated's matching log
+		// line for why.
+		slog.ErrorContext(ctx, "sn create comment: publish case.mentioned failed", "caseId", req.CaseID)
 	}
 }
 
@@ -1751,7 +1882,18 @@ func (s *snCaseService) CreateCaseComment(ctx context.Context, req domain.Create
 			CreatedBy: snResp.Comment.CreatedBy,
 		},
 	}
-	s.publishCommentAdded(ctx, req, result.Comment.ID)
+	// authorName is resolved once here (rather than inside each publish*
+	// method) so publishCaseMentioned can reuse it for
+	// CaseMentionedPayload.MentionerName without re-issuing
+	// resolveCommentAuthorName's own SearchCaseComments lookup — see that
+	// method's doc comment for why it can't be trusted from the create
+	// response. Resolving it when s.publisher is nil would be wasted work,
+	// so this mirrors both publish methods' own nil-check.
+	if s.publisher != nil {
+		authorName := s.resolveCommentAuthorName(ctx, req.CaseID, result.Comment.ID)
+		s.publishCommentAdded(ctx, req, result.Comment.ID, authorName)
+		s.publishCaseMentioned(ctx, req, result.Comment.ID, authorName)
+	}
 	return result, nil
 }
 
