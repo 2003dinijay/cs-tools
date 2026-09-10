@@ -1680,8 +1680,8 @@ export interface BeProject {
   /** Whether this project is eligible to raise service requests, as
    *  precomputed by the backing data source. */
   hasSr?: boolean;
-  startDate?: string;
-  endDate?: string;
+  startDate?: string | null;
+  endDate?: string | null;
   createdAt?: string;
   updatedAt?: string;
 }
