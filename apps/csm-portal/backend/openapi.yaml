@@ -5265,6 +5265,75 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /incidents/{id}/specialist-handoffs:
+    post:
+      summary: Hand an incident off to its specialist group (backing data source only).
+      description: >
+        One atomic call: moves the incident to the specialist group for its business
+        service, clears the assignee, opens a runbook-gap task, and (by default) files
+        an internal issue for the receiving team. The request body is validated at this
+        layer for reasonCode and escalationTeam, then forwarded to the entity service,
+        which performs the handoff; the response is returned to the caller verbatim.
+      operationId: postIncidentsIdSpecialistHandoffs
+      parameters:
+        - name: id
+          in: path
+          description: UUID of the incident.
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        description: Specialist handoff payload.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IncidentSpecialistHandoffPayload'
+        required: true
+      responses:
+        "200":
+          description: Specialist handoff result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentSpecialistHandoffResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Incident not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /alerts/{id}:
     get:
       summary: Get a single alert by ID.
@@ -12036,6 +12105,13 @@ components:
         resolutionCode:
           type: string
           nullable: true
+          enum:
+            - "Solved (Work Around)"
+            - "Solved (Permanently)"
+            - "Not Solved (Not Reproducible)"
+            - "False Alarm"
+            - "Duplicate"
+            - "Not Actionable Alert"
         parentId:
           type: string
           format: uuid
@@ -12105,6 +12181,95 @@ components:
           type: string
         incident:
           $ref: '#/components/schemas/IncidentDetail'
+
+    IncidentSpecialistHandoffPayload:
+      type: object
+      description: >-
+        Hands an incident off to its specialist group in one call: moves the incident
+        to the specialist group for its business service, clears the assignee, opens a
+        runbook-gap task, and (by default) files an internal issue for the receiving
+        team. Filing the internal issue is best-effort, not atomic with the rest of the
+        handoff -- a successful response means the handoff itself succeeded even if the
+        issue could not be created; see githubIssueError on the response.
+      required: [reasonCode]
+      properties:
+        reasonCode:
+          type: string
+          enum: [no-runbook, runbook-not-working]
+        escalationTeam:
+          type: string
+          nullable: true
+          description: Only meaningful for a Choreo-routed handoff.
+          enum: [choreo-runtime-team, choreo-apim-team]
+        createGithubIssue:
+          type: boolean
+          default: true
+          description: >-
+            Whether to also file an internal issue for the receiving team. Set false to
+            suppress it, e.g. on a re-handoff or when one already exists.
+
+    IncidentSpecialistHandoffTask:
+      type: object
+      description: The runbook-gap task opened for the specialist team as part of a handoff.
+      properties:
+        id:
+          type: string
+        number:
+          type: string
+        subject:
+          type: string
+
+    IncidentSpecialistHandoffGithubIssue:
+      type: object
+      description: >-
+        The internal issue filed for the receiving specialist team, present only when
+        creation was requested and succeeded.
+      properties:
+        url:
+          type: string
+        number:
+          type: integer
+        repo:
+          type: string
+
+    IncidentSpecialistHandoffResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        handoff:
+          type: object
+          properties:
+            assignmentGroup:
+              $ref: '#/components/schemas/EntityRef'
+            previousAssignmentGroup:
+              allOf:
+                - $ref: '#/components/schemas/EntityRef'
+              nullable: true
+            reasonCode:
+              type: string
+              enum: [no-runbook, runbook-not-working]
+            reasonDescription:
+              type: string
+            escalationTeam:
+              type: string
+              nullable: true
+              enum: [choreo-runtime-team, choreo-apim-team]
+            task:
+              $ref: '#/components/schemas/IncidentSpecialistHandoffTask'
+            githubIssue:
+              allOf:
+                - $ref: '#/components/schemas/IncidentSpecialistHandoffGithubIssue'
+              nullable: true
+            githubIssueError:
+              type: string
+              nullable: true
+              description: >-
+                Why the internal issue could not be created, if creation was requested
+                but failed. The handoff itself still succeeds -- callers must surface
+                this rather than report a clean success when it is non-null.
+            incident:
+              $ref: '#/components/schemas/IncidentDetail'
 
     UpdateProblemPayload:
       type: object
