@@ -34,6 +34,12 @@ import {
   problemStateLabel,
   type ProblemFilters,
 } from "@features/csm-operations/utils/problems";
+import {
+  readProblemFiltersFromUrl,
+  writeProblemFiltersToUrl,
+} from "@features/csm-operations/utils/problemsFiltersUrl";
+import { problemsSavedViews } from "@features/csm-operations/utils/problemsSavedViews";
+import SavedViewsMenu from "@features/csm-operations/components/SavedViewsMenu";
 import MultiSelectField from "@components/MultiSelectField";
 
 interface ProblemsFilterBarProps {
@@ -120,6 +126,16 @@ export default function ProblemsFilterBar({
             }}
           />
         </Box>
+
+        <SavedViewsMenu
+          currentQs={writeProblemFiltersToUrl(filters).toString()}
+          canonicalizeQs={(qs) =>
+            writeProblemFiltersToUrl(readProblemFiltersFromUrl(new URLSearchParams(qs))).toString()
+          }
+          activeCount={activeCount}
+          onApply={(qs) => onChange(readProblemFiltersFromUrl(new URLSearchParams(qs)))}
+          store={problemsSavedViews}
+        />
 
         <Button
           variant="outlined"

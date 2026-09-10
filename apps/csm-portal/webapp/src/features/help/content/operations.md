@@ -24,6 +24,12 @@ The Change requests tab lists change requests with server-side search,
 pagination, and filters for state, impact, and closed-date range, plus a
 CSV export of the filtered results. Each row links to a detail page.
 
+**Saved views**: save the current search/filter combination under a name for
+one-click reuse later, from the same "Saved views" button as the Support
+section's case list. Saved views here are scoped to this tab only (they
+don't show up on Incidents, Problem management, or the case list, and vice
+versa) and stay on this device/browser.
+
 The detail page shows:
 
 - An **overview** card: project, type, linked case, deployment, deployed
@@ -61,6 +67,10 @@ From the detail page a CS engineer can:
 The Incidents tab lists incidents with server-side search, pagination, and
 filters for priority, SLA-violated status, created-date range, and product,
 plus a CSV export of the filtered results. Each row links to a detail page.
+
+Like Change requests, this tab has its own **Saved views** button for
+naming and reapplying a filter combination — scoped to this tab, on this
+device/browser.
 
 The detail page shows:
 
@@ -100,6 +110,10 @@ instead of an error.
 The Problem management tab lists problems with server-side search,
 pagination, free-text search, and a state filter. Each row links to a
 detail page.
+
+Like Change requests and Incidents, this tab has its own **Saved views**
+button for naming and reapplying a filter combination — scoped to this tab,
+on this device/browser.
 
 The detail page shows an overview (priority, category, subcategory, assigned
 to, opened/closed dates), any linked records (origin record, primary
