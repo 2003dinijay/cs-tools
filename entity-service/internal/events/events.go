@@ -37,7 +37,6 @@ const (
 	TypeCaseAcknowledged Type = "case.acknowledged"
 	TypeSeverityChanged  Type = "case.severity_changed"
 	TypeIncidentCreated  Type = "incident.created"
-	TypeCaseMentioned    Type = "case.mentioned"
 )
 
 // Envelope is the wire shape of every record on the case-events topic.
@@ -84,32 +83,6 @@ type CommentAddedPayload struct {
 	// snCaseService.publishCommentAdded's own doc comment). Mirrors
 	// csm-notification-service's own IsInternalNote field, which renders a
 	// distinct email layout for it.
-	IsInternalNote bool     `json:"isInternalNote,omitempty"`
-	Recipients     []string `json:"recipients"`
-}
-
-// CaseMentionedPayload is the Payload shape for TypeCaseMentioned — mirrors
-// csm-notification-service's own CaseMentionedPayload, same reasoning as
-// CommentAddedPayload above. Published once per comment that carries at
-// least one resolved @mention (see snCaseService.publishCaseMentioned),
-// distinct from case.comment_added which always publishes to the case's
-// watch list regardless of mentions. MentionerName is the comment author's
-// resolved display name (same value CommentAddedPayload.Name carries for
-// the same comment — see publishCaseMentioned's own doc comment for why
-// it's passed in rather than re-resolved). Recipients is the mentioned
-// users' resolved emails, filtered to wso2.com addresses when the comment
-// is a work note, same convention as CommentAddedPayload.Recipients.
-type CaseMentionedPayload struct {
-	MentionerName string `json:"mentionerName"`
-	ProjectID     string `json:"projectId"`
-	CaseID        string `json:"caseId"`
-	CaseNumber    string `json:"caseNumber,omitempty"`
-	// WSO2CaseID — see CommentAddedPayload's own doc comment.
-	WSO2CaseID  string `json:"wso2CaseId,omitempty"`
-	CaseTitle   string `json:"caseTitle,omitempty"`
-	CaseComment string `json:"caseComment"`
-	CommentID   string `json:"commentId"`
-	// IsInternalNote — see CommentAddedPayload's own doc comment.
 	IsInternalNote bool     `json:"isInternalNote,omitempty"`
 	Recipients     []string `json:"recipients"`
 }
