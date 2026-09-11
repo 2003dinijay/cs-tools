@@ -575,12 +575,6 @@ export default function CaseDetailsDetailsPanel({
                 )}
               </Typography>
             </Box>
-            <Box sx={{ gridColumn: { xs: "1", md: "1 / -1" } }}>
-              <Typography {...labelSx}>Close Notes</Typography>
-              <Typography {...valueSx}>
-                {formatValue(data?.closeNotes)}
-              </Typography>
-            </Box>
           </Box>
         </CaseDetailsCard>
       )}
