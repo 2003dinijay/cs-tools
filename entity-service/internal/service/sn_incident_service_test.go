@@ -176,8 +176,8 @@ func TestSNIncidentService_UpdateIncident_WatchList_InvalidUUID(t *testing.T) {
 }
 
 // TestSNIncidentService_UpdateIncident_ResolutionCodePassedThrough verifies a valid closed
-// enum resolution code is sent straight through as the payload's resolutionCodeKey string,
-// with no translation step.
+// enum resolution code is mapped to the SN close_code string value in the payload's
+// resolutionCodeKey field, same convention as category/impact/urgency.
 func TestSNIncidentService_UpdateIncident_ResolutionCodePassedThrough(t *testing.T) {
 	var gotBody map[string]any
 	mux := http.NewServeMux()

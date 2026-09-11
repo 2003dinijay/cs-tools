@@ -12540,12 +12540,12 @@ components:
           type: string
           nullable: true
           enum:
-            - "Solved (Work Around)"
-            - "Solved (Permanently)"
-            - "Not Solved (Not Reproducible)"
-            - "False Alarm"
-            - "Duplicate"
-            - "Not Actionable Alert"
+            - SOLVED_WORKAROUND
+            - SOLVED_PERMANENTLY
+            - NOT_SOLVED_NOT_REPRODUCIBLE
+            - FALSE_ALARM
+            - DUPLICATE
+            - NOT_ACTIONABLE
         parentId:
           type: string
           format: uuid

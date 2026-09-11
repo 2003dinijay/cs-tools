@@ -600,13 +600,15 @@ var validIncidentUrgency = map[domain.IncidentUrgency]bool{
 	domain.IncidentUrgencyLow:    true,
 }
 
-var validIncidentResolutionCode = map[domain.IncidentResolutionCode]bool{
-	domain.IncidentResolutionCodeSolvedWorkaround:         true,
-	domain.IncidentResolutionCodeSolvedPermanently:        true,
-	domain.IncidentResolutionCodeNotSolvedNotReproducible: true,
-	domain.IncidentResolutionCodeFalseAlarm:               true,
-	domain.IncidentResolutionCodeDuplicateAlert:           true,
-	domain.IncidentResolutionCodeNotActionableAlert:       true,
+// snIncidentResolutionCodeKeyMap maps domain IncidentResolutionCode enums to SN close_code
+// string values -- same convention as snIncidentCategoryKeyMap.
+var snIncidentResolutionCodeKeyMap = map[domain.IncidentResolutionCode]string{
+	domain.IncidentResolutionCodeSolvedWorkaround:         "Solved (Work Around)",
+	domain.IncidentResolutionCodeSolvedPermanently:        "Solved (Permanently)",
+	domain.IncidentResolutionCodeNotSolvedNotReproducible: "Not Solved (Not Reproducible)",
+	domain.IncidentResolutionCodeFalseAlarm:               "False Alarm",
+	domain.IncidentResolutionCodeDuplicate:                "Duplicate",
+	domain.IncidentResolutionCodeNotActionable:            "Not Actionable Alert",
 }
 
 // snCreateIncidentPayload is the Choreo POST /incidents request body.
@@ -1223,8 +1225,10 @@ func (s *snIncidentService) UpdateIncident(ctx context.Context, req domain.Updat
 	if req.Urgency != nil && !validIncidentUrgency[*req.Urgency] {
 		return domain.UpdateIncidentResponse{}, &apierror.ValidationError{Msg: "invalid urgency: " + string(*req.Urgency)}
 	}
-	if req.ResolutionCode != nil && !validIncidentResolutionCode[*req.ResolutionCode] {
-		return domain.UpdateIncidentResponse{}, &apierror.ValidationError{Msg: "invalid resolutionCode: " + string(*req.ResolutionCode)}
+	if req.ResolutionCode != nil {
+		if _, ok := snIncidentResolutionCodeKeyMap[*req.ResolutionCode]; !ok {
+			return domain.UpdateIncidentResponse{}, &apierror.ValidationError{Msg: "invalid resolutionCode: " + string(*req.ResolutionCode)}
+		}
 	}
 
 	optionalUUIDs := map[string]*string{
@@ -1302,7 +1306,7 @@ func (s *snIncidentService) UpdateIncident(ctx context.Context, req domain.Updat
 		payload.UrgencyKey = &v
 	}
 	if req.ResolutionCode != nil {
-		v := string(*req.ResolutionCode)
+		v := snIncidentResolutionCodeKeyMap[*req.ResolutionCode]
 		payload.ResolutionCodeKey = &v
 	}
 	if req.ParentID != nil {

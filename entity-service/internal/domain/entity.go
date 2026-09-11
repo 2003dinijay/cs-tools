@@ -4266,18 +4266,18 @@ const (
 )
 
 // IncidentResolutionCode represents the resolution code recorded when closing an incident.
-// Values are the data source's own close-code values, sent straight through with no
-// translation step (unlike IncidentCategory/IncidentImpact/etc., which map a friendly domain
-// value to a separate backing key).
+// A friendly domain key, mapped to the data source's own close-code value via
+// snIncidentResolutionCodeKeyMap before being sent downstream -- same convention as
+// IncidentCategory/IncidentImpact/etc.
 type IncidentResolutionCode string
 
 const (
-	IncidentResolutionCodeSolvedWorkaround         IncidentResolutionCode = "Solved (Work Around)"
-	IncidentResolutionCodeSolvedPermanently        IncidentResolutionCode = "Solved (Permanently)"
-	IncidentResolutionCodeNotSolvedNotReproducible IncidentResolutionCode = "Not Solved (Not Reproducible)"
-	IncidentResolutionCodeFalseAlarm               IncidentResolutionCode = "False Alarm"
-	IncidentResolutionCodeDuplicateAlert           IncidentResolutionCode = "Duplicate"
-	IncidentResolutionCodeNotActionableAlert       IncidentResolutionCode = "Not Actionable Alert"
+	IncidentResolutionCodeSolvedWorkaround         IncidentResolutionCode = "SOLVED_WORKAROUND"
+	IncidentResolutionCodeSolvedPermanently        IncidentResolutionCode = "SOLVED_PERMANENTLY"
+	IncidentResolutionCodeNotSolvedNotReproducible IncidentResolutionCode = "NOT_SOLVED_NOT_REPRODUCIBLE"
+	IncidentResolutionCodeFalseAlarm               IncidentResolutionCode = "FALSE_ALARM"
+	IncidentResolutionCodeDuplicate                IncidentResolutionCode = "DUPLICATE"
+	IncidentResolutionCodeNotActionable            IncidentResolutionCode = "NOT_ACTIONABLE"
 )
 
 // CreateIncidentRequest is the input for POST /incidents.
