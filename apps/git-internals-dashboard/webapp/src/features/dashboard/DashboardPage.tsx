@@ -99,6 +99,7 @@ export default function DashboardPage() {
   if (isLoading || !overview) {
     return (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        {/* Hero attention bar: 3 stat tiles + the CS-side tile */}
         <Box sx={{ display: "grid", gap: "18px", gridTemplateColumns: { lg: "1.55fr .9fr" } }}>
           <Box sx={{ display: "grid", gap: 1.75, gridTemplateColumns: { sm: "1fr 1fr", lg: "1fr 1fr 1fr" } }}>
             <Skeleton variant="rounded" sx={{ height: 144, borderRadius: "16px" }} />
@@ -107,16 +108,35 @@ export default function DashboardPage() {
           </Box>
           <Skeleton variant="rounded" sx={{ height: 144, borderRadius: "16px" }} />
         </Box>
+
+        {/* Per-project comparison */}
         <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { md: "repeat(3, 1fr)" } }}>
           {[0, 1, 2].map((i) => (
-            <Skeleton key={i} variant="rounded" sx={{ height: 176, borderRadius: "16px" }} />
+            <Skeleton key={i} variant="rounded" sx={{ height: 176, borderRadius: "14px" }} />
           ))}
         </Box>
+
+        {/* Priority breakdown */}
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, 1fr)", lg: "repeat(4, 1fr)" }, gap: 1.75 }}>
           {[0, 1, 2, 3].map((i) => (
             <Skeleton key={i} variant="rounded" sx={{ height: 192, borderRadius: "16px" }} />
           ))}
         </Box>
+
+        {/* Priority × SLA-state matrix + trend chart */}
+        <Box sx={{ display: "grid", gap: "18px", gridTemplateColumns: { lg: ".92fr 1.08fr" } }}>
+          <Skeleton variant="rounded" sx={{ height: 300, borderRadius: "16px" }} />
+          <Skeleton variant="rounded" sx={{ height: 300, borderRadius: "16px" }} />
+        </Box>
+
+        {/* Closest to breach */}
+        <Skeleton variant="rounded" sx={{ height: 260, borderRadius: "16px" }} />
+
+        {/* New-issue volume */}
+        <Skeleton variant="rounded" sx={{ height: 340, borderRadius: "16px" }} />
+
+        {/* Attention set */}
+        <Skeleton variant="rounded" sx={{ height: 420, borderRadius: "16px" }} />
       </Box>
     );
   }
