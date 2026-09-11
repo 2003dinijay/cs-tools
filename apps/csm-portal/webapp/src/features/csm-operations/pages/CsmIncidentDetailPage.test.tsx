@@ -523,7 +523,7 @@ describe("CsmIncidentDetailPage — state-transition action bar", () => {
         id: "inc-1",
         patch: {
           state: "RESOLVED",
-          resolutionCode: "Solved (Permanently)",
+          resolutionCode: "SOLVED_PERMANENTLY",
           resolutionNotes: "Restarted the service.",
         },
       },

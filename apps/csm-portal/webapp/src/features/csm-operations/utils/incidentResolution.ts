@@ -18,25 +18,24 @@ import type { BeIncidentResolutionCode } from "@api/backend/types";
 
 /** All backend incident resolution codes, in the order declared in openapi.yaml. */
 export const INCIDENT_RESOLUTION_CODES: BeIncidentResolutionCode[] = [
-  "Solved (Work Around)",
-  "Solved (Permanently)",
-  "Not Solved (Not Reproducible)",
-  "False Alarm",
-  "Duplicate",
-  "Not Actionable Alert",
+  "SOLVED_WORKAROUND",
+  "SOLVED_PERMANENTLY",
+  "NOT_SOLVED_NOT_REPRODUCIBLE",
+  "FALSE_ALARM",
+  "DUPLICATE",
+  "NOT_ACTIONABLE",
 ];
 
 /**
- * Display text for each incident resolution code. Matches the backing data
- * source's choice-list values verbatim, except "Duplicate" — the source's UI
- * label for that choice is "Duplicate Alert", but this platform isn't an
- * alerting feature, so it's shown here as just "Duplicate".
+ * Display text for each incident resolution code. "Duplicate" is deliberately
+ * not "Duplicate Alert" (the backing data source's own UI label for that
+ * choice) — this platform isn't an alerting feature.
  */
 export const INCIDENT_RESOLUTION_CODE_LABELS: Record<BeIncidentResolutionCode, string> = {
-  "Solved (Work Around)": "Solved (Work Around)",
-  "Solved (Permanently)": "Solved (Permanently)",
-  "Not Solved (Not Reproducible)": "Not Solved (Not Reproducible)",
-  "False Alarm": "False Alarm",
-  Duplicate: "Duplicate",
-  "Not Actionable Alert": "Not Actionable Alert",
+  SOLVED_WORKAROUND: "Solved (Work Around)",
+  SOLVED_PERMANENTLY: "Solved (Permanently)",
+  NOT_SOLVED_NOT_REPRODUCIBLE: "Not Solved (Not Reproducible)",
+  FALSE_ALARM: "False Alarm",
+  DUPLICATE: "Duplicate",
+  NOT_ACTIONABLE: "Not Actionable Alert",
 };

@@ -63,7 +63,7 @@ describe("IncidentResolutionDialog", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /move to closed/i }));
     expect(onSubmit).toHaveBeenCalledWith({
-      resolutionCode: "Duplicate",
+      resolutionCode: "DUPLICATE",
       resolutionNotes: "Duplicate of INC0012345.",
     });
   });

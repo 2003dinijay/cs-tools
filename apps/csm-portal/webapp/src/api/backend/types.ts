@@ -3086,18 +3086,16 @@ export interface BeCreateIncidentResponse {
 /**
  * Resolution code for an incident moving to `RESOLVED`/`CLOSED`. Only accepted
  * by `PATCH /incidents/{id}` alongside `state: "RESOLVED"` or `"CLOSED"`.
- * Closed to the backing data source's real 6-value choice list — "Duplicate"
- * is this platform's label for the source list's "Duplicate Alert" entry;
- * this isn't an alerting feature, so the value is used as-is without that
- * suffix.
+ * Closed to the backend's domain keys for the backing data source's real
+ * 6-value choice list (see `INCIDENT_RESOLUTION_CODE_LABELS` for display text).
  */
 export type BeIncidentResolutionCode =
-  | "Solved (Work Around)"
-  | "Solved (Permanently)"
-  | "Not Solved (Not Reproducible)"
-  | "False Alarm"
-  | "Duplicate"
-  | "Not Actionable Alert";
+  | "SOLVED_WORKAROUND"
+  | "SOLVED_PERMANENTLY"
+  | "NOT_SOLVED_NOT_REPRODUCIBLE"
+  | "FALSE_ALARM"
+  | "DUPLICATE"
+  | "NOT_ACTIONABLE";
 
 /**
  * `PATCH /incidents/{id}` body (ServiceNow data source only,
