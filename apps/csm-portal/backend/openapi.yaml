@@ -5269,11 +5269,15 @@ paths:
     post:
       summary: Hand an incident off to its specialist group (backing data source only).
       description: >
-        One atomic call: moves the incident to the specialist group for its business
-        service, clears the assignee, opens a runbook-gap task, and (by default) files
-        an internal issue for the receiving team. The request body is validated at this
+        One call moves the incident to the specialist group for its business service,
+        clears the assignee, opens a runbook-gap task, and (by default) files an
+        internal issue for the receiving team. The request body is validated at this
         layer for reasonCode and escalationTeam, then forwarded to the entity service,
         which performs the handoff; the response is returned to the caller verbatim.
+        Internal issue filing is best-effort and non-atomic with the rest of the
+        handoff: a successful response means the handoff itself succeeded even if the
+        issue could not be created -- callers must inspect githubIssueError and must
+        not retry the full handoff as if nothing changed.
       operationId: postIncidentsIdSpecialistHandoffs
       parameters:
         - name: id
@@ -5317,6 +5321,12 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "404":
           description: Incident not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: Conflict -- the incident is not eligible for a specialist handoff (e.g. wrong service, not In Progress, or already with the specialist group).
           content:
             application/json:
               schema:
