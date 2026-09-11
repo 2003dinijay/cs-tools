@@ -4265,6 +4265,21 @@ const (
 	IncidentUrgencyLow    IncidentUrgency = "LOW"
 )
 
+// IncidentResolutionCode represents the resolution code recorded when closing an incident.
+// A friendly domain key, mapped to the data source's own close-code value via
+// snIncidentResolutionCodeKeyMap before being sent downstream -- same convention as
+// IncidentCategory/IncidentImpact/etc.
+type IncidentResolutionCode string
+
+const (
+	IncidentResolutionCodeSolvedWorkaround         IncidentResolutionCode = "SOLVED_WORKAROUND"
+	IncidentResolutionCodeSolvedPermanently        IncidentResolutionCode = "SOLVED_PERMANENTLY"
+	IncidentResolutionCodeNotSolvedNotReproducible IncidentResolutionCode = "NOT_SOLVED_NOT_REPRODUCIBLE"
+	IncidentResolutionCodeFalseAlarm               IncidentResolutionCode = "FALSE_ALARM"
+	IncidentResolutionCodeDuplicate                IncidentResolutionCode = "DUPLICATE"
+	IncidentResolutionCodeNotActionable            IncidentResolutionCode = "NOT_ACTIONABLE"
+)
+
 // CreateIncidentRequest is the input for POST /incidents.
 type CreateIncidentRequest struct {
 	CallerID            string               `json:"callerId"`
@@ -4303,32 +4318,32 @@ type CreateIncidentResponse struct {
 // UpdateIncidentRequest is the input for PATCH /incidents/{id}. All fields are optional,
 // but at least one must be provided.
 type UpdateIncidentRequest struct {
-	ID                  string               `json:"-"`
-	Subject             *string              `json:"subject,omitempty"`
-	Priority            *IncidentPriority    `json:"priority,omitempty"`
-	State               *IncidentState       `json:"state,omitempty"`
-	Category            *IncidentCategory    `json:"category,omitempty"`
-	Subcategory         *IncidentSubcategory `json:"subcategory,omitempty"`
-	ContactType         *IncidentContactType `json:"contactType,omitempty"`
-	Impact              *IncidentImpact      `json:"impact,omitempty"`
-	Urgency             *IncidentUrgency     `json:"urgency,omitempty"`
-	ResolutionCode      *string              `json:"resolutionCode,omitempty"`
-	ParentID            *string              `json:"parentId,omitempty"`
-	ParentIncidentID    *string              `json:"parentIncidentId,omitempty"`
-	AssignmentGroupID   *string              `json:"assignmentGroupId,omitempty"`
-	AssignedEngineerID  *string              `json:"assignedEngineerId,omitempty"`
-	ServiceID           *string              `json:"serviceId,omitempty"`
-	ServiceOfferingID   *string              `json:"serviceOfferingId,omitempty"`
-	ConfigurationItemID *string              `json:"configurationItemId,omitempty"`
-	ChangeRequestID     *string              `json:"changeRequestId,omitempty"`
-	ProblemID           *string              `json:"problemId,omitempty"`
-	CausedByID          *string              `json:"causedById,omitempty"`
-	ResolvedByID        *string              `json:"resolvedById,omitempty"`
-	ResolutionNotes     *string              `json:"resolutionNotes,omitempty"`
-	IncidentReport      *string              `json:"incidentReport,omitempty"`
-	AdditionalComments  *string              `json:"additionalComments,omitempty"`
-	WorkNotes           *string              `json:"workNotes,omitempty"`
-	WatchList           *[]string            `json:"watchList,omitempty"`
+	ID                  string                  `json:"-"`
+	Subject             *string                 `json:"subject,omitempty"`
+	Priority            *IncidentPriority       `json:"priority,omitempty"`
+	State               *IncidentState          `json:"state,omitempty"`
+	Category            *IncidentCategory       `json:"category,omitempty"`
+	Subcategory         *IncidentSubcategory    `json:"subcategory,omitempty"`
+	ContactType         *IncidentContactType    `json:"contactType,omitempty"`
+	Impact              *IncidentImpact         `json:"impact,omitempty"`
+	Urgency             *IncidentUrgency        `json:"urgency,omitempty"`
+	ResolutionCode      *IncidentResolutionCode `json:"resolutionCode,omitempty"`
+	ParentID            *string                 `json:"parentId,omitempty"`
+	ParentIncidentID    *string                 `json:"parentIncidentId,omitempty"`
+	AssignmentGroupID   *string                 `json:"assignmentGroupId,omitempty"`
+	AssignedEngineerID  *string                 `json:"assignedEngineerId,omitempty"`
+	ServiceID           *string                 `json:"serviceId,omitempty"`
+	ServiceOfferingID   *string                 `json:"serviceOfferingId,omitempty"`
+	ConfigurationItemID *string                 `json:"configurationItemId,omitempty"`
+	ChangeRequestID     *string                 `json:"changeRequestId,omitempty"`
+	ProblemID           *string                 `json:"problemId,omitempty"`
+	CausedByID          *string                 `json:"causedById,omitempty"`
+	ResolvedByID        *string                 `json:"resolvedById,omitempty"`
+	ResolutionNotes     *string                 `json:"resolutionNotes,omitempty"`
+	IncidentReport      *string                 `json:"incidentReport,omitempty"`
+	AdditionalComments  *string                 `json:"additionalComments,omitempty"`
+	WorkNotes           *string                 `json:"workNotes,omitempty"`
+	WatchList           *[]string               `json:"watchList,omitempty"`
 }
 
 // UpdateIncidentResponse is the output for PATCH /incidents/{id}.

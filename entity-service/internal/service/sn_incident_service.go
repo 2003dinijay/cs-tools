@@ -600,6 +600,17 @@ var validIncidentUrgency = map[domain.IncidentUrgency]bool{
 	domain.IncidentUrgencyLow:    true,
 }
 
+// snIncidentResolutionCodeKeyMap maps domain IncidentResolutionCode enums to SN close_code
+// string values -- same convention as snIncidentCategoryKeyMap.
+var snIncidentResolutionCodeKeyMap = map[domain.IncidentResolutionCode]string{
+	domain.IncidentResolutionCodeSolvedWorkaround:         "Solved (Work Around)",
+	domain.IncidentResolutionCodeSolvedPermanently:        "Solved (Permanently)",
+	domain.IncidentResolutionCodeNotSolvedNotReproducible: "Not Solved (Not Reproducible)",
+	domain.IncidentResolutionCodeFalseAlarm:               "False Alarm",
+	domain.IncidentResolutionCodeDuplicate:                "Duplicate",
+	domain.IncidentResolutionCodeNotActionable:            "Not Actionable Alert",
+}
+
 // snCreateIncidentPayload is the Choreo POST /incidents request body.
 type snCreateIncidentPayload struct {
 	CallerID            string   `json:"callerId"`
@@ -1214,6 +1225,11 @@ func (s *snIncidentService) UpdateIncident(ctx context.Context, req domain.Updat
 	if req.Urgency != nil && !validIncidentUrgency[*req.Urgency] {
 		return domain.UpdateIncidentResponse{}, &apierror.ValidationError{Msg: "invalid urgency: " + string(*req.Urgency)}
 	}
+	if req.ResolutionCode != nil {
+		if _, ok := snIncidentResolutionCodeKeyMap[*req.ResolutionCode]; !ok {
+			return domain.UpdateIncidentResponse{}, &apierror.ValidationError{Msg: "invalid resolutionCode: " + string(*req.ResolutionCode)}
+		}
+	}
 
 	optionalUUIDs := map[string]*string{
 		"parentId":            req.ParentID,
@@ -1290,7 +1306,8 @@ func (s *snIncidentService) UpdateIncident(ctx context.Context, req domain.Updat
 		payload.UrgencyKey = &v
 	}
 	if req.ResolutionCode != nil {
-		payload.ResolutionCodeKey = req.ResolutionCode
+		v := snIncidentResolutionCodeKeyMap[*req.ResolutionCode]
+		payload.ResolutionCodeKey = &v
 	}
 	if req.ParentID != nil {
 		v := uuidToSysid(*req.ParentID)

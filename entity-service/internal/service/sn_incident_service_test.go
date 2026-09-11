@@ -175,6 +175,57 @@ func TestSNIncidentService_UpdateIncident_WatchList_InvalidUUID(t *testing.T) {
 	}
 }
 
+// TestSNIncidentService_UpdateIncident_ResolutionCodePassedThrough verifies a valid closed
+// enum resolution code is mapped to the SN close_code string value in the payload's
+// resolutionCodeKey field, same convention as category/impact/urgency.
+func TestSNIncidentService_UpdateIncident_ResolutionCodePassedThrough(t *testing.T) {
+	var gotBody map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/incidents/"+testIncidentSysid, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"message": "Incident updated successfully.",
+			"incident": {"id": "` + testIncidentSysid + `", "number": "INC0001", "createdOn": "2026-01-01 00:00:00", "createdBy": "engineer@example.com"}
+		}`))
+	})
+
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowIncidentService(client, nil)
+
+	code := domain.IncidentResolutionCodeSolvedWorkaround
+	_, err := svc.UpdateIncident(contextWithUserIDToken("token"), domain.UpdateIncidentRequest{
+		ID:             testIncidentUUID,
+		ResolutionCode: &code,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, _ := gotBody["resolutionCodeKey"].(string)
+	if got != "Solved (Work Around)" {
+		t.Fatalf("resolutionCodeKey: got %q, want %q", got, "Solved (Work Around)")
+	}
+}
+
+// TestSNIncidentService_UpdateIncident_ResolutionCode_Invalid verifies a resolution code
+// outside the closed enum is rejected with a clean validation error before any SN call.
+func TestSNIncidentService_UpdateIncident_ResolutionCode_Invalid(t *testing.T) {
+	// client is intentionally nil: validation must fail before touching it.
+	svc := NewServiceNowIncidentService(nil, nil)
+
+	code := domain.IncidentResolutionCode("Not A Real Code")
+	_, err := svc.UpdateIncident(contextWithUserIDToken("token"), domain.UpdateIncidentRequest{
+		ID:             testIncidentUUID,
+		ResolutionCode: &code,
+	})
+	if _, ok := err.(*apierror.ValidationError); !ok {
+		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+	}
+}
+
 // TestSNIncidentService_SearchIncidents_NumberFilterPassedThrough verifies the
 // exact-match Number filter reaches the outgoing payload under the "number" key
 // unchanged, alongside the untouched free-text searchQuery.

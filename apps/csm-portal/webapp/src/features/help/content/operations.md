@@ -107,7 +107,11 @@ From the detail page a CS engineer can:
 - **Change state**: again driven by the incident's own legal next states.
   Moving to Resolved or Closed opens a dialog to collect a resolution code
   and notes, since those are required by the backing system for those two
-  transitions.
+  transitions. Resolution code is picked from a fixed list rather than typed
+  freely: **Solved (Work Around)**, **Solved (Permanently)**, **Not Solved
+  (Not Reproducible)**, **False Alarm**, **Duplicate**, and **Not Actionable
+  Alert** — use **Duplicate** when closing an incident as a duplicate of
+  another one.
 - **Escalate to specialist team**: reproduces the backing system's own
   "Escalate to Special Ops" action. Pick a reason (runbook unavailable, or
   the runbook didn't solve the incident) and, for a Choreo incident

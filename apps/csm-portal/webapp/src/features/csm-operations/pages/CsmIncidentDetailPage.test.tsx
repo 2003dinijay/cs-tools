@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import type { JSX } from "react";
@@ -507,9 +507,12 @@ describe("CsmIncidentDetailPage — state-transition action bar", () => {
     openChangeState();
     fireEvent.click(screen.getByRole("menuitem", { name: /resolved/i }));
 
-    fireEvent.change(screen.getByLabelText(/resolution code/i), {
-      target: { value: "Solved" },
-    });
+    fireEvent.mouseDown(
+      document
+        .getElementById("incident-resolution-code-label")!
+        .parentElement!.querySelector('[role="combobox"]')!,
+    );
+    fireEvent.click(within(screen.getByRole("listbox")).getByText(/^solved \(permanently\)$/i));
     fireEvent.change(screen.getByLabelText(/resolution notes/i), {
       target: { value: "Restarted the service." },
     });
@@ -520,7 +523,7 @@ describe("CsmIncidentDetailPage — state-transition action bar", () => {
         id: "inc-1",
         patch: {
           state: "RESOLVED",
-          resolutionCode: "Solved",
+          resolutionCode: "SOLVED_PERMANENTLY",
           resolutionNotes: "Restarted the service.",
         },
       },

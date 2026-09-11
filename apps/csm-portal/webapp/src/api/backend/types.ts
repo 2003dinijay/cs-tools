@@ -3084,6 +3084,20 @@ export interface BeCreateIncidentResponse {
 }
 
 /**
+ * Resolution code for an incident moving to `RESOLVED`/`CLOSED`. Only accepted
+ * by `PATCH /incidents/{id}` alongside `state: "RESOLVED"` or `"CLOSED"`.
+ * Closed to the backend's domain keys for the backing data source's real
+ * 6-value choice list (see `INCIDENT_RESOLUTION_CODE_LABELS` for display text).
+ */
+export type BeIncidentResolutionCode =
+  | "SOLVED_WORKAROUND"
+  | "SOLVED_PERMANENTLY"
+  | "NOT_SOLVED_NOT_REPRODUCIBLE"
+  | "FALSE_ALARM"
+  | "DUPLICATE"
+  | "NOT_ACTIONABLE";
+
+/**
  * `PATCH /incidents/{id}` body (ServiceNow data source only,
  * `minProperties: 1`). Covers the in-scope subset the Edit dialog sends —
  * the full `UpdateIncidentPayload` schema also documents `incidentReport` /
@@ -3102,7 +3116,7 @@ export interface BeUpdateIncidentPayload {
   impact?: BeIncidentImpact;
   urgency?: BeIncidentUrgency;
   state?: BeIncidentState;
-  resolutionCode?: string;
+  resolutionCode?: BeIncidentResolutionCode;
   resolutionNotes?: string;
   // Reference/note fields are `nullable: true` on the documented schema — the
   // portal sends an explicit `null` to clear one (e.g. unassign an engineer),
