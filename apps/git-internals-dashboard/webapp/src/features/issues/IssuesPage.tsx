@@ -33,6 +33,7 @@ const KIND_CHIPS: { key: BucketKey; label: string }[] = [
   { key: "violated", label: "Violated" },
   { key: "at_risk", label: "At risk" },
   { key: "cs", label: "On CS side" },
+  { key: "product_side", label: "On product team side" },
   { key: "untracked", label: "Untracked" },
 ];
 
