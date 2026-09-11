@@ -318,8 +318,10 @@ type CaseWatchListUser struct {
 // Deliberately excludes entity-service's AutoclosureStep/AutoclosureStateTime
 // and BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta — genuinely
 // CSM-engineer-facing only. CsManager and FindingsResolved/FindingsTotal
-// have no entity-service equivalent on CaseView. CloseNotes is on the
-// GET path (Ballerina CaseResponse.closeNotes) as well as PATCH.
+// have no entity-service equivalent on CaseView. CloseNotes is deliberately
+// NOT exposed here even though entity-service's CaseView carries it (GET path)
+// as well as PATCH: it is an internal CS-agent close note, never meant for
+// the customer-facing view.
 type CaseDetails struct {
 	ID                    string                       `json:"id"`
 	InternalID            string                       `json:"internalId"`
@@ -363,7 +365,6 @@ type CaseDetails struct {
 	// no frontend consumer, so per CLAUDE.md they stay trimmed until one exists.
 	SLAResponseTime     *string   `json:"slaResponseTime,omitempty"`
 	ClosedBy            *Ref      `json:"closedBy,omitempty"`
-	CloseNotes          *string   `json:"closeNotes,omitempty"`
 	HasAutoClosed       *bool     `json:"hasAutoClosed,omitempty"`
 	EngagementStartDate *string   `json:"engagementStartDate,omitempty"`
 	EngagementEndDate   *string   `json:"engagementEndDate,omitempty"`
@@ -466,7 +467,6 @@ func MapCaseDetails(c entity.CaseView) CaseDetails {
 		FixEta:                c.FixEta,
 		SLAResponseTime:       c.SLAResponseTime,
 		ClosedBy:              mapRef(c.ClosedBy),
-		CloseNotes:            c.CloseNotes,
 		HasAutoClosed:         c.HasAutoClosed,
 		EngagementStartDate:   c.EngagementStartDate,
 		EngagementEndDate:     c.EngagementEndDate,
@@ -664,7 +664,6 @@ type CaseUpdateResponse struct {
 	AssignedTo     *PersonRef `json:"assignedTo,omitempty"`
 	ResolutionCode *string    `json:"resolutionCode,omitempty"`
 	Cause          *string    `json:"cause,omitempty"`
-	CloseNotes     *string    `json:"closeNotes,omitempty"`
 	ResolvedOn     *time.Time `json:"resolvedOn,omitempty"`
 	ParentCase     *NumberRef `json:"parentCase,omitempty"`
 	FixEta         *time.Time `json:"fixEta,omitempty"`
@@ -701,7 +700,6 @@ func MapCaseUpdate(r entity.UpdateCaseResponse) CaseUpdateResponse {
 		AssignedTo:     assignedTo,
 		ResolutionCode: c.ResolutionCode,
 		Cause:          c.Cause,
-		CloseNotes:     c.CloseNotes,
 		ResolvedOn:     c.ResolvedOn,
 		ParentCase:     mapNumberRef(c.ParentCase),
 		FixEta:         c.FixEta,

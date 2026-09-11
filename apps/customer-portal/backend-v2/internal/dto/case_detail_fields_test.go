@@ -23,10 +23,14 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
 )
 
-// TestMapCaseDetails_ExposesFieldsTheFrontendDeclares covers the five fields
-// added because the frontend's CaseDetails type declares them
+// TestMapCaseDetails_ExposesFieldsTheFrontendDeclares covers the fields added
+// because the frontend's CaseDetails type declares them
 // (features/support/types/cases.ts) while this backend never sent them —
 // entity-service was discarding them from the upstream case response.
+// CloseNotes is deliberately excluded from what's asserted present here (see
+// the closeNotes assertion below): it's an internal CS-agent field that must
+// never reach the customer-facing response, even though it's still decoded
+// off the upstream CaseView.
 func TestMapCaseDetails_ExposesFieldsTheFrontendDeclares(t *testing.T) {
 	sla := "4 hours"
 	start, end := "2026-01-01", "2026-06-30"
@@ -66,8 +70,11 @@ func TestMapCaseDetails_ExposesFieldsTheFrontendDeclares(t *testing.T) {
 	if cb["id"] != "user-1" {
 		t.Errorf("closedBy.id = %v, want user-1", cb["id"])
 	}
-	if got["closeNotes"] != notes {
-		t.Errorf("closeNotes = %v, want %q", got["closeNotes"], notes)
+	// CloseNotes is read off the upstream CaseView (it's still decoded above)
+	// but must never reach the customer-facing response: it's an internal
+	// CS-agent close note, not something a customer should see.
+	if _, present := got["closeNotes"]; present {
+		t.Errorf("closeNotes = %v, want omitted from the customer-facing response", got["closeNotes"])
 	}
 }
 

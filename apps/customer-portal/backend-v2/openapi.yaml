@@ -6858,8 +6858,6 @@ components:
           type: string
         cause:
           type: string
-        closeNotes:
-          type: string
         resolvedOn:
           type: string
         parentCase:

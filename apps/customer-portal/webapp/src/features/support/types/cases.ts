@@ -294,7 +294,6 @@ export type CaseDetails = AuditMetadata & {
   status: IdLabelRef | null;
   closedOn: string | null;
   closedBy: CaseDetailsClosedBy | null;
-  closeNotes: string | null;
   hasAutoClosed: boolean | null;
   engineerEmail: string | null;
   findingsResolved: number | null;
