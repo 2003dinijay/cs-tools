@@ -268,7 +268,11 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   );
   const engineerName = useEngineerDisplayName();
 
-  const { data: comments, isLoading: isCommentsLoading } = useGetCsmChangeRequestComments(id);
+  const {
+    data: comments,
+    isLoading: isCommentsLoading,
+    isError: isCommentsError,
+  } = useGetCsmChangeRequestComments(id);
   const postComment = usePostCsmChangeRequestComment();
   const { data: attachments } = useGetCsmCaseAttachments(id, "change_request");
   const postAttachment = usePostCsmCaseAttachment();
@@ -509,7 +513,10 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         }}
       >
         {BackButton}
-        <ExportPdfButton onExport={handleExportChangeRequestPdf} disabled={isCommentsLoading} />
+        <ExportPdfButton
+          onExport={handleExportChangeRequestPdf}
+          disabled={isCommentsLoading || isCommentsError}
+        />
       </Box>
 
       <Box

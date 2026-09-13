@@ -2137,7 +2137,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
             isActivityLoading ||
             isAttachmentsLoading ||
             isFeedbackLoading ||
-            isChatLoading
+            isChatLoading ||
+            isCommentsError ||
+            isActivityError ||
+            isAttachmentsError ||
+            isFeedbackError ||
+            isChatError
           }
         />
       </Box>

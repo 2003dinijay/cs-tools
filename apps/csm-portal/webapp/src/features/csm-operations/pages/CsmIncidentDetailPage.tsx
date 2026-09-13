@@ -232,13 +232,22 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   const { user: currentUser } = useCurrentUser();
   const currentUserEmail = useIdTokenClaims()?.email;
 
-  const { data: comments, isLoading: isCommentsLoading } = useGetCsmIncidentComments(id);
-  const { data: activityAudit, isLoading: isActivityLoading } = useGetCsmIncidentActivities(id);
+  const {
+    data: comments,
+    isLoading: isCommentsLoading,
+    isError: isCommentsError,
+  } = useGetCsmIncidentComments(id);
+  const {
+    data: activityAudit,
+    isLoading: isActivityLoading,
+    isError: isActivityError,
+  } = useGetCsmIncidentActivities(id);
   const postComment = usePostCsmIncidentComment();
-  const { data: attachments, isLoading: isAttachmentsLoading } = useGetCsmCaseAttachments(
-    id,
-    "incident",
-  );
+  const {
+    data: attachments,
+    isLoading: isAttachmentsLoading,
+    isError: isAttachmentsError,
+  } = useGetCsmCaseAttachments(id, "incident");
   const postAttachment = usePostCsmCaseAttachment();
   const downloadAttachment = useDownloadCsmCaseAttachment();
   const getAttachmentPreviewContent = useGetCsmCaseAttachmentPreviewSource();
@@ -500,7 +509,14 @@ export default function CsmIncidentDetailPage(): JSX.Element {
         {BackButton}
         <ExportPdfButton
           onExport={handleExportIncidentPdf}
-          disabled={isCommentsLoading || isActivityLoading || isAttachmentsLoading}
+          disabled={
+            isCommentsLoading ||
+            isActivityLoading ||
+            isAttachmentsLoading ||
+            isCommentsError ||
+            isActivityError ||
+            isAttachmentsError
+          }
         />
       </Box>
 
