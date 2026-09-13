@@ -218,3 +218,24 @@ func TestLoadSecurityHeadersOverridesDefaultValue(t *testing.T) {
 		t.Errorf("expected untouched default X-Content-Type-Options=nosniff, got %q", got)
 	}
 }
+
+// TestLoadSecurityHeadersCaseInsensitiveOverride verifies a YAML header name
+// differing only in case from a default still overrides that default (not
+// coexists with it), since http.Header.Set canonicalizes names anyway — two
+// case-variant map entries would otherwise both resolve to the same wire
+// header with a nondeterministic winner (Go map iteration order).
+func TestLoadSecurityHeadersCaseInsensitiveOverride(t *testing.T) {
+	path := writeConfig(t, "securityHeaders:\n  x-frame-options: SAMEORIGIN\n")
+	t.Setenv("APP_CONFIG_PATH", path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected valid config, got: %v", err)
+	}
+	if got, want := len(cfg.SecurityHeaders), len(Default().SecurityHeaders); got != want {
+		t.Errorf("expected exactly %d headers (case-variant key must override, not add), got %d: %+v", want, got, cfg.SecurityHeaders)
+	}
+	if got := cfg.SecurityHeaders["X-Frame-Options"]; got != "SAMEORIGIN" {
+		t.Errorf("expected X-Frame-Options=SAMEORIGIN (overridden via lowercase YAML key), got %q", got)
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -229,10 +230,10 @@ func (r rawAPI) resolve(d API) API {
 func resolveSecurityHeaders(raw, defaults SecurityHeaders) SecurityHeaders {
 	merged := make(SecurityHeaders, len(defaults)+len(raw))
 	for k, v := range defaults {
-		merged[k] = v
+		merged[http.CanonicalHeaderKey(k)] = v
 	}
 	for k, v := range raw {
-		merged[k] = v
+		merged[http.CanonicalHeaderKey(k)] = v
 	}
 	return merged
 }
