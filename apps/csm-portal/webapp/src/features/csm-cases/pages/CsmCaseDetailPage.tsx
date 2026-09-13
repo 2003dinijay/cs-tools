@@ -2196,6 +2196,28 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   sx={{ fontWeight: 600 }}
                 />
               )}
+            {/* Quick visual flag that the case's project has an onboarding
+                engagement actively underway — requested so an engineer
+                doesn't have to open the project page to notice it. Gated on
+                `onboardingStatus === "In-Progress"` only: the chip still
+                shows with no owner assigned, the tooltip just says so. */}
+            {!isAnnouncement && caseProject?.onboardingStatus === "In-Progress" && (
+              <Tooltip
+                title={
+                  caseProject.onboardingOwner?.name
+                    ? `Onboarding owner: ${caseProject.onboardingOwner.name}`
+                    : "Onboarding owner: Unassigned"
+                }
+              >
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  color="info"
+                  label="Onboarding"
+                  sx={{ fontWeight: 600 }}
+                />
+              </Tooltip>
+            )}
             {!isAnnouncement && c.state === "work_in_progress" && (
               <Chip
                 size="small"

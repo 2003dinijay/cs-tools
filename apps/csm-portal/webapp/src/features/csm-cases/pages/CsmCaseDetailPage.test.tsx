@@ -293,13 +293,19 @@ vi.mock("@features/csm-cases/api/useSearchDeployments", () => ({
     isFetching: false,
   }),
 }));
+// Controllable per-test so the onboarding chip's gate (`onboardingStatus` /
+// `onboardingOwner`, both on the same project fetch already used elsewhere
+// on this page) can be exercised without adding a new fetch mock per case.
+const useGetProjectMock = vi.fn();
+function defaultGetProjectImpl(): unknown {
+  return { data: undefined, isLoading: false, refetch: vi.fn(), isFetching: false };
+}
+useGetProjectMock.mockImplementation(defaultGetProjectImpl);
+afterEach(() => {
+  useGetProjectMock.mockImplementation(defaultGetProjectImpl);
+});
 vi.mock("@features/csm-projects/api/useGetProject", () => ({
-  useGetProject: () => ({
-    data: undefined,
-    isLoading: false,
-    refetch: vi.fn(),
-    isFetching: false,
-  }),
+  useGetProject: (...args: unknown[]) => useGetProjectMock(...args),
 }));
 vi.mock("@features/csm-cases/api/useGetCsmCaseSlas", () => ({
   useGetCsmCaseSlas: () => ({ data: undefined }),
@@ -972,6 +978,76 @@ describe("CsmCaseDetailPage — tab label counts", () => {
 
     expect(
       screen.getByRole("tab", { name: /time tracking \(9\)/i }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("CsmCaseDetailPage — onboarding chip", () => {
+  it("does not render when the project has no onboarding engagement", () => {
+    useGetProjectMock.mockImplementation(() => ({
+      data: { onboardingStatus: undefined, onboardingOwner: null },
+      isLoading: false,
+      refetch: vi.fn(),
+      isFetching: false,
+    }));
+
+    renderPage();
+
+    expect(screen.queryByText("Onboarding")).not.toBeInTheDocument();
+  });
+
+  it("does not render for a non-'In-Progress' onboarding status", () => {
+    useGetProjectMock.mockImplementation(() => ({
+      data: {
+        onboardingStatus: "Not-Started",
+        onboardingOwner: { id: "user-1", name: "Jane Doe", email: "jane.doe@example.com" },
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+      isFetching: false,
+    }));
+
+    renderPage();
+
+    expect(screen.queryByText("Onboarding")).not.toBeInTheDocument();
+  });
+
+  it("renders with the owner's name in the tooltip when onboarding is in progress", async () => {
+    useGetProjectMock.mockImplementation(() => ({
+      data: {
+        onboardingStatus: "In-Progress",
+        onboardingOwner: { id: "user-1", name: "Jane Doe", email: "jane.doe@example.com" },
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+      isFetching: false,
+    }));
+
+    renderPage();
+
+    const chip = screen.getByText("Onboarding");
+    expect(chip).toBeInTheDocument();
+    fireEvent.mouseOver(chip);
+    expect(
+      await screen.findByText("Onboarding owner: Jane Doe"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders with an 'Unassigned' tooltip when onboarding is in progress but no owner is set", async () => {
+    useGetProjectMock.mockImplementation(() => ({
+      data: { onboardingStatus: "In-Progress", onboardingOwner: null },
+      isLoading: false,
+      refetch: vi.fn(),
+      isFetching: false,
+    }));
+
+    renderPage();
+
+    const chip = screen.getByText("Onboarding");
+    expect(chip).toBeInTheDocument();
+    fireEvent.mouseOver(chip);
+    expect(
+      await screen.findByText("Onboarding owner: Unassigned"),
     ).toBeInTheDocument();
   });
 });
