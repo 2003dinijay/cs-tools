@@ -19,6 +19,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Fragment, useState, type JSX, type ReactNode } from "react";
 import type { BeDashboardWidget } from "@api/backend/types";
 import DashboardWidgetTile from "@features/csm-dashboard/components/DashboardWidgetTile";
+import WidgetInlineDrilldownPanel from "@features/csm-dashboard/components/WidgetInlineDrilldownPanel";
+import type { PieSliceResult } from "@features/csm-dashboard/api/useWidgetPieData";
 import RefreshButton from "@components/RefreshButton";
 import { resolveWidgetText } from "@features/csm-dashboard/utils/widgetTextPlaceholder";
 import { invalidateWidgetQueries } from "@features/csm-dashboard/utils/invalidateWidgetQueries";
@@ -155,6 +157,20 @@ export default function DashboardWidgetGrid({
   dateRangeTo,
 }: DashboardWidgetGridProps): JSX.Element {
   const queryClient = useQueryClient();
+  // Which widget's own slice (if any) is currently expanded into a
+  // full-width inline-drilldown panel (see `WidgetInlineDrilldownPanel`,
+  // rendered as a standalone sibling grid item right after that widget's
+  // own tile in `renderTile` below) — lifted up here, out of
+  // `DashboardWidgetTile`, specifically so the expanded list can render at
+  // full grid width instead of nested inside the tile's own (narrow,
+  // `gridWidth`-sized) `Card`. Singular by design: only one widget's own
+  // slice is ever expanded at a time, across the whole grid — expanding a
+  // different widget's slice (or a different slice of the SAME widget)
+  // replaces whatever was previously expanded, it does not add a second
+  // panel. `null` means nothing is expanded anywhere in this grid.
+  const [expanded, setExpanded] = useState<{ widgetId: string; slice: PieSliceResult } | null>(
+    null,
+  );
   // Per-section refresh tracks its own in-flight state, keyed by section.
   const [refreshingSections, setRefreshingSections] = useState<Set<string>>(new Set());
   // A section can bundle multiple widgets/queries, so there's no single
@@ -182,45 +198,84 @@ export default function DashboardWidgetGrid({
 
   const renderTile = (widget: BeDashboardWidget) => {
     const action = renderWidgetAction?.(widget);
+    const resolvedFilters = resolveDateRangeFilterPlaceholder(
+      widget.query ?? {},
+      dateRangeFrom,
+      dateRangeTo,
+    );
+    const thisWidgetExpandedSlice =
+      expanded?.widgetId === widget.widgetId ? expanded.slice : null;
     return (
-      <Box key={widget.widgetId} sx={{ position: "relative", ...widgetGridColumnSx(widget) }}>
-        <DashboardWidgetTile
-          widgetId={widget.widgetId}
-          displayName={widget.displayName}
-          description={widget.description}
-          resourceType={widget.resourceType}
-          shape={widget.shape}
-          // `widget.query` is legally absent for a slices-only pie/bar
-          // widget (see `BeDashboardWidget.query`'s doc comment) — default
-          // to `{}` here too, at the source, on top of `mergeWidgetFilters`
-          // and `useWidgetData`/`useWidgetPieData` already tolerating it.
-          // `resolveDateRangeFilterPlaceholder` is a no-op for every widget
-          // that doesn't carry `__dateRangeFrom__`/`__dateRangeTo__` (every
-          // widget today except `case_feedback`'s own two) — see that
-          // function's own doc comment.
-          filters={resolveDateRangeFilterPlaceholder(widget.query ?? {}, dateRangeFrom, dateRangeTo)}
-          listLimit={widget.listLimit}
-          slices={widget.slices}
-          groupBy={widget.groupBy}
-          columns={widget.columns}
-          sortBy={widget.sortBy}
-          inlineDrilldown={widget.inlineDrilldown}
-          inlineLabels={widget.inlineLabels}
-          selectedTeamCreGroupId={selectedTeamCreGroupId}
-          selectedTeamSreGroupId={selectedTeamSreGroupId}
-          selectedTeamLabel={selectedTeamLabel}
-          // The builder action below renders as a sibling absolutely
-          // positioned over this same top-right corner (at a higher
-          // zIndex), fully covering the tile's own refresh button — so
-          // suppress the tile's refresh button exactly when (and only
-          // when) a builder action actually exists for this widget. See
-          // `hideRefreshButton`'s own doc comment on `DashboardWidgetTile`.
-          hideRefreshButton={Boolean(action)}
-        />
-        {action && (
-          <Box sx={{ position: "absolute", top: 6, right: 6, zIndex: 2 }}>{action}</Box>
+      <Fragment key={widget.widgetId}>
+        <Box sx={{ position: "relative", ...widgetGridColumnSx(widget) }}>
+          <DashboardWidgetTile
+            widgetId={widget.widgetId}
+            displayName={widget.displayName}
+            description={widget.description}
+            resourceType={widget.resourceType}
+            shape={widget.shape}
+            // `widget.query` is legally absent for a slices-only pie/bar
+            // widget (see `BeDashboardWidget.query`'s doc comment) —
+            // default to `{}` here too, at the source, on top of
+            // `mergeWidgetFilters` and `useWidgetData`/`useWidgetPieData`
+            // already tolerating it. `resolveDateRangeFilterPlaceholder` is
+            // a no-op for every widget that doesn't carry
+            // `__dateRangeFrom__`/`__dateRangeTo__` (every widget today
+            // except `case_feedback`'s own two) — see that function's own
+            // doc comment.
+            filters={resolvedFilters}
+            listLimit={widget.listLimit}
+            slices={widget.slices}
+            groupBy={widget.groupBy}
+            columns={widget.columns}
+            sortBy={widget.sortBy}
+            inlineDrilldown={widget.inlineDrilldown}
+            inlineLabels={widget.inlineLabels}
+            selectedTeamCreGroupId={selectedTeamCreGroupId}
+            selectedTeamSreGroupId={selectedTeamSreGroupId}
+            selectedTeamLabel={selectedTeamLabel}
+            // The builder action below renders as a sibling absolutely
+            // positioned over this same top-right corner (at a higher
+            // zIndex), fully covering the tile's own refresh button — so
+            // suppress the tile's refresh button exactly when (and only
+            // when) a builder action actually exists for this widget. See
+            // `hideRefreshButton`'s own doc comment on `DashboardWidgetTile`.
+            hideRefreshButton={Boolean(action)}
+            expandedSlice={thisWidgetExpandedSlice}
+            onExpandChange={(slice) =>
+              setExpanded(slice ? { widgetId: widget.widgetId, slice } : null)
+            }
+          />
+          {action && (
+            <Box sx={{ position: "absolute", top: 6, right: 6, zIndex: 2 }}>{action}</Box>
+          )}
+        </Box>
+        {/* Rendered as a SEPARATE grid item, immediately after this
+            widget's own (narrow, `gridWidth`-sized) tile above — not nested
+            inside that tile's own `Card` — so it lands full-width on its
+            own row directly below, the same way a `shape: "list"` widget's
+            own row already behaves (see `widgetGridColumnSx`). Only
+            present while THIS widget is the one currently expanded (see
+            `expanded`'s own doc comment above — singular across the whole
+            grid). */}
+        {thisWidgetExpandedSlice && (
+          <Box sx={{ gridColumn: "1 / -1" }}>
+            <WidgetInlineDrilldownPanel
+              widgetId={widget.widgetId}
+              displayName={widget.displayName}
+              resourceType={widget.resourceType}
+              filters={resolvedFilters}
+              slice={thisWidgetExpandedSlice}
+              listLimit={widget.listLimit}
+              columns={widget.columns}
+              selectedTeamCreGroupId={selectedTeamCreGroupId}
+              selectedTeamSreGroupId={selectedTeamSreGroupId}
+              selectedTeamLabel={selectedTeamLabel}
+              onClose={() => setExpanded(null)}
+            />
+          </Box>
         )}
-      </Box>
+      </Fragment>
     );
   };
 

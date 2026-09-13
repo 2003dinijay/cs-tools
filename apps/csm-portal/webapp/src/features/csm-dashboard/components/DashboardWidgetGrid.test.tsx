@@ -14,26 +14,44 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { MemoryRouter } from "react-router";
 import type { ReactNode } from "react";
 import type { BeDashboardWidget } from "@api/backend/types";
+import type { PieSliceResult } from "@features/csm-dashboard/api/useWidgetPieData";
+
+// `DashboardWidgetGrid` now imports `WidgetInlineDrilldownPanel` directly
+// (unmocked, its own real module graph reaches `widgetListConfig.tsx`,
+// which pulls in `useTimeSheets.ts` — time_card's mapper — which reads
+// `window.config` at load via `@config/apiConfig`, unavailable under
+// vitest). See `DashboardWidgetTile.test.tsx`'s identical mock/comment.
+vi.mock("@config/apiConfig", () => ({
+  apiConfig: { backendUrl: "https://example.test" },
+}));
 
 // Stubs the real tile out entirely — this test is only about
 // `DashboardWidgetGrid`'s own wiring of `hideRefreshButton` alongside
 // `renderWidgetAction`, not about anything the real tile fetches/renders.
 // Exposes both as plain text so the assertions below can read them straight
-// out of the DOM rather than needing a spy.
+// out of the DOM rather than needing a spy. Also exposes `expandedSlice`/
+// `onExpandChange` as a plain button so this file's own tests can assert on
+// the LIFTED expand/collapse behavior `DashboardWidgetGrid` now owns,
+// without depending on the real chart/slice-click machinery
+// `DashboardWidgetTile.test.tsx` already covers in full.
 vi.mock("@features/csm-dashboard/components/DashboardWidgetTile", () => ({
   default: ({
     widgetId,
     hideRefreshButton,
+    expandedSlice,
+    onExpandChange,
   }: {
     widgetId: string;
     hideRefreshButton?: boolean;
+    expandedSlice?: PieSliceResult | null;
+    onExpandChange?: (slice: PieSliceResult | null) => void;
   }) => (
     <div data-testid={`tile-${widgetId}`}>
       {!hideRefreshButton && (
@@ -41,6 +59,44 @@ vi.mock("@features/csm-dashboard/components/DashboardWidgetTile", () => ({
           refresh
         </button>
       )}
+      {onExpandChange && (
+        <button
+          type="button"
+          aria-label={`Expand a slice on ${widgetId}`}
+          onClick={() =>
+            onExpandChange(
+              expandedSlice
+                ? null
+                : { label: `${widgetId}-slice`, value: 1, query: {} },
+            )
+          }
+        >
+          toggle slice
+        </button>
+      )}
+    </div>
+  ),
+}));
+
+// Stubs the real panel out too — this file only asserts on WHERE/WHEN it
+// renders (full-width sibling, singular across the grid), not on its own
+// data-fetching/rendering, which `WidgetInlineDrilldownPanel.test.tsx`
+// covers directly.
+vi.mock("@features/csm-dashboard/components/WidgetInlineDrilldownPanel", () => ({
+  default: ({
+    widgetId,
+    slice,
+    onClose,
+  }: {
+    widgetId: string;
+    slice: PieSliceResult;
+    onClose: () => void;
+  }) => (
+    <div data-testid={`panel-${widgetId}`}>
+      <span>{slice.label}</span>
+      <button type="button" aria-label={`Close panel for ${widgetId}`} onClick={onClose}>
+        close
+      </button>
     </div>
   ),
 }));
@@ -130,5 +186,56 @@ describe("DashboardWidgetGrid", () => {
       .map((el) => el.getAttribute("data-testid"));
 
     expect(tileIds).toEqual(["tile-trend_widget", "tile-list_widget", "tile-count_widget"]);
+  });
+
+  it("expands a widget's slice into a full-width panel rendered as a sibling of that widget's own tile, not nested inside it", () => {
+    renderGrid([makeWidget({ widgetId: "cases_by_severity", shape: "pie" })]);
+
+    expect(screen.queryByTestId("panel-cases_by_severity")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand a slice on cases_by_severity" }));
+
+    const panel = screen.getByTestId("panel-cases_by_severity");
+    expect(panel).toBeInTheDocument();
+    expect(screen.getByText("cases_by_severity-slice")).toBeInTheDocument();
+    // A sibling of the tile's own wrapper, not a descendant of it.
+    const tile = screen.getByTestId("tile-cases_by_severity");
+    expect(tile.contains(panel)).toBe(false);
+  });
+
+  it("collapses the panel when the tile reports null (e.g. clicking the same slice again, or the panel's own close control)", () => {
+    renderGrid([makeWidget({ widgetId: "cases_by_severity", shape: "pie" })]);
+
+    const toggle = screen.getByRole("button", { name: "Expand a slice on cases_by_severity" });
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("panel-cases_by_severity")).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(screen.queryByTestId("panel-cases_by_severity")).not.toBeInTheDocument();
+  });
+
+  it("closing the panel via its own onClose collapses it", () => {
+    renderGrid([makeWidget({ widgetId: "cases_by_severity", shape: "pie" })]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand a slice on cases_by_severity" }));
+    expect(screen.getByTestId("panel-cases_by_severity")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close panel for cases_by_severity" }));
+    expect(screen.queryByTestId("panel-cases_by_severity")).not.toBeInTheDocument();
+  });
+
+  it("expanding a different widget's slice replaces the previously expanded panel — only one panel is ever open at a time", () => {
+    renderGrid([
+      makeWidget({ widgetId: "widget_a", shape: "pie" }),
+      makeWidget({ widgetId: "widget_b", shape: "pie" }),
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand a slice on widget_a" }));
+    expect(screen.getByTestId("panel-widget_a")).toBeInTheDocument();
+    expect(screen.queryByTestId("panel-widget_b")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand a slice on widget_b" }));
+    expect(screen.queryByTestId("panel-widget_a")).not.toBeInTheDocument();
+    expect(screen.getByTestId("panel-widget_b")).toBeInTheDocument();
   });
 });

@@ -169,6 +169,21 @@ interface DashboardWidgetTileProps {
    * shape "bar", so never forwarded to `DashboardBarChart`. Absent/`false`
    * is a no-op. */
   inlineLabels?: boolean;
+  /** Only meaningful when `inlineDrilldown` is set (shape "pie"/"bar"):
+   * this tile's own currently-expanded slice, LIFTED into the parent
+   * `DashboardWidgetGrid` (see that component's own `expanded` state) so it
+   * can render the resulting list as a full-width sibling grid item below
+   * this (narrow) tile, rather than nested inside this tile's own `Card`.
+   * `null`/`undefined` means no slice of THIS widget is currently expanded
+   * — which is also true while a DIFFERENT widget's slice is expanded, both
+   * of which render identically here (just the chart, no expansion). */
+  expandedSlice?: PieSliceResult | null;
+  /** Only meaningful when `inlineDrilldown` is set: reports a slice click
+   * up to `DashboardWidgetGrid` instead of tracking it locally. Called with
+   * the clicked slice to expand it (replacing whichever slice — on this
+   * widget or another — was previously expanded), or `null` to collapse
+   * (clicking the already-expanded slice again). */
+  onExpandChange?: (slice: PieSliceResult | null) => void;
 }
 
 /**
@@ -205,6 +220,8 @@ export default function DashboardWidgetTile({
   hideRefreshButton,
   inlineDrilldown,
   inlineLabels,
+  expandedSlice = null,
+  onExpandChange,
 }: DashboardWidgetTileProps): JSX.Element {
   const theme = useTheme();
   const navigate = useNavigate();
@@ -241,14 +258,6 @@ export default function DashboardWidgetTile({
   // like two unrelated controls when split across two separate rows. `null`
   // for every other resourceType, which never calls this back.
   const [inlineColumnCustomizer, setInlineColumnCustomizer] = useState<ReactNode>(null);
-  // Only meaningful when `inlineDrilldown` is set (shape "pie"/"bar"): which
-  // slice, if any, is currently expanded into its own inline list below the
-  // chart. `null` means none — the chart alone renders, same as a non-
-  // inline-drilldown widget. Compared by `label` when toggling (see
-  // `handleSliceClick` below) since that's the same identity the chart
-  // itself already keys each slice/bar on (see DashboardPieChart/
-  // DashboardBarChart's own `data` mapping).
-  const [expandedSlice, setExpandedSlice] = useState<PieSliceResult | null>(null);
   // Re-renders exactly when the "Last refreshed …" text below would next
   // change (adaptive shared scheduler — see RelativeTime.tsx), without
   // requiring another fetch. Passed explicitly into `formatRelativeTime`
@@ -433,34 +442,6 @@ export default function DashboardWidgetTile({
     isVisible,
   );
   const pieData = groupBy?.bucket ? feedbackTrendData : groupBy ? groupByData : sliceData;
-  // Only meaningful for `inlineDrilldown`: the expanded slice's own filtered
-  // list, fed through the same `useWidgetData` hook shape "list" tiles use
-  // (see the shape-"list" branch below) — its own `filters` argument is the
-  // expanded slice's query merged under this widget's base filters (see
-  // `mergeWidgetFilters`), same computation the non-inline navigate-away
-  // path already performs before resolving placeholders. Called
-  // unconditionally (rules of hooks; `inlineDrilldown`/`expandedSlice` can
-  // change across this component's lifetime, but the hook itself must not
-  // be skipped) and gated purely via its own `enabled` argument — same
-  // pattern every other data hook on this component already follows. Falls
-  // back to an empty filters object while collapsed/disabled: its value is
-  // never read in that state (the query is disabled), but it must still be
-  // a valid object rather than throwing.
-  const inlineDrilldownEnabled =
-    Boolean(inlineDrilldown) && (shape === "pie" || shape === "bar") && expandedSlice !== null;
-  const inlineListData = useWidgetData(
-    widgetId,
-    resourceType,
-    expandedSlice ? mergeWidgetFilters(filters, expandedSlice.query) : {},
-    "list",
-    listLimit,
-    0,
-    inlineDrilldownEnabled && isVisible,
-    selectedTeamCreGroupId,
-    selectedTeamSreGroupId,
-    undefined,
-    currentUserId,
-  );
   // True while this widget carries a `__current_user__` filter and the
   // signed-in user's profile hasn't loaded yet. `useWidgetData`/
   // `useWidgetPieData` hold their requests in that window (see
@@ -739,8 +720,11 @@ export default function DashboardWidgetTile({
         // clicking a different slice switches the expansion to it. Slices
         // are compared by `label` — the same identity the chart itself
         // already keys each slice/bar on (see DashboardPieChart/
-        // DashboardBarChart's own `data` mapping).
-        setExpandedSlice((prev) => (prev && prev.label === slice.label ? null : slice));
+        // DashboardBarChart's own `data` mapping). The actual expand/collapse
+        // state is lifted into `DashboardWidgetGrid` (see `expandedSlice`/
+        // `onExpandChange`'s own doc comments) — this tile only reports the
+        // click, it no longer tracks the expansion itself.
+        onExpandChange?.(expandedSlice && expandedSlice.label === slice.label ? null : slice);
         return;
       }
       navigate(
@@ -751,15 +735,6 @@ export default function DashboardWidgetTile({
         { state: dashboardReturnState },
       );
     };
-    // The expanded slice's own resolved filters, used for both the inline
-    // list's own data (fetched above via `inlineListData`) and its "View
-    // more" link below — same computation the non-inline navigate-away path
-    // performs before building its own href.
-    const expandedSliceFilters = expandedSlice
-      ? resolvePlaceholders(mergeWidgetFilters(filters, expandedSlice.query))
-      : undefined;
-    const inlineTotal = inlineListData.data?.total ?? 0;
-    const inlineListLimit = listLimit ?? 4;
     return (
       <Card
         ref={tileRef}
@@ -829,53 +804,6 @@ export default function DashboardWidgetTile({
               {...(shape === "pie" ? { inlineLabels } : {})}
             />
           </Box>
-          {inlineDrilldown && expandedSlice && (
-            <Box sx={{ pointerEvents: "auto", mt: 1.5 }}>
-              {inlineListData.isLoading ? (
-                <Skeleton variant="rounded" height={28 * inlineListLimit + 40} sx={{ mt: 1 }} />
-              ) : inlineListData.isError ? (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  Could not load this widget.
-                </Typography>
-              ) : (
-                <>
-                  {hasColumns ? (
-                    <GenericColumnList
-                      items={inlineListData.data?.items ?? []}
-                      isLoading={false}
-                      resourceType={resourceType}
-                      columns={columns ?? []}
-                    />
-                  ) : (
-                    <ListRenderer
-                      items={inlineListData.data?.items ?? []}
-                      isLoading={false}
-                      resourceType={resourceType}
-                    />
-                  )}
-                  {inlineTotal > inlineListLimit && (
-                    <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 1 }}>
-                      <Button
-                        component={RouterLink}
-                        to={buildWidgetPreviewHref({
-                          previewSlug: config.previewSlug,
-                          widgetId,
-                          displayName: resolvedDisplayName,
-                          filters: expandedSliceFilters ?? {},
-                          currentUserId,
-                        })}
-                        size="small"
-                        variant="text"
-                        endIcon={<ArrowRight size={14} />}
-                      >
-                        View more
-                      </Button>
-                    </Box>
-                  )}
-                </>
-              )}
-            </Box>
-          )}
         </Box>
       </Card>
     );
