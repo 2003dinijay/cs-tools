@@ -135,6 +135,7 @@ import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFee
 import { scrollToFragmentWithRetry } from "@features/csm-cases/utils/permalinkScroll";
 import CaseMetaBand from "@features/csm-cases/components/CaseMetaBand";
 import RefreshButton from "@components/RefreshButton";
+import ExportPdfButton from "@components/ExportPdfButton";
 import {
   AttachmentsWidget,
   CustomerContextWidget,
@@ -2093,18 +2094,58 @@ export default function CsmCaseDetailPage(): JSX.Element {
     ? "This case has an open task. Closing may be rejected until it's resolved or closed."
     : undefined;
 
+  const handleExportCasePdf = async (): Promise<void> => {
+    try {
+      const { generateCaseReportPdf } = await import(
+        "@features/csm-cases/utils/caseReportPdf"
+      );
+      generateCaseReportPdf(
+        c,
+        mergedComments,
+        activityAudit ?? [],
+        attachmentList,
+        caseFeedback ?? [],
+      );
+    } catch (err) {
+      showError("Could not export this case as a PDF. Please try again.", err);
+    }
+  };
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
-      <Button
-        variant="text"
-        size="small"
-        className="csm-print-hide"
-        startIcon={<ArrowLeft size={16} />}
-        onClick={() => navigate(resolvedBackPath)}
-        sx={{ alignSelf: "flex-start" }}
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
       >
-        Back
-      </Button>
+        <Button
+          variant="text"
+          size="small"
+          className="csm-print-hide"
+          startIcon={<ArrowLeft size={16} />}
+          onClick={() => navigate(resolvedBackPath)}
+          sx={{ alignSelf: "flex-start" }}
+        >
+          Back
+        </Button>
+        <ExportPdfButton
+          onExport={handleExportCasePdf}
+          disabled={
+            isCommentsLoading ||
+            isActivityLoading ||
+            isAttachmentsLoading ||
+            isFeedbackLoading ||
+            isChatLoading ||
+            isCommentsError ||
+            isActivityError ||
+            isAttachmentsError ||
+            isFeedbackError ||
+            isChatError
+          }
+        />
+      </Box>
 
       <Box
         sx={{

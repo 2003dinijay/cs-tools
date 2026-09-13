@@ -49,6 +49,7 @@ import { useLocation } from "react-router";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { isBlankHtml, sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 import { BackendApiError } from "@api/backend/client";
+import ExportPdfButton from "@components/ExportPdfButton";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useEngineerDisplayName } from "@hooks/useEngineerDisplayName";
 import { useRecordRecentView } from "@features/csm-recent/hooks/useRecentViews";
@@ -267,7 +268,11 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   );
   const engineerName = useEngineerDisplayName();
 
-  const { data: comments } = useGetCsmChangeRequestComments(id);
+  const {
+    data: comments,
+    isLoading: isCommentsLoading,
+    isError: isCommentsError,
+  } = useGetCsmChangeRequestComments(id);
   const postComment = usePostCsmChangeRequestComment();
   const { data: attachments } = useGetCsmCaseAttachments(id, "change_request");
   const postAttachment = usePostCsmCaseAttachment();
@@ -376,6 +381,17 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   }
 
   const cr = data;
+
+  const handleExportChangeRequestPdf = async (): Promise<void> => {
+    try {
+      const { generateChangeRequestReportPdf } = await import(
+        "@features/csm-operations/utils/changeRequestReportPdf"
+      );
+      generateChangeRequestReportPdf(cr, comments ?? []);
+    } catch (err) {
+      showError("Could not export this change request as a PDF. Please try again.", err);
+    }
+  };
   // Only meaningful while the CR is actively moving through approval —
   // closed/canceled/rollback are terminal or off-ramp states where "awaiting
   // approval" no longer describes what's happening.
@@ -489,7 +505,19 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
-      {BackButton}
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        {BackButton}
+        <ExportPdfButton
+          onExport={handleExportChangeRequestPdf}
+          disabled={isCommentsLoading || isCommentsError}
+        />
+      </Box>
 
       <Box
         sx={{
