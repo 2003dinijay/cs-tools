@@ -19,7 +19,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -109,6 +108,7 @@ func main() {
 
 	githubToken := strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
 
+	healthHandler := handler.NewHealthHandler(pool, appCfg.Readiness)
 	taxonomyHandler := handler.NewTaxonomyHandler(slaCfg)
 	issuesHandler := handler.NewIssuesHandler(pool, slaCfg, appCfg.API)
 	metricsHandler := handler.NewMetricsHandler(pool, slaCfg, appCfg.Cache, appCfg.API)
@@ -117,7 +117,8 @@ func main() {
 		time.Duration(appCfg.Jobs.SyncRunDeadlineMinutes)*time.Minute)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", handleHealthz)
+	mux.HandleFunc("GET /healthz", healthHandler.GetHealthz)
+	mux.HandleFunc("GET /readyz", healthHandler.GetReadyz)
 	mux.HandleFunc("GET /taxonomy", taxonomyHandler.GetTaxonomy)
 	mux.HandleFunc("GET /issues", issuesHandler.ListIssues)
 	mux.HandleFunc("GET /issues/{id}", issuesHandler.GetIssue)
@@ -180,19 +181,6 @@ func main() {
 	}
 
 	slog.Info("git-internals-dashboard backend stopped")
-}
-
-// handleHealthz is liveness-only: it reports the process is up and serving,
-// not that its dependencies are healthy — it never touches the database, so
-// a booted process with a dead DB still reports {"ok":true}. This app's API
-// surface is deliberately kept frozen to its existing set of endpoints, so a
-// separate readiness probe (e.g. GET /readyz) is out of scope here rather
-// than added ad hoc; whatever platform config consumes this endpoint for
-// readiness should be pointed at a different signal (e.g. Choreo's own
-// DB-backed health check) instead.
-func handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
 // configureLogger installs a level-controlled slog handler as the process
