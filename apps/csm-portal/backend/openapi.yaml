@@ -7369,6 +7369,16 @@ components:
             query/filters. Not validated here; an unsupported field name for
             that resourceType is surfaced by that resource's own /search
             endpoint, not caught here.
+        inlineDrilldown:
+          type: boolean
+          description: >
+            Only meaningful for shapes "pie"/"bar". Omitted/false is existing
+            behavior unchanged — clicking a slice/bar navigates away to that
+            criteria's own list view. true tells the frontend to instead
+            expand the clicked slice's filtered list inline on the tile,
+            without navigating. This backend does not decide or render
+            anything about that choice — forwarded verbatim, exactly like
+            groupBy/slices/columns; a no-op if set on a count/list widget.
 
     MetadataResponse:
       type: object

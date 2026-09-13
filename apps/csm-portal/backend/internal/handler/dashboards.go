@@ -60,6 +60,11 @@ type dashboardWidgetView struct {
 	// request's "sortBy" instead of its "filters".
 	Columns []dashboard.Column `json:"columns,omitempty"`
 	SortBy  map[string]any     `json:"sortBy,omitempty"`
+	// InlineDrilldown is only meaningful for Shape "pie"/"bar" — see
+	// dashboard.WidgetTemplate.InlineDrilldown. Forwarded verbatim: the
+	// frontend, not this backend, decides whether/how to render a clicked
+	// slice's list inline versus navigating away.
+	InlineDrilldown bool `json:"inlineDrilldown,omitempty"`
 }
 
 // filterPresetView is one entry of the shared filter-preset catalogue,
@@ -217,19 +222,20 @@ func widgetViews(templates []dashboard.WidgetTemplate) []dashboardWidgetView {
 			}
 		}
 		views = append(views, dashboardWidgetView{
-			WidgetID:     tpl.ID,
-			DisplayName:  tpl.DisplayName,
-			Description:  tpl.Description,
-			ResourceType: tpl.ResourceType,
-			Shape:        tpl.Shape,
-			GridWidth:    tpl.GridWidth,
-			Query:        tpl.Query,
-			GroupBy:      tpl.GroupBy,
-			ListLimit:    tpl.ListLimit,
-			Slices:       slices,
-			Section:      tpl.Section,
-			Columns:      tpl.Columns,
-			SortBy:       tpl.SortBy,
+			WidgetID:        tpl.ID,
+			DisplayName:     tpl.DisplayName,
+			Description:     tpl.Description,
+			ResourceType:    tpl.ResourceType,
+			Shape:           tpl.Shape,
+			GridWidth:       tpl.GridWidth,
+			Query:           tpl.Query,
+			GroupBy:         tpl.GroupBy,
+			ListLimit:       tpl.ListLimit,
+			Slices:          slices,
+			Section:         tpl.Section,
+			Columns:         tpl.Columns,
+			SortBy:          tpl.SortBy,
+			InlineDrilldown: tpl.InlineDrilldown,
 		})
 	}
 	return views
