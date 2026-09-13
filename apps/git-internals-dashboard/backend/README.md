@@ -108,10 +108,35 @@ database and changes on its own cadence (per environment, per load profile).
   `middleware.SecurityHeaders`. Ships with documented defaults commented out
   in the file, same as `database:` — a key added here overrides that one
   default's value or adds a new header, with no code change required.
+- `readiness` tunes `GET /readyz`: the DB ping deadline (`timeoutSeconds`), how long a
+  result is cached (`cacheTTLSeconds`), and whether pool saturation alone fails the probe
+  (`failOnPoolSaturation` / `poolSaturationThresholdPercent`, off by default — see
+  "Probes" below for why).
 - Non-secret by rule, same as `sla-config.yaml`: tokens, DB URLs, and other credentials stay in
   environment variables, never in this file.
 - **Choreo deployments** that need non-default values: mount the file and point `APP_CONFIG_PATH`
   at the mount path — `<<FILL IN>>` the component's config-mount configuration once that's decided.
+
+## Probes
+
+- **Liveness (`GET /healthz`)** never touches the database — it only reports the process
+  is up and serving. If it depended on Postgres, a DB blip would make the kubelet kill and
+  restart every replica at once: a restart storm on top of an outage, with no recovery path.
+- **Readiness (`GET /readyz`)** answers "should traffic come here right now": a bounded
+  `pool.Ping` plus a `pool.Stat()` snapshot, briefly cached (`readiness.cacheTTLSeconds`)
+  to collapse concurrent probes into one DB round trip. 200 when ready, 503 otherwise, with
+  a `checks.database.status` of `unreachable`, `timeout`, or `pool_saturated`. Pool
+  saturation is always reported but only fails the probe when `failOnPoolSaturation` is
+  explicitly enabled — a load spike saturates every replica at roughly the same moment, so
+  making saturation alone fail the probe by default would turn backpressure into a total
+  outage.
+- Neither probe checks GitHub reachability or queries application tables — an unset
+  `GITHUB_TOKEN` is a degraded feature, not unreadiness, and a missing table is a migration
+  failure, not a readiness signal.
+- **Choreo configuration:** point liveness at `GET /healthz` and readiness at
+  `GET /readyz`. `<<FILL IN>>` the component's actual probe configuration once decided —
+  `.choreo/component.yaml`'s `schemaVersion: 1.2` endpoint schema has no `probes:`/
+  `healthCheck:` field to encode this in directly.
 
 ## Project Structure
 
@@ -143,7 +168,8 @@ backend/
 
 ## API Endpoints
 
-- `GET /healthz` — Liveness probe
+- `GET /healthz` — Liveness probe (no dependencies checked)
+- `GET /readyz` — Readiness probe (bounded DB ping + pool stats; see "Probes" below)
 - `GET /taxonomy` — Get the configured status taxonomy
 - `GET /issues` — List issues
 - `GET /issues/{id}` — Get issue by ID
