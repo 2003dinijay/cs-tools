@@ -97,13 +97,15 @@ function paste(target: Element, data: Record<string, string>): void {
   });
 }
 
-// Representative Word clipboard fragment: mso-* inline style is the
-// detection fingerprint (see isWordOrGoogleDocsPasteHtml).
+// Representative Word clipboard fragment: mso-* inline style, one of many
+// possible rich-HTML shapes -- the prompt no longer depends on this marker,
+// any non-empty text/html triggers it.
 const WORD_HTML =
   '<p class=MsoNormal style="mso-margin-top-alt:auto">Hello <b>Word</b></p>';
 
 // Representative Gmail clipboard fragment: rich HTML with no mso-*/
-// docs-internal-guid marker anywhere -- must never trigger the prompt.
+// docs-internal-guid marker anywhere -- must still trigger the prompt, same
+// as every other HTML paste source.
 const GMAIL_HTML = '<div dir="ltr">Hello <b>Gmail</b></div>';
 
 const getEditable = () => screen.getByTestId("case-description-editor");
@@ -118,15 +120,24 @@ describe("Editor paste-format prompt", () => {
     ).toBeInTheDocument();
   });
 
-  it("does not show the prompt for Gmail-style paste (no Word/GDocs fingerprint) -- regression", async () => {
-    const onChange = vi.fn();
-    render(<Editor autoFocus showToolbar={false} onChange={onChange} />);
+  it("shows the Keep/Remove Formatting prompt for a Gmail-style paste too (no Word/GDocs fingerprint)", async () => {
+    render(<Editor autoFocus showToolbar={false} onChange={() => {}} />);
     paste(getEditable(), {
       "text/html": GMAIL_HTML,
       "text/plain": "Hello Gmail",
     });
 
-    // The non-prompted path still normalizes and inserts silently.
+    expect(
+      await screen.findByText("Paste formatted content?"),
+    ).toBeInTheDocument();
+  });
+
+  it("does not show the prompt for a plain-text-only paste (no text/html on the clipboard)", async () => {
+    const onChange = vi.fn();
+    render(<Editor autoFocus showToolbar={false} onChange={onChange} />);
+    paste(getEditable(), { "text/plain": "Hello plain text" });
+
+    // The plain-text path still normalizes and inserts silently.
     await waitFor(() => expect(onChange).toHaveBeenCalled());
     expect(
       screen.queryByText("Paste formatted content?"),

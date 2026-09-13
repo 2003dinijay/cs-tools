@@ -39,7 +39,6 @@ import {
   unwrapNestedPreCodeElements,
   collapseEmptyParagraphElements,
   stripWhitespaceStyleFromHtml,
-  isWordOrGoogleDocsPasteHtml,
   htmlToPlainText,
 } from "@components/rich-text-editor/richTextEditor";
 import { ALLOWED_IMAGE_MIME_TYPES } from "@components/rich-text-editor/richTextConstants";
@@ -316,12 +315,13 @@ const ClipboardImagePlugin = ({
  *   path gets from `tokenizePlainTextPaste`, generalized to any source that
  *   puts `text/html` on the clipboard. See `collapseEmptyParagraphElements`
  *   in richTextEditor.tsx.
- * - HTML paste carrying a Word/Google-Docs fingerprint (see
- *   `isWordOrGoogleDocsPasteHtml`): instead of inserting immediately, holds
- *   the clipboard payload and shows `PasteFormatDialog`, which lets the user
- *   choose between "Keep Formatting" (the normalized-HTML path above) and
- *   "Remove Formatting" (the plain-text path below, applied to the pasted
- *   content). Every other rich-HTML source never sees this prompt.
+ * - Any HTML paste (clipboard carries a non-empty `text/html`): instead of
+ *   inserting immediately, holds the clipboard payload and shows
+ *   `PasteFormatDialog`, which lets the user choose between "Keep Formatting"
+ *   (the normalized-HTML path above) and "Remove Formatting" (the plain-text
+ *   path below, applied to the pasted content). A plain-text-only paste
+ *   (clipboard has `text/plain` but no `text/html`) is unaffected and always
+ *   goes straight to the plain-text path with no prompt.
  */
 const PasteNormalizationPlugin = (): JSX.Element | null => {
   const [editor] = useLexicalComposerContext();
@@ -342,27 +342,8 @@ const PasteNormalizationPlugin = (): JSX.Element | null => {
         const text = clipboardData.getData("text/plain");
 
         if (html.trim()) {
-          if (isWordOrGoogleDocsPasteHtml(html)) {
-            event.preventDefault();
-            setPendingPaste({ html, text });
-            return true;
-          }
-
-          const dom = new DOMParser().parseFromString(html, "text/html");
-          const unwrappedPreCode = unwrapNestedPreCodeElements(dom);
-          const collapsedEmptyParagraphs = collapseEmptyParagraphElements(dom);
-          if (!unwrappedPreCode && !collapsedEmptyParagraphs) return false;
-
           event.preventDefault();
-          editor.update(
-            () => {
-              const selection = $getSelection();
-              if (!$isRangeSelection(selection)) return;
-              const nodes = $generateNodesFromDOM(editor, dom);
-              selection.insertNodes(nodes);
-            },
-            { tag: PASTE_TAG },
-          );
+          setPendingPaste({ html, text });
           return true;
         }
 

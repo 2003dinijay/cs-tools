@@ -34,12 +34,11 @@ interface PasteFormatDialogProps {
 }
 
 /**
- * Prompt shown when pasted clipboard content is detected as coming from a
- * word processor or online document editor (see
- * `isWordOrGoogleDocsPasteHtml` in richTextEditor.tsx). Every other paste
- * source is inserted silently, exactly as before -- this dialog only ever
- * appears for that one detected case, and only ever offers this one binary
- * choice.
+ * Prompt shown whenever pasted clipboard content carries HTML (i.e. any rich
+ * source -- a word processor, an online document editor, an email client, a
+ * notes app, or a plain HTML fragment). Every paste that carries `text/html`
+ * shows this dialog and only ever offers this one binary choice; a
+ * plain-text-only paste never reaches it.
  */
 export default function PasteFormatDialog({
   onKeepFormatting,
@@ -52,7 +51,9 @@ export default function PasteFormatDialog({
       <DialogContent>
         <Typography variant="body2" color="text.secondary">
           The content you pasted carries formatting from its source document.
-          Keep it, or paste as plain text instead.
+          Keep it, or paste as plain text instead. Keeping source formatting
+          can look inconsistent or out of place wherever this comment is
+          shown later, so if you're unsure, plain text is the safer choice.
         </Typography>
       </DialogContent>
       <DialogActions>
