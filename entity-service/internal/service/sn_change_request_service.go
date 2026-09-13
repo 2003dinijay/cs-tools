@@ -492,13 +492,27 @@ func (s *snChangeRequestService) AggregateChangeRequests(ctx context.Context, re
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return domain.AggregateResponse{}, fmt.Errorf("sn change requests: parse aggregate response: %w", err)
 	}
-	// "assignmentGroup" is the only ID-valued field in
+	// "assignmentGroup" is an ID-valued field in
 	// validChangeRequestAggregateField; SN returns its bucket keys as raw
 	// sys_ids, so convert them to this platform's UUIDs before returning.
-	// "state" is a plain enum and is left as-is.
 	if req.GroupBy == "assignmentGroup" {
 		for i := range resp.Groups {
 			resp.Groups[i].Key = sysidToUUID(resp.Groups[i].Key)
+		}
+	}
+	// "state" is a plain enum, but SN's own groupBy implementation returns
+	// its raw internal state value as the bucket key (e.g. "-5"), not this
+	// platform's domain enum string. SN's response already carries the
+	// correct human-readable label for each bucket (e.g. "New"), so remap
+	// the key through the same label lookup snCRStateLabelToString uses
+	// elsewhere in this file, rather than trying to parse the raw value.
+	if req.GroupBy == "state" {
+		for i := range resp.Groups {
+			if v, ok := snCRStateLabelMap[strings.ToLower(resp.Groups[i].Label)]; ok {
+				resp.Groups[i].Key = string(v)
+			}
+			// else: leave the key as-is, mirroring snCRStateLabelToString's
+			// own defensive fallback for an unrecognized label.
 		}
 	}
 	return resp, nil

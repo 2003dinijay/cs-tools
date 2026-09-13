@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -447,13 +448,32 @@ func (s *snIncidentService) AggregateIncidents(ctx context.Context, req domain.A
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return domain.AggregateResponse{}, fmt.Errorf("sn incidents: parse aggregate response: %w", err)
 	}
-	// "assignmentGroup" and "businessService" are the only ID-valued fields
-	// in validIncidentAggregateField; SN returns their bucket keys as raw
+	// "assignmentGroup" and "businessService" are ID-valued fields in
+	// validIncidentAggregateField; SN returns their bucket keys as raw
 	// sys_ids, so convert them to this platform's UUIDs before returning.
-	// "state" is a plain enum and is left as-is.
 	if req.GroupBy == "assignmentGroup" || req.GroupBy == "businessService" {
 		for i := range resp.Groups {
 			resp.Groups[i].Key = sysidToUUID(resp.Groups[i].Key)
+		}
+	}
+	// "state" is a plain enum, but SN's own groupBy implementation returns
+	// its raw numeric state value (as a string) as the bucket key, not this
+	// platform's domain enum string. Parse it back to the numeric SN state
+	// ID and look it up in snIncidentStateLabelMap (SN numeric ID -> domain
+	// label string), the same map used elsewhere in this file to build
+	// Incident.State from sn.State.ID.
+	if req.GroupBy == "state" {
+		for i := range resp.Groups {
+			id, err := strconv.Atoi(resp.Groups[i].Key)
+			if err != nil {
+				// Leave the key as-is if it isn't the numeric string we expect.
+				continue
+			}
+			if label, ok := snIncidentStateLabelMap[id]; ok {
+				resp.Groups[i].Key = label
+			}
+			// else: leave the key as-is, mirroring this file's own
+			// defensive fallback for an unrecognized state ID.
 		}
 	}
 	return resp, nil
