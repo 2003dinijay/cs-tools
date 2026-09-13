@@ -99,8 +99,8 @@ interface CasesListProps {
 }
 
 /** Maps the optional columns that double as sort headers to the field they
- * sort by. Columns not listed here (Product, Type, Customer) have no
- * server-side sort of their own. */
+ * sort by. Columns not listed here (Product, Type, Issue Type, Created By,
+ * Customer, Escalation Level) have no server-side sort of their own. */
 const OPTIONAL_COLUMN_SORT_FIELD: Partial<Record<CaseOptionalColumnId, CasesSortField>> = {
   createdAt: "createdOn",
   severity: "severity",
