@@ -22,16 +22,26 @@
 // treated as immutable for the process lifetime.
 package appconfig
 
+// SecurityHeaders maps an HTTP response header name to the value the
+// SecurityHeaders middleware (internal/middleware/headers.go) sets on every
+// response. Keys are merged onto Default()'s built-in set in load.go's
+// resolve(): a key present in app-config.yaml overrides that default's value
+// or adds a new header; an absent key leaves the default untouched. This is
+// the whole point of making the set config-driven — adding a header later is
+// a YAML edit, not a code change.
+type SecurityHeaders map[string]string
+
 // Config is the fully resolved contents of app-config.yaml: every key either
 // read from the file or filled in from Default.
 type Config struct {
-	Server   Server
-	Database Database
-	Cache    Cache
-	GitHub   GitHub
-	Jobs     Jobs
-	Seed     Seed
-	API      API
+	Server          Server
+	Database        Database
+	Cache           Cache
+	GitHub          GitHub
+	Jobs            Jobs
+	Seed            Seed
+	API             API
+	SecurityHeaders SecurityHeaders
 }
 
 // Server holds the HTTP server's networking knobs.
@@ -157,6 +167,15 @@ func Default() Config {
 			TimeseriesMaxDays:      365,
 			PriorityParamMaxLength: 50,
 			StatusParamMaxLength:   50,
+		},
+		SecurityHeaders: SecurityHeaders{
+			"Content-Security-Policy":           "default-src 'none'; frame-ancestors 'none'",
+			"X-Content-Type-Options":            "nosniff",
+			"X-Frame-Options":                   "DENY",
+			"Referrer-Policy":                   "no-referrer",
+			"X-Permitted-Cross-Domain-Policies": "none",
+			"Cache-Control":                     "no-store",
+			"Strict-Transport-Security":         "max-age=31536000; includeSubDomains",
 		},
 	}
 }

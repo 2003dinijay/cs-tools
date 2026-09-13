@@ -219,31 +219,51 @@ func (r rawAPI) resolve(d API) API {
 	return a
 }
 
+// resolveSecurityHeaders overlays raw onto a copy of defaults: a key present
+// in raw either overrides that default's value or adds a new header
+// alongside the defaults; an absent (nil or empty) raw map leaves every
+// default untouched. Unlike every other resolve() method in this file, there
+// is no bare "absent vs explicit zero" ambiguity to preserve here — an
+// arbitrary string-keyed map has no fixed set of legal keys, so "merge onto
+// defaults" is the only sensible resolution rule.
+func resolveSecurityHeaders(raw, defaults SecurityHeaders) SecurityHeaders {
+	merged := make(SecurityHeaders, len(defaults)+len(raw))
+	for k, v := range defaults {
+		merged[k] = v
+	}
+	for k, v := range raw {
+		merged[k] = v
+	}
+	return merged
+}
+
 // rawConfig is the direct YAML unmarshal target; every section stays raw so
 // missing-vs-zero can be told apart before defaults are resolved. Database is
 // unmarshaled straight into Database itself: its fields are already pointers
 // (nil = "leave pgx's own default alone"), so no separate raw shape is
 // needed.
 type rawConfig struct {
-	Server   rawServer `yaml:"server"`
-	Database Database  `yaml:"database"`
-	Cache    rawCache  `yaml:"cache"`
-	GitHub   rawGitHub `yaml:"github"`
-	Jobs     rawJobs   `yaml:"jobs"`
-	Seed     rawSeed   `yaml:"seed"`
-	API      rawAPI    `yaml:"api"`
+	Server          rawServer       `yaml:"server"`
+	Database        Database        `yaml:"database"`
+	Cache           rawCache        `yaml:"cache"`
+	GitHub          rawGitHub       `yaml:"github"`
+	Jobs            rawJobs         `yaml:"jobs"`
+	Seed            rawSeed         `yaml:"seed"`
+	API             rawAPI          `yaml:"api"`
+	SecurityHeaders SecurityHeaders `yaml:"securityHeaders"`
 }
 
 func (r rawConfig) resolve() Config {
 	d := Default()
 	return Config{
-		Server:   r.Server.resolve(d.Server),
-		Database: r.Database,
-		Cache:    r.Cache.resolve(d.Cache),
-		GitHub:   r.GitHub.resolve(d.GitHub),
-		Jobs:     r.Jobs.resolve(d.Jobs),
-		Seed:     r.Seed.resolve(d.Seed),
-		API:      r.API.resolve(d.API),
+		Server:          r.Server.resolve(d.Server),
+		Database:        r.Database,
+		Cache:           r.Cache.resolve(d.Cache),
+		GitHub:          r.GitHub.resolve(d.GitHub),
+		Jobs:            r.Jobs.resolve(d.Jobs),
+		Seed:            r.Seed.resolve(d.Seed),
+		API:             r.API.resolve(d.API),
+		SecurityHeaders: resolveSecurityHeaders(r.SecurityHeaders, d.SecurityHeaders),
 	}
 }
 

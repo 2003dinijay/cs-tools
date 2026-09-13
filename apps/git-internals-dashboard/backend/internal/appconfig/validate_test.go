@@ -86,3 +86,38 @@ func TestValidateGithubMaxRetriesZeroIsLegal(t *testing.T) {
 		t.Error("expected github.maxRetries=-1 to be rejected")
 	}
 }
+
+func TestValidateRejectsInvalidSecurityHeaderName(t *testing.T) {
+	cfg := Default()
+	cfg.SecurityHeaders = map[string]string{"": "nosniff"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected an error for an empty header name")
+	}
+	if !strings.Contains(err.Error(), "securityHeaders") {
+		t.Errorf("expected error naming securityHeaders, got: %v", err)
+	}
+}
+
+func TestValidateRejectsSecurityHeaderNameWithInvalidChars(t *testing.T) {
+	cfg := Default()
+	cfg.SecurityHeaders = map[string]string{"X Frame Options": "DENY"} // space is not a valid token char
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected an error for a header name containing a space")
+	}
+	if !strings.Contains(err.Error(), "securityHeaders") {
+		t.Errorf("expected error naming securityHeaders, got: %v", err)
+	}
+}
+
+func TestValidateAcceptsCustomSecurityHeaderName(t *testing.T) {
+	cfg := Default()
+	cfg.SecurityHeaders["X-Custom-Header"] = "some-value"
+
+	if err := Validate(&cfg); err != nil {
+		t.Errorf("expected a well-formed custom header name to be valid, got: %v", err)
+	}
+}

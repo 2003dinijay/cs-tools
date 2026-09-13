@@ -21,6 +21,30 @@ import (
 	"strings"
 )
 
+// headerTokenChars lists the non-alphanumeric bytes RFC 7230 allows in an
+// HTTP header field name (the "tchar" set minus letters/digits, which are
+// checked separately below).
+const headerTokenChars = "!#$%&'*+-.^_`|~"
+
+// isValidHeaderName reports whether name is a syntactically legal HTTP
+// header field name: non-empty, and built only from RFC 7230 token
+// characters.
+func isValidHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.ContainsRune(headerTokenChars, rune(c)):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // ValidationError aggregates every rule violation found in one config, so a
 // misconfigured deploy sees every problem at once instead of fixing them one
 // failed boot at a time.
@@ -127,6 +151,12 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.API.TimeseriesDefaultDays > cfg.API.TimeseriesMaxDays {
 		add("api.timeseriesDefaultDays: must not exceed api.timeseriesMaxDays")
+	}
+
+	for name := range cfg.SecurityHeaders {
+		if !isValidHeaderName(name) {
+			add("securityHeaders: %q is not a valid HTTP header name", name)
+		}
 	}
 
 	if len(issues) == 0 {

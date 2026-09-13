@@ -163,3 +163,58 @@ func TestLoadValidatesTheCommittedConfig(t *testing.T) {
 		t.Errorf("committed app-config.yaml has drifted from Default():\n got:  %+v\n want: %+v", cfg, Default())
 	}
 }
+
+// TestLoadSecurityHeadersAbsentUsesDefaults verifies that with no
+// securityHeaders key in the YAML at all, every default header survives
+// unchanged.
+func TestLoadSecurityHeadersAbsentUsesDefaults(t *testing.T) {
+	path := writeConfig(t, "server:\n  port: 9090\n")
+	t.Setenv("APP_CONFIG_PATH", path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected valid config, got: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.SecurityHeaders, Default().SecurityHeaders) {
+		t.Errorf("expected default security headers, got: %+v", cfg.SecurityHeaders)
+	}
+}
+
+// TestLoadSecurityHeadersMergesCustomHeaderOntoDefaults verifies a custom
+// header in the YAML is added alongside every built-in default, so the set
+// is purely additive/overridable via config with no code change.
+func TestLoadSecurityHeadersMergesCustomHeaderOntoDefaults(t *testing.T) {
+	path := writeConfig(t, "securityHeaders:\n  X-Custom-Header: custom-value\n")
+	t.Setenv("APP_CONFIG_PATH", path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected valid config, got: %v", err)
+	}
+	if got := cfg.SecurityHeaders["X-Custom-Header"]; got != "custom-value" {
+		t.Errorf("expected custom header to be present, got %q", got)
+	}
+	for name, value := range Default().SecurityHeaders {
+		if cfg.SecurityHeaders[name] != value {
+			t.Errorf("expected default %s=%q to survive alongside the custom header, got %q", name, value, cfg.SecurityHeaders[name])
+		}
+	}
+}
+
+// TestLoadSecurityHeadersOverridesDefaultValue verifies the YAML can change
+// one default header's value without needing to repeat every other default.
+func TestLoadSecurityHeadersOverridesDefaultValue(t *testing.T) {
+	path := writeConfig(t, "securityHeaders:\n  X-Frame-Options: SAMEORIGIN\n")
+	t.Setenv("APP_CONFIG_PATH", path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected valid config, got: %v", err)
+	}
+	if got := cfg.SecurityHeaders["X-Frame-Options"]; got != "SAMEORIGIN" {
+		t.Errorf("expected overridden X-Frame-Options=SAMEORIGIN, got %q", got)
+	}
+	if got := cfg.SecurityHeaders["X-Content-Type-Options"]; got != "nosniff" {
+		t.Errorf("expected untouched default X-Content-Type-Options=nosniff, got %q", got)
+	}
+}
