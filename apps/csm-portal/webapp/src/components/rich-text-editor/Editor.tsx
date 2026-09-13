@@ -38,6 +38,7 @@ import {
   tokenizePlainTextPaste,
   unwrapNestedPreCodeElements,
   collapseEmptyParagraphElements,
+  stripWhitespaceStyleFromHtml,
 } from "@components/rich-text-editor/richTextEditor";
 import { ALLOWED_IMAGE_MIME_TYPES } from "@components/rich-text-editor/richTextConstants";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
@@ -124,7 +125,7 @@ const OnChangeHTMLPlugin = ({
       onChange={(editorState) => {
         editorState.read(() => {
           const html = $generateHtmlFromNodes(editor);
-          onChange?.(html);
+          onChange?.(stripWhitespaceStyleFromHtml(html));
         });
       }}
     />
