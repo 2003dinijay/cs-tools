@@ -18,7 +18,7 @@ import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useIssueTitles, useTaxonomy } from "./hooks";
+import { useIssueTitles, useOverview, useTaxonomy } from "./hooks";
 
 /** Wraps a hook under test in its own fresh QueryClient. */
 function wrapper({ children }: { children: ReactNode }) {
@@ -110,5 +110,42 @@ describe("api hooks", () => {
 
     // Same sorted key => same cache entry => fetch only happened once.
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("useOverview keeps the previous filter's data on screen while the new filter's fetch is pending", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url.includes("repo=b") ? { repo: "b" } : { repo: "a" };
+      return Promise.resolve(
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // A single shared QueryClient across both renders, so the key change on
+    // rerender can hit the first render's cache entry as its placeholder.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const localWrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+
+    const { result, rerender } = renderHook(({ repo }: { repo: string }) => useOverview(repo), {
+      wrapper: localWrapper,
+      initialProps: { repo: "a" },
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual({ repo: "a" });
+
+    rerender({ repo: "b" });
+
+    // The new query key is a cache miss, but keepPreviousData holds the
+    // prior filter's data on screen instead of flipping isLoading.
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.isPlaceholderData).toBe(true);
+    expect(result.current.data).toEqual({ repo: "a" });
+
+    await waitFor(() => expect(result.current.data).toEqual({ repo: "b" }));
+    expect(result.current.isPlaceholderData).toBe(false);
   });
 });

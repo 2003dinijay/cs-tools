@@ -21,6 +21,8 @@ import { useOverview, useIssues, useIssueTitles, useTaxonomy, makeIsCsStatus } f
 import type { BucketKey } from "@api/types";
 import { BackButton } from "@components/BackButton";
 import { ErrorState } from "@components/ErrorState";
+import { FetchProgressBar } from "@components/FetchProgressBar";
+import { StaleDataAlert } from "@components/StaleDataAlert";
 import { errorMessage } from "@lib/apiError";
 import { IssueTimelineRow } from "@components/IssueTimelineRow";
 import { gridTemplate } from "@lib/grid";
@@ -131,8 +133,10 @@ export default function IssuesPage() {
   const {
     data: issues,
     isLoading,
+    isPlaceholderData,
     isError,
     error,
+    errorUpdatedAt,
     refetch,
   } = useIssues({
     bucket,
@@ -158,8 +162,13 @@ export default function IssuesPage() {
   const cols = gridTemplate(true);
 
   return (
-    <Box>
+    <Box sx={{ position: "relative" }} aria-busy={isPlaceholderData}>
+      <FetchProgressBar active={isPlaceholderData} />
       <BackButton />
+
+      {isError && issues && (
+        <StaleDataAlert key={errorUpdatedAt} message={errorMessage(error, "Failed to refresh the issue list")} />
+      )}
 
       <Box sx={{ mb: 2, mt: "18px", display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: "14px" }}>
         <Box>

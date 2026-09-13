@@ -18,6 +18,8 @@ import { useNavigate, useSearchParams } from "react-router";
 import { Box, Skeleton } from "@mui/material";
 import { useOverview, useTaxonomy, makeIsCsStatus } from "@api/hooks";
 import { ErrorState } from "@components/ErrorState";
+import { FetchProgressBar } from "@components/FetchProgressBar";
+import { StaleDataAlert } from "@components/StaleDataAlert";
 import { errorMessage } from "@lib/apiError";
 import { HeroCard, CsHeroCard } from "@components/HeroCard";
 import { ProjectCard } from "@components/ProjectCard";
@@ -70,7 +72,7 @@ export default function DashboardPage() {
   const repo = params.get("repo") ?? undefined;
   const priority = params.get("priority") ?? undefined;
 
-  const { data: overview, isLoading, isError, error, refetch } = useOverview(repo, priority);
+  const { data: overview, isLoading, isPlaceholderData, isError, error, errorUpdatedAt, refetch } = useOverview(repo, priority);
   const { data: taxonomy } = useTaxonomy();
   const isCsStatus = makeIsCsStatus(taxonomy?.csStatuses);
 
@@ -146,7 +148,13 @@ export default function DashboardPage() {
   const repoForId = (id: number) => overview.projects.find((p) => p.repoId === id)?.repo;
 
   return (
-    <Box>
+    <Box sx={{ position: "relative" }} aria-busy={isPlaceholderData}>
+      <FetchProgressBar active={isPlaceholderData} />
+
+      {isError && overview && (
+        <StaleDataAlert key={errorUpdatedAt} message={errorMessage(error, "Failed to refresh the dashboard")} />
+      )}
+
       {/* All-clear banner */}
       {allClear && (
         <Box sx={{ mb: "22px", display: "flex", alignItems: "center", gap: 1.5, borderRadius: "12px", border: "1px solid color-mix(in srgb, var(--sla-ok) 35%, transparent)", bgcolor: "var(--sla-ok-tint)", px: "18px", py: 1.75 }}>
