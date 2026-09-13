@@ -127,6 +127,7 @@ type Readiness struct {
 	CacheTTLSeconds                int
 	FailOnPoolSaturation           bool
 	PoolSaturationThresholdPercent int
+	DrainGracePeriodSeconds        int
 }
 
 // Default returns the built-in default Config: one value per field, each
@@ -193,6 +194,7 @@ func Default() Config {
 			CacheTTLSeconds:                1,
 			FailOnPoolSaturation:           false,
 			PoolSaturationThresholdPercent: 100,
+			DrainGracePeriodSeconds:        0,
 		},
 	}
 }

@@ -226,6 +226,7 @@ type rawReadiness struct {
 	CacheTTLSeconds                *int  `yaml:"cacheTTLSeconds"`
 	FailOnPoolSaturation           *bool `yaml:"failOnPoolSaturation"`
 	PoolSaturationThresholdPercent *int  `yaml:"poolSaturationThresholdPercent"`
+	DrainGracePeriodSeconds        *int  `yaml:"drainGracePeriodSeconds"`
 }
 
 func (r rawReadiness) resolve(d Readiness) Readiness {
@@ -241,6 +242,9 @@ func (r rawReadiness) resolve(d Readiness) Readiness {
 	}
 	if r.PoolSaturationThresholdPercent != nil {
 		rd.PoolSaturationThresholdPercent = *r.PoolSaturationThresholdPercent
+	}
+	if r.DrainGracePeriodSeconds != nil {
+		rd.DrainGracePeriodSeconds = *r.DrainGracePeriodSeconds
 	}
 	return rd
 }

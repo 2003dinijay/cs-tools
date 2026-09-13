@@ -170,6 +170,9 @@ func Validate(cfg *Config) error {
 	if cfg.Readiness.PoolSaturationThresholdPercent < 1 || cfg.Readiness.PoolSaturationThresholdPercent > 100 {
 		add("readiness.poolSaturationThresholdPercent: must be between 1 and 100")
 	}
+	if cfg.Readiness.DrainGracePeriodSeconds < 0 {
+		add("readiness.drainGracePeriodSeconds: must not be negative")
+	}
 
 	if len(issues) == 0 {
 		return nil

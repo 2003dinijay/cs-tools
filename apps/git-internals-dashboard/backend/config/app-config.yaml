@@ -157,3 +157,9 @@ readiness:
   # acquiredConns/maxConns at or above this percentage counts as saturated.
   # Only consulted when failOnPoolSaturation is true.
   poolSaturationThresholdPercent: 100
+  # Grace period after SIGTERM during which /readyz reports 503 "draining"
+  # before the process actually stops accepting connections, giving the
+  # load balancer time to notice and stop routing here first. Default 0
+  # means zero behaviour change until an operator sets it; in Choreo, set
+  # this to roughly two readiness probe periods.
+  drainGracePeriodSeconds: 0

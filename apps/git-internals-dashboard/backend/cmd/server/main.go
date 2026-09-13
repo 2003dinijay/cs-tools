@@ -173,6 +173,16 @@ func main() {
 	<-ctx.Done()
 	stop()
 
+	// Give the load balancer time to notice this replica is going away and
+	// stop routing here before in-flight requests get cut: /readyz starts
+	// reporting 503 "draining" now, /healthz keeps reporting 200 since the
+	// process is still alive.
+	healthHandler.BeginDraining()
+	if drain := time.Duration(appCfg.Readiness.DrainGracePeriodSeconds) * time.Second; drain > 0 {
+		slog.Info("draining before shutdown", "seconds", appCfg.Readiness.DrainGracePeriodSeconds)
+		time.Sleep(drain)
+	}
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Duration(appCfg.Server.ShutdownTimeoutSeconds)*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {

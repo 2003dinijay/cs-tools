@@ -241,3 +241,34 @@ func TestGetReadyzPoolSaturatedSkipsPing(t *testing.T) {
 		t.Errorf("expected pool.utilizationPercent >= 100, got %+v", body.Pool)
 	}
 }
+
+// TestReadyzDrainingReturns503WhileHealthzStaysOk verifies BeginDraining
+// flips /readyz to 503 "draining" immediately (no DB work attempted) while
+// /healthz — liveness — is completely unaffected.
+func TestReadyzDrainingReturns503WhileHealthzStaysOk(t *testing.T) {
+	pool := testPool(t)
+	h := NewHealthHandler(pool, appconfig.Default().Readiness)
+	h.BeginDraining()
+
+	readyReq := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	readyRec := httptest.NewRecorder()
+	h.GetReadyz(readyRec, readyReq)
+
+	if readyRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d (body: %s)", readyRec.Code, readyRec.Body.String())
+	}
+	var body readyBody
+	if err := json.Unmarshal(readyRec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body.Status != "draining" {
+		t.Errorf("expected status=draining, got %q", body.Status)
+	}
+
+	healthReq := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	healthRec := httptest.NewRecorder()
+	h.GetHealthz(healthRec, healthReq)
+	if healthRec.Code != http.StatusOK {
+		t.Errorf("expected /healthz to stay 200 while draining, got %d", healthRec.Code)
+	}
+}

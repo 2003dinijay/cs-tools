@@ -137,6 +137,11 @@ database and changes on its own cadence (per environment, per load profile).
   `GET /readyz`. `<<FILL IN>>` the component's actual probe configuration once decided —
   `.choreo/component.yaml`'s `schemaVersion: 1.2` endpoint schema has no `probes:`/
   `healthCheck:` field to encode this in directly.
+- On SIGTERM, this service marks itself draining (`/readyz` → 503 `draining`, `/healthz`
+  unaffected) and waits `readiness.drainGracePeriodSeconds` (default `0`, i.e. no change in
+  behavior) before the normal graceful-shutdown sequence begins. Set this in Choreo to
+  roughly two readiness probe periods so the platform reliably stops routing traffic here
+  before the process exits.
 
 ## Project Structure
 

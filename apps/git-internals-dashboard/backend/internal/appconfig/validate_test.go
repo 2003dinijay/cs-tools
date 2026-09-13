@@ -173,3 +173,17 @@ func TestValidateReadinessCacheTTLZeroIsLegal(t *testing.T) {
 		t.Error("expected cacheTTLSeconds=-1 to be rejected")
 	}
 }
+
+// TestValidateReadinessDrainGracePeriodNegativeRejected verifies the drain
+// grace period cannot be negative (0 — no draining behavior — is legal).
+func TestValidateReadinessDrainGracePeriodNegativeRejected(t *testing.T) {
+	cfg := Default()
+	cfg.Readiness.DrainGracePeriodSeconds = -1
+	if err := Validate(&cfg); err == nil {
+		t.Error("expected drainGracePeriodSeconds=-1 to be rejected")
+	}
+	cfg.Readiness.DrainGracePeriodSeconds = 0
+	if err := Validate(&cfg); err != nil {
+		t.Errorf("expected drainGracePeriodSeconds=0 to be valid, got: %v", err)
+	}
+}
