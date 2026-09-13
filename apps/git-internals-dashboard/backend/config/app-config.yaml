@@ -115,3 +115,20 @@ api:
   # Max length of the free-text `priority` and `status` query parameters.
   priorityParamMaxLength: 50
   statusParamMaxLength: 50
+
+securityHeaders:
+  # Every key below is optional and ships commented out, same as `database:`
+  # above — the committed file resolves to exactly the built-in defaults, so
+  # editing this file changes nothing until a line here is actually
+  # uncommented or added. A key present here overrides that one default's
+  # value (or adds a brand-new header) without needing to repeat every other
+  # default; there is no way to remove a default header entirely, only to
+  # blank its value.
+  #
+  # Content-Security-Policy: "default-src 'none'; frame-ancestors 'none'"
+  # X-Content-Type-Options: nosniff
+  # X-Frame-Options: DENY
+  # Referrer-Policy: no-referrer
+  # X-Permitted-Cross-Domain-Policies: none
+  # Cache-Control: no-store
+  # Strict-Transport-Security: "max-age=31536000; includeSubDomains"

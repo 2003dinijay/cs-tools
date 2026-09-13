@@ -103,6 +103,11 @@ database and changes on its own cadence (per environment, per load profile).
   alongside the other SLA-math knobs, so there is one source of truth per knob.
 - The `api.*` limits mirror the ranges documented in `openapi.yaml`; change both together or the
   published contract will desync from the running service.
+- `securityHeaders` sets response headers (CSP, `X-Frame-Options`,
+  `Strict-Transport-Security`, etc.) on every response via
+  `middleware.SecurityHeaders`. Ships with documented defaults commented out
+  in the file, same as `database:` — a key added here overrides that one
+  default's value or adds a new header, with no code change required.
 - Non-secret by rule, same as `sla-config.yaml`: tokens, DB URLs, and other credentials stay in
   environment variables, never in this file.
 - **Choreo deployments** that need non-default values: mount the file and point `APP_CONFIG_PATH`
@@ -117,7 +122,7 @@ backend/
 │   └── seed/main.go         # Synthetic or real-GitHub seed data
 ├── internal/
 │   ├── apierror/            # {"error":{"code","message"}} envelope + write helpers
-│   ├── middleware/           # logger.go, recovery.go, cors.go
+│   ├── middleware/           # logger.go, recovery.go, cors.go, headers.go
 │   ├── config/                # sla-config.yaml load + validate
 │   ├── appconfig/              # app-config.yaml load + validate (operational tuning)
 │   ├── db/                     # pgxpool init, config-sync
