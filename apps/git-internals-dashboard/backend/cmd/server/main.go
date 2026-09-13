@@ -128,15 +128,20 @@ func main() {
 	mux.HandleFunc("GET /sync/status", syncHandler.GetSyncStatus)
 
 	// Handler chain, outermost first: Recovery must be outermost so a panic
-	// anywhere downstream (including in CORS or Logger) still gets the
-	// standard error envelope instead of an empty connection reset. CORS
-	// wraps Logger so a preflight — which never reaches Logger's wrapped
-	// handler — still gets its own headers; see middleware.CORS's doc
-	// comment for why this backend needs CORS at all despite doing no
-	// authentication of its own.
+	// anywhere downstream (including in SecurityHeaders, CORS, or Logger)
+	// still gets the standard error envelope instead of an empty connection
+	// reset. SecurityHeaders wraps CORS (rather than the other way around)
+	// so a CORS preflight — which short-circuits before reaching Logger's
+	// wrapped handler — still carries the same security headers as every
+	// other response; see middleware.SecurityHeaders's doc comment. CORS
+	// wraps Logger so a preflight still gets its own headers; see
+	// middleware.CORS's doc comment for why this backend needs CORS at all
+	// despite doing no authentication of its own.
 	rootHandler := middleware.Recovery(
-		middleware.CORS(splitComma(os.Getenv("CORS_ALLOWED_ORIGINS")))(
-			middleware.Logger(mux),
+		middleware.SecurityHeaders(appCfg.SecurityHeaders)(
+			middleware.CORS(splitComma(os.Getenv("CORS_ALLOWED_ORIGINS")))(
+				middleware.Logger(mux),
+			),
 		),
 	)
 
