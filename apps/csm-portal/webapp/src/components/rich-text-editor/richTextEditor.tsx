@@ -213,6 +213,31 @@ export function tokenizePlainTextPaste(text: string): PlainTextPasteToken[] {
 }
 
 /**
+ * Fingerprint pattern for clipboard HTML that originated in a word processor
+ * or online document editor (Microsoft Word, Google Docs). Matches Microsoft
+ * Office's `mso-*` inline style properties -- present on virtually every
+ * element a Word paste carries, either inline (`style="mso-list:l0 level1
+ * lfo1"`) or inside an embedded `<style>` block (`p.MsoNormal {mso-pagination
+ * :widow-orphan; ...}`) -- and Google Docs' `docs-internal-guid` wrapper
+ * attribute, which it stamps onto the outermost `<b>`/`<span>` of every copy.
+ */
+const WORD_OR_GOOGLE_DOCS_FINGERPRINT_PATTERN = /mso-[a-z-]+|docs-internal-guid/i;
+
+/**
+ * Detects whether a pasted clipboard HTML fragment carries a Word- or
+ * Google-Docs-origin marker (see `WORD_OR_GOOGLE_DOCS_FINGERPRINT_PATTERN`).
+ * Used to gate the "Keep Formatting" / "Remove Formatting" prompt so it only
+ * appears for paste sources known to carry heavy, often unwanted source
+ * styling -- every other rich-HTML source (Gmail, Notion, ChatGPT, Claude,
+ * GitHub, a manual text-selection copy, ...) falls through this check and
+ * keeps today's silent normalization behavior completely unchanged.
+ */
+export function isWordOrGoogleDocsPasteHtml(html: string): boolean {
+  if (!html) return false;
+  return WORD_OR_GOOGLE_DOCS_FINGERPRINT_PATTERN.test(html);
+}
+
+/**
  * Unwraps a `<code>` element that is a direct child of a `<pre>`, moving the
  * `<code>`'s children up to be the `<pre>`'s own children and removing the
  * now-empty `<code>` wrapper. Mutates `dom` in place; returns whether any

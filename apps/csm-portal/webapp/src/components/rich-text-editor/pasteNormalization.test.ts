@@ -19,6 +19,7 @@ import {
   tokenizePlainTextPaste,
   unwrapNestedPreCodeElements,
   collapseEmptyParagraphElements,
+  isWordOrGoogleDocsPasteHtml,
 } from "./richTextEditor";
 
 describe("tokenizePlainTextPaste", () => {
@@ -239,5 +240,64 @@ describe("collapseEmptyParagraphElements", () => {
     expect(changed).toBe(true);
     expect(dom.querySelector("div")).toBeNull();
     expect(dom.body.textContent).toBe("Para1Para2");
+  });
+});
+
+describe("isWordOrGoogleDocsPasteHtml", () => {
+  // Representative of a real Microsoft Word clipboard export: an embedded
+  // <style> block defining "Mso*" classes via mso-* properties, plus mso-*
+  // inline styles on the pasted elements themselves.
+  const WORD_PASTE_HTML = `
+    <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
+    <head>
+    <meta name=Generator content="Microsoft Word 15">
+    <style>
+    p.MsoNormal, li.MsoNormal, div.MsoNormal
+      {margin:0in; font-size:12.0pt; font-family:"Calibri",sans-serif;
+      mso-fareast-font-family:Calibri; mso-pagination:widow-orphan;}
+    </style>
+    </head>
+    <body>
+    <p class=MsoNormal style='mso-margin-top-alt:auto'>
+      <span style='mso-spacerun:yes'>Hello from Word</span>
+    </p>
+    </body>
+    </html>
+  `;
+
+  // Representative of a real Google Docs clipboard export: the outermost
+  // wrapper carries a docs-internal-guid attribute unique to that copy.
+  const GOOGLE_DOCS_PASTE_HTML =
+    '<b style="font-weight:normal;" id="docs-internal-guid-3f9a1b2c-7fff-abcd-1234-56789abcdef0">' +
+    '<p dir="ltr" style="line-height:1.38;margin-top:0pt;margin-bottom:0pt;">' +
+    '<span style="font-size:11pt;font-family:Arial;">Hello from Google Docs</span>' +
+    "</p></b>";
+
+  // Representative of a Gmail-composed message's clipboard HTML: plain
+  // inline styles, no mso-* properties and no docs-internal-guid attribute.
+  const GMAIL_PASTE_HTML =
+    '<div dir="ltr">Hello from <b>Gmail</b>' +
+    '<div><br></div><div>Second line with a <a href="https://example.com">link</a>.</div></div>';
+
+  it("detects a Word clipboard paste via its mso-* fingerprint", () => {
+    expect(isWordOrGoogleDocsPasteHtml(WORD_PASTE_HTML)).toBe(true);
+  });
+
+  it("detects a Google Docs clipboard paste via its docs-internal-guid fingerprint", () => {
+    expect(isWordOrGoogleDocsPasteHtml(GOOGLE_DOCS_PASTE_HTML)).toBe(true);
+  });
+
+  it("does not flag Gmail-style clipboard HTML (no mso-* / docs-internal-guid marker)", () => {
+    expect(isWordOrGoogleDocsPasteHtml(GMAIL_PASTE_HTML)).toBe(false);
+  });
+
+  it("does not flag plain generic HTML", () => {
+    expect(isWordOrGoogleDocsPasteHtml("<p>Just a normal paragraph</p>")).toBe(
+      false,
+    );
+  });
+
+  it("returns false for empty input", () => {
+    expect(isWordOrGoogleDocsPasteHtml("")).toBe(false);
   });
 });
