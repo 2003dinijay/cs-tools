@@ -164,6 +164,11 @@ interface DashboardWidgetTileProps {
    * instead. Absent/`false` renders and behaves exactly as before this prop
    * existed. */
   inlineDrilldown?: boolean;
+  /** Only meaningful for shape "pie" (see `DashboardPieChart`'s own prop of
+   * the same name, and `BeDashboardWidget.inlineLabels`). Not applicable to
+   * shape "bar", so never forwarded to `DashboardBarChart`. Absent/`false`
+   * is a no-op. */
+  inlineLabels?: boolean;
 }
 
 /**
@@ -199,6 +204,7 @@ export default function DashboardWidgetTile({
   selectedTeamLabel,
   hideRefreshButton,
   inlineDrilldown,
+  inlineLabels,
 }: DashboardWidgetTileProps): JSX.Element {
   const theme = useTheme();
   const navigate = useNavigate();
@@ -817,6 +823,10 @@ export default function DashboardWidgetTile({
               isLoading={pieData.isLoading}
               isError={pieData.isError}
               onSliceClick={handleSliceClick}
+              // Only DashboardPieChart accepts this prop — shape "bar" never
+              // sets `inlineLabels` on its own widget config, but guard it
+              // here too rather than relying on that alone.
+              {...(shape === "pie" ? { inlineLabels } : {})}
             />
           </Box>
           {inlineDrilldown && expandedSlice && (

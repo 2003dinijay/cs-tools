@@ -205,6 +205,7 @@ export default function DashboardWidgetGrid({
           columns={widget.columns}
           sortBy={widget.sortBy}
           inlineDrilldown={widget.inlineDrilldown}
+          inlineLabels={widget.inlineLabels}
           selectedTeamCreGroupId={selectedTeamCreGroupId}
           selectedTeamSreGroupId={selectedTeamSreGroupId}
           selectedTeamLabel={selectedTeamLabel}

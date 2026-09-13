@@ -4016,6 +4016,13 @@ export interface BeDashboardWidget {
    * `false` is a no-op — every existing pie/bar widget's navigate-away
    * click-through is unchanged. */
   inlineDrilldown?: boolean;
+  /** Only meaningful for shape "pie": opts this widget into rendering each
+   * slice's own "{label} {value}" outside the ring, connected to its wedge
+   * by a leader line, instead of the default donut + separate legend list
+   * below it (no percentage shown in these outer labels). Absent/`false` is
+   * a no-op — every existing pie widget's donut+legend rendering is
+   * unchanged. See `DashboardPieChart`'s own `inlineLabels` prop. */
+  inlineLabels?: boolean;
 }
 
 /**
