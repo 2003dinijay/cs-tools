@@ -758,3 +758,47 @@ func TestSNIncidentService_GetIncidentByID_MapsSpecialistHandoff(t *testing.T) {
 		})
 	}
 }
+
+// --- AggregateIncidents: state groupBy key remap ---
+//
+// SN's own groupBy implementation (IncidentUtils.groupIncidentsBy) returns
+// the raw numeric incident state value (as a string) as the bucket key, not
+// this platform's domain enum string. This test pins the remap through
+// snIncidentStateLabelMap (SN numeric state ID -> domain label).
+func TestSNIncidentService_AggregateIncidents_StateGroupByRemapsKeyToDomainEnum(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/incidents/aggregate", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"groups": []map[string]any{
+				{"key": "1", "label": "New", "count": 4},
+				{"key": "2", "label": "In Progress", "count": 2},
+				{"key": "42", "label": "Unrecognized", "count": 1},
+			},
+			"othersCount":  0,
+			"totalRecords": 7,
+		})
+	})
+
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowIncidentService(client, nil)
+
+	resp, err := svc.AggregateIncidents(contextWithUserIDToken("token"), domain.AggregateIncidentsRequest{
+		GroupBy: "state",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Groups) != 3 {
+		t.Fatalf("groups: got %d, want 3", len(resp.Groups))
+	}
+	if got, want := resp.Groups[0].Key, "NEW"; got != want {
+		t.Errorf("groups[0].Key: got %q, want %q (domain label, not raw SN state id %q)", got, want, "1")
+	}
+	if got, want := resp.Groups[1].Key, "IN_PROGRESS"; got != want {
+		t.Errorf("groups[1].Key: got %q, want %q", got, want)
+	}
+	// Unrecognized numeric state id: falls back to leaving the key as-is.
+	if got, want := resp.Groups[2].Key, "42"; got != want {
+		t.Errorf("groups[2].Key: got %q, want %q (unrecognized state id falls back to raw key)", got, want)
+	}
+}

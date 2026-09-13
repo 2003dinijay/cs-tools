@@ -8737,7 +8737,15 @@ components:
       properties:
         key:
           type: string
-          description: The raw value of the grouped field for this bucket.
+          description: >-
+            The grouped field's value for this bucket. For an assignment-group
+            grouping this is a raw sys_id-derived value; for change_request,
+            incident, and problem's own "state" grouping, a recognized
+            ServiceNow value is normalized to that resource's own domain
+            state enum (the same values its own "state" search filter
+            accepts) — an unrecognized value is left as the raw ServiceNow
+            value instead of being dropped. Other groupings return the raw
+            grouped-field value unchanged.
         label:
           type: string
           description: >-
@@ -9208,6 +9216,7 @@ components:
             - createdOn
             - assignmentGroupId
             - approval
+            - assignedUserId
         op:
           type: string
           enum: [gte, lte, in, eq]
@@ -9235,6 +9244,8 @@ components:
           `approvedBy`/`approvedOn` on ChangeRequestDetail, which are derived
           from a narrower Customer-Approval-stage record, not this CR-wide
           field.
+        - **assignedUserId** (in): assignee UUIDs to filter the change
+          request's assigned user by.
 
     SearchChangeRequestsRequest:
       type: object
@@ -11823,6 +11834,7 @@ components:
             - slaViolated
             - madeSla
             - productName
+            - assignedUserId
         op:
           type: string
           enum: [in, gte, lte, eq]
@@ -11860,6 +11872,8 @@ components:
           union (an incident matching any one of them is returned). Only a
           minority of incidents carry a product association, so this filter
           narrows rather than guarantees full coverage.
+        - **assignedUserId** (in): assignee UUIDs to filter the incident's
+          assigned user by.
 
     SearchIncidentsRequest:
       type: object
@@ -12732,6 +12746,7 @@ components:
           enum:
             - state
             - assignmentGroupId
+            - assignedUserId
         op:
           type: string
           enum: [in]
@@ -12749,6 +12764,8 @@ components:
           data source's raw numeric key).
         - **assignmentGroupId** (in): sys_user_group UUIDs to filter the
           assignment group by.
+        - **assignedUserId** (in): assignee UUIDs to filter the problem's
+          assigned user by.
 
     SearchProblemsRequest:
       type: object

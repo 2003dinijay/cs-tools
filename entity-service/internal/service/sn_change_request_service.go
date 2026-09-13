@@ -102,6 +102,10 @@ type snChangeRequestFilters struct {
 	// ("approval" field). ServiceNow's raw task.approval value, passed
 	// through as-is -- not a key/enum mapping.
 	Approval string `json:"approval,omitempty"`
+	// AssignedUserIDs: sys_user sys_ids (converted from UUIDs). Wire key is
+	// plural "assignedUserIds" to match Ballerina/SN's contract, even though
+	// the domain-facing filter field is singular "assignedUserId".
+	AssignedUserIDs []string `json:"assignedUserIds,omitempty"`
 }
 
 // snCRTypeIDMap maps domain ChangeRequestType enums to SN numeric type IDs.
@@ -327,6 +331,7 @@ func (s *snChangeRequestService) SearchChangeRequests(ctx context.Context, req d
 			CreatedEndDate:     formatSNDateTimeUTC(parsedFilters.CreatedEndDate),
 			AssignmentGroupIDs: uuidsToSysids(parsedFilters.AssignmentGroupIDs),
 			Approval:           stringPtrValue(parsedFilters.Approval),
+			AssignedUserIDs:    uuidsToSysids(parsedFilters.AssignedUserIDs),
 		},
 		SortBy:     snSortBy,
 		Pagination: snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
@@ -472,6 +477,7 @@ func (s *snChangeRequestService) AggregateChangeRequests(ctx context.Context, re
 			CreatedEndDate:     formatSNDateTimeUTC(parsedFilters.CreatedEndDate),
 			AssignmentGroupIDs: uuidsToSysids(parsedFilters.AssignmentGroupIDs),
 			Approval:           stringPtrValue(parsedFilters.Approval),
+			AssignedUserIDs:    uuidsToSysids(parsedFilters.AssignedUserIDs),
 		},
 		GroupBy:   req.GroupBy,
 		MaxGroups: req.MaxGroups,
@@ -486,13 +492,27 @@ func (s *snChangeRequestService) AggregateChangeRequests(ctx context.Context, re
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return domain.AggregateResponse{}, fmt.Errorf("sn change requests: parse aggregate response: %w", err)
 	}
-	// "assignmentGroup" is the only ID-valued field in
+	// "assignmentGroup" is an ID-valued field in
 	// validChangeRequestAggregateField; SN returns its bucket keys as raw
 	// sys_ids, so convert them to this platform's UUIDs before returning.
-	// "state" is a plain enum and is left as-is.
 	if req.GroupBy == "assignmentGroup" {
 		for i := range resp.Groups {
 			resp.Groups[i].Key = sysidToUUID(resp.Groups[i].Key)
+		}
+	}
+	// "state" is a plain enum, but SN's own groupBy implementation returns
+	// its raw internal state value as the bucket key (e.g. "-5"), not this
+	// platform's domain enum string. SN's response already carries the
+	// correct human-readable label for each bucket (e.g. "New"), so remap
+	// the key through the same label lookup snCRStateLabelToString uses
+	// elsewhere in this file, rather than trying to parse the raw value.
+	if req.GroupBy == "state" {
+		for i := range resp.Groups {
+			if v, ok := snCRStateLabelMap[strings.ToLower(resp.Groups[i].Label)]; ok {
+				resp.Groups[i].Key = string(v)
+			}
+			// else: leave the key as-is, mirroring snCRStateLabelToString's
+			// own defensive fallback for an unrecognized label.
 		}
 	}
 	return resp, nil
