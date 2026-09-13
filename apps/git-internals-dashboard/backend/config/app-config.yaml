@@ -132,3 +132,28 @@ securityHeaders:
   # X-Permitted-Cross-Domain-Policies: none
   # Cache-Control: no-store
   # Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+
+readiness:
+  # Deadline for the DB ping GET /readyz performs. Exceeded ⇒ not ready.
+  # Must be strictly less than server.writeTimeoutSeconds, otherwise
+  # net/http closes the connection before the handler can write its 503 and
+  # the probe reports a network error instead of a diagnosis. Setting this
+  # below database.connectTimeoutSeconds means the probe can fail before pgx
+  # even finishes dialling a *new* connection — a legitimate fail-fast
+  # choice on a cold pool, but a deliberate one.
+  timeoutSeconds: 2
+  # Reuse the last readiness result for this long; 0 disables caching. Kept
+  # small so a recovering database is picked up within one probe interval,
+  # while still collapsing concurrent probes (kubelet + gateway + any
+  # external monitor) into one DB round trip.
+  cacheTTLSeconds: 1
+  # Whether a saturated connection pool alone fails the probe. Default off:
+  # a load spike saturates every replica at roughly the same moment, and if
+  # saturation alone returns 503, every pod leaves the Service endpoints
+  # simultaneously and backpressure becomes a total outage. Saturation is
+  # always reported in the response body for operators/dashboards regardless
+  # of this setting.
+  failOnPoolSaturation: false
+  # acquiredConns/maxConns at or above this percentage counts as saturated.
+  # Only consulted when failOnPoolSaturation is true.
+  poolSaturationThresholdPercent: 100
