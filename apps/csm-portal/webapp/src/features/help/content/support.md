@@ -83,6 +83,12 @@ request** action is disabled in both places: closed cases are read-only.
 Service requests aren't available on every project. If the selected project isn't eligible,
 the create form shows a warning and blocks submission.
 
+If the case's project has an onboarding engagement currently in progress, an **Onboarding**
+chip appears alongside the case's severity and state chips at the top of the page. Hover it
+to see the onboarding owner (or "Unassigned" if none is set yet); it's just a pointer back to
+the project's own **Onboarding Owner** field (see Customers → Projects) and disappears once
+onboarding moves past "in progress."
+
 **Escalation** shows the case's current level (EL0 "not escalated" through EL5 "CEO") as a
 badge, with a read-only history of every past escalate/de-escalate step below it — who made
 each change, when, and their stated reason. **Escalate** and **De-escalate** buttons sit next
