@@ -140,7 +140,12 @@ export type BeCaseCause =
   | "INFRASTRUCTURE_OTHER"
   | "UNKNOWN";
 
-export type BeCaseSortField = "createdOn" | "updatedOn" | "severity" | "state";
+export type BeCaseSortField =
+  | "createdOn"
+  | "updatedOn"
+  | "severity"
+  | "state"
+  | "assignee";
 
 /**
  * Where a case sits in the backing data source's staged auto-closure sequence
