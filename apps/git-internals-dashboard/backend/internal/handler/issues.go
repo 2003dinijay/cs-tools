@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/apierror"
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/config"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/taxonomy"
 	"github.com/jackc/pgx/v5"
@@ -37,11 +38,12 @@ import (
 type IssuesHandler struct {
 	pool *pgxpool.Pool
 	cfg  *config.AppConfig
+	api  appconfig.API
 }
 
 // NewIssuesHandler creates an IssuesHandler.
-func NewIssuesHandler(pool *pgxpool.Pool, cfg *config.AppConfig) *IssuesHandler {
-	return &IssuesHandler{pool: pool, cfg: cfg}
+func NewIssuesHandler(pool *pgxpool.Pool, cfg *config.AppConfig, api appconfig.API) *IssuesHandler {
+	return &IssuesHandler{pool: pool, cfg: cfg, api: api}
 }
 
 type slaWire struct {
@@ -147,7 +149,7 @@ func toIssueWire(r issueRow) issueWire {
 
 // ListIssues handles GET /issues.
 func (h *IssuesHandler) ListIssues(w http.ResponseWriter, r *http.Request) {
-	q, errMsg := parseIssuesQuery(r.URL.Query())
+	q, errMsg := parseIssuesQuery(r.URL.Query(), h.api)
 	if errMsg != "" {
 		apierror.ValidationFailed(w, errMsg)
 		return

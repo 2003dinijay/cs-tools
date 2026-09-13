@@ -38,25 +38,28 @@ import (
 // Shares the same *jobs.Lock as the recompute scheduler, so a manual sync
 // and a scheduled tick never interleave on this replica or any other.
 type SyncHandler struct {
-	pool        *pgxpool.Pool
-	cfg         *config.AppConfig
-	lock        *jobs.Lock
-	runtime     *ingest.RuntimeConfig
-	githubToken string
+	pool            *pgxpool.Pool
+	cfg             *config.AppConfig
+	lock            *jobs.Lock
+	runtime         *ingest.RuntimeConfig
+	githubToken     string
+	syncRunDeadline time.Duration
 }
 
 // NewSyncHandler creates a SyncHandler. githubToken may be empty — POST
 // /sync/runs then always responds 400 sync_token_missing.
-func NewSyncHandler(pool *pgxpool.Pool, cfg *config.AppConfig, lock *jobs.Lock, runtime *ingest.RuntimeConfig, githubToken string) *SyncHandler {
-	return &SyncHandler{pool: pool, cfg: cfg, lock: lock, runtime: runtime, githubToken: strings.TrimSpace(githubToken)}
-}
-
-// postSyncRunsDeadline is a generous cap for the whole synchronous
-// POST /sync/runs handler — well above the server's default 30s
+//
+// syncRunDeadline is a generous cap for the whole synchronous POST
+// /sync/runs handler — well above the server's default 30s
 // WriteTimeout/ReadTimeout, since a real sync fetches issue detail per
-// updated issue with a 150ms courtesy delay plus GraphQL round trips and can
+// updated issue with a courtesy delay plus GraphQL round trips and can
 // easily exceed 30s over a few hundred issues.
-const postSyncRunsDeadline = 15 * time.Minute
+func NewSyncHandler(pool *pgxpool.Pool, cfg *config.AppConfig, lock *jobs.Lock, runtime *ingest.RuntimeConfig, githubToken string, syncRunDeadline time.Duration) *SyncHandler {
+	return &SyncHandler{
+		pool: pool, cfg: cfg, lock: lock, runtime: runtime,
+		githubToken: strings.TrimSpace(githubToken), syncRunDeadline: syncRunDeadline,
+	}
+}
 
 // PostSyncRuns handles POST /sync/runs: triggers an incremental sync
 // followed by an immediate recompute tick, under the job lock. Runs
@@ -77,7 +80,7 @@ func (h *SyncHandler) PostSyncRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rc := http.NewResponseController(w)
-	deadline := time.Now().Add(postSyncRunsDeadline)
+	deadline := time.Now().Add(h.syncRunDeadline)
 	if err := rc.SetWriteDeadline(deadline); err != nil {
 		slog.WarnContext(r.Context(), "sync: could not extend write deadline; falling back to the server default", "err", err)
 	}
@@ -90,10 +93,10 @@ func (h *SyncHandler) PostSyncRuns(w http.ResponseWriter, r *http.Request) {
 	// sync. Canceling mid-run is safe (the watermark only advances on
 	// success), but wasteful — it discards GitHub API calls already spent
 	// and leaves the repo needing a full retry on the next manual sync.
-	// Still bounded by postSyncRunsDeadline: jobs.TryRun holds the job lock
+	// Still bounded by h.syncRunDeadline: jobs.TryRun holds the job lock
 	// until its callback returns, so an unbounded detached context could
 	// wedge the lock past this handler's own deadline.
-	runCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), postSyncRunsDeadline)
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.syncRunDeadline)
 	defer cancel()
 
 	client := github.NewClient(h.githubToken)

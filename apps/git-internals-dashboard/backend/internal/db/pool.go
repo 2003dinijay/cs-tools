@@ -23,15 +23,48 @@ package db
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // NewPool creates a pgxpool.Pool for databaseURL and verifies connectivity
 // with a Ping before returning, so a misconfigured DSN fails at boot rather
-// than on the first request.
+// than on the first request. Equivalent to NewPoolWithConfig with every
+// tuning knob left at pgx's own default.
 func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
+	return NewPoolWithConfig(ctx, databaseURL, appconfig.Database{})
+}
+
+// NewPoolWithConfig creates a pgxpool.Pool for databaseURL, applying each
+// non-nil field of dbCfg over pgx's own defaults, and verifies connectivity
+// with a Ping before returning.
+func NewPoolWithConfig(ctx context.Context, databaseURL string, dbCfg appconfig.Database) (*pgxpool.Pool, error) {
+	poolCfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("db: parse config: %w", err)
+	}
+	if dbCfg.MaxConns != nil {
+		poolCfg.MaxConns = *dbCfg.MaxConns
+	}
+	if dbCfg.MinConns != nil {
+		poolCfg.MinConns = *dbCfg.MinConns
+	}
+	if dbCfg.MaxConnLifetimeMinutes != nil {
+		poolCfg.MaxConnLifetime = time.Duration(*dbCfg.MaxConnLifetimeMinutes) * time.Minute
+	}
+	if dbCfg.MaxConnIdleTimeMinutes != nil {
+		poolCfg.MaxConnIdleTime = time.Duration(*dbCfg.MaxConnIdleTimeMinutes) * time.Minute
+	}
+	if dbCfg.HealthCheckPeriodSeconds != nil {
+		poolCfg.HealthCheckPeriod = time.Duration(*dbCfg.HealthCheckPeriodSeconds) * time.Second
+	}
+	if dbCfg.ConnectTimeoutSeconds != nil {
+		poolCfg.ConnConfig.ConnectTimeout = time.Duration(*dbCfg.ConnectTimeoutSeconds) * time.Second
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("db: create pool: %w", err)
 	}

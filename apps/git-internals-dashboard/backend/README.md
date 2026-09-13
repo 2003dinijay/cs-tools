@@ -76,12 +76,37 @@ Copy `.env.example` to `.env` and fill in the values.
 | `CORS_ALLOWED_ORIGINS` | no | Comma-separated Origin allow-list. Empty ⇒ no cross-origin browser request allowed (fail closed). Local dev: `http://localhost:5173`. |
 | `RECOMPUTE_ENABLED` | no (default on) | `0` disables the recompute scheduler (tests/CI). |
 | `SLA_CONFIG_PATH` | no | Override config path (default `config/sla-config.yaml`). |
+| `APP_CONFIG_PATH` | no | Override runtime config path (default `config/app-config.yaml`). |
 | `LOG_LEVEL` | no | slog level, default `info`. |
 | `SEED_STRICT_TAXONOMY` | no | `1` fails `make seed` on unknown board statuses instead of warning. |
 
 The SLA taxonomy — which repos/projects to track, the status categories, and per-priority time
 budgets — is configured in `config/sla-config.yaml`, loaded once at startup. Non-secret values
 only; tokens and connection strings stay in environment variables.
+
+### `config/app-config.yaml`
+
+Operational tuning — server networking, DB pool, in-process caches, GitHub client pacing,
+background jobs, and API request-validation limits — lives in `config/app-config.yaml`, loaded
+once at startup by `internal/appconfig`. It is a separate file from `sla-config.yaml`: the SLA
+config is domain data synced into the database at boot, while this file never touches the
+database and changes on its own cadence (per environment, per load profile).
+
+- **Precedence:** an environment variable (e.g. `PORT`) overrides the file, which overrides the
+  built-in default. Every value in the committed file equals its built-in default, so the file can
+  be edited, trimmed, or removed without changing behavior unless a value is actually changed.
+- **Missing vs. broken:** if `APP_CONFIG_PATH` is unset and the default path is absent, the backend
+  logs a warning and boots with built-in defaults. If `APP_CONFIG_PATH` is set and unreadable, or
+  the file is present but fails to parse or validate, boot fails — an explicit path is treated as
+  explicit intent.
+- `settings.recomputeIntervalMinutes` is **not** in this file — it stays in `sla-config.yaml`
+  alongside the other SLA-math knobs, so there is one source of truth per knob.
+- The `api.*` limits mirror the ranges documented in `openapi.yaml`; change both together or the
+  published contract will desync from the running service.
+- Non-secret by rule, same as `sla-config.yaml`: tokens, DB URLs, and other credentials stay in
+  environment variables, never in this file.
+- **Choreo deployments** that need non-default values: mount the file and point `APP_CONFIG_PATH`
+  at the mount path — `<<FILL IN>>` the component's config-mount configuration once that's decided.
 
 ## Project Structure
 
@@ -94,6 +119,7 @@ backend/
 │   ├── apierror/            # {"error":{"code","message"}} envelope + write helpers
 │   ├── middleware/           # logger.go, recovery.go, cors.go
 │   ├── config/                # sla-config.yaml load + validate
+│   ├── appconfig/              # app-config.yaml load + validate (operational tuning)
 │   ├── db/                     # pgxpool init, config-sync
 │   ├── sla/                     # Pure SLA engine — no I/O
 │   ├── github/                   # GraphQL client: search, issue detail, titles
@@ -104,6 +130,9 @@ backend/
 │   ├── taxonomy/                        # Config-driven status taxonomy helpers
 │   └── handler/                          # issues.go, taxonomy.go, metrics.go, sync.go, titles.go
 ├── migrations/                # golang-migrate SQL migrations
+├── config/
+│   ├── sla-config.yaml         # SLA domain config: repos, taxonomy, budgets
+│   └── app-config.yaml         # Operational runtime config (see Configuration above)
 └── openapi.yaml                # API contract
 ```
 

@@ -23,6 +23,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 )
 
 var (
@@ -47,11 +49,11 @@ type issuesQuery struct {
 	Order    string
 }
 
-// parseIssuesQuery validates v and returns a non-empty error message on the
-// first violation found. Unknown query parameter names are intentionally
-// ignored rather than rejected.
-func parseIssuesQuery(v url.Values) (issuesQuery, string) {
-	q := issuesQuery{Limit: 200, Order: "updated_desc"}
+// parseIssuesQuery validates v against lim and returns a non-empty error
+// message on the first violation found. Unknown query parameter names are
+// intentionally ignored rather than rejected.
+func parseIssuesQuery(v url.Values, lim appconfig.API) (issuesQuery, string) {
+	q := issuesQuery{Limit: lim.IssuesDefaultLimit, Order: "updated_desc"}
 
 	if repo := v.Get("repo"); repo != "" {
 		if !repoParamRe.MatchString(repo) {
@@ -60,8 +62,8 @@ func parseIssuesQuery(v url.Values) (issuesQuery, string) {
 		q.Repo = repo
 	}
 	if priority := v.Get("priority"); priority != "" {
-		if len(priority) > 50 {
-			return q, "priority must be at most 50 characters"
+		if len(priority) > lim.PriorityParamMaxLength {
+			return q, fmt.Sprintf("priority must be at most %d characters", lim.PriorityParamMaxLength)
 		}
 		q.Priority = priority
 	}
@@ -80,8 +82,8 @@ func parseIssuesQuery(v url.Values) (issuesQuery, string) {
 		}
 	}
 	if status := v.Get("status"); status != "" {
-		if len(status) > 50 {
-			return q, "status must be at most 50 characters"
+		if len(status) > lim.StatusParamMaxLength {
+			return q, fmt.Sprintf("status must be at most %d characters", lim.StatusParamMaxLength)
 		}
 		q.Status = status
 	}
@@ -93,8 +95,8 @@ func parseIssuesQuery(v url.Values) (issuesQuery, string) {
 	}
 	if limitStr := v.Get("limit"); limitStr != "" {
 		n, err := strconv.Atoi(limitStr)
-		if err != nil || n < 1 || n > 500 {
-			return q, "limit must be an integer between 1 and 500"
+		if err != nil || n < 1 || n > lim.IssuesMaxLimit {
+			return q, fmt.Sprintf("limit must be an integer between 1 and %d", lim.IssuesMaxLimit)
 		}
 		q.Limit = n
 	}

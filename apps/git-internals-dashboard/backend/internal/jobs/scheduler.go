@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/ingest"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/sla"
 	"github.com/jackc/pgx/v5"
@@ -31,6 +32,14 @@ import (
 // Overridable only by tests, so a keyset-pagination test can force multiple
 // pages without seeding hundreds of rows.
 var recomputePageSize = 200
+
+// Apply sets every package-level tuning var from cfg. Boot-only: call once,
+// in main(), before the recompute scheduler or any lock release runs — not
+// safe to call concurrently with in-flight jobs.
+func Apply(cfg appconfig.Jobs) {
+	recomputePageSize = cfg.RecomputePageSize
+	lockReleaseTimeout = time.Duration(cfg.LockReleaseTimeoutSeconds) * time.Second
+}
 
 // TickSummary reports what one RunTickOnce pass did.
 type TickSummary struct {

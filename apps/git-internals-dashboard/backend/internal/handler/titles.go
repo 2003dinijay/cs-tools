@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"strconv"
@@ -27,39 +28,34 @@ import (
 	"time"
 
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/apierror"
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	ghclient "github.com/binara-sachin/git-internals-dashboard/backend/internal/github"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/metrics"
 	"github.com/jackc/pgx/v5/pgxpool"
-)
-
-const (
-	titlesCacheTTL  = 15 * time.Minute
-	titlesCacheCap  = 5000
-	titlesBatchSize = 100 // issues per GraphQL request
-
-	// titlesMaxBodyBytes bounds POST /issues/titles' request body before it is
-	// decoded. 200 ids as JSON ints is well under 4KB; 64KB is generous
-	// headroom without letting a client force a multi-hundred-MB allocation
-	// before the 1-200 length check ever runs.
-	titlesMaxBodyBytes = 1 << 16
 )
 
 // TitlesHandler serves POST /issues/titles. PRIVACY: titles are resolved
 // live from GitHub on every cache miss and cached in memory only — never
 // persisted to the database.
 type TitlesHandler struct {
-	pool        *pgxpool.Pool
-	githubToken string
-	cache       *metrics.TTLCache[string, *string]
+	pool         *pgxpool.Pool
+	githubToken  string
+	cache        *metrics.TTLCache[string, *string]
+	batchSize    int // issues per GraphQL request
+	maxIDs       int
+	maxBodyBytes int
 }
 
 // NewTitlesHandler creates a TitlesHandler. githubToken may be empty — every
 // title then resolves to null (no live GitHub calls are attempted).
-func NewTitlesHandler(pool *pgxpool.Pool, githubToken string) *TitlesHandler {
+func NewTitlesHandler(pool *pgxpool.Pool, githubToken string, cacheCfg appconfig.CacheEntry, batchSize int, api appconfig.API) *TitlesHandler {
 	return &TitlesHandler{
-		pool:        pool,
-		githubToken: strings.TrimSpace(githubToken),
-		cache:       metrics.NewTTLCache[string, *string](titlesCacheTTL, titlesCacheCap),
+		pool:         pool,
+		githubToken:  strings.TrimSpace(githubToken),
+		cache:        metrics.NewTTLCache[string, *string](time.Duration(cacheCfg.TTLSeconds)*time.Second, cacheCfg.MaxEntries),
+		batchSize:    batchSize,
+		maxIDs:       api.TitlesMaxIDs,
+		maxBodyBytes: api.TitlesMaxBodyBytes,
 	}
 }
 
@@ -77,7 +73,7 @@ type titlesResponseBody struct {
 // no GITHUB_TOKEN, unknown id, synthetic fixture, deleted issue, or GitHub
 // failure.
 func (h *TitlesHandler) PostTitles(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, titlesMaxBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, int64(h.maxBodyBytes))
 
 	var body titlesRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -89,8 +85,8 @@ func (h *TitlesHandler) PostTitles(w http.ResponseWriter, r *http.Request) {
 		apierror.ValidationFailed(w, "invalid JSON body")
 		return
 	}
-	if len(body.IDs) < 1 || len(body.IDs) > 200 {
-		apierror.ValidationFailed(w, "ids must contain between 1 and 200 entries")
+	if len(body.IDs) < 1 || len(body.IDs) > h.maxIDs {
+		apierror.ValidationFailed(w, fmt.Sprintf("ids must contain between 1 and %d entries", h.maxIDs))
 		return
 	}
 	for _, id := range body.IDs {
@@ -126,8 +122,8 @@ func (h *TitlesHandler) PostTitles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch misses in batches; a failed batch degrades to nulls, never a 500.
-	for start := 0; start < len(misses); start += titlesBatchSize {
-		end := min(start+titlesBatchSize, len(misses))
+	for start := 0; start < len(misses); start += h.batchSize {
+		end := min(start+h.batchSize, len(misses))
 		chunk := misses[start:end]
 		fetched, err := ghclient.FetchTitles(r.Context(), h.githubToken, chunk)
 		if err != nil {

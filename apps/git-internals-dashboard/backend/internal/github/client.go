@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 )
 
 // graphQLPath is a var (not const) so titles_test.go can point FetchTitles
@@ -49,6 +51,19 @@ var (
 	// huge value from GitHub can't stall a sync indefinitely.
 	gqlRetryAfterCap = 60 * time.Second
 )
+
+// Apply sets every package-level tuning var from cfg. Boot-only: call once,
+// in main(), before any Client is constructed — not safe to call
+// concurrently with in-flight requests.
+func Apply(cfg appconfig.GitHub) {
+	gqlTimeout = time.Duration(cfg.RequestTimeoutSeconds) * time.Second
+	gqlRetryBackoffUnit = time.Duration(cfg.RetryBackoffUnitSeconds) * time.Second
+	gqlMaxRetries = cfg.MaxRetries
+	searchPageDelay = time.Duration(cfg.SearchPageDelayMs) * time.Millisecond
+	detailPageDelay = time.Duration(cfg.DetailPageDelayMs) * time.Millisecond
+	gqlRetryAfterCap = time.Duration(cfg.RetryAfterCapSeconds) * time.Second
+	titlesTimeout = time.Duration(cfg.TitlesRequestTimeoutSeconds) * time.Second
+}
 
 type httpClient struct {
 	token    string

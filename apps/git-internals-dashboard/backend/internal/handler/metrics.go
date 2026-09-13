@@ -23,18 +23,10 @@ import (
 	"time"
 
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/apierror"
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/config"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/metrics"
 	"github.com/jackc/pgx/v5/pgxpool"
-)
-
-// overviewCacheTTL and timeseriesCacheTTL set a 30s per-(repo,priority)
-// cache for overview and a 60s per-(repo,days,groupBy,metric) cache for
-// timeseries. A per-replica cache is acceptable here (see MetricsHandler
-// below for why).
-const (
-	overviewCacheTTL   = 30 * time.Second
-	timeseriesCacheTTL = 60 * time.Second
 )
 
 // MetricsHandler serves GET /metrics/overview and GET /metrics/timeseries.
@@ -46,17 +38,21 @@ const (
 type MetricsHandler struct {
 	pool            *pgxpool.Pool
 	cfg             *config.AppConfig
+	api             appconfig.API
 	overviewCache   *metrics.TTLCache[string, metrics.Overview]
 	timeseriesCache *metrics.TTLCache[string, metrics.Timeseries]
 }
 
 // NewMetricsHandler creates a MetricsHandler.
-func NewMetricsHandler(pool *pgxpool.Pool, cfg *config.AppConfig) *MetricsHandler {
+func NewMetricsHandler(pool *pgxpool.Pool, cfg *config.AppConfig, cacheCfg appconfig.Cache, api appconfig.API) *MetricsHandler {
 	return &MetricsHandler{
-		pool:            pool,
-		cfg:             cfg,
-		overviewCache:   metrics.NewTTLCache[string, metrics.Overview](overviewCacheTTL, 100),
-		timeseriesCache: metrics.NewTTLCache[string, metrics.Timeseries](timeseriesCacheTTL, 100),
+		pool: pool,
+		cfg:  cfg,
+		api:  api,
+		overviewCache: metrics.NewTTLCache[string, metrics.Overview](
+			time.Duration(cacheCfg.Overview.TTLSeconds)*time.Second, cacheCfg.Overview.MaxEntries),
+		timeseriesCache: metrics.NewTTLCache[string, metrics.Timeseries](
+			time.Duration(cacheCfg.Timeseries.TTLSeconds)*time.Second, cacheCfg.Timeseries.MaxEntries),
 	}
 }
 
@@ -72,8 +68,8 @@ func (h *MetricsHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 		repo = &raw
 	}
 	if raw := v.Get("priority"); raw != "" {
-		if len(raw) > 50 {
-			apierror.ValidationFailed(w, "priority must be at most 50 characters")
+		if len(raw) > h.api.PriorityParamMaxLength {
+			apierror.ValidationFailed(w, fmt.Sprintf("priority must be at most %d characters", h.api.PriorityParamMaxLength))
 			return
 		}
 		priority = &raw
@@ -102,11 +98,11 @@ func (h *MetricsHandler) GetTimeseries(w http.ResponseWriter, r *http.Request) {
 		repo = &raw
 	}
 
-	days := 30
+	days := h.api.TimeseriesDefaultDays
 	if raw := v.Get("days"); raw != "" {
-		n, err := parseIntInRange(raw, 7, 365)
+		n, err := parseIntInRange(raw, h.api.TimeseriesMinDays, h.api.TimeseriesMaxDays)
 		if err != nil {
-			apierror.ValidationFailed(w, "days must be an integer between 7 and 365")
+			apierror.ValidationFailed(w, fmt.Sprintf("days must be an integer between %d and %d", h.api.TimeseriesMinDays, h.api.TimeseriesMaxDays))
 			return
 		}
 		days = n

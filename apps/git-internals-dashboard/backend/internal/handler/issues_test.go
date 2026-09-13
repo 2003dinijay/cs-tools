@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/apierror"
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/config"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/db"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -70,7 +71,7 @@ var handlerTestConfig = &config.AppConfig{
 // ListIssues accepts (bad repo/state/slaState/q/limit/bucket/order/priority)
 // is rejected with 400 validation_failed rather than reaching the DB.
 func TestListIssuesValidation400s(t *testing.T) {
-	h := NewIssuesHandler(nil, handlerTestConfig)
+	h := NewIssuesHandler(nil, handlerTestConfig, appconfig.Default().API)
 
 	cases := []struct {
 		name  string
@@ -112,7 +113,7 @@ func TestListIssuesValidation400s(t *testing.T) {
 // TestGetIssueValidation400ForNonIntegerID verifies a non-numeric path id
 // is rejected with 400 rather than reaching the DB.
 func TestGetIssueValidation400ForNonIntegerID(t *testing.T) {
-	h := NewIssuesHandler(nil, handlerTestConfig)
+	h := NewIssuesHandler(nil, handlerTestConfig, appconfig.Default().API)
 	req := httptest.NewRequest(http.MethodGet, "/issues/abc", nil)
 	req.SetPathValue("id", "abc")
 	rec := httptest.NewRecorder()
@@ -128,7 +129,7 @@ func TestGetIssueValidation400ForNonIntegerID(t *testing.T) {
 // the query-error branch maps to 500, not the 400 this out-of-range id
 // deserves.
 func TestGetIssueValidation400ForIDOutsideInt32Range(t *testing.T) {
-	h := NewIssuesHandler(nil, handlerTestConfig)
+	h := NewIssuesHandler(nil, handlerTestConfig, appconfig.Default().API)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/issues/2147483648", nil)
 	req.SetPathValue("id", "2147483648")
 	rec := httptest.NewRecorder()
@@ -245,7 +246,7 @@ func numbersOf(issues []issueWire) []int {
 func TestListIssuesDefaultBucketExcludesTerminalAndClosed(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues", nil)
 	rec := httptest.NewRecorder()
@@ -260,7 +261,7 @@ func TestListIssuesDefaultBucketExcludesTerminalAndClosed(t *testing.T) {
 func TestListIssuesBucketViolated(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&bucket=violated", nil)
 	rec := httptest.NewRecorder()
@@ -274,7 +275,7 @@ func TestListIssuesBucketViolated(t *testing.T) {
 func TestListIssuesBucketAtRisk(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&bucket=at_risk", nil)
 	rec := httptest.NewRecorder()
@@ -288,7 +289,7 @@ func TestListIssuesBucketAtRisk(t *testing.T) {
 func TestListIssuesBucketOnTrackExcludesCsSideStatuses(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&bucket=on_track", nil)
 	rec := httptest.NewRecorder()
@@ -303,7 +304,7 @@ func TestListIssuesBucketOnTrackExcludesCsSideStatuses(t *testing.T) {
 func TestListIssuesBucketCsIncludesNoSlaOnCsSide(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&bucket=cs", nil)
 	rec := httptest.NewRecorder()
@@ -318,7 +319,7 @@ func TestListIssuesBucketCsIncludesNoSlaOnCsSide(t *testing.T) {
 func TestListIssuesBucketCsNarrowedByStatusParam(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&bucket=cs&status=WOC", nil)
 	rec := httptest.NewRecorder()
@@ -332,7 +333,7 @@ func TestListIssuesBucketCsNarrowedByStatusParam(t *testing.T) {
 func TestListIssuesBucketTracked(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&bucket=tracked", nil)
 	rec := httptest.NewRecorder()
@@ -347,7 +348,7 @@ func TestListIssuesBucketTracked(t *testing.T) {
 func TestListIssuesBucketUntracked(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&bucket=untracked", nil)
 	rec := httptest.NewRecorder()
@@ -361,7 +362,7 @@ func TestListIssuesBucketUntracked(t *testing.T) {
 func TestListIssuesBucketAttention(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&bucket=attention", nil)
 	rec := httptest.NewRecorder()
@@ -377,7 +378,7 @@ func TestListIssuesBucketAttention(t *testing.T) {
 func TestListIssuesSlaStateParamOverridesBaseTerminalExclusion(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&slaState=NO_SLA", nil)
 	rec := httptest.NewRecorder()
@@ -392,7 +393,7 @@ func TestListIssuesSlaStateParamOverridesBaseTerminalExclusion(t *testing.T) {
 func TestListIssuesStateParamOverridesBaseOpenFilter(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&state=CLOSED", nil)
 	rec := httptest.NewRecorder()
@@ -409,7 +410,7 @@ func TestListIssuesStateParamOverridesBaseOpenFilter(t *testing.T) {
 func TestListIssuesPriorityFilter(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&priority=High(P2)", nil)
 	rec := httptest.NewRecorder()
@@ -423,7 +424,7 @@ func TestListIssuesPriorityFilter(t *testing.T) {
 func TestListIssuesQNumberFilter(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&q=103", nil)
 	rec := httptest.NewRecorder()
@@ -437,7 +438,7 @@ func TestListIssuesQNumberFilter(t *testing.T) {
 func TestListIssuesOrderBudgetDescNullsLast(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&order=budget_desc", nil)
 	rec := httptest.NewRecorder()
@@ -455,7 +456,7 @@ func TestListIssuesOrderBudgetDescNullsLast(t *testing.T) {
 func TestListIssuesOrderUpdatedDescIsDefault(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues", nil)
 	rec := httptest.NewRecorder()
@@ -474,7 +475,7 @@ func TestListIssuesOrderUpdatedDescIsDefault(t *testing.T) {
 func TestGetIssueReturnsEventsAscendingWithNoActors(t *testing.T) {
 	pool := testPool(t)
 	repoID := seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	var issueID int32
 	if err := pool.QueryRow(context.Background(), `SELECT id FROM issues WHERE repository_id = $1 AND github_number = 101`, repoID).Scan(&issueID); err != nil {
@@ -518,7 +519,7 @@ func TestGetIssueReturnsEventsAscendingWithNoActors(t *testing.T) {
 func TestGetIssue404WhenAbsent(t *testing.T) {
 	pool := testPool(t)
 	seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	req := httptest.NewRequest(http.MethodGet, "/issues/999999999", nil)
 	req.SetPathValue("id", "999999999")
@@ -546,7 +547,7 @@ func TestGetIssue404WhenAbsent(t *testing.T) {
 func TestGetIssue404WhenRepositoryDisabled(t *testing.T) {
 	pool := testPool(t)
 	repoID := seedIssuesFixture(t, pool)
-	h := NewIssuesHandler(pool, handlerTestConfig)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
 
 	if _, err := pool.Exec(context.Background(), `UPDATE repositories SET enabled = false WHERE id = $1`, repoID); err != nil {
 		t.Fatalf("disable repository: %v", err)

@@ -31,6 +31,10 @@ import (
 // lockKey is an arbitrary fixed key, unique to this app's job lock.
 const lockKey = 847_362_915
 
+// lockReleaseTimeout bounds how long release() waits for the advisory-lock
+// unlock Exec. Overridable only via Apply (production) or tests.
+var lockReleaseTimeout = 5 * time.Second
+
 // Lock is a cross-replica mutex for the recompute tick and manual sync, so
 // they never interleave — including across multiple Choreo replicas under
 // autoscaling. Backed by a Postgres session-level advisory lock
@@ -105,7 +109,7 @@ func (l *Lock) release() {
 	if conn == nil {
 		return
 	}
-	unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	unlockCtx, cancel := context.WithTimeout(context.Background(), lockReleaseTimeout)
 	defer cancel()
 	if _, err := conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, lockKey); err != nil {
 		slog.Error("joblock: failed to release advisory lock; dropping connection", "err", err)

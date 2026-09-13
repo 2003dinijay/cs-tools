@@ -115,6 +115,10 @@ type titlesGraphQLResponse struct {
 
 var titlesHTTPClient = &http.Client{}
 
+// titlesTimeout is overridable only via Apply (production) or tests; the
+// production default matches gqlTimeout's own package-default pattern.
+var titlesTimeout = 15 * time.Second
+
 // FetchTitles resolves every ref's title in one batched GraphQL request
 // (callers are responsible for keeping each call to <=100 refs). Returns an
 // empty map with no error when refs is empty or token is blank — the
@@ -130,7 +134,7 @@ func FetchTitles(ctx context.Context, token string, refs []TitleRef) (map[string
 		return out, nil
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, titlesTimeout)
 	defer cancel()
 
 	body, err := json.Marshal(map[string]any{"query": BuildTitlesQuery(refs)})

@@ -32,6 +32,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/config"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/db"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/github"
@@ -56,13 +57,21 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	appCfg, err := appconfig.Load()
+	if err != nil {
+		fatal("invalid app-config.yaml", err)
+	}
+	// Boot-only: must run before any github.Client is constructed below.
+	github.Apply(appCfg.GitHub)
+	interIssueDelay = time.Duration(appCfg.Seed.InterIssueDelayMs) * time.Millisecond
+
 	app, err := config.Load()
 	if err != nil {
 		fatal("invalid sla-config.yaml", err)
 	}
 	runtime := ingest.BuildRuntimeConfig(app)
 
-	pool, err := db.NewPool(ctx, mustEnv("DATABASE_URL"))
+	pool, err := db.NewPoolWithConfig(ctx, mustEnv("DATABASE_URL"), appCfg.Database)
 	if err != nil {
 		fatal("failed to connect to postgres", err)
 	}

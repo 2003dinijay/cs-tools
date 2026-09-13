@@ -24,8 +24,10 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/apierror"
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/config"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/ingest"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/jobs"
@@ -47,7 +49,7 @@ func testDatabaseURL(t *testing.T) string {
 func TestPostSyncRunsReturns400WhenTokenMissing(t *testing.T) {
 	pool := testPool(t)
 	lock := jobs.NewLock(testDatabaseURL(t))
-	h := NewSyncHandler(pool, &config.AppConfig{}, lock, ingest.BuildRuntimeConfig(&config.AppConfig{}), "")
+	h := NewSyncHandler(pool, &config.AppConfig{}, lock, ingest.BuildRuntimeConfig(&config.AppConfig{}), "", time.Duration(appconfig.Default().Jobs.SyncRunDeadlineMinutes)*time.Minute)
 
 	req := httptest.NewRequest(http.MethodPost, "/sync/runs", nil)
 	rec := httptest.NewRecorder()
@@ -76,7 +78,7 @@ func TestPostSyncRunsReturns409WhenLockBusy(t *testing.T) {
 	pool := testPool(t)
 	url := testDatabaseURL(t)
 	lock := jobs.NewLock(url)
-	h := NewSyncHandler(pool, &config.AppConfig{}, lock, ingest.BuildRuntimeConfig(&config.AppConfig{}), "fake-token")
+	h := NewSyncHandler(pool, &config.AppConfig{}, lock, ingest.BuildRuntimeConfig(&config.AppConfig{}), "fake-token", time.Duration(appconfig.Default().Jobs.SyncRunDeadlineMinutes)*time.Minute)
 
 	// Hold the lock via a concurrent TryRun that blocks until released.
 	release := make(chan struct{})
@@ -121,7 +123,7 @@ func TestPostSyncRunsReturns409WhenLockBusy(t *testing.T) {
 func TestGetSyncStatusReportsRunningAndWatermarks(t *testing.T) {
 	pool := testPool(t)
 	lock := jobs.NewLock(testDatabaseURL(t))
-	h := NewSyncHandler(pool, &config.AppConfig{}, lock, ingest.BuildRuntimeConfig(&config.AppConfig{}), "")
+	h := NewSyncHandler(pool, &config.AppConfig{}, lock, ingest.BuildRuntimeConfig(&config.AppConfig{}), "", time.Duration(appconfig.Default().Jobs.SyncRunDeadlineMinutes)*time.Minute)
 
 	req := httptest.NewRequest(http.MethodGet, "/sync/status", nil)
 	rec := httptest.NewRecorder()
