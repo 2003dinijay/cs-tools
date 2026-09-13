@@ -123,6 +123,7 @@ import { usePostCsmCaseEscalation } from "@features/csm-cases/api/usePostCsmCase
 import {
   canDeescalate,
   canEscalateFurther,
+  isEscalationLevelUnset,
 } from "@features/csm-cases/utils/escalationLevel";
 import { ChildCasesWidget } from "@features/csm-cases/components/ChildCasesWidget";
 import { LinkedServiceRequestsWidget } from "@features/csm-cases/components/LinkedServiceRequestsWidget";
@@ -182,6 +183,7 @@ import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
 import QueryErrorState from "@components/QueryErrorState";
 import RelativeTime from "@components/RelativeTime";
+import EscalationLevelChip from "@components/EscalationLevelChip";
 import SeverityChip from "@components/SeverityChip";
 import StateChip from "@components/StateChip";
 import { CASE_TYPE_LABEL } from "@features/csm-cases/utils/caseType";
@@ -593,6 +595,15 @@ export default function CsmCaseDetailPage(): JSX.Element {
     isLoading: isEscalationHistoryLoading,
     isError: isEscalationHistoryError,
   } = useGetCsmCaseEscalations(caseId);
+  // The chip bar's escalation chip reads the same escalation-history query
+  // the Escalation tab already fetches (no second request) rather than the
+  // case payload's own `escalationLevel` snapshot field: `escalations` is
+  // sorted newest-first (see useGetCsmCaseEscalations/SearchCaseEscalations),
+  // so its first record's currentLevel is the case's current level. Hidden
+  // entirely at "0"/unset -- matches CasesList's own blank-unless-escalated
+  // rule -- rather than rendering an empty/"Not escalated" chip.
+  const currentEscalationLevel =
+    escalationHistory?.escalations[0]?.currentLevel ?? null;
   const postEscalation = usePostCsmCaseEscalation(caseId);
   const requestCaseUpdate = useRequestCaseUpdate();
   const findMyOngoingCases = useFindMyOngoingCases();
@@ -2176,6 +2187,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 <SeverityChip severity={c.severity} withLabel />
               )}
             {!isAnnouncement && <StateChip state={c.state} />}
+            {!isAnnouncement && !isEscalationLevelUnset(currentEscalationLevel) && (
+              <EscalationLevelChip level={currentEscalationLevel as string} short />
+            )}
             {/* Related/Parent moved to CaseMetaBand's Overview cells — those
                 are singular facts (never more than one each), so a compact
                 "Cell" fits better than a chip crowding this row, especially
