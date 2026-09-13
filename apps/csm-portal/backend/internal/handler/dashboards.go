@@ -65,6 +65,10 @@ type dashboardWidgetView struct {
 	// frontend, not this backend, decides whether/how to render a clicked
 	// slice's list inline versus navigating away.
 	InlineDrilldown bool `json:"inlineDrilldown,omitempty"`
+	// InlineLabels is only meaningful for Shape "pie" — see
+	// dashboard.WidgetTemplate.InlineLabels. Forwarded verbatim: this backend
+	// only passes it through, exactly like InlineDrilldown.
+	InlineLabels bool `json:"inlineLabels,omitempty"`
 }
 
 // filterPresetView is one entry of the shared filter-preset catalogue,
@@ -236,6 +240,7 @@ func widgetViews(templates []dashboard.WidgetTemplate) []dashboardWidgetView {
 			Columns:         tpl.Columns,
 			SortBy:          tpl.SortBy,
 			InlineDrilldown: tpl.InlineDrilldown,
+			InlineLabels:    tpl.InlineLabels,
 		})
 	}
 	return views

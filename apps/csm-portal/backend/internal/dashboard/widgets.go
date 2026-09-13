@@ -255,6 +255,12 @@ type WidgetTemplate struct {
 	// a no-op if set on a count/list widget, the same way Columns/SortBy
 	// are no-ops outside their own shape.
 	InlineDrilldown bool `json:"inlineDrilldown,omitempty"`
+	// InlineLabels is only meaningful for Shape pie: opts a widget into
+	// rendering each slice's label+value on the ring itself with a leader
+	// line, instead of a donut plus separate legend list. Absent/false is a
+	// no-op -- this backend only passes it through, exactly like
+	// InlineDrilldown.
+	InlineLabels bool `json:"inlineLabels,omitempty"`
 
 	// legacyFilters holds a pre-rename config's "filters" key so
 	// migrateLegacyWidgetKeys can move it into Query. Unexported so it can

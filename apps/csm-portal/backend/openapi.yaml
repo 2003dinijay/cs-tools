@@ -7379,6 +7379,14 @@ components:
             without navigating. This backend does not decide or render
             anything about that choice — forwarded verbatim, exactly like
             groupBy/slices/columns; a no-op if set on a count/list widget.
+        inlineLabels:
+          type: boolean
+          description: >
+            Only meaningful for shape "pie". Opts a widget into rendering each
+            slice's label+value on the ring itself with a leader line,
+            instead of a donut plus separate legend list. Omitted/false is a
+            no-op — this backend only forwards it, exactly like
+            inlineDrilldown.
 
     MetadataResponse:
       type: object
