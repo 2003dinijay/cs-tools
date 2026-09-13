@@ -16,7 +16,12 @@
 
 // Package handler wires HTTP routes to the domain packages: taxonomy,
 // issues, metrics, sync, titles, and health. Every non-2xx response uses
-// internal/apierror's envelope; every 2xx uses writeJSON below.
+// internal/apierror's envelope, with one documented exception: GET /readyz
+// returns a status document (ready/not_ready/draining plus per-check
+// detail) on both 200 and 503 rather than collapsing into {"error":{...}}
+// — folding it into the error envelope would throw away the per-check
+// detail that makes the endpoint worth having. Every other 2xx, and
+// /readyz's own non-2xx, uses writeJSON below.
 package handler
 
 import (
@@ -24,7 +29,9 @@ import (
 	"net/http"
 )
 
-// writeJSON marshals v and writes it as a 2xx JSON response.
+// writeJSON marshals v and writes it with the given HTTP status. Used for
+// every 2xx response and, as the one documented exception (see the package
+// comment), for GET /readyz's 503.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
