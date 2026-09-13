@@ -220,6 +220,31 @@ func (r rawAPI) resolve(d API) API {
 	return a
 }
 
+// rawReadiness mirrors Readiness with optional fields.
+type rawReadiness struct {
+	TimeoutSeconds                 *int  `yaml:"timeoutSeconds"`
+	CacheTTLSeconds                *int  `yaml:"cacheTTLSeconds"`
+	FailOnPoolSaturation           *bool `yaml:"failOnPoolSaturation"`
+	PoolSaturationThresholdPercent *int  `yaml:"poolSaturationThresholdPercent"`
+}
+
+func (r rawReadiness) resolve(d Readiness) Readiness {
+	rd := d
+	if r.TimeoutSeconds != nil {
+		rd.TimeoutSeconds = *r.TimeoutSeconds
+	}
+	if r.CacheTTLSeconds != nil {
+		rd.CacheTTLSeconds = *r.CacheTTLSeconds
+	}
+	if r.FailOnPoolSaturation != nil {
+		rd.FailOnPoolSaturation = *r.FailOnPoolSaturation
+	}
+	if r.PoolSaturationThresholdPercent != nil {
+		rd.PoolSaturationThresholdPercent = *r.PoolSaturationThresholdPercent
+	}
+	return rd
+}
+
 // resolveSecurityHeaders overlays raw onto a copy of defaults: a key present
 // in raw either overrides that default's value or adds a new header
 // alongside the defaults; an absent (nil or empty) raw map leaves every
@@ -252,6 +277,7 @@ type rawConfig struct {
 	Seed            rawSeed         `yaml:"seed"`
 	API             rawAPI          `yaml:"api"`
 	SecurityHeaders SecurityHeaders `yaml:"securityHeaders"`
+	Readiness       rawReadiness    `yaml:"readiness"`
 }
 
 func (r rawConfig) resolve() Config {
@@ -265,6 +291,7 @@ func (r rawConfig) resolve() Config {
 		Seed:            r.Seed.resolve(d.Seed),
 		API:             r.API.resolve(d.API),
 		SecurityHeaders: resolveSecurityHeaders(r.SecurityHeaders, d.SecurityHeaders),
+		Readiness:       r.Readiness.resolve(d.Readiness),
 	}
 }
 

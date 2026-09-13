@@ -42,6 +42,7 @@ type Config struct {
 	Seed            Seed
 	API             API
 	SecurityHeaders SecurityHeaders
+	Readiness       Readiness
 }
 
 // Server holds the HTTP server's networking knobs.
@@ -118,6 +119,16 @@ type API struct {
 	StatusParamMaxLength   int
 }
 
+// Readiness holds GET /readyz's tuning: the DB ping deadline, how long a
+// computed result is reused, and whether pool saturation alone fails the
+// probe. See internal/handler/health.go for how these are consumed.
+type Readiness struct {
+	TimeoutSeconds                 int
+	CacheTTLSeconds                int
+	FailOnPoolSaturation           bool
+	PoolSaturationThresholdPercent int
+}
+
 // Default returns the built-in default Config: one value per field, each
 // equal to what the code hardcoded before app-config.yaml existed. Database
 // is left entirely nil, since D9's pointer fields have no fixed-literal
@@ -176,6 +187,12 @@ func Default() Config {
 			"X-Permitted-Cross-Domain-Policies": "none",
 			"Cache-Control":                     "no-store",
 			"Strict-Transport-Security":         "max-age=31536000; includeSubDomains",
+		},
+		Readiness: Readiness{
+			TimeoutSeconds:                 2,
+			CacheTTLSeconds:                1,
+			FailOnPoolSaturation:           false,
+			PoolSaturationThresholdPercent: 100,
 		},
 	}
 }

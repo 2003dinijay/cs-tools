@@ -159,6 +159,18 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	positive("readiness.timeoutSeconds", cfg.Readiness.TimeoutSeconds)
+	if cfg.Readiness.TimeoutSeconds >= cfg.Server.WriteTimeoutSeconds {
+		add("readiness.timeoutSeconds: must be strictly less than server.writeTimeoutSeconds (got %d, server.writeTimeoutSeconds=%d)",
+			cfg.Readiness.TimeoutSeconds, cfg.Server.WriteTimeoutSeconds)
+	}
+	if cfg.Readiness.CacheTTLSeconds < 0 {
+		add("readiness.cacheTTLSeconds: must not be negative")
+	}
+	if cfg.Readiness.PoolSaturationThresholdPercent < 1 || cfg.Readiness.PoolSaturationThresholdPercent > 100 {
+		add("readiness.poolSaturationThresholdPercent: must be between 1 and 100")
+	}
+
 	if len(issues) == 0 {
 		return nil
 	}

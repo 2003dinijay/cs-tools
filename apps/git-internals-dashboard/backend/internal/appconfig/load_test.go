@@ -239,3 +239,51 @@ func TestLoadSecurityHeadersCaseInsensitiveOverride(t *testing.T) {
 		t.Errorf("expected X-Frame-Options=SAMEORIGIN (overridden via lowercase YAML key), got %q", got)
 	}
 }
+
+// TestLoadReadinessAbsentAppliesDefaults verifies that with no readiness:
+// key in the YAML at all, every readiness default applies unchanged.
+func TestLoadReadinessAbsentAppliesDefaults(t *testing.T) {
+	path := writeConfig(t, "server:\n  port: 9090\n")
+	t.Setenv("APP_CONFIG_PATH", path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected valid config, got: %v", err)
+	}
+	if cfg.Readiness != Default().Readiness {
+		t.Errorf("expected default readiness config, got: %+v", cfg.Readiness)
+	}
+}
+
+// TestLoadReadinessExplicitZeroTimeoutRejected proves the raw-pointer idiom
+// applies to readiness too: an explicit 0 for timeoutSeconds must reach
+// Validate and fail, not be silently defaulted away.
+func TestLoadReadinessExplicitZeroTimeoutRejected(t *testing.T) {
+	path := writeConfig(t, "readiness:\n  timeoutSeconds: 0\n")
+	t.Setenv("APP_CONFIG_PATH", path)
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected an error for an explicit 0 readiness.timeoutSeconds")
+	}
+	if !strings.Contains(err.Error(), "readiness.timeoutSeconds") {
+		t.Errorf("expected error naming readiness.timeoutSeconds, got: %v", err)
+	}
+}
+
+// TestLoadReadinessPartialOverrideLeavesRestAtDefault verifies setting one
+// readiness key leaves its siblings at their Default() values.
+func TestLoadReadinessPartialOverrideLeavesRestAtDefault(t *testing.T) {
+	path := writeConfig(t, "readiness:\n  cacheTTLSeconds: 5\n")
+	t.Setenv("APP_CONFIG_PATH", path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected valid config, got: %v", err)
+	}
+	want := Default().Readiness
+	want.CacheTTLSeconds = 5
+	if cfg.Readiness != want {
+		t.Errorf("expected only cacheTTLSeconds to differ from Default(), got: %+v", cfg.Readiness)
+	}
+}

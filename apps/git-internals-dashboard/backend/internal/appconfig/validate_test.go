@@ -121,3 +121,55 @@ func TestValidateAcceptsCustomSecurityHeaderName(t *testing.T) {
 		t.Errorf("expected a well-formed custom header name to be valid, got: %v", err)
 	}
 }
+
+// TestValidateReadinessTimeoutMustBeLessThanWriteTimeout verifies the
+// probe's ping deadline can never reach or exceed the server's write
+// timeout — otherwise net/http closes the connection before the handler can
+// write its 503 and the probe reports a network error instead of a
+// diagnosis.
+func TestValidateReadinessTimeoutMustBeLessThanWriteTimeout(t *testing.T) {
+	cfg := Default()
+	cfg.Readiness.TimeoutSeconds = cfg.Server.WriteTimeoutSeconds // equal is still invalid
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected an error when readiness.timeoutSeconds >= server.writeTimeoutSeconds")
+	}
+	if !strings.Contains(err.Error(), "readiness.timeoutSeconds") || !strings.Contains(err.Error(), "server.writeTimeoutSeconds") {
+		t.Errorf("expected error naming both readiness.timeoutSeconds and server.writeTimeoutSeconds, got: %v", err)
+	}
+}
+
+// TestValidateReadinessThresholdOutOfRangeRejected verifies the saturation
+// threshold is bounded to 1-100 inclusive.
+func TestValidateReadinessThresholdOutOfRangeRejected(t *testing.T) {
+	cfg := Default()
+	cfg.Readiness.PoolSaturationThresholdPercent = 0
+	if err := Validate(&cfg); err == nil {
+		t.Error("expected poolSaturationThresholdPercent=0 to be rejected")
+	}
+	cfg.Readiness.PoolSaturationThresholdPercent = 101
+	if err := Validate(&cfg); err == nil {
+		t.Error("expected poolSaturationThresholdPercent=101 to be rejected")
+	}
+	cfg.Readiness.PoolSaturationThresholdPercent = 100
+	cfg.Readiness.TimeoutSeconds = 2 // keep the cross-field rule satisfied
+	if err := Validate(&cfg); err != nil {
+		t.Errorf("expected poolSaturationThresholdPercent=100 to be valid, got: %v", err)
+	}
+}
+
+// TestValidateReadinessCacheTTLZeroIsLegal verifies 0 (caching disabled) is
+// accepted, following the seed.interIssueDelayMs precedent, while a negative
+// value is rejected.
+func TestValidateReadinessCacheTTLZeroIsLegal(t *testing.T) {
+	cfg := Default()
+	cfg.Readiness.CacheTTLSeconds = 0
+	if err := Validate(&cfg); err != nil {
+		t.Errorf("expected cacheTTLSeconds=0 to be valid, got: %v", err)
+	}
+	cfg.Readiness.CacheTTLSeconds = -1
+	if err := Validate(&cfg); err == nil {
+		t.Error("expected cacheTTLSeconds=-1 to be rejected")
+	}
+}
