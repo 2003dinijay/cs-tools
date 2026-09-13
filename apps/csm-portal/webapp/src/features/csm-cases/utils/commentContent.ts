@@ -14,6 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import { markdownToHtml } from "@utils/renderMarkdown";
 import type { CsmCaseComment } from "@features/csm-cases/types/csmCases";
 
 /**
@@ -131,6 +132,30 @@ export function hasDisplayableContent(comment: CsmCaseComment): boolean {
   const textOnly = withoutLabel.replace(/<[^>]+>/g, "").trim();
   if (textOnly.length > 0) return true;
   return /<img\b/i.test(withoutLabel);
+}
+
+/**
+ * Cleans a comment's raw `bodyHtml` the same way `CsmCaseCommentBubble`'s own
+ * `preprocessed` memo does before rendering it — unwraps `[code]` wrapper
+ * tags into real HTML (or renders bot/chatbot Markdown to HTML) and strips
+ * the backend's "Customer comment added" label. Exists so a consumer that
+ * needs the same cleaned-up content but isn't rendering the bubble itself
+ * (e.g. the PDF report generators, which turn the result into plain text via
+ * `stripHtmlTags`) doesn't have to reimplement this pipeline — reported live
+ * when the PDF export instead showed the raw, unstripped "Customer comment
+ * added" label as if it were the comment's actual content.
+ */
+export function preprocessCommentBodyHtml(comment: CsmCaseComment): string {
+  if (comment.authorRole === "chatbot") return markdownToHtml(comment.bodyHtml);
+  const raw = comment.bodyHtml ?? "";
+  const isFullCodeWrap = hasSingleCodeWrapper(raw);
+  const codeBlockCount = raw.match(/\[code\]/gi)?.length ?? 0;
+  const afterCode = isFullCodeWrap
+    ? stripCodeWrapper(raw)
+    : codeBlockCount > 1
+      ? stripAllCodeBlocks(raw)
+      : convertCodeTagsToHtml(raw);
+  return stripCustomerCommentAddedLabel(afterCode);
 }
 
 /**

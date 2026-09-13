@@ -38,6 +38,7 @@ import {
 import { useLocation } from "react-router";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { BackendApiError } from "@api/backend/client";
+import ExportPdfButton from "@components/ExportPdfButton";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useEngineerDisplayName } from "@hooks/useEngineerDisplayName";
@@ -231,10 +232,13 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   const { user: currentUser } = useCurrentUser();
   const currentUserEmail = useIdTokenClaims()?.email;
 
-  const { data: comments } = useGetCsmIncidentComments(id);
-  const { data: activityAudit } = useGetCsmIncidentActivities(id);
+  const { data: comments, isLoading: isCommentsLoading } = useGetCsmIncidentComments(id);
+  const { data: activityAudit, isLoading: isActivityLoading } = useGetCsmIncidentActivities(id);
   const postComment = usePostCsmIncidentComment();
-  const { data: attachments } = useGetCsmCaseAttachments(id, "incident");
+  const { data: attachments, isLoading: isAttachmentsLoading } = useGetCsmCaseAttachments(
+    id,
+    "incident",
+  );
   const postAttachment = usePostCsmCaseAttachment();
   const downloadAttachment = useDownloadCsmCaseAttachment();
   const getAttachmentPreviewContent = useGetCsmCaseAttachmentPreviewSource();
@@ -473,9 +477,32 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   const hasLinkedServiceRequests =
     !!incident.linkedServiceRequests && incident.linkedServiceRequests.length > 0;
 
+  const handleExportIncidentPdf = async (): Promise<void> => {
+    try {
+      const { generateIncidentReportPdf } = await import(
+        "@features/csm-operations/utils/incidentReportPdf"
+      );
+      generateIncidentReportPdf(incident, comments ?? [], activityAudit ?? [], attachmentList);
+    } catch (err) {
+      showError("Could not export this incident as a PDF. Please try again.", err);
+    }
+  };
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
-      {BackButton}
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        {BackButton}
+        <ExportPdfButton
+          onExport={handleExportIncidentPdf}
+          disabled={isCommentsLoading || isActivityLoading || isAttachmentsLoading}
+        />
+      </Box>
 
       <Box
         sx={{
