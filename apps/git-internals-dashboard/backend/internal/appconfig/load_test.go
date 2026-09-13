@@ -287,3 +287,24 @@ func TestLoadReadinessPartialOverrideLeavesRestAtDefault(t *testing.T) {
 		t.Errorf("expected only cacheTTLSeconds to differ from Default(), got: %+v", cfg.Readiness)
 	}
 }
+
+// TestLoadReadinessDrainGracePeriodOverrideLeavesRestAtDefault verifies
+// setting readiness.drainGracePeriodSeconds leaves its siblings at their
+// Default() values. Both Default() and the committed app-config.yaml have
+// DrainGracePeriodSeconds at 0, so no other test exercises this field's YAML
+// tag or its resolve() wiring — a broken tag or a missing nil-check here
+// would silently produce the same zero value and go undetected.
+func TestLoadReadinessDrainGracePeriodOverrideLeavesRestAtDefault(t *testing.T) {
+	path := writeConfig(t, "readiness:\n  drainGracePeriodSeconds: 5\n")
+	t.Setenv("APP_CONFIG_PATH", path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected valid config, got: %v", err)
+	}
+	want := Default().Readiness
+	want.DrainGracePeriodSeconds = 5
+	if cfg.Readiness != want {
+		t.Errorf("expected only drainGracePeriodSeconds to differ from Default(), got: %+v", cfg.Readiness)
+	}
+}

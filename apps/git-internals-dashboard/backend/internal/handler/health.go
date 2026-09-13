@@ -188,7 +188,7 @@ func (h *HealthHandler) computeReadiness(ctx context.Context) readyResponse {
 		}
 		return readyResponse{
 			Status: "not_ready",
-			Checks: map[string]checkResult{"database": {Status: status}},
+			Checks: map[string]checkResult{"database": {Status: status, LatencyMs: latencyMs}},
 			Pool:   pool,
 		}
 	}
