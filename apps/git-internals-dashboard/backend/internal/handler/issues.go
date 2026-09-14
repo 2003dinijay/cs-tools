@@ -53,6 +53,10 @@ type slaWire struct {
 	PctConsumed    *float64 `json:"pctConsumed"`
 	SlaState       string   `json:"slaState"`
 	SlaRunning     bool     `json:"slaRunning"`
+	// BreachedEver is sticky: true once pct_consumed has ever reached 1.0,
+	// regardless of the issue's current sla_state — SlaState alone can't
+	// serve compliance reporting since TERMINAL masks a resolved VIOLATED.
+	BreachedEver bool `json:"breachedEver"`
 }
 
 type issueWire struct {
@@ -85,12 +89,13 @@ type issueRow struct {
 	PctConsumed     *float64
 	SlaState        *string
 	SlaRunning      *bool
+	BreachedEver    *bool
 }
 
 const issueListSelect = `
 	i.id, i.github_number, i.state, i.html_url, r.owner, r.name, i.priority, i.current_status,
 	i.github_created_at, i.github_updated_at,
-	s.budget_hours, s.consumed_hours, s.remaining_hours, s.pct_consumed, s.sla_state, s.sla_running
+	s.budget_hours, s.consumed_hours, s.remaining_hours, s.pct_consumed, s.sla_state, s.sla_running, s.breached_ever
 `
 
 const issueListFrom = `
@@ -106,7 +111,7 @@ func scanIssueRow(row pgx.Row) (issueRow, error) {
 	err := row.Scan(
 		&r.ID, &r.GithubNumber, &r.State, &r.HTMLURL, &r.Owner, &r.Name, &r.Priority, &r.CurrentStatus,
 		&r.GithubCreatedAt, &r.GithubUpdatedAt,
-		&r.BudgetHours, &r.ConsumedHours, &r.RemainingHours, &r.PctConsumed, &r.SlaState, &r.SlaRunning,
+		&r.BudgetHours, &r.ConsumedHours, &r.RemainingHours, &r.PctConsumed, &r.SlaState, &r.SlaRunning, &r.BreachedEver,
 	)
 	return r, err
 }
@@ -135,6 +140,10 @@ func toIssueWire(r issueRow) issueWire {
 		if r.SlaRunning != nil {
 			running = *r.SlaRunning
 		}
+		breachedEver := false
+		if r.BreachedEver != nil {
+			breachedEver = *r.BreachedEver
+		}
 		w.Sla = &slaWire{
 			BudgetHours:    r.BudgetHours,
 			ConsumedHours:  consumed,
@@ -142,6 +151,7 @@ func toIssueWire(r issueRow) issueWire {
 			PctConsumed:    r.PctConsumed,
 			SlaState:       *r.SlaState,
 			SlaRunning:     running,
+			BreachedEver:   breachedEver,
 		}
 	}
 	return w

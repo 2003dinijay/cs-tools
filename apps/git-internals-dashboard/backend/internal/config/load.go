@@ -36,6 +36,7 @@ type rawSettings struct {
 	SnapshotHourUtc          *int     `yaml:"snapshotHourUtc"`
 	SeedSnapshotDays         *int     `yaml:"seedSnapshotDays"`
 	SeedClosedLookbackDays   *int     `yaml:"seedClosedLookbackDays"`
+	UnknownStatusPolicy      *string  `yaml:"unknownStatusPolicy"`
 }
 
 // resolve builds a Settings from r, substituting defaultSettings' value for
@@ -60,6 +61,9 @@ func (r rawSettings) resolve() Settings {
 	if r.SeedClosedLookbackDays != nil {
 		s.SeedClosedLookbackDays = *r.SeedClosedLookbackDays
 	}
+	if r.UnknownStatusPolicy != nil {
+		s.UnknownStatusPolicy = UnknownStatusPolicy(*r.UnknownStatusPolicy)
+	}
 	return s
 }
 
@@ -70,6 +74,7 @@ type rawAppConfig struct {
 	Taxonomy Taxonomy      `yaml:"taxonomy"`
 	Budgets  []BudgetEntry `yaml:"budgets"`
 	Settings rawSettings   `yaml:"settings"`
+	Holidays []string      `yaml:"holidays"`
 }
 
 // configPath resolves SLA_CONFIG_PATH (absolute path recommended) or falls
@@ -107,6 +112,7 @@ func Load() (*AppConfig, error) {
 		Taxonomy: parsed.Taxonomy,
 		Budgets:  parsed.Budgets,
 		Settings: parsed.Settings.resolve(),
+		Holidays: parsed.Holidays,
 	}
 	if cfg.Taxonomy.Aliases == nil {
 		cfg.Taxonomy.Aliases = []AliasEntry{}

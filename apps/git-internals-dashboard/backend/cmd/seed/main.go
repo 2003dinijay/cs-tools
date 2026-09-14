@@ -299,10 +299,22 @@ func writeSnapshots(ctx context.Context, pool *pgxpool.Pool, pair ingest.Pair, r
 	day := startOfUTCDay(start)
 	today := startOfUTCDay(now)
 
+	closed := pair.Node.State == "CLOSED"
+	var closedAt *time.Time
+	if pair.Node.ClosedAt != nil {
+		if t, err := time.Parse(time.RFC3339, *pair.Node.ClosedAt); err == nil {
+			closedAt = &t
+		}
+	}
+
 	for !day.After(today) {
 		through := endOfUTCDay(day)
-		statusThatDay := sla.StatusAsOf(result.SlaEvents, through)
-		r := sla.ComputeSla(result.Priority, result.SlaEvents, statusThatDay, runtime.Cfg, through)
+		// Days on/after closure replay with the closure-capped clock, same
+		// as the live projection: consumption freezes and the state reports
+		// TERMINAL from the day of closure onward.
+		cfg, effectiveThrough := sla.AdjustForClosure(runtime.Cfg, through, closed, closedAt)
+		statusThatDay := sla.StatusAsOf(result.SlaEvents, effectiveThrough)
+		r := sla.ComputeSla(result.Priority, result.SlaEvents, statusThatDay, cfg, effectiveThrough)
 		_, err := pool.Exec(ctx, `
 			INSERT INTO sla_snapshots (
 				snapshot_date, issue_id, repository_id, priority, current_status,

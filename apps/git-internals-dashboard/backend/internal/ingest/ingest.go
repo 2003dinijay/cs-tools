@@ -218,11 +218,6 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 		currentStatusAt = &t
 	}
 
-	// SLA event list (ascending), reconciled with the project-scoped current
-	// status — this is what both the current projection and the snapshot
-	// replay walk.
-	slaEvents := sla.WithCurrentStatusBoundary(slaInputEvents, currentStatus, currentStatusAt, ictx.Now)
-
 	githubCreatedAt, err := time.Parse(time.RFC3339, node.CreatedAt)
 	if err != nil {
 		return Result{}, fmt.Errorf("ingest: parse issue createdAt %q: %w", node.CreatedAt, err)
@@ -239,6 +234,18 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 		}
 		githubClosedAt = &t
 	}
+
+	// A GitHub closure caps the SLA clock at the moment of closure and makes
+	// the issue terminal regardless of board status — the board is only
+	// process-guaranteed (a workflow or a human) to reach a terminal status
+	// on closure, not guaranteed by code.
+	closed := node.State == "CLOSED"
+	slaCfg, slaNow := sla.AdjustForClosure(ictx.Runtime.Cfg, ictx.Now, closed, githubClosedAt)
+
+	// SLA event list (ascending), reconciled with the project-scoped current
+	// status — this is what both the current projection and the snapshot
+	// replay walk.
+	slaEvents := sla.WithCurrentStatusBoundary(slaInputEvents, currentStatus, currentStatusAt, slaNow)
 
 	// The issue upsert, its event log, and its SLA projection must land
 	// together: a failure partway through (e.g. the event batch or the SLA
@@ -324,17 +331,21 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 	}
 
 	// Current SLA projection.
-	r := sla.ComputeSla(priority, slaEvents, currentStatus, ictx.Runtime.Cfg, ictx.Now)
+	r := sla.ComputeSla(priority, slaEvents, currentStatus, slaCfg, slaNow)
 	_, err = tx.Exec(ctx, `
 		INSERT INTO issue_sla (
 			issue_id, priority, budget_hours, consumed_hours, remaining_hours,
-			pct_consumed, sla_state, sla_running, computed_at, computed_through
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			pct_consumed, sla_state, sla_running, breached_ever, computed_at, computed_through
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (issue_id) DO UPDATE SET
 			priority = $2, budget_hours = $3, consumed_hours = $4, remaining_hours = $5,
-			pct_consumed = $6, sla_state = $7, sla_running = $8, computed_at = $9, computed_through = $10
+			pct_consumed = $6, sla_state = $7, sla_running = $8,
+			-- Sticky: once true, stays true even if a later priority change
+			-- (or closure/reopen) drops pct back under 1.0 — see Finding 3.
+			breached_ever = issue_sla.breached_ever OR $9,
+			computed_at = $10, computed_through = $11
 	`, issueID, priority, r.BudgetHours, r.ConsumedHours, r.RemainingHours,
-		r.PctConsumed, string(r.SlaState), r.SlaRunning, ictx.Now, ictx.Now)
+		r.PctConsumed, string(r.SlaState), r.SlaRunning, r.BreachedEver, ictx.Now, ictx.Now)
 	if err != nil {
 		return Result{}, fmt.Errorf("ingest: upsert issue_sla: %w", err)
 	}

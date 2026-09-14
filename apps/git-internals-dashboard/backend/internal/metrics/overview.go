@@ -166,13 +166,26 @@ type Volume struct {
 }
 
 type Overview struct {
-	RefreshedAt string     `json:"refreshedAt"`
-	Filters     Filters    `json:"filters"`
-	Hero        Hero       `json:"hero"`
-	Projects    []Project  `json:"projects"`
-	Priorities  []Priority `json:"priorities"`
-	Matrix      Matrix     `json:"matrix"`
-	Volume      []Volume   `json:"volume"`
+	RefreshedAt     string          `json:"refreshedAt"`
+	Filters         Filters         `json:"filters"`
+	Hero            Hero            `json:"hero"`
+	Projects        []Project       `json:"projects"`
+	Priorities      []Priority      `json:"priorities"`
+	Matrix          Matrix          `json:"matrix"`
+	Volume          []Volume        `json:"volume"`
+	UnknownStatuses []UnknownStatus `json:"unknownStatuses"`
+}
+
+// UnknownStatus is one board status the recompute scheduler doesn't
+// recognize (absent from taxonomy.statuses) as of its most recent tick —
+// Finding 4's loud alternative to silently pausing/accruing an
+// unclassified status. Ignores both the repo and priority filters: it's an
+// operational data-quality signal, not a per-issue metric.
+type UnknownStatus struct {
+	Status          string `json:"status"`
+	OccurrenceCount int    `json:"occurrenceCount"`
+	FirstSeenAt     string `json:"firstSeenAt"`
+	LastSeenAt      string `json:"lastSeenAt"`
 }
 
 // overviewIssue is one row of the base "open, non-terminal, enabled-repo"
@@ -484,6 +497,12 @@ func BuildOverview(ctx context.Context, pool *pgxpool.Pool, cfg *config.AppConfi
 		return Overview{}, fmt.Errorf("metrics: build volume: %w", err)
 	}
 
+	// ── 8. Unknown statuses (ignores both filters — an operational signal) ──
+	unknownStatuses, err := fetchUnknownStatuses(ctx, pool)
+	if err != nil {
+		return Overview{}, fmt.Errorf("metrics: fetch unknown statuses: %w", err)
+	}
+
 	heroCsByStatusWire := make([]HeroCsByStatus, len(csStatuses))
 	for i, s := range csStatuses {
 		heroCsByStatusWire[i] = HeroCsByStatus{Status: s, N: heroCsByStatus[s]}
@@ -498,10 +517,11 @@ func BuildOverview(ctx context.Context, pool *pgxpool.Pool, cfg *config.AppConfi
 			Cs:          HeroCs{N: heroCs, ByStatus: heroCsByStatusWire},
 			ProductSide: HeroMetric{N: heroProductSide, Delta: productSideDelta, Spark: productSideSpark},
 		},
-		Projects:   projects,
-		Priorities: priorities,
-		Matrix:     Matrix{Rows: matrixRows, Totals: matrixTotals, GrandTotal: grandTotal},
-		Volume:     volume,
+		Projects:        projects,
+		Priorities:      priorities,
+		Matrix:          Matrix{Rows: matrixRows, Totals: matrixTotals, GrandTotal: grandTotal},
+		Volume:          volume,
+		UnknownStatuses: unknownStatuses,
 	}, nil
 }
 
@@ -771,4 +791,33 @@ func buildVolume(ctx context.Context, pool *pgxpool.Pool, repoOrder []int32, rep
 		volume = append(volume, Volume{RepoID: id, Name: repoMap[id].Name, Total: total, Weeks: weeks})
 	}
 	return volume, nil
+}
+
+// fetchUnknownStatuses returns every status the most recent recompute tick
+// found absent from taxonomy.statuses (see internal/jobs.RunTickOnce's
+// replaceUnknownStatuses), most-frequent first — Finding 4's dashboard
+// signal so an unrecognized board status gets noticed and classified.
+func fetchUnknownStatuses(ctx context.Context, pool *pgxpool.Pool) ([]UnknownStatus, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT status, occurrence_count, first_seen_at, last_seen_at
+		FROM unknown_statuses
+		ORDER BY occurrence_count DESC, status ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	statuses := make([]UnknownStatus, 0)
+	for rows.Next() {
+		var s UnknownStatus
+		var firstSeenAt, lastSeenAt time.Time
+		if err := rows.Scan(&s.Status, &s.OccurrenceCount, &firstSeenAt, &lastSeenAt); err != nil {
+			return nil, err
+		}
+		s.FirstSeenAt = firstSeenAt.UTC().Format(time.RFC3339)
+		s.LastSeenAt = lastSeenAt.UTC().Format(time.RFC3339)
+		statuses = append(statuses, s)
+	}
+	return statuses, rows.Err()
 }

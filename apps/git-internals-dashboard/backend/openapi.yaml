@@ -415,6 +415,13 @@ components:
           $ref: '#/components/schemas/SlaState'
         slaRunning:
           type: boolean
+        breachedEver:
+          type: boolean
+          description: >-
+            Sticky: true once pctConsumed has ever reached 1.0, regardless
+            of the issue's current slaState — slaState alone can't serve
+            compliance reporting since a resolved issue reports TERMINAL
+            even if it was VIOLATED beforehand.
 
     Issue:
       type: object

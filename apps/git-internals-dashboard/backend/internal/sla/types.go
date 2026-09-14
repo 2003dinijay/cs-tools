@@ -61,6 +61,10 @@ type Config struct {
 	Accrues         func(status *string) bool
 	IsTerminal      func(status *string) bool
 	AtRiskThreshold float64
+	// Holidays is the set of IST-calendar-day indices (see HolidayDayIndex)
+	// excluded from Coverage12x5Ist. nil/empty => no holidays. Coverage24x7
+	// budgets are unaffected.
+	Holidays map[int64]bool
 }
 
 // Result is computeSla's output.
@@ -71,4 +75,11 @@ type Result struct {
 	PctConsumed    *float64
 	SlaState       SlaState
 	SlaRunning     bool
+	// BreachedEver is pct>=1.0 evaluated independently of SlaState/terminal
+	// status — a "was this ever violated" signal a caller can persist
+	// sticky (OR'd against its prior stored value) so a later priority
+	// change, closure, or reopen that lowers pct back under 1.0 can't erase
+	// the fact that it once breached. See Finding 3: SlaState alone can't
+	// serve this, because TERMINAL masks VIOLATED once an issue resolves.
+	BreachedEver bool
 }

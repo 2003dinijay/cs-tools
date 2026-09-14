@@ -84,6 +84,48 @@ The SLA taxonomy — which repos/projects to track, the status categories, and p
 budgets — is configured in `config/sla-config.yaml`, loaded once at startup. Non-secret values
 only; tokens and connection strings stay in environment variables.
 
+**Known limitation — priority changes rewrite history.** There is no priority-change event log:
+`internal/sla.ComputeSla` applies an issue's *current* priority's budget and coverage window to
+its entire status-event timeline, not just to the time after the change. Escalating P3→P2 halves
+the budget and re-masks all past accrual under the (same) 12x5 coverage window — it can flip an
+issue straight to `VIOLATED`; downgrading can just as easily hide a real breach. Changing between
+P1 and P2 additionally switches the coverage clock (24x7 vs. 12x5 IST) retroactively too. Fixing
+this properly means persisting priority-change events and walking budget segments per interval;
+until then, treat `pct_consumed`/`sla_state` as computed against an issue's *current* priority,
+not a running record of the priority in effect when the time was actually spent.
+
+**`settings.unknownStatusPolicy`** (`pause` default, or `accrue`) controls what the SLA clock
+does with a board status absent from `taxonomy.statuses` — a renamed or newly added column. Either
+way, the current set of unknown statuses is always surfaced on `GET /metrics/overview` (as
+`unknownStatuses`, backed by the `unknown_statuses` table the recompute tick maintains) so they get
+noticed and classified instead of silently mis-accruing forever. Like the priority-change caveat
+above, changing this setting (or adding a status to `taxonomy.statuses`, which has the same effect)
+retroactively re-walks every affected issue's full history on the next tick — expect a step in
+`pct_consumed`/`consumed_hours`, not just a change going forward.
+
+**`holidays`** (top-level list of `YYYY-MM-DD` dates, empty by default) excludes those IST calendar
+days from the `12x5_ist` coverage window — e.g. Indian public holidays, if the SLA contract
+excludes them; confirm before adding dates. `24x7` budgets are unaffected. Same retroactive-recompute
+caveat as `unknownStatusPolicy`: adding or removing a date shifts `consumed_hours`/`pct_consumed`
+for every issue whose history spans that date, on the next tick.
+
+**Known limitation — GitHub closure stopping accrual is forward-only.** A GitHub issue closure now
+caps its SLA clock and forces `TERMINAL` from the moment of closure onward (`sla.AdjustForClosure`),
+fixing the case where a closed issue's board status was never moved to a terminal column and kept
+accruing/polluting the `violated`/`at_risk` trend forever. This only changes what happens *going
+forward*: the tick only ever re-upserts today's `sla_snapshots` row, so a long-closed issue's
+already-written historical snapshot rows (e.g. old `VIOLATED` rows accrued before this fix shipped)
+are not retroactively corrected — they stay as they were computed at the time. If cleaning up that
+historical drift matters, it needs a one-off backfill job, not a code change here.
+
+**`breachedEver`** (on `issue_sla`, exposed as `sla.breachedEver` in the issues API) is a sticky
+"was this ever violated" signal, independent of `sla_state` — `sla_state` reports `TERMINAL` once
+an issue resolves, which would otherwise mask a real past `VIOLATED`. It's OR'd against its prior
+stored value on every write, so it can only go `false` → `true`, and is backfilled at migration time
+from `sla_snapshots` history. That backfill is bounded by the snapshot window: an issue whose only
+breach predates its earliest retained snapshot reads `breachedEver: false` — correct given available
+history, but worth knowing before treating it as an absolute "never breached" claim.
+
 ### `config/app-config.yaml`
 
 Operational tuning — server networking, DB pool, in-process caches, GitHub client pacing,

@@ -57,8 +57,9 @@ budgets:
   - { priority: "Medium(P3)",   budgetHours: 48, coverage: "12x5_ist", rank: 3 }
 
 settings:
-  # Fraction of an issue's budget consumed (strictly between 0 and 1) above
-  # which its SLA state becomes AT_RISK; at/above 1.0 it's VIOLATED instead.
+  # Fraction of an issue's budget consumed (strictly between 0 and 1) at or
+  # above which its SLA state becomes AT_RISK; at/above 1.0 it's VIOLATED
+  # instead.
   atRiskThreshold: 0.75
   # How often the background scheduler re-runs a recompute tick, advancing
   # issue_sla/sla_snapshots from already-synced state. Does not call GitHub.
@@ -78,3 +79,34 @@ settings:
   # seed/sync. Also incremental sync's fallback lookback window the first
   # time a repo has no last_synced_at yet.
   seedClosedLookbackDays: 90
+  # How a board status absent from taxonomy.statuses (a renamed or newly
+  # added column) affects the SLA clock:
+  #   pause  (default) — today's behavior: the clock pauses, same as any
+  #           other non-accruing status. Safe against over-counting, but
+  #           silently undercounts if the status is actually product-side.
+  #   accrue — treat it as product-side (assume-accrues until classified).
+  #           Safer against hiding a stalled issue from breach alerts, at
+  #           the cost of possibly over-counting until it's classified.
+  # Either way, unknown statuses are always surfaced via
+  # /metrics/overview.unknownStatuses so they get noticed and classified —
+  # this setting only controls what happens to the SLA clock meanwhile. A
+  # nil status (issue removed from the board) is never "unknown": it keeps
+  # pausing regardless of this setting.
+  # CAUTION: this applies to every historical event's status in the walk,
+  # not just an issue's current status — changing this setting (or adding a
+  # newly-recognized status to taxonomy.statuses, which has the same effect)
+  # retroactively re-accrues/re-pauses every past interval that sat on the
+  # affected status, on the very next tick. Same retroactive-recompute class
+  # as editing holidays below.
+  unknownStatusPolicy: pause
+
+# IST calendar dates (YYYY-MM-DD) excluded from the 12x5_ist coverage window
+# — e.g. Indian public holidays, if the SLA contract excludes them. Applies
+# only to 12x5_ist budgets (P2/P3 today); 24x7 budgets (P1) are unaffected,
+# since they already ignore weekends and holidays alike. Empty by default —
+# confirm with the actual SLA contract before adding dates. Adding or
+# removing a date here recomputes every issue's history retroactively on the
+# next tick (same as any other coverage-window change), which can visibly
+# shift consumed_hours/pct_consumed for issues whose intervals span the
+# changed date.
+holidays: []

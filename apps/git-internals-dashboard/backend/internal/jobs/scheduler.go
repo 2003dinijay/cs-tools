@@ -56,6 +56,8 @@ type recomputeIssue struct {
 	Priority        *string
 	CurrentStatus   *string
 	CurrentStatusAt *time.Time
+	State           string
+	GithubClosedAt  *time.Time
 	Events          []sla.StatusEvent
 }
 
@@ -115,8 +117,13 @@ func RunTickOnce(ctx context.Context, pool *pgxpool.Pool, runtime *ingest.Runtim
 				events[i] = sla.StatusEvent{Status: status, OccurredAt: e.OccurredAt}
 			}
 
-			slaEvents := sla.WithCurrentStatusBoundary(events, currentStatus, issue.CurrentStatusAt, now)
-			result := sla.ComputeSla(issue.Priority, slaEvents, currentStatus, runtime.Cfg, now)
+			// A GitHub closure caps the clock at closure and reports TERMINAL
+			// from then on, regardless of board status (see
+			// sla.AdjustForClosure) — closing the board item is only a
+			// process guarantee, not a code one.
+			slaCfg, slaNow := sla.AdjustForClosure(runtime.Cfg, now, issue.State == "CLOSED", issue.GithubClosedAt)
+			slaEvents := sla.WithCurrentStatusBoundary(events, currentStatus, issue.CurrentStatusAt, slaNow)
+			result := sla.ComputeSla(issue.Priority, slaEvents, currentStatus, slaCfg, slaNow)
 
 			queueUpdateIssueSla(batch, issue.ID, issue.Priority, result, now)
 			// Recomputing today's row on every tick is idempotent and keeps
@@ -137,7 +144,46 @@ func RunTickOnce(ctx context.Context, pool *pgxpool.Pool, runtime *ingest.Runtim
 		}
 	}
 
+	if err := replaceUnknownStatuses(ctx, pool, unknownStatuses, now); err != nil {
+		return TickSummary{}, err
+	}
+
 	return TickSummary{Processed: processed, StateCounts: stateCounts, UnknownStatuses: unknownStatuses}, nil
+}
+
+// replaceUnknownStatuses syncs the unknown_statuses table to exactly this
+// tick's findings — surfaced via GET /metrics/overview (Finding 4) so an
+// unrecognized board status gets noticed and classified instead of silently
+// pausing (or, under unknownStatusPolicy=accrue, silently accruing)
+// forever. A status this tick no longer sees (reclassified into the
+// taxonomy, or the board column renamed again) is dropped rather than kept
+// forever; one this tick still sees keeps its original first_seen_at. All
+// in one transaction so a concurrent overview read never observes a
+// mid-replace empty set.
+func replaceUnknownStatuses(ctx context.Context, pool *pgxpool.Pool, statuses map[string]int, now time.Time) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) // no-op once Commit succeeds
+
+	seen := make([]string, 0, len(statuses))
+	for status := range statuses {
+		seen = append(seen, status)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM unknown_statuses WHERE status != ALL($1::text[])`, seen); err != nil {
+		return err
+	}
+	for status, count := range statuses {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO unknown_statuses (status, occurrence_count, first_seen_at, last_seen_at)
+			VALUES ($1, $2, $3, $3)
+			ON CONFLICT (status) DO UPDATE SET occurrence_count = $2, last_seen_at = $3
+		`, status, count, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // startOfUTCDay returns t truncated to 00:00:00.000 UTC on its own day —
@@ -152,7 +198,7 @@ func startOfUTCDay(t time.Time) time.Time {
 // attached.
 func fetchIssuePage(ctx context.Context, pool *pgxpool.Pool, limit int, lastID int32) ([]recomputeIssue, error) {
 	rows, err := pool.Query(ctx, `
-		SELECT i.id, i.repository_id, i.priority, i.current_status, i.current_status_at
+		SELECT i.id, i.repository_id, i.priority, i.current_status, i.current_status_at, i.state, i.github_closed_at
 		FROM issues i
 		JOIN repositories r ON r.id = i.repository_id
 		WHERE r.enabled = true AND i.id > $2
@@ -168,7 +214,7 @@ func fetchIssuePage(ctx context.Context, pool *pgxpool.Pool, limit int, lastID i
 	ids := make([]int32, 0)
 	for rows.Next() {
 		var it recomputeIssue
-		if err := rows.Scan(&it.ID, &it.RepositoryID, &it.Priority, &it.CurrentStatus, &it.CurrentStatusAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.RepositoryID, &it.Priority, &it.CurrentStatus, &it.CurrentStatusAt, &it.State, &it.GithubClosedAt); err != nil {
 			return nil, err
 		}
 		issues = append(issues, it)
@@ -216,9 +262,12 @@ func queueUpdateIssueSla(batch *pgx.Batch, issueID int32, priority *string, r sl
 	batch.Queue(`
 		UPDATE issue_sla SET
 			priority = $2, budget_hours = $3, consumed_hours = $4, remaining_hours = $5,
-			pct_consumed = $6, sla_state = $7, sla_running = $8, computed_at = $9, computed_through = $10
+			pct_consumed = $6, sla_state = $7, sla_running = $8,
+			-- Sticky: see the matching comment in ingest.go's upsert (Finding 3).
+			breached_ever = issue_sla.breached_ever OR $9,
+			computed_at = $10, computed_through = $11
 		WHERE issue_id = $1
-	`, issueID, priority, r.BudgetHours, r.ConsumedHours, r.RemainingHours, r.PctConsumed, string(r.SlaState), r.SlaRunning, now, now)
+	`, issueID, priority, r.BudgetHours, r.ConsumedHours, r.RemainingHours, r.PctConsumed, string(r.SlaState), r.SlaRunning, r.BreachedEver, now, now)
 }
 
 // queueUpsertSnapshot queues the day's sla_snapshots upsert for one issue.

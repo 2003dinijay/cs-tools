@@ -487,8 +487,29 @@ func (c *httpClient) FetchIssueDetail(ctx context.Context, owner, name string, n
 		}
 	}
 
-	// Ascending by time — the SLA interval walk depends on this.
-	sort.SliceStable(events, func(i, j int) bool { return events[i].CreatedAt < events[j].CreatedAt })
+	// Ascending by time — the SLA interval walk depends on this. Sorted by
+	// parsed time.Time, not string comparison: GitHub's CreatedAt is
+	// normally whole-second "...Z", but mixed fractional-second precision
+	// would misorder lexicographically (e.g. "...:00.500Z" < "...:00Z").
+	// CreatedAt itself is left untouched — it feeds the dedupe key verbatim.
+	// A parse failure sorts as the zero time, leaving that event's relative
+	// order to SliceStable's stability rather than failing the whole fetch.
+	// Sorted as (event, parsedTime) pairs, not events alongside a separate
+	// parallel slice: sort.SliceStable only permutes the slice it's given,
+	// so a same-indexed side slice would desync from events on every swap.
+	type timedEvent struct {
+		event StatusEvent
+		at    time.Time
+	}
+	timed := make([]timedEvent, len(events))
+	for i, e := range events {
+		t, _ := time.Parse(time.RFC3339, e.CreatedAt)
+		timed[i] = timedEvent{event: e, at: t}
+	}
+	sort.SliceStable(timed, func(i, j int) bool { return timed[i].at.Before(timed[j].at) })
+	for i, te := range timed {
+		events[i] = te.event
+	}
 	return &IssueDetail{Number: number, Events: events, ProjectStatuses: projectStatuses}, nil
 }
 

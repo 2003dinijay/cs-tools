@@ -19,6 +19,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ValidationError aggregates every rule violation found in one config, so a
@@ -143,6 +144,21 @@ func Validate(cfg *AppConfig) error {
 	}
 	if cfg.Settings.SeedClosedLookbackDays <= 0 {
 		add("settings.seedClosedLookbackDays: must be positive")
+	}
+	if !cfg.Settings.UnknownStatusPolicy.valid() {
+		add("settings.unknownStatusPolicy: invalid enum value %q", cfg.Settings.UnknownStatusPolicy)
+	}
+
+	seenHoliday := make(map[string]bool, len(cfg.Holidays))
+	for i, h := range cfg.Holidays {
+		if _, err := time.Parse("2006-01-02", h); err != nil {
+			add("holidays.%d: invalid date %q, want YYYY-MM-DD", i, h)
+			continue
+		}
+		if seenHoliday[h] {
+			add("duplicate holiday: %s", h)
+		}
+		seenHoliday[h] = true
 	}
 
 	if len(issues) == 0 {
