@@ -56,26 +56,9 @@ function FilterSelect({
   );
 }
 
-/** The small square app-mark shown in the top nav bar. */
+/** The WSO2 pulse mark shown in the top nav bar. */
 function Logo() {
-  return (
-    <Box
-      sx={{
-        display: "flex",
-        height: 34,
-        width: 34,
-        alignItems: "center",
-        justifyContent: "center",
-        borderRadius: "9px",
-        background: "var(--sla-primary-gradient)",
-        color: "var(--sla-contrast-text)",
-        fontSize: 15,
-        fontWeight: 700,
-      }}
-    >
-      S
-    </Box>
-  );
+  return <Box component="img" src="/wso2-pulse.svg" alt="WSO2" sx={{ height: 34, width: 34, display: "block" }} />;
 }
 
 /** The signed-in app frame: top nav with global repo/priority filters, routed content below. */
