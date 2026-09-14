@@ -42,5 +42,5 @@ export function FetchProgressProvider({ children }: { children: ReactNode }) {
  */
 export function FetchProgressBar({ active }: { active: boolean }) {
   if (!active) return null;
-  return <LinearProgress sx={{ position: "fixed", top: 0, left: 0, right: 0, height: 2, zIndex: 30 }} />;
+  return <LinearProgress sx={{ position: "fixed", top: 0, left: 0, right: 0, height: 3, zIndex: 30 }} />;
 }

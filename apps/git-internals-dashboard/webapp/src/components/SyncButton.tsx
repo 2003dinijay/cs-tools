@@ -44,6 +44,7 @@ function oldestLastSynced(repos: Array<{ lastSyncedAt: string | null }>): string
 export function SyncButton() {
   const { data: status } = useSyncStatus();
   const [transientMessage, setTransientMessage] = useState<string | null>(null);
+  const [hovered, setHovered] = useState(false);
   const mutation = useManualSync();
 
   const lastSynced = status ? oldestLastSynced(status.repos) : null;
@@ -58,10 +59,32 @@ export function SyncButton() {
   else if (errorMessage) statusText = errorMessage;
   else if (transientMessage) statusText = transientMessage;
 
+  const expanded = hovered || mutation.isPending || !!errorMessage || !!transientMessage;
+
   return (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-      <Box component="span" sx={{ fontSize: 12, color: errorMessage ? "var(--sla-violated)" : "var(--sla-fg3)" }}>
-        {statusText}
+    <Box sx={{ display: "flex", alignItems: "center" }}>
+      <Box
+        sx={{
+          display: "grid",
+          gridTemplateColumns: expanded ? "1fr" : "0fr",
+          opacity: expanded ? 1 : 0,
+          marginRight: expanded ? "8px" : 0,
+          transition: "grid-template-columns 0.25s ease, opacity 0.2s ease, margin-right 0.25s ease",
+        }}
+      >
+        <Box
+          component="span"
+          sx={{
+            display: "inline-block",
+            minWidth: 0,
+            overflow: "hidden",
+            whiteSpace: "nowrap",
+            fontSize: 12,
+            color: errorMessage ? "var(--sla-violated)" : "var(--sla-fg3)",
+          }}
+        >
+          {statusText}
+        </Box>
       </Box>
       <IconButton
         onClick={() => {
@@ -75,6 +98,10 @@ export function SyncButton() {
             },
           });
         }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onFocus={() => setHovered(true)}
+        onBlur={() => setHovered(false)}
         disabled={mutation.isPending}
         aria-label="Sync now"
         title="Sync now"
