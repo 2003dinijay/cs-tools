@@ -108,4 +108,48 @@ describe("IssuesPage", () => {
     expect(search).toContain("q=42");
     expect(search).toContain("bucket=violated");
   });
+
+  it("splits the CS-side chip into separate Waiting on CS Team / Pending Patch Queue tiles", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/metrics/overview")) return Promise.resolve(jsonResponse(EMPTY_OVERVIEW));
+      if (url.includes("/issues")) return Promise.resolve(jsonResponse([]));
+      if (url.includes("/taxonomy")) return Promise.resolve(jsonResponse({ statuses: [], csStatuses: ["WOC", "Pending Patch Queue"] }));
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const router = renderIssuesPage();
+
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+
+    // There is no single combined "On CS Side" chip anymore.
+    expect(screen.queryByText("On CS Side")).toBeNull();
+
+    act(() => {
+      fireEvent.click(screen.getByText("Waiting on CS Team"));
+    });
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+
+    let search = router.state.location.search;
+    expect(search).toContain("bucket=cs");
+    expect(search).toContain("status=WOC");
+    expect(screen.getByText("Waiting on CS Team issues")).toBeTruthy();
+
+    act(() => {
+      fireEvent.click(screen.getByText("Pending Patch Queue"));
+    });
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+
+    search = router.state.location.search;
+    expect(search).toContain("bucket=cs");
+    expect(search).toContain("status=Pending+Patch+Queue");
+    expect(screen.getByText("Pending Patch Queue issues")).toBeTruthy();
+  });
 });

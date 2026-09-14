@@ -28,11 +28,12 @@ import { IssueTimelineRow } from "@components/IssueTimelineRow";
 import { gridTemplate } from "@lib/grid";
 import { acrylicSurfaceSx } from "@lib/surfaces";
 
-const KIND_CHIPS: { key: BucketKey; label: string }[] = [
+const KIND_CHIPS: { key: BucketKey; status?: string; label: string }[] = [
   { key: "all", label: "All Open" },
   { key: "violated", label: "Violated" },
   { key: "at_risk", label: "At Risk" },
-  { key: "cs", label: "On CS Side" },
+  { key: "cs", status: "WOC", label: "Waiting on CS Team" },
+  { key: "cs", status: "Pending Patch Queue", label: "Pending Patch Queue" },
   { key: "product_side", label: "On Product Team Side" },
   { key: "untracked", label: "Untracked" },
 ];
@@ -47,6 +48,12 @@ const BUCKET_TITLES: Partial<Record<BucketKey, string>> = {
   untracked: "Untracked / missing priority",
   attention: "Attention set",
   all: "All open issues",
+};
+
+// Friendlier page heading for a single-status drill-down than the raw status name.
+const STATUS_TITLES: Record<string, string> = {
+  WOC: "Waiting on CS Team issues",
+  "Pending Patch Queue": "Pending Patch Queue issues",
 };
 
 const PRIORITY_OPTIONS = [
@@ -118,12 +125,15 @@ export default function IssuesPage() {
     setParams(next, { replace: true });
   };
 
-  // Switching kind (or "All open") clears any single-status refinement (e.g. WOC vs PPQ).
-  const setBucket = (key: BucketKey) => {
+  // Switching kind (or "All open") clears any single-status refinement, unless
+  // the chip itself carries one (e.g. the CS-side "Waiting on CS Team" / "Pending
+  // Patch Queue" chips, which share bucket=cs and differ only by status).
+  const setBucket = (key: BucketKey, chipStatus?: string) => {
     const next = new URLSearchParams(params);
     if (key === "all") next.delete("bucket");
     else next.set("bucket", key);
-    next.delete("status");
+    if (chipStatus) next.set("status", chipStatus);
+    else next.delete("status");
     setParams(next, { replace: true });
   };
 
@@ -159,7 +169,7 @@ export default function IssuesPage() {
   const projName = repo ? nameForRepo(repo) : "All Projects";
 
   // A single CS status gets its own titled list.
-  const title = status ? `${status} issues` : (BUCKET_TITLES[bucket] ?? "Issues");
+  const title = status ? (STATUS_TITLES[status] ?? `${status} issues`) : (BUCKET_TITLES[bucket] ?? "Issues");
   const cols = gridTemplate(true);
 
   return (
@@ -214,13 +224,13 @@ export default function IssuesPage() {
       {/* Kind chips */}
       <Box sx={{ mb: 2, display: "flex", flexWrap: "wrap", gap: 1 }}>
         {KIND_CHIPS.map((chip) => {
-          const active = bucket === chip.key || (chip.key === "all" && bucket === "all");
+          const active = bucket === chip.key && (chip.status ?? undefined) === status;
           return (
             <Box
-              key={chip.key}
+              key={chip.status ? `${chip.key}:${chip.status}` : chip.key}
               component="button"
               type="button"
-              onClick={() => setBucket(chip.key)}
+              onClick={() => setBucket(chip.key, chip.status)}
               sx={{
                 borderRadius: "8px", border: "1px solid", px: 1.5, py: 0.75, fontSize: 12.5, fontWeight: 600, cursor: "pointer",
                 borderColor: active ? "var(--sla-primary)" : "var(--sla-border)",
