@@ -318,9 +318,9 @@ type CaseWatchListUser struct {
 // Deliberately excludes entity-service's AutoclosureStep/AutoclosureStateTime
 // and BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta — genuinely
 // CSM-engineer-facing only. CsManager and FindingsResolved/FindingsTotal
-// have no entity-service equivalent on CaseView. CloseNotes is deliberately
-// NOT exposed here even though entity-service's CaseView carries it (GET path)
-// as well as PATCH: it is an internal CS-agent close note, never meant for
+// have no entity-service equivalent on CaseView. CloseNotes and ResolutionNotes
+// are deliberately NOT exposed here even though entity-service's CaseView carries them:
+// they are internal CS-agent close/resolution notes, never meant for
 // the customer-facing view.
 type CaseDetails struct {
 	ID                    string                       `json:"id"`
@@ -356,7 +356,6 @@ type CaseDetails struct {
 	ResolvedOn            *time.Time                   `json:"resolvedOn,omitempty"`
 	ResolutionCode        *string                      `json:"resolutionCode,omitempty"`
 	Cause                 *string                      `json:"cause,omitempty"`
-	ResolutionNotes       *string                      `json:"resolutionNotes,omitempty"`
 	WatchList             []CaseWatchListUser          `json:"watchList,omitempty"`
 	FixEta                *time.Time                   `json:"fixEta,omitempty"`
 	// Exposed because the frontend's CaseDetails type declares them
@@ -462,7 +461,6 @@ func MapCaseDetails(c entity.CaseView) CaseDetails {
 		ResolvedOn:            c.ResolvedOn,
 		ResolutionCode:        c.ResolutionCode,
 		Cause:                 c.Cause,
-		ResolutionNotes:       c.ResolutionNotes,
 		WatchList:             watchList,
 		FixEta:                c.FixEta,
 		SLAResponseTime:       c.SLAResponseTime,
@@ -790,6 +788,17 @@ type SearchCaseActivitiesResponse struct {
 func MapSearchCaseActivities(r entity.SearchCaseActivitiesResponse) SearchCaseActivitiesResponse {
 	items := make([]CaseActivity, 0, len(r.Activity))
 	for _, a := range r.Activity {
+		// Work notes (internal WSO2 support annotations) must never reach the customer portal.
+		if a.Type == "work_note" || a.Type == "work_notes" {
+			continue
+		}
+		if a.CommentType != nil {
+			ct := string(*a.CommentType)
+			if ct == string(entity.CommentTypeWorkNote) || ct == "work_note" || ct == "work_notes" {
+				continue
+			}
+		}
+
 		var commentType *string
 		if a.CommentType != nil {
 			s := string(*a.CommentType)
