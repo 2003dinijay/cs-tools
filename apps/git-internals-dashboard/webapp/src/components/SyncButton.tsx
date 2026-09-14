@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RefreshCw } from "@wso2/oxygen-ui-icons-react";
 import { Box, IconButton } from "@mui/material";
 import { useManualSync, useSyncStatus } from "@api/hooks";
@@ -46,6 +46,15 @@ export function SyncButton() {
   const [transientMessage, setTransientMessage] = useState<string | null>(null);
   const [hovered, setHovered] = useState(false);
   const mutation = useManualSync();
+
+  // Fall back to the relative "Last synced" text a few seconds after a
+  // successful sync, instead of pinning the "Synced — N issues..." message
+  // (and the expanded box) forever.
+  useEffect(() => {
+    if (!transientMessage) return;
+    const t = setTimeout(() => setTransientMessage(null), 5000);
+    return () => clearTimeout(t);
+  }, [transientMessage]);
 
   const lastSynced = status ? oldestLastSynced(status.repos) : null;
   const errorMessage = mutation.isError
