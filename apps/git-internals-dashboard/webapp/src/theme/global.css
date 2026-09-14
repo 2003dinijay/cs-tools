@@ -1,5 +1,4 @@
-/* Port of v3's src/app/globals.css.
-   SLA Monitor design tokens. These alias Oxygen UI's live theme CSS variables
+/* SLA Monitor design tokens. These alias Oxygen UI's live theme CSS variables
    (--oxygen-palette-*, --oxygen-blur-*, --oxygen-border-*), emitted by the
    theme passed to MUI's ThemeProvider (src/theme/theme.ts, currently Acrylic
    Purple) — NOT hardcoded hex — so every component that references
@@ -75,10 +74,10 @@
   --sla-overlay: var(--oxygen-palette-background-paper, #ffffffc5);
   --sla-overlay-blur: var(--oxygen-blur-medium, blur(16px));
 
-  /* v3 sources these from next/font/google (Geist / Geist Mono); this SPA has
-     no build-time font-optimization step, so they're plain system-font
-     stacks instead of a webfont — every component that reads var(--font-*)
-     (numeric stats, badges, dates) still works unchanged. */
+  /* This SPA has no build-time font-optimization step, so these are plain
+     system-font stacks instead of a loaded webfont — every component that
+     reads var(--font-*) (numeric stats, badges, dates) still works
+     unchanged. */
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
