@@ -294,9 +294,13 @@ export const ADVANCED_FILTER_FIELDS: AdvancedFilterFieldMeta[] = [
   {
     // Options are supplied at render time by `AdvancedFiltersBuilder` (the
     // `sreTeamOptions` prop, computed once in `CasesFilterBar.tsx` from the
-    // same `useTeams(true)` fetch the "CRE Team" (`creTeam`) bar control
-    // uses) — not listed statically here, since the team registry is
-    // fetched data, not a fixed enum like `projectType`/`issueType` above.
+    // same `useTeams(true)` fetch the "CRE Team" (`creTeam`) and "SRE Team"
+    // bar controls use) — not listed statically here, since the team
+    // registry is fetched data, not a fixed enum like `projectType`/
+    // `issueType` above. Has its own dedicated Simple-mode bar control too
+    // (mirroring `creTeam`), per the same unification this file's own top
+    // doc comment describes: one `CasesFilters` property, rendered as a
+    // dedicated control in Simple mode and this generic row in Advanced.
     field: "sreTeam",
     label: "SRE team",
     ops: [{ op: "in", label: "is one of", valueKind: "multiSelect" }],

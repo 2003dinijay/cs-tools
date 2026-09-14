@@ -155,13 +155,14 @@ interface CsmIssuesViewProps {
   /** Hide the project filter control (use when the view is project-scoped). */
   hideProjectFilter?: boolean;
   /**
-   * Hide the "Onboarding status"/"CRE Team" Simple-mode controls — see
-   * `CasesFilterBar`'s own doc comments. Pass when the view is already
-   * scoped to one project (both are per-project attributes, so filtering by
-   * them on a single-project view is a no-op).
+   * Hide the "Onboarding status"/"CRE Team"/"SRE Team" Simple-mode controls
+   * — see `CasesFilterBar`'s own doc comments. Pass when the view is
+   * already scoped to one project (all three are per-project attributes,
+   * so filtering by them on a single-project view is a no-op).
    */
   hideOnboardingStatusFilter?: boolean;
   hideCreTeamFilter?: boolean;
+  hideSreTeamFilter?: boolean;
   /** Show the engagement-type sub-filter (pass when the view is locked to engagement cases). */
   showEngagementTypeFilter?: boolean;
   /**
@@ -226,6 +227,7 @@ export default function CsmIssuesView({
   hideProjectFilter,
   hideOnboardingStatusFilter,
   hideCreTeamFilter,
+  hideSreTeamFilter,
   showEngagementTypeFilter,
   showSeverityFilter: showSeverityFilterOverride,
   detailBasePath,
@@ -627,6 +629,7 @@ export default function CsmIssuesView({
         hideProjectFilter={hideProjectFilter}
         hideOnboardingStatusFilter={hideOnboardingStatusFilter}
         hideCreTeamFilter={hideCreTeamFilter}
+        hideSreTeamFilter={hideSreTeamFilter}
         showEngagementTypeFilter={showEngagementTypeFilter}
       />
 
