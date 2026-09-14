@@ -132,8 +132,8 @@ type Readiness struct {
 
 // Default returns the built-in default Config: one value per field, each
 // equal to what the code hardcoded before app-config.yaml existed. Database
-// is left entirely nil, since D9's pointer fields have no fixed-literal
-// default to fall back to.
+// is left entirely nil, since its pointer fields have no fixed-literal
+// default to fall back to (nil means "let the pgxpool driver default apply").
 func Default() Config {
 	return Config{
 		Server: Server{

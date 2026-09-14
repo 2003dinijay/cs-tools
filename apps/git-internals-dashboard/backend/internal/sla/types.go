@@ -79,7 +79,7 @@ type Result struct {
 	// status — a "was this ever violated" signal a caller can persist
 	// sticky (OR'd against its prior stored value) so a later priority
 	// change, closure, or reopen that lowers pct back under 1.0 can't erase
-	// the fact that it once breached. See Finding 3: SlaState alone can't
-	// serve this, because TERMINAL masks VIOLATED once an issue resolves.
+	// the fact that it once breached. SlaState alone can't serve this,
+	// because TERMINAL masks VIOLATED once an issue resolves.
 	BreachedEver bool
 }

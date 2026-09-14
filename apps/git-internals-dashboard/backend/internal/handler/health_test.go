@@ -154,7 +154,7 @@ func TestGetReadyzResponseNeverLeaksConnectionDetails(t *testing.T) {
 	}
 }
 
-// TestGetReadyzCachesWithinTTLAndRecomputesAfter verifies D8: a result
+// TestGetReadyzCachesWithinTTLAndRecomputesAfter verifies that a result
 // computed once is reused for cacheTTLSeconds, then recomputed after it
 // elapses. Asserted by observing the handler's internal cachedAt timestamp
 // change (or not), rather than instrumenting the DB call itself.

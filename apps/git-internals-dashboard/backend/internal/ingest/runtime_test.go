@@ -66,8 +66,8 @@ func TestBuildRuntimeConfigAccruePolicyAccruesUnknownStatus(t *testing.T) {
 }
 
 // TestBuildRuntimeConfigAccruePolicyNeverAccruesNilStatus verifies a nil
-// status (off-board — Finding 10's AdjustForClosure relies on this) never
-// accrues, regardless of unknownStatusPolicy.
+// status (off-board — AdjustForClosure relies on this to keep pausing once
+// an issue closes) never accrues, regardless of unknownStatusPolicy.
 func TestBuildRuntimeConfigAccruePolicyNeverAccruesNilStatus(t *testing.T) {
 	rt := BuildRuntimeConfig(runtimeFixtureApp(config.UnknownStatusAccrue, nil))
 	if rt.Cfg.Accrues(nil) {

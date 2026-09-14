@@ -341,7 +341,7 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 			priority = $2, budget_hours = $3, consumed_hours = $4, remaining_hours = $5,
 			pct_consumed = $6, sla_state = $7, sla_running = $8,
 			-- Sticky: once true, stays true even if a later priority change
-			-- (or closure/reopen) drops pct back under 1.0 — see Finding 3.
+			-- (or closure/reopen) drops pct back under 1.0.
 			breached_ever = issue_sla.breached_ever OR $9,
 			computed_at = $10, computed_through = $11
 	`, issueID, priority, r.BudgetHours, r.ConsumedHours, r.RemainingHours,

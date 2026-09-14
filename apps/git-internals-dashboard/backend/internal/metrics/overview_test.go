@@ -334,10 +334,10 @@ func TestBuildOverviewPriorityFilterNarrowsHero(t *testing.T) {
 	}
 }
 
-// TestBuildOverviewSurfacesUnknownStatuses verifies Finding 4's dashboard
-// signal: rows in unknown_statuses (as the recompute tick left them) come
-// back on Overview, most-frequent first, independent of any repo/priority
-// filter.
+// TestBuildOverviewSurfacesUnknownStatuses verifies the unrecognized-status
+// dashboard signal: rows in unknown_statuses (as the recompute tick left
+// them) come back on Overview, most-frequent first, independent of any
+// repo/priority filter.
 func TestBuildOverviewSurfacesUnknownStatuses(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()

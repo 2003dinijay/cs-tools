@@ -136,8 +136,8 @@ func TestComputeSlaTerminalStatusWinsRegardlessOfPctConsumed(t *testing.T) {
 	if r.SlaRunning {
 		t.Errorf("expected slaRunning=false")
 	}
-	// Finding 3: BreachedEver must still report the real breach (pct=1.25)
-	// even though SlaState reports TERMINAL, not VIOLATED.
+	// BreachedEver must still report the real breach (pct=1.25) even though
+	// SlaState reports TERMINAL, not VIOLATED.
 	if !r.BreachedEver {
 		t.Errorf("expected BreachedEver=true despite SlaState=TERMINAL")
 	}
@@ -225,7 +225,7 @@ func TestComputeSlaFallsBackTo24x7WhenNoCoverageEntry(t *testing.T) {
 	closeTo(t, "consumedHours", r.ConsumedHours, 24) // full wall-clock — no business-hours mask
 }
 
-// --- 12x5 with holidays (Finding 6) ---
+// --- 12x5 with holidays ---
 
 // mon0105Holiday is the IST-calendar-day index of Mon 2026-01-05, the day
 // mon0105_09ist falls on.
@@ -394,10 +394,10 @@ func TestWithCurrentStatusBoundaryAgreementIsNoOp(t *testing.T) {
 	}
 }
 
-// TestWithCurrentStatusBoundaryIgnoresFutureDatedLastEvent is Finding 1's
-// reproduction: a skewed/contradictory last event stamped after now must not
-// anchor the divergence clamp — the paused hour (9->10, board says WOC since
-// h=9) must not accrue.
+// TestWithCurrentStatusBoundaryIgnoresFutureDatedLastEvent reproduces a
+// skewed/contradictory last event stamped after now: it must not anchor the
+// divergence clamp — the paused hour (9->10, board says WOC since h=9) must
+// not accrue.
 func TestWithCurrentStatusBoundaryIgnoresFutureDatedLastEvent(t *testing.T) {
 	now := at(10)
 	events := []StatusEvent{
@@ -434,8 +434,8 @@ func TestWithCurrentStatusBoundaryFutureLastEventAgreeingWithCurrentStatusStillG
 	closeTo(t, "consumedHours", r.ConsumedHours, 9)
 }
 
-// TestWithCurrentStatusBoundaryEmptyTimelineClampsFutureCurrentStatusAt is
-// Finding 2: a future-dated currentStatusAt must clamp to now rather than
+// TestWithCurrentStatusBoundaryEmptyTimelineClampsFutureCurrentStatusAt
+// verifies a future-dated currentStatusAt clamps to now rather than
 // producing an event ComputeSla then filters out entirely.
 func TestWithCurrentStatusBoundaryEmptyTimelineClampsFutureCurrentStatusAt(t *testing.T) {
 	out := WithCurrentStatusBoundary([]StatusEvent{}, strp("Open"), timep(at(15)), at(10))
@@ -502,10 +502,10 @@ func TestAdjustForClosureNoOverrideBeforeClosedAt(t *testing.T) {
 	}
 }
 
-// TestComputeSlaClosureCapsConsumptionAndReportsTerminal is Finding 10's
-// engine-level regression: closing the GitHub issue while its board status
-// still accrues must freeze consumption at closure and stop the clock
-// (SlaRunning=false), not keep accruing indefinitely.
+// TestComputeSlaClosureCapsConsumptionAndReportsTerminal is an engine-level
+// regression: closing the GitHub issue while its board status still accrues
+// must freeze consumption at closure and stop the clock (SlaRunning=false),
+// not keep accruing indefinitely.
 func TestComputeSlaClosureCapsConsumptionAndReportsTerminal(t *testing.T) {
 	events := []StatusEvent{ev("Open", 0)}
 	closedAt := at(5)

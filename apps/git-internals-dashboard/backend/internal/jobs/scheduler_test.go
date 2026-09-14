@@ -269,11 +269,11 @@ func TestRunTickOnceUpdatesIssueSlaAndSnapshot(t *testing.T) {
 	_ = repositoryID
 }
 
-// TestRunTickOnceFreezesConsumptionOnceIssueIsClosedOnGithub is Finding 10's
-// regression: a GitHub-closed issue whose board status is still an accruing
-// one must stop gaining consumed_hours between ticks and report TERMINAL,
-// instead of accruing forever because the board was never moved to a
-// terminal status.
+// TestRunTickOnceFreezesConsumptionOnceIssueIsClosedOnGithub is a
+// scheduler-level regression: a GitHub-closed issue whose board status is
+// still an accruing one must stop gaining consumed_hours between ticks and
+// report TERMINAL, instead of accruing forever because the board was never
+// moved to a terminal status.
 func TestRunTickOnceFreezesConsumptionOnceIssueIsClosedOnGithub(t *testing.T) {
 	pool := testPool(t)
 	issueID, _ := seedIngestedIssue(t, pool)
@@ -325,11 +325,11 @@ func closeTo(t *testing.T, got, want float64) {
 	}
 }
 
-// TestRunTickOnceSurfacesAndReclassifiesUnknownStatuses is Finding 4's
-// regression: a status absent from taxonomy.statuses must be surfaced in
-// unknown_statuses (for GET /metrics/overview to warn on), and must
-// disappear again once the taxonomy is updated to recognize it — the table
-// tracks "unknown right now", not "ever seen".
+// TestRunTickOnceSurfacesAndReclassifiesUnknownStatuses is a
+// scheduler-level regression: a status absent from taxonomy.statuses must
+// be surfaced in unknown_statuses (for GET /metrics/overview to warn on),
+// and must disappear again once the taxonomy is updated to recognize it —
+// the table tracks "unknown right now", not "ever seen".
 func TestRunTickOnceSurfacesAndReclassifiesUnknownStatuses(t *testing.T) {
 	pool := testPool(t)
 	issueID, _ := seedIngestedIssue(t, pool)

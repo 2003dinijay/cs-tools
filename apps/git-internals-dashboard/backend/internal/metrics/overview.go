@@ -178,9 +178,9 @@ type Overview struct {
 
 // UnknownStatus is one board status the recompute scheduler doesn't
 // recognize (absent from taxonomy.statuses) as of its most recent tick —
-// Finding 4's loud alternative to silently pausing/accruing an
-// unclassified status. Ignores both the repo and priority filters: it's an
-// operational data-quality signal, not a per-issue metric.
+// a loud alternative to silently pausing/accruing an unclassified status.
+// Ignores both the repo and priority filters: it's an operational
+// data-quality signal, not a per-issue metric.
 type UnknownStatus struct {
 	Status          string `json:"status"`
 	OccurrenceCount int    `json:"occurrenceCount"`
@@ -795,8 +795,8 @@ func buildVolume(ctx context.Context, pool *pgxpool.Pool, repoOrder []int32, rep
 
 // fetchUnknownStatuses returns every status the most recent recompute tick
 // found absent from taxonomy.statuses (see internal/jobs.RunTickOnce's
-// replaceUnknownStatuses), most-frequent first — Finding 4's dashboard
-// signal so an unrecognized board status gets noticed and classified.
+// replaceUnknownStatuses), most-frequent first — a dashboard signal so an
+// unrecognized board status gets noticed and classified.
 func fetchUnknownStatuses(ctx context.Context, pool *pgxpool.Pool) ([]UnknownStatus, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT status, occurrence_count, first_seen_at, last_seen_at

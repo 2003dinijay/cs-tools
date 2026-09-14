@@ -78,7 +78,8 @@ func BuildRuntimeConfig(app *config.AppConfig) *RuntimeConfig {
 			// Unknown status (absent from taxonomy.statuses): apply the
 			// configured policy rather than silently pausing. nil is never
 			// "unknown" — it means off-board, which must keep pausing
-			// regardless of policy (see AdjustForClosure/Finding 10).
+			// regardless of policy (see AdjustForClosure, which freezes
+			// consumption once an issue closes).
 			return app.Settings.UnknownStatusPolicy == config.UnknownStatusAccrue
 		},
 		IsTerminal: func(status *string) bool {

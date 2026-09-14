@@ -152,8 +152,8 @@ func RunTickOnce(ctx context.Context, pool *pgxpool.Pool, runtime *ingest.Runtim
 }
 
 // replaceUnknownStatuses syncs the unknown_statuses table to exactly this
-// tick's findings — surfaced via GET /metrics/overview (Finding 4) so an
-// unrecognized board status gets noticed and classified instead of silently
+// tick's results — surfaced via GET /metrics/overview so an unrecognized
+// board status gets noticed and classified instead of silently
 // pausing (or, under unknownStatusPolicy=accrue, silently accruing)
 // forever. A status this tick no longer sees (reclassified into the
 // taxonomy, or the board column renamed again) is dropped rather than kept
@@ -263,7 +263,7 @@ func queueUpdateIssueSla(batch *pgx.Batch, issueID int32, priority *string, r sl
 		UPDATE issue_sla SET
 			priority = $2, budget_hours = $3, consumed_hours = $4, remaining_hours = $5,
 			pct_consumed = $6, sla_state = $7, sla_running = $8,
-			-- Sticky: see the matching comment in ingest.go's upsert (Finding 3).
+			-- Sticky: see the matching comment in ingest.go's upsert.
 			breached_ever = issue_sla.breached_ever OR $9,
 			computed_at = $10, computed_through = $11
 		WHERE issue_id = $1

@@ -28,12 +28,12 @@ import (
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/sla"
 )
 
-// TestIngestIssueBreachedEverStaysStickyAcrossPriorityDowngrade is Finding
-// 3's regression: pct_consumed is not monotonic (a priority downgrade can
-// widen the budget and drop pct back under 1.0), so breached_ever must be
-// sticky — OR'd against its prior value, never recomputed from scratch —
-// or a real historical breach silently disappears from the projection the
-// instant the priority changes.
+// TestIngestIssueBreachedEverStaysStickyAcrossPriorityDowngrade is an
+// ingest-level regression: pct_consumed is not monotonic (a priority
+// downgrade can widen the budget and drop pct back under 1.0), so
+// breached_ever must be sticky — OR'd against its prior value, never
+// recomputed from scratch — or a real historical breach silently
+// disappears from the projection the instant the priority changes.
 func TestIngestIssueBreachedEverStaysStickyAcrossPriorityDowngrade(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
