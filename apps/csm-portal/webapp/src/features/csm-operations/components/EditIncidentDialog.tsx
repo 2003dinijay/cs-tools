@@ -36,7 +36,7 @@ import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchItServices } from "@api/useSearchItServices";
 import { useSearchServiceOfferings } from "@api/useSearchServiceOfferings";
 import { useSearchConfigurationItems } from "@api/useSearchConfigurationItems";
-import { useSearchUsersByName } from "@api/useSearchUsersByName";
+import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
 import { useSearchIncidentsExcludingSelf } from "@features/csm-operations/api/useSearchIncidentsForSelect";
 import { useSearchChangeRequestsForSelect } from "@features/csm-operations/api/useSearchChangeRequestsForSelect";
@@ -495,7 +495,7 @@ export default function EditIncidentDialog({
                 value={state.assignedEngineerId}
                 onChange={(v) => set("assignedEngineerId", v)}
                 disabled={isSaving}
-                useSearch={useSearchUsersByName}
+                useSearch={useSearchInternalUsersByName}
                 getId={(u) => u.id!}
                 getLabel={userLabel}
                 knownLabel={incident.assignedTo?.name}

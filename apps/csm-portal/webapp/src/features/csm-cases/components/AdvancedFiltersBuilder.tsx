@@ -36,6 +36,7 @@ import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProject
 import AsyncAccountMultiSelect from "@features/csm-cases/components/AsyncAccountMultiSelect";
 import ProductNameMultiSelect from "@features/csm-cases/components/ProductNameMultiSelect";
 import AsyncTagMultiSelect from "@features/csm-cases/components/AsyncTagMultiSelect";
+import { INTERNAL_USER_ROLES } from "@features/csm-users/types/csmUsers";
 import {
   ADVANCED_FILTER_FIELDS,
   RELATIVE_DATE_PRESETS,
@@ -339,6 +340,8 @@ export default function AdvancedFiltersBuilder({
                 <AsyncCreatedByMultiSelect
                   values={row.values}
                   onChange={(next) => onUpdateRow(row, { ...asRow(row), values: next })}
+                  roleIds={INTERNAL_USER_ROLES}
+                  active
                 />
               )}
               {opMeta?.valueKind === "asyncAssigneeMultiSelect" && (
@@ -348,6 +351,8 @@ export default function AdvancedFiltersBuilder({
                   values={row.values}
                   onChange={(next) => onUpdateRow(row, { ...asRow(row), values: next })}
                   nameSeed={assigneeNameSeed}
+                  roleIds={INTERNAL_USER_ROLES}
+                  active
                 />
               )}
               {opMeta?.valueKind === "asyncProjectMultiSelect" && (

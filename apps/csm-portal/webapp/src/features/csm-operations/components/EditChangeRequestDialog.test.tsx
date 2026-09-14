@@ -32,7 +32,7 @@ vi.mock("@api/useSearchGroups", () => ({
 // same kind of backend-client-backed hook — stub it out identically.
 const useSearchUsersByNameMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
 vi.mock("@api/useSearchUsersByName", () => ({
-  useSearchUsersByName: (...args: unknown[]) => useSearchUsersByNameMock(...(args as [])),
+  useSearchInternalUsersByName: (...args: unknown[]) => useSearchUsersByNameMock(...(args as [])),
 }));
 
 /**
