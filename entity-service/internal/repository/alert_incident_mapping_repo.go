@@ -66,7 +66,7 @@ func scanAlertIncidentMapping(row pgx.Row) (domain.AlertIncidentMappingView, err
 	); err != nil {
 		return domain.AlertIncidentMappingView{}, err
 	}
-	m.CreatedAt = createdAt.Format(time.RFC3339)
+	m.CreatedOn = createdAt.Format(time.RFC3339)
 	return m, nil
 }
 
