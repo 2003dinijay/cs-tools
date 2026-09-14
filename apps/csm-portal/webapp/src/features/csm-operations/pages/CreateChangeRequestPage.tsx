@@ -550,7 +550,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
             </Typography>
             <AsyncEntitySelect<ParentRecordOption>
               id="cr-originating-service-request"
-              label="Originating service request"
+              label="Originating service request or incident"
               placeholder="Search service requests or incidents…"
               value={parentValue}
               onChange={setParentValue}
