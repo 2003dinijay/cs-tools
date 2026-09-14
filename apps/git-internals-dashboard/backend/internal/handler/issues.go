@@ -153,7 +153,7 @@ func (h *IssuesHandler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	whereSQL, args := buildIssuesWhere(taxonomy.CsStatuses(h.cfg), q)
+	whereSQL, args := buildIssuesWhere(taxonomy.CsStatuses(h.cfg), taxonomy.ProductSideStatuses(h.cfg), q)
 
 	orderSQL := "i.github_updated_at DESC"
 	if q.Order == "budget_desc" {

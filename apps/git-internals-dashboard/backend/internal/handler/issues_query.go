@@ -101,10 +101,10 @@ func parseIssuesQuery(v url.Values) (issuesQuery, string) {
 	}
 	if bucket := v.Get("bucket"); bucket != "" {
 		switch bucket {
-		case "all", "violated", "at_risk", "on_track", "cs", "tracked", "untracked", "attention":
+		case "all", "violated", "at_risk", "on_track", "cs", "product_side", "tracked", "untracked", "attention":
 			q.Bucket = bucket
 		default:
-			return q, "bucket must be one of all, violated, at_risk, on_track, cs, tracked, untracked, attention"
+			return q, "bucket must be one of all, violated, at_risk, on_track, cs, product_side, tracked, untracked, attention"
 		}
 	}
 	if order := v.Get("order"); order != "" {
@@ -159,9 +159,10 @@ type statusFilter struct {
 // src/app/api/issues/route.ts bucket switch: every bucket overrides the base
 // scope exactly as that switch statement does field-by-field (e.g. "cs"
 // clears the sla filter so NO_SLA issues on the CS side are included;
-// "attention" = VIOLATED ∪ AT_RISK ∪ current CS statuses). csStatuses must be
-// sortOrder-ascending status names categorized CS_SIDE.
-func buildIssuesWhere(csStatuses []string, q issuesQuery) (string, []any) {
+// "attention" = VIOLATED ∪ AT_RISK ∪ current CS statuses). csStatuses and
+// productSideStatuses must be sortOrder-ascending status names categorized
+// CS_SIDE and PRODUCT_SIDE respectively.
+func buildIssuesWhere(csStatuses, productSideStatuses []string, q issuesQuery) (string, []any) {
 	// Base scope (SPEC §6.3): open, non-terminal issues from enabled repos.
 	state := "OPEN"
 	sla := slaFilter{mode: "notTerminal"}
@@ -194,6 +195,11 @@ func buildIssuesWhere(csStatuses []string, q issuesQuery) (string, []any) {
 			status = statusFilter{mode: "in", values: csStatuses}
 		}
 		sla = slaFilter{mode: "none"}
+	case "product_side":
+		// Mirrors overview.go's hero.productSide count: base open/non-terminal
+		// scope (sla stays "notTerminal"), narrowed to statuses currently
+		// categorized PRODUCT_SIDE.
+		status = statusFilter{mode: "in", values: productSideStatuses}
 	case "tracked":
 		priority = priorityFilter{mode: "notNull"}
 	case "untracked":

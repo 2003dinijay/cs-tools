@@ -83,7 +83,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [all, violated, at_risk, on_track, cs, tracked, untracked, attention]
+            enum: [all, violated, at_risk, on_track, cs, product_side, tracked, untracked, attention]
         - name: order
           in: query
           schema:
