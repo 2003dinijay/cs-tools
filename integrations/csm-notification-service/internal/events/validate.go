@@ -82,8 +82,20 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		if err := decodeStrict(raw, &p); err != nil {
 			return err
 		}
+		// Priority is deliberately NOT required here: entity-service only
+		// ever sets a severity (and so a Priority) for type=="case" — every
+		// other case type (service_request/security_report_analysis/
+		// announcement/engagement) genuinely has none, by design, not a
+		// data-quality bug (see entity-service's own validateCreateCaseRequest).
+		// Requiring it unconditionally used to reject case.created outright
+		// for every one of those types, before it ever reached dispatch's
+		// own CaseType branching — no email or Chat alert ever went out for
+		// them as a result. RenderCaseCreatedEmail already renders an empty
+		// Priority as a blank value with no ill effect, and
+		// SendSecurityReportAnalysisAlert/SendCaseCreatedAlert both already
+		// omit their severity-derived line entirely when it's empty.
 		if p.ReporterName == "" || p.ProjectName == "" || p.ProjectID == "" || p.CaseID == "" || p.CaseTitle == "" ||
-			p.CaseType == "" || p.Priority == "" || p.CreatedAt == "" || p.Description == "" ||
+			p.CaseType == "" || p.CreatedAt == "" || p.Description == "" ||
 			!validRecipients(p.Recipients) {
 			return fmt.Errorf("events: missing required field for %s", t)
 		}
