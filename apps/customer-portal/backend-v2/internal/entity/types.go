@@ -1809,6 +1809,7 @@ type SearchChangeRequestView struct {
 	Type             *string    `json:"type"`
 	CreatedOn        string     `json:"createdOn"`
 	UpdatedOn        string     `json:"updatedOn"`
+	UpdatedBy        string     `json:"updatedBy,omitempty"`
 }
 
 // SearchChangeRequestsResponse is entity-service's response for POST /change-requests/search.
