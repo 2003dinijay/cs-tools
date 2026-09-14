@@ -46,13 +46,6 @@ var uuidRe = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 // sysidRe matches a bare ServiceNow sysid: 32 hex characters, no dashes.
 var sysidRe = regexp.MustCompile(`(?i)^[0-9a-f]{32}$`)
 
-// toSysID converts an identifier (either a dashed UUID or a 32-hex sysid)
-// to a 32-character lowercase hex string without hyphens, for upstream services
-// that enforce ServiceNow's 32-hex IdString pattern constraint.
-func toSysID(id string) string {
-	return strings.ToLower(strings.ReplaceAll(id, "-", ""))
-}
-
 // toDashedID converts an identifier (either a dashed UUID or a 32-hex sysid)
 // to a canonical lowercase 8-4-4-4-12 dashed UUID string expected by entity-service.
 func toDashedID(id string) string {
