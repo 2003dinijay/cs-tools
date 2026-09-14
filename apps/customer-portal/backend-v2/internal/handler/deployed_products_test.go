@@ -170,7 +170,11 @@ func TestSearchDeployedProducts_RejectsUnauthenticated(t *testing.T) {
 	}
 }
 
-func TestCreateDeployedProduct_NormalizesUUIDToSysID(t *testing.T) {
+// Identifiers must reach entity-service as canonical dashed UUIDs: it
+// validates them with validateUUIDs and converts them to sysids itself, so
+// sending a hyphen-stripped value made every create fail with
+// "projectId contains invalid UUID".
+func TestCreateDeployedProduct_NormalizesIdentifiersToDashedUUID(t *testing.T) {
 	fake := &fakeDeployedProductEntity{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /deployments/{deploymentId}/products", NewDeployedProductHandler(fake).CreateDeployedProduct)
@@ -188,11 +192,14 @@ func TestCreateDeployedProduct_NormalizesUUIDToSysID(t *testing.T) {
 		t.Fatalf("status = %d, want 201 (body: %s)", w.Code, w.Body.String())
 	}
 
-	if fake.gotCreate.DeploymentID != "4e8431b11b8c03100bb3da47b04bcba6" {
-		t.Errorf("got DeploymentID = %q, want sysid", fake.gotCreate.DeploymentID)
+	if fake.gotCreate.DeploymentID != "4e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+		t.Errorf("got DeploymentID = %q, want the dashed UUID", fake.gotCreate.DeploymentID)
 	}
-	if fake.gotCreate.ProductID != "5e8431b11b8c03100bb3da47b04bcba6" {
-		t.Errorf("got ProductID = %q, want sysid", fake.gotCreate.ProductID)
+	if fake.gotCreate.ProductID != "5e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+		t.Errorf("got ProductID = %q, want the dashed UUID", fake.gotCreate.ProductID)
+	}
+	if fake.gotCreate.ProjectID != "7e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+		t.Errorf("got ProjectID = %q, want the dashed UUID", fake.gotCreate.ProjectID)
 	}
 }
 
@@ -232,24 +239,36 @@ func TestCreateDeployedProduct_RejectsInvalidBodyIdentifiers(t *testing.T) {
 	}
 }
 
-func TestPatchDeployedProduct_AcceptsUUIDAndBareSysID(t *testing.T) {
-	fake := &fakeDeployedProductEntity{}
-	mux := http.NewServeMux()
-	mux.HandleFunc("PATCH /deployments/{deploymentId}/products/{id}", NewDeployedProductHandler(fake).PatchDeployedProduct)
-
-	body := `{"cores": 8}`
-	req := authedRequest(http.MethodPatch, "/deployments/4e8431b1-1b8c-0310-0bb3-da47b04bcba6/products/5e8431b1-1b8c-0310-0bb3-da47b04bcba6", body)
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+// Either id shape may arrive on the URL, and both must leave as the canonical
+// dashed UUID — entity-service validates id and deploymentId with
+// validateUUIDs on this route too, and converts them to sysids itself.
+func TestPatchDeployedProduct_AcceptsBothIDShapes(t *testing.T) {
+	tests := map[string]struct{ deploymentID, productID string }{
+		"dashed uuids":  {"4e8431b1-1b8c-0310-0bb3-da47b04bcba6", "5e8431b1-1b8c-0310-0bb3-da47b04bcba6"},
+		"bare sysids":   {"4e8431b11b8c03100bb3da47b04bcba6", "5e8431b11b8c03100bb3da47b04bcba6"},
+		"mixed shapes":  {"4e8431b1-1b8c-0310-0bb3-da47b04bcba6", "5e8431b11b8c03100bb3da47b04bcba6"},
+		"uppercase hex": {"4E8431B1-1B8C-0310-0BB3-DA47B04BCBA6", "5E8431B11B8C03100BB3DA47B04BCBA6"},
 	}
 
-	if fake.gotUpdate.id != "5e8431b11b8c03100bb3da47b04bcba6" {
-		t.Errorf("got update id = %q, want sysid", fake.gotUpdate.id)
-	}
-	if fake.gotUpdate.req.DeploymentID == nil || *fake.gotUpdate.req.DeploymentID != "4e8431b11b8c03100bb3da47b04bcba6" {
-		t.Errorf("got DeploymentID = %v, want sysid", fake.gotUpdate.req.DeploymentID)
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeDeployedProductEntity{}
+			mux := http.NewServeMux()
+			mux.HandleFunc("PATCH /deployments/{deploymentId}/products/{id}", NewDeployedProductHandler(fake).PatchDeployedProduct)
+
+			req := authedRequest(http.MethodPatch, "/deployments/"+tc.deploymentID+"/products/"+tc.productID, `{"cores": 8}`)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+			}
+			if fake.gotUpdate.id != "5e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+				t.Errorf("got update id = %q, want the dashed UUID", fake.gotUpdate.id)
+			}
+			if fake.gotUpdate.req.DeploymentID == nil || *fake.gotUpdate.req.DeploymentID != "4e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+				t.Errorf("got DeploymentID = %v, want the dashed UUID", fake.gotUpdate.req.DeploymentID)
+			}
+		})
 	}
 }

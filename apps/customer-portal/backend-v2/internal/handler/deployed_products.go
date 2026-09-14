@@ -168,7 +168,7 @@ func (h *DeployedProductHandler) PatchDeployedProduct(w http.ResponseWriter, r *
 		return
 	}
 
-	result, err := h.entity.UpdateDeployedProduct(r.Context(), toSysID(id), req)
+	result, err := h.entity.UpdateDeployedProduct(r.Context(), toDashedID(id), req)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity UpdateDeployedProduct failed", "userID", user.UserID, "deployedProductID", id, "err", summarizeErr(err))
 		mapUpstreamError(w, err, "Failed to update deployed product.")
@@ -231,8 +231,8 @@ func (h *DeployedProductHandler) SearchDeployedProductMetrics(w http.ResponseWri
 		return
 	}
 
-	entityReq := entity.DeployedProductMetricsRequest{DeploymentID: toSysID(deploymentID), StartDate: req.StartDate, EndDate: req.EndDate}
-	result, err := h.entity.SearchDeployedProductMetrics(r.Context(), toSysID(productID), entityReq)
+	entityReq := entity.DeployedProductMetricsRequest{DeploymentID: toDashedID(deploymentID), StartDate: req.StartDate, EndDate: req.EndDate}
+	result, err := h.entity.SearchDeployedProductMetrics(r.Context(), toDashedID(productID), entityReq)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchDeployedProductMetrics failed", "userID", user.UserID, "deployedProductID", productID, "err", summarizeErr(err))
 		mapUpstreamError(w, err, "Failed to retrieve metrics for the deployed product.")
@@ -272,8 +272,8 @@ func (h *DeployedProductHandler) SearchDeployedProductUsageCounts(w http.Respons
 		return
 	}
 
-	entityReq := entity.DeployedProductUsageCountsRequest{DeploymentID: toSysID(deploymentID), StartDate: req.StartDate, EndDate: req.EndDate}
-	result, err := h.entity.SearchDeployedProductUsageCounts(r.Context(), toSysID(productID), entityReq)
+	entityReq := entity.DeployedProductUsageCountsRequest{DeploymentID: toDashedID(deploymentID), StartDate: req.StartDate, EndDate: req.EndDate}
+	result, err := h.entity.SearchDeployedProductUsageCounts(r.Context(), toDashedID(productID), entityReq)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchDeployedProductUsageCounts failed", "userID", user.UserID, "deployedProductID", productID, "err", summarizeErr(err))
 		mapUpstreamError(w, err, "Failed to retrieve metrics usage counts for the deployed product.")

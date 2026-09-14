@@ -24,28 +24,56 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
 )
 
-func TestToSysID(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{
-			input: "4e8431b1-1b8c-0310-0bb3-da47b04bcba6",
-			want:  "4e8431b11b8c03100bb3da47b04bcba6",
-		},
-		{
-			input: "4e8431b11b8c03100bb3da47b04bcba6",
-			want:  "4e8431b11b8c03100bb3da47b04bcba6",
-		},
-		{
-			input: "",
-			want:  "",
-		},
+// TestBuildEntityCreateDeployedProductRequest_SendsDashedUUIDs is the
+// regression test for "projectId contains invalid UUID" on
+// POST /deployments/{deploymentId}/products. Every identifier must leave this
+// backend in the canonical dashed form whichever shape it arrived in:
+// entity-service validates all four with validateUUIDs and converts them to
+// sysids itself, so a hyphen-stripped value was rejected before any deployed
+// product could be created.
+func TestBuildEntityCreateDeployedProductRequest_SendsDashedUUIDs(t *testing.T) {
+	const (
+		dashedProject    = "a1b2c3d4-e5f6-0718-293a-4b5c6d7e8f90"
+		dashlessProject  = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+		dashlessDeploy   = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+		dashedDeployment = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+	)
+
+	got := BuildEntityCreateDeployedProductRequest(dashlessDeploy, DeployedProductCreateRequest{
+		ProjectID: dashlessProject,
+		ProductID: "5e8431b1-1b8c-0310-0bb3-da47b04bcba6",
+		VersionID: "6E8431B1-1B8C-0310-0BB3-DA47B04BCBA6",
+	})
+
+	if got.ProjectID != dashedProject {
+		t.Errorf("ProjectID = %q, want %q", got.ProjectID, dashedProject)
 	}
-	for _, tc := range tests {
-		if got := ToSysID(tc.input); got != tc.want {
-			t.Errorf("ToSysID(%q) = %q, want %q", tc.input, got, tc.want)
-		}
+	if got.DeploymentID != dashedDeployment {
+		t.Errorf("DeploymentID = %q, want %q", got.DeploymentID, dashedDeployment)
+	}
+	if got.ProductID != "5e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+		t.Errorf("ProductID = %q, want the dashed form unchanged", got.ProductID)
+	}
+	if got.VersionID != "6e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+		t.Errorf("VersionID = %q, want the lowercased dashed form", got.VersionID)
+	}
+}
+
+// TestBuildEntityUpdateDeployedProductRequest_SendsDashedUUIDs covers the same
+// direction on PATCH, whose id and deploymentId entity-service validates the
+// same way.
+func TestBuildEntityUpdateDeployedProductRequest_SendsDashedUUIDs(t *testing.T) {
+	got := BuildEntityUpdateDeployedProductRequest(
+		"4e8431b11b8c03100bb3da47b04bcba6",
+		"0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+		DeployedProductUpdateRequest{},
+	)
+
+	if got.ID != "4e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+		t.Errorf("ID = %q, want the dashed form", got.ID)
+	}
+	if got.DeploymentID == nil || *got.DeploymentID != "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0" {
+		t.Errorf("DeploymentID = %v, want the dashed form", got.DeploymentID)
 	}
 }
 
@@ -184,17 +212,17 @@ func TestBuildEntityCreateDeployedProductRequest(t *testing.T) {
 	}
 	got := BuildEntityCreateDeployedProductRequest("4e8431b1-1b8c-0310-0bb3-da47b04bcba6", req)
 
-	if got.DeploymentID != "4e8431b11b8c03100bb3da47b04bcba6" {
-		t.Errorf("got DeploymentID = %q, want %q", got.DeploymentID, "4e8431b11b8c03100bb3da47b04bcba6")
+	if got.DeploymentID != "4e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+		t.Errorf("got DeploymentID = %q, want %q", got.DeploymentID, "4e8431b1-1b8c-0310-0bb3-da47b04bcba6")
 	}
-	if got.ProductID != "5e8431b11b8c03100bb3da47b04bcba6" {
-		t.Errorf("got ProductID = %q, want %q", got.ProductID, "5e8431b11b8c03100bb3da47b04bcba6")
+	if got.ProductID != "5e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+		t.Errorf("got ProductID = %q, want %q", got.ProductID, "5e8431b1-1b8c-0310-0bb3-da47b04bcba6")
 	}
-	if got.VersionID != "6e8431b11b8c03100bb3da47b04bcba6" {
-		t.Errorf("got VersionID = %q, want %q", got.VersionID, "6e8431b11b8c03100bb3da47b04bcba6")
+	if got.VersionID != "6e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+		t.Errorf("got VersionID = %q, want %q", got.VersionID, "6e8431b1-1b8c-0310-0bb3-da47b04bcba6")
 	}
-	if got.ProjectID != "7e8431b11b8c03100bb3da47b04bcba6" {
-		t.Errorf("got ProjectID = %q, want %q", got.ProjectID, "7e8431b11b8c03100bb3da47b04bcba6")
+	if got.ProjectID != "7e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+		t.Errorf("got ProjectID = %q, want %q", got.ProjectID, "7e8431b1-1b8c-0310-0bb3-da47b04bcba6")
 	}
 }
 
@@ -205,11 +233,11 @@ func TestBuildEntityUpdateDeployedProductRequest(t *testing.T) {
 	}
 	got := BuildEntityUpdateDeployedProductRequest("1e8431b1-1b8c-0310-0bb3-da47b04bcba6", "2e8431b1-1b8c-0310-0bb3-da47b04bcba6", req)
 
-	if got.ID != "1e8431b11b8c03100bb3da47b04bcba6" {
-		t.Errorf("got ID = %q, want %q", got.ID, "1e8431b11b8c03100bb3da47b04bcba6")
+	if got.ID != "1e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+		t.Errorf("got ID = %q, want %q", got.ID, "1e8431b1-1b8c-0310-0bb3-da47b04bcba6")
 	}
-	if got.DeploymentID == nil || *got.DeploymentID != "2e8431b11b8c03100bb3da47b04bcba6" {
-		t.Errorf("got DeploymentID = %v, want 2e8431b11b8c03100bb3da47b04bcba6", got.DeploymentID)
+	if got.DeploymentID == nil || *got.DeploymentID != "2e8431b1-1b8c-0310-0bb3-da47b04bcba6" {
+		t.Errorf("got DeploymentID = %v, want 2e8431b1-1b8c-0310-0bb3-da47b04bcba6", got.DeploymentID)
 	}
 }
 
