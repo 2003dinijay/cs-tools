@@ -6833,7 +6833,7 @@ components:
 
     CommentView:
       description: >
-        Shared by POST /comments/search and GET /conversations/{id}/messages.
+        Used by GET /conversations/{id}/messages.
         type/createdByFirstName/createdByLastName let the chat-history view
         distinguish the AI's replies from the customer's own messages.
       type: object
@@ -6856,8 +6856,7 @@ components:
     SearchCommentsResponse:
       description: >
         totalRecords (not total) to match the frontend's shared pagination
-        envelope. Shared by POST /comments/search and
-        GET /conversations/{id}/messages.
+        envelope. Used by GET /conversations/{id}/messages.
       type: object
       properties:
         comments:
@@ -6892,7 +6891,7 @@ components:
     SearchProductsResponse:
       description: >
         totalRecords (not total) to match the frontend's shared pagination
-        envelope. Shared by POST /products/search and GET /products.
+        envelope. Used by GET /products.
       type: object
       properties:
         products:
