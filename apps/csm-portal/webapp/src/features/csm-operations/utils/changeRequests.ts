@@ -425,3 +425,88 @@ export const CLONE_SOURCE_GAP_MESSAGE =
   "Priority, implementation plan, risk/impact analysis, backout plan, assignment group, " +
   "linked project/case, and affected product aren't available to copy and need to be re-entered. " +
   "Deployment, schedule, and approval fields are intentionally left blank for you to set for the new environment.";
+
+// ---------------------------------------------------------------------------
+// "Originating service request" picker — unified parent-record search
+//
+// The create form's picker searches both service requests (by CS number) and
+// incidents (by INC number) — see `useSearchParentRecordsForSelect`. But the
+// live `PATCH /change-requests/{id}` write (`ChangeRequestUtils.
+// patchChangeRequestFields` in the shared ServiceNow scoped app) only ever
+// resolves `caseId` against the `sn_customerservice_case` table — passing an
+// incident's sys_id through that same call 404s. Until the backend adds a
+// path for a change request to link directly to an incident, an incident
+// result can be *found* by this picker (so the UI is ready the moment that
+// ships) but must never be *submitted* — see `CreateChangeRequestPage`'s
+// `isIncidentParentSelected` gate.
+// ---------------------------------------------------------------------------
+
+export type ParentRecordKind = "service_request" | "incident";
+
+/** A single option in the unified service-request/incident picker. */
+export interface ParentRecordOption {
+  kind: ParentRecordKind;
+  id: string;
+  number?: string | null;
+  subject?: string | null;
+}
+
+const PARENT_RECORD_VALUE_PREFIX: Record<ParentRecordKind, string> = {
+  service_request: "sr:",
+  incident: "inc:",
+};
+
+/**
+ * Encodes a `ParentRecordOption`'s kind and id into the single string id
+ * `AsyncEntitySelect` (and this page's `caseId` state) works with — the kind
+ * has to travel with the id since a plain incident id and a plain case id are
+ * both opaque UUIDs the form otherwise can't tell apart.
+ */
+export function encodeParentRecordValue(kind: ParentRecordKind, id: string): string {
+  return `${PARENT_RECORD_VALUE_PREFIX[kind]}${id}`;
+}
+
+/** Reverses {@link encodeParentRecordValue}; `undefined` for an empty/unrecognized value. */
+export function decodeParentRecordValue(
+  value: string,
+): { kind: ParentRecordKind; id: string } | undefined {
+  if (value.startsWith(PARENT_RECORD_VALUE_PREFIX.service_request)) {
+    return {
+      kind: "service_request",
+      id: value.slice(PARENT_RECORD_VALUE_PREFIX.service_request.length),
+    };
+  }
+  if (value.startsWith(PARENT_RECORD_VALUE_PREFIX.incident)) {
+    return { kind: "incident", id: value.slice(PARENT_RECORD_VALUE_PREFIX.incident.length) };
+  }
+  return undefined;
+}
+
+/**
+ * Display label for a parent-record option, as "CS0001234 — subject" (service
+ * request) or "INC0001234 — subject" (incident) — number and subject are both
+ * optional on the underlying search views, so it degrades to whichever exists
+ * and finally to the id.
+ */
+export function parentRecordLabel(o: {
+  id: string;
+  number?: string | null;
+  subject?: string | null;
+}): string {
+  return [o.number, o.subject].filter(Boolean).join(" — ") || o.id;
+}
+
+/**
+ * Router state carried from an incident's own "Create change request…" action
+ * (`CsmIncidentDetailPage`) to `/operations/change-requests/new`, mirroring
+ * `CreateChangeRequestFromCaseNavState` — pre-selects that incident as the
+ * intended parent so the picker starts populated rather than blank. Unlike
+ * the service-request entry point, submitting with this pre-fill in place is
+ * gated (see this file's header comment) until the backend accepts an
+ * incident-linked change request.
+ */
+export interface CreateChangeRequestFromIncidentNavState {
+  incidentId: string;
+  incidentNumber?: string;
+  incidentSubject?: string;
+}

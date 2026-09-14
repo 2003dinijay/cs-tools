@@ -17,7 +17,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import type { CloneChangeRequestNavState } from "@features/csm-operations/utils/changeRequests";
+import type {
+  CloneChangeRequestNavState,
+  CreateChangeRequestFromIncidentNavState,
+} from "@features/csm-operations/utils/changeRequests";
 import type { CreateChangeRequestFromCaseNavState } from "@features/csm-cases/types/csmCases";
 
 const navigateMock = vi.fn();
@@ -29,6 +32,7 @@ const patchIsPending = false;
 let locationState:
   | CloneChangeRequestNavState
   | CreateChangeRequestFromCaseNavState
+  | CreateChangeRequestFromIncidentNavState
   | { from?: string }
   | undefined;
 
@@ -101,6 +105,7 @@ vi.mock("@components/rich-text-editor/Editor", () => ({
 
 // Imported after the mocks above so the module picks them up.
 import CreateChangeRequestPage from "@features/csm-operations/pages/CreateChangeRequestPage";
+import { encodeParentRecordValue } from "@features/csm-operations/utils/changeRequests";
 
 /**
  * Fill the one field the form requires, so a test can reach the submit path
@@ -180,9 +185,41 @@ describe("CreateChangeRequestPage — originating service request", () => {
     showErrorMock.mockReset();
   });
 
-  it("renders the originating service request picker inside the optional section", () => {
+  it("renders the originating service request picker in its own callout, visible with no interaction needed", () => {
     render(<CreateChangeRequestPage />);
-    expect(screen.getByLabelText(/originating service request/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/originating service request/i)).toBeVisible();
+  });
+
+  // Regression: this field used to sit at the bottom of a collapsed
+  // Accordion, indistinguishable from the other "More options" fields and
+  // easy to never see at all. It's now pulled into its own heavier-weight
+  // section — a heading of its own, a bordered/tinted panel, and positioned
+  // above the Type/Priority/Impact/State row rather than at the very bottom
+  // of the form — so it reads as more important than a plain inlined field,
+  // not just "no longer collapsed".
+  it("gives the originating service request field its own heading and callout, positioned above Type/Priority/Impact/State, not a same-weight field among the rest of 'More options'", () => {
+    render(<CreateChangeRequestPage />);
+    const heading = screen.getByText("Originating service request or incident");
+    const typeField = screen.getByLabelText(/^type$/i);
+    // The callout's own heading sits earlier in the DOM than the Type field —
+    // i.e. above the core fields, not buried after them.
+    expect(
+      heading.compareDocumentPosition(typeField) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  // Regression: this section used to be a collapsed Accordion the user had
+  // to expand before "Assignment group"/"Assigned to"/"Requested by" were
+  // reachable at all. They're now rendered inline like every other field
+  // (the Originating service request field has since moved to its own
+  // callout above, see the test above), so all three must be visible without
+  // any click, and there must be no expand/collapse control left behind.
+  it("renders the remaining 'More options' fields inline with no collapsed/expandable control", () => {
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByLabelText(/^assignment group$/i)).toBeVisible();
+    expect(screen.getByLabelText(/^assigned to$/i)).toBeVisible();
+    expect(screen.getByLabelText(/^requested by$/i)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /more options/i })).not.toBeInTheDocument();
   });
 
   it("does not PATCH when no originating service request was picked — navigates straight to the created change request", () => {
@@ -203,7 +240,7 @@ describe("CreateChangeRequestPage — originating service request", () => {
     render(<CreateChangeRequestPage />);
     fillSubject();
     fireEvent.change(screen.getByLabelText(/originating service request/i), {
-      target: { value: "sr-123" },
+      target: { value: encodeParentRecordValue("service_request", "sr-123") },
     });
     fireEvent.click(screen.getByRole("button", { name: /create change request/i }));
 
@@ -229,7 +266,7 @@ describe("CreateChangeRequestPage — originating service request", () => {
     render(<CreateChangeRequestPage />);
     fillSubject();
     fireEvent.change(screen.getByLabelText(/originating service request/i), {
-      target: { value: "sr-123" },
+      target: { value: encodeParentRecordValue("service_request", "sr-123") },
     });
     fireEvent.click(screen.getByRole("button", { name: /create change request/i }));
 
@@ -311,7 +348,9 @@ describe("CreateChangeRequestPage — opened from a service request's own 'Creat
       projectId: "prj-1",
     };
     render(<CreateChangeRequestPage />);
-    expect(screen.getByLabelText(/originating service request/i)).toHaveValue("sr-789");
+    expect(screen.getByLabelText(/originating service request/i)).toHaveValue(
+      encodeParentRecordValue("service_request", "sr-789"),
+    );
     expect(screen.getByText(/linking to cs-4321/i)).toBeInTheDocument();
   });
 
@@ -345,5 +384,108 @@ describe("CreateChangeRequestPage — opened from a service request's own 'Creat
     expect(screen.queryByText(/cloned from/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/linking to/i)).not.toBeInTheDocument();
     expect(screen.getByLabelText(/originating service request/i)).toHaveValue("");
+  });
+});
+
+// Coverage for the unified service-request/incident picker's backend
+// constraint: `PATCH /change-requests/{id} { caseId }` only ever resolves
+// against the case table (see `changeRequests.ts`'s "Originating service
+// request picker" section) — an incident can be *found* by the picker, but
+// selecting one must block submit entirely rather than let the create-then-
+// PATCH flow 404.
+describe("CreateChangeRequestPage — incident selected as the parent record is gated", () => {
+  beforeEach(() => {
+    locationState = undefined;
+    navigateMock.mockReset();
+    postChangeRequestMutateMock.mockReset();
+    patchChangeRequestMutateMock.mockReset();
+    showErrorMock.mockReset();
+  });
+
+  it("disables the Create button and shows an inline warning once an incident is picked from the unified search", () => {
+    render(<CreateChangeRequestPage />);
+    fillSubject();
+    expect(screen.getByRole("button", { name: /create change request/i })).toBeEnabled();
+
+    fireEvent.change(screen.getByLabelText(/originating service request/i), {
+      target: { value: encodeParentRecordValue("incident", "inc-1") },
+    });
+
+    expect(
+      screen.getByText(/linking a change request directly to an incident isn't available yet/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create change request/i })).toBeDisabled();
+  });
+
+  it("re-enables the Create button once the incident selection is cleared", () => {
+    render(<CreateChangeRequestPage />);
+    fillSubject();
+    fireEvent.change(screen.getByLabelText(/originating service request/i), {
+      target: { value: encodeParentRecordValue("incident", "inc-1") },
+    });
+    expect(screen.getByRole("button", { name: /create change request/i })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/originating service request/i), {
+      target: { value: "" },
+    });
+
+    expect(screen.getByRole("button", { name: /create change request/i })).toBeEnabled();
+    expect(postChangeRequestMutateMock).not.toHaveBeenCalled();
+  });
+
+  it("never calls the create mutation while an incident parent is selected, even if Create is clicked", () => {
+    render(<CreateChangeRequestPage />);
+    fillSubject();
+    fireEvent.change(screen.getByLabelText(/originating service request/i), {
+      target: { value: encodeParentRecordValue("incident", "inc-1") },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /create change request/i }));
+
+    expect(postChangeRequestMutateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("CreateChangeRequestPage — opened from an incident's own 'Create change request…' action", () => {
+  beforeEach(() => {
+    navigateMock.mockReset();
+    postChangeRequestMutateMock.mockReset();
+    patchChangeRequestMutateMock.mockReset();
+    showErrorMock.mockReset();
+  });
+
+  it("pre-selects the incident, surfaces a gating banner, and disables Create", () => {
+    locationState = {
+      incidentId: "inc-1",
+      incidentNumber: "INC0012345",
+      incidentSubject: "Gateway 502s",
+    };
+    render(<CreateChangeRequestPage />);
+    fillSubject();
+
+    expect(screen.getByLabelText(/originating service request/i)).toHaveValue(
+      encodeParentRecordValue("incident", "inc-1"),
+    );
+    expect(screen.getByText(/opened from inc0012345/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create change request/i })).toBeDisabled();
+  });
+
+  it("lets the pre-selected incident be replaced with a service request, which un-gates submit", () => {
+    locationState = { incidentId: "inc-1", incidentNumber: "INC0012345" };
+    render(<CreateChangeRequestPage />);
+    fillSubject();
+    fireEvent.change(screen.getByLabelText(/originating service request/i), {
+      target: { value: encodeParentRecordValue("service_request", "sr-1") },
+    });
+
+    expect(screen.getByRole("button", { name: /create change request/i })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /create change request/i }));
+
+    const [, postOptions] = postChangeRequestMutateMock.mock.calls[0];
+    postOptions.onSuccess({ changeRequest: { id: "chg-3", number: "CHG0000003" } });
+
+    expect(patchChangeRequestMutateMock).toHaveBeenCalledWith(
+      { id: "chg-3", patch: { caseId: "sr-1" } },
+      expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
+    );
   });
 });
