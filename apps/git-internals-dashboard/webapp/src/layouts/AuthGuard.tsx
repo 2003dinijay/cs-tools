@@ -73,19 +73,26 @@ function SignInRedirect(): JSX.Element {
 // Unwires on unmount so a stale getter/handler from a previous session
 // can never leak into a later one.
 //
-// The wiring itself happens directly in the render body, not in a
+// The wiring itself happens directly in the render body, not only in a
 // useEffect: `children` (AppShell and its data-fetching descendants —
 // useOverview, useSyncStatus, useTaxonomy, ...) renders right after this
 // component returns, in the same commit, and their useQuery hooks fetch
 // from *their own* mount effects. Effects fire child-first, parent-last
-// within a commit, so wiring in this component's effect would still run
-// after those children's effects — api/client's getAccessToken() would see
-// no tokenGetter yet and send their first request with no Authorization
+// within a commit, so wiring only in this component's effect would still
+// run after those children's effects — api/client's getAccessToken() would
+// see no tokenGetter yet and send their first request with no Authorization
 // header, a guaranteed 401 on every fresh sign-in. Wiring during render
 // instead guarantees it's set before React ever descends into `children`.
 // The setters are plain idempotent module-level assignments (no React
 // state), so re-running them on every render — including React's
 // StrictMode double-render — is harmless.
+//
+// The effect below re-registers the same two setters (not just cleanup):
+// StrictMode's dev-only mount replay runs this effect's cleanup and then
+// re-invokes its setup with no render in between, so a cleanup-only effect
+// would leave both callbacks null until something else happens to
+// re-render this component. Re-registering in the setup closes that
+// window; the render-time assignment above still covers everything else.
 function AuthBridge({ children }: { children: ReactNode }): JSX.Element {
   const { getAccessToken, signIn } = useAsgardeo();
 
@@ -95,11 +102,15 @@ function AuthBridge({ children }: { children: ReactNode }): JSX.Element {
   });
 
   useEffect(() => {
+    setAccessTokenGetter(() => getAccessToken());
+    setUnauthorizedHandler(() => {
+      void signIn();
+    });
     return () => {
       setAccessTokenGetter(null);
       setUnauthorizedHandler(null);
     };
-  }, []);
+  }, [getAccessToken, signIn]);
 
   return <>{children}</>;
 }
