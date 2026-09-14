@@ -14,8 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Card, Skeleton, Typography } from "@wso2/oxygen-ui";
+import { Alert, Box, Card, Skeleton, Typography } from "@wso2/oxygen-ui";
 import { useMemo, useState, type JSX } from "react";
+import { Link as RouterLink } from "react-router";
 import { useDashboard } from "@features/csm-dashboard/api/useDashboard";
 import DashboardWidgetGrid from "@features/csm-dashboard/components/DashboardWidgetGrid";
 import DateRangeFilter, {
@@ -24,6 +25,10 @@ import DateRangeFilter, {
 import SectionCard from "@features/csm-dashboard/components/SectionCard";
 import { WIDGET_GRID_SX } from "@features/csm-dashboard/utils/dashboardWidgetGridLayout";
 import { hasDateRangeFilterPlaceholder } from "@features/csm-dashboard/utils/dateRangeFilterPlaceholder";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
+import { hasDashboardBuilderAccess } from "@features/csm-admin/dashboards/utils/dashboardBuilderAccess";
+import { isDraftDrifted } from "@features/csm-admin/dashboards/utils/dashboardDrift";
+import { useDashboardDraft } from "@features/csm-admin/dashboards/utils/dashboardDraftsStorage";
 
 /** Placeholder tile count while the dashboard detail is in flight. */
 const PILOT_TILE_COUNT = 3;
@@ -73,6 +78,24 @@ export default function AgentsLandingPagePilot({
 }: AgentsLandingPagePilotProps): JSX.Element {
   const { data, isLoading, isError } = useDashboard(dashboardId);
 
+  // Surfaces the local dashboard-builder draft (if any) for THIS dashboard
+  // right on the page it's actually a draft OF, not just in the builder's
+  // own list page (`LocalDraftDriftChip`) — a designer switching back to
+  // "the real home dashboard" after editing shouldn't have to remember to
+  // check the builder to know they left local edits pending. Deliberately
+  // does NOT render the draft's widgets here: this page always shows what's
+  // actually deployed, and only notes that a local draft with unsaved
+  // changes exists — see `dashboardBuilderAccess.ts`'s own doc comment on why
+  // this whole builder is local-only/temporary. Gated on
+  // `hasDashboardBuilderAccess` so a note meant for designers doesn't appear
+  // for every other viewer of this same dashboard, even though the
+  // `localStorage` draft itself is only ever written by a designer's own
+  // browser to begin with.
+  const { user } = useCurrentUser();
+  const canDesignDashboards = hasDashboardBuilderAccess(user?.roles);
+  const draft = useDashboardDraft(dashboardId);
+  const hasUnsavedDraft = canDesignDashboards && Boolean(draft) && isDraftDrifted(draft!, data ?? undefined);
+
   // Whether ANY widget on this loaded dashboard actually uses the
   // date-range placeholder (see `dateRangeFilterPlaceholder.ts`) — derived
   // purely from the loaded widget list, not a dashboard-level config flag:
@@ -115,6 +138,20 @@ export default function AgentsLandingPagePilot({
         </Box>
       ) : (
         <>
+          {hasUnsavedDraft && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              You have an unsaved local draft for this dashboard —{" "}
+              <Typography
+                component={RouterLink}
+                to={`/admin/dashboards/${dashboardId}`}
+                variant="inherit"
+                sx={{ fontWeight: 600, textDecoration: "underline" }}
+              >
+                open it in the dashboard builder
+              </Typography>
+              . What's shown below is still the deployed version, not your draft.
+            </Alert>
+          )}
           {showDateRangeFilter && (
             <Box sx={{ mb: 2 }}>
               <DateRangeFilter value={dateRange} onChange={setDateRange} />

@@ -52,15 +52,16 @@ vi.mock("@api/backend/client", () => ({
 vi.mock("@config/apiConfig", () => ({
   apiConfig: { backendUrl: "https://example.test" },
 }));
+// A mutable mock so individual tests can grant dashboard-builder access
+// (roles) without affecting the rest of the suite's default (no roles).
+const { currentUserMock } = vi.hoisted(() => ({ currentUserMock: vi.fn() }));
 vi.mock("@context/current-user/CurrentUserContext", () => ({
-  useCurrentUser: () => ({
-    user: { id: "11111111-aaaa-bbbb-cccc-000000000001" },
-    isLoading: false,
-    isError: false,
-  }),
+  useCurrentUser: () => currentUserMock(),
 }));
 
 import AgentsLandingPagePilot from "@features/csm-dashboard/components/AgentsLandingPagePilot";
+import { saveDashboardDraft } from "@features/csm-admin/dashboards/utils/dashboardDraftsStorage";
+import type { BeDashboardWidget } from "@api/backend/types";
 
 function renderWithClient(ui: ReactNode) {
   const queryClient = new QueryClient({
@@ -113,6 +114,12 @@ describe("AgentsLandingPagePilot", () => {
   beforeEach(() => {
     getMock.mockReset();
     postMock.mockReset();
+    localStorage.clear();
+    currentUserMock.mockReturnValue({
+      user: { id: "11111111-aaaa-bbbb-cccc-000000000001" },
+      isLoading: false,
+      isError: false,
+    });
   });
 
   it("renders skeleton tiles while the template list is in flight", () => {
@@ -301,5 +308,89 @@ describe("AgentsLandingPagePilot", () => {
     await waitFor(() => expect(screen.getByText("Team Open P0/P1")).toBeInTheDocument());
     expect(screen.getByText("Overall - Castor")).toBeInTheDocument();
     expect(screen.queryByText(/{{currentTeam}}/)).not.toBeInTheDocument();
+  });
+
+  it("shows a local-draft note when a dashboard_designer has an unsaved draft for this dashboard", async () => {
+    currentUserMock.mockReturnValue({
+      user: { id: "u-1", roles: ["dashboard_designer"] },
+      isLoading: false,
+      isError: false,
+    });
+    getMock.mockResolvedValue(DASHBOARD_DETAIL);
+    postMock.mockResolvedValue(searchResponseFor(3));
+    saveDashboardDraft({
+      id: "agents_pilot",
+      sourceDashboardId: "agents_pilot",
+      displayName: "Engineer overview (draft)",
+      isDefault: true,
+      isTeamBased: false,
+      widgets: [],
+      emptySections: [],
+    });
+
+    renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/You have an unsaved local draft for this dashboard/)).toBeInTheDocument(),
+    );
+    expect(screen.getByText("open it in the dashboard builder")).toBeInTheDocument();
+  });
+
+  it("does not show the local-draft note for a viewer without dashboard-builder access, even with a stored draft", async () => {
+    getMock.mockResolvedValue(DASHBOARD_DETAIL);
+    postMock.mockResolvedValue(searchResponseFor(3));
+    saveDashboardDraft({
+      id: "agents_pilot",
+      sourceDashboardId: "agents_pilot",
+      displayName: "Engineer overview (draft)",
+      isDefault: true,
+      isTeamBased: false,
+      widgets: [],
+      emptySections: [],
+    });
+
+    renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
+
+    await waitFor(() => expect(screen.getByText("My Patches")).toBeInTheDocument());
+    expect(screen.queryByText(/unsaved local draft/)).not.toBeInTheDocument();
+  });
+
+  it("does not show the local-draft note when the draft matches what's deployed", async () => {
+    currentUserMock.mockReturnValue({
+      user: { id: "u-1", roles: ["dashboard_designer"] },
+      isLoading: false,
+      isError: false,
+    });
+    // Deliberately sets every field `isDraftDrifted`'s comparison reads
+    // (including `isTeamBased`/`targetTeam`, which `DASHBOARD_DETAIL` above
+    // leaves entirely unset) so both sides of the comparison see the exact
+    // same keys — an explicit `false`/`undefined` mismatched against an
+    // absent key would register as drifted even though the "true" content is
+    // identical, which isn't what this test is checking.
+    const matchingDetail = {
+      id: "agents_pilot",
+      displayName: "Engineer overview",
+      isDefault: true,
+      isTeamBased: false,
+      targetTeam: undefined,
+      widgets: DASHBOARD_DETAIL.widgets as BeDashboardWidget[],
+    };
+    getMock.mockResolvedValue(matchingDetail);
+    postMock.mockResolvedValue(searchResponseFor(3));
+    saveDashboardDraft({
+      id: "agents_pilot",
+      sourceDashboardId: "agents_pilot",
+      displayName: matchingDetail.displayName,
+      isDefault: matchingDetail.isDefault,
+      isTeamBased: matchingDetail.isTeamBased,
+      targetTeam: matchingDetail.targetTeam,
+      widgets: matchingDetail.widgets,
+      emptySections: [],
+    });
+
+    renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
+
+    await waitFor(() => expect(screen.getByText("My Patches")).toBeInTheDocument());
+    expect(screen.queryByText(/unsaved local draft/)).not.toBeInTheDocument();
   });
 });
