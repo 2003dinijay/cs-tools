@@ -550,6 +550,28 @@ describe("CsmIncidentDetailPage — state-transition action bar", () => {
   });
 });
 
+describe("CsmIncidentDetailPage — Create change request entry point", () => {
+  // Regression/new-feature test: this action used to not exist at all on the
+  // incident detail page (unlike the service request's own "Create change
+  // request…" action) — see CreateChangeRequestFromIncidentNavState's doc
+  // comment for why the create form still gates submitting on this pre-fill
+  // until the backend accepts an incident-linked change request.
+  it("navigates to the change-request create form with this incident pre-selected as the intended parent", () => {
+    mockQueryResult({ data: BASE_INCIDENT });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /create change request/i }));
+
+    expect(navigateMock).toHaveBeenCalledWith("/operations/change-requests/new", {
+      state: {
+        incidentId: "inc-1",
+        incidentNumber: "INC0012345",
+        incidentSubject: "Gateway 502s",
+      },
+    });
+  });
+});
+
 describe("CsmIncidentDetailPage — reports its own draft state to the tab strip", () => {
   // Regression test for bug: this page only called `useReportCaseTabMeta`,
   // not `useReportCaseTabDraft` (unlike `CsmCaseDetailPage`, which calls

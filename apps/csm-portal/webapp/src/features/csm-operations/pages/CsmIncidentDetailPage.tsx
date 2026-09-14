@@ -20,6 +20,7 @@ import {
   ArrowLeft,
   Eye,
   FileText,
+  GitPullRequest,
   Link as LinkIcon,
   MessageSquarePlus,
   Paperclip,
@@ -94,6 +95,7 @@ import { useQueryParamTabs } from "@hooks/useSectionTabs";
 import { useCaseRouteOverride } from "@context/case-tabs/CaseRouteOverrideContext";
 import { useReportCaseTabMeta } from "@features/case-tabs/hooks/useReportCaseTabMeta";
 import { useReportCaseTabDraft } from "@features/case-tabs/hooks/useReportCaseTabDraft";
+import type { CreateChangeRequestFromIncidentNavState } from "@features/csm-operations/utils/changeRequests";
 
 const OPERATIONS_INCIDENTS_PATH = "/operations/incidents";
 
@@ -601,6 +603,36 @@ export default function CsmIncidentDetailPage(): JSX.Element {
               }
             >
               Create outage
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<GitPullRequest size={14} />}
+              // Pre-selects this incident as the intended parent on the
+              // change-request create form — mirrors the service request's
+              // own "Create change request…" action (`CsmCaseDetailPage`'s
+              // `create_change_request` handler). Unlike that entry point,
+              // submitting with this pre-fill in place is gated on the
+              // create form itself (`isIncidentParentSelected`) until the
+              // backend accepts a change request linked directly to an
+              // incident — see `CreateChangeRequestFromIncidentNavState`'s
+              // doc comment. Offered unconditionally (no state gate) so the
+              // form is reachable regardless of the incident's own state;
+              // the gate lives entirely on the submit side.
+              onClick={() =>
+                navigate("/operations/change-requests/new", {
+                  // `incident.id` is only nullable in the shared BeIncident
+                  // type for a bare search-result row; this is a loaded
+                  // detail record, always carrying a real id.
+                  state: {
+                    incidentId: incident.id as string,
+                    incidentNumber: incident.number ?? undefined,
+                    incidentSubject: incident.subject ?? undefined,
+                  } satisfies CreateChangeRequestFromIncidentNavState,
+                })
+              }
+            >
+              Create change request
             </Button>
             <Button
               variant="outlined"
