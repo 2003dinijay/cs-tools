@@ -68,6 +68,10 @@ type sentCaseCreatedAlert struct {
 	product, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string
 }
 
+type sentSecurityReportAnalysisAlert struct {
+	product, caseNumber, wso2CaseID, productName, title, team, caseLink string
+}
+
 type sentCaseAcknowledgedAlert struct {
 	product, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string
 }
@@ -79,11 +83,12 @@ type sentSeverityChangedAlert struct {
 type mockGoogleChatSender struct {
 	err error
 	// mu guards calls — see mockEmailSender.mu's doc comment.
-	mu                    sync.Mutex
-	calls                 []sentChatAlert
-	caseCreatedCalls      []sentCaseCreatedAlert
-	caseAcknowledgedCalls []sentCaseAcknowledgedAlert
-	severityChangedCalls  []sentSeverityChangedAlert
+	mu                          sync.Mutex
+	calls                       []sentChatAlert
+	caseCreatedCalls            []sentCaseCreatedAlert
+	caseAcknowledgedCalls       []sentCaseAcknowledgedAlert
+	severityChangedCalls        []sentSeverityChangedAlert
+	securityReportAnalysisCalls []sentSecurityReportAnalysisAlert
 }
 
 func (m *mockGoogleChatSender) SendIncidentAlert(ctx context.Context, product, title, shortDescription, portalURL string) error {
@@ -97,6 +102,13 @@ func (m *mockGoogleChatSender) SendCaseCreatedAlert(ctx context.Context, product
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.caseCreatedCalls = append(m.caseCreatedCalls, sentCaseCreatedAlert{product, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink})
+	return m.err
+}
+
+func (m *mockGoogleChatSender) SendSecurityReportAnalysisAlert(ctx context.Context, product, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.securityReportAnalysisCalls = append(m.securityReportAnalysisCalls, sentSecurityReportAnalysisAlert{product, caseNumber, wso2CaseID, productName, title, team, caseLink})
 	return m.err
 }
 
@@ -1343,6 +1355,10 @@ func (s *concurrencyProbeChatSender) SendCaseCreatedAlert(ctx context.Context, p
 	return nil
 }
 
+func (s *concurrencyProbeChatSender) SendSecurityReportAnalysisAlert(ctx context.Context, product, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
+	return nil
+}
+
 func (s *concurrencyProbeChatSender) SendCaseAcknowledgedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
 	return nil
 }
@@ -1403,6 +1419,10 @@ func (s *blockingCaseAcknowledgedChatSender) SendIncidentAlert(ctx context.Conte
 }
 
 func (s *blockingCaseAcknowledgedChatSender) SendCaseCreatedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendSecurityReportAnalysisAlert(ctx context.Context, product, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
 	return nil
 }
 
