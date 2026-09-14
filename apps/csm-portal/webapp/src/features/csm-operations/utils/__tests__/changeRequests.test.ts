@@ -82,8 +82,10 @@ describe("buildCloneChangeRequestNavState", () => {
     expect(keys).not.toContain("serviceOutage");
     expect(keys).not.toContain("communicationPlan");
     expect(keys).not.toContain("rollbackPlan");
-    // category/priority/risk/implementationPlan/riskImpactAnalysis are
-    // write-only — never returned by GET — so there is no source value ever.
+    // category/priority/risk/riskImpactAnalysis are write-only — never
+    // returned by GET — so there is no source value ever. `implementationPlan`
+    // is readable now too, but isn't wired into clone yet (separate feature
+    // decision), so it also must not appear here.
     expect(keys).not.toContain("category");
     expect(keys).not.toContain("priority");
     expect(keys).not.toContain("risk");

@@ -345,8 +345,11 @@ export function buildChangeRequestSearchFilters(
 //   - `priority` is write-only — accepted by create, never present on the
 //     read response — so there is no source value to copy from, ever,
 //     regardless of how the form is wired.
-//   - `implementationPlan` and `riskImpactAnalysis` are write-only for the
-//     same reason.
+//   - `riskImpactAnalysis` is write-only for the same reason.
+//     (`implementationPlan` was write-only too, but the read side now
+//     returns it — see `BeChangeRequestDetail.implementationPlan` — so it's
+//     no longer part of this gap. It isn't wired into the clone fields
+//     below yet, though: that's a separate feature decision, not a gap.)
 //   - `impactDescription`, `serviceOutage`, `communicationPlan`, and
 //     `rollbackPlan` are read-only today — the create payload has no field
 //     for any of them.
