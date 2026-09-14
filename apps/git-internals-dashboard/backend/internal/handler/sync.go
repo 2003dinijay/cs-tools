@@ -72,7 +72,7 @@ const postSyncRunsDeadline = 15 * time.Minute
 func (h *SyncHandler) PostSyncRuns(w http.ResponseWriter, r *http.Request) {
 	if h.githubToken == "" {
 		apierror.Write(w, http.StatusBadRequest, apierror.CodeSyncTokenMissing,
-			"GITHUB_TOKEN is not configured — manual sync needs a fine-grained PAT with Issues:Read + Projects:Read.")
+			"GitHub PAT is not configured")
 		return
 	}
 
