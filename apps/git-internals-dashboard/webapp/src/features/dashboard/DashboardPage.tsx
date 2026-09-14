@@ -161,16 +161,13 @@ export default function DashboardPage() {
             accent="var(--sla-at-risk)"
             onClick={() => drill("at_risk")}
           />
-          {/* No onClick: there's no bucket=product_side drill-down filter in
-              the API today (see GET /issues's bucket enum) and adding one
-              wasn't part of this widget's ask ("displays a single count") —
-              flagged rather than silently inventing a new backend filter. */}
           <HeroCard
             label="On Product Team Side"
             n={overview.hero.productSide.n}
             delta={overview.hero.productSide.delta}
             spark={overview.hero.productSide.spark}
             accent="var(--sla-primary)"
+            onClick={() => drill("product_side")}
           />
         </Box>
         <CsHeroCard n={overview.hero.cs.n} byStatus={overview.hero.cs.byStatus} onDrill={(status) => drill("cs", { status })} />

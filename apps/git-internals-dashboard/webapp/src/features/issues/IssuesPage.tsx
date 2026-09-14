@@ -41,6 +41,7 @@ const BUCKET_TITLES: Partial<Record<BucketKey, string>> = {
   at_risk: "At-risk issues",
   on_track: "On-track issues",
   cs: "On-CS-side issues",
+  product_side: "On-product-side issues",
   tracked: "Open tracked issues",
   untracked: "Untracked / missing priority",
   attention: "Attention set",

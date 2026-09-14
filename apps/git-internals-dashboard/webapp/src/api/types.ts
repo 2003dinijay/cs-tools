@@ -187,6 +187,7 @@ export type BucketKey =
   | "at_risk"
   | "on_track"
   | "cs"
+  | "product_side"
   | "tracked"
   | "untracked"
   | "attention";
