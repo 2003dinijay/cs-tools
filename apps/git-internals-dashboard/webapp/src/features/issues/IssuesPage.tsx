@@ -27,11 +27,11 @@ import { gridTemplate } from "@lib/grid";
 import { acrylicSurfaceSx } from "@lib/surfaces";
 
 const KIND_CHIPS: { key: BucketKey; label: string }[] = [
-  { key: "all", label: "All open" },
+  { key: "all", label: "All Open" },
   { key: "violated", label: "Violated" },
-  { key: "at_risk", label: "At risk" },
-  { key: "cs", label: "On CS side" },
-  { key: "product_side", label: "On product team side" },
+  { key: "at_risk", label: "At Risk" },
+  { key: "cs", label: "On CS Side" },
+  { key: "product_side", label: "On Product Team Side" },
   { key: "untracked", label: "Untracked" },
 ];
 
@@ -151,7 +151,7 @@ export default function IssuesPage() {
   // Friendly project name for "owner/name", falling back to the repo's own name part.
   const nameForRepo = (r: string | null) =>
     overview?.projects.find((p) => p.repo === r)?.name ?? r?.split("/")[1] ?? "—";
-  const projName = repo ? nameForRepo(repo) : "All projects";
+  const projName = repo ? nameForRepo(repo) : "All Projects";
 
   // A single CS status gets its own titled list.
   const title = status ? `${status} issues` : (BUCKET_TITLES[bucket] ?? "Issues");
@@ -184,7 +184,7 @@ export default function IssuesPage() {
             }}
           />
           <FilterSelect value={repo ?? "all"} onChange={(v) => setParam("repo", v === "all" ? "" : v)}>
-            <MenuItem value="all">All projects</MenuItem>
+            <MenuItem value="all">All Projects</MenuItem>
             {repoOptions.map((r) => (
               <MenuItem key={r.repoId} value={r.repo}>
                 {r.name}
@@ -192,7 +192,7 @@ export default function IssuesPage() {
             ))}
           </FilterSelect>
           <FilterSelect value={priority ?? "all"} onChange={(v) => setParam("priority", v === "all" ? "" : v)}>
-            <MenuItem value="all">All priorities</MenuItem>
+            <MenuItem value="all">All Priorities</MenuItem>
             {PRIORITY_OPTIONS.map((p) => (
               <MenuItem key={p.value} value={p.value}>
                 {p.label}

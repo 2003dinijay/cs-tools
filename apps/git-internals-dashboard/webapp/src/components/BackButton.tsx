@@ -49,7 +49,7 @@ export function BackButton() {
         "&:hover": { borderColor: "var(--sla-fg3)", color: "var(--sla-fg)", bgcolor: "var(--sla-card)" },
       }}
     >
-      ← Back to dashboard
+      ← Back to Dashboard
     </Button>
   );
 }

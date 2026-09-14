@@ -134,7 +134,7 @@ export default function AppShell({ children }: { children?: ReactNode }) {
 
           <Box sx={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <FilterSelect value={repo ?? "all"} onChange={(v) => setFilter("repo", v === "all" ? "" : v)}>
-              <MenuItem value="all">All projects</MenuItem>
+              <MenuItem value="all">All Projects</MenuItem>
               {repoOptions.map((r) => (
                 <MenuItem key={r.repoId} value={r.repo}>
                   {r.name}
@@ -143,7 +143,7 @@ export default function AppShell({ children }: { children?: ReactNode }) {
             </FilterSelect>
 
             <FilterSelect value={priority ?? "all"} onChange={(v) => setFilter("priority", v === "all" ? "" : v)}>
-              <MenuItem value="all">All priorities</MenuItem>
+              <MenuItem value="all">All Priorities</MenuItem>
               {PRIORITY_OPTIONS.map((p) => (
                 <MenuItem key={p.value} value={p.value}>
                   {p.label}
