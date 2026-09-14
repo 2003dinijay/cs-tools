@@ -24,7 +24,7 @@ import (
 // headerTokenChars lists the non-alphanumeric bytes RFC 7230 allows in an
 // HTTP header field name (the "tchar" set minus letters/digits, which are
 // checked separately below).
-const headerTokenChars = "!#$%&'*+-.^_`|~"
+const headerTokenChars = "!#$%&'*+-.^_`|~" // #nosec G101 -- charset constant for header-name validation, not a credential
 
 // isValidHeaderName reports whether name is a syntactically legal HTTP
 // header field name: non-empty, and built only from RFC 7230 token
