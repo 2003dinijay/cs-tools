@@ -227,6 +227,33 @@ func TestDispatcher_Handle_CaseCreated(t *testing.T) {
 	}
 }
 
+// TestDispatcher_Handle_CaseCreated_SecurityReportAnalysisUsesDedicatedChatAlert
+// verifies handleCaseCreated's CaseType branch: a security_report_analysis
+// case calls SendSecurityReportAnalysisAlert instead of SendCaseCreatedAlert
+// (whose severity line would have nothing to show, since severity is never
+// set for this case type) — and does NOT also call the generic alert.
+func TestDispatcher_Handle_CaseCreated_SecurityReportAnalysisUsesDedicatedChatAlert(t *testing.T) {
+	chat := &mockGoogleChatSender{}
+	d := newTestDispatcher(&mockEmailSender{}, chat, &mockCallSender{})
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"SECURITY_REPORT_ANALYSIS","priority":"","product":"api-manager","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+
+	if len(chat.caseCreatedCalls) != 0 {
+		t.Errorf("expected SendCaseCreatedAlert NOT to be called for a security_report_analysis case, got %d call(s)", len(chat.caseCreatedCalls))
+	}
+	if len(chat.securityReportAnalysisCalls) != 1 {
+		t.Fatalf("expected 1 SendSecurityReportAnalysisAlert call, got %d", len(chat.securityReportAnalysisCalls))
+	}
+	got := chat.securityReportAnalysisCalls[0]
+	if got.title != "Something broke" || got.caseLink != "https://csm.example/cases/CASE-1" || got.productName != "api-manager" {
+		t.Errorf("unexpected SendSecurityReportAnalysisAlert args: %+v", got)
+	}
+}
+
 // TestDispatcher_Handle_CaseCreated_ChatUsesDefaultProduct verifies
 // case.created's Chat alert falls back to Dispatcher.defaultChatProduct when
 // the payload omits product, the same fallback handleIncidentCreated uses.
@@ -1281,7 +1308,7 @@ func TestDispatcher_Handle_IgnoresSLAEventTypes(t *testing.T) {
 	d := newTestDispatcher(mock, chat, call)
 
 	records := []string{
-		`{"type":"sla.clock.register","entityId":"CASE-1","payload":{"caseId":"CASE-1","durations":{"response":"2h"}}}`,
+		`{"type":"sla.clock.register","entityId":"CASE-1","payload":{"caseId":"CASE-1","caseTitle":"Something broke","durations":{"response":"2h"}}}`,
 		`{"type":"sla.tier_reached","entityId":"CASE-1","payload":{"caseId":"CASE-1","clockType":"response","tier":"50"}}`,
 	}
 	for _, r := range records {
