@@ -54,6 +54,8 @@ func TestIsCaseStateClosed(t *testing.T) {
 		{name: "whitespace only", input: "   ", expected: false},
 		{name: "unknown string", input: "foobar", expected: false},
 		{name: "unknown id", input: "999", expected: false},
+		{name: "substring of a closed label", input: "close", expected: false},
+		{name: "closed-looking longer string", input: "closed_pending_review", expected: false},
 	}
 
 	for _, tc := range cases {

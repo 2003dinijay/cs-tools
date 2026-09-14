@@ -1624,6 +1624,10 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
     delete:
       summary: Delete an attachment.
+      description: >
+        Rejected with 400 when the attachment belongs to a closed case: a
+        closed case's attachments are read-only. The case is resolved from the
+        attachment's own referenceId, since this route is not nested under one.
       operationId: deleteAttachmentsId
       parameters:
         - name: id
@@ -3825,7 +3829,8 @@ paths:
       summary: Create a case attachment.
       description: >
         The case is scoped by the {id} path parameter — there is no
-        referenceId field in the request body.
+        referenceId field in the request body. Rejected with 400 when the case
+        is closed: a closed case's attachments are read-only.
       operationId: postCasesIdAttachments
       parameters:
         - name: id
@@ -4176,7 +4181,8 @@ paths:
       summary: Update a case's attachment.
       description: >
         Only name is forwarded here — description is always dropped, by
-        design for this route.
+        design for this route. Rejected with 400 when the case is closed: a
+        closed case's attachments are read-only.
       operationId: patchCasesCaseIdAttachmentsAttachmentId
       parameters:
         - name: caseId

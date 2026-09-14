@@ -19,6 +19,7 @@ package dto
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
@@ -133,20 +134,32 @@ func MapSearchDeployedProducts(r entity.SearchDeployedProductsResponse) SearchDe
 	}
 }
 
+// ToSysID normalizes a dashed UUID or bare 32-hex string into a 32-character
+// ServiceNow sysid (IdString) format by stripping hyphens.
+func ToSysID(id string) string {
+	return strings.ReplaceAll(id, "-", "")
+}
+
+// DeployedProductSearchFilters contains optional filters for searching deployed products.
+type DeployedProductSearchFilters struct {
+	ProductCategories []string `json:"productCategories,omitempty"`
+}
+
 // DeployedProductSearchRequest is the portal's request body for
 // POST /deployments/{deploymentId}/products/search.
 type DeployedProductSearchRequest struct {
-	Pagination entity.Pagination `json:"pagination"`
+	Pagination entity.Pagination             `json:"pagination"`
+	Filters    *DeployedProductSearchFilters `json:"filters,omitempty"`
 }
 
 // BuildEntitySearchDeployedProductsRequest translates the portal's search
 // request into entity-service's request shape, always scoping to the
-// deployment in the URL — never a client-settable body field (same
-// reasoning as BuildEntitySearchCasesRequest's projectID parameter).
+// deployment in the URL (normalized to a canonical dashed UUID) — never a client-settable
+// body field (same reasoning as BuildEntitySearchCasesRequest's projectID parameter).
 func BuildEntitySearchDeployedProductsRequest(deploymentID string, req DeployedProductSearchRequest) entity.SearchDeployedProductsRequest {
 	return entity.SearchDeployedProductsRequest{
 		Pagination:    req.Pagination,
-		DeploymentIDs: []string{deploymentID},
+		DeploymentIDs: []string{toDashedID(deploymentID)},
 	}
 }
 
@@ -164,13 +177,13 @@ type DeployedProductCreateRequest struct {
 
 // BuildEntityCreateDeployedProductRequest translates the portal's create
 // request into entity-service's request shape, forcing DeploymentID from
-// the path.
+// the path and normalizing all identifiers to sysids.
 func BuildEntityCreateDeployedProductRequest(deploymentID string, req DeployedProductCreateRequest) entity.CreateDeployedProductRequest {
 	return entity.CreateDeployedProductRequest{
-		ProjectID:    req.ProjectID,
-		DeploymentID: deploymentID,
-		ProductID:    req.ProductID,
-		VersionID:    req.VersionID,
+		ProjectID:    ToSysID(req.ProjectID),
+		DeploymentID: ToSysID(deploymentID),
+		ProductID:    ToSysID(req.ProductID),
+		VersionID:    ToSysID(req.VersionID),
 		Cores:        req.Cores,
 		TPS:          req.TPS,
 		Description:  req.Description,
@@ -212,9 +225,10 @@ type DeployedProductUpdateRequest struct {
 // reliable source (see PatchDeployment's doc comment on entityDeployment
 // Client for the same reasoning).
 func BuildEntityUpdateDeployedProductRequest(id, deploymentID string, req DeployedProductUpdateRequest) entity.UpdateDeployedProductRequest {
+	depSysID := ToSysID(deploymentID)
 	out := entity.UpdateDeployedProductRequest{
-		ID:           id,
-		DeploymentID: &deploymentID,
+		ID:           ToSysID(id),
+		DeploymentID: &depSysID,
 		Cores:        req.Cores,
 		TPS:          req.TPS,
 		Active:       req.Active,

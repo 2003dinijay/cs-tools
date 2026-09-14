@@ -277,14 +277,14 @@ paths:
   /cases/{id}/request-update:
     post:
       summary: >
-        Post a customer-visible "request update" nudge comment on a case. Only
-        the case's assigned engineer may call this, and only while the case is
-        awaiting_info or solution_proposed. The message is one of three fixed
-        reminder templates (first/second/final), automatically drawn from a
-        generic or migration wording set depending on the case's own
-        type/engagementType, or a caller-supplied custom message. The
-        category is always server-determined; it is never accepted from the
-        caller.
+        Post a customer-visible "request update" nudge comment on a case. Any
+        authenticated CS engineer may call this, not only the case's assigned
+        engineer, and only while the case is awaiting_info or
+        solution_proposed. The message is one of three fixed reminder
+        templates (first/second/final), automatically drawn from a generic or
+        migration wording set depending on the case's own type/engagementType,
+        or a caller-supplied custom message. The category is always
+        server-determined; it is never accepted from the caller.
       operationId: postCasesIdRequestUpdate
       parameters:
         - name: id
@@ -321,7 +321,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — the caller is not the case's assigned engineer.
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -7369,6 +7369,24 @@ components:
             query/filters. Not validated here; an unsupported field name for
             that resourceType is surfaced by that resource's own /search
             endpoint, not caught here.
+        inlineDrilldown:
+          type: boolean
+          description: >
+            Only meaningful for shapes "pie"/"bar". Omitted/false is existing
+            behavior unchanged — clicking a slice/bar navigates away to that
+            criteria's own list view. true tells the frontend to instead
+            expand the clicked slice's filtered list inline on the tile,
+            without navigating. This backend does not decide or render
+            anything about that choice — forwarded verbatim, exactly like
+            groupBy/slices/columns; a no-op if set on a count/list widget.
+        inlineLabels:
+          type: boolean
+          description: >
+            Only meaningful for shape "pie". Opts a widget into rendering each
+            slice's label+value on the ring itself with a leader line,
+            instead of a donut plus separate legend list. Omitted/false is a
+            no-op — this backend only forwards it, exactly like
+            inlineDrilldown.
 
     MetadataResponse:
       type: object
@@ -9648,19 +9666,6 @@ components:
         content:
           type: string
           description: Comment text
-        mentionedUserIds:
-          type: array
-          items:
-            type: string
-            format: uuid
-          description: >
-            User ids (the platform's own UUID-form user id, the same shape
-            returned by GET /users/{id} and POST /users/search, and used by
-            assignedEngineer.id / createdBy.id elsewhere in this API) that the
-            comment's author @mentioned in content, as selected by the
-            caller's mention-typeahead. Optional: absent or empty means no
-            mentions. A mentioned id the backing data source cannot resolve
-            to a user is silently skipped rather than failing the comment.
 
     RequestCaseUpdatePayload:
       type: object

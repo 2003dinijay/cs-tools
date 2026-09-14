@@ -82,6 +82,157 @@ func TestSNProjectService_SearchProjects_MapsAccountRef(t *testing.T) {
 	}
 }
 
+// TestSNProjectService_SearchProjects_MapsOnboardingScopedFields verifies that
+// the onboarding-scoped dashboard fields added to ServiceNow's project search
+// response are mapped into domain.ProjectView: top-level onboardingStatus and
+// onboardingOwner, and the account sub-object's region/subRegion/arrToday.
+func TestSNProjectService_SearchProjects_MapsOnboardingScopedFields(t *testing.T) {
+	const accountSysid = "4a6fc0623b16c31091404c6aa5e45a09"
+	const ownerSysid = "5b6fc0623b16c31091404c6aa5e45a10"
+
+	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"projects": []map[string]any{
+				{
+					"id": "11111111111111111111111111111111", "name": "Onboarding project", "key": "OBP",
+					"type":    map[string]any{"name": "Subscription"},
+					"endDate": "", "createdOn": "2026-01-01 00:00:00",
+					"account": map[string]any{
+						"id": accountSysid, "name": "Customer Portal Account",
+						"region": nil, "subRegion": "APAC", "arrToday": "0",
+					},
+					"onboardingStatus": "In-Progress",
+					"onboardingOwner":  map[string]any{"id": ownerSysid, "name": "a a", "email": "ff@ww.com"},
+				},
+			},
+			"totalRecords": 1, "offset": 0, "limit": 10,
+		})
+	}))
+
+	svc := NewServiceNowProjectService(client, nil)
+	resp, err := svc.SearchProjects(contextWithUserIDToken("token"), domain.SearchProjectsRequest{
+		Pagination: domain.Pagination{Limit: 10},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(resp.Projects))
+	}
+
+	p := resp.Projects[0]
+	if p.OnboardingStatus == nil || *p.OnboardingStatus != "In-Progress" {
+		t.Errorf("OnboardingStatus = %v, want \"In-Progress\"", p.OnboardingStatus)
+	}
+	if p.OnboardingOwner == nil {
+		t.Fatalf("OnboardingOwner = nil, want non-nil")
+	}
+	wantOwnerID := sysidToUUID(ownerSysid)
+	if p.OnboardingOwner.ID != wantOwnerID || p.OnboardingOwner.Name != "a a" {
+		t.Errorf("OnboardingOwner = %+v, want id=%s name=\"a a\"", p.OnboardingOwner, wantOwnerID)
+	}
+	if p.OnboardingOwner.Email == nil || *p.OnboardingOwner.Email != "ff@ww.com" {
+		t.Errorf("OnboardingOwner.Email = %v, want ff@ww.com", p.OnboardingOwner.Email)
+	}
+
+	if p.Account == nil {
+		t.Fatalf("Account = nil, want non-nil")
+	}
+	if p.Account.Region != nil {
+		t.Errorf("Account.Region = %v, want nil", *p.Account.Region)
+	}
+	if p.Account.SubRegion == nil || *p.Account.SubRegion != "APAC" {
+		t.Errorf("Account.SubRegion = %v, want APAC", p.Account.SubRegion)
+	}
+	if p.Account.ArrToday == nil || *p.Account.ArrToday != "0" {
+		t.Errorf("Account.ArrToday = %v, want \"0\"", p.Account.ArrToday)
+	}
+}
+
+// TestSNProjectService_SearchProjects_OnboardingScopedFieldsAbsent verifies
+// that a project with none of the onboarding-scoped fields tracked decodes
+// cleanly to nil OnboardingStatus/OnboardingOwner and nil account
+// region/subRegion/arrToday, rather than empty-string/zero-value
+// placeholders.
+func TestSNProjectService_SearchProjects_OnboardingScopedFieldsAbsent(t *testing.T) {
+	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"projects": []map[string]any{
+				{
+					"id": "22222222222222222222222222222222", "name": "Plain project", "key": "PLN",
+					"type":    map[string]any{"name": "Subscription"},
+					"endDate": "", "createdOn": "2026-01-01 00:00:00",
+					"account": map[string]any{"id": "", "name": ""},
+				},
+			},
+			"totalRecords": 1, "offset": 0, "limit": 10,
+		})
+	}))
+
+	svc := NewServiceNowProjectService(client, nil)
+	resp, err := svc.SearchProjects(contextWithUserIDToken("token"), domain.SearchProjectsRequest{
+		Pagination: domain.Pagination{Limit: 10},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	p := resp.Projects[0]
+	if p.OnboardingStatus != nil {
+		t.Errorf("OnboardingStatus = %v, want nil", *p.OnboardingStatus)
+	}
+	if p.OnboardingOwner != nil {
+		t.Errorf("OnboardingOwner = %+v, want nil", p.OnboardingOwner)
+	}
+	if p.Account != nil {
+		t.Errorf("Account = %+v, want nil for a project with no linked account", p.Account)
+	}
+}
+
+// TestSNProjectService_SearchProjects_WiresOnboardingScopedFilters verifies
+// that OnboardingStatus/ArrTodayGte/SubRegion on the request are translated
+// into the corresponding keys on the Choreo request body's filters object,
+// matching digiops-cs's field names exactly.
+func TestSNProjectService_SearchProjects_WiresOnboardingScopedFilters(t *testing.T) {
+	var gotBody map[string]any
+	client := newTestSNClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"projects": []map[string]any{}, "totalRecords": 0, "offset": 0, "limit": 10,
+		})
+	}))
+
+	svc := NewServiceNowProjectService(client, nil)
+	_, err := svc.SearchProjects(contextWithUserIDToken("token"), domain.SearchProjectsRequest{
+		Pagination:       domain.Pagination{Limit: 10},
+		OnboardingStatus: []string{"In-Progress", "Not-Started"},
+		ArrTodayGte:      "1000",
+		SubRegion:        "APAC",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	filters, ok := gotBody["filters"].(map[string]any)
+	if !ok {
+		t.Fatalf("request body missing filters object: %+v", gotBody)
+	}
+	gotStatuses, ok := filters["onboardingStatus"].([]any)
+	if !ok || len(gotStatuses) != 2 || gotStatuses[0] != "In-Progress" || gotStatuses[1] != "Not-Started" {
+		t.Errorf("filters.onboardingStatus = %v, want [In-Progress Not-Started]", filters["onboardingStatus"])
+	}
+	if filters["arrTodayGte"] != "1000" {
+		t.Errorf("filters.arrTodayGte = %v, want 1000", filters["arrTodayGte"])
+	}
+	if filters["subRegion"] != "APAC" {
+		t.Errorf("filters.subRegion = %v, want APAC", filters["subRegion"])
+	}
+}
+
 // TestSNProjectService_SearchProjects_MapsStartDate verifies that the date-only
 // startDate from ServiceNow's project search response is parsed into
 // domain.ProjectView.StartDate, and that a null or absent startDate maps to a

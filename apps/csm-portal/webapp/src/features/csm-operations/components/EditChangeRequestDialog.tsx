@@ -207,6 +207,7 @@ export default function EditChangeRequestDialog({
     [cr.plannedEndOn],
   );
   const initialAssignedTeamId = cr.assignedTeam?.id ?? "";
+  const initialAssignedEngineerId = cr.assignedEngineer?.id ?? "";
   const initialCustomerGroupId = cr.customerGroup?.id ?? "";
   const initialRequestedById = cr.requestedBy?.id ?? "";
   const initialRollbackDurationText = cr.rollbackDurationText ?? "";
@@ -214,6 +215,7 @@ export default function EditChangeRequestDialog({
   const [plannedStart, setPlannedStart] = useState(initialPlannedStart);
   const [plannedEnd, setPlannedEnd] = useState(initialPlannedEnd);
   const [assignedTeamId, setAssignedTeamId] = useState(initialAssignedTeamId);
+  const [assignedEngineerId, setAssignedEngineerId] = useState(initialAssignedEngineerId);
   const [customerGroupId, setCustomerGroupId] = useState(initialCustomerGroupId);
   const [requestedById, setRequestedById] = useState(initialRequestedById);
   const [rollbackDurationText, setRollbackDurationText] = useState(initialRollbackDurationText);
@@ -246,6 +248,9 @@ export default function EditChangeRequestDialog({
     if (assignedTeamId !== initialAssignedTeamId && assignedTeamId) {
       next.assignedTeamId = assignedTeamId;
     }
+    if (assignedEngineerId !== initialAssignedEngineerId && assignedEngineerId) {
+      next.assignedEngineerId = assignedEngineerId;
+    }
     // Unlike the pickers above, an emptied plan field is a real edit the BE
     // can accept, so "" is sent rather than skipped. Both plans are rich text
     // on both sides now — see `useRichTextPlanField` for why "changed" is not
@@ -275,6 +280,8 @@ export default function EditChangeRequestDialog({
     initialPlannedEnd,
     assignedTeamId,
     initialAssignedTeamId,
+    assignedEngineerId,
+    initialAssignedEngineerId,
     rollbackPlan.isDirty,
     rollbackPlan.outgoing,
     testPlan.isDirty,
@@ -407,6 +414,18 @@ export default function EditChangeRequestDialog({
             getLabel={(g) => g.name}
             knownLabel={cr.assignedTeam?.name}
             helperText="Required before approval can be requested."
+          />
+          <AsyncEntitySelect<BeUser>
+            id="cr-edit-assigned-engineer"
+            label="Assigned to"
+            placeholder="Search people…"
+            value={assignedEngineerId}
+            onChange={setAssignedEngineerId}
+            disabled={isSaving}
+            useSearch={useSearchUsersByName}
+            getId={(u) => u.id!}
+            getLabel={userLabel}
+            knownLabel={cr.assignedEngineer?.name}
           />
           <AsyncEntitySelect<BeUser>
             id="cr-edit-requested-by"

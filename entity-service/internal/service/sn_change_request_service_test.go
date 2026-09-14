@@ -764,3 +764,49 @@ func TestSNChangeRequestService_GetChangeRequest_MapsFieldParityKeys(t *testing.
 		t.Errorf("gitReference: got %v", got.GitReference)
 	}
 }
+
+// --- AggregateChangeRequests: state groupBy key remap ---
+//
+// SN's own groupBy implementation (ChangeRequestUtils.groupChangeRequestsBy)
+// returns the raw internal state value as the bucket key (e.g. "-5" for
+// "New") and the human-readable label separately. The platform's own
+// ChangeRequestState enum strings must come back as the key so the frontend
+// can round-trip it into a states filter. This test pins that remap.
+func TestSNChangeRequestService_AggregateChangeRequests_StateGroupByRemapsKeyToDomainEnum(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/change-requests/aggregate", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"groups": []map[string]any{
+				{"key": "-5", "label": "New", "count": 3},
+				{"key": "-4", "label": "Assess", "count": 2},
+				{"key": "999", "label": "Unrecognized Label", "count": 1},
+			},
+			"othersCount":  0,
+			"totalRecords": 6,
+		})
+	})
+
+	client := newTestSNClient(t, mux)
+	svc := NewServiceNowChangeRequestService(client)
+
+	resp, err := svc.AggregateChangeRequests(contextWithUserIDToken("token"), domain.AggregateChangeRequestsRequest{
+		GroupBy: "state",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Groups) != 3 {
+		t.Fatalf("groups: got %d, want 3", len(resp.Groups))
+	}
+	if got, want := resp.Groups[0].Key, string(domain.ChangeRequestStateNew); got != want {
+		t.Errorf("groups[0].Key: got %q, want %q (domain enum, not raw SN value %q)", got, want, "-5")
+	}
+	if got, want := resp.Groups[1].Key, string(domain.ChangeRequestStateAssess); got != want {
+		t.Errorf("groups[1].Key: got %q, want %q", got, want)
+	}
+	// Unrecognized label: falls back to leaving the key as-is rather than
+	// crashing or dropping the bucket.
+	if got, want := resp.Groups[2].Key, "999"; got != want {
+		t.Errorf("groups[2].Key: got %q, want %q (unrecognized label falls back to raw key)", got, want)
+	}
+}

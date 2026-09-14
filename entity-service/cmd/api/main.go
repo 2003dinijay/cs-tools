@@ -42,11 +42,13 @@ func main() {
 		log.Fatalf("invalid configuration: %v", err)
 	}
 
-	pool, err := db.NewPoolFromConfig(cfg)
+	pool, err := db.NewPoolIfNeeded(cfg)
 	if err != nil {
 		log.Fatalf("connect to database: %v", err)
 	}
-	defer pool.Close()
+	if pool != nil {
+		defer pool.Close()
+	}
 
 	addr := ":" + cfg.ServerPort
 	srv, eventPublisher := server.New(addr, pool, cfg)

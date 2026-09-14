@@ -65,6 +65,10 @@ type snProject struct {
 	// ProjectListItem types it as a non-optional number.
 	ActiveCasesCount int `json:"activeCasesCount"`
 	snProjectClosureFields
+	// OnboardingStatus/OnboardingOwner support onboarding-scoped dashboard
+	// queries. Nil when the project has no onboarding engagement tracked.
+	OnboardingStatus *string      `json:"onboardingStatus"`
+	OnboardingOwner  *snPersonRef `json:"onboardingOwner"`
 }
 
 type snProjectType struct {
@@ -73,9 +77,14 @@ type snProjectType struct {
 
 // snProjectSummaryAccount is the compact account reference embedded in each
 // search result. ID/Name are empty when the project has no linked account.
+// Region/SubRegion/ArrToday support onboarding-scoped dashboard queries and
+// are nil when not tracked upstream.
 type snProjectSummaryAccount struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID        string  `json:"id"`
+	Name      string  `json:"name"`
+	Region    *string `json:"region"`
+	SubRegion *string `json:"subRegion"`
+	ArrToday  *string `json:"arrToday"`
 }
 
 // snSearchProjectsPayload is the Choreo POST /projects/search request body.
@@ -92,6 +101,11 @@ type snProjectFilters struct {
 	SortBy        string `json:"sortBy,omitempty"`
 	SortOrder     string `json:"sortOrder,omitempty"`
 	AccountID     string `json:"accountId,omitempty"`
+	// OnboardingStatus/ArrTodayGte/SubRegion support onboarding-scoped
+	// dashboard queries.
+	OnboardingStatus []string `json:"onboardingStatus,omitempty"`
+	ArrTodayGte      string   `json:"arrTodayGte,omitempty"`
+	SubRegion        string   `json:"subRegion,omitempty"`
 }
 
 type snProjectPagination struct {
@@ -180,13 +194,16 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 
 	payload := snSearchProjectsPayload{
 		Filters: snProjectFilters{
-			SearchQuery:   req.SearchQuery,
-			ClosureStatus: req.ClosureStatus,
-			EndDateFrom:   req.EndDateFrom,
-			EndDateTo:     req.EndDateTo,
-			SortBy:        req.SortBy,
-			SortOrder:     req.SortOrder,
-			AccountID:     accountSysid,
+			SearchQuery:      req.SearchQuery,
+			ClosureStatus:    req.ClosureStatus,
+			EndDateFrom:      req.EndDateFrom,
+			EndDateTo:        req.EndDateTo,
+			SortBy:           req.SortBy,
+			SortOrder:        req.SortOrder,
+			AccountID:        accountSysid,
+			OnboardingStatus: req.OnboardingStatus,
+			ArrTodayGte:      req.ArrTodayGte,
+			SubRegion:        req.SubRegion,
 		},
 		Pagination: snProjectPagination{Limit: req.Pagination.Limit, Offset: req.Pagination.Offset},
 	}
@@ -226,9 +243,23 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 			}
 			endDate = &parsed
 		}
-		var account *domain.EntityRef
+		var account *domain.ProjectSearchAccountRef
 		if p.Account.ID != "" {
-			account = &domain.EntityRef{ID: sysidToUUID(p.Account.ID), Name: p.Account.Name}
+			account = &domain.ProjectSearchAccountRef{
+				ID:        sysidToUUID(p.Account.ID),
+				Name:      p.Account.Name,
+				Region:    p.Account.Region,
+				SubRegion: p.Account.SubRegion,
+				ArrToday:  p.Account.ArrToday,
+			}
+		}
+		var onboardingOwner *domain.PersonRef
+		if p.OnboardingOwner != nil && p.OnboardingOwner.ID != "" {
+			onboardingOwner = &domain.PersonRef{
+				ID:    sysidToUUID(p.OnboardingOwner.ID),
+				Name:  p.OnboardingOwner.Name,
+				Email: nilIfEmpty(p.OnboardingOwner.Email),
+			}
 		}
 		views = append(views, domain.ProjectView{
 			ID:               sysidToUUID(p.ID),
@@ -248,6 +279,8 @@ func (s *snProjectService) SearchProjects(ctx context.Context, req domain.Search
 				ComplianceViolationDate:         p.ComplianceViolationDate,
 				SuspensionProcessState:          p.SuspensionProcessState,
 			},
+			OnboardingStatus: p.OnboardingStatus,
+			OnboardingOwner:  onboardingOwner,
 		})
 	}
 

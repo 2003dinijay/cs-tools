@@ -534,6 +534,35 @@ type SearchProjectsRequest struct {
 	// converted to the backing data source's internal id before dispatch
 	// (ServiceNow data source only).
 	AccountID string `json:"accountId"`
+	// OnboardingStatus filters to projects whose onboarding status is one of
+	// the given values (ServiceNow data source only).
+	OnboardingStatus []string `json:"onboardingStatus"`
+	// ArrTodayGte filters to projects whose linked account's current ARR is
+	// greater than or equal to this value (ServiceNow data source only).
+	ArrTodayGte string `json:"arrTodayGte"`
+	// SubRegion filters to projects whose linked account is in this sub-region
+	// (ServiceNow data source only).
+	SubRegion string `json:"subRegion"`
+}
+
+// ProjectSearchAccountRef is the account reference embedded in a project
+// search result. Richer than EntityRef — which is reused across many
+// unrelated non-account references elsewhere in this file — because the
+// onboarding-scoped dashboard queries need the account's region, sub-region,
+// and current ARR alongside the plain id/name every project search already
+// returned. Mirrors the account fields ProjectAccountRef already carries for
+// the single-project detail response; kept as its own type rather than
+// reusing ProjectAccountRef directly because that type also carries
+// detail-only fields (tier, agent/KB flags, owner emails) that have no place
+// on a list row.
+type ProjectSearchAccountRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Region/SubRegion/ArrToday are nil when the backing data source has no
+	// value recorded (ServiceNow data source only).
+	Region    *string `json:"region"`
+	SubRegion *string `json:"subRegion"`
+	ArrToday  *string `json:"arrToday"`
 }
 
 // ProjectView is the unified search result shape returned for all data sources.
@@ -556,8 +585,15 @@ type ProjectView struct {
 	// ProjectListItem types it as a required number.
 	ActiveCasesCount int `json:"activeCasesCount"`
 	// Account is nil when the project has no linked account (ServiceNow data source only).
-	Account *EntityRef `json:"account"`
+	Account *ProjectSearchAccountRef `json:"account"`
 	ProjectClosureFields
+	// OnboardingStatus is the project's onboarding status, nil when not
+	// tracked for this project (ServiceNow data source only).
+	OnboardingStatus *string `json:"onboardingStatus"`
+	// OnboardingOwner is the person assigned to run this project's
+	// onboarding. Nil when no owner is assigned — most projects, since only
+	// onboarding-enabled projects have one (ServiceNow data source only).
+	OnboardingOwner *PersonRef `json:"onboardingOwner"`
 }
 
 // SearchProjectsResponse is the paginated result of a project search.
@@ -1230,6 +1266,7 @@ const (
 	CaseSortFieldUpdatedOn CaseSortField = "updatedOn"
 	CaseSortFieldSeverity  CaseSortField = "severity"
 	CaseSortFieldState     CaseSortField = "state"
+	CaseSortFieldAssignee  CaseSortField = "assignee"
 )
 
 // CaseSortOrder controls the sort direction.

@@ -16,7 +16,11 @@
 
 package dto
 
-import "github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
+import (
+	"strings"
+
+	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
+)
 
 // CallRequestCreateResponse is the portal's response for POST /call-requests.
 type CallRequestCreateResponse struct {
@@ -27,10 +31,14 @@ type CallRequestCreateResponse struct {
 
 // MapCallRequestCreate builds the portal response from entity-service's CreateCallRequestResponse.
 func MapCallRequestCreate(r entity.CreateCallRequestResponse) CallRequestCreateResponse {
+	state := r.CallRequest.State.Label
+	if state == "" {
+		state = r.CallRequest.State.ID
+	}
 	return CallRequestCreateResponse{
 		ID:        r.CallRequest.ID,
 		CreatedOn: r.CallRequest.CreatedOn,
-		State:     r.CallRequest.State,
+		State:     state,
 	}
 }
 
@@ -91,6 +99,16 @@ type CallRequestSearchRequest struct {
 	Pagination entity.Pagination        `json:"pagination"`
 }
 
+// toDashedID converts an identifier (either a dashed UUID or a 32-hex sysid)
+// to a canonical lowercase 8-4-4-4-12 dashed UUID string expected by entity-service.
+func toDashedID(id string) string {
+	clean := strings.ToLower(strings.ReplaceAll(id, "-", ""))
+	if len(clean) == 32 {
+		return clean[0:8] + "-" + clean[8:12] + "-" + clean[12:16] + "-" + clean[16:20] + "-" + clean[20:32]
+	}
+	return strings.ToLower(id)
+}
+
 // BuildEntitySearchCallRequestsRequest translates the portal's request into
 // entity-service's SearchCallRequestsRequest. caseID (the {caseId} path
 // parameter) is always forced, never taken from the request body — the
@@ -109,7 +127,7 @@ func BuildEntitySearchCallRequestsRequest(caseID string, req CallRequestSearchRe
 		filters = &entity.SearchCallRequestsFilters{States: states}
 	}
 	return entity.SearchCallRequestsRequest{
-		CaseID:     caseID,
+		CaseID:     toDashedID(caseID),
 		Filters:    filters,
 		Pagination: req.Pagination,
 	}

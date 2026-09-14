@@ -123,6 +123,7 @@ import { usePostCsmCaseEscalation } from "@features/csm-cases/api/usePostCsmCase
 import {
   canDeescalate,
   canEscalateFurther,
+  isEscalationLevelUnset,
 } from "@features/csm-cases/utils/escalationLevel";
 import { ChildCasesWidget } from "@features/csm-cases/components/ChildCasesWidget";
 import { LinkedServiceRequestsWidget } from "@features/csm-cases/components/LinkedServiceRequestsWidget";
@@ -135,6 +136,7 @@ import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFee
 import { scrollToFragmentWithRetry } from "@features/csm-cases/utils/permalinkScroll";
 import CaseMetaBand from "@features/csm-cases/components/CaseMetaBand";
 import RefreshButton from "@components/RefreshButton";
+import ExportPdfButton from "@components/ExportPdfButton";
 import {
   AttachmentsWidget,
   CustomerContextWidget,
@@ -182,6 +184,7 @@ import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
 import QueryErrorState from "@components/QueryErrorState";
 import RelativeTime from "@components/RelativeTime";
+import EscalationLevelChip from "@components/EscalationLevelChip";
 import SeverityChip from "@components/SeverityChip";
 import StateChip from "@components/StateChip";
 import { CASE_TYPE_LABEL } from "@features/csm-cases/utils/caseType";
@@ -593,6 +596,15 @@ export default function CsmCaseDetailPage(): JSX.Element {
     isLoading: isEscalationHistoryLoading,
     isError: isEscalationHistoryError,
   } = useGetCsmCaseEscalations(caseId);
+  // The chip bar's escalation chip reads the same escalation-history query
+  // the Escalation tab already fetches (no second request) rather than the
+  // case payload's own `escalationLevel` snapshot field: `escalations` is
+  // sorted newest-first (see useGetCsmCaseEscalations/SearchCaseEscalations),
+  // so its first record's currentLevel is the case's current level. Hidden
+  // entirely at "0"/unset -- matches CasesList's own blank-unless-escalated
+  // rule -- rather than rendering an empty/"Not escalated" chip.
+  const currentEscalationLevel =
+    escalationHistory?.escalations[0]?.currentLevel ?? null;
   const postEscalation = usePostCsmCaseEscalation(caseId);
   const requestCaseUpdate = useRequestCaseUpdate();
   const findMyOngoingCases = useFindMyOngoingCases();
@@ -2093,18 +2105,58 @@ export default function CsmCaseDetailPage(): JSX.Element {
     ? "This case has an open task. Closing may be rejected until it's resolved or closed."
     : undefined;
 
+  const handleExportCasePdf = async (): Promise<void> => {
+    try {
+      const { generateCaseReportPdf } = await import(
+        "@features/csm-cases/utils/caseReportPdf"
+      );
+      generateCaseReportPdf(
+        c,
+        mergedComments,
+        activityAudit ?? [],
+        attachmentList,
+        caseFeedback ?? [],
+      );
+    } catch (err) {
+      showError("Could not export this case as a PDF. Please try again.", err);
+    }
+  };
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
-      <Button
-        variant="text"
-        size="small"
-        className="csm-print-hide"
-        startIcon={<ArrowLeft size={16} />}
-        onClick={() => navigate(resolvedBackPath)}
-        sx={{ alignSelf: "flex-start" }}
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
       >
-        Back
-      </Button>
+        <Button
+          variant="text"
+          size="small"
+          className="csm-print-hide"
+          startIcon={<ArrowLeft size={16} />}
+          onClick={() => navigate(resolvedBackPath)}
+          sx={{ alignSelf: "flex-start" }}
+        >
+          Back
+        </Button>
+        <ExportPdfButton
+          onExport={handleExportCasePdf}
+          disabled={
+            isCommentsLoading ||
+            isActivityLoading ||
+            isAttachmentsLoading ||
+            isFeedbackLoading ||
+            isChatLoading ||
+            isCommentsError ||
+            isActivityError ||
+            isAttachmentsError ||
+            isFeedbackError ||
+            isChatError
+          }
+        />
+      </Box>
 
       <Box
         sx={{
@@ -2176,6 +2228,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 <SeverityChip severity={c.severity} withLabel />
               )}
             {!isAnnouncement && <StateChip state={c.state} />}
+            {!isAnnouncement && !isEscalationLevelUnset(currentEscalationLevel) && (
+              <EscalationLevelChip level={currentEscalationLevel as string} short />
+            )}
             {/* Related/Parent moved to CaseMetaBand's Overview cells — those
                 are singular facts (never more than one each), so a compact
                 "Cell" fits better than a chip crowding this row, especially
@@ -2196,6 +2251,28 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   sx={{ fontWeight: 600 }}
                 />
               )}
+            {/* Quick visual flag that the case's project has an onboarding
+                engagement actively underway — requested so an engineer
+                doesn't have to open the project page to notice it. Gated on
+                `onboardingStatus === "In-Progress"` only: the chip still
+                shows with no owner assigned, the tooltip just says so. */}
+            {!isAnnouncement && caseProject?.onboardingStatus === "In-Progress" && (
+              <Tooltip
+                title={
+                  caseProject.onboardingOwner?.name
+                    ? `Onboarding owner: ${caseProject.onboardingOwner.name}`
+                    : "Onboarding owner: Unassigned"
+                }
+              >
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  color="info"
+                  label="Onboarding"
+                  sx={{ fontWeight: 600 }}
+                />
+              </Tooltip>
+            )}
             {!isAnnouncement && c.state === "work_in_progress" && (
               <Chip
                 size="small"
@@ -2382,7 +2459,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 onDraftInternalChange={setDraftInternal}
                 draftSourceMode={draftSourceMode}
                 onDraftSourceModeChange={setDraftSourceMode}
-                onSubmit={async (bodyHtml, internal, commentAttachments, mentionedUserIds) => {
+                onSubmit={async (bodyHtml, internal, commentAttachments) => {
                   if (!caseId) return;
                   // Post the comment only when there's text; an attachment-only
                   // send skips the comment endpoint and just uploads the files.
@@ -2397,7 +2474,6 @@ export default function CsmCaseDetailPage(): JSX.Element {
                       bodyHtml,
                       authorName: engineerName,
                       internal,
-                      mentionedUserIds,
                     });
                   }
                   // Attachments are case-level (no comment linkage on the BE);

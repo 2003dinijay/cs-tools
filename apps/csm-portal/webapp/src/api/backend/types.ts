@@ -140,7 +140,12 @@ export type BeCaseCause =
   | "INFRASTRUCTURE_OTHER"
   | "UNKNOWN";
 
-export type BeCaseSortField = "createdOn" | "updatedOn" | "severity" | "state";
+export type BeCaseSortField =
+  | "createdOn"
+  | "updatedOn"
+  | "severity"
+  | "state"
+  | "assignee";
 
 /**
  * Where a case sits in the backing data source's staged auto-closure sequence
@@ -1249,13 +1254,6 @@ export interface BeCaseCommentCreatePayload {
   type: BeCreatableCommentType;
   /** Rich-text HTML body. */
   content: string;
-  /**
-   * User ids (the platform's own UUID-form user id, the same shape returned
-   * by `GET /users/{id}` and `POST /users/search`) that the comment's author
-   * @mentioned in `content`, as selected by the mention-typeahead. Optional:
-   * absent or empty means no mentions.
-   */
-  mentionedUserIds?: string[];
 }
 
 export interface BeCaseCommentSearchPayload {
@@ -2799,6 +2797,9 @@ export interface BePatchChangeRequestPayload {
   isCustomerApproved?: boolean;
   isCustomerReviewed?: boolean;
   assignedTeamId?: string;
+  /** Individual assignee (portal user UUID). Distinct from `assignedTeamId`
+   * (the assignment group) — a CR can carry both, one, or neither. */
+  assignedEngineerId?: string;
   requestApproval?: true;
   /**
    * Target lifecycle state, for a transition listed in the record's own
@@ -4025,6 +4026,21 @@ export interface BeDashboardWidget {
    * valid for that resourceType's own search contract; an invalid one is
    * rejected by that search endpoint, not caught here. */
   sortBy?: Record<string, unknown>;
+  /** Only meaningful for shapes "pie"/"bar": opts this widget into rendering
+   * a clicked slice's filtered list inline, below the chart, on the same
+   * tile — instead of navigating away to that resourceType's own list page
+   * (the existing, still-default behavior for every widget that omits
+   * this). See `DashboardWidgetTile`'s own `inlineDrilldown` prop. Absent/
+   * `false` is a no-op — every existing pie/bar widget's navigate-away
+   * click-through is unchanged. */
+  inlineDrilldown?: boolean;
+  /** Only meaningful for shape "pie": opts this widget into rendering each
+   * slice's own "{label} {value}" outside the ring, connected to its wedge
+   * by a leader line, instead of the default donut + separate legend list
+   * below it (no percentage shown in these outer labels). Absent/`false` is
+   * a no-op — every existing pie widget's donut+legend rendering is
+   * unchanged. See `DashboardPieChart`'s own `inlineLabels` prop. */
+  inlineLabels?: boolean;
 }
 
 /**

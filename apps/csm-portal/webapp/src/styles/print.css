@@ -48,6 +48,17 @@
     min-height: 0 !important;
     flex: none !important;
     display: block !important;
+    /* `AppShellLayout`'s `main` column sets a literal `width: 0` (paired
+       with `flex: "1 1 0"` on screen, so the column only ever gets exactly
+       its allotted flex share rather than sizing to content) — `flex: none`
+       above stops that box participating in flex layout at all under print,
+       which turns that same `width: 0` from "this flex item's basis" into
+       an actual block-level width constraint, collapsing this box (and
+       every `width: 100%` descendant resolving against it, e.g. AppLayout's
+       own content wrapper) to zero. Without this, print output for any page
+       inside that column renders blank/garbled rather than truncated. */
+    width: auto !important;
+    min-width: 0 !important;
   }
 
   /* Chrome that has no place in a printed page/PDF: top nav, side nav, the
@@ -59,5 +70,31 @@
      chrome. */
   .csm-print-hide {
     display: none !important;
+  }
+
+  /*
+   * A chip/pill (e.g. a case's Tier badge, or a team name rendered via
+   * `DirectoryEntityChip`) sits inside a CSS grid/flex layout sized for a
+   * desktop viewport on screen. A printed page is narrower, and — because a
+   * MUI Chip's label (`.MuiChip-label`) truncates with `overflow: hidden` on
+   * screen — the chip's own automatic minimum width in that grid/flex layout
+   * is effectively zero (an overflow-hidden descendant doesn't hold its
+   * container open the way ordinary text would), so under print the grid
+   * track/flex item can be squeezed down to just the chip's own fixed
+   * padding, with none of its label text visible — reported live: two team
+   * chips on a case's Overview print as empty bordered pills, the label
+   * silently vanished rather than merely truncated. Reset every chip label
+   * to wrap instead of truncating, and stop the chip itself from being
+   * squeezed below its content, for print specifically — this doesn't
+   * change on-screen truncation at all.
+   */
+  .MuiChip-root {
+    height: auto !important;
+    min-width: max-content !important;
+  }
+  .MuiChip-label {
+    overflow: visible !important;
+    text-overflow: clip !important;
+    white-space: normal !important;
   }
 }
