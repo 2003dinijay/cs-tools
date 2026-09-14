@@ -20,6 +20,7 @@ import { Outlet, useSearchParams } from "react-router";
 import { useOverview } from "@api/hooks";
 import { FetchProgressBar, FetchProgressProvider } from "@components/FetchProgressBar";
 import { SyncButton } from "@components/SyncButton";
+import { UserProfile } from "@components/UserProfile";
 import { useFetchProgressActive } from "@lib/fetchProgress";
 
 const PRIORITY_OPTIONS = [
@@ -164,8 +165,9 @@ function AppShellContent({ children }: { children?: ReactNode }) {
             </FilterSelect>
           </Box>
 
-          <Box sx={{ display: "flex", alignItems: "center", pl: 1 }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: "10px", pl: 1 }}>
             <SyncButton />
+            <UserProfile />
           </Box>
         </Box>
       </Box>
