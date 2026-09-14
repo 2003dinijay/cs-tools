@@ -1266,6 +1266,7 @@ const (
 	CaseSortFieldUpdatedOn CaseSortField = "updatedOn"
 	CaseSortFieldSeverity  CaseSortField = "severity"
 	CaseSortFieldState     CaseSortField = "state"
+	CaseSortFieldAssignee  CaseSortField = "assignee"
 )
 
 // CaseSortOrder controls the sort direction.

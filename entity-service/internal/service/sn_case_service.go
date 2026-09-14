@@ -491,6 +491,7 @@ var snSortFieldMap = map[domain.CaseSortField]string{
 	domain.CaseSortFieldUpdatedOn: "updatedOn",
 	domain.CaseSortFieldSeverity:  "severity",
 	domain.CaseSortFieldState:     "state",
+	domain.CaseSortFieldAssignee:  "assignee",
 }
 
 // caseGroupByFieldValues enumerates the case-search fields SearchCases can
