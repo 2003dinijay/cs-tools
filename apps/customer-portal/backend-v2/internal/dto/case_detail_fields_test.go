@@ -19,6 +19,7 @@ package dto
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
 )
@@ -85,9 +86,18 @@ func TestMapCaseDetails_ExposesFieldsTheFrontendDeclares(t *testing.T) {
 // rule. The fix-ETA quartet is trimmed for the stronger reason that it is
 // CSM-internal.
 func TestMapCaseDetails_TrimsFieldsWithNoConsumer(t *testing.T) {
+	now := time.Now()
 	raw, err := json.Marshal(MapCaseDetails(entity.CaseView{
 		AcknowledgedBy:        &entity.EntityRef{ID: "user-2", Name: "Acker"},
 		EngagementPaymentType: strPtr("Prepaid"),
+		WorkState:             strPtr("In Progress"),
+		ResolutionCode:        strPtr("Solved"),
+		Cause:                 strPtr("Bug"),
+		FixEta:                &now,
+		ResolutionNotes:       strPtr("Some internal resolution notes"),
+		LinkedServiceRequests: []entity.LinkedServiceRequestRef{{ID: "lsr-1", Number: "SR1001", Name: "Service Req"}},
+		Tags:                  []entity.Tag{{Label: "tag-1", Color: strPtr("#ff0000")}},
+		AssignedEngineer:      &entity.AssignedEngineerRef{ID: "eng-1", Name: "Engineer", Email: strPtr("engineer@example.com")},
 	}))
 	if err != nil {
 		t.Fatalf("marshal returned error: %v", err)
@@ -97,7 +107,10 @@ func TestMapCaseDetails_TrimsFieldsWithNoConsumer(t *testing.T) {
 		t.Fatalf("result is not valid JSON: %v", err)
 	}
 
-	for _, k := range []string{"acknowledgedBy", "engagementPaymentType", "bestCaseFixEta", "mostLikelyFixEta", "worstCaseFixEta"} {
+	for _, k := range []string{
+		"acknowledgedBy", "engagementPaymentType", "bestCaseFixEta", "mostLikelyFixEta", "worstCaseFixEta",
+		"workState", "resolutionCode", "cause", "fixEta", "linkedServiceRequests", "tags", "resolutionNotes", "engineerEmail",
+	} {
 		if _, present := got[k]; present {
 			t.Errorf("%q leaked into the customer-facing case response", k)
 		}
