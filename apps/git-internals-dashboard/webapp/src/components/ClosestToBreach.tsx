@@ -39,7 +39,7 @@ interface ClosestToBreachProps {
   projects: OverviewProject[];
 }
 
-/** Top-9 tracked issues by budget consumed, shown only once one crosses 75%. */
+/** Top-9 tracked issues by budget consumed, shown only once one is AT_RISK or VIOLATED per the API's own SLA verdict. */
 export function ClosestToBreach({ repo, priority, projects }: ClosestToBreachProps) {
   const { data: issues } = useIssues({ bucket: "tracked", order: "budget_desc", limit: 9, repo, priority });
 
@@ -67,7 +67,7 @@ export function ClosestToBreach({ repo, priority, projects }: ClosestToBreachPro
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, borderRadius: "10px", border: "1px solid color-mix(in srgb, var(--sla-ok) 35%, transparent)", bgcolor: "var(--sla-ok-tint)", px: 2, py: 1.75 }}>
           <Box component="span" sx={{ display: "flex", height: 24, width: 24, alignItems: "center", justifyContent: "center", borderRadius: "50%", bgcolor: "var(--sla-ok)", fontSize: 14, fontWeight: 700, color: "var(--sla-ok-contrast-text)" }}>✓</Box>
           <Box component="span" sx={{ fontSize: 13, fontWeight: 600, color: "var(--sla-ok)" }}>
-            Nothing is within 75% of its SLA budget — no issues approaching breach.
+            Nothing is at risk or over its SLA budget — no issues approaching breach.
           </Box>
         </Box>
       ) : (
