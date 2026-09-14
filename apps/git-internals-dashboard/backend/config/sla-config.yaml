@@ -24,6 +24,10 @@ taxonomy:
     - { name: "In Progress",           category: PRODUCT_SIDE, accruesSla: true,  isTerminal: false, sortOrder: 20 }
     - { name: "WOW",                   category: PRODUCT_SIDE, accruesSla: true,  isTerminal: false, sortOrder: 30 }
     - { name: "Reopened",              category: PRODUCT_SIDE, accruesSla: true,  isTerminal: false, sortOrder: 40 }
+    - { name: "Waiting-on-PC",         category: PRODUCT_SIDE, accruesSla: true,  isTerminal: false, sortOrder: 41 }
+    - { name: "POC Pending",           category: PRODUCT_SIDE, accruesSla: true,  isTerminal: false, sortOrder: 42 }
+    - { name: "Requests",              category: PRODUCT_SIDE, accruesSla: true,  isTerminal: false, sortOrder: 43 }
+    - { name: "Todo",                  category: PRODUCT_SIDE, accruesSla: true,  isTerminal: false, sortOrder: 44 }
     # CS Team Side — pauses (no accrual)
     - { name: "WOC",                   category: CS_SIDE,      accruesSla: false, isTerminal: false, sortOrder: 50 }
     - { name: "Pending Patch Queue",   category: CS_SIDE,      accruesSla: false, isTerminal: false, sortOrder: 60 }
