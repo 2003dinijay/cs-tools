@@ -56,30 +56,19 @@ type CallRequestCase struct {
 }
 
 // CallRequestSummary is one item of the portal's response for
-// POST /call-requests/search. Assignee/Notes/Plan/Attendees/ActionItems/
-// ActualDurationMin are agent-side fields entity-service populates once a
-// support engineer schedules or concludes the call — read-only information
-// for the customer, not something they set (see
-// dto.CallRequestUpdateRequest for the write-side restriction).
+// POST /cases/{caseId}/call-requests/search.
 type CallRequestSummary struct {
-	ID                 string               `json:"id"`
-	Number             string               `json:"number"`
-	Case               CallRequestCase      `json:"case"`
-	Reason             *string              `json:"reason,omitempty"`
-	PreferredTimes     []string             `json:"preferredTimes,omitempty"`
-	DurationMin        int                  `json:"durationMin"`
-	ScheduleTime       *string              `json:"scheduleTime,omitempty"`
-	MeetingLink        *string              `json:"meetingLink,omitempty"`
-	CreatedOn          string               `json:"createdOn"`
-	UpdatedOn          string               `json:"updatedOn"`
-	State              CallRequestStateInfo `json:"state"`
-	CancellationReason *string              `json:"cancellationReason,omitempty"`
-	Assignee           *string              `json:"assignee,omitempty"`
-	Notes              *string              `json:"notes,omitempty"`
-	Plan               *string              `json:"plan,omitempty"`
-	Attendees          *string              `json:"attendees,omitempty"`
-	ActionItems        *string              `json:"actionItems,omitempty"`
-	ActualDurationMin  *int                 `json:"actualDurationMin,omitempty"`
+	ID             string               `json:"id"`
+	Number         string               `json:"number"`
+	Case           CallRequestCase      `json:"case"`
+	Reason         *string              `json:"reason,omitempty"`
+	PreferredTimes []string             `json:"preferredTimes,omitempty"`
+	DurationMin    int                  `json:"durationMin"`
+	ScheduleTime   *string              `json:"scheduleTime,omitempty"`
+	MeetingLink    *string              `json:"meetingLink,omitempty"`
+	CreatedOn      string               `json:"createdOn"`
+	UpdatedOn      string               `json:"updatedOn"`
+	State          CallRequestStateInfo `json:"state"`
 }
 
 // CallRequestSearchFilters holds the optional filter criteria for
@@ -149,24 +138,17 @@ func MapSearchCallRequests(r entity.SearchCallRequestsResponse) SearchCallReques
 	items := make([]CallRequestSummary, 0, len(r.CallRequests))
 	for _, v := range r.CallRequests {
 		items = append(items, CallRequestSummary{
-			ID:                 v.ID,
-			Number:             v.Number,
-			Case:               CallRequestCase{ID: v.Case.ID, Name: v.Case.Name, Number: v.Case.Number},
-			Reason:             v.Reason,
-			PreferredTimes:     v.PreferredTimes,
-			DurationMin:        v.DurationMin,
-			ScheduleTime:       v.ScheduleTime,
-			MeetingLink:        v.MeetingLink,
-			CreatedOn:          v.CreatedOn,
-			UpdatedOn:          v.UpdatedOn,
-			State:              CallRequestStateInfo{ID: v.State.ID, Label: v.State.Label},
-			CancellationReason: v.CancellationReason,
-			Assignee:           v.Assignee,
-			Notes:              v.Notes,
-			Plan:               v.Plan,
-			Attendees:          v.Attendees,
-			ActionItems:        v.ActionItems,
-			ActualDurationMin:  v.ActualDurationMin,
+			ID:             v.ID,
+			Number:         v.Number,
+			Case:           CallRequestCase{ID: v.Case.ID, Name: v.Case.Name, Number: v.Case.Number},
+			Reason:         v.Reason,
+			PreferredTimes: v.PreferredTimes,
+			DurationMin:    v.DurationMin,
+			ScheduleTime:   v.ScheduleTime,
+			MeetingLink:    v.MeetingLink,
+			CreatedOn:      v.CreatedOn,
+			UpdatedOn:      v.UpdatedOn,
+			State:          CallRequestStateInfo{ID: v.State.ID, Label: v.State.Label},
 		})
 	}
 	return SearchCallRequestsResponse{
