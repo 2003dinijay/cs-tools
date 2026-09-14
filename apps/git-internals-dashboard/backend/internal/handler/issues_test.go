@@ -328,6 +328,40 @@ func TestListIssuesBucketCsNarrowedByStatusParam(t *testing.T) {
 	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{102})
 }
 
+// TestListIssuesBucketProductSideIncludesAllProductSideStatuses verifies
+// bucket=product_side with no status param returns every open, non-terminal
+// issue currently on a PRODUCT_SIDE status.
+func TestListIssuesBucketProductSideIncludesAllProductSideStatuses(t *testing.T) {
+	pool := testPool(t)
+	seedIssuesFixture(t, pool)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
+
+	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&bucket=product_side", nil)
+	rec := httptest.NewRecorder()
+	h.ListIssues(rec, req)
+
+	// 101 (In Progress), 103 (Open), 104 (In Progress) are open/non-terminal
+	// and PRODUCT_SIDE; 108 is In Progress but CLOSED, excluded by base scope.
+	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{101, 103, 104})
+}
+
+// TestListIssuesBucketProductSideNarrowedByStatusParam verifies
+// bucket=product_side combined with an explicit status param narrows to
+// just that status instead of ignoring it (regression: the product_side
+// branch previously always overwrote status with the full PRODUCT_SIDE set,
+// dropping any equality filter the caller requested).
+func TestListIssuesBucketProductSideNarrowedByStatusParam(t *testing.T) {
+	pool := testPool(t)
+	seedIssuesFixture(t, pool)
+	h := NewIssuesHandler(pool, handlerTestConfig, appconfig.Default().API)
+
+	req := httptest.NewRequest(http.MethodGet, "/issues?repo=test-owner/test-issues&bucket=product_side&status=Open", nil)
+	rec := httptest.NewRecorder()
+	h.ListIssues(rec, req)
+
+	assertSameSet(t, numbersOf(decodeIssueList(t, rec)), []int{103})
+}
+
 // TestListIssuesBucketTracked verifies bucket=tracked returns issues with a
 // non-nil priority, within the base OPEN/non-TERMINAL scope.
 func TestListIssuesBucketTracked(t *testing.T) {

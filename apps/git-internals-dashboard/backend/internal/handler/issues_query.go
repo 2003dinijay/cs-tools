@@ -197,8 +197,14 @@ func buildIssuesWhere(csStatuses, productSideStatuses []string, q issuesQuery) (
 	case "product_side":
 		// Mirrors overview.go's hero.productSide count: base open/non-terminal
 		// scope (sla stays "notTerminal"), narrowed to statuses currently
-		// categorized PRODUCT_SIDE.
-		status = statusFilter{mode: "in", values: productSideStatuses}
+		// categorized PRODUCT_SIDE. As with "cs" above, narrow to a single
+		// status when one is requested, otherwise show all PRODUCT_SIDE
+		// statuses.
+		if q.Status != "" && slices.Contains(productSideStatuses, q.Status) {
+			status = statusFilter{mode: "eq", value: q.Status}
+		} else {
+			status = statusFilter{mode: "in", values: productSideStatuses}
+		}
 	case "tracked":
 		priority = priorityFilter{mode: "notNull"}
 	case "untracked":
