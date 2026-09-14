@@ -18,7 +18,9 @@ import type { ReactNode } from "react";
 import { Box, MenuItem, Select, type SelectChangeEvent } from "@mui/material";
 import { Outlet, useSearchParams } from "react-router";
 import { useOverview } from "@api/hooks";
+import { FetchProgressBar, FetchProgressProvider } from "@components/FetchProgressBar";
 import { SyncButton } from "@components/SyncButton";
+import { useFetchProgressActive } from "@lib/fetchProgress";
 
 const PRIORITY_OPTIONS = [
   { value: "Critical(P1)", label: "Critical · P1" },
@@ -77,6 +79,15 @@ function Logo() {
 
 /** The signed-in app frame: top nav with global repo/priority filters, routed content below. */
 export default function AppShell({ children }: { children?: ReactNode }) {
+  return (
+    <FetchProgressProvider>
+      <AppShellContent>{children}</AppShellContent>
+    </FetchProgressProvider>
+  );
+}
+
+function AppShellContent({ children }: { children?: ReactNode }) {
+  const progressActive = useFetchProgressActive();
   const [params, setParams] = useSearchParams();
   const repo = params.get("repo") ?? undefined;
   const priority = params.get("priority") ?? undefined;
@@ -98,6 +109,7 @@ export default function AppShell({ children }: { children?: ReactNode }) {
     // Acrylic radial-gradient body backdrop (see theme/global.css); an
     // opaque background on this wrapper would hide it completely.
     <Box sx={{ minHeight: "100vh", color: "var(--sla-fg)" }}>
+      <FetchProgressBar active={progressActive} />
       <Box
         component="header"
         sx={{

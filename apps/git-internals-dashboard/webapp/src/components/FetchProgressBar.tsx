@@ -14,15 +14,33 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import { useState, type ReactNode } from "react";
 import { LinearProgress } from "@mui/material";
+import { ActiveContext, SetActiveContext } from "@lib/fetchProgress";
+
+/**
+ * Holds whether any routed page is currently showing placeholder data while a
+ * background refetch is in flight. Wraps AppShell so the progress bar it
+ * renders (pinned above the sticky header) can reflect the state of whatever
+ * page is mounted below it via `useReportFetchProgress`.
+ */
+export function FetchProgressProvider({ children }: { children: ReactNode }) {
+  const [active, setActive] = useState(false);
+  return (
+    <ActiveContext.Provider value={active}>
+      <SetActiveContext.Provider value={setActive}>{children}</SetActiveContext.Provider>
+    </ActiveContext.Provider>
+  );
+}
 
 /**
  * Thin, non-intrusive indicator that a background refetch is in flight while
- * `keepPreviousData` keeps the prior filter's data on screen. Absolutely
- * positioned against a `position: relative` ancestor so it reserves no
- * layout space and never shifts content.
+ * `keepPreviousData` keeps the prior filter's data on screen. Fixed to the
+ * top edge of the viewport, above AppShell's sticky header, so it never
+ * reserves layout space and reads as "the page is busy" rather than "this
+ * one row is busy".
  */
 export function FetchProgressBar({ active }: { active: boolean }) {
   if (!active) return null;
-  return <LinearProgress sx={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, zIndex: 1 }} />;
+  return <LinearProgress sx={{ position: "fixed", top: 0, left: 0, right: 0, height: 2, zIndex: 30 }} />;
 }

@@ -18,7 +18,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FetchProgressBar, FetchProgressProvider } from "@components/FetchProgressBar";
+import { useFetchProgressActive } from "@lib/fetchProgress";
 import DashboardPage from "./DashboardPage";
+
+// Mirrors how AppShell wires the page-reported placeholder-data state into
+// the progress bar it renders above its own header — DashboardPage itself no
+// longer renders a progress bar in its own DOM.
+function ProgressBarHost() {
+  const active = useFetchProgressActive();
+  return <FetchProgressBar active={active} />;
+}
 
 /** Builds a 200 OK Response with a JSON body, for mocking fetch. */
 function jsonResponse(body: unknown): Response {
@@ -75,7 +85,10 @@ function renderDashboardPage(fetchMock: ReturnType<typeof vi.fn>) {
   const router = createMemoryRouter([{ path: "/", element: <DashboardPage /> }], { initialEntries: ["/"] });
   render(
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <FetchProgressProvider>
+        <ProgressBarHost />
+        <RouterProvider router={router} />
+      </FetchProgressProvider>
     </QueryClientProvider>,
   );
   return router;

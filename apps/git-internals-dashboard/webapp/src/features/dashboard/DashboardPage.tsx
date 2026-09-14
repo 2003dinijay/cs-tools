@@ -18,10 +18,10 @@ import { useNavigate, useSearchParams } from "react-router";
 import { Box, Skeleton } from "@mui/material";
 import { useOverview, useTaxonomy, makeIsCsStatus } from "@api/hooks";
 import { ErrorState } from "@components/ErrorState";
-import { FetchProgressBar } from "@components/FetchProgressBar";
 import { StaleDataAlert } from "@components/StaleDataAlert";
 import { UnknownStatusAlert } from "@components/UnknownStatusAlert";
 import { errorMessage } from "@lib/apiError";
+import { useReportFetchProgress } from "@lib/fetchProgress";
 import { HeroCard, CsHeroCard } from "@components/HeroCard";
 import { ProjectCard } from "@components/ProjectCard";
 import { PriorityTierCard } from "@components/PriorityTierCard";
@@ -74,6 +74,7 @@ export default function DashboardPage() {
   const priority = params.get("priority") ?? undefined;
 
   const { data: overview, isLoading, isPlaceholderData, isError, error, errorUpdatedAt, refetch } = useOverview(repo, priority);
+  useReportFetchProgress(isPlaceholderData);
   const { data: taxonomy } = useTaxonomy();
   const isCsStatus = makeIsCsStatus(taxonomy?.csStatuses);
 
@@ -149,9 +150,7 @@ export default function DashboardPage() {
   const repoForId = (id: number) => overview.projects.find((p) => p.repoId === id)?.repo;
 
   return (
-    <Box sx={{ position: "relative" }} aria-busy={isPlaceholderData}>
-      <FetchProgressBar active={isPlaceholderData} />
-
+    <Box aria-busy={isPlaceholderData}>
       {isError && overview && (
         <StaleDataAlert key={errorUpdatedAt} message={errorMessage(error, "Failed to refresh the dashboard")} />
       )}

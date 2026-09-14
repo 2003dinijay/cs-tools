@@ -21,9 +21,9 @@ import { useOverview, useIssues, useIssueTitles, useTaxonomy, makeIsCsStatus } f
 import type { BucketKey } from "@api/types";
 import { BackButton } from "@components/BackButton";
 import { ErrorState } from "@components/ErrorState";
-import { FetchProgressBar } from "@components/FetchProgressBar";
 import { StaleDataAlert } from "@components/StaleDataAlert";
 import { errorMessage } from "@lib/apiError";
+import { useReportFetchProgress } from "@lib/fetchProgress";
 import { IssueTimelineRow } from "@components/IssueTimelineRow";
 import { gridTemplate } from "@lib/grid";
 import { acrylicSurfaceSx } from "@lib/surfaces";
@@ -147,6 +147,7 @@ export default function IssuesPage() {
     order: "budget_desc",
     limit: 200,
   });
+  useReportFetchProgress(isPlaceholderData);
 
   const issueIds = (issues ?? []).map((i) => i.id);
   const { data: titles, isPending: titlesPending } = useIssueTitles(issueIds);
@@ -162,8 +163,7 @@ export default function IssuesPage() {
   const cols = gridTemplate(true);
 
   return (
-    <Box sx={{ position: "relative" }} aria-busy={isPlaceholderData}>
-      <FetchProgressBar active={isPlaceholderData} />
+    <Box aria-busy={isPlaceholderData}>
       <BackButton />
 
       {isError && issues && (
