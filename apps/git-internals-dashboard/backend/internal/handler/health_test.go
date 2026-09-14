@@ -48,7 +48,7 @@ type readyBody struct {
 // a nil pool must not panic or change the response.
 func TestGetHealthzAlwaysReturnsOk(t *testing.T) {
 	h := NewHealthHandler(nil, appconfig.Default().Readiness)
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
 	h.GetHealthz(rec, req)
@@ -73,7 +73,7 @@ func TestGetReadyzReadyPath(t *testing.T) {
 	pool := testPool(t)
 	h := NewHealthHandler(pool, appconfig.Default().Readiness)
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 	h.GetReadyz(rec, req)
 
@@ -105,7 +105,7 @@ func TestGetReadyzUnreachableDBReturns503(t *testing.T) {
 	pool.Close()
 	h := NewHealthHandler(pool, appconfig.Default().Readiness)
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 	h.GetReadyz(rec, req)
 
@@ -133,7 +133,7 @@ func TestGetReadyzResponseNeverLeaksConnectionDetails(t *testing.T) {
 	pool.Close()
 	h := NewHealthHandler(pool, appconfig.Default().Readiness)
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 	h.GetReadyz(rec, req)
 
@@ -165,7 +165,7 @@ func TestGetReadyzCachesWithinTTLAndRecomputesAfter(t *testing.T) {
 	h := NewHealthHandler(pool, cfg)
 
 	get := func() {
-		req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil)
 		rec := httptest.NewRecorder()
 		h.GetReadyz(rec, req)
 		if rec.Code != http.StatusOK {
@@ -217,7 +217,7 @@ func TestGetReadyzPoolSaturatedSkipsPing(t *testing.T) {
 	cfg.PoolSaturationThresholdPercent = 100
 	h := NewHealthHandler(saturated, cfg)
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
 	start := time.Now()
@@ -250,7 +250,7 @@ func TestReadyzDrainingReturns503WhileHealthzStaysOk(t *testing.T) {
 	h := NewHealthHandler(pool, appconfig.Default().Readiness)
 	h.BeginDraining()
 
-	readyReq := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	readyReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil)
 	readyRec := httptest.NewRecorder()
 	h.GetReadyz(readyRec, readyReq)
 
@@ -265,7 +265,7 @@ func TestReadyzDrainingReturns503WhileHealthzStaysOk(t *testing.T) {
 		t.Errorf("expected status=draining, got %q", body.Status)
 	}
 
-	healthReq := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	healthReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", nil)
 	healthRec := httptest.NewRecorder()
 	h.GetHealthz(healthRec, healthReq)
 	if healthRec.Code != http.StatusOK {

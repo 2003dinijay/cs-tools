@@ -17,6 +17,7 @@
 package appconfig
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -256,15 +257,27 @@ func (r rawReadiness) resolve(d Readiness) Readiness {
 // is no bare "absent vs explicit zero" ambiguity to preserve here — an
 // arbitrary string-keyed map has no fixed set of legal keys, so "merge onto
 // defaults" is the only sensible resolution rule.
-func resolveSecurityHeaders(raw, defaults SecurityHeaders) SecurityHeaders {
+//
+// Two raw keys that canonicalize to the same header name (e.g.
+// "X-Frame-Options" and "x-frame-options" both present) are rejected rather
+// than merged: Go map iteration order over raw would otherwise pick one of
+// them nondeterministically, so two replicas loading the same file could
+// emit different headers.
+func resolveSecurityHeaders(raw, defaults SecurityHeaders) (SecurityHeaders, error) {
 	merged := make(SecurityHeaders, len(defaults)+len(raw))
 	for k, v := range defaults {
 		merged[http.CanonicalHeaderKey(k)] = v
 	}
+	rawKeys := make(map[string]string, len(raw))
 	for k, v := range raw {
-		merged[http.CanonicalHeaderKey(k)] = v
+		canonical := http.CanonicalHeaderKey(k)
+		if other, ok := rawKeys[canonical]; ok {
+			return nil, fmt.Errorf("securityHeaders: %q and %q both canonicalize to %q — keep only one", other, k, canonical)
+		}
+		rawKeys[canonical] = k
+		merged[canonical] = v
 	}
-	return merged
+	return merged, nil
 }
 
 // rawConfig is the direct YAML unmarshal target; every section stays raw so
@@ -284,8 +297,12 @@ type rawConfig struct {
 	Readiness       rawReadiness    `yaml:"readiness"`
 }
 
-func (r rawConfig) resolve() Config {
+func (r rawConfig) resolve() (Config, error) {
 	d := Default()
+	securityHeaders, err := resolveSecurityHeaders(r.SecurityHeaders, d.SecurityHeaders)
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		Server:          r.Server.resolve(d.Server),
 		Database:        r.Database,
@@ -294,9 +311,9 @@ func (r rawConfig) resolve() Config {
 		Jobs:            r.Jobs.resolve(d.Jobs),
 		Seed:            r.Seed.resolve(d.Seed),
 		API:             r.API.resolve(d.API),
-		SecurityHeaders: resolveSecurityHeaders(r.SecurityHeaders, d.SecurityHeaders),
+		SecurityHeaders: securityHeaders,
 		Readiness:       r.Readiness.resolve(d.Readiness),
-	}
+	}, nil
 }
 
 // ResolvedPath returns the path Load will read from: APP_CONFIG_PATH when
@@ -340,11 +357,16 @@ func Load() (Config, error) {
 	}
 
 	var parsed rawConfig
-	if err := yaml.Unmarshal(raw, &parsed); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&parsed); err != nil {
 		return Config{}, fmt.Errorf("invalid app config at %s: %w", path, err)
 	}
 
-	cfg := parsed.resolve()
+	cfg, err := parsed.resolve()
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid app config at %s: %w", path, err)
+	}
 	if err := Validate(&cfg); err != nil {
 		return Config{}, fmt.Errorf("invalid app config at %s: %w", path, err)
 	}

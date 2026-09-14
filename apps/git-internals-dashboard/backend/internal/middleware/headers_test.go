@@ -17,6 +17,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -37,7 +38,7 @@ func TestSecurityHeadersSetOnSuccessResponse(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/issues", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/issues", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -58,7 +59,7 @@ func TestSecurityHeadersPassesRequestThrough(t *testing.T) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -80,7 +81,7 @@ func TestSecurityHeadersSetOnNotFound(t *testing.T) {
 	})
 	handler := SecurityHeaders(testHeaders)(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/does-not-exist", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/does-not-exist", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -99,7 +100,7 @@ func TestSecurityHeadersSetOnErrorEnvelope(t *testing.T) {
 		apierror.ValidationFailed(w, "bad request")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/issues", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/issues", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -122,7 +123,7 @@ func TestSecurityHeadersSetOnCORSPreflight(t *testing.T) {
 	})
 	handler := SecurityHeaders(testHeaders)(CORS([]string{"https://frontend.example.com"})(inner))
 
-	req := httptest.NewRequest(http.MethodOptions, "/issues", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, "/issues", nil)
 	req.Header.Set("Origin", "https://frontend.example.com")
 	req.Header.Set("Access-Control-Request-Method", "GET")
 	rec := httptest.NewRecorder()
@@ -147,7 +148,7 @@ func TestSecurityHeadersEmptyConfigSetsNothing(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

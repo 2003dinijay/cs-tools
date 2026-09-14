@@ -94,6 +94,23 @@ func TestLoadMalformedYAMLReturnsError(t *testing.T) {
 	}
 }
 
+// TestLoadUnknownFieldRejected verifies a typo'd or unrecognized key
+// (e.g. an operator misspelling readiness.cacheTTLSeconds) fails loading
+// instead of being silently ignored and leaving the intended field at its
+// default.
+func TestLoadUnknownFieldRejected(t *testing.T) {
+	path := writeConfig(t, "readiness:\n  cacheTTSeconds: 5\n")
+	t.Setenv("APP_CONFIG_PATH", path)
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected an error for an unknown config key")
+	}
+	if !strings.Contains(err.Error(), "invalid app config at") {
+		t.Errorf("expected 'invalid app config at' in error, got: %v", err)
+	}
+}
+
 // TestLoadExplicitZeroRejected proves the raw-pointer idiom works: an
 // explicit 0 for a field that must be positive is not silently replaced by
 // its default — it reaches Validate and fails.
@@ -237,6 +254,24 @@ func TestLoadSecurityHeadersCaseInsensitiveOverride(t *testing.T) {
 	}
 	if got := cfg.SecurityHeaders["X-Frame-Options"]; got != "SAMEORIGIN" {
 		t.Errorf("expected X-Frame-Options=SAMEORIGIN (overridden via lowercase YAML key), got %q", got)
+	}
+}
+
+// TestLoadSecurityHeadersCaseVariantCollisionRejected verifies that two RAW
+// keys in the same file which canonicalize to the same header name (as
+// opposed to one raw key overriding a default, covered above) are rejected
+// rather than merged — Go map iteration order over raw would otherwise pick
+// one of them nondeterministically.
+func TestLoadSecurityHeadersCaseVariantCollisionRejected(t *testing.T) {
+	path := writeConfig(t, "securityHeaders:\n  X-Frame-Options: DENY\n  x-frame-options: SAMEORIGIN\n")
+	t.Setenv("APP_CONFIG_PATH", path)
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected an error for case-variant duplicate securityHeaders keys")
+	}
+	if !strings.Contains(err.Error(), "invalid app config at") {
+		t.Errorf("expected 'invalid app config at' in error, got: %v", err)
 	}
 }
 
