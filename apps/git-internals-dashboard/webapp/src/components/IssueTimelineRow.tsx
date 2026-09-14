@@ -14,7 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/IssueTimelineRow.tsx.
 import { useState } from "react";
 import { Box, Skeleton } from "@mui/material";
 import { useIssue } from "@api/hooks";

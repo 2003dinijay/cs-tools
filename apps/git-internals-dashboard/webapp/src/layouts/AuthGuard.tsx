@@ -14,13 +14,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Route wrapper that redirects unauthenticated users to sign-in. Simplified
-// from csm-portal's AuthGuard.tsx (SPEC §11): this app has no entitlement
-// gate — any signed-in org user is authorized (D7) — so there is no
-// CurrentUserProvider/"/users/me" check and no silent-sign-in retry loop.
-// It does keep csm-portal's sign-out latch (below), minus that file's
-// separate "explicit sign-out" tracking — this app has no sign-out action
-// to distinguish from a transient `isSignedIn` flip.
+// Route wrapper that redirects unauthenticated users to sign-in. This app
+// has no entitlement gate — any signed-in org user is authorized — so there
+// is no CurrentUserProvider/"/users/me" check and no silent-sign-in retry
+// loop. It does keep a sign-out latch (below) to absorb a transient
+// `isSignedIn` flip; since this app has no sign-out action of its own, a
+// real sign-out and that transient flip are handled by the same
+// grace-period logic (REAUTH_GRACE_MS) rather than tracked separately.
 import { type JSX, type ReactNode, useEffect, useRef, useState } from "react";
 import { useAsgardeo } from "@asgardeo/react";
 import { ProtectedRoute } from "@asgardeo/react-router";
@@ -119,13 +119,13 @@ export default function AuthGuard(): JSX.Element {
   // `AuthBridge`/`AppShell`) for as long as `isSignedIn` is false, however
   // briefly and however recoverable — a full React-level unmount that
   // remounts `SignInRedirect` fresh, re-arming its `started` guard and
-  // firing `signIn()` again. Ported from csm-portal's AuthGuard.tsx, which
-  // hit this live: a transient `isSignedIn` flip (there, a token-clock
-  // check) destroyed in-progress work on every occurrence, and — as
-  // reproduced against this app's own Asgardeo tenant — the flip can recur
-  // continuously, since `AsgardeoProvider`'s post-sign-in bookkeeping
-  // re-fires from the remounted `SignInRedirect` every time, turning a
-  // single flip into an unbounded loop.
+  // firing `signIn()` again. `AsgardeoProvider` is known to flip
+  // `isSignedIn` to false transiently, as part of its own internal
+  // bookkeeping and independent of any real sign-out. As reproduced against
+  // this app's own Asgardeo tenant, that flip can recur continuously: each
+  // remount of `SignInRedirect` re-triggers `AsgardeoProvider`'s
+  // post-sign-in bookkeeping, which flips `isSignedIn` again — turning a
+  // single transient flip into an unbounded remount/sign-in loop.
   //
   // The latch is NOT permanent, though: a `false` reading that survives
   // REAUTH_GRACE_MS (below) is treated as a real sign-out, not the transient

@@ -14,8 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/views/DashboardPage.tsx (Next's useRouter/useSearchParams
-// -> react-router's useNavigate/useSearchParams).
 import { useNavigate, useSearchParams } from "react-router";
 import { Box, Skeleton } from "@mui/material";
 import { useOverview, useTaxonomy, makeIsCsStatus } from "@api/hooks";

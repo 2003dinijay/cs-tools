@@ -37,14 +37,12 @@ import "@theme/global.css";
 // nested silent sign-in, recursively. This app is never legitimately
 // embedded by anything else, so `window.self !== window.top`
 // unambiguously means "I am the SDK's own hidden recovery iframe," not a
-// real embedding scenario to support. Ported from csm-portal's
-// AppWithConfig.tsx, which hit this live (a single token expiry cascaded
-// into 7 nested iframe loads).
+// real embedding scenario to support.
 const isInsideHiddenAuthIframe = typeof window !== "undefined" && window.self !== window.top;
 
 /**
- * Retries only on 502 (Bad Gateway) and 503 (Service Unavailable) — matches
- * csm-portal's shouldRetryQuery (SPEC §11).
+ * Retries only on 502 (Bad Gateway) and 503 (Service Unavailable) — transient
+ * upstream failures — and gives up after 2 attempts.
  */
 function shouldRetryQuery(failureCount: number, error: Error): boolean {
   if (failureCount >= 2) return false;
@@ -79,13 +77,11 @@ export default function AppWithConfig(): JSX.Element {
         // AsgardeoProvider otherwise calls Asgardeo's own `/scim2/Me` and
         // `/api/users/v1/me/organizations` on every session to populate
         // `user`/`userProfile`/`myOrganizations` — endpoints gated behind the
-        // `internal_login` scope, which this app doesn't request (D7: no
-        // entitlement gate, any signed-in org user is authorized). Without
-        // it those calls 403 forever. This app never reads that state (no
-        // CurrentUserProvider/"/users/me" check — see AuthGuard.tsx), so
-        // there's nothing to lose by not fetching it. Matches csm-portal's
-        // AppWithConfig.tsx, which disables the same two flags for the same
-        // reason.
+        // `internal_login` scope, which this app doesn't request: there's no
+        // entitlement gate here, any signed-in org user is authorized.
+        // Without it those calls 403 forever. This app never reads that
+        // state (no CurrentUserProvider/"/users/me" check — see
+        // AuthGuard.tsx), so there's nothing to lose by not fetching it.
         user: {
           fetchUserProfile: false,
           fetchOrganizations: false,

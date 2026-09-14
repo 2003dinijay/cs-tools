@@ -15,11 +15,10 @@
 // under the License.
 
 // Typed fetch wrapper: bearer attachment, error-envelope parsing, 401 ->
-// sign-in. Port of v3's src/lib/api.ts `request()`, adapted for D3's uniform
-// error envelope ({"error":{"code","message"}}) and a real cross-origin
-// backend base URL (v3 called its own same-origin Next.js API routes;
-// this app calls a separate Go service, so every request needs an absolute
-// URL — SPEC §10's GID_BACKEND_BASE_URL).
+// sign-in. The backend returns errors in a uniform envelope
+// ({"error":{"code","message"}}) and lives at a separate origin from this
+// app, so every request needs an absolute URL, built from the configured
+// GID_BACKEND_BASE_URL.
 import { windowConfig } from "@config/windowConfig";
 
 export class ApiError extends Error {
@@ -35,8 +34,8 @@ export class ApiError extends Error {
 }
 
 // Module-level bridges so this plain-fetch client doesn't need React
-// context (mirrors v3's src/lib/auth-token.ts) — wired up once from
-// AuthGuard's AuthBridge, which does have access to useAsgardeo().
+// context — wired up once from AuthGuard's AuthBridge, which does have
+// access to useAsgardeo().
 type TokenGetter = () => Promise<string>;
 let tokenGetter: TokenGetter | null = null;
 /** Wires (or clears, on `null`) the getter `request()` uses to attach a bearer token. */
@@ -64,7 +63,7 @@ interface ErrorEnvelope {
   error?: { code?: string; message?: string };
 }
 
-/** Fetches `${backendBaseUrl}${path}`, attaching a bearer token and parsing the D3 error envelope on failure. */
+/** Fetches `${backendBaseUrl}${path}`, attaching a bearer token and parsing the error envelope on failure. */
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // backendBaseUrl() throws for a non-HTTPS, non-loopback URL — checked
   // before requesting a token so an insecure GID_BACKEND_BASE_URL can never
@@ -74,8 +73,8 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${baseUrl}${path}`, {
     ...init,
     headers: {
-      // AUDIT-FINDINGS B8: only a request with a body has a body type to
-      // declare — a bodyless GET shouldn't send Content-Type.
+      // Only a request with a body has a body type to declare — a bodyless
+      // GET shouldn't send Content-Type.
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
       ...init?.headers,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),

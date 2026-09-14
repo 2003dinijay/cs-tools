@@ -14,7 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/TimeseriesChart.tsx.
 import { useState } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { Box } from "@mui/material";
@@ -116,7 +115,7 @@ export function TimeseriesChart({ repo, activePriority, onPriorityFilter }: Time
       return row;
     }) ?? [];
 
-  // Today's value for a series, for the legend's trailing number.
+  // Last point in the series' window, for the legend's trailing number.
   const last = (key: string) => {
     const s = data?.series.find((x) => x.key === key);
     return s ? s.points[s.points.length - 1] ?? 0 : 0;

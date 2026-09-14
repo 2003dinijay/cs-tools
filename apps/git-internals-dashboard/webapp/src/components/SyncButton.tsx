@@ -14,8 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/SyncButton.tsx (POST /api/sync/manual ->
-// POST /sync/runs, D3).
 import { useState } from "react";
 import { RefreshCw } from "@wso2/oxygen-ui-icons-react";
 import { Box, IconButton } from "@mui/material";
@@ -42,7 +40,7 @@ function oldestLastSynced(repos: Array<{ lastSyncedAt: string | null }>): string
   return times.reduce((oldest, t) => (t < oldest ? t : oldest));
 }
 
-/** Manual-sync trigger button, showing last-synced time and in-flight/error state. */
+/** Manual-sync trigger button: triggers a POST /sync/runs run and shows last-synced time and in-flight/error state. */
 export function SyncButton() {
   const { data: status } = useSyncStatus();
   const [transientMessage, setTransientMessage] = useState<string | null>(null);

@@ -14,8 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/views/IssuesPage.tsx (Next's useRouter/useSearchParams ->
-// react-router's useNavigate/useSearchParams).
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Box, MenuItem, Select, Skeleton, type SelectChangeEvent } from "@mui/material";

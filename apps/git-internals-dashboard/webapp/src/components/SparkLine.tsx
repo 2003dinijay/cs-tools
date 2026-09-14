@@ -14,7 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/SparkLine.tsx.
 interface SparkLineProps {
   points: number[];
   color: string;
@@ -22,7 +21,9 @@ interface SparkLineProps {
   height?: number;
 }
 
-// Inline SVG polyline matching the design comp (92x28 viewport, non-scaling stroke).
+// Inline SVG polyline, sized to a 92x28 viewBox by default. preserveAspectRatio="none"
+// lets the viewBox stretch to fill its container, so the stroke uses
+// vectorEffect="non-scaling-stroke" below to stay a constant width under that stretch.
 export function SparkLine({ points, color, width = 92, height = 28 }: SparkLineProps) {
   if (points.length < 2) return <svg width={width} height={height} />;
   const max = Math.max(...points, 1);

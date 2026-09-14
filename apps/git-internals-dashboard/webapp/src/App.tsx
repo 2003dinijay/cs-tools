@@ -14,10 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Routes: / (dashboard), /issues, catch-all -> redirect to / (SPEC §11).
-// Eagerly imported pages (csm-portal's no-lazy rule) — this app ships as one
-// small bundle, so there is no route-chunking cost to avoid in the first
-// place.
+// Routes: / (dashboard), /issues, catch-all -> redirect to /.
+// Eagerly imported pages — this app ships as one small bundle, so there is
+// no route-chunking cost to avoid in the first place.
 import { Navigate, Route, Routes } from "react-router";
 import AuthGuard from "@layouts/AuthGuard";
 import DashboardPage from "@features/dashboard/DashboardPage";

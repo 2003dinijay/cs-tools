@@ -14,7 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/ClosestToBreach.tsx.
 import { Box } from "@mui/material";
 import { useIssues } from "@api/hooks";
 import type { OverviewProject } from "@api/types";

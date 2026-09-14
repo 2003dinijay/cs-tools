@@ -14,8 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/layout/AppShell.tsx (Next's useRouter/
-// useSearchParams -> react-router's useSearchParams).
 import type { ReactNode } from "react";
 import { Box, MenuItem, Select, type SelectChangeEvent } from "@mui/material";
 import { Outlet, useSearchParams } from "react-router";

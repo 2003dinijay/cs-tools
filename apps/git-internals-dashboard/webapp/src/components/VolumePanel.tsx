@@ -14,7 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/VolumePanel.tsx.
 import { Box } from "@mui/material";
 import type { VolumeProject } from "@api/types";
 

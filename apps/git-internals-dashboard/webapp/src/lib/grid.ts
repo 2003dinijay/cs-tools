@@ -14,8 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/lib/grid.ts. Shared grid templates so issue-list headers
-// and rows stay aligned.
+// Shared grid templates so issue-list headers and rows stay aligned.
 export const gridTemplate = (showSlaState: boolean): string =>
   showSlaState
     ? "minmax(0,1fr) 158px 56px 168px 132px 150px 56px"

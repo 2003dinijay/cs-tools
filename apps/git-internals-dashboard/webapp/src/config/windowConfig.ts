@@ -14,10 +14,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Typed accessor for window.config (SPEC §10), loaded by index.html's
-// <script src="/config.js"> before this bundle runs. csm-portal pattern:
-// public/config.js is per-environment and gitignored — public/config.js.example
-// is the committed template.
+// Typed accessor for window.config, loaded by index.html's
+// <script src="/config.js"> before this bundle runs. public/config.js is
+// per-environment and gitignored; public/config.js.example is the
+// committed template.
 declare global {
   interface Window {
     config: {

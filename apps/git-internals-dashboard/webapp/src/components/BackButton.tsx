@@ -14,8 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/BackButton.tsx (Next's useRouter/useSearchParams
-// -> react-router's useNavigate/useSearchParams).
 import { Button } from "@mui/material";
 import { useNavigate, useSearchParams } from "react-router";
 

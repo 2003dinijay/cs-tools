@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// TanStack React Query hooks (SPEC §11). Port of v3's src/lib/api.ts hooks.
+// TanStack React Query hooks wrapping the api client's endpoint functions.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./endpoints";
 import type { IssueFilters } from "./types";
