@@ -347,13 +347,11 @@ function buildSecondaryItems(caseDetail: CsmCaseDetail): SecondaryItem[] {
   // meaningful while the ball is meant to be in the customer's court, so it's
   // enabled ONLY in those two states rather than blocked in a few — mirrors
   // the backend's own state gate in `RequestCaseUpdate` (409 outside these
-  // states). Also requires `assigneeIsMe`: the backend separately rejects a
-  // non-assignee with 403 (same ownership rule `CreateCaseComment` already
-  // enforces for public comments), so gating on state alone would let anyone
-  // open the dialog and fill it in only to hit a confusing 403 on submit.
+  // states). Not assignee-gated: any CS engineer working the case can request
+  // an update, same as workaround marking above — the backend has no
+  // ownership check on this endpoint.
   const requestUpdateStateAllowed = canRequestCaseUpdate(caseDetail);
-  const requestUpdateAllowed =
-    requestUpdateStateAllowed && caseDetail.assigneeIsMe;
+  const requestUpdateAllowed = requestUpdateStateAllowed;
 
   // Only a service request can be the "Originating service request" a change
   // request links back to (see the create form's picker), so the action is
@@ -391,9 +389,7 @@ function buildSecondaryItems(caseDetail: CsmCaseDetail): SecondaryItem[] {
       disabled: !requestUpdateAllowed,
       tooltip: !requestUpdateStateAllowed
         ? "Requesting an update is only available while the case is Awaiting info or has a proposed solution."
-        : !requestUpdateAllowed
-          ? "Only the assigned engineer can request an update on this case."
-          : undefined,
+        : undefined,
     },
     {
       key: "reassign_engineer",

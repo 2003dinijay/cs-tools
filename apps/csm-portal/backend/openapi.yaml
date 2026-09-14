@@ -277,14 +277,14 @@ paths:
   /cases/{id}/request-update:
     post:
       summary: >
-        Post a customer-visible "request update" nudge comment on a case. Only
-        the case's assigned engineer may call this, and only while the case is
-        awaiting_info or solution_proposed. The message is one of three fixed
-        reminder templates (first/second/final), automatically drawn from a
-        generic or migration wording set depending on the case's own
-        type/engagementType, or a caller-supplied custom message. The
-        category is always server-determined; it is never accepted from the
-        caller.
+        Post a customer-visible "request update" nudge comment on a case. Any
+        authenticated CS engineer may call this, not only the case's assigned
+        engineer, and only while the case is awaiting_info or
+        solution_proposed. The message is one of three fixed reminder
+        templates (first/second/final), automatically drawn from a generic or
+        migration wording set depending on the case's own type/engagementType,
+        or a caller-supplied custom message. The category is always
+        server-determined; it is never accepted from the caller.
       operationId: postCasesIdRequestUpdate
       parameters:
         - name: id
@@ -321,7 +321,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — the caller is not the case's assigned engineer.
+          description: Forbidden
           content:
             application/json:
               schema:
