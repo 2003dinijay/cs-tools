@@ -167,9 +167,9 @@ func TestLockReleasesAfterRunSoASubsequentCallCanAcquireIt(t *testing.T) {
 	}
 }
 
-// TestLockDropsConnectionWhenUnlockFails (AUDIT-FINDINGS A3): if
-// pg_advisory_unlock's Exec fails at release time, release() must drop the
-// dedicated connection rather than merely log — otherwise l.conn keeps
+// TestLockDropsConnectionWhenUnlockFails checks that when
+// pg_advisory_unlock's Exec fails at release time, release() drops the
+// dedicated connection rather than merely logging — otherwise l.conn keeps
 // pointing at a dead connection forever and every future acquire on this
 // instance fails, wedging sync/recompute cluster-wide until a restart.
 func TestLockDropsConnectionWhenUnlockFails(t *testing.T) {

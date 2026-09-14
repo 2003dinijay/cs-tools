@@ -15,7 +15,7 @@
 // under the License.
 
 // Package db holds the pgxpool connection pool and every hand-written SQL
-// query the backend issues (D5: no ORM, no sqlc). Package-level helpers here
+// query the backend issues (no ORM, no sqlc). Package-level helpers here
 // are transport-agnostic infrastructure only; domain writes live in
 // internal/ingest, internal/sync, and internal/jobs.
 package db

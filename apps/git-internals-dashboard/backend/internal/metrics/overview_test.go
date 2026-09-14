@@ -134,7 +134,7 @@ const metricsQuietFixtureRepo = "test-owner/test-metrics-quiet"
 
 // seedQuietRepoFixture creates an enabled repository with no issues at all —
 // the case where a repo has no current open non-terminal issue and must
-// still show up in Projects/Volume (SPEC §6.6 covers every enabled repo).
+// still show up in Projects/Volume, which cover every enabled repo.
 func seedQuietRepoFixture(t *testing.T, pool *pgxpool.Pool) (repositoryID int32) {
 	t.Helper()
 	ctx := context.Background()
@@ -218,8 +218,8 @@ func TestBuildOverviewProjectsCard(t *testing.T) {
 		t.Fatalf("BuildOverview: %v", err)
 	}
 
-	// Projects always reflects ALL enabled repos (SPEC §6.6), so we look up
-	// our fixture's row by name rather than asserting the whole list.
+	// Projects always reflects ALL enabled repos, so we look up our
+	// fixture's row by name rather than asserting the whole list.
 	p := findProject(overview.Projects, metricsFixtureRepo)
 	if p == nil {
 		t.Fatalf("expected a project entry for %s, got %+v", metricsFixtureRepo, overview.Projects)

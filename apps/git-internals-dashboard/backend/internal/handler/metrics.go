@@ -28,17 +28,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// overviewCacheTTL and timeseriesCacheTTL match SPEC §6.6/§6.7 exactly: a
-// 30s per-(repo,priority) cache for overview, 60s per-(repo,days,groupBy,
-// metric) for timeseries. Per-replica cache is acceptable — see SPEC's
-// comment requirement below.
+// overviewCacheTTL and timeseriesCacheTTL set a 30s per-(repo,priority)
+// cache for overview and a 60s per-(repo,days,groupBy,metric) cache for
+// timeseries. A per-replica cache is acceptable here (see MetricsHandler
+// below for why).
 const (
 	overviewCacheTTL   = 30 * time.Second
 	timeseriesCacheTTL = 60 * time.Second
 )
 
-// MetricsHandler serves GET /metrics/overview and GET /metrics/timeseries
-// (SPEC §6.6/§6.7). Responses are cached in-memory per this replica only —
+// MetricsHandler serves GET /metrics/overview and GET /metrics/timeseries.
+// Responses are cached in-memory per this replica only —
 // under Choreo's multi-replica autoscaling a request can land on any
 // replica, so a cache hit/miss here is not cross-replica consistent, which
 // is fine: these are read-mostly aggregates a few seconds stale is harmless

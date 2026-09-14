@@ -34,7 +34,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// SyncHandler serves POST /sync/runs and GET /sync/status (SPEC §6.8/§6.9).
+// SyncHandler serves POST /sync/runs and GET /sync/status.
 // Shares the same *jobs.Lock as the recompute scheduler, so a manual sync
 // and a scheduled tick never interleave on this replica or any other.
 type SyncHandler struct {
@@ -55,7 +55,7 @@ func NewSyncHandler(pool *pgxpool.Pool, cfg *config.AppConfig, lock *jobs.Lock, 
 // POST /sync/runs handler — well above the server's default 30s
 // WriteTimeout/ReadTimeout, since a real sync fetches issue detail per
 // updated issue with a 150ms courtesy delay plus GraphQL round trips and can
-// easily exceed 30s over a few hundred issues (AUDIT-FINDINGS A4).
+// easily exceed 30s over a few hundred issues.
 const postSyncRunsDeadline = 15 * time.Minute
 
 // PostSyncRuns handles POST /sync/runs: triggers an incremental sync

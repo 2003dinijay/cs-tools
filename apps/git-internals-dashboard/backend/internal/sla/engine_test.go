@@ -14,8 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/server/db/sla.test.ts — every vector there has a direct
-// counterpart here, read line by line rather than sampled.
+// Test vectors for ComputeSla, StatusAsOf, and WithCurrentStatusBoundary,
+// covering budget accrual, coverage windows, terminal/reopen handling, and
+// the current-status boundary event.
 package sla
 
 import (

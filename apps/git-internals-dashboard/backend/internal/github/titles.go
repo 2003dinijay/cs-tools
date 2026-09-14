@@ -14,10 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/server/lib/issue-titles.ts. Runtime issue-title
-// resolution — PRIVACY: titles are never persisted; internal/handler's
-// titles.go is the only caller and the only endpoint allowed to return one
-// (SPEC's non-negotiable #1).
+// Runtime issue-title resolution — PRIVACY: titles are never persisted;
+// internal/handler's titles.go is the only caller and the only endpoint
+// allowed to return one.
 //
 // Flow: ids -> (owner, name, number) from OUR DB (handler's job) -> batched
 // GitHub GraphQL (aliased repository/issue lookups, <=100 issues per

@@ -49,11 +49,11 @@ type RepoRef struct {
 }
 
 // Context is everything IngestIssue needs beyond the (node, detail) pair
-// itself. This function is the ONLY write path for GitHub-derived data
-// (SPEC §8.5): the seed, the incremental sync, and any future webhook
-// handler all call it, and it must not know or care which transport
-// produced pair — that is the entire webhook-readiness requirement (D6). Do
-// not implement any webhook route.
+// itself. IngestIssue is the ONLY write path for GitHub-derived data: the
+// seed, the incremental sync, and any future webhook handler all call it,
+// and it must not know or care which transport produced pair — that keeps
+// it ready for a webhook handler to be added later without changing this
+// function. Do not implement any webhook route.
 type Context struct {
 	RepositoryID int32
 	SlaProjectID int32 // DB projects.id
@@ -78,8 +78,8 @@ type Result struct {
 var priorityRe = regexp.MustCompile(`^Priority/(.+)$`)
 
 // extractPriority reads the first "Priority/<tier>" label and discards the
-// rest — labels are read transiently to derive priority only (SPEC's
-// non-negotiable #1: no labels are ever persisted).
+// rest — labels are read transiently to derive priority only; no label
+// value is ever written to the database.
 func extractPriority(labels []string) *string {
 	for _, l := range labels {
 		if m := priorityRe.FindStringSubmatch(l); m != nil {
@@ -119,11 +119,10 @@ type normalizedEvent struct {
 	Status         *string
 }
 
-// IngestIssue is the transport-agnostic write path for one GitHub issue
-// (port of v3's ingestIssuePair, SPEC §8.5): priority extraction, scoped
-// current status, alias normalization, a guarded leading "derived" event,
-// event insert with dedupe, issue upsert, boundary reconciliation, computeSla,
-// and the issue_sla upsert.
+// IngestIssue is the transport-agnostic write path for one GitHub issue:
+// priority extraction, scoped current status, alias normalization, a
+// guarded leading "derived" event, event insert with dedupe, issue upsert,
+// boundary reconciliation, computeSla, and the issue_sla upsert.
 func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Context) (Result, error) {
 	node, detail := pair.Node, pair.Detail
 	normalize := ictx.Runtime.Normalize
@@ -283,13 +282,13 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 	// The leading event (if any) is marked source "derived" so every future
 	// consumer reproduces the same numbers from the DB alone.
 	//
-	// Batched (AUDIT-FINDINGS B2): one round trip for the whole event log
-	// instead of one Exec per event — same SQL, same conflict clause, same
-	// per-row RowsAffected counting. Incidental benefit: a pgx batch sent
-	// this way runs as one implicit transaction, so this issue's event log
-	// now writes all-or-nothing instead of possibly-partial on a mid-loop
-	// failure — a slice of B3's "transaction per issue" idea, delivered here
-	// without wrapping the rest of IngestIssue's writes.
+	// Batched: one round trip for the whole event log instead of one Exec
+	// per event — same SQL, same conflict clause, same per-row RowsAffected
+	// counting. Incidental benefit: a pgx batch sent this way runs as one
+	// implicit transaction, so this issue's event log now writes
+	// all-or-nothing instead of possibly-partial on a mid-loop failure,
+	// without needing to wrap the rest of IngestIssue's writes in the same
+	// transaction.
 	eventsInserted := 0
 	if len(persistedEvents) > 0 {
 		batch := &pgx.Batch{}

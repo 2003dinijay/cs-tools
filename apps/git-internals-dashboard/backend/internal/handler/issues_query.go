@@ -29,12 +29,12 @@ var (
 	repoParamRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 	// qParamRe caps at 9 digits: issues.github_number is a Postgres integer
 	// (max 2,147,483,647, 10 digits), so a 10-digit value could exceed
-	// int32 range even though it would just never match (AUDIT-FINDINGS
-	// B10) — 9 digits keeps every accepted value unambiguously in range.
+	// int32 range even though it would just never match anyway — 9 digits
+	// keeps every accepted value unambiguously in range.
 	qParamRe = regexp.MustCompile(`^\d{1,9}$`)
 )
 
-// issuesQuery is GET /issues's validated query params (SPEC §6.3).
+// issuesQuery is GET /issues's validated query params.
 type issuesQuery struct {
 	Repo     string
 	Priority string
@@ -47,10 +47,9 @@ type issuesQuery struct {
 	Order    string
 }
 
-// parseIssuesQuery validates v exactly per the SPEC §6.3 table and returns a
-// non-empty error message on the first violation found (unknown query
-// parameter names are ignored, matching v3's zod object schema, which has no
-// .strict() call).
+// parseIssuesQuery validates v and returns a non-empty error message on the
+// first violation found. Unknown query parameter names are intentionally
+// ignored rather than rejected.
 func parseIssuesQuery(v url.Values) (issuesQuery, string) {
 	q := issuesQuery{Limit: 200, Order: "updated_desc"}
 
@@ -155,15 +154,13 @@ type statusFilter struct {
 }
 
 // buildIssuesWhere translates q into a SQL WHERE clause body (without the
-// "WHERE" keyword) plus its parameter args — a precise port of v3's
-// src/app/api/issues/route.ts bucket switch: every bucket overrides the base
-// scope exactly as that switch statement does field-by-field (e.g. "cs"
-// clears the sla filter so NO_SLA issues on the CS side are included;
-// "attention" = VIOLATED ∪ AT_RISK ∪ current CS statuses). csStatuses and
-// productSideStatuses must be sortOrder-ascending status names categorized
-// CS_SIDE and PRODUCT_SIDE respectively.
+// "WHERE" keyword) plus its parameter args. Each bucket overrides the base
+// scope field-by-field (e.g. "cs" clears the sla filter so NO_SLA issues on
+// the CS side are included; "attention" = VIOLATED ∪ AT_RISK ∪ current CS
+// statuses). csStatuses and productSideStatuses must be sortOrder-ascending
+// status names categorized CS_SIDE and PRODUCT_SIDE respectively.
 func buildIssuesWhere(csStatuses, productSideStatuses []string, q issuesQuery) (string, []any) {
-	// Base scope (SPEC §6.3): open, non-terminal issues from enabled repos.
+	// Base scope: open, non-terminal issues from enabled repos.
 	state := "OPEN"
 	sla := slaFilter{mode: "notTerminal"}
 	var priority priorityFilter
@@ -208,7 +205,7 @@ func buildIssuesWhere(csStatuses, productSideStatuses []string, q issuesQuery) (
 	case "attention":
 		sla = slaFilter{mode: "none"}
 		attention = true
-	default: // "all" or unset — keep base scope; honour explicit params.
+	default: // "all" or unset — keep base scope; honor explicit params.
 		if q.SlaState != "" {
 			sla = slaFilter{mode: "eq", value: q.SlaState}
 		}

@@ -15,7 +15,7 @@
 // under the License.
 
 // Package jobs holds the cross-replica job mutex and the in-process
-// recompute scheduler (SPEC §8, port of v3's src/server/jobs/{lock,recompute}.ts).
+// recompute scheduler that keeps issue SLA state up to date.
 package jobs
 
 import (
@@ -112,16 +112,16 @@ func (l *Lock) release() {
 		// The advisory lock is scoped to this session. If we can't unlock it
 		// explicitly, closing the session releases it server-side anyway —
 		// otherwise every future acquire on every replica would see
-		// locked=false forever (AUDIT-FINDINGS A3). getConn reconnects
-		// lazily on the next attempt.
+		// locked=false forever. getConn reconnects lazily on the next
+		// attempt.
 		l.dropConn(unlockCtx)
 	}
 }
 
 // Running reports whether this replica currently holds the lock (the
-// in-process fast-path flag) — SPEC §6.9's GET /sync/status "running" field
-// reflects this replica's activity only; watermarks and lastRun come from
-// the DB and are shared across replicas.
+// in-process fast-path flag). The GET /sync/status "running" field reflects
+// this replica's activity only; watermarks and lastRun come from the DB and
+// are shared across replicas.
 func (l *Lock) Running() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

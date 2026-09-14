@@ -36,8 +36,8 @@ import (
 var graphQLPath = "https://api.github.com/graphql"
 
 // Overridable only by tests, so retry/pagination pacing tests don't take
-// real wall-clock seconds; production always uses the zero-value (real)
-// timings below.
+// real wall-clock seconds; production code never reassigns these and always
+// uses the real timings below.
 var (
 	gqlTimeout          = 60 * time.Second
 	gqlRetryBackoffUnit = 2 * time.Second
@@ -57,7 +57,7 @@ type httpClient struct {
 }
 
 // NewClient returns a Client that talks to the real GitHub GraphQL API using
-// token (a fine-grained PAT with Issues:Read + Projects:Read, SPEC §5.2).
+// token (a fine-grained PAT with Issues:Read + Projects:Read).
 func NewClient(token string) Client {
 	return &httpClient{token: token, endpoint: graphQLPath, hc: &http.Client{}}
 }
@@ -81,8 +81,8 @@ var nonRetryableStatuses = map[int]bool{
 	http.StatusUnprocessableEntity: true,
 }
 
-// gql posts one GraphQL request with a status-aware retry policy
-// (AUDIT-FINDINGS A5): 400/401/404/422 never retry; a 403/429 carrying
+// gql posts one GraphQL request with a status-aware retry policy:
+// 400/401/404/422 never retry; a 403/429 carrying
 // Retry-After sleeps that long (capped) instead of the default linear
 // backoff, so this client doesn't hammer through GitHub's secondary rate
 // limit — repeatedly doing so is what gets a PAT temporarily banned by
@@ -477,13 +477,11 @@ func (c *httpClient) FetchIssueDetail(ctx context.Context, owner, name string, n
 	return &IssueDetail{Number: number, Events: events, ProjectStatuses: projectStatuses}, nil
 }
 
-// strPtr returns a pointer to s.
 func strPtr(s string) *string { return &s }
 
 // SleepOrDone sleeps for d, or returns ctx.Err() early if ctx is canceled
-// first. Exported so internal/sync's own inter-issue pacing (AUDIT-FINDINGS
-// B4) doesn't need a second identical copy — sync already depends on this
-// package.
+// first. Exported so internal/sync's own inter-issue pacing doesn't need a
+// second identical copy — sync already depends on this package.
 func SleepOrDone(ctx context.Context, d time.Duration) error {
 	select {
 	case <-ctx.Done():

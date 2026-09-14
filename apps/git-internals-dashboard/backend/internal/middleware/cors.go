@@ -22,8 +22,8 @@ import "net/http"
 // Authorization carries the Asgardeo bearer access token the frontend
 // attaches to every request (see webapp's api/client.ts) — in a real
 // deployment this is validated by the Choreo gateway before the request ever
-// reaches this backend (D7: the backend itself parses no auth at all), but
-// the header still has to clear the browser's CORS preflight to get there.
+// reaches this backend, which itself parses no auth at all, but the header
+// still has to clear the browser's CORS preflight to get there.
 // Content-Type is required for JSON request bodies: application/json is not
 // a CORS-safelisted value, so a POST preflight fails without it.
 const corsAllowedHeaders = "Content-Type, Authorization"
@@ -33,7 +33,7 @@ const corsAllowedMethods = "GET, POST, OPTIONS"
 
 // CORS returns an HTTP middleware handling cross-origin browser requests. In
 // a real deployment Choreo's API gateway supplies these headers itself,
-// making this middleware a no-op there (D14); it matters only for local
+// making this middleware a no-op there; it matters only for local
 // development, where the webapp (Vite on :5173) calls this backend (:8080)
 // directly with no gateway in front of it.
 //
@@ -46,8 +46,9 @@ const corsAllowedMethods = "GET, POST, OPTIONS"
 // allowedOrigins is an allow-list of browser Origins; fail-closed by
 // default — an empty list allows *no* cross-origin browser request through
 // (Access-Control-Allow-Origin is never set, so the browser blocks it),
-// rather than reflecting any Origin back. This backend is authless (D7) and
-// has no cookie-based session for a browser to attach automatically, and
+// rather than reflecting any Origin back. This backend has no cookie-based
+// session for a browser to attach automatically — auth is a bearer token the
+// frontend attaches explicitly (see corsAllowedHeaders above) — and
 // Access-Control-Allow-Credentials is deliberately never set below, but
 // fail-closed is kept anyway as defense-in-depth rather than relying on that
 // precondition never changing. Local development sets this explicitly (see

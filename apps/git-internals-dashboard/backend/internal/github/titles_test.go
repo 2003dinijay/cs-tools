@@ -14,7 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/server/lib/issue-titles.test.ts.
+// Tests BuildTitlesQuery's repo/alias grouping and FetchTitles' batched
+// title resolution, including per-issue nulls vs whole-batch failures.
 package github
 
 import (

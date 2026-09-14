@@ -23,8 +23,7 @@ import (
 
 // ValidationError aggregates every rule violation found in one config, so a
 // misconfigured deploy sees every problem at once instead of fixing them one
-// failed boot at a time (port of schema.ts's superRefine, which collects all
-// zod issues rather than failing on the first).
+// failed boot at a time.
 type ValidationError struct {
 	Issues []string
 }
@@ -34,9 +33,9 @@ func (e *ValidationError) Error() string {
 	return "invalid SLA config:\n  " + strings.Join(e.Issues, "\n  ")
 }
 
-// Validate checks cfg against every rule schema.ts enforces: required
-// fields, valid enum values, numeric ranges, uniqueness, and alias targets.
-// Returns nil when cfg is valid.
+// Validate checks cfg against every configuration rule: required fields,
+// valid enum values, numeric ranges, uniqueness, and alias targets. Returns
+// nil when cfg is valid.
 func Validate(cfg *AppConfig) error {
 	var issues []string
 	add := func(format string, args ...any) {

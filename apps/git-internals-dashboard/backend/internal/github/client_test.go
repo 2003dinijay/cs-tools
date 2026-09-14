@@ -218,9 +218,9 @@ func TestTransportErrorUnwrapsToOriginalError(t *testing.T) {
 	}
 }
 
-// TestGqlDoesNotRetry401 (AUDIT-FINDINGS A5): an expired/invalid token fails
-// identically on every attempt, so retrying it 3 times with backoff is pure
-// waste — gql must give up after the first response.
+// TestGqlDoesNotRetry401 verifies an expired/invalid token fails identically
+// on every attempt, so retrying it 3 times with backoff is pure waste — gql
+// must give up after the first response.
 func TestGqlDoesNotRetry401(t *testing.T) {
 	fastTimings(t)
 	var calls int32
@@ -243,7 +243,7 @@ func TestGqlDoesNotRetry401(t *testing.T) {
 	}
 }
 
-// TestGqlHonorsRetryAfterOnSecondaryRateLimit (AUDIT-FINDINGS A5): a 403
+// TestGqlHonorsRetryAfterOnSecondaryRateLimit verifies a 403
 // secondary-rate-limit response carrying Retry-After must be waited out
 // exactly that long (capped), not hammered on the default linear schedule —
 // repeatedly ignoring Retry-After is what gets a PAT temporarily banned by
@@ -279,9 +279,9 @@ func TestGqlHonorsRetryAfterOnSecondaryRateLimit(t *testing.T) {
 	}
 }
 
-// TestGqlCapsRetryAfter (AUDIT-FINDINGS A5): an oversized Retry-After must
-// be capped rather than honored verbatim, so a misbehaving response can't
-// stall a sync indefinitely.
+// TestGqlCapsRetryAfter verifies an oversized Retry-After must be capped
+// rather than honored verbatim, so a misbehaving response can't stall a
+// sync indefinitely.
 func TestGqlCapsRetryAfter(t *testing.T) {
 	fastTimings(t) // gqlRetryAfterCap=50ms in tests; GitHub sends a huge Retry-After below
 

@@ -205,8 +205,8 @@ func StatusAsOf(events []StatusEvent, at time.Time) *string {
 }
 
 // WithCurrentStatusBoundary reconciles the event walk with the project-scoped
-// current status (the authoritative "final open interval" source — see SLA
-// domain rules, SPEC §7). It appends an in-memory boundary event when the
+// current status (the authoritative source for the final open interval). It
+// appends an in-memory boundary event when the
 // last event's status disagrees with currentStatus, splitting the final
 // interval at currentStatusAt. Never persisted: derived from
 // Issue.currentStatus/currentStatusAt on demand.

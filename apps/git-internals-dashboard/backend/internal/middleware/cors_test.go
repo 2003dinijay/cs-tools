@@ -81,9 +81,9 @@ func TestCORSRejectsDisallowedOrigin(t *testing.T) {
 // TestCORSNeverSetsAllowCredentials guards against reintroducing
 // Access-Control-Allow-Credentials: true alongside an unrestricted (or
 // reflected-any) Origin — that combination lets any site read authenticated
-// responses on the victim's behalf. This backend is authless (D7) and has no
-// cookie-based session for a browser to attach automatically, and no
-// legitimate reason to ever set this header — see the doc comment on CORS.
+// responses on the victim's behalf. This backend has no cookie-based session
+// for a browser to attach automatically, and no legitimate reason to ever
+// set this header — see the doc comment on CORS.
 func TestCORSNeverSetsAllowCredentials(t *testing.T) {
 	handler := CORS(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

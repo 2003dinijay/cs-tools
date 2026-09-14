@@ -40,13 +40,13 @@ const (
 	// titlesMaxBodyBytes bounds POST /issues/titles' request body before it is
 	// decoded. 200 ids as JSON ints is well under 4KB; 64KB is generous
 	// headroom without letting a client force a multi-hundred-MB allocation
-	// before the 1-200 length check ever runs (AUDIT-FINDINGS A1).
+	// before the 1-200 length check ever runs.
 	titlesMaxBodyBytes = 1 << 16
 )
 
-// TitlesHandler serves POST /issues/titles (SPEC §6.5). PRIVACY: titles are
-// resolved live from GitHub on every cache miss and cached in memory only —
-// never persisted to the database (SPEC's non-negotiable #1).
+// TitlesHandler serves POST /issues/titles. PRIVACY: titles are resolved
+// live from GitHub on every cache miss and cached in memory only — never
+// persisted to the database.
 type TitlesHandler struct {
 	pool        *pgxpool.Pool
 	githubToken string
@@ -72,10 +72,10 @@ type titlesResponseBody struct {
 }
 
 // PostTitles handles POST /issues/titles: body {"ids": [1,2,3]}, 1-200
-// positive ints. Resolution flow (port of issue-titles.ts): ids -> (owner,
-// name, number) from OUR DB -> batched GitHub GraphQL -> in-memory TTL
-// cache -> map. null per id when: no GITHUB_TOKEN, unknown id, synthetic
-// fixture, deleted issue, or GitHub failure.
+// positive ints. Resolution flow: ids -> (owner, name, number) from OUR DB
+// -> batched GitHub GraphQL -> in-memory TTL cache -> map. null per id when:
+// no GITHUB_TOKEN, unknown id, synthetic fixture, deleted issue, or GitHub
+// failure.
 func (h *TitlesHandler) PostTitles(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, titlesMaxBodyBytes)
 
@@ -105,7 +105,6 @@ func (h *TitlesHandler) PostTitles(w http.ResponseWriter, r *http.Request) {
 		result[strconv.Itoa(id)] = nil
 	}
 
-	// Resolve ids -> refs from OUR DB (never trust client-supplied repo/number).
 	refs, err := h.resolveRefs(r.Context(), body.IDs)
 	if err != nil {
 		apierror.Internal(w, r, "resolve issue titles refs failed", err)

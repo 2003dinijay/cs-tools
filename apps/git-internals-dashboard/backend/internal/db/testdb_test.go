@@ -25,9 +25,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// testPool connects to the docker-composed Postgres (SPEC §12) for DB-backed
-// tests. It skips the test (rather than failing) when the database is
-// unreachable, so `go test` still runs without Docker (SPEC §15).
+// testPool connects to the docker-composed Postgres for DB-backed tests. It
+// skips the test (rather than failing) when the database is unreachable, so
+// `go test` still runs without Docker.
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")

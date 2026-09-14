@@ -31,9 +31,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// IssuesHandler serves GET /issues and GET /issues/{id} (SPEC §6.3/§6.4).
+// IssuesHandler serves GET /issues and GET /issues/{id}.
 // Privacy: the row shape it returns carries no title, labels, assignees,
-// opener, or event actors — see SPEC's non-negotiable #1.
+// opener, or event actors.
 type IssuesHandler struct {
 	pool *pgxpool.Pool
 	cfg  *config.AppConfig
@@ -157,7 +157,7 @@ func (h *IssuesHandler) ListIssues(w http.ResponseWriter, r *http.Request) {
 
 	orderSQL := "i.github_updated_at DESC"
 	if q.Order == "budget_desc" {
-		// Uses the issue_sla.pct_consumed index (SPEC §4).
+		// Uses the issue_sla.pct_consumed index.
 		orderSQL = "s.pct_consumed DESC NULLS LAST"
 	}
 

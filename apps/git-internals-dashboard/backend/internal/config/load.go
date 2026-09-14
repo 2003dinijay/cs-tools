@@ -28,8 +28,7 @@ import (
 // rawSettings mirrors Settings but with every field optional (nil = absent
 // from the YAML), so a default is applied only when the key is missing
 // entirely — an explicit value, even an invalid one like 0, must reach
-// Validate rather than being silently replaced (port of zod's
-// z.number().default(...), which only substitutes on undefined).
+// Validate rather than being silently replaced.
 type rawSettings struct {
 	AtRiskThreshold          *float64 `yaml:"atRiskThreshold"`
 	RecomputeIntervalMinutes *int     `yaml:"recomputeIntervalMinutes"`
@@ -86,7 +85,7 @@ func configPath() string {
 	return filepath.Join("config", "sla-config.yaml")
 }
 
-// Load reads, parses, and validates the SLA config (SPEC §5.1). Every call
+// Load reads, parses, and validates the SLA config. Every call
 // re-reads the file from disk — callers that want a single immutable
 // snapshot for the process lifetime (the normal case) call this once at
 // boot and pass the result down, rather than relying on any hidden

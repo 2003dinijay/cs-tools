@@ -14,9 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Idempotent seed (SPEC §9, port of v3's seed/seed.ts). Resets the tables it
-// owns, then rebuilds from real GitHub data (if GITHUB_TOKEN is set) or
-// synthetic fixtures (if not). Run via `make seed`.
+// Idempotent seed. Resets the tables it owns, then rebuilds from real
+// GitHub data (if GITHUB_TOKEN is set) or synthetic fixtures (if not). Run
+// via `make seed`.
 //
 // PRIVACY: persists no titles, assignees, openers, labels, or actors.
 package main
@@ -242,8 +242,7 @@ func fatal(msg string, err error) {
 }
 
 // loadDotEnv reads a .env file and sets any unset environment variables from
-// it (csm-portal's loadDotEnv pattern). Silently ignored if the file does
-// not exist.
+// it. Silently ignored if the file does not exist.
 func loadDotEnv(path string) {
 	f, err := os.Open(path) // #nosec G304 -- path is always the hardcoded literal ".env" at the only call site
 	if err != nil {
@@ -275,7 +274,7 @@ func loadDotEnv(path string) {
 // replaying its reconciled event log (result.SlaEvents) as of each past
 // day's end, from max(the issue's first event, the snapshotDays window
 // start) through today. Never touched again after the seed writes it — the
-// recompute scheduler only ever upserts *today's* row (SPEC §8.2).
+// recompute scheduler only ever upserts *today's* row.
 func writeSnapshots(ctx context.Context, pool *pgxpool.Pool, pair ingest.Pair, result ingest.Result, repositoryID int32, now time.Time, snapshotDays int, runtime *ingest.RuntimeConfig) error {
 	firstMs := now
 	if len(result.SlaEvents) > 0 {

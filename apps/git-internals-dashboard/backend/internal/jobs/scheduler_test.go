@@ -177,10 +177,10 @@ func seedIngestedIssues(t *testing.T, pool *pgxpool.Pool, n int) (issueIDs []int
 	return issueIDs, repositoryID
 }
 
-// TestRunTickOnceWalksAllPagesViaKeysetPagination (AUDIT-FINDINGS B1): with
-// a page size smaller than the fixture set, RunTickOnce must still process
-// every issue exactly once — proving the i.id > lastID walk correctly
-// advances across page boundaries rather than looping or skipping rows.
+// TestRunTickOnceWalksAllPagesViaKeysetPagination verifies that with a page
+// size smaller than the fixture set, RunTickOnce still processes every
+// issue exactly once — proving the i.id > lastID walk correctly advances
+// across page boundaries rather than looping or skipping rows.
 func TestRunTickOnceWalksAllPagesViaKeysetPagination(t *testing.T) {
 	pool := testPool(t)
 	const pageSize, issueCount = 2, 5

@@ -44,10 +44,10 @@ func (w *committedResponseWriter) Write(b []byte) (int, error) {
 }
 
 // Unwrap exposes the underlying ResponseWriter so http.NewResponseController
-// (used by PostSyncRuns to extend its write deadline, AUDIT-FINDINGS A4) can
-// see through this wrapper — without it, SetWriteDeadline/SetReadDeadline
-// would silently no-op for every route, since Recovery is outermost in the
-// handler chain (cmd/server/main.go).
+// (used by PostSyncRuns to extend its write deadline) can see through this
+// wrapper — without it, SetWriteDeadline/SetReadDeadline would silently
+// no-op for every route, since Recovery is outermost in the handler chain
+// (cmd/server/main.go).
 func (w *committedResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
@@ -65,12 +65,11 @@ func Recovery(next http.Handler) http.Handler {
 				// own recovery suppresses the stack trace for it); recovering
 				// it here would instead turn a deliberate abort into a
 				// logged "panic recovered" plus an attempted write on a
-				// connection net/http already intends to drop
-				// (AUDIT-FINDINGS A6) — including a "superfluous
-				// WriteHeader" log if the downstream handler had already
-				// written headers before panicking, which is an acceptable
-				// side effect of re-panicking rather than something to
-				// guard against here.
+				// connection net/http already intends to drop — including a
+				// "superfluous WriteHeader" log if the downstream handler had
+				// already written headers before panicking, which is an
+				// acceptable side effect of re-panicking rather than
+				// something to guard against here.
 				if rec == http.ErrAbortHandler {
 					panic(rec)
 				}

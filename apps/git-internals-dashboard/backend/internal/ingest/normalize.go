@@ -15,9 +15,9 @@
 // under the License.
 
 // Package ingest is the transport-agnostic write path for GitHub-derived
-// data (SPEC §8.5): the seed, the incremental sync, and any future webhook
-// handler all normalize through it, so it must not know or care which
-// transport produced its input.
+// data: the seed, the incremental sync, and any future webhook handler all
+// normalize through it, so it must not know or care which transport
+// produced its input.
 package ingest
 
 import (
@@ -27,8 +27,8 @@ import (
 )
 
 // StatusNormalizer maps a raw board status string to its canonical taxonomy
-// name (port of normalize.ts's buildStatusNormalizer). One implementation
-// shared by the seed, the recompute job, and the incremental sync.
+// name. One implementation shared by the seed, the recompute job, and the
+// incremental sync.
 type StatusNormalizer func(status *string) *string
 
 // BuildStatusNormalizer builds a StatusNormalizer from the taxonomy's alias

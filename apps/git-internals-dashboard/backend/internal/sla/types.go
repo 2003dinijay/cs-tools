@@ -15,11 +15,10 @@
 // under the License.
 
 // Package sla is the pure SLA engine: no I/O, no database — unit-testable in
-// isolation (see engine_test.go). It is a semantics-identical port of v3's
-// src/server/db/sla.ts (SPEC §7), the correctness core of the whole system.
-// Every status here is *string rather than string so "unset"/null (no event
-// yet, no current status) stays distinguishable from the empty-string
-// taxonomy status, exactly as TypeScript's `string | null` does.
+// isolation (see engine_test.go). It is the correctness core of the whole
+// system. Every status here is *string rather than string so "unset"/null
+// (no event yet, no current status) stays distinguishable from the
+// empty-string taxonomy status.
 package sla
 
 import "time"
@@ -55,7 +54,7 @@ type StatusEvent struct {
 
 // Config supplies everything ComputeSla needs from taxonomy/budget config,
 // kept as plain functions/maps so this package never imports internal/config
-// (SPEC §3: sla is a leaf, dependency-free package).
+// — sla is a leaf, dependency-free package.
 type Config struct {
 	Budgets         map[string]float64  // priority -> budget hours
 	Coverage        map[string]Coverage // priority -> coverage window; absent => 24x7

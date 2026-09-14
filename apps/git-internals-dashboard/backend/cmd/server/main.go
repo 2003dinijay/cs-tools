@@ -62,9 +62,9 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Boot-time config→DB sync (SPEC §8.4): idempotent, keeps projects/
-	// repositories in referential-integrity lockstep with sla-config.yaml
-	// before anything else touches the database.
+	// Boot-time config→DB sync: idempotent, keeps projects/repositories in
+	// referential-integrity lockstep with sla-config.yaml before anything
+	// else touches the database.
 	syncSummary, err := db.SyncConfigToDB(ctx, pool, cfg)
 	if err != nil {
 		slog.Error("config sync failed", "err", err)
@@ -72,13 +72,13 @@ func main() {
 	}
 	slog.Info("config sync complete", "activeRepos", syncSummary.ActiveRepos, "disabledRepos", syncSummary.DisabledRepos)
 
-	// Shared job lock (SPEC §8.1): one instance for both the recompute
-	// scheduler and POST /sync/runs, so a manual sync and a scheduled tick
-	// never interleave on this replica or any other.
+	// Shared job lock: one instance for both the recompute scheduler and
+	// POST /sync/runs, so a manual sync and a scheduled tick never interleave
+	// on this replica or any other.
 	runtime := ingest.BuildRuntimeConfig(cfg)
 	lock := jobs.NewLock(databaseURL)
 
-	// Recompute scheduler (SPEC §8.2): one tick immediately, then every
+	// Recompute scheduler: one tick immediately, then every
 	// recomputeIntervalMinutes. RECOMPUTE_ENABLED=0 disables it (tests/CI).
 	if os.Getenv("RECOMPUTE_ENABLED") != "0" {
 		interval := time.Duration(cfg.Settings.RecomputeIntervalMinutes) * time.Minute
@@ -112,8 +112,8 @@ func main() {
 	// standard error envelope instead of an empty connection reset. CORS
 	// wraps Logger so a preflight — which never reaches Logger's wrapped
 	// handler — still gets its own headers; see middleware.CORS's doc
-	// comment for why this backend needs CORS at all despite being
-	// authless (D14).
+	// comment for why this backend needs CORS at all despite doing no
+	// authentication of its own.
 	rootHandler := middleware.Recovery(
 		middleware.CORS(splitComma(os.Getenv("CORS_ALLOWED_ORIGINS")))(
 			middleware.Logger(mux),
@@ -156,14 +156,14 @@ func main() {
 	slog.Info("git-internals-dashboard backend stopped")
 }
 
-// handleHealthz is liveness-only (AUDIT-FINDINGS B7): it reports the process
-// is up and serving, not that its dependencies are healthy — it never
-// touches the database, so a booted process with a dead DB still reports
-// {"ok":true}. D1/D3 freeze this app's API surface to exact v3 parity plus
-// SPEC §6, so a separate readiness probe (e.g. GET /readyz) is deliberately
-// out of scope here rather than added ad hoc; whatever platform config
-// consumes this endpoint for readiness should be pointed at a different
-// signal (e.g. Choreo's own DB-backed health check) instead.
+// handleHealthz is liveness-only: it reports the process is up and serving,
+// not that its dependencies are healthy — it never touches the database, so
+// a booted process with a dead DB still reports {"ok":true}. This app's API
+// surface is deliberately kept frozen to its existing set of endpoints, so a
+// separate readiness probe (e.g. GET /readyz) is out of scope here rather
+// than added ad hoc; whatever platform config consumes this endpoint for
+// readiness should be pointed at a different signal (e.g. Choreo's own
+// DB-backed health check) instead.
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
@@ -187,8 +187,8 @@ func configureLogger() {
 }
 
 // loadDotEnv reads a .env file and sets any unset environment variables from
-// it (csm-portal's loadDotEnv pattern). Silently ignored if the file does
-// not exist; logs a warning for any other error.
+// it. Silently ignored if the file does not exist; logs a warning for any
+// other error.
 func loadDotEnv(path string) {
 	f, err := os.Open(path) // #nosec G304 -- path is always the hardcoded literal ".env" at the only call site
 	if err != nil {

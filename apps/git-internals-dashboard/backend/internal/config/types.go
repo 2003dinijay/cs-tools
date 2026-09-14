@@ -15,10 +15,9 @@
 // under the License.
 
 // Package config loads and validates config/sla-config.yaml — the single
-// source of truth for repos, status taxonomy, and SLA budgets (SPEC §5.1).
-// It is a port of v3's src/server/config/{index,schema}.ts: same shape,
-// same defaults, same validation rules. The result is loaded once at process
-// start and treated as immutable for the process lifetime.
+// source of truth for repos, status taxonomy, and SLA budgets. The result is
+// loaded once at process start and treated as immutable for the process
+// lifetime.
 package config
 
 // StatusCategory classifies a taxonomy status by who owns it while an issue
@@ -42,7 +41,7 @@ func (c StatusCategory) valid() bool {
 	}
 }
 
-// SlaCoverage names an SLA budget's coverage window (SPEC §7).
+// SlaCoverage names an SLA budget's coverage window.
 type SlaCoverage string
 
 const (
@@ -102,8 +101,8 @@ type Taxonomy struct {
 }
 
 // Settings holds the tunable knobs governing SLA math and job cadence.
-// Defaults mirror schema.ts's zod defaults exactly (applied only when the
-// corresponding YAML key is entirely absent — see rawSettings in load.go).
+// Defaults apply only when the corresponding YAML key is entirely absent
+// (see rawSettings in load.go).
 type Settings struct {
 	AtRiskThreshold          float64
 	RecomputeIntervalMinutes int
@@ -113,7 +112,7 @@ type Settings struct {
 	SeedClosedLookbackDays   int
 }
 
-// defaultSettings mirrors Settings.default({}) field-by-field in schema.ts.
+// defaultSettings returns the default value for every Settings field.
 func defaultSettings() Settings {
 	return Settings{
 		AtRiskThreshold:          0.75,

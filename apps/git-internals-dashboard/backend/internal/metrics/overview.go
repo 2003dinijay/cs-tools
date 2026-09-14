@@ -14,9 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/server/lib/overview.ts, section by section, keeping its
-// section comments — they document which filters each section honors,
-// which is the part SPEC §6.6 requires replicated exactly:
+// BuildOverview is organized section by section; the comment before each
+// section documents which filters it honors:
 //
 //	hero + spark honor repo + priority; priorities + matrix honor repo only;
 //	projects and volume ignore both filters (volume: last 12 UTC weeks).
@@ -70,7 +69,7 @@ func pLabel(priority string) string {
 	return strings.TrimSpace(pLabelSuffixRe.ReplaceAllString(priority, ""))
 }
 
-// --- Wire types (SPEC §6.6) ---
+// --- Wire types ---
 
 type Filters struct {
 	Repo     *string `json:"repo"`
@@ -177,9 +176,8 @@ type Overview struct {
 }
 
 // overviewIssue is one row of the base "open, non-terminal, enabled-repo"
-// issue set section 1 loads once and every other section filters/aggregates
-// in memory, mirroring the reference's single findMany + in-memory
-// aggregation approach.
+// issue set section 1 loads once; every other section filters/aggregates it
+// in memory rather than re-querying.
 type overviewIssue struct {
 	Priority      *string
 	CurrentStatus *string
@@ -220,12 +218,8 @@ func BuildOverview(ctx context.Context, pool *pgxpool.Pool, cfg *config.AppConfi
 	}
 
 	// ── 1. All open non-terminal issues from enabled repos (narrow select) ──
-	// Both reads run inside one REPEATABLE READ, read-only transaction so
-	// they see the same enabled-repo membership — otherwise a concurrent
-	// config sync enabling/disabling a repo between two separate READ
-	// COMMITTED queries could leave allIssues referencing a repository
-	// absent from repoMap (built from enabledRepos below), and the
-	// per-issue aggregation would nil-dereference it.
+	// REPEATABLE READ, read-only: this and fetchEnabledRepos need to see the
+	// same enabled-repo snapshot (see the querier doc comment for why).
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return Overview{}, fmt.Errorf("metrics: begin overview snapshot: %w", err)
@@ -237,8 +231,8 @@ func BuildOverview(ctx context.Context, pool *pgxpool.Pool, cfg *config.AppConfi
 		return Overview{}, fmt.Errorf("metrics: fetch overview issues: %w", err)
 	}
 	// Every enabled repo, independent of allIssues — Projects and Volume
-	// (SPEC §6.6) must include a repo with no current open non-terminal
-	// issue, which allIssues alone would never surface.
+	// must include a repo with no current open non-terminal issue, which
+	// allIssues alone would never surface.
 	enabledRepos, err := fetchEnabledRepos(ctx, tx)
 	if err != nil {
 		return Overview{}, fmt.Errorf("metrics: fetch enabled repos: %w", err)
@@ -540,8 +534,8 @@ func fetchOverviewIssues(ctx context.Context, q querier) ([]overviewIssue, error
 }
 
 // overviewRepo is one enabled repository, independent of whether it has any
-// current open non-terminal issue — the base set for Projects and Volume
-// (SPEC §6.6: both sections cover every enabled repo).
+// current open non-terminal issue — the base set for Projects and Volume,
+// which must cover every enabled repo.
 type overviewRepo struct {
 	ID           int32
 	Owner        string
@@ -714,9 +708,9 @@ func fetchVolumeWeeks(ctx context.Context, pool *pgxpool.Pool) ([]weekRow, error
 	return out, rows.Err()
 }
 
-// buildVolume is overview.ts section 7: ignores both repo/priority filters —
-// last 12 UTC weeks (Monday-aligned) of tracked-issue creation volume, one
-// row per project in repoOrder's insertion order.
+// buildVolume is section 7: ignores both repo/priority filters — last 12 UTC
+// weeks (Monday-aligned) of tracked-issue creation volume, one row per
+// project in repoOrder's insertion order.
 func buildVolume(ctx context.Context, pool *pgxpool.Pool, repoOrder []int32, repoMap map[int32]*Project) ([]Volume, error) {
 	rows, err := fetchVolumeWeeks(ctx, pool)
 	if err != nil {

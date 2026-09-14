@@ -50,11 +50,11 @@ type recomputeIssue struct {
 	Events          []sla.StatusEvent
 }
 
-// RunTickOnce is one recompute pass (port of v3's runTickOnce, SPEC §8.2).
-// It does NOT call GitHub: currentStatus, priority, and the event log stay
-// frozen at their last-synced values — this only advances the open interval
-// of already-known state (the issue_sla projection and today's sla_snapshots
-// row). SyncRun/watermark belong to internal/sync.
+// RunTickOnce is one recompute pass. It does NOT call GitHub: currentStatus,
+// priority, and the event log stay frozen at their last-synced values — this
+// only advances the open interval of already-known state (the issue_sla
+// projection and today's sla_snapshots row). SyncRun/watermark belong to
+// internal/sync.
 func RunTickOnce(ctx context.Context, pool *pgxpool.Pool, runtime *ingest.RuntimeConfig, now time.Time) (TickSummary, error) {
 	snapshotDate := startOfUTCDay(now)
 	unknownStatuses := make(map[string]int)
@@ -70,10 +70,10 @@ func RunTickOnce(ctx context.Context, pool *pgxpool.Pool, runtime *ingest.Runtim
 
 	var lastID int32
 	for {
-		// Keyset pagination (AUDIT-FINDINGS B1): OFFSET re-scans and discards
-		// every prior row on each page, making a full tick O(N²/pageSize).
-		// Walking i.id > lastID does strictly less work per page and stays
-		// correct even if rows shift between pages.
+		// Keyset pagination: OFFSET re-scans and discards every prior row on
+		// each page, making a full tick O(N²/pageSize). Walking i.id > lastID
+		// does strictly less work per page and stays correct even if rows
+		// shift between pages.
 		page, err := fetchIssuePage(ctx, pool, recomputePageSize, lastID)
 		if err != nil {
 			return TickSummary{}, err
@@ -82,18 +82,18 @@ func RunTickOnce(ctx context.Context, pool *pgxpool.Pool, runtime *ingest.Runtim
 			break
 		}
 
-		// Batch this page's writes (AUDIT-FINDINGS B2): 2 statements/issue as
-		// separate round trips (up to 400 for a full page) dominates tick
-		// latency. pgx.Batch pipelines them into one round trip — but a
-		// pipeline terminated by a single Sync (what pool.SendBatch sends)
-		// runs as ONE implicit transaction server-side: a genuine SQL error
-		// anywhere in the page rolls back every statement in it, unlike the
-		// old one-exec-per-issue loop where each statement committed on its
-		// own (verified empirically: a batch with a constraint-violating
-		// second statement left zero rows from the first). This is fine
-		// here — every statement is idempotent and a failed page is retried
-		// wholesale on the next tick — but it is a real behavior change, not
-		// "isolation unchanged". Same SQL, same conflict clauses either way.
+		// Batch this page's writes: 2 statements/issue as separate round trips
+		// (up to 400 for a full page) dominates tick latency. pgx.Batch
+		// pipelines them into one round trip — but a pipeline terminated by a
+		// single Sync (what pool.SendBatch sends) runs as ONE implicit
+		// transaction server-side: a genuine SQL error anywhere in the page
+		// rolls back every statement in it, unlike the old one-exec-per-issue
+		// loop where each statement committed on its own (verified
+		// empirically: a batch with a constraint-violating second statement
+		// left zero rows from the first). This is fine here — every
+		// statement is idempotent and a failed page is retried wholesale on
+		// the next tick — but it is a real behavior change: same SQL, same
+		// conflict clauses, different transaction semantics.
 		batch := &pgx.Batch{}
 		for _, issue := range page {
 			currentStatus := runtime.Normalize(issue.CurrentStatus)
@@ -202,9 +202,7 @@ func fetchIssuePage(ctx context.Context, pool *pgxpool.Pool, limit int, lastID i
 	return issues, nil
 }
 
-// queueUpdateIssueSla and queueUpsertSnapshot queue exactly the same
-// statements updateIssueSla/upsertSnapshot used to run standalone; batching
-// only changes how they're sent, never the SQL or conflict clauses.
+// queueUpdateIssueSla queues one issue's issue_sla update.
 func queueUpdateIssueSla(batch *pgx.Batch, issueID int32, priority *string, r sla.Result, now time.Time) {
 	batch.Queue(`
 		UPDATE issue_sla SET
@@ -262,8 +260,7 @@ func execRecomputeBatch(ctx context.Context, pool *pgxpool.Pool, batch *pgx.Batc
 }
 
 // Scheduler runs RunTickOnce on a fixed interval, guarded by a Lock so a
-// tick never interleaves with a manual sync — on this replica or any other
-// (port of v3's startRecomputeJob).
+// tick never interleaves with a manual sync — on this replica or any other.
 type Scheduler struct {
 	pool     *pgxpool.Pool
 	lock     *Lock

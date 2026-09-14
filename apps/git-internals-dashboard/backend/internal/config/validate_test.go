@@ -14,8 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/server/config/schema.test.ts — every case there has a
-// direct counterpart here.
+// Tests for Validate: required fields, enum values, duplicate/uniqueness
+// checks, alias targets, and default application.
 package config
 
 import (

@@ -21,10 +21,9 @@ import (
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/sla"
 )
 
-// RuntimeConfig is the SLA engine wired up from the loaded config file (port
-// of v3's src/server/db/sla-config.ts's slaConfigFromFile). Built once at
-// boot and shared by ingest, the recompute scheduler, incremental sync, and
-// seed.
+// RuntimeConfig is the SLA engine wired up from the loaded config file.
+// Built once at boot and shared by ingest, the recompute scheduler,
+// incremental sync, and seed.
 type RuntimeConfig struct {
 	Cfg        sla.Config
 	Normalize  StatusNormalizer
