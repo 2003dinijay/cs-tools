@@ -134,6 +134,7 @@ vi.mock("@features/csm-cases/components/CaseDetailWidgets", () => ({
 }));
 vi.mock("@api/useSearchUsersByName", () => ({
   useSearchUsersByName: () => ({ data: [], isFetching: false, isError: false }),
+  useSearchInternalUsersByName: () => ({ data: [], isFetching: false, isError: false }),
 }));
 
 // Imported after the mocks above so the module picks them up.

@@ -77,6 +77,7 @@ import {
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
 import MultiSelectField from "@components/MultiSelectField";
 import AsyncAssigneeMultiSelect from "@features/csm-cases/components/AsyncAssigneeMultiSelect";
+import { INTERNAL_USER_ROLES } from "@features/csm-users/types/csmUsers";
 import ProductNameMultiSelect from "@features/csm-cases/components/ProductNameMultiSelect";
 import AdvancedFiltersBuilder from "@features/csm-cases/components/AdvancedFiltersBuilder";
 import AnyOfGroupsBuilder from "@features/csm-cases/components/AnyOfGroupsBuilder";
@@ -1083,6 +1084,8 @@ export default function CasesFilterBar({
                 values={filters.assignees}
                 onChange={(next) => handleSimpleFieldChange({ ...filters, assignees: next })}
                 nameSeed={assigneeNameSeed}
+                roleIds={INTERNAL_USER_ROLES}
+                active
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 4, lg: 2 }}>

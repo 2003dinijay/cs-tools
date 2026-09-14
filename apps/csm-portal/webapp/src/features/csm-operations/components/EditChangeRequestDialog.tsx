@@ -32,7 +32,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { useCallback, useMemo, useState, type JSX } from "react";
 import { useSearchGroups } from "@api/useSearchGroups";
-import { useSearchUsersByName } from "@api/useSearchUsersByName";
+import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
 import type {
   BeChangeRequestDetail,
   BeGroup,
@@ -422,7 +422,7 @@ export default function EditChangeRequestDialog({
             value={assignedEngineerId}
             onChange={setAssignedEngineerId}
             disabled={isSaving}
-            useSearch={useSearchUsersByName}
+            useSearch={useSearchInternalUsersByName}
             getId={(u) => u.id!}
             getLabel={userLabel}
             knownLabel={cr.assignedEngineer?.name}
@@ -434,7 +434,7 @@ export default function EditChangeRequestDialog({
             value={requestedById}
             onChange={setRequestedById}
             disabled={isSaving}
-            useSearch={useSearchUsersByName}
+            useSearch={useSearchInternalUsersByName}
             getId={(u) => u.id!}
             getLabel={userLabel}
             knownLabel={cr.requestedBy?.name}
