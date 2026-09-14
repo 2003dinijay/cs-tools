@@ -16,7 +16,7 @@
 
 import { Box, Button, Card, Chip, IconButton, Skeleton, Tooltip, Typography, alpha, useTheme } from "@wso2/oxygen-ui";
 import { ArrowRight, Info, RefreshCw } from "@wso2/oxygen-ui-icons-react";
-import { useRef, useState, type JSX, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { memo, useRef, useState, type JSX, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { Link as RouterLink, useLocation, useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useElementVisibleOnce } from "@hooks/useElementVisibleOnce";
@@ -201,8 +201,25 @@ interface DashboardWidgetTileProps {
  * resource's own tab; `shape: "list"` tiles can't be (their rows and "View
  * more" need their own nested links), so only they get a plain, non-link
  * `Card`.
+ *
+ * Wrapped in `React.memo` so that expanding/collapsing an inline-drilldown
+ * slice on ONE widget (`DashboardWidgetGrid`'s own lifted `expanded` state)
+ * doesn't re-render every OTHER widget on the same dashboard — confirmed via
+ * a temporary render-count probe (removed before landing this) that,
+ * without this memo, clicking a slice on one pie/bar tile re-rendered every
+ * sibling tile on the page, even though their own props were unchanged.
+ * That re-render was harmless on its own (React's reconciliation produces
+ * no DOM writes for a tile whose rendered output is byte-identical), but
+ * it's needless work at dashboard scale and this memo is free as long as
+ * `DashboardWidgetGrid` also keeps this component's own `filters` and
+ * `onExpandChange` props referentially stable per widget id across an
+ * unrelated expand/collapse (see that component's own
+ * `getResolvedFilters`/`getOnExpandChange` caches) — without THAT half of
+ * the fix, this memo alone would do nothing, since a fresh object/closure
+ * identity on every render defeats `React.memo`'s default shallow prop
+ * comparison regardless.
  */
-export default function DashboardWidgetTile({
+function DashboardWidgetTile({
   widgetId,
   displayName,
   description,
@@ -918,3 +935,5 @@ export default function DashboardWidgetTile({
     </Card>
   );
 }
+
+export default memo(DashboardWidgetTile);
