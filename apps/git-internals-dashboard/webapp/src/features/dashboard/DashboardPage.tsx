@@ -20,6 +20,7 @@ import { useOverview, useTaxonomy, makeIsCsStatus } from "@api/hooks";
 import { ErrorState } from "@components/ErrorState";
 import { FetchProgressBar } from "@components/FetchProgressBar";
 import { StaleDataAlert } from "@components/StaleDataAlert";
+import { UnknownStatusAlert } from "@components/UnknownStatusAlert";
 import { errorMessage } from "@lib/apiError";
 import { HeroCard, CsHeroCard } from "@components/HeroCard";
 import { ProjectCard } from "@components/ProjectCard";
@@ -154,6 +155,8 @@ export default function DashboardPage() {
       {isError && overview && (
         <StaleDataAlert key={errorUpdatedAt} message={errorMessage(error, "Failed to refresh the dashboard")} />
       )}
+
+      <UnknownStatusAlert statuses={overview.unknownStatuses} />
 
       {/* All-clear banner */}
       {allClear && (

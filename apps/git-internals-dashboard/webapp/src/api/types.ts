@@ -107,6 +107,13 @@ export interface VolumeProject {
   weeks: VolumeWeek[];
 }
 
+export interface UnknownStatus {
+  status: string;
+  occurrenceCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
 export interface Overview {
   refreshedAt: string;
   filters: { repo: string | null; priority: string | null };
@@ -124,6 +131,7 @@ export interface Overview {
     grandTotal: number;
   };
   volume: VolumeProject[];
+  unknownStatuses: UnknownStatus[];
 }
 
 export interface TimeseriesSeries {

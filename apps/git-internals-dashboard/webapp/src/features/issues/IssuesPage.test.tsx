@@ -38,6 +38,7 @@ const EMPTY_OVERVIEW = {
   priorities: [],
   matrix: { rows: [], totals: { violated: 0, atRisk: 0, onTrack: 0, cs: 0 }, grandTotal: 0 },
   volume: [],
+  unknownStatuses: [],
 };
 
 /** Renders IssuesPage under a fresh QueryClient and a memory router at /issues. */

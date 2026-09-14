@@ -47,7 +47,9 @@ export function ClosestToBreach({ repo, priority, projects }: ClosestToBreachPro
   const nameForRepo = (r: string | null) => projects.find((p) => p.repo === r)?.name ?? r?.split("/")[1] ?? "—";
 
   const pool = (issues ?? []).filter((i) => i.sla?.pctConsumed != null);
-  const rows = pool.some((i) => (i.sla!.pctConsumed as number) >= 0.75) ? pool : [];
+  // Gate on the API's own verdict rather than a hardcoded 0.75 — the panel
+  // must track settings.atRiskThreshold without duplicating it here.
+  const rows = pool.some((i) => i.sla?.slaState === "AT_RISK" || i.sla?.slaState === "VIOLATED") ? pool : [];
 
   return (
     <Box sx={{ ...acrylicSurfaceSx, borderRadius: "16px", border: "1px solid var(--sla-border)", px: "22px", py: 2.5, boxShadow: "0 1px 2px rgba(17,24,39,.04)" }}>
