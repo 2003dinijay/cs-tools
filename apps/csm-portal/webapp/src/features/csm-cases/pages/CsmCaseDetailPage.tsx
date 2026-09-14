@@ -129,6 +129,8 @@ import { ChildCasesWidget } from "@features/csm-cases/components/ChildCasesWidge
 import { LinkedServiceRequestsWidget } from "@features/csm-cases/components/LinkedServiceRequestsWidget";
 import { LinkedChangeRequestsWidget } from "@features/csm-cases/components/LinkedChangeRequestsWidget";
 import { LinkedIncidentWidget } from "@features/csm-cases/components/LinkedIncidentWidget";
+import { LinkedIncidentsListWidget } from "@features/csm-cases/components/LinkedIncidentsListWidget";
+import { useSearchLinkedIncidents } from "@features/csm-cases/api/useSearchLinkedIncidents";
 import { CreateGithubIssueDialog } from "@features/csm-cases/components/CreateGithubIssueDialog";
 import { isCloudSupportSubscription } from "@features/csm-projects/utils/subscriptionType";
 import { usePostCaseGithubIssue } from "@features/csm-cases/api/useCsmCaseGithubIssue";
@@ -561,6 +563,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
     isAnnouncement ? undefined : caseId,
   );
   const { data: caseTimeCards } = useCaseTimeCards(
+    isAnnouncement ? undefined : caseId,
+  );
+  const { data: linkedIncidents } = useSearchLinkedIncidents(
     isAnnouncement ? undefined : caseId,
   );
   // Live deployment lookup for the Details tab's "Deployment info" widget —
@@ -2370,9 +2375,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
             // Counts shown only where the tab IS the list (unambiguous), or
             // where the parent case-detail object already has the list in
             // hand. "related" sums linkedChangeRequests + linkedServiceRequests
-            // (both already present on `c`); ChildCasesWidget is still
-            // excluded since it runs its own scoped query and would need an
-            // extra fetch to get a count.
+            // (both already present on `c`) plus linkedIncidents' own total,
+            // fetched unconditionally above (see that hook call's comment) so
+            // its widget's tab mount doesn't refetch. ChildCasesWidget is
+            // still excluded since nothing above already fetches it.
             const count =
               t.id === "watchers"
                 ? c.watchers.length
@@ -2389,7 +2395,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
                           : t.id === "related"
                             ? (c.parentCase?.type === "incident" ? 1 : 0) +
                               (c.linkedChangeRequests?.length ?? 0) +
-                              (c.linkedServiceRequests?.length ?? 0)
+                              (c.linkedServiceRequests?.length ?? 0) +
+                              (linkedIncidents?.total ?? 0)
                             : undefined;
             return (
               <Tab
@@ -2775,6 +2782,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               onLinkIncident={() => setLinkIncidentOpen(true)}
               linkDisabled={isClosed}
             />
+            <LinkedIncidentsListWidget caseId={c.id} />
             {/* Change requests are only ever raised from a service request,
                 never directly from a plain case — gate solely on
                 `isServiceRequest` rather than falling back to

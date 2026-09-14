@@ -285,6 +285,9 @@ vi.mock("@features/csm-cases/api/useCsmCaseCallRequests", () => ({
 vi.mock("@features/csm-cases/api/useSearchCaseTasks", () => ({
   useSearchCaseTasks: () => ({ data: undefined }),
 }));
+vi.mock("@features/csm-cases/api/useSearchLinkedIncidents", () => ({
+  useSearchLinkedIncidents: () => ({ data: undefined }),
+}));
 vi.mock("@features/csm-cases/api/useSearchDeployments", () => ({
   useSearchDeployments: () => ({
     data: undefined,
@@ -461,6 +464,9 @@ vi.mock("@features/csm-cases/components/RequestUpdateDialog", () => ({
 }));
 vi.mock("@features/csm-cases/components/ChildCasesWidget", () => ({
   ChildCasesWidget: () => null,
+}));
+vi.mock("@features/csm-cases/components/LinkedIncidentsListWidget", () => ({
+  LinkedIncidentsListWidget: () => null,
 }));
 vi.mock("@features/csm-cases/components/LinkedServiceRequestsWidget", () => ({
   LinkedServiceRequestsWidget: () => null,
