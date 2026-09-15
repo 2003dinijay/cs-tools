@@ -155,10 +155,10 @@ func TestSNInvoiceService_GetInvoiceByID_DatesParse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.InvoiceDate == nil || got.InvoiceDate.Format(snDateLayout) != "2026-01-15" {
+	if got.InvoiceDate == nil || *got.InvoiceDate != "2026-01-15" {
 		t.Errorf("InvoiceDate = %v, want 2026-01-15", got.InvoiceDate)
 	}
-	if got.InvoiceOriginalDueDate == nil || got.InvoiceOriginalDueDate.Format(snDateLayout) != "2026-02-01" {
+	if got.InvoiceOriginalDueDate == nil || *got.InvoiceOriginalDueDate != "2026-02-01" {
 		t.Errorf("InvoiceOriginalDueDate = %v, want 2026-02-01", got.InvoiceOriginalDueDate)
 	}
 	if got.Classification == nil || *got.Classification != "CL" {

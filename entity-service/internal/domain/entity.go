@@ -668,16 +668,17 @@ type SearchOpportunitiesResponse struct {
 // only). Every field but ID is nilable: ServiceNow can omit any of them entirely for a
 // sparsely-populated row.
 type Invoice struct {
-	ID             string     `json:"id"`
-	Name           *string    `json:"name"`
-	InvoicedAmount *string    `json:"invoicedAmount"`
-	InvoiceDate    *time.Time `json:"invoiceDate"`
+	ID             string  `json:"id"`
+	Name           *string `json:"name"`
+	InvoicedAmount *string `json:"invoicedAmount"`
+	// InvoiceDate is a date-only value (YYYY-MM-DD), matching openapi.yaml's `format: date`.
+	InvoiceDate *string `json:"invoiceDate"`
 	// InvoicedPaidDate is the date the invoice was paid, nil if unpaid or not tracked.
-	InvoicedPaidDate *time.Time `json:"invoicedPaidDate"`
-	InvoicedDueDate  *time.Time `json:"invoicedDueDate"`
+	InvoicedPaidDate *string `json:"invoicedPaidDate"`
+	InvoicedDueDate  *string `json:"invoicedDueDate"`
 	// InvoiceOriginalDueDate is the invoice's original due date before any extension
 	// (ServiceNow `u_original_invoice_due_date`).
-	InvoiceOriginalDueDate *time.Time `json:"invoiceOriginalDueDate"`
+	InvoiceOriginalDueDate *string `json:"invoiceOriginalDueDate"`
 	// Opportunity is the invoice's linked opportunity, nil when absent.
 	Opportunity *EntityRef `json:"opportunity"`
 	// Classification is a short code (e.g. "CL"), nil when not set.

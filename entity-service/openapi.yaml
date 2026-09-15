@@ -8508,6 +8508,7 @@ components:
         Sourced from ServiceNow's Salesforce-sync data (ServiceNow data source only;
         no Postgres equivalent). Every field but id is nullable — ServiceNow can omit
         any of them entirely for a sparsely-populated row.
+      required: [id]
       properties:
         id:
           type: string
@@ -8558,6 +8559,7 @@ components:
         Sourced from ServiceNow's Salesforce-sync data (ServiceNow data source only;
         no Postgres equivalent). Every field but id is nullable — ServiceNow can omit
         any of them entirely for a sparsely-populated row.
+      required: [id]
       properties:
         id:
           type: string
@@ -8631,6 +8633,7 @@ components:
         Sourced from ServiceNow's Salesforce-sync data (ServiceNow data source only;
         no Postgres equivalent). Every field but id is nullable — ServiceNow can omit
         either reference entirely for a sparsely-populated row.
+      required: [id]
       properties:
         id:
           type: string

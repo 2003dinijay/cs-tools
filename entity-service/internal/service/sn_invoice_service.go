@@ -69,18 +69,19 @@ func NewServiceNowInvoiceService(client *integrationservice.Client) InvoiceServi
 	return &snInvoiceService{client: client}
 }
 
-// snOptionalDate parses an optional date-only ServiceNow field (snDateLayout), returning nil
-// for an absent or empty value. Mirrors optionalSNProjectDate's semantics for project dates: a
-// present-but-malformed value is an error rather than a silent nil.
-func snOptionalDate(label string, v *string) (*time.Time, error) {
+// snOptionalDate validates an optional date-only ServiceNow field (snDateLayout), returning nil
+// for an absent or empty value and the original date-only string when valid. Mirrors
+// optionalSNProjectDate's semantics for project dates: a present-but-malformed value is an
+// error rather than a silent nil. The value is kept as a string (not time.Time) so it marshals
+// as a bare YYYY-MM-DD, matching openapi.yaml's `format: date` for these fields.
+func snOptionalDate(label string, v *string) (*string, error) {
 	if v == nil || *v == "" {
 		return nil, nil
 	}
-	t, err := time.Parse(snDateLayout, *v)
-	if err != nil {
+	if _, err := time.Parse(snDateLayout, *v); err != nil {
 		return nil, fmt.Errorf("sn invoices: parse %s %q: %w", label, *v, err)
 	}
-	return &t, nil
+	return v, nil
 }
 
 func snInvoiceToDomain(i snInvoice) (domain.Invoice, error) {
