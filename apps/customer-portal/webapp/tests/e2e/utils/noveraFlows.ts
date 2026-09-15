@@ -26,6 +26,7 @@
 //
 
 import { expect, type Page, type Response } from "../fixtures/test";
+import { sessionOrigin } from "../fixtures/test";
 import { SettingsPage } from "../pages/SettingsPage";
 import { SETTINGS } from "./selectors";
 
@@ -131,12 +132,20 @@ export async function setNoveraViaApi(
   // page happens to be on, and come back 404 — indistinguishable from the
   // backend genuinely not exposing the route. That misdiagnosis is expensive, so
   // it is worth naming explicitly.
+  //
+  // The expected origin comes from the captured session rather than a hardcoded
+  // host list: the suite runs against staging, a local dev server, or any other
+  // deployment, and a baked-in list silently rejects the others. Skipped when
+  // the bundle records no origin — the config and token checks below then do the
+  // diagnosing on their own.
   const pageUrl = page.url();
-  if (!/support-stg\.wso2\.com|localhost/.test(pageUrl)) {
+  const expectedOrigin = sessionOrigin();
+  if (expectedOrigin && new URL(pageUrl).origin !== expectedOrigin) {
     throw new Error(
-      `Not on the portal — the page is at ${pageUrl}. This is what an expired ` +
-        "session looks like: the app redirected to sign-in before any backend " +
-        "call could be made. Re-capture the session and retry.",
+      `Not on the portal — the page is at ${pageUrl}, but the captured session ` +
+        `belongs to ${expectedOrigin}. This is what an expired session looks ` +
+        "like: the app redirected to sign-in before any backend call could be " +
+        "made. Re-capture the session and retry.",
     );
   }
 

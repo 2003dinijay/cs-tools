@@ -50,6 +50,10 @@ import {
   type CreatedCase,
 } from "../../utils/caseFlows";
 import { CASE_DETAIL, CASE_ESCALATION } from "../../utils/selectors";
+import {
+  permanentWriteSkipReason,
+  permanentWritesAllowed,
+} from "../../utils/permanentWrites";
 
 withSession(test);
 
@@ -153,6 +157,21 @@ test.describe("Escalate Case", () => {
   // Creates a case first, so these need the create flow's budget on top of
   // their own.
   test.describe.configure({ timeout: 180_000 });
+
+  // Every test here raises a case that cannot be deleted AND escalates it,
+  // which notifies real people — the Team Lead at EL1, and up the chain to the
+  // CEO at EL5. That is an acceptable cost when someone runs this deliberately
+  // and an unacceptable one for a routine full-suite run or a scheduled job, so
+  // it is opt-in for the same reason case-matrix is.
+  test.beforeEach(() => {
+    test.skip(
+      !permanentWritesAllowed(),
+      permanentWriteSkipReason(
+        "a support case, and escalations that notify real people (up to CEO " +
+          "level at EL5)",
+      ),
+    );
+  });
 
   test(`${ProjectType.SUBSCRIPTION} — escalates a newly created S4 case`, async ({
     page,

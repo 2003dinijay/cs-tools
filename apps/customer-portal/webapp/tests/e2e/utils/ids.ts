@@ -37,6 +37,23 @@
 //
 
 /**
+ * Matches ANY record id, in either spelling, for a URL whose id is not known
+ * ahead of time.
+ *
+ * {@link idPattern} is for an id you already hold; this is for asserting the
+ * SHAPE of a route — "…/engagements/<some record>" — where the id only exists
+ * after the navigation being asserted.
+ *
+ * Both spellings are accepted for the reason described above: the portal renders
+ * ids UUID-hyphenated while the API returns them as plain 32-hex, and a pattern
+ * fixed to one of those quietly stops matching if the other is rendered. It is a
+ * regex fragment rather than a RegExp so it can be interpolated into a larger
+ * path pattern.
+ */
+export const RECORD_ID_PATTERN =
+  "(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})";
+
+/**
  * Escapes a string for literal use inside a regular expression.
  *
  * @param value - Raw string.
@@ -74,6 +91,16 @@ export function idPattern(id: string): string {
 /**
  * Builds a pattern for a project-scoped path, tolerant of both id spellings.
  *
+ * The path must END after `suffix` — a query string or fragment may follow, but
+ * no further path segments. Without that, the pattern is a prefix match:
+ * `projectPathPattern(id, "settings")` would also accept
+ * `/projects/<id>/settings/users/42`, so an assertion that a nav landed on
+ * Settings would pass on a deeper route it never meant to allow.
+ *
+ * Enforced with a lookahead rather than `$` so it composes with suffixes that
+ * already anchor themselves (several callers end theirs with `$`) and with those
+ * that match a query of their own.
+ *
  * @param projectId - Project id, in either spelling.
  * @param suffix - Path after the project id, e.g. `dashboard` or
  *   `support/cases/abc`. Interpolate ids in it via {@link idPattern}.
@@ -83,5 +110,7 @@ export function projectPathPattern(
   projectId: string,
   suffix: string,
 ): RegExp {
-  return new RegExp(`/projects/${idPattern(projectId)}/${suffix}`);
+  // (?![^?#]) — the next character, if any, must be `?` or `#`. At the end of
+  // the string the lookahead trivially succeeds.
+  return new RegExp(`/projects/${idPattern(projectId)}/${suffix}(?![^?#])`);
 }

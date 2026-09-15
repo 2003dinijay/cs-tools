@@ -40,6 +40,7 @@ import { SettingsPage } from "../../pages/SettingsPage";
 import { PROJECTS, SETTINGS_USER_INPUT } from "../../config/testData";
 import { GET_HELP_BUTTON, SETTINGS } from "../../utils/selectors";
 import { expectSuccess } from "../../utils/caseFlows";
+import { projectPathPattern } from "../../utils/ids";
 
 withSession(test);
 
@@ -62,7 +63,7 @@ test.describe("Settings", () => {
     await settings.openViaSideNav(project.id);
 
     await expect(page).toHaveURL(
-      new RegExp(`/projects/${project.id}/${SETTINGS.pathSegment}`),
+      projectPathPattern(project.id, SETTINGS.pathSegment),
     );
 
     // Soft, so one missing tab does not hide the state of the others.
@@ -302,6 +303,15 @@ test.describe("Settings", () => {
       await expect(settings.noveraLabel()).toBeVisible();
 
       const novera = SETTINGS.aiAssistant.novera;
+
+      // Wait for the switch to become interactive before reading it. It renders
+      // disabled while the project details load, so `isChecked()` — which does
+      // not retry — can sample a state that is still arriving. That matters more
+      // here than elsewhere because the value drives the skip below: a stale
+      // read either skips a healthy test or sends it on to "enable" a toggle
+      // that is already on. Same synchronisation as setNoveraEnabled().
+      await expect(settings.noveraToggle()).toBeEnabled({ timeout: 30_000 });
+
       const wasEnabled = await settings.noveraToggle().isChecked();
 
       // The scenario starts from off. If the project is already on, this has
@@ -348,9 +358,7 @@ test.describe("Settings", () => {
           .click();
 
         await expect(page).toHaveURL(
-          new RegExp(
-            `/projects/${project.id}/${novera.getHelpPathWhenEnabled}`,
-          ),
+          projectPathPattern(project.id, novera.getHelpPathWhenEnabled),
           { timeout: 30_000 },
         );
         await expect(page).not.toHaveURL(

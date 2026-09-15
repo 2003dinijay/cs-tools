@@ -52,6 +52,10 @@ import {
 } from "../../config/testData";
 import { expectSuccess, skipWhenUnconfigured } from "../../utils/caseFlows";
 import { CREATE_CASE } from "../../utils/selectors";
+import {
+  permanentWriteSkipReason,
+  permanentWritesAllowed,
+} from "../../utils/permanentWrites";
 
 withSession(test);
 
@@ -71,6 +75,12 @@ test.describe("Case Matrix", () => {
 
         test(`create ${code} case`, async ({ page }) => {
           skipWhenUnconfigured(project);
+          test.skip(
+            !permanentWritesAllowed(),
+            permanentWriteSkipReason(
+              "a support case (up to 12 across the full matrix)",
+            ),
+          );
 
           console.log(`${projectType} ${code}: creating "${subject}"`);
 
