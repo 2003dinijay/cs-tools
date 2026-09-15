@@ -223,7 +223,7 @@ func (r *accountRepo) UpsertFromSalesforce(ctx context.Context, row domain.Sales
 			industry = EXCLUDED.industry,
 			region = EXCLUDED.region,
 			global_pod = EXCLUDED.global_pod,
-			phone = EXCLUDED.phone,
+			phone = CASE WHEN $18 THEN account.phone ELSE EXCLUDED.phone END,
 			sales_region = EXCLUDED.sales_region,
 			sub_region = EXCLUDED.sub_region,
 			account_vertical = EXCLUDED.account_vertical,
@@ -243,6 +243,7 @@ func (r *accountRepo) UpsertFromSalesforce(ctx context.Context, row domain.Sales
 		row.Industry, row.Region, row.GlobalPod, row.Phone, row.SalesRegion, row.SubRegion,
 		row.AccountVertical, row.LifeCycle, row.NAICSIndustry, row.SubIndustry,
 		row.Classification, row.TechnicalOwnerID, row.SecondaryTechnicalOwnerID,
+		row.KeepExistingPhone,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert account from salesforce: %w", err)

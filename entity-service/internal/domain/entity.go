@@ -365,6 +365,7 @@ type SalesforceAccountUpsert struct {
 	Region                    *string
 	GlobalPod                 *string
 	Phone                     *string
+	KeepExistingPhone         bool
 	SalesRegion               *string
 	SubRegion                 *string
 	AccountVertical           *string

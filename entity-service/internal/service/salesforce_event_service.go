@@ -55,6 +55,9 @@ func (s *salesforceEventService) HandleEvent(ctx context.Context, req domain.Sal
 	if strings.TrimSpace(req.ReferenceID) == "" {
 		return &apierror.ValidationError{Msg: "referenceId is required"}
 	}
+	req.EventType = strings.TrimSpace(req.EventType)
+	req.Entity = strings.TrimSpace(req.Entity)
+	req.ReferenceID = strings.TrimSpace(req.ReferenceID)
 	if !strings.EqualFold(req.Entity, domain.SalesforceEntityAccount) {
 		return nil
 	}
@@ -106,21 +109,23 @@ func mapSalesforceAccount(acct salesforce.Account) domain.SalesforceAccountUpser
 	if number == "" {
 		number = acct.ID
 	}
+	phone, keepExistingPhone := mapPhone(acct.Phone)
 	return domain.SalesforceAccountUpsert{
-		SfID:            acct.ID,
-		Name:            strings.TrimSpace(acct.Name),
-		Number:          number,
-		Industry:        optionalString(acct.Industry),
-		Region:          optionalString(acct.Region),
-		GlobalPod:       optionalString(acct.GlobalPOD),
-		Phone:           mapPhone(acct.Phone),
-		SalesRegion:     optionalString(acct.SalesRegions),
-		SubRegion:       optionalString(acct.SubRegion),
-		AccountVertical: optionalString(acct.AccountVertical),
-		LifeCycle:       optionalString(acct.AccountStatus),
-		NAICSIndustry:   optionalString(acct.NAICSIndustry),
-		SubIndustry:     optionalString(acct.SubIndustry),
-		Classification:  optionalString(acct.AccountClassification),
+		SfID:              acct.ID,
+		Name:              strings.TrimSpace(acct.Name),
+		Number:            number,
+		Industry:          optionalString(acct.Industry),
+		Region:            optionalString(acct.Region),
+		GlobalPod:         optionalString(acct.GlobalPOD),
+		Phone:             phone,
+		KeepExistingPhone: keepExistingPhone,
+		SalesRegion:       optionalString(acct.SalesRegions),
+		SubRegion:         optionalString(acct.SubRegion),
+		AccountVertical:   optionalString(acct.AccountVertical),
+		LifeCycle:         optionalString(acct.AccountStatus),
+		NAICSIndustry:     optionalString(acct.NAICSIndustry),
+		SubIndustry:       optionalString(acct.SubIndustry),
+		Classification:    optionalString(acct.AccountClassification),
 	}
 }
 
@@ -132,10 +137,13 @@ func optionalString(v string) *string {
 	return &v
 }
 
-func mapPhone(phone string) *string {
+func mapPhone(phone string) (*string, bool) {
 	phone = strings.TrimSpace(phone)
-	if phone == "" || utf8.RuneCountInString(phone) > maxAccountPhoneChars {
-		return nil
+	if phone == "" {
+		return nil, false
 	}
-	return &phone
+	if utf8.RuneCountInString(phone) > maxAccountPhoneChars {
+		return nil, true
+	}
+	return &phone, false
 }

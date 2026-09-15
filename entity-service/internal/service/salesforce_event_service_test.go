@@ -112,15 +112,15 @@ func TestHandleEvent_CreatedUpdatedRestored(t *testing.T) {
 			sf.calls = 0
 			repo.upsertCalls = 0
 			err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
-				EventType:   eventType,
-				Entity:      "Account",
-				ReferenceID: "001xx0000001",
+				EventType:   "  " + eventType + "  ",
+				Entity:      "  Account  ",
+				ReferenceID: "  001xx0000001  ",
 			})
 			if err != nil {
 				t.Fatalf("HandleEvent: %v", err)
 			}
-			if sf.calls != 1 {
-				t.Errorf("GetAccount calls = %d, want 1", sf.calls)
+			if sf.calls != 1 || sf.lastID != "001xx0000001" {
+				t.Errorf("GetAccount calls = %d id = %q, want 1 / 001xx0000001", sf.calls, sf.lastID)
 			}
 			if repo.upsertCalls != 1 {
 				t.Errorf("upsert calls = %d, want 1", repo.upsertCalls)
@@ -128,6 +128,9 @@ func TestHandleEvent_CreatedUpdatedRestored(t *testing.T) {
 			got := repo.lastUpsert
 			if got.SfID != "001xx0000001" || got.Name != "Acme" || got.Number != "A-100" {
 				t.Errorf("upsert = %+v", got)
+			}
+			if got.KeepExistingPhone {
+				t.Error("KeepExistingPhone = true, want false for a valid phone")
 			}
 			if got.TechnicalOwnerID == nil || *got.TechnicalOwnerID != "user-1" {
 				t.Errorf("technical owner = %v, want user-1", got.TechnicalOwnerID)
@@ -147,7 +150,7 @@ func TestHandleEvent_Deleted(t *testing.T) {
 	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
 		EventType:   domain.SalesforceEventDeleted,
 		Entity:      "account",
-		ReferenceID: "001xx0000001",
+		ReferenceID: "  001xx0000001  ",
 	})
 	if err != nil {
 		t.Fatalf("HandleEvent: %v", err)
@@ -243,12 +246,38 @@ func TestHandleEvent_MissingOwnerLeavesFKNull(t *testing.T) {
 	}
 }
 
-func TestMapPhone_LongerThan20IsNil(t *testing.T) {
-	if got := mapPhone("+49 40 123456789012345"); got != nil {
-		t.Errorf("mapPhone(long) = %v, want nil", *got)
+func TestMapPhone_LongerThan20OmitsUpdate(t *testing.T) {
+	got, omit := mapPhone("+49 40 123456789012345")
+	if got != nil || !omit {
+		t.Errorf("mapPhone(long) = %v omit = %v, want nil / true", got, omit)
 	}
-	if got := mapPhone("+494012345678"); got == nil || *got != "+494012345678" {
-		t.Errorf("mapPhone(short) = %v, want kept", got)
+	got, omit = mapPhone("")
+	if got != nil || omit {
+		t.Errorf("mapPhone(blank) = %v omit = %v, want nil / false", got, omit)
+	}
+	got, omit = mapPhone("+494012345678")
+	if got == nil || *got != "+494012345678" || omit {
+		t.Errorf("mapPhone(short) = %v omit = %v, want kept / false", got, omit)
+	}
+}
+
+func TestHandleEvent_OverlengthPhoneLeavesExisting(t *testing.T) {
+	acct := sampleSFAccount()
+	acct.Phone = "+49 40 123456789012345"
+	sf := &stubSalesforceClient{account: acct}
+	repo := &stubSalesforceAccountRepo{}
+	svc := NewSalesforceEventService(repo, sf)
+
+	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
+		EventType:   domain.SalesforceEventUpdated,
+		Entity:      "Account",
+		ReferenceID: acct.ID,
+	})
+	if err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	if !repo.lastUpsert.KeepExistingPhone || repo.lastUpsert.Phone != nil {
+		t.Errorf("upsert phone = %v keep = %v, want nil / true", repo.lastUpsert.Phone, repo.lastUpsert.KeepExistingPhone)
 	}
 }
 
