@@ -43,6 +43,10 @@ import (
 // emailSender abstracts notifications.EmailClient for testability.
 type emailSender interface {
 	SendEmail(ctx context.Context, to, cc, bcc, replyTo []string, subject, htmlBody string, attachments []notifications.EmailAttachment) error
+	// FromAddress is needed by a handler that BCCs its audience: the email
+	// service requires a non-empty To, and the sender is the only address that
+	// is always valid and discloses nothing.
+	FromAddress() string
 }
 
 // googleChatSender abstracts notifications.GoogleChatClient for testability.
@@ -562,6 +566,10 @@ func (d *Dispatcher) handleStatusChanged(ctx context.Context, record eventbus.Re
 // request has neither. Internal and customer audiences never share one notice
 // (they are separate branches of the original flow), so the audience on the
 // payload picks the portal for the whole send.
+// crAudienceCustomer is the audience value csm-flow-service publishes for a
+// notice bound for a project's contacts rather than a WSO2 approval group.
+const crAudienceCustomer = "customer"
+
 func (d *Dispatcher) handleCRApprovalRequested(ctx context.Context, record eventbus.Record, raw json.RawMessage) error {
 	var p events.CRApprovalRequestedPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -607,7 +615,23 @@ func (d *Dispatcher) handleCRApprovalRequested(ctx context.Context, record event
 		Link:          d.links.ChangeRequestLink(p.Audience, p.ChangeRequestID, p.ProjectID),
 	})
 
-	if err := d.email.SendEmail(ctx, recipients, nil, nil, nil, p.Subject, body, nil); err != nil {
+	// A customer audience goes in BCC, an internal one in To.
+	//
+	// ServiceNow sent one email per recipient, so nobody ever saw who else was
+	// notified. Collapsing that into one message is right -- the notice is
+	// identical for everyone -- but it must not also publish a customer's
+	// contact list to itself: a project's contacts routinely span several
+	// organisations, so To would disclose addresses across companies that have
+	// no relationship with each other.
+	//
+	// Internal notices stay in To deliberately. That audience is one WSO2
+	// approval group who already know each other, and a visible To is what lets
+	// them reply to the group and see that a colleague has picked it up.
+	to, bcc := recipients, []string(nil)
+	if p.Audience == crAudienceCustomer {
+		to, bcc = []string{d.email.FromAddress()}, recipients
+	}
+	if err := d.email.SendEmail(ctx, to, nil, bcc, nil, p.Subject, body, nil); err != nil {
 		return fmt.Errorf("dispatch: send CR approval notice for %s: %w", p.ChangeRequestID, err)
 	}
 	slog.InfoContext(ctx, "dispatch: CR approval notice sent",

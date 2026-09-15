@@ -33,6 +33,7 @@ import (
 
 type sentEmail struct {
 	to       []string
+	bcc      []string
 	subject  string
 	htmlBody string
 }
@@ -50,10 +51,12 @@ type mockEmailSender struct {
 	calls []sentEmail
 }
 
+func (m *mockEmailSender) FromAddress() string { return "noreply@wso2.com" }
+
 func (m *mockEmailSender) SendEmail(ctx context.Context, to, cc, bcc, replyTo []string, subject, htmlBody string, attachments []notifications.EmailAttachment) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, sentEmail{to: to, subject: subject, htmlBody: htmlBody})
+	m.calls = append(m.calls, sentEmail{to: to, bcc: bcc, subject: subject, htmlBody: htmlBody})
 	if m.errFor != nil {
 		return m.errFor(to)
 	}
@@ -1488,6 +1491,8 @@ type blockingEmailSender struct {
 	calls   int32
 }
 
+func (s *blockingEmailSender) FromAddress() string { return "noreply@wso2.com" }
+
 func (s *blockingEmailSender) SendEmail(ctx context.Context, to, cc, bcc, replyTo []string, subject, htmlBody string, attachments []notifications.EmailAttachment) error {
 	atomic.AddInt32(&s.calls, 1)
 	<-s.proceed
@@ -1772,4 +1777,60 @@ func TestDispatcher_Handle_CRApprovalRequested_DebugMode(t *testing.T) {
 	if got := mock.calls[0].to; len(got) != 1 || got[0] != "debug@wso2.com" {
 		t.Errorf("to = %v, want the debug list to replace the real audience", got)
 	}
+}
+
+// TestDispatcher_Handle_CRApprovalRequested_CustomerAudienceIsBCC guards a real
+// exposure. ServiceNow sent one email per recipient, so no customer contact
+// ever saw who else was notified; collapsing that into one message must not
+// publish a project's contact list to itself. Project contacts routinely span
+// several organisations, so a visible To would disclose addresses across
+// companies with no relationship to each other.
+func TestDispatcher_Handle_CRApprovalRequested_CustomerAudienceIsBCC(t *testing.T) {
+	t.Run("customer recipients are hidden from each other", func(t *testing.T) {
+		mock := &mockEmailSender{}
+		d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+
+		record := eventbus.Record{Value: []byte(`{"type":"change_request.approval_requested","entityId":"CR-1","payload":{` +
+			`"changeRequestId":"CR-1","number":"CHG0031234","state":"CUSTOMER_REVIEW","audience":"customer",` +
+			`"projectId":"PROJ-1","subject":"[WSO2 Support] [CR] (CHG0031234) Request for approval - Customer Review",` +
+			`"recipients":["a@acme.example","b@globex.example","c@initech.example"]}}`)}
+
+		if err := d.Handle(context.Background(), record); err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+		if len(mock.calls) != 1 {
+			t.Fatalf("sent %d emails, want 1", len(mock.calls))
+		}
+		sent := mock.calls[0]
+
+		if len(sent.bcc) != 3 {
+			t.Errorf("bcc = %v, want all three contacts", sent.bcc)
+		}
+		if len(sent.to) != 1 || sent.to[0] != "noreply@wso2.com" {
+			t.Errorf("to = %v, want only the sender — the service rejects an empty To, and the sender discloses nobody", sent.to)
+		}
+		for _, addr := range []string{"a@acme.example", "b@globex.example", "c@initech.example"} {
+			for _, visible := range sent.to {
+				if visible == addr {
+					t.Errorf("%s appears in To, where every other recipient can read it", addr)
+				}
+			}
+		}
+	})
+
+	t.Run("internal recipients stay visible to each other", func(t *testing.T) {
+		mock := &mockEmailSender{}
+		d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+
+		if err := d.Handle(context.Background(), crRecord("internal", "")); err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+		sent := mock.calls[0]
+		if len(sent.bcc) != 0 {
+			t.Errorf("bcc = %v, want none — one WSO2 approval group should see who else was asked", sent.bcc)
+		}
+		if len(sent.to) != 1 || sent.to[0] != testRecipient {
+			t.Errorf("to = %v, want the approval group itself", sent.to)
+		}
+	})
 }
