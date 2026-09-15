@@ -151,6 +151,12 @@ func TestCreateAlert_RejectsMissingRequiredFields(t *testing.T) {
 		{"missing metricName", `{"source":"azure","severity":"critical","service":"svc","description":"d"}`},
 		{"missing description", `{"source":"azure","severity":"critical","service":"svc","metricName":"m"}`},
 		{"empty body", `{}`},
+		// source/uniqueIdentifier are embedded verbatim in the dedup/group
+		// tag (csmclient.DedupTag/GroupTag) -- a value containing the tag's
+		// own delimiter characters could forge a tag colliding with a
+		// different alert's group. See tagDelimiterChars's doc comment.
+		{"source contains a tag delimiter", `{"source":"azure]x[group:other:uid","severity":"critical","service":"svc","metricName":"m","description":"d"}`},
+		{"uniqueIdentifier contains a tag delimiter", `{"source":"azure","severity":"critical","service":"svc","metricName":"m","description":"d","uniqueIdentifier":"uid]x[group:other:legit-uid"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

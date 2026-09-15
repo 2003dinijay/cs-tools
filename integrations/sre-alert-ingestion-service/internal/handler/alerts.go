@@ -51,13 +51,33 @@ type AlertRequest struct {
 	Description      string `json:"description"`
 }
 
-// validate reports the first missing required field, or "" if req is
+// tagDelimiterChars are the characters DedupTag/GroupTag use to structure a
+// tag (csmclient.DedupTag/GroupTag): "[", "]", ":". A field embedded
+// unescaped inside one of those tags must not contain them — otherwise a
+// crafted Source/UniqueIdentifier could forge a tag string that collides
+// with a different alert's group (attacker-controlled grouping/dedup
+// conflation, entirely within this service's own logic, independent of
+// whatever entity-service's downstream search implementation does with the
+// query text) or inject unexpected structure into the free-text search
+// query sent to csm-integration-service. Rejected outright rather than
+// stripped/escaped: this service does not get to decide what a stripped
+// value should have meant.
+const tagDelimiterChars = "[]:"
+
+// validate reports the first missing or malformed field, or "" if req is
 // well-formed. Category/Environment/UniqueIdentifier are genuinely optional
-// (see severity.MapCategory's safe default and the WorkNotes builder below).
+// (see severity.MapCategory's safe default and the WorkNotes builder below)
+// — but Source and UniqueIdentifier, when present, are embedded verbatim in
+// a dedup/group tag (see tagDelimiterChars) and so are constrained beyond
+// simple presence.
 func (req AlertRequest) validate() string {
 	switch {
 	case strings.TrimSpace(req.Source) == "":
 		return "source is required"
+	case strings.ContainsAny(req.Source, tagDelimiterChars):
+		return "source must not contain '[', ']', or ':'"
+	case strings.ContainsAny(req.UniqueIdentifier, tagDelimiterChars):
+		return "uniqueIdentifier must not contain '[', ']', or ':'"
 	case strings.TrimSpace(req.Severity) == "":
 		return "severity is required"
 	case strings.TrimSpace(req.Service) == "":
