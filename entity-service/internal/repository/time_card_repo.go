@@ -35,16 +35,30 @@ import (
 // and time_card_approver tables (migration 000039).
 type TimeCardRepository interface {
 	// SearchTimeCards returns a filtered, sorted, paginated slice of time
-	// cards together with the total count of matching rows before pagination.
-	SearchTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) ([]domain.TimeCardView, int, error)
+	// cards together with the total count of matching rows before
+	// pagination. callerEmail is the caller's own resolved identity,
+	// threaded down to this layer for a future authorization decision --
+	// not enforced yet, same posture as AccountContactRepository's own
+	// callerEmail parameter.
+	SearchTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest, callerEmail string) ([]domain.TimeCardView, int, error)
 	// SearchCaseTimeCards returns the same filtered set as SearchTimeCards,
 	// grouped and rolled up by case, together with the total count of
-	// distinct matching cases before pagination.
-	SearchCaseTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) ([]domain.CaseTimeCardSummary, int, error)
+	// distinct matching cases before pagination. The returned project comes
+	// from the case's own work_item.project_id, not any individual time
+	// card's customer_project_id: the latter varies per row (in principle;
+	// CreateTimeCard validates it against the case's project when supplied)
+	// and grouping by it would fragment one case into multiple summary rows
+	// while COUNT(DISTINCT tc.case_id) still counted it once. callerEmail is
+	// threaded down for the same future-authorization reason as
+	// SearchTimeCards.
+	SearchCaseTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest, callerEmail string) ([]domain.CaseTimeCardSummary, int, error)
 	// CreateTimeCard inserts a new time card in the "submitted" state,
 	// submitted by userID, plus one time_card_approver row per
-	// req.ApproverIDs, all in one transaction. Returns a ValidationError if
-	// req.CaseID, req.ProjectID, or any approver id does not exist.
+	// req.ApproverIDs, all in one transaction. When req.ProjectID is
+	// non-empty it must match the case's own project (work_item.project_id);
+	// an empty req.ProjectID leaves customer_project_id NULL. Returns a
+	// ValidationError if req.CaseID does not exist, req.ProjectID does not
+	// match the case's project, or any approver id does not exist.
 	CreateTimeCard(ctx context.Context, req domain.CreateTimeCardRequest, userID string) (domain.TimeCardView, error)
 	// UpdateTimeCardFields applies req's non-nil editable fields (everything
 	// except State/LeadComment, which go through TransitionTimeCardState
@@ -63,12 +77,15 @@ type TimeCardRepository interface {
 	// actorID as approved_by_id when approving and leadComment (if any)
 	// regardless of which transition. Only an eligible approver (a row in
 	// time_card_approver for this card) other than the card's own submitter
-	// may do this -- checked and then acted on inside one transaction (a
-	// SELECT ... FOR UPDATE followed by the UPDATE) so a concurrent
-	// approver-list edit can't slip a caller through between the check and
+	// may do this, and only while the card is still "submitted" -- both
+	// checked and then acted on inside one transaction (a SELECT ... FOR
+	// UPDATE followed by the UPDATE) so a concurrent approver-list edit or a
+	// second transition attempt can't slip through between the check and
 	// the write. Returns a NotFoundError if id does not exist; a
 	// ForbiddenError if actorID is not an eligible approver, or is the
-	// card's own submitter (self-approval).
+	// card's own submitter (self-approval); a ConflictError if the card is
+	// not currently "submitted" (already approved/rejected/processed/
+	// recalled).
 	TransitionTimeCardState(ctx context.Context, id string, state domain.TimeCardState, leadComment *string, actorID string) (domain.TimeCardView, error)
 	// DeleteTimeCard permanently deletes the time card identified by id, but
 	// only if it belongs to submitterID and is still in the "submitted"
@@ -272,7 +289,7 @@ func timeCardWhereClause(f *domain.SearchTimeCardsFilters) (string, []any) {
 }
 
 // SearchTimeCards implements TimeCardRepository.
-func (r *timeCardRepo) SearchTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) ([]domain.TimeCardView, int, error) {
+func (r *timeCardRepo) SearchTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest, _ string) ([]domain.TimeCardView, int, error) {
 	where, args := timeCardWhereClause(req.Filters)
 
 	sortCol := "tc.updated_on"
@@ -343,7 +360,7 @@ func (r *timeCardRepo) SearchTimeCards(ctx context.Context, req domain.SearchTim
 }
 
 // SearchCaseTimeCards implements TimeCardRepository.
-func (r *timeCardRepo) SearchCaseTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) ([]domain.CaseTimeCardSummary, int, error) {
+func (r *timeCardRepo) SearchCaseTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest, _ string) ([]domain.CaseTimeCardSummary, int, error) {
 	where, args := timeCardWhereClause(req.Filters)
 
 	countQuery := fmt.Sprintf(`SELECT COUNT(DISTINCT tc.case_id) FROM time_card tc %s`, where)
@@ -360,7 +377,7 @@ func (r *timeCardRepo) SearchCaseTimeCards(ctx context.Context, req domain.Searc
 		FROM time_card tc
 		JOIN "case" c ON c.id = tc.case_id
 		JOIN work_item wi ON wi.id = c.id
-		LEFT JOIN project p ON p.id = tc.customer_project_id
+		LEFT JOIN project p ON p.id = wi.project_id
 		%s
 		GROUP BY c.id, wi.number, wi.subject, wi.created_on, wi.updated_on, wi.created_by, wi.updated_by, p.id, p.name
 		ORDER BY wi.updated_on DESC, c.id
@@ -451,6 +468,25 @@ func (r *timeCardRepo) CreateTimeCard(ctx context.Context, req domain.CreateTime
 		return domain.TimeCardView{}, fmt.Errorf("create time card: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// The case's own project is work_item.project_id (case.id == work_item.id).
+	// time_card.customer_project_id is a separate, independently-settable
+	// column, so without this check a caller could attach an unrelated
+	// existing project to a case's time card. Validate a supplied
+	// req.ProjectID against it in this same transaction; when none is
+	// supplied, leave customer_project_id NULL (unchanged behavior) rather
+	// than auto-filling it in.
+	var caseProjectID *string
+	err = tx.QueryRow(ctx, `SELECT wi.project_id FROM "case" c JOIN work_item wi ON wi.id = c.id WHERE c.id = $1`, req.CaseID).Scan(&caseProjectID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.TimeCardView{}, &apierror.ValidationError{Msg: "case not found: " + req.CaseID}
+	}
+	if err != nil {
+		return domain.TimeCardView{}, fmt.Errorf("look up case project: %w", err)
+	}
+	if req.ProjectID != "" && (caseProjectID == nil || *caseProjectID != req.ProjectID) {
+		return domain.TimeCardView{}, &apierror.ValidationError{Msg: "projectId must match the case's own project"}
+	}
 
 	const insertQuery = `
 		INSERT INTO time_card (
@@ -603,19 +639,23 @@ func (r *timeCardRepo) TransitionTimeCardState(ctx context.Context, id string, s
 	}
 	defer tx.Rollback(ctx)
 
-	// Lock the row and check eligibility before writing anything: only an
-	// approver on this specific card, other than its own submitter, may
-	// transition it. FOR UPDATE holds the lock across both statements in
-	// this transaction, closing the gap a plain check-then-UPDATE would
-	// leave for a concurrent approver-list edit to race through.
-	var submitterID string
+	// Lock the row and check eligibility AND current state before writing
+	// anything: only an approver on this specific card, other than its own
+	// submitter, may transition it, and only while it is still "submitted"
+	// -- without that state check, an eligible approver could re-approve/
+	// reject an already approved/rejected/processed/recalled card. FOR
+	// UPDATE holds the lock across both statements in this transaction,
+	// closing the gap a plain check-then-UPDATE would leave for a
+	// concurrent approver-list edit (or a second transition attempt) to
+	// race through.
+	var submitterID, currentState string
 	var isApprover bool
 	err = tx.QueryRow(ctx, `
-		SELECT tc.user_id, EXISTS (
+		SELECT tc.user_id, tc.state, EXISTS (
 			SELECT 1 FROM time_card_approver tca WHERE tca.time_card_id = tc.id AND tca.approver_id = $2
 		)
 		FROM time_card tc WHERE tc.id = $1 FOR UPDATE`, id, actorID,
-	).Scan(&submitterID, &isApprover)
+	).Scan(&submitterID, &currentState, &isApprover)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.TimeCardView{}, &apierror.NotFoundError{Msg: "time card not found"}
 	}
@@ -624,6 +664,9 @@ func (r *timeCardRepo) TransitionTimeCardState(ctx context.Context, id string, s
 	}
 	if !isApprover || submitterID == actorID {
 		return domain.TimeCardView{}, &apierror.ForbiddenError{Msg: "only an eligible approver, other than the submitter, may approve or reject this time card"}
+	}
+	if currentState != string(domain.TimeCardStateSubmitted) {
+		return domain.TimeCardView{}, &apierror.ConflictError{Msg: "time card is not in the submitted state (it may already have been approved, rejected, processed, or recalled)"}
 	}
 
 	const query = `

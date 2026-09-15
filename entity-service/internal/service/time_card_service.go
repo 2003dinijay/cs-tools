@@ -151,7 +151,20 @@ func (s *timeCardService) SearchTimeCards(ctx context.Context, req domain.Search
 		return domain.SearchTimeCardsResponse{}, err
 	}
 
-	views, total, err := s.repo.SearchTimeCards(ctx, req)
+	// Requires a valid, authenticated caller (same minimum bar as every
+	// write on this service) but does not yet scope results to what that
+	// caller specifically owns/approves/manages -- entity-service has no
+	// authorization model to build that against today. callerEmail is
+	// threaded to the repository layer for that future decision, the same
+	// deliberate, deferred-not-missing posture as
+	// AccountContactRepository/ProjectContactRepository's own callerEmail
+	// parameter.
+	callerEmail, err := resolveCallerEmail(ctx)
+	if err != nil {
+		return domain.SearchTimeCardsResponse{}, err
+	}
+
+	views, total, err := s.repo.SearchTimeCards(ctx, req, callerEmail)
 	if err != nil {
 		return domain.SearchTimeCardsResponse{}, err
 	}
@@ -173,7 +186,14 @@ func (s *timeCardService) SearchCaseTimeCards(ctx context.Context, req domain.Se
 		return domain.SearchCaseTimeCardsResponse{}, err
 	}
 
-	summaries, total, err := s.repo.SearchCaseTimeCards(ctx, req)
+	// See SearchTimeCards' identical comment: requires authentication, does
+	// not yet scope results to it.
+	callerEmail, err := resolveCallerEmail(ctx)
+	if err != nil {
+		return domain.SearchCaseTimeCardsResponse{}, err
+	}
+
+	summaries, total, err := s.repo.SearchCaseTimeCards(ctx, req, callerEmail)
 	if err != nil {
 		return domain.SearchCaseTimeCardsResponse{}, err
 	}

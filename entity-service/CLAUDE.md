@@ -648,11 +648,31 @@ already use — no route path, request, or response shape changed.
   "only the submitter, only while `submitted`" itself, in the repository's
   `WHERE` clause (`state = 'submitted'` / `user_id = $2 AND state =
   'submitted'`) — the ServiceNow-backed implementation instead trusts SN to
-  enforce both, since it just forwards the caller's token. Approvers
-  (`time_card_approver`) are replaced wholesale, never diffed, whenever
-  `ApproverIDs` is provided on an edit. `SearchCaseTimeCards`' rollup
-  (`CaseTimeCardSummary`) is computed with `GROUP BY`/`SUM`/`COUNT FILTER`
-  in one query per page, not aggregated in Go.
+  enforce both, since it just forwards the caller's token.
+  `TransitionTimeCardState` (approve/reject) similarly requires the actor to
+  be an eligible approver (a `time_card_approver` row, and not the card's
+  own submitter) AND the card to currently be `submitted` — both checked
+  under one `SELECT ... FOR UPDATE` so a concurrent approver-list edit or a
+  second transition attempt can't slip through between the check and the
+  write. `CreateTimeCard` validates a supplied `projectId` against the
+  case's own `work_item.project_id` (`case.id` and `work_item.id` are the
+  same value) rather than trusting an unrelated existing project id;
+  omitting it leaves `customer_project_id` `NULL`, unchanged from before
+  this check existed. Approvers (`time_card_approver`) are replaced
+  wholesale, never diffed, whenever `ApproverIDs` is provided on an edit.
+  `SearchCaseTimeCards`' rollup (`CaseTimeCardSummary`) is computed with
+  `GROUP BY`/`SUM`/`COUNT FILTER` in one query per page, not aggregated in
+  Go — its returned project comes from the case's own
+  `work_item.project_id`, not any individual time card's
+  `customer_project_id`, so one case can never fragment into multiple
+  summary rows.
+  `SearchTimeCards`/`SearchCaseTimeCards` require a valid `x-user-id-token`
+  (the same minimum bar as every write here) but do not yet scope results
+  to what the caller specifically owns, approves, or manages — there is no
+  authorization model to build that against today. `callerEmail` is
+  threaded to the repository layer for that future decision, unused for
+  filtering, the same deliberate posture as `AccountContactRepository`/
+  `ProjectContactRepository`'s own `callerEmail` parameter below.
 
 ## Case tags, case watch list, account/project contacts, and user roles
 
@@ -680,9 +700,19 @@ changed.
   with an early return specifically so it can't disturb the pre-existing
   `state`/`severity`/`workState` branch (including its billable-status side
   effect). Mutually exclusive with `State`/`Severity`/`WorkState` per
-  request, same as ServiceNow. `GetCaseByID` also now populates `WatchList`
-  via the same `fetchCaseWatchers` helper `SetCaseWatchList` uses to read
-  back its own result.
+  request, same as ServiceNow — and, same as ServiceNow, with every other
+  `UpdateCaseRequest` field that's ServiceNow-only regardless of `WatchList`
+  (`AssigneeEmail`, `EngagementPaymentType`, `IssueType`, `ResolutionCode`,
+  `Cause`, `CloseNotes`, `AddPublicComment`, `Product`, `PublicTicket`,
+  `Acknowledge`, `WorkaroundProvided`, and the rest of the existing
+  unconditional rejection list) — a caller can no longer combine, say,
+  `resolutionCode` with a Postgres `UpdateCase` call and have it silently
+  ignored. `GetCaseByID` also now populates `WatchList` via the same
+  `fetchCaseWatchers` helper `SetCaseWatchList` uses to read back its own
+  result; both build each `WatchListUser.User` with an empty id
+  (`domain.NewUserReference("", ...)`), never the watcher's own resolved id
+  — `WatchListUser.User`'s own doc comment requires that field to stay null
+  regardless of whether this data source happens to know it.
 - **Account contacts** (`account_contact`, migration 000020) and **project
   contacts** (`project_contact` + `project_contact_group`/`project_group`/
   `project_group_role`/`project_role`, migrations 000022-000025): new

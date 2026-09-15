@@ -380,9 +380,12 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 		req.RelatedCaseID != nil || req.ParentID != nil || req.AutocloseHoldUntil != nil ||
 		req.Subject != nil || req.Description != nil || req.DeploymentID != nil || req.DeployedProductID != nil ||
 		req.BestCaseFixEta != nil || req.MostLikelyFixEta != nil || req.WorstCaseFixEta != nil ||
-		req.Type != nil || req.EngagementType != nil || req.CatalogID != nil ||
-		req.CatalogItemID != nil || len(req.Variables) > 0 {
-		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "assigneeEmail, relatedCaseId, parentId, autocloseHoldUntil, subject, description, deploymentId, deployedProductId, bestCaseFixEta, mostLikelyFixEta, worstCaseFixEta, type, engagementType, catalogId, catalogItemId, and variables are only supported for the ServiceNow data source"}
+		req.Type != nil || req.EngagementType != nil || req.EngagementPaymentType != nil ||
+		req.IssueType != nil || req.ResolutionCode != nil || req.Cause != nil || req.CloseNotes != nil ||
+		req.AddPublicComment != nil || req.Product != nil || req.PublicTicket != nil ||
+		req.Acknowledge != nil || req.WorkaroundProvided != nil ||
+		req.CatalogID != nil || req.CatalogItemID != nil || len(req.Variables) > 0 {
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "assigneeEmail, relatedCaseId, parentId, autocloseHoldUntil, subject, description, deploymentId, deployedProductId, bestCaseFixEta, mostLikelyFixEta, worstCaseFixEta, type, engagementType, engagementPaymentType, issueType, resolutionCode, cause, closeNotes, addPublicComment, product, publicTicket, acknowledge, workaroundProvided, catalogId, catalogItemId, and variables are only supported for the ServiceNow data source"}
 	}
 
 	// WatchList is mutually exclusive with State/Severity/WorkState (see this

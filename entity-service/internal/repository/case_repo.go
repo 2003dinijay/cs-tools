@@ -958,7 +958,12 @@ func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]dom
 			UserName: userName,
 			Name:     name,
 			Email:    email,
-			User:     domain.NewUserReference(id, email, name),
+			// User.ID is always null by contract -- see WatchListUser.User's
+			// own doc comment ("its id is always null: a watch-list entry is
+			// not guaranteed to point at a user record"). Pass "" rather
+			// than id so NewUserReference omits it, even though this
+			// particular row is known to resolve to a real user.
+			User: domain.NewUserReference("", email, name),
 		})
 	}
 	if err := rows.Err(); err != nil {
