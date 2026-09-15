@@ -102,6 +102,10 @@ RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
 COPY webapp/package.json webapp/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
+RUN addgroup --gid 10014 updates && \
+    adduser  --disabled-password  --no-create-home --uid 10014 --ingroup updates updatesuser
+
+USER 10014
 # The whole webapp, not just tests/: the specs resolve imports through the path
 # aliases in tsconfig, and playwright.config.ts reads .env.e2e from the webapp
 # root.
