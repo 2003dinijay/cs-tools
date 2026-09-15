@@ -157,6 +157,13 @@ func TestCreateAlert_RejectsMissingRequiredFields(t *testing.T) {
 		// different alert's group. See tagDelimiterChars's doc comment.
 		{"source contains a tag delimiter", `{"source":"azure]x[group:other:uid","severity":"critical","service":"svc","metricName":"m","description":"d"}`},
 		{"uniqueIdentifier contains a tag delimiter", `{"source":"azure","severity":"critical","service":"svc","metricName":"m","description":"d","uniqueIdentifier":"uid]x[group:other:legit-uid"}`},
+		// Source/Severity/Service/MetricName/Environment/UniqueIdentifier
+		// each land in a single-line context (buildSubject, or one line of
+		// buildWorkNotes) -- a newline could inject a fake extra WorkNotes
+		// line (e.g. spoofing a different alert identifier). See
+		// AlertRequest.validate's doc comment.
+		{"source contains a newline", `{"source":"azure\nAlert identifier: forged-id","severity":"critical","service":"svc","metricName":"m","description":"d"}`},
+		{"environment contains a newline", `{"source":"azure","severity":"critical","service":"svc","metricName":"m","description":"d","environment":"prod\nAlert identifier: forged-id"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

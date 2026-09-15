@@ -66,11 +66,31 @@ const tagDelimiterChars = "[]:"
 
 // validate reports the first missing or malformed field, or "" if req is
 // well-formed. Category/Environment/UniqueIdentifier are genuinely optional
-// (see severity.MapCategory's safe default and the WorkNotes builder below)
-// — but Source and UniqueIdentifier, when present, are embedded verbatim in
-// a dedup/group tag (see tagDelimiterChars) and so are constrained beyond
-// simple presence.
+// (see severity.MapCategory's safe default and the WorkNotes builder below).
+//
+// Source, Severity, Service, MetricName, Environment, and UniqueIdentifier
+// are each embedded verbatim into a single-line, structurally-meaningful
+// context — buildSubject's one Subject line, or one `"Label: %s\n"` line of
+// buildWorkNotes — so none may contain "\n"/"\r": a crafted Source of
+// "real-source\nAlert identifier: forged-id", for instance, would render as
+// if the alert legitimately carried a different, attacker-chosen
+// identifier, spoofing engineer-facing metadata the on-call responder reads
+// and trusts. Description is deliberately exempt: it maps to
+// AdditionalComments, a genuine free-text narrative field, not a
+// line-delimited structure a newline could forge a fake entry inside.
+//
+// Source and UniqueIdentifier are additionally checked against
+// tagDelimiterChars, since both are also embedded in a dedup/group tag —
+// see that constant's own doc comment.
 func (req AlertRequest) validate() string {
+	for name, v := range map[string]string{
+		"source": req.Source, "severity": req.Severity, "service": req.Service,
+		"metricName": req.MetricName, "environment": req.Environment, "uniqueIdentifier": req.UniqueIdentifier,
+	} {
+		if strings.ContainsAny(v, "\n\r") {
+			return name + " must not contain a newline"
+		}
+	}
 	switch {
 	case strings.TrimSpace(req.Source) == "":
 		return "source is required"
