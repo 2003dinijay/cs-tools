@@ -199,7 +199,7 @@ services:
     volumes:
       - csm-dev-certs:/certs:ro
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
 
   csm-portal-backend:
     build:
@@ -225,7 +225,7 @@ services:
       PORT: "8080"
       DASHBOARDS_DIR: ./dashboards.example
     ports:
-      - "8082:8080"
+      - "127.0.0.1:8082:8080"
 
   csm-portal-webapp:
     build:
@@ -241,7 +241,7 @@ services:
       CSM_PORTAL_AUTH_SIGN_OUT_REDIRECT_URL: http://localhost:3001
       CSM_PORTAL_BACKEND_BASE_URL: http://localhost:8082
     ports:
-      - "3001:8080"
+      - "127.0.0.1:3001:8080"
 
   customer-portal-backend-v2:
     build:
@@ -275,8 +275,8 @@ services:
       # collides with entity-service's default port.
       WS_PORT: "8092"
     ports:
-      - "8090:8080"
-      - "8092:8092"
+      - "127.0.0.1:8090:8080"
+      - "127.0.0.1:8092:8092"
 
   customer-portal-webapp:
     build:
@@ -292,7 +292,7 @@ services:
       CUSTOMER_PORTAL_AUTH_SIGN_OUT_REDIRECT_URL: http://localhost:3000
       CUSTOMER_PORTAL_BACKEND_BASE_URL: http://localhost:8090
     ports:
-      - "3000:8080"
+      - "127.0.0.1:3000:8080"
 
   # ── Integrations ──────────────────────────────────────────────────────────
 
@@ -310,7 +310,7 @@ services:
       ENTITY_CLIENT_SECRET: dev-secret
       PORT: "8080"
     ports:
-      - "8084:8080"
+      - "127.0.0.1:8084:8080"
 
   csm-notification-service:
     build:
@@ -343,7 +343,7 @@ services:
     volumes:
       - csm-dev-certs:/certs:ro
     ports:
-      - "8083:8080"
+      - "127.0.0.1:8083:8080"
 
   csm-portal-activity-stream-service:
     build:
@@ -374,8 +374,8 @@ services:
     volumes:
       - csm-dev-certs:/certs:ro
     ports:
-      - "8085:8080"
-      - "9095:9092"
+      - "127.0.0.1:8085:8080"
+      - "127.0.0.1:9095:9092"
 
   customer-portal-activity-stream-service:
     build:
@@ -406,8 +406,8 @@ services:
     volumes:
       - csm-dev-certs:/certs:ro
     ports:
-      - "8086:8080"
-      - "9096:9092"
+      - "127.0.0.1:8086:8080"
+      - "127.0.0.1:9096:9092"
 
   sre-alert-ingestion-service:
     build:
@@ -427,4 +427,4 @@ services:
       SRE_ALERT_CALLER_ID: local-dev-sre-ingestion
       PORT: "8080"
     ports:
-      - "8087:8080"
+      - "127.0.0.1:8087:8080"
