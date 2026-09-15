@@ -78,10 +78,6 @@ func TestGroupsSearch_IsStillALiveQuery(t *testing.T) {
 	}
 }
 
-// TestCuratedCataloguesAreNoLongerServedHere locks in the move: the team
-// registry and the role allow-list are the caller's configuration now, and this
-// service no longer reads either. If someone reinstates a route here, the
-// registry has two owners again and they will silently disagree.
 // TestPostgresOnlyRoutesAreAbsentWithoutAPool pins that SN-mode startup
 // without a reachable database must not register the side-table routes.
 func TestPostgresOnlyRoutesAreAbsentWithoutAPool(t *testing.T) {
@@ -98,6 +94,10 @@ func TestPostgresOnlyRoutesAreAbsentWithoutAPool(t *testing.T) {
 	}
 }
 
+// TestCuratedCataloguesAreNoLongerServedHere locks in the move: the team
+// registry and the role allow-list are the caller's configuration now, and this
+// service no longer reads either. If someone reinstates a route here, the
+// registry has two owners again and they will silently disagree.
 func TestCuratedCataloguesAreNoLongerServedHere(t *testing.T) {
 	router := newDirectoryRouter(t)
 	for _, path := range []string{"/teams/search", "/roles/search"} {
