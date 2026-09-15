@@ -1834,3 +1834,86 @@ func TestDispatcher_Handle_CRApprovalRequested_CustomerAudienceIsBCC(t *testing.
 		}
 	})
 }
+
+func planDateRecord(kind, audience, projectID string) eventbus.Record {
+	return eventbus.Record{Value: []byte(`{"type":"change_request.plan_date_notice","entityId":"CR-1","payload":{` +
+		`"changeRequestId":"CR-1","number":"CHG0031234","kind":"` + kind + `","audience":"` + audience + `",` +
+		`"projectId":"` + projectID + `","projectName":"Acme Cloud","actorName":"Perera Nimal",` +
+		`"shortDescription":"Upgrade the gateway","description":"Full details",` +
+		`"subject":"[WSO2 Support] [CR] (CHG0031234) Customer has updated the plan start date",` +
+		`"recipients":["` + testRecipient + `"]}}`)}
+}
+
+// TestDispatcher_Handle_CRPlanDateNotice covers all three turns: who sees the
+// recipient list, and which portal each is linked into.
+func TestDispatcher_Handle_CRPlanDateNotice(t *testing.T) {
+	tests := []struct {
+		name, kind, audience, projectID string
+		wantLink                        string
+		wantBCC                         bool
+	}{
+		{"customer proposed — internal audience, visible To", "customer_proposed", "internal", "",
+			"https://csm.example/operations/change-requests/CR-1", false},
+		{"WSO2 accepted — customer audience, BCC", "accepted", "customer", "PROJ-1",
+			"https://customer.example/projects/PROJ-1/operations/change-requests/CR-1", true},
+		{"WSO2 rejected — customer audience, BCC", "rejected", "customer", "PROJ-1",
+			"https://customer.example/projects/PROJ-1/operations/change-requests/CR-1", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockEmailSender{}
+			d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+
+			if err := d.Handle(context.Background(), planDateRecord(tt.kind, tt.audience, tt.projectID)); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+			if len(mock.calls) != 1 {
+				t.Fatalf("sent %d emails, want 1", len(mock.calls))
+			}
+			sent := mock.calls[0]
+
+			if !strings.Contains(sent.htmlBody, tt.wantLink) {
+				t.Errorf("body does not link to %q", tt.wantLink)
+			}
+			if tt.wantBCC {
+				if len(sent.bcc) != 1 || len(sent.to) != 1 || sent.to[0] != "noreply@wso2.com" {
+					t.Errorf("to=%v bcc=%v, want the audience hidden in BCC", sent.to, sent.bcc)
+				}
+			} else if len(sent.bcc) != 0 {
+				t.Errorf("bcc=%v, want an internal group visible to each other", sent.bcc)
+			}
+		})
+	}
+}
+
+// TestDispatcher_Handle_CRPlanDateNotice_WordingPerKind pins the three body
+// texts, reproduced from ServiceNow including its own awkward grammar.
+func TestDispatcher_Handle_CRPlanDateNotice_WordingPerKind(t *testing.T) {
+	tests := []struct{ kind, audience, want string }{
+		{"customer_proposed", "internal", "Customer has updated the plan start date. Please review the change."},
+		{"accepted", "customer", "The proposed plan start date accepted by the WSO2 Team."},
+		{"rejected", "customer", "WSO2 Team request to change the plan start date."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.kind, func(t *testing.T) {
+			mock := &mockEmailSender{}
+			d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+			if err := d.Handle(context.Background(), planDateRecord(tt.kind, tt.audience, "PROJ-1")); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+			body := mock.calls[0].htmlBody
+			if !strings.Contains(body, tt.want) {
+				t.Errorf("body missing %q", tt.want)
+			}
+			if !strings.Contains(body, "Perera Nimal") {
+				t.Error("body does not name the actor")
+			}
+			if !strings.Contains(body, "Acme Cloud / CHG0031234") {
+				t.Error("body missing the project / number line")
+			}
+			if strings.Count(body, "<!DOCTYPE") != 1 {
+				t.Errorf("rendered %d documents, want 1", strings.Count(body, "<!DOCTYPE"))
+			}
+		})
+	}
+}

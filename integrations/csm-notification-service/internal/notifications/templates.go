@@ -45,6 +45,9 @@ var severityChangedTemplateRaw string
 //go:embed templates/cr_approval_requested.html
 var crApprovalRequestedTemplateRaw string
 
+//go:embed templates/cr_plan_date_notice.html
+var crPlanDateNoticeTemplateRaw string
+
 // wso2LogoURL is WSO2's own official logo asset, served from wso2.cachefly.net
 // (WSO2's public CDN for site assets — not third-party hosting). An earlier
 // version embedded the logo as an inline base64 data: URI instead, avoiding
@@ -71,6 +74,7 @@ var (
 	commentAddedTemplate        = bakeLogo(commentAddedTemplateRaw)
 	statusChangedTemplate       = bakeLogo(statusChangedTemplateRaw)
 	crApprovalRequestedTemplate = bakeLogo(crApprovalRequestedTemplateRaw)
+	crPlanDateNoticeTemplate    = bakeLogo(crPlanDateNoticeTemplateRaw)
 	caseAssignedTemplate        = bakeLogo(caseAssignedTemplateRaw)
 	caseCreatedTemplate         = bakeLogo(caseCreatedTemplateRaw)
 	internalNoteTemplate        = bakeLogo(internalNoteTemplateRaw)
@@ -362,4 +366,70 @@ func RenderCRApprovalRequestedEmail(d CRApprovalEmailData) string {
 		"<!-- [CONTEXT_LINE] -->", context,
 	)
 	return replacer.Replace(crApprovalRequestedTemplate)
+}
+
+// CRPlanDateEmailData is what the plan-start-date notice renders from.
+type CRPlanDateEmailData struct {
+	// Kind is "customer_proposed", "accepted" or "rejected" — it selects both
+	// the headline and the closing line.
+	Kind             string
+	Number           string
+	ActorName        string
+	ProjectName      string
+	ShortDescription string
+	Description      string
+	Link             string
+}
+
+// crPlanDateWording is the per-kind text, reproduced from the ServiceNow
+// templates verbatim — including "Reject the proposed plan start date" as a
+// past-tense sentence and "<name> customer has updated…", both of which read
+// oddly and are what the original sends.
+var crPlanDateWording = map[string]struct{ headlineSuffix, closing string }{
+	"customer_proposed": {
+		"customer has updated the <b>plan start date</b>",
+		"Customer has updated the plan start date. Please review the change.",
+	},
+	"accepted": {
+		"accepted the plan start date",
+		"The proposed plan start date accepted by the WSO2 Team.",
+	},
+	"rejected": {
+		"Reject the proposed plan start date",
+		"WSO2 Team request to change the plan start date.",
+	},
+}
+
+// RenderCRPlanDateNoticeEmail renders one plan-start-date notice.
+func RenderCRPlanDateNoticeEmail(d CRPlanDateEmailData) string {
+	w, ok := crPlanDateWording[d.Kind]
+	if !ok {
+		// An unmapped kind still sends: a plain statement beats no notice at
+		// all to someone waiting on a date.
+		w.headlineSuffix = "updated the plan start date"
+		w.closing = "Open the change request to review the change."
+	}
+
+	headline := escapeHTML(d.ActorName) + " " + w.headlineSuffix
+	if d.ActorName == "" {
+		// No resolvable actor: drop the empty leading space rather than
+		// rendering " customer has updated…".
+		headline = strings.ToUpper(w.headlineSuffix[:1]) + w.headlineSuffix[1:]
+	}
+
+	projectAndNumber := escapeHTML(d.Number)
+	if d.ProjectName != "" {
+		projectAndNumber = escapeHTML(d.ProjectName) + " / " + escapeHTML(d.Number)
+	}
+
+	replacer := strings.NewReplacer(
+		"<!-- [CR_NUMBER] -->", escapeHTML(d.Number),
+		"<!-- [HEADLINE] -->", headline,
+		"<!-- [PROJECT_AND_NUMBER] -->", projectAndNumber,
+		"<!-- [SHORT_DESCRIPTION] -->", escapeMultiline(d.ShortDescription),
+		"<!-- [DESCRIPTION] -->", escapeMultiline(d.Description),
+		"<!-- [CLOSING_LINE] -->", escapeHTML(w.closing),
+		"<!-- [CR_LINK] -->", escapeHTML(d.Link),
+	)
+	return replacer.Replace(crPlanDateNoticeTemplate)
 }

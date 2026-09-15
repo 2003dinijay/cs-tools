@@ -97,7 +97,7 @@ const (
 var KnownTypes = []Type{
 	TypeCaseCreated, TypeCommentAdded, TypeStatusChanged, TypeCaseAssigned, TypeCaseAcknowledged, TypeSeverityChanged, TypeIncidentCreated,
 	TypeSLAClockRegister, TypeSLATierReached, TypeCaseBillableStatusChanged,
-	TypeCRApprovalRequested,
+	TypeCRApprovalRequested, TypeCRPlanDateNotice,
 }
 
 // Envelope is the wire shape of every record on the event bus: Payload's
@@ -374,6 +374,34 @@ type SLATierReachedPayload struct {
 type CaseBillableStatusChangedPayload struct {
 	CaseID     string `json:"caseId"`
 	IsBillable bool   `json:"isBillable"`
+}
+
+// TypeCRPlanDateNotice is published by csm-flow-service's cr_plan_date_notice
+// flow — the plan-start-date conversation between WSO2 and a customer. One
+// type for all three notices because they differ only in wording and audience.
+const TypeCRPlanDateNotice Type = "change_request.plan_date_notice"
+
+// CRPlanDateNoticePayload is TypeCRPlanDateNotice's payload. Mirrors
+// csm-flow-service's struct of the same name.
+type CRPlanDateNoticePayload struct {
+	ChangeRequestID string `json:"changeRequestId"`
+	Number          string `json:"number"`
+	// Kind is "customer_proposed" (internal audience), or "accepted" /
+	// "rejected" (customer audience). It selects the body wording.
+	Kind string `json:"kind"`
+	// Audience is "internal" or "customer" — picks the portal to link to, and
+	// whether the recipient list goes in To or BCC.
+	Audience  string `json:"audience"`
+	GroupName string `json:"groupName,omitempty"`
+	// ActorName is whoever changed the date, already rendered LAST NAME FIRST
+	// by the flow, matching the ServiceNow templates' pill order.
+	ActorName        string   `json:"actorName,omitempty"`
+	ProjectID        string   `json:"projectId,omitempty"`
+	ProjectName      string   `json:"projectName,omitempty"`
+	ShortDescription string   `json:"shortDescription,omitempty"`
+	Description      string   `json:"description,omitempty"`
+	Subject          string   `json:"subject"`
+	Recipients       []string `json:"recipients"`
 }
 
 // CRApprovalRequestedPayload is TypeCRApprovalRequested's payload. Mirrors

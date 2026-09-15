@@ -327,6 +327,8 @@ func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {
 		return d.handleIncidentCreated(ctx, record, env.EntityID, env.Payload)
 	case events.TypeCRApprovalRequested:
 		return d.handleCRApprovalRequested(ctx, record, env.Payload)
+	case events.TypeCRPlanDateNotice:
+		return d.handleCRPlanDateNotice(ctx, record, env.Payload)
 	case events.TypeSLAClockRegister, events.TypeSLATierReached:
 		// internal/slaengine's own consumer group (a different group ID, so
 		// it gets its own full copy of this same topic) is what reacts to
@@ -1204,4 +1206,64 @@ func (d *Dispatcher) handleIncidentCreated(ctx context.Context, record eventbus.
 		d.forget(callKey)
 	}
 	return errors.Join(chatErr, callErr)
+}
+
+// handleCRPlanDateNotice emails one turn of the plan-start-date conversation:
+// a customer proposing a new date (internal audience), or WSO2 accepting or
+// rejecting one (customer audience).
+//
+// Same division of labour as handleCRApprovalRequested — the flow resolves the
+// recipients and builds the subject, both reproduced from ServiceNow verbatim,
+// and this service renders and sends. The audience decides two things here:
+// which portal the link points at, and whether the recipient list is visible.
+func (d *Dispatcher) handleCRPlanDateNotice(ctx context.Context, record eventbus.Record, raw json.RawMessage) error {
+	var p events.CRPlanDateNoticePayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("dispatch: decode change_request.plan_date_notice payload: %w", err)
+	}
+	if len(p.Recipients) == 0 || p.Subject == "" {
+		slog.WarnContext(ctx, "dispatch: plan date notice with no recipients or subject, dropping",
+			"changeRequestId", p.ChangeRequestID, "kind", p.Kind)
+		return nil
+	}
+
+	recipients := p.Recipients
+	if !d.emailSendingEnabled {
+		slog.InfoContext(ctx, "dispatch: email sending disabled, skipping plan date notice",
+			"changeRequestId", p.ChangeRequestID, "recipients", len(recipients))
+		return nil
+	}
+	if d.emailDebugMode {
+		if len(d.emailDebugRecipients) == 0 {
+			slog.WarnContext(ctx, "dispatch: email debug mode on with no debug recipients, skipping plan date notice",
+				"changeRequestId", p.ChangeRequestID)
+			return nil
+		}
+		recipients = d.emailDebugRecipients
+	}
+
+	body := notifications.RenderCRPlanDateNoticeEmail(notifications.CRPlanDateEmailData{
+		Kind:             p.Kind,
+		Number:           p.Number,
+		ActorName:        p.ActorName,
+		ProjectName:      p.ProjectName,
+		ShortDescription: p.ShortDescription,
+		Description:      p.Description,
+		Link:             d.links.ChangeRequestLink(p.Audience, p.ChangeRequestID, p.ProjectID),
+	})
+
+	// Customer contacts go in BCC for the same reason as the approval notice:
+	// a project's contacts span organisations, and ServiceNow sent these one
+	// per person so nobody ever saw the rest of the list.
+	to, bcc := recipients, []string(nil)
+	if p.Audience == crAudienceCustomer {
+		to, bcc = []string{d.email.FromAddress()}, recipients
+	}
+	if err := d.email.SendEmail(ctx, to, nil, bcc, nil, p.Subject, body, nil); err != nil {
+		return fmt.Errorf("dispatch: send plan date notice for %s: %w", p.ChangeRequestID, err)
+	}
+	slog.InfoContext(ctx, "dispatch: plan date notice sent",
+		"changeRequestId", p.ChangeRequestID, "number", p.Number,
+		"kind", p.Kind, "audience", p.Audience, "recipients", len(recipients))
+	return nil
 }
