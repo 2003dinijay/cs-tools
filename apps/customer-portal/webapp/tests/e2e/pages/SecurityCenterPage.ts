@@ -104,10 +104,14 @@ export class SecurityCenterPage {
    * it looks like the tab is absent, and the spec skips itself reporting the
    * feature is not available when it is.
    *
-   * The marker is "a tab bar or the report search box, whichever appears":
-   * which tab lands first depends on the project's permissions
-   * (SECURITY_PAGE_TABS is filtered), so waiting on the reports search alone
-   * would hang for a project whose first tab is Component Analysis.
+   * The marker is "either tab's search box, whichever appears". Both are unique
+   * to this page, which matters: a page-wide `getByRole("tab")` would be
+   * satisfied by the tabs of whatever page is still mounted — a case detail has
+   * several — so the wait would pass before Security Center rendered at all.
+   *
+   * Both are accepted because which tab lands first depends on the project's
+   * permissions (SECURITY_PAGE_TABS is filtered), so waiting on the reports
+   * search alone would hang for a project whose first tab is Component Analysis.
    */
   async openViaSideNav(projectId: string): Promise<void> {
     const sideNav = new SideNavPage(this.page);
@@ -118,9 +122,12 @@ export class SecurityCenterPage {
     );
 
     await expect(async () => {
-      const tabs = await this.page.getByRole("tab").count();
-      const search = await this.searchInput().count();
-      expect(tabs + search).toBeGreaterThan(0);
+      const reports = await this.searchInput().count();
+      const components = await this.componentSearchInput().count();
+      expect(
+        reports + components,
+        "Security Center should show either tab's search box",
+      ).toBeGreaterThan(0);
     }).toPass({ timeout: LOAD_TIMEOUT_MS });
   }
 

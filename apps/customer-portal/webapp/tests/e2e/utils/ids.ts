@@ -89,6 +89,34 @@ export function idPattern(id: string): string {
 }
 
 /**
+ * Drops a terminal `$` from a suffix, when it is a regex anchor rather than a
+ * literal.
+ *
+ * Several callers anchor their own suffix — `"support$"` — which predates this
+ * helper enforcing the path end itself. Left in place, that `$` demands the
+ * string end THERE, so `/projects/<id>/support?tab=cases` stops matching while
+ * the unanchored `"support"` accepts it: the same intent, two different
+ * behaviours depending on how the caller happened to write it. Removing the
+ * anchor lets the boundary assertion below do the job uniformly.
+ *
+ * A `$` preceded by an odd number of backslashes is escaped — a literal dollar
+ * in the path — and is kept.
+ *
+ * @param suffix - Path fragment, possibly self-anchored.
+ * @returns The suffix without its trailing anchor.
+ */
+function stripTerminalAnchor(suffix: string): string {
+  if (!suffix.endsWith("$")) return suffix;
+
+  let backslashes = 0;
+  for (let i = suffix.length - 2; i >= 0 && suffix[i] === "\\"; i -= 1) {
+    backslashes += 1;
+  }
+
+  return backslashes % 2 === 0 ? suffix.slice(0, -1) : suffix;
+}
+
+/**
  * Builds a pattern for a project-scoped path, tolerant of both id spellings.
  *
  * The path must END after `suffix` — a query string or fragment may follow, but
@@ -98,8 +126,9 @@ export function idPattern(id: string): string {
  * Settings would pass on a deeper route it never meant to allow.
  *
  * Enforced with a lookahead rather than `$` so it composes with suffixes that
- * already anchor themselves (several callers end theirs with `$`) and with those
- * that match a query of their own.
+ * match a query of their own. A suffix that anchors itself with a trailing `$`
+ * has that anchor removed first — see {@link stripTerminalAnchor} — so anchored
+ * and unanchored suffixes behave identically.
  *
  * @param projectId - Project id, in either spelling.
  * @param suffix - Path after the project id, e.g. `dashboard` or
@@ -111,6 +140,9 @@ export function projectPathPattern(
   suffix: string,
 ): RegExp {
   // (?![^?#]) — the next character, if any, must be `?` or `#`. At the end of
-  // the string the lookahead trivially succeeds.
-  return new RegExp(`/projects/${idPattern(projectId)}/${suffix}(?![^?#])`);
+  // the string the lookahead trivially succeeds. A caller's own trailing anchor
+  // is dropped first, or it would forbid the query string this is meant to
+  // allow.
+  const path = stripTerminalAnchor(suffix);
+  return new RegExp(`/projects/${idPattern(projectId)}/${path}(?![^?#])`);
 }

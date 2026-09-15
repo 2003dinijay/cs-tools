@@ -49,10 +49,25 @@ test("project path pattern ends at the suffix", () => {
   expect(settings.test(`https://x/projects/${uuid}/settings/users/42`)).toBe(false);
   expect(settings.test(`https://x/projects/${uuid}/settings-archive`)).toBe(false);
 
-  // Composes with a suffix that already anchors itself ($), as several callers do.
+  // A suffix that anchors itself ($), as several callers do, must behave exactly
+  // like the unanchored form — including accepting a query or fragment, which a
+  // surviving `$` would forbid.
   const anchored = projectPathPattern(uuid, "support$");
   expect(anchored.test(`https://x/projects/${uuid}/support`)).toBe(true);
+  expect(anchored.test(`https://x/projects/${uuid}/support?createdByMe=true`)).toBe(true);
+  expect(anchored.test(`https://x/projects/${uuid}/support#section`)).toBe(true);
   expect(anchored.test(`https://x/projects/${uuid}/support/cases`)).toBe(false);
+  expect(anchored.test(`https://x/projects/${uuid}/support-archive`)).toBe(false);
+
+  // The real call sites that anchor: chat history and an engagement detail.
+  const history = projectPathPattern(uuid, "support/conversations$");
+  expect(history.test(`https://x/projects/${uuid}/support/conversations?view=all`)).toBe(true);
+  expect(history.test(`https://x/projects/${uuid}/support/conversations/abc`)).toBe(false);
+
+  // An ESCAPED dollar stays literal — it is part of the path, not an anchor.
+  const literal = projectPathPattern(uuid, "odd\\$name");
+  expect(literal.test(`https://x/projects/${uuid}/odd$name`)).toBe(true);
+  expect(literal.test(`https://x/projects/${uuid}/odd$name?q=1`)).toBe(true);
 
   // And with a suffix matching its own query string.
   const withQuery = projectPathPattern(uuid, "support/cases\\?createdByMe=true");
