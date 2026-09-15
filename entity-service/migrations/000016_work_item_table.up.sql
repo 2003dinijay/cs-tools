@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS work_item (
     created_by VARCHAR(255) NOT NULL,
     updated_by VARCHAR(255) NOT NULL,
     number VARCHAR(100) NOT NULL UNIQUE,
-    wso2_id VARCHAR(100) NOT NULL UNIQUE,
+    -- Nullable: change_request work items have no wso2_id data.
+    wso2_id VARCHAR(100) UNIQUE,
     subject VARCHAR(255) NOT NULL,
     type work_item_type_enum,
     account_id UUID REFERENCES account(id) ON DELETE SET NULL,
