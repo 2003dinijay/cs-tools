@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS change_request (
     risk change_request_risk_enum,
     closed_by_user_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
     closed_on TIMESTAMPTZ,
+    requested_by_user_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
     approval change_request_approval_enum,
     justification TEXT,
     impact_description TEXT,
@@ -100,3 +101,4 @@ CREATE TABLE IF NOT EXISTS change_request (
 );
 
 CREATE INDEX IF NOT EXISTS idx_change_request_closed_by_user_id ON change_request (closed_by_user_id);
+CREATE INDEX IF NOT EXISTS idx_change_request_requested_by_user_id ON change_request (requested_by_user_id);
