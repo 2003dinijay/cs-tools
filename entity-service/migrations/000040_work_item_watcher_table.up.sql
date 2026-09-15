@@ -16,6 +16,10 @@
 
 -- Junction table fanned out from task.watch_list via expand_list, same shape
 -- as project_group_role: one row per (work_item, watching user) pair.
+-- Deliberately no created_on/updated_on/created_by/updated_by, unlike that
+-- table and time_card_approver: watch_list is a bare list of user
+-- references on the source record, with no per-entry audit trail to copy
+-- down the way a bundle record's own fields are for those two.
 CREATE TABLE IF NOT EXISTS work_item_watcher (
     id UUID PRIMARY KEY,
     work_item_id UUID NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,

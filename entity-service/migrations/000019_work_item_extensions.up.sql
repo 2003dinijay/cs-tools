@@ -15,7 +15,7 @@
 -- under the License.
 
 -- Four more work_item type extensions, same shared-primary-key pattern as
--- case (migrations/0023_case_table.sql): id IS work_item.id, ON DELETE
+-- case (migrations/000018_case_table.up.sql): id IS work_item.id, ON DELETE
 -- CASCADE, no audit columns - those live on work_item and are reachable
 -- via join.
 

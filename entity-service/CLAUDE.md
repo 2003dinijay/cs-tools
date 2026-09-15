@@ -369,7 +369,7 @@ create.
 
 ## SLA clocks
 
-`sla_clocks` (migration `000011`, `internal/domain/entity.go`'s `SLAClock`,
+`sla_clocks` (migration `000042`, `internal/domain/entity.go`'s `SLAClock`,
 `internal/repository/sla_clock_repo.go`, `internal/service/sla_clock_service.go`)
 is durable per-case SLA timer state — `caseId`/`clockType`, `startedAt`/`dueAt`,
 and up to three tier-crossing timestamps. Like `event_publish_failures`, it has
@@ -395,7 +395,7 @@ that already exists for a `(caseId, clockType)` pair resets it from scratch
 (`RegisterSLAClock`) rather than adjusting it in place — including its
 eight display-only fields (case number/WSO2 case id/title/type/product/
 team/priority/state, a point-in-time snapshot from registration, added in
-migration `000014`), populated so `csm-notification-service`'s slaengine
+migration `000046`), populated so `csm-notification-service`'s slaengine
 can build a Google Chat breach card from one `GetClock` call with no second
 lookup — this service is the only thing with case data to give it.
 
@@ -509,15 +509,14 @@ here.
 
 ## Scheduled task runs
 
-`scheduled_task_run` (migration `000013`, `internal/domain/entity.go`'s
+`scheduled_task_run` (migration `000045`, `internal/domain/entity.go`'s
 `ScheduledTaskRun`, `internal/repository/scheduled_task_run_repo.go`,
 `internal/service/scheduled_task_run_service.go`) is durable claim/retry
 state for `operations/csm-scheduled-tasks` — a single Choreo Scheduled Task
 that internally fans out to any number of independently-scheduled sub-crons
 on one shared driver cadence. Like `sla_clocks`/`event_publish_failures`, it
 has no ServiceNow equivalent and is always backed by Postgres regardless of
-`DATA_SOURCE`. It is also the one intentionally **singular** table name in
-this schema — every other table here is plural; don't "fix" it to match.
+`DATA_SOURCE`.
 
 `taskName` is a caller-defined registry key, not a fixed enum — same
 reasoning as `sla_clocks.clockType`: which sub-crons exist, and on what

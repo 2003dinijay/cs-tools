@@ -155,7 +155,7 @@ rather than async.
 
 ### SLA clocks
 
-`sla_clocks` (migration `000011`, display columns added in `000014`) durably tracks per-case SLA
+`sla_clocks` (migration `000042`, display columns added in `000046`) durably tracks per-case SLA
 timers — `caseId`/`clockType`, `startedAt`/`dueAt`, up to three tier-crossing timestamps
 (`reached50At`/`reached75At`/`reached100At`), `pausedAt`, and eight display-only fields (case
 number/WSO2 case id/title/type/product/team/priority/state, a point-in-time snapshot from
@@ -204,8 +204,7 @@ publishing and the SLA pause/resume side effects above for free, with no duplica
 
 ### Scheduled task runs
 
-`scheduled_task_run` (migration `000013` — the one intentionally singular table name in this
-schema) is durable claim/retry state for `operations/csm-scheduled-tasks`, a single Choreo
+`scheduled_task_run` (migration `000045`) is durable claim/retry state for `operations/csm-scheduled-tasks`, a single Choreo
 Scheduled Task that fans out to many independently-scheduled sub-crons on one shared driver
 cadence. Has no ServiceNow equivalent — always backed by Postgres. No stored status column: a row's
 state is always derivable from which timestamp is set (`succeededOn`, `supersededOn`,
