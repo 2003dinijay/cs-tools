@@ -142,9 +142,6 @@ func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersReq
 	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchUsersResponse{}, err
 	}
-	if len(req.Filters.RoleIDs) > 0 {
-		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "roleIds filter is only supported for the ServiceNow data source"}
-	}
 	if len(req.Filters.UserIDs) > 0 || len(req.Filters.GroupIDs) > 0 || len(req.Filters.GroupNames) > 0 {
 		return domain.SearchUsersResponse{}, &apierror.ValidationError{
 			Msg: "userIds, groupIds and groupNames filters are only supported for the ServiceNow data source"}
@@ -160,6 +157,9 @@ func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersReq
 	}
 	if len(req.Filters.Emails) > 50 {
 		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "emails cannot contain more than 50 values"}
+	}
+	if len(req.Filters.RoleIDs) > 50 {
+		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "roleIds cannot contain more than 50 values"}
 	}
 
 	users, total, err := s.repo.SearchUsers(ctx, req)
@@ -185,10 +185,13 @@ func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersReq
 // matching row. See case_service.go's identical pattern for CreateCase /
 // CreateCaseComment.
 //
-// Postgres users have no roles or group-membership tables (unlike the
-// ServiceNow data source), so Roles and Groups are always empty rather than
-// fabricated — the frontend's team/role resolution is simply a no-op for
-// this data source today.
+// Postgres has role/user_role tables (migrations 000004/000006 -- see
+// SearchUsers' roleIds filter, which does query them) and no group-membership
+// table at all. GetMe doesn't resolve either here: Roles is left empty rather
+// than queried, since no caller has asked for it on this path yet, and Groups
+// is always empty because there is genuinely nothing to resolve it from —
+// the frontend's team/role resolution is simply a no-op for this data source
+// today.
 func (s *userService) GetMe(ctx context.Context) (domain.GetUserMeResponse, error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {

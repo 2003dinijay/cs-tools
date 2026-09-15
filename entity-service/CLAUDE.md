@@ -591,6 +591,195 @@ Exposed at:
   there) — that endpoint existed from the start, but this is the first
   thing that actually calls it.
 
+## Comment, product vulnerability, and time-card Postgres support
+
+`comment` (migration 000037), `product_vulnerability` (migration 000034),
+and `time_card`/`time_card_approver` (migration 000039) had tables from the
+start but no repository/service ever queried them — every route backed by
+these entities (`/comments*`, `/products/vulnerabilities/*`, `/time-cards/*`,
+`/cases/time-cards/search`) was ServiceNow-only regardless of
+`cfg.DataSource`. `comment_repo.go`/`comment_service.go`,
+`product_vulnerability_repo.go`/`product_vulnerability_service.go`, and
+`time_card_repo.go`/`time_card_service.go` wire up a Postgres-backed
+implementation for each, following the same `routes.go` "SN branch vs.
+Postgres branch, same service interface" pattern `caseRepo`/`projectRepo`
+already use — no route path, request, or response shape changed.
+
+- **Comments**: `comment.work_item_id` is a foreign key into `work_item(id)`,
+  so only reference types that are themselves work_item subtypes can be
+  commented on through Postgres — see
+  `repository.ReferenceTypeToWorkItemType`. `"deployment"` has no entry:
+  `deployment` (migration 000013) is its own standalone table with its own
+  primary key space, not a work_item subtype, so `CreateComment`/
+  `SearchComments` reject it with a `ValidationError` before any query runs.
+  `CreateComment` also refuses to write `CommentTypeActivity`
+  (`comment_type_enum`'s `APPROVAL_HISTORY` label is reserved for
+  ServiceNow's own audit trail, never a caller-authored comment) but still
+  accepts it as a search filter, for reading rows a future SN-sourced ETL
+  might load. `comment.created_by` is a free-text `VARCHAR`, not a foreign
+  key into `"user"` (it mirrors ServiceNow's `sys_journal_field` author
+  string, which can be a non-user integration account) — the Postgres path
+  writes the caller's resolved email into it, the same identity mechanism
+  `caseService.CreateCaseComment` uses (`x-user-id-token` → `emailFromJWT` →
+  `UserRepository.GetUserByEmail`).
+- **Product vulnerabilities**: `SearchProductVulnerabilities`/
+  `GetProductVulnerability`/`GetVulnerabilityMeta` are read-only queries
+  against `product_vulnerability`, which mirrors ServiceNow's own
+  vulnerability record 1:1 and is deliberately standalone (no FK into
+  `product`/`product_version` — see that migration's own doc comment).
+  `GetVulnerabilityMeta` reads `product_vulnerability_severity_enum`'s
+  labels straight from Postgres's own enum catalog
+  (`pg_enum`/`ListSeverities`) rather than hardcoding them, so it can never
+  drift from the migration that defines the type.
+  `SyncProductVulnerabilities` has **no Postgres equivalent** and always
+  returns a `ServiceUnavailableError` on that data source: its full-replace
+  semantics (delete anything absent from the submitted set, upsert
+  everything present) need a stable external join key with a
+  database-enforced uniqueness guarantee, and `product_vulnerability` has no
+  `UNIQUE` constraint on any column other than its own generated `id` —
+  adding one is a schema change, out of scope for wiring up the existing
+  table's read queries.
+- **Time cards**: like comments, the Postgres path has no inbound-auth
+  layer to forward a caller's identity through, so `CreateTimeCard`/
+  `UpdateTimeCard`/`DeleteTimeCard` resolve the caller's user id from
+  `x-user-id-token` the same way `caseService.CreateCaseComment` does,
+  rather than trusting a submitter id in the request body. `UpdateTimeCard`
+  enforces "only editable while `submitted`" and `DeleteTimeCard` enforces
+  "only the submitter, only while `submitted`" itself, in the repository's
+  `WHERE` clause (`state = 'submitted'` / `user_id = $2 AND state =
+  'submitted'`) — the ServiceNow-backed implementation instead trusts SN to
+  enforce both, since it just forwards the caller's token.
+  `TransitionTimeCardState` (approve/reject) similarly requires the actor to
+  be an eligible approver (a `time_card_approver` row, and not the card's
+  own submitter) AND the card to currently be `submitted` — both checked
+  under one `SELECT ... FOR UPDATE` so a concurrent approver-list edit or a
+  second transition attempt can't slip through between the check and the
+  write. `CreateTimeCard` validates a supplied `projectId` against the
+  case's own `work_item.project_id` (`case.id` and `work_item.id` are the
+  same value) rather than trusting an unrelated existing project id;
+  omitting it leaves `customer_project_id` `NULL`, unchanged from before
+  this check existed. Approvers (`time_card_approver`) are replaced
+  wholesale, never diffed, whenever `ApproverIDs` is provided on an edit.
+  `SearchCaseTimeCards`' rollup (`CaseTimeCardSummary`) is computed with
+  `GROUP BY`/`SUM`/`COUNT FILTER` in one query per page, not aggregated in
+  Go — its returned project comes from the case's own
+  `work_item.project_id`, not any individual time card's
+  `customer_project_id`, so one case can never fragment into multiple
+  summary rows.
+  `SearchTimeCards`/`SearchCaseTimeCards` require a valid `x-user-id-token`
+  (the same minimum bar as every write here) but do not yet scope results
+  to what the caller specifically owns, approves, or manages — there is no
+  authorization model to build that against today. `callerEmail` is
+  threaded to the repository layer for that future decision, unused for
+  filtering, the same deliberate posture as `AccountContactRepository`/
+  `ProjectContactRepository`'s own `callerEmail` parameter below.
+
+## Case tags, case watch list, account/project contacts, and user roles
+
+A second round of wiring previously-ServiceNow-only routes up to Postgres,
+following the same "SN branch vs. Postgres branch, same service interface"
+pattern as the section above — no route path, request, or response shape
+changed.
+
+- **Case tags** (`tag`/`work_item_tag`, migration 000021): `CaseService.
+  AddCaseTag`/`RemoveCaseTag`/`SearchTags` in `case_service.go` were a
+  detection-only stub that always returned 503 — see
+  `detectPatchTagBillableOverride`'s own doc comment for that history — and
+  now actually persist. `AddCaseTag` finds-or-creates a tag by name
+  (case-insensitively; `tag.name` has no `UNIQUE` constraint, so a race
+  between two first-uses of the same never-before-seen label can produce a
+  cosmetic duplicate row, not a correctness bug) and attaches it to the
+  case's underlying `work_item`, idempotently. The `detectPatchTagBillableOverride`
+  "patch tag on a LOW-severity case" detection still only logs — condition
+  (a) it was blocked on (case tags having real storage) is now true, but
+  condition (b) (a consumer for `events.TypeCaseBillableStatusChanged`)
+  still doesn't exist.
+- **Case watch list** (`work_item_watcher`, migration 000040):
+  `UpdateCase`'s `WatchList` field, previously rejected outright on this
+  data source, now has its own branch (`updateCaseWatchList`) — split out
+  with an early return specifically so it can't disturb the pre-existing
+  `state`/`severity`/`workState` branch (including its billable-status side
+  effect). Mutually exclusive with `State`/`Severity`/`WorkState` per
+  request, same as ServiceNow — and, same as ServiceNow, with every other
+  `UpdateCaseRequest` field that's ServiceNow-only regardless of `WatchList`
+  (`AssigneeEmail`, `EngagementPaymentType`, `IssueType`, `ResolutionCode`,
+  `Cause`, `CloseNotes`, `AddPublicComment`, `Product`, `PublicTicket`,
+  `Acknowledge`, `WorkaroundProvided`, and the rest of the existing
+  unconditional rejection list) — a caller can no longer combine, say,
+  `resolutionCode` with a Postgres `UpdateCase` call and have it silently
+  ignored. `GetCaseByID` also now populates `WatchList` via the same
+  `fetchCaseWatchers` helper `SetCaseWatchList` uses to read back its own
+  result; both build each `WatchListUser.User` with an empty id
+  (`domain.NewUserReference("", ...)`), never the watcher's own resolved id
+  — `WatchListUser.User`'s own doc comment requires that field to stay null
+  regardless of whether this data source happens to know it.
+- **Account contacts** (`account_contact`, migration 000020) and **project
+  contacts** (`project_contact` + `project_contact_group`/`project_group`/
+  `project_group_role`/`project_role`, migrations 000022-000025): new
+  `AccountContactService`/`ProjectContactService` Postgres implementations.
+  Neither table has its own name/email column — `account_contact.user_name`
+  and, for project contacts, `account_contact` joined through
+  `project_contact.account_contact_id` are matched against `"user".user_name`
+  (case-insensitively) to resolve a display name/email; a row with no
+  matching `"user"` row falls back to the raw `user_name` (account contacts)
+  or the invited `email` (project contacts, matching
+  `domain.ProjectContact.Email`'s own documented fallback). A project
+  contact's `Roles` is the union of `project_role.role` across every
+  `project_group` it belongs to via `project_contact_group`.
+  `NotificationsEnabled` has no backing column anywhere in this schema and
+  is hardcoded `true` (see `projectContactRowToDomain`'s own comment) —
+  flagged as a known gap, not fabricated data pretending to be real.
+- **User roles** (`role`/`user_role`, migrations 000004/000006):
+  `SearchUsersFilters.RoleIDs` (holds role **names**, e.g. `"admin"`,
+  despite the field's name — see `domain.UserRole`'s own doc comment) was
+  previously rejected outright on Postgres; `user_repo.go`'s `SearchUsers`
+  now joins through `user_role`/`role` with OR semantics (matches if the
+  user holds *any* of the given roles). `GetMe`'s `Roles` is still always
+  empty — nothing has asked for it on that path, this only wires up the
+  search filter.
+
+**Pre-existing bug fixed as a side effect, not scope creep**: `user_repo.go`
+queried a `users` table with `created_at`/`updated_at`/`phone`/`timezone`
+columns that do not exist anywhere in `migrations/` — the real table is
+`"user"` (migration 000001) with `created_on`/`updated_on` and no
+`phone`/`timezone` column at all. Every identity-resolution call this
+service makes (`GetUserByEmail`, used by `CreateCaseComment`, `AddCaseTag`/
+`RemoveCaseTag`/`SearchTags`, `SetCaseWatchList`, `CreateTimeCard`/
+`UpdateTimeCard`/`DeleteTimeCard`/`TransitionTimeCardState`, `resolveActor`)
+depended on this, so it had to be fixed here rather than deferred — see
+"Known pre-existing schema/repository mismatch" below for the sibling repos
+that still have this problem and haven't been touched.
+
+**Threading the caller's identity to the repository layer**: several of the
+methods above (`SearchAccountContacts`, `SearchProjectContacts`,
+`GetProjectContact`) accept a `callerEmail string` parameter that reaches
+the repository layer but is **not yet used to restrict any query** — added
+at explicit request, so a future authorization decision (e.g. restricting
+an `EXTERNAL` `user_type` caller to only the accounts/projects they are
+themselves a contact on) has the caller's identity already available at the
+SQL-query-writing layer without needing to re-plumb it through every layer
+again. `resolveCallerEmail` (`account_contact_service.go`) is the shared
+helper: decodes `x-user-id-token`'s `email` claim without a `"user"` table
+lookup, since nothing on these paths needs the caller's platform id today,
+only their claimed email.
+
+**Known pre-existing schema/repository mismatch (not fixed here)**:
+`case_repo.go`, `project_repo.go`, `product_repo.go`, `product_version_repo.go`,
+`deployment_repo.go`, and `deployed_product_repo.go` all query plural,
+unquoted table names (`cases`, `projects`, `products`, `accounts`,
+`deployments`, `deployed_products`, `case_comments`) that do not exist
+anywhere in `migrations/`, which instead define singular/quoted `"case"`,
+project, product, account, deployment, deployed_product, split across
+`work_item`+`case`. These repositories cannot function against this
+migration set as they stand. The new methods added to `case_repo.go` in
+this section and the one above (tags, watch list, comments via
+`comment_repo.go`) deliberately query only the *real* tables
+(`work_item`, `tag`, `work_item_tag`, `work_item_watcher`, `"user"`) and are
+unaffected by this bug, but the rest of `case_repo.go` (`CreateCase`,
+`GetCaseByID`'s own case/project/account/deployment joins, `SearchCases`,
+etc.) is not, and needs its own dedicated fix — out of scope for adding new
+queries on top of it.
+
 ## Adding a new entity
 
 Follow these steps in order:

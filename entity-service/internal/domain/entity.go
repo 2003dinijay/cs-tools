@@ -1472,7 +1472,8 @@ type CaseView struct {
 	ResolutionCode  *CaseResolutionCode `json:"resolutionCode"`
 	Cause           *CaseCause          `json:"cause"`
 	ResolutionNotes *string             `json:"resolutionNotes"`
-	// WatchList is the set of users watching the case (ServiceNow data source only).
+	// WatchList is the set of users watching the case. For the Postgres data
+	// source this is backed by work_item_watcher (migration 000040).
 	WatchList []WatchListUser `json:"watchList,omitempty"`
 	// AutoclosureStep indicates where the case sits in ServiceNow's staged auto-closure
 	// sequence: DEFAULT -> FIRST_COMMENT -> ON_HOLD -> SECOND_COMMENT. Read-only —
@@ -2918,8 +2919,8 @@ type SearchContactsFilters struct {
 	SearchQuery string `json:"searchQuery"`
 }
 
-// ProjectContact is a contact associated with a project. Supported by the
-// ServiceNow data source only; there is no Postgres equivalent.
+// ProjectContact is a contact associated with a project. For the Postgres
+// data source, backed by the project_contact table (migration 000022).
 type ProjectContact struct {
 	// ID is the contact's user id, for linking a row to that user's profile. Nil when
 	// the row has no contact record linked, or when the backing instance predates the
@@ -2967,8 +2968,8 @@ type SearchProjectContactsResponse struct {
 	Offset   int              `json:"offset"`
 }
 
-// AccountContact is a contact associated with an account. Supported by the
-// ServiceNow data source only; there is no Postgres equivalent.
+// AccountContact is a contact associated with an account. For the Postgres
+// data source, backed by the account_contact table (migration 000020).
 type AccountContact struct {
 	Name      string `json:"name"`
 	Email     string `json:"email"`
