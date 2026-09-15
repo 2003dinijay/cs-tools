@@ -104,13 +104,6 @@ const RELATED_DESCRIPTION_PREFIX_HTML =
 const RELATED_DESCRIPTION_HTML_TAG_REGEX =
   /<[a-zA-Z][^>]*>[\s\S]*<\/[a-zA-Z][^>]*>|<[a-zA-Z][^>]*\/>/;
 
-const RELATED_TITLE_PREFIX = "Related Case: ";
-
-function buildRelatedCaseTitle(rawTitle?: string): string {
-  const base = (rawTitle ?? "").trim();
-  return base ? `${RELATED_TITLE_PREFIX}${base}` : RELATED_TITLE_PREFIX.trim();
-}
-
 function buildRelatedCaseDescriptionHtml(rawDescription?: string): string {
   const base = (rawDescription ?? "").trim();
   if (!base) {
@@ -163,9 +156,7 @@ export default function CreateCasePage(): JSX.Element {
   const { data: projectContacts, isLoading: isContactsLoading } =
     useGetProjectContacts(projectId || "");
   const { data: currentUser } = useGetUserDetails();
-  const [title, setTitle] = useState(() =>
-    relatedCase ? buildRelatedCaseTitle(relatedCase.title) : "",
-  );
+  const [title, setTitle] = useState(() => relatedCase?.title ?? "");
   const [description, setDescription] = useState(() =>
     relatedCase ? buildRelatedCaseDescriptionHtml(relatedCase.description) : "",
   );
@@ -595,7 +586,7 @@ export default function CreateCasePage(): JSX.Element {
     if (!relatedCase) return;
     if (hasRelatedCaseInitializedRef.current) return;
 
-    setTitle(buildRelatedCaseTitle(relatedCase.title));
+    setTitle(relatedCase.title ?? "");
     setDescription(buildRelatedCaseDescriptionHtml(relatedCase.description));
 
     hasRelatedCaseInitializedRef.current = true;
