@@ -118,7 +118,12 @@ function fillSubject(): void {
 }
 
 describe("CreateChangeRequestPage — Clone prefill", () => {
+  // The page now persists an in-progress draft to sessionStorage (see the
+  // "in-progress draft" describe block below) — cleared before every test so
+  // one test's edits can never leak into the next via real, unmocked
+  // sessionStorage.
   beforeEach(() => {
+    sessionStorage.clear();
     navigateMock.mockReset();
     postChangeRequestMutateMock.mockReset();
     patchChangeRequestMutateMock.mockReset();
@@ -178,6 +183,7 @@ describe("CreateChangeRequestPage — Clone prefill", () => {
 
 describe("CreateChangeRequestPage — originating service request", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     locationState = undefined;
     navigateMock.mockReset();
     postChangeRequestMutateMock.mockReset();
@@ -301,6 +307,7 @@ describe("CreateChangeRequestPage — originating service request", () => {
 // engagement/security report).
 describe("CreateChangeRequestPage — Back navigation", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     locationState = undefined;
     navigateMock.mockReset();
     postChangeRequestMutateMock.mockReset();
@@ -334,6 +341,7 @@ describe("CreateChangeRequestPage — Back navigation", () => {
 
 describe("CreateChangeRequestPage — opened from a service request's own 'Create change request…' action", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     navigateMock.mockReset();
     postChangeRequestMutateMock.mockReset();
     patchChangeRequestMutateMock.mockReset();
@@ -395,6 +403,7 @@ describe("CreateChangeRequestPage — opened from a service request's own 'Creat
 // PATCH flow 404.
 describe("CreateChangeRequestPage — incident selected as the parent record is gated", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     locationState = undefined;
     navigateMock.mockReset();
     postChangeRequestMutateMock.mockReset();
@@ -447,6 +456,7 @@ describe("CreateChangeRequestPage — incident selected as the parent record is 
 
 describe("CreateChangeRequestPage — opened from an incident's own 'Create change request…' action", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     navigateMock.mockReset();
     postChangeRequestMutateMock.mockReset();
     patchChangeRequestMutateMock.mockReset();
@@ -487,5 +497,117 @@ describe("CreateChangeRequestPage — opened from an incident's own 'Create chan
       { id: "chg-3", patch: { caseId: "sr-1" } },
       expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
     );
+  });
+});
+
+// Regression: this route unmounts whenever the user navigates to another
+// operations tab, and remounts fresh on the way back — it used to re-seed
+// every field from the original clone/service-request/incident source again,
+// silently discarding anything the user had typed in between. `unmount()`
+// followed by a second `render()` with the same `locationState` simulates
+// exactly that: a real remount, not just a re-render of the same instance.
+describe("CreateChangeRequestPage — in-progress draft survives navigating away and back", () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+    navigateMock.mockReset();
+    postChangeRequestMutateMock.mockReset();
+    patchChangeRequestMutateMock.mockReset();
+    showErrorMock.mockReset();
+  });
+
+  it("restores an edited subject after unmount/remount for the same clone source", () => {
+    locationState = { sourceNumber: "CHG0009988", subject: "Original subject" };
+    const { unmount } = render(<CreateChangeRequestPage />);
+    fireEvent.change(screen.getByLabelText(/subject/i), {
+      target: { value: "Edited subject" },
+    });
+    unmount();
+
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByLabelText(/subject/i)).toHaveValue("Edited subject");
+  });
+
+  it("restores an edited rich-text field (e.g. Description) after unmount/remount", () => {
+    locationState = { sourceNumber: "CHG0009988", subject: "Original subject" };
+    const { unmount } = render(<CreateChangeRequestPage />);
+    // Every rich-text Planning field uses the same stubbed Editor (see the
+    // module mock above), so all six render with the same aria-label —
+    // Description is the first in DOM order.
+    fireEvent.change(screen.getAllByLabelText("editor")[0], {
+      target: { value: "<p>In-progress plan notes</p>" },
+    });
+    unmount();
+
+    render(<CreateChangeRequestPage />);
+    expect(screen.getAllByLabelText("editor")[0]).toHaveValue("<p>In-progress plan notes</p>");
+  });
+
+  it("never restores a draft into a different clone source's form", () => {
+    locationState = { sourceNumber: "CHG0009988", subject: "Original subject A" };
+    const { unmount } = render(<CreateChangeRequestPage />);
+    fireEvent.change(screen.getByLabelText(/subject/i), {
+      target: { value: "Edited subject for A" },
+    });
+    unmount();
+
+    // A different source record, cloned next — its own subject must win, not
+    // the draft left over from A.
+    locationState = { sourceNumber: "CHG0011111", subject: "Original subject B" };
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByLabelText(/subject/i)).toHaveValue("Original subject B");
+  });
+
+  it("never leaks a draft between the from-scratch path and an unrelated originating service request", () => {
+    locationState = undefined;
+    const { unmount } = render(<CreateChangeRequestPage />);
+    fireEvent.change(screen.getByLabelText(/subject/i), {
+      target: { value: "From-scratch draft" },
+    });
+    unmount();
+
+    locationState = { caseId: "sr-789", caseNumber: "CS-4321" };
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByLabelText(/subject/i)).toHaveValue("");
+  });
+
+  it("clears the draft once the change request is created, so re-opening the same clone source starts clean", () => {
+    locationState = { sourceNumber: "CHG0009988", subject: "Original subject" };
+    const { unmount } = render(<CreateChangeRequestPage />);
+    fireEvent.change(screen.getByLabelText(/subject/i), {
+      target: { value: "Edited subject" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /create change request/i }));
+    const [, options] = postChangeRequestMutateMock.mock.calls[0];
+    options.onSuccess({ changeRequest: { id: "chg-1", number: "CHG0000001" } });
+    unmount();
+
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByLabelText(/subject/i)).toHaveValue("Original subject");
+  });
+
+  it("clears the draft when Back is clicked, so returning starts clean", () => {
+    locationState = { sourceNumber: "CHG0009988", subject: "Original subject" };
+    const { unmount } = render(<CreateChangeRequestPage />);
+    fireEvent.change(screen.getByLabelText(/subject/i), {
+      target: { value: "Edited subject" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    unmount();
+
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByLabelText(/subject/i)).toHaveValue("Original subject");
+  });
+
+  it("clears the draft when Cancel is clicked, so returning starts clean", () => {
+    locationState = { sourceNumber: "CHG0009988", subject: "Original subject" };
+    const { unmount } = render(<CreateChangeRequestPage />);
+    fireEvent.change(screen.getByLabelText(/subject/i), {
+      target: { value: "Edited subject" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    unmount();
+
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByLabelText(/subject/i)).toHaveValue("Original subject");
   });
 });
