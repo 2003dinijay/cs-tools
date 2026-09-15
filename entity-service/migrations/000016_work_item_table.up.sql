@@ -46,7 +46,14 @@ CREATE TABLE IF NOT EXISTS work_item (
     workaround_provided_on TIMESTAMPTZ,
     workaround_provided_by_user_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
     opened_by_user_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
-    business_duration INTERVAL
+    business_duration INTERVAL,
+    -- wso2_id is required for the work item types that map to a real CSM
+    -- portal case identifier; change_request (and any other future type)
+    -- has no such identifier and stays nullable.
+    CONSTRAINT work_item_wso2_id_required_by_type CHECK (
+        type NOT IN ('CASE', 'SERVICE_REQUEST', 'ANNOUNCEMENT', 'ENGAGEMENT', 'SECURITY_REPORT_ANALYSIS')
+        OR wso2_id IS NOT NULL
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_work_item_account_id ON work_item (account_id);
