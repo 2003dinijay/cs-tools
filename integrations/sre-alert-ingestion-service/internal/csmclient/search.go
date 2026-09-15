@@ -24,6 +24,18 @@ import (
 	"time"
 )
 
+// TagDelimiterChars are the characters DedupTag/GroupTag use to structure a
+// tag: "[", "]", ":". A field embedded unescaped inside one of those tags
+// must not contain them — otherwise a crafted Source/UniqueIdentifier could
+// forge a tag string that collides with a different alert's group
+// (attacker-controlled grouping/dedup conflation) or inject unexpected
+// structure into the free-text search query sent to csm-integration-service.
+// internal/handler.AlertRequest.validate rejects these on ingress; anything
+// consuming Source/UniqueIdentifier out of a persisted row (e.g.
+// internal/worker.Worker.tryGroup) must re-check them too, since a legacy
+// row buffered before that ingress check existed could still carry one.
+const TagDelimiterChars = "[]:"
+
 // DedupTag returns the exact, stable tag internal/handler.MapToIncident
 // embeds in every CreateIncidentRequest.Subject it builds, keyed off the
 // buffered alert row's own human-readable alert number (this service's own

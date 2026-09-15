@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/sre-alert-ingestion-service/internal/alertpayload"
@@ -418,6 +419,19 @@ func (w *Worker) attempt(ctx context.Context, row store.AlertRecord) {
 // structurally complete and ready for that day; it does not attempt to work
 // around the gap.
 func (w *Worker) tryGroup(ctx context.Context, row store.AlertRecord, bp alertpayload.Payload) (incidentID, incidentNumber string, grouped bool) {
+	// handler.AlertRequest.validate rejects csmclient.TagDelimiterChars in
+	// Source/UniqueIdentifier on ingress, but that check postdates rows
+	// already buffered by then — a legacy row's persisted payload can still
+	// carry one. Building GroupTag from an unvalidated field lets distinct
+	// (source, uniqueIdentifier) pairs collide on the same tag (e.g.
+	// ("a", "b:c") and ("a:b", "c")), grouping this alert onto the wrong
+	// incident and skipping CreateIncident. Bypass grouping instead —
+	// falling through to the normal create/dedup path is always safe.
+	if strings.ContainsAny(bp.Source, csmclient.TagDelimiterChars) || strings.ContainsAny(bp.UniqueIdentifier, csmclient.TagDelimiterChars) {
+		slog.WarnContext(ctx, "worker: persisted source/uniqueIdentifier contains a tag delimiter, skipping grouping for this alert", "id", row.ID, "alertNumber", row.AlertNumber)
+		return "", "", false
+	}
+
 	tag := csmclient.GroupTag(bp.Source, bp.UniqueIdentifier)
 	since := w.now().Add(-w.cfg.GroupWindow)
 	existing, found, serr := w.csm.SearchOpenIncidentByGroupTag(ctx, tag, since)

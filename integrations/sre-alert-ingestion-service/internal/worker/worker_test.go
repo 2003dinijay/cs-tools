@@ -774,6 +774,47 @@ func TestRunOnce_NoUniqueIdentifierSkipsGroupingEntirely(t *testing.T) {
 	}
 }
 
+// TestRunOnce_GroupingSkippedWhenPersistedFieldsContainTagDelimiter covers a
+// legacy row buffered before the ingress delimiter check existed: its
+// persisted Source or UniqueIdentifier can still contain
+// csmclient.TagDelimiterChars. Building a GroupTag from either unvalidated
+// would let distinct (source, uniqueIdentifier) pairs collide on the same
+// tag, so tryGroup must bypass the search entirely and fall through to the
+// normal create/dedup path.
+func TestRunOnce_GroupingSkippedWhenPersistedFieldsContainTagDelimiter(t *testing.T) {
+	cases := []struct {
+		name             string
+		source           string
+		uniqueIdentifier string
+	}{
+		{name: "delimiter in source", source: "a:b", uniqueIdentifier: "c"},
+		{name: "delimiter in uniqueIdentifier", source: "a", uniqueIdentifier: "b:c"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			row := rowWithGroupablePayload(t, "alert-2", tc.source, tc.uniqueIdentifier)
+			s := &mockStore{pendingBatchFn: func(ctx context.Context, limit int) ([]store.AlertRecord, error) {
+				return []store.AlertRecord{row}, nil
+			}}
+			csm := &mockIncidentCreator{createFn: func(ctx context.Context, req csmclient.CreateIncidentRequest) (*csmclient.CreateIncidentResult, error) {
+				return &csmclient.CreateIncidentResult{IncidentID: "inc-new", IncidentNumber: "INC0000001"}, nil
+			}}
+			tw := &mockEscalator{}
+
+			w := New(s, csm, tw, Config{MaxRetries: 3})
+			w.RunOnce(context.Background())
+
+			if csm.searchGroupCalls != 0 {
+				t.Errorf("SearchOpenIncidentByGroupTag called %d times, want 0 when persisted fields contain a tag delimiter", csm.searchGroupCalls)
+			}
+			if csm.calls != 1 {
+				t.Errorf("CreateIncident called %d times, want 1", csm.calls)
+			}
+		})
+	}
+}
+
 // TestRunOnce_RecordsMappingAfterNewIncidentCreated_BestEffort covers
 // attempt's post-create call: once a new incident is successfully created,
 // a mapping row must be recorded against it (so a later related alert can

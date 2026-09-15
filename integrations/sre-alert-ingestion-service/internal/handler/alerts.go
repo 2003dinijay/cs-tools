@@ -51,19 +51,6 @@ type AlertRequest struct {
 	Description      string `json:"description"`
 }
 
-// tagDelimiterChars are the characters DedupTag/GroupTag use to structure a
-// tag (csmclient.DedupTag/GroupTag): "[", "]", ":". A field embedded
-// unescaped inside one of those tags must not contain them — otherwise a
-// crafted Source/UniqueIdentifier could forge a tag string that collides
-// with a different alert's group (attacker-controlled grouping/dedup
-// conflation, entirely within this service's own logic, independent of
-// whatever entity-service's downstream search implementation does with the
-// query text) or inject unexpected structure into the free-text search
-// query sent to csm-integration-service. Rejected outright rather than
-// stripped/escaped: this service does not get to decide what a stripped
-// value should have meant.
-const tagDelimiterChars = "[]:"
-
 // validate reports the first missing or malformed field, or "" if req is
 // well-formed. Category/Environment/UniqueIdentifier are genuinely optional
 // (see severity.MapCategory's safe default and the WorkNotes builder below).
@@ -80,7 +67,7 @@ const tagDelimiterChars = "[]:"
 // line-delimited structure a newline could forge a fake entry inside.
 //
 // Source and UniqueIdentifier are additionally checked against
-// tagDelimiterChars, since both are also embedded in a dedup/group tag —
+// csmclient.TagDelimiterChars, since both are also embedded in a dedup/group tag —
 // see that constant's own doc comment.
 func (req AlertRequest) validate() string {
 	for name, v := range map[string]string{
@@ -94,9 +81,9 @@ func (req AlertRequest) validate() string {
 	switch {
 	case strings.TrimSpace(req.Source) == "":
 		return "source is required"
-	case strings.ContainsAny(req.Source, tagDelimiterChars):
+	case strings.ContainsAny(req.Source, csmclient.TagDelimiterChars):
 		return "source must not contain '[', ']', or ':'"
-	case strings.ContainsAny(req.UniqueIdentifier, tagDelimiterChars):
+	case strings.ContainsAny(req.UniqueIdentifier, csmclient.TagDelimiterChars):
 		return "uniqueIdentifier must not contain '[', ']', or ':'"
 	case strings.TrimSpace(req.Severity) == "":
 		return "severity is required"
