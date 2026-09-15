@@ -94,6 +94,14 @@ Copy `.env.example` to `.env` and fill in the values:
 | `TWILIO_VOICE` | Optional: TTS voice for the escalation call |
 | `TWILIO_LANGUAGE` | Optional: TTS language/locale |
 | `TWILIO_API_BASE_URL` | Optional: override Twilio's API base (tests / regional edge) |
+| `GOOGLE_CHAT_ESCALATION_WEBHOOK_URL` | Incoming-webhook URL for the escalation Google Chat space |
+| `EMAIL_SERVICE_BASE_URL` | Base URL of the internal email-notification service |
+| `EMAIL_SERVICE_TOKEN_URL` | OAuth2 token endpoint for the email-notification service |
+| `EMAIL_SERVICE_CLIENT_ID` | OAuth2 client ID |
+| `EMAIL_SERVICE_CLIENT_SECRET` | OAuth2 client secret |
+| `EMAIL_SERVICE_SCOPES` | Comma-separated OAuth2 scopes |
+| `SRE_ALERT_ESCALATION_EMAIL_FROM` | "From" address for escalation emails |
+| `SRE_ALERT_ESCALATION_EMAIL_TO` | Comma-separated recipient list for escalation emails |
 | `PORT` | Server listen port (default `8080`) |
 
 ## Database / migrations
@@ -183,9 +191,16 @@ Every `POST /incidents` failure is classified (`internal/worker.isRetryable`):
   which is the opposite of how a 401 is normally read.
 
 Once a row accumulates `SRE_ALERT_MAX_RETRIES` retryable failures, the
-worker places a Twilio voice call (`internal/notifications.TwilioClient.Escalate`)
-and marks the row `escalated` — terminal; this service does not resume
-retrying an escalated row automatically.
+worker escalates via `internal/notifications.MultiChannelEscalator` and
+marks the row `escalated` — terminal; this service does not resume
+retrying an escalated row automatically. Escalation fans out to every
+configured channel independently — a Twilio voice call, a Google Chat
+message, and an email — not a first-success-wins race: the whole point is
+more independent ways for SRE to notice that CSM delivery is failing.
+`Escalate` reports success if *any* channel got through; a channel that
+isn't configured is skipped, not treated as a failure, and a channel that
+fails while another succeeds is logged but doesn't block the others (see
+`MultiChannelEscalator`'s own doc comment).
 
 ## Duplicate-incident dedup
 
@@ -305,12 +320,13 @@ to work around — documented here rather than as scattered code comments.
   a PagerDuty/Opsgenie lookup before placing the call) would change
   `internal/worker`'s escalation step and `internal/notifications.TwilioClient`
   accordingly.
-- **No further fallback if the Twilio escalation call itself fails.** If
-  CSM is unreachable and Twilio is *also* unreachable (or misconfigured),
-  the row is still marked `escalated` and the failure is logged — there is
-  no second notification channel. This is the worst case this service can
-  be in by design; a wider on-call/paging integration was out of scope for
-  this iteration.
+- **No further fallback if every escalation channel fails.** If CSM is
+  unreachable and Twilio, Google Chat, *and* email are all also unreachable
+  or unconfigured, the row is still marked `escalated` and every failure is
+  logged — there is no fourth channel. Three independent channels make this
+  a much smaller risk than the single-channel (Twilio-only) design this
+  replaced, but it isn't zero; a wider on-call/paging integration (e.g.
+  PagerDuty) is still out of scope for this iteration.
 - **Run exactly one instance of this worker.** `PendingBatch` has no
   claim/lease mechanism, so two instances polling concurrently can both pick
   up and dispatch the same new row (`RetryCount == 0` skips the dedup search
