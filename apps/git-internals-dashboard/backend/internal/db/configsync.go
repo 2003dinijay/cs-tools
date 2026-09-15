@@ -30,13 +30,13 @@ type ConfigSyncSummary struct {
 	DisabledRepos int
 }
 
-// SyncConfigToDB upserts projects/repositories from cfg (SPEC §8.4, port of
-// config-sync.ts). Idempotent and safe to run on every boot: these rows are
-// a derived cache for referential integrity only — nothing edits them
-// directly. Rows for repos no longer present in the file are disabled, never
-// deleted, so their FK children (issues, events, snapshots) keep their
-// history; last_synced_at is never touched here — only the seed/sync
-// pipeline (which actually fetches data) owns that column.
+// SyncConfigToDB upserts projects/repositories from cfg. Idempotent and safe
+// to run on every boot: these rows are a derived cache for referential
+// integrity only — nothing edits them directly. Rows for repos no longer
+// present in the file are disabled, never deleted, so their FK children
+// (issues, events, snapshots) keep their history; last_synced_at is never
+// touched here — only the seed/sync pipeline (which actually fetches data)
+// owns that column.
 func SyncConfigToDB(ctx context.Context, pool *pgxpool.Pool, cfg *config.AppConfig) (ConfigSyncSummary, error) {
 	projectIDByGh := make(map[string]int32, len(cfg.Repos))
 

@@ -15,10 +15,9 @@
 // under the License.
 
 // Package config loads and validates config/sla-config.yaml — the single
-// source of truth for repos, status taxonomy, and SLA budgets (SPEC §5.1).
-// It is a port of v3's src/server/config/{index,schema}.ts: same shape,
-// same defaults, same validation rules. The result is loaded once at process
-// start and treated as immutable for the process lifetime.
+// source of truth for repos, status taxonomy, and SLA budgets. The result is
+// loaded once at process start and treated as immutable for the process
+// lifetime.
 package config
 
 // StatusCategory classifies a taxonomy status by who owns it while an issue
@@ -42,7 +41,7 @@ func (c StatusCategory) valid() bool {
 	}
 }
 
-// SlaCoverage names an SLA budget's coverage window (SPEC §7).
+// SlaCoverage names an SLA budget's coverage window.
 type SlaCoverage string
 
 const (
@@ -101,9 +100,37 @@ type Taxonomy struct {
 	Aliases  []AliasEntry  `yaml:"aliases"`
 }
 
+// UnknownStatusPolicy controls how the SLA clock treats a board status
+// absent from taxonomy.statuses — a renamed or newly added column the
+// config hasn't caught up to yet.
+type UnknownStatusPolicy string
+
+const (
+	// UnknownStatusPause pauses accrual for an unknown status, same as
+	// today's (implicit, undocumented) behavior — safe against
+	// over-counting, but silently undercounts if the status is actually
+	// product-side.
+	UnknownStatusPause UnknownStatusPolicy = "pause"
+	// UnknownStatusAccrue treats an unknown status as product-side —
+	// safer against silently hiding a stalled issue from breach alerts,
+	// at the cost of possibly over-counting until the status is
+	// classified.
+	UnknownStatusAccrue UnknownStatusPolicy = "accrue"
+)
+
+// valid reports whether p is one of the two recognized policies.
+func (p UnknownStatusPolicy) valid() bool {
+	switch p {
+	case UnknownStatusPause, UnknownStatusAccrue:
+		return true
+	default:
+		return false
+	}
+}
+
 // Settings holds the tunable knobs governing SLA math and job cadence.
-// Defaults mirror schema.ts's zod defaults exactly (applied only when the
-// corresponding YAML key is entirely absent — see rawSettings in load.go).
+// Defaults apply only when the corresponding YAML key is entirely absent
+// (see rawSettings in load.go).
 type Settings struct {
 	AtRiskThreshold          float64
 	RecomputeIntervalMinutes int
@@ -111,9 +138,10 @@ type Settings struct {
 	SnapshotHourUtc          int
 	SeedSnapshotDays         int
 	SeedClosedLookbackDays   int
+	UnknownStatusPolicy      UnknownStatusPolicy
 }
 
-// defaultSettings mirrors Settings.default({}) field-by-field in schema.ts.
+// defaultSettings returns the default value for every Settings field.
 func defaultSettings() Settings {
 	return Settings{
 		AtRiskThreshold:          0.75,
@@ -122,6 +150,7 @@ func defaultSettings() Settings {
 		SnapshotHourUtc:          0,
 		SeedSnapshotDays:         90,
 		SeedClosedLookbackDays:   90,
+		UnknownStatusPolicy:      UnknownStatusPause,
 	}
 }
 
@@ -131,4 +160,8 @@ type AppConfig struct {
 	Taxonomy Taxonomy
 	Budgets  []BudgetEntry
 	Settings Settings
+	// Holidays is a list of ISO 8601 dates ("2026-01-26") excluded from the
+	// 12x5_ist coverage window (24x7 budgets are unaffected — a holiday
+	// only removes hours from a window that already excludes weekends).
+	Holidays []string
 }

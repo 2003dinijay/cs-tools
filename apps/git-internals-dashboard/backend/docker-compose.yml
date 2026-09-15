@@ -8,9 +8,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gid}
       POSTGRES_DB: ${POSTGRES_DB:-gid}
     ports:
-      # Loopback-only (AUDIT-FINDINGS A7): unqualified "5433:5432" publishes
+      # Bound to loopback only: an unqualified "5433:5432" would publish
       # on 0.0.0.0 with default gid/gid/gid credentials — on a laptop on an
-      # untrusted network or a shared dev VM, anyone on the LAN can connect.
+      # untrusted network or a shared dev VM, anyone on the LAN could connect.
       - "127.0.0.1:5433:5432"
     volumes:
       - gid_pgdata:/var/lib/postgresql/data

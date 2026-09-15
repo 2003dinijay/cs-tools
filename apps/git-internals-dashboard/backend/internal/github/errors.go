@@ -23,8 +23,8 @@ import (
 )
 
 // errKind classifies an APIError so callers can both apply a status-aware
-// retry policy (AUDIT-FINDINGS A5) and produce a message safe to persist or
-// return to API clients (AUDIT-FINDINGS A2) without a status-code check.
+// retry policy and produce a message safe to persist or return to API
+// clients without a status-code check.
 type errKind int
 
 const (
@@ -109,8 +109,8 @@ func NewTransportError(detail string, wrapped error) *APIError {
 
 // NewSearchTruncatedError builds an APIError for a search query whose
 // issueCount exceeds what SearchAll actually retrieved — GitHub Search never
-// exposes more than 1,000 results per query (SPEC: fail rather than silently
-// advance a sync watermark past unretrieved issues).
+// exposes more than 1,000 results per query, so this fails rather than
+// silently advancing a sync watermark past issues that were never retrieved.
 func NewSearchTruncatedError(query string, issueCount, fetched int) *APIError {
 	return &APIError{
 		Kind:   errKindTruncated,

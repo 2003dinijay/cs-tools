@@ -16,10 +16,9 @@
 
 // Package taxonomy is config-driven status-taxonomy helpers shared by
 // internal/handler (GET /taxonomy) and internal/metrics (which categorizes
-// issues by status without a DB round-trip). Port of v3's
-// src/server/lib/taxonomy.ts. Pure, synchronous reads over the in-process
-// config — the config itself is already an immutable snapshot loaded once
-// at boot, so nothing here needs its own cache.
+// issues by status without a DB round-trip). Pure, synchronous reads over
+// the in-process config — the config itself is already an immutable
+// snapshot loaded once at boot, so nothing here needs its own cache.
 package taxonomy
 
 import (

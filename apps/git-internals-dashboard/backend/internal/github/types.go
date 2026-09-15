@@ -15,7 +15,7 @@
 // under the License.
 
 // Package github is the minimal GitHub GraphQL client shared by the seed and
-// the incremental sync (SPEC §5, port of v3's src/server/db/github/client.ts):
+// the incremental sync:
 //
 //   - FetchRepoIssues — open issues + issues closed within a lookback window
 //   - FetchIssueDetail — per-issue Status-change timeline + current Status,
@@ -23,12 +23,10 @@
 //
 // PRIVACY: these queries deliberately do NOT request titles, assignees, or
 // event actors. Labels are requested only so the ingest pipeline can derive
-// priority, and are discarded after extraction (SPEC's non-negotiable #1).
+// priority, and are discarded after extraction rather than persisted.
 //
 // Client is defined as an interface so internal/sync and cmd/seed can be
-// tested against a stub rather than live GitHub (SPEC: "single GITHUB_TOKEN
-// (D3). Define the client as an interface consumed by sync/seed so tests can
-// stub it.").
+// tested against a stub rather than live GitHub.
 package github
 
 import "context"
@@ -60,7 +58,7 @@ type ProjectStatus struct {
 	ProjectID       string
 	Status          *string
 	StatusUpdatedAt *string
-	ItemCreatedAt   *string // board-add time; assumed to resolve
+	ItemCreatedAt   *string // board-add time; GitHub's schema makes this non-nullable, so it's always populated
 }
 
 // IssueDetail is one issue's full status timeline plus its current status in

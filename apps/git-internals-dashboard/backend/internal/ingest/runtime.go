@@ -17,14 +17,15 @@
 package ingest
 
 import (
+	"time"
+
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/config"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/sla"
 )
 
-// RuntimeConfig is the SLA engine wired up from the loaded config file (port
-// of v3's src/server/db/sla-config.ts's slaConfigFromFile). Built once at
-// boot and shared by ingest, the recompute scheduler, incremental sync, and
-// seed.
+// RuntimeConfig is the SLA engine wired up from the loaded config file.
+// Built once at boot and shared by ingest, the recompute scheduler,
+// incremental sync, and seed.
 type RuntimeConfig struct {
 	Cfg        sla.Config
 	Normalize  StatusNormalizer
@@ -38,6 +39,17 @@ func BuildRuntimeConfig(app *config.AppConfig) *RuntimeConfig {
 	for _, b := range app.Budgets {
 		budgets[b.Priority] = b.BudgetHours
 		coverage[b.Priority] = sla.Coverage(b.Coverage)
+	}
+
+	// config.Validate already rejects any unparseable entry, so a parse
+	// error here can't happen for a config that made it through Load —
+	// skip it defensively rather than propagate an error BuildRuntimeConfig
+	// has no signature for.
+	holidays := make(map[int64]bool, len(app.Holidays))
+	for _, h := range app.Holidays {
+		if t, err := time.Parse("2006-01-02", h); err == nil {
+			holidays[sla.HolidayDayIndex(t)] = true
+		}
 	}
 
 	accrueSet := make(map[string]bool, len(app.Taxonomy.Statuses))
@@ -57,12 +69,24 @@ func BuildRuntimeConfig(app *config.AppConfig) *RuntimeConfig {
 		Budgets:  budgets,
 		Coverage: coverage,
 		Accrues: func(status *string) bool {
-			return status != nil && accrueSet[*status]
+			if status == nil {
+				return false
+			}
+			if known := knownNames[*status]; known {
+				return accrueSet[*status]
+			}
+			// Unknown status (absent from taxonomy.statuses): apply the
+			// configured policy rather than silently pausing. nil is never
+			// "unknown" — it means off-board, which must keep pausing
+			// regardless of policy (see AdjustForClosure, which freezes
+			// consumption once an issue closes).
+			return app.Settings.UnknownStatusPolicy == config.UnknownStatusAccrue
 		},
 		IsTerminal: func(status *string) bool {
 			return status != nil && terminalSet[*status]
 		},
 		AtRiskThreshold: app.Settings.AtRiskThreshold,
+		Holidays:        holidays,
 	}
 
 	return &RuntimeConfig{

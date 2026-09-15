@@ -14,14 +14,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/server/db/sync/incremental.test.ts behaviors — watermark
-// computation, per-repo error isolation, and idempotency — against a stubbed
-// GithubClient rather than a mocked module, since Go has no module-mocking
-// equivalent. The token-presence check (v3's SyncTokenMissingError) moved to
-// the POST /sync/runs handler (see this package's doc comment); it has no
-// counterpart here. Likewise, sync_runs carries no triggeredBy column in
-// this schema (SPEC §4) — this backend is authless (D7), so there is no
-// caller identity to record; the corresponding v3 tests have no counterpart.
+// Tests watermark computation, per-repo error isolation, and idempotency,
+// against a stubbed GithubClient rather than a mocked module, since Go has
+// no module-mocking equivalent. The GITHUB_TOKEN presence check lives in the
+// POST /sync/runs handler (see Run's doc comment), not here, so it isn't
+// covered by these tests. Likewise, sync_runs carries no triggeredBy column
+// in this schema — this backend does no authentication of its own (that's
+// the platform gateway's job), so there is no caller identity to record or
+// test.
 package sync
 
 import (
@@ -286,8 +286,8 @@ func TestRunIsolatesPerRepoFailures(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT status, error FROM sync_runs WHERE repository_id = $1`, repoAID).Scan(&errStatus, &errMessage); err != nil {
 		t.Fatal(err)
 	}
-	// AUDIT-FINDINGS A2: sync_runs.error carries a sanitized classification,
-	// never the raw underlying error detail ("boom" must not leak through).
+	// sync_runs.error carries a sanitized classification, never the raw
+	// underlying error detail ("boom" must not leak through).
 	if errStatus != "error" || errMessage != "github search failed" {
 		t.Errorf("expected an error sync_runs row with sanitized error=%q, got status=%s error=%s", "github search failed", errStatus, errMessage)
 	}

@@ -25,14 +25,12 @@ clean:
 	rm -f $(BINARY)
 
 # Applies migrations/*.up.sql against DATABASE_URL via golang-migrate.
-# Wired up in Phase 3.
 migrate:
 	migrate -path migrations -database "$$DATABASE_URL" up
 
 migrate-down:
 	migrate -path migrations -database "$$DATABASE_URL" down 1
 
-# Runs cmd/seed — synthetic fixtures unless GITHUB_TOKEN is set. Wired up in
-# Phase 9.
+# Runs cmd/seed — synthetic fixtures unless GITHUB_TOKEN is set.
 seed:
 	go run ./cmd/seed

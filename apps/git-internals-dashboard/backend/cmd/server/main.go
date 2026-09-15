@@ -19,7 +19,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -31,8 +30,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/config"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/db"
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/github"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/handler"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/ingest"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/jobs"
@@ -45,7 +46,24 @@ func main() {
 	loadDotEnv(".env")
 	configureLogger()
 
-	cfg, err := config.Load()
+	appCfg, err := appconfig.Load()
+	if err != nil {
+		slog.Error("invalid app-config.yaml", "err", err)
+		os.Exit(1)
+	}
+	if _, statErr := os.Stat(appconfig.ResolvedPath()); statErr != nil {
+		slog.Info("app config: file absent, using built-in defaults", "path", appconfig.ResolvedPath())
+	} else {
+		slog.Info("app config loaded", "path", appconfig.ResolvedPath())
+	}
+
+	// Boot-only: must run before any github.Client or jobs.Scheduler/Lock is
+	// constructed below, since both packages' tuning vars are not safe to
+	// change concurrently with in-flight requests.
+	github.Apply(appCfg.GitHub)
+	jobs.Apply(appCfg.Jobs)
+
+	slaCfg, err := config.Load()
 	if err != nil {
 		slog.Error("invalid sla-config.yaml", "err", err)
 		os.Exit(1)
@@ -55,49 +73,52 @@ func main() {
 	defer stop()
 
 	databaseURL := mustEnv("DATABASE_URL")
-	pool, err := db.NewPool(ctx, databaseURL)
+	pool, err := db.NewPoolWithConfig(ctx, databaseURL, appCfg.Database)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "err", err)
 		os.Exit(1)
 	}
 	defer pool.Close()
 
-	// Boot-time config→DB sync (SPEC §8.4): idempotent, keeps projects/
-	// repositories in referential-integrity lockstep with sla-config.yaml
-	// before anything else touches the database.
-	syncSummary, err := db.SyncConfigToDB(ctx, pool, cfg)
+	// Boot-time config→DB sync: idempotent, keeps projects/repositories in
+	// referential-integrity lockstep with sla-config.yaml before anything
+	// else touches the database.
+	syncSummary, err := db.SyncConfigToDB(ctx, pool, slaCfg)
 	if err != nil {
 		slog.Error("config sync failed", "err", err)
 		os.Exit(1)
 	}
 	slog.Info("config sync complete", "activeRepos", syncSummary.ActiveRepos, "disabledRepos", syncSummary.DisabledRepos)
 
-	// Shared job lock (SPEC §8.1): one instance for both the recompute
-	// scheduler and POST /sync/runs, so a manual sync and a scheduled tick
-	// never interleave on this replica or any other.
-	runtime := ingest.BuildRuntimeConfig(cfg)
+	// Shared job lock: one instance for both the recompute scheduler and
+	// POST /sync/runs, so a manual sync and a scheduled tick never interleave
+	// on this replica or any other.
+	runtime := ingest.BuildRuntimeConfig(slaCfg)
 	lock := jobs.NewLock(databaseURL)
 
-	// Recompute scheduler (SPEC §8.2): one tick immediately, then every
+	// Recompute scheduler: one tick immediately, then every
 	// recomputeIntervalMinutes. RECOMPUTE_ENABLED=0 disables it (tests/CI).
 	if os.Getenv("RECOMPUTE_ENABLED") != "0" {
-		interval := time.Duration(cfg.Settings.RecomputeIntervalMinutes) * time.Minute
+		interval := time.Duration(slaCfg.Settings.RecomputeIntervalMinutes) * time.Minute
 		jobs.NewScheduler(pool, lock, runtime, interval).Start(ctx)
-		slog.Info("recompute scheduler started", "intervalMinutes", cfg.Settings.RecomputeIntervalMinutes)
+		slog.Info("recompute scheduler started", "intervalMinutes", slaCfg.Settings.RecomputeIntervalMinutes)
 	} else {
 		slog.Info("recompute scheduler disabled via RECOMPUTE_ENABLED=0")
 	}
 
 	githubToken := strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
 
-	taxonomyHandler := handler.NewTaxonomyHandler(cfg)
-	issuesHandler := handler.NewIssuesHandler(pool, cfg)
-	metricsHandler := handler.NewMetricsHandler(pool, cfg)
-	titlesHandler := handler.NewTitlesHandler(pool, githubToken)
-	syncHandler := handler.NewSyncHandler(pool, cfg, lock, runtime, githubToken)
+	healthHandler := handler.NewHealthHandler(pool, appCfg.Readiness)
+	taxonomyHandler := handler.NewTaxonomyHandler(slaCfg)
+	issuesHandler := handler.NewIssuesHandler(pool, slaCfg, appCfg.API)
+	metricsHandler := handler.NewMetricsHandler(pool, slaCfg, appCfg.Cache, appCfg.API)
+	titlesHandler := handler.NewTitlesHandler(pool, githubToken, appCfg.Cache.Titles, appCfg.GitHub.TitlesBatchSize, appCfg.API)
+	syncHandler := handler.NewSyncHandler(pool, slaCfg, lock, runtime, githubToken,
+		time.Duration(appCfg.Jobs.SyncRunDeadlineMinutes)*time.Minute)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", handleHealthz)
+	mux.HandleFunc("GET /healthz", healthHandler.GetHealthz)
+	mux.HandleFunc("GET /readyz", healthHandler.GetReadyz)
 	mux.HandleFunc("GET /taxonomy", taxonomyHandler.GetTaxonomy)
 	mux.HandleFunc("GET /issues", issuesHandler.ListIssues)
 	mux.HandleFunc("GET /issues/{id}", issuesHandler.GetIssue)
@@ -108,19 +129,24 @@ func main() {
 	mux.HandleFunc("GET /sync/status", syncHandler.GetSyncStatus)
 
 	// Handler chain, outermost first: Recovery must be outermost so a panic
-	// anywhere downstream (including in CORS or Logger) still gets the
-	// standard error envelope instead of an empty connection reset. CORS
-	// wraps Logger so a preflight — which never reaches Logger's wrapped
-	// handler — still gets its own headers; see middleware.CORS's doc
-	// comment for why this backend needs CORS at all despite being
-	// authless (D14).
+	// anywhere downstream (including in SecurityHeaders, CORS, or Logger)
+	// still gets the standard error envelope instead of an empty connection
+	// reset. SecurityHeaders wraps CORS (rather than the other way around)
+	// so a CORS preflight — which short-circuits before reaching Logger's
+	// wrapped handler — still carries the same security headers as every
+	// other response; see middleware.SecurityHeaders's doc comment. CORS
+	// wraps Logger so a preflight still gets its own headers; see
+	// middleware.CORS's doc comment for why this backend needs CORS at all
+	// despite doing no authentication of its own.
 	rootHandler := middleware.Recovery(
-		middleware.CORS(splitComma(os.Getenv("CORS_ALLOWED_ORIGINS")))(
-			middleware.Logger(mux),
+		middleware.SecurityHeaders(appCfg.SecurityHeaders)(
+			middleware.CORS(splitComma(os.Getenv("CORS_ALLOWED_ORIGINS")))(
+				middleware.Logger(mux),
+			),
 		),
 	)
 
-	addr := ":" + mustPort("PORT", "8080")
+	addr := ":" + mustPort("PORT", strconv.Itoa(appCfg.Server.Port))
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 	if err != nil {
 		slog.Error("failed to bind", "addr", addr, "err", err)
@@ -129,10 +155,11 @@ func main() {
 
 	srv := &http.Server{
 		Handler:           rootHandler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: time.Duration(appCfg.Server.ReadHeaderTimeoutSeconds) * time.Second,
+		ReadTimeout:       time.Duration(appCfg.Server.ReadTimeoutSeconds) * time.Second,
+		WriteTimeout:      time.Duration(appCfg.Server.WriteTimeoutSeconds) * time.Second,
+		IdleTimeout:       time.Duration(appCfg.Server.IdleTimeoutSeconds) * time.Second,
+		MaxHeaderBytes:    appCfg.Server.MaxHeaderBytes,
 	}
 
 	go func() {
@@ -146,7 +173,17 @@ func main() {
 	<-ctx.Done()
 	stop()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// Give the load balancer time to notice this replica is going away and
+	// stop routing here before in-flight requests get cut: /readyz starts
+	// reporting 503 "draining" now, /healthz keeps reporting 200 since the
+	// process is still alive.
+	healthHandler.BeginDraining()
+	if drain := time.Duration(appCfg.Readiness.DrainGracePeriodSeconds) * time.Second; drain > 0 {
+		slog.Info("draining before shutdown", "seconds", appCfg.Readiness.DrainGracePeriodSeconds)
+		time.Sleep(drain)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Duration(appCfg.Server.ShutdownTimeoutSeconds)*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("graceful shutdown failed", "err", err)
@@ -154,19 +191,6 @@ func main() {
 	}
 
 	slog.Info("git-internals-dashboard backend stopped")
-}
-
-// handleHealthz is liveness-only (AUDIT-FINDINGS B7): it reports the process
-// is up and serving, not that its dependencies are healthy — it never
-// touches the database, so a booted process with a dead DB still reports
-// {"ok":true}. D1/D3 freeze this app's API surface to exact v3 parity plus
-// SPEC §6, so a separate readiness probe (e.g. GET /readyz) is deliberately
-// out of scope here rather than added ad hoc; whatever platform config
-// consumes this endpoint for readiness should be pointed at a different
-// signal (e.g. Choreo's own DB-backed health check) instead.
-func handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
 // configureLogger installs a level-controlled slog handler as the process
@@ -187,8 +211,8 @@ func configureLogger() {
 }
 
 // loadDotEnv reads a .env file and sets any unset environment variables from
-// it (csm-portal's loadDotEnv pattern). Silently ignored if the file does
-// not exist; logs a warning for any other error.
+// it. Silently ignored if the file does not exist; logs a warning for any
+// other error.
 func loadDotEnv(path string) {
 	f, err := os.Open(path) // #nosec G304 -- path is always the hardcoded literal ".env" at the only call site
 	if err != nil {

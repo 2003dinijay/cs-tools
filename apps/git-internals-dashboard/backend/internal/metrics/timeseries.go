@@ -14,7 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/server/lib/timeseries.ts, section by section.
+// This file builds the /metrics/timeseries response: query the snapshot
+// rows, fill in the date range, then assemble series.
 package metrics
 
 import (
@@ -35,7 +36,7 @@ type Series struct {
 	Points []int  `json:"points"`
 }
 
-// Timeseries is the wire shape GET /metrics/timeseries returns (SPEC §6.7).
+// Timeseries is the wire shape GET /metrics/timeseries returns.
 type Timeseries struct {
 	Window  int      `json:"window"`
 	Metric  string   `json:"metric"`
@@ -114,7 +115,8 @@ func BuildTimeseries(ctx context.Context, pool *pgxpool.Pool, cfg *config.AppCon
 	if groupBy == "priority" {
 		budgets := make([]config.BudgetEntry, len(cfg.Budgets))
 		copy(budgets, cfg.Budgets)
-		// Sorted by rank ascending, matching v3's [...budgets].sort((a,b) => a.rank-b.rank).
+		// Sorted by rank ascending — sla-config.yaml's budget order, so
+		// budgetPriorities lands P1, P2, P3, ... (most urgent first).
 		sort.SliceStable(budgets, func(i, j int) bool { return budgets[i].Rank < budgets[j].Rank })
 		for _, b := range budgets {
 			budgetPriorities = append(budgetPriorities, b.Priority)
