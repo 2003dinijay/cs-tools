@@ -14,7 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/HeroCard.tsx.
 import { Box } from "@mui/material";
 import { SparkLine } from "@components/SparkLine";
 import { acrylicSurfaceSx } from "@lib/surfaces";
@@ -120,8 +119,8 @@ interface CsHeroCardProps {
   onDrill?: (status: string) => void;
 }
 
-// Alternates between the two CS accent colors by index; 2 entries reproduces
-// the original WOC/PPQ two-tile layout pixel-for-pixel.
+// Alternates between the two CS accent colors by index; two entries covers
+// today's WOC/PPQ two-tile layout.
 const CS_COLORS = ["var(--sla-cs)", "var(--sla-cs-lite)"];
 
 /** The hero bar's CS-side tile: one drill-down count per current CS status. */

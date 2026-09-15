@@ -14,8 +14,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Shared grid templates so issue-list headers and rows stay aligned.
-export const gridTemplate = (showSlaState: boolean): string =>
-  showSlaState
-    ? "minmax(0,1fr) 158px 56px 168px 132px 150px 56px"
-    : "minmax(0,1fr) 158px 56px 168px 150px 56px";
+import { createContext, useContext, useEffect } from "react";
+
+export const SetActiveContext = createContext<((active: boolean) => void) | null>(null);
+export const ActiveContext = createContext(false);
+
+/** Reports this page's placeholder-data/refetch status up to AppShell's progress bar. */
+export function useReportFetchProgress(active: boolean) {
+  const setActive = useContext(SetActiveContext);
+  useEffect(() => {
+    setActive?.(active);
+    return () => setActive?.(false);
+  }, [active, setActive]);
+}
+
+export function useFetchProgressActive() {
+  return useContext(ActiveContext);
+}

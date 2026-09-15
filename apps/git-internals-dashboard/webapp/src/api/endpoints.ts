@@ -14,9 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// One typed function per endpoint (SPEC §6). Port of v3's `api` object in
-// src/lib/api.ts, adjusted for the routes living at the root (no /api
-// prefix) and POST /sync/runs replacing POST /api/sync/manual (D3).
+// One typed function per endpoint. Routes live at the root (no /api
+// prefix); a sync run is triggered via POST /sync/runs.
 import { qs, request } from "./client";
 import type {
   IssueDetail,

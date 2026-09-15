@@ -14,8 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/views/IssuesPage.tsx (Next's useRouter/useSearchParams ->
-// react-router's useNavigate/useSearchParams).
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Box, MenuItem, Select, Skeleton, type SelectChangeEvent } from "@mui/material";
@@ -23,16 +21,20 @@ import { useOverview, useIssues, useIssueTitles, useTaxonomy, makeIsCsStatus } f
 import type { BucketKey } from "@api/types";
 import { BackButton } from "@components/BackButton";
 import { ErrorState } from "@components/ErrorState";
+import { StaleDataAlert } from "@components/StaleDataAlert";
 import { errorMessage } from "@lib/apiError";
+import { useReportFetchProgress } from "@lib/fetchProgress";
 import { IssueTimelineRow } from "@components/IssueTimelineRow";
 import { gridTemplate } from "@lib/grid";
 import { acrylicSurfaceSx } from "@lib/surfaces";
 
-const KIND_CHIPS: { key: BucketKey; label: string }[] = [
-  { key: "all", label: "All open" },
+const KIND_CHIPS: { key: BucketKey; status?: string; label: string }[] = [
+  { key: "all", label: "All Open" },
   { key: "violated", label: "Violated" },
-  { key: "at_risk", label: "At risk" },
-  { key: "cs", label: "On CS side" },
+  { key: "at_risk", label: "At Risk" },
+  { key: "cs", status: "WOC", label: "Waiting on CS Team" },
+  { key: "cs", status: "Pending Patch Queue", label: "Pending Patch Queue" },
+  { key: "product_side", label: "On Product Team Side" },
   { key: "untracked", label: "Untracked" },
 ];
 
@@ -41,10 +43,17 @@ const BUCKET_TITLES: Partial<Record<BucketKey, string>> = {
   at_risk: "At-risk issues",
   on_track: "On-track issues",
   cs: "On-CS-side issues",
+  product_side: "On-product-side issues",
   tracked: "Open tracked issues",
   untracked: "Untracked / missing priority",
   attention: "Attention set",
   all: "All open issues",
+};
+
+// Friendlier page heading for a single-status drill-down than the raw status name.
+const STATUS_TITLES: Record<string, string> = {
+  WOC: "Waiting on CS Team issues",
+  "Pending Patch Queue": "Pending Patch Queue issues",
 };
 
 const PRIORITY_OPTIONS = [
@@ -116,12 +125,15 @@ export default function IssuesPage() {
     setParams(next, { replace: true });
   };
 
-  // Switching kind (or "All open") clears any single-status refinement (e.g. WOC vs PPQ).
-  const setBucket = (key: BucketKey) => {
+  // Switching kind (or "All open") clears any single-status refinement, unless
+  // the chip itself carries one (e.g. the CS-side "Waiting on CS Team" / "Pending
+  // Patch Queue" chips, which share bucket=cs and differ only by status).
+  const setBucket = (key: BucketKey, chipStatus?: string) => {
     const next = new URLSearchParams(params);
     if (key === "all") next.delete("bucket");
     else next.set("bucket", key);
-    next.delete("status");
+    if (chipStatus) next.set("status", chipStatus);
+    else next.delete("status");
     setParams(next, { replace: true });
   };
 
@@ -131,8 +143,10 @@ export default function IssuesPage() {
   const {
     data: issues,
     isLoading,
+    isPlaceholderData,
     isError,
     error,
+    errorUpdatedAt,
     refetch,
   } = useIssues({
     bucket,
@@ -143,6 +157,7 @@ export default function IssuesPage() {
     order: "budget_desc",
     limit: 200,
   });
+  useReportFetchProgress(isPlaceholderData);
 
   const issueIds = (issues ?? []).map((i) => i.id);
   const { data: titles, isPending: titlesPending } = useIssueTitles(issueIds);
@@ -151,15 +166,19 @@ export default function IssuesPage() {
   // Friendly project name for "owner/name", falling back to the repo's own name part.
   const nameForRepo = (r: string | null) =>
     overview?.projects.find((p) => p.repo === r)?.name ?? r?.split("/")[1] ?? "—";
-  const projName = repo ? nameForRepo(repo) : "All projects";
+  const projName = repo ? nameForRepo(repo) : "All Projects";
 
   // A single CS status gets its own titled list.
-  const title = status ? `${status} issues` : (BUCKET_TITLES[bucket] ?? "Issues");
+  const title = status ? (STATUS_TITLES[status] ?? `${status} issues`) : (BUCKET_TITLES[bucket] ?? "Issues");
   const cols = gridTemplate(true);
 
   return (
-    <Box>
+    <Box aria-busy={isPlaceholderData}>
       <BackButton />
+
+      {isError && issues && (
+        <StaleDataAlert key={errorUpdatedAt} message={errorMessage(error, "Failed to refresh the issue list")} />
+      )}
 
       <Box sx={{ mb: 2, mt: "18px", display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: "14px" }}>
         <Box>
@@ -184,7 +203,7 @@ export default function IssuesPage() {
             }}
           />
           <FilterSelect value={repo ?? "all"} onChange={(v) => setParam("repo", v === "all" ? "" : v)}>
-            <MenuItem value="all">All projects</MenuItem>
+            <MenuItem value="all">All Projects</MenuItem>
             {repoOptions.map((r) => (
               <MenuItem key={r.repoId} value={r.repo}>
                 {r.name}
@@ -192,7 +211,7 @@ export default function IssuesPage() {
             ))}
           </FilterSelect>
           <FilterSelect value={priority ?? "all"} onChange={(v) => setParam("priority", v === "all" ? "" : v)}>
-            <MenuItem value="all">All priorities</MenuItem>
+            <MenuItem value="all">All Priorities</MenuItem>
             {PRIORITY_OPTIONS.map((p) => (
               <MenuItem key={p.value} value={p.value}>
                 {p.label}
@@ -205,13 +224,13 @@ export default function IssuesPage() {
       {/* Kind chips */}
       <Box sx={{ mb: 2, display: "flex", flexWrap: "wrap", gap: 1 }}>
         {KIND_CHIPS.map((chip) => {
-          const active = bucket === chip.key || (chip.key === "all" && bucket === "all");
+          const active = bucket === chip.key && (chip.status ?? undefined) === status;
           return (
             <Box
-              key={chip.key}
+              key={chip.status ? `${chip.key}:${chip.status}` : chip.key}
               component="button"
               type="button"
-              onClick={() => setBucket(chip.key)}
+              onClick={() => setBucket(chip.key, chip.status)}
               sx={{
                 borderRadius: "8px", border: "1px solid", px: 1.5, py: 0.75, fontSize: 12.5, fontWeight: 600, cursor: "pointer",
                 borderColor: active ? "var(--sla-primary)" : "var(--sla-border)",

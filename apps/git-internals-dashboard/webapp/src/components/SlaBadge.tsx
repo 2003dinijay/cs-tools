@@ -14,7 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/SlaBadge.tsx.
 import { Chip } from "@mui/material";
 import { SLA_BADGE_SX, SLA_STATE_LABEL } from "@lib/sla";
 import type { SlaState } from "@api/types";

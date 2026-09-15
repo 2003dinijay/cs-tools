@@ -17,7 +17,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { request } from "./client";
 
-describe("request (AUDIT-FINDINGS B8)", () => {
+describe("request", () => {
   beforeEach(() => {
     // @ts-expect-error -- partial config is fine for these tests
     window.config = { GID_BACKEND_BASE_URL: "https://backend.example.test" };

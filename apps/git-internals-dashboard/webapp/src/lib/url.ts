@@ -14,12 +14,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Defense-in-depth for outbound issue links (AUDIT-FINDINGS A9): issue.url
-// originates from GitHub's API and transits our DB untouched before landing
-// in a plain <a href>. It's trustworthy today; the only path to abuse is a
-// compromised DB or upstream, at which point a `javascript:` URL becomes a
-// stored-XSS gadget. Restricting to https: costs nothing (GitHub URLs always
-// are) and closes that path regardless of how a bad value got in.
+// Defense-in-depth for outbound issue links: issue.url originates from
+// GitHub's API and transits our DB untouched before landing in a plain
+// <a href>. It's trustworthy today; the only path to abuse is a compromised
+// DB or upstream, at which point a `javascript:` URL becomes a stored-XSS
+// gadget. Restricting to https: costs nothing (GitHub URLs always are) and
+// closes that path regardless of how a bad value got in.
 
 // Returns url unchanged when it parses as an https: URL, "#" otherwise
 // (missing, malformed, or any other scheme).

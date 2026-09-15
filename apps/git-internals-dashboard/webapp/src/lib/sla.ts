@@ -14,8 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/lib/sla.ts — SLA-state display formatting shared by
-// SlaBadge, IssueTimelineRow, and every card that shows a priority/budget.
+// SLA-state display formatting shared by SlaBadge, IssueTimelineRow, and
+// every card that shows a priority/budget.
 import type { SlaState } from "@api/types";
 
 export const SLA_STATES: SlaState[] = ["NO_SLA", "OK", "AT_RISK", "VIOLATED", "TERMINAL"];
@@ -79,7 +79,7 @@ export function fmtBudget(hours: number | null | undefined): string {
   return `${hours}h`;
 }
 
-// Age from creation: < 48h shown in hours, otherwise whole days (matches the design comp).
+// Age from creation: < 48h shown in hours, otherwise whole days.
 export function fmtAge(iso: string | null | undefined): string {
   if (!iso) return "—";
   const h = (Date.now() - new Date(iso).getTime()) / 3_600_000;

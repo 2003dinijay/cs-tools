@@ -14,13 +14,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/views/DashboardPage.tsx (Next's useRouter/useSearchParams
-// -> react-router's useNavigate/useSearchParams).
 import { useNavigate, useSearchParams } from "react-router";
 import { Box, Skeleton } from "@mui/material";
 import { useOverview, useTaxonomy, makeIsCsStatus } from "@api/hooks";
 import { ErrorState } from "@components/ErrorState";
+import { StaleDataAlert } from "@components/StaleDataAlert";
+import { UnknownStatusAlert } from "@components/UnknownStatusAlert";
 import { errorMessage } from "@lib/apiError";
+import { useReportFetchProgress } from "@lib/fetchProgress";
 import { HeroCard, CsHeroCard } from "@components/HeroCard";
 import { ProjectCard } from "@components/ProjectCard";
 import { PriorityTierCard } from "@components/PriorityTierCard";
@@ -72,7 +73,8 @@ export default function DashboardPage() {
   const repo = params.get("repo") ?? undefined;
   const priority = params.get("priority") ?? undefined;
 
-  const { data: overview, isLoading, isError, error, refetch } = useOverview(repo, priority);
+  const { data: overview, isLoading, isPlaceholderData, isError, error, errorUpdatedAt, refetch } = useOverview(repo, priority);
+  useReportFetchProgress(isPlaceholderData);
   const { data: taxonomy } = useTaxonomy();
   const isCsStatus = makeIsCsStatus(taxonomy?.csStatuses);
 
@@ -99,6 +101,7 @@ export default function DashboardPage() {
   if (isLoading || !overview) {
     return (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        {/* Hero attention bar: 3 stat tiles + the CS-side tile */}
         <Box sx={{ display: "grid", gap: "18px", gridTemplateColumns: { lg: "1.55fr .9fr" } }}>
           <Box sx={{ display: "grid", gap: 1.75, gridTemplateColumns: { sm: "1fr 1fr", lg: "1fr 1fr 1fr" } }}>
             <Skeleton variant="rounded" sx={{ height: 144, borderRadius: "16px" }} />
@@ -107,16 +110,35 @@ export default function DashboardPage() {
           </Box>
           <Skeleton variant="rounded" sx={{ height: 144, borderRadius: "16px" }} />
         </Box>
+
+        {/* Per-project comparison */}
         <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { md: "repeat(3, 1fr)" } }}>
           {[0, 1, 2].map((i) => (
-            <Skeleton key={i} variant="rounded" sx={{ height: 176, borderRadius: "16px" }} />
+            <Skeleton key={i} variant="rounded" sx={{ height: 176, borderRadius: "14px" }} />
           ))}
         </Box>
+
+        {/* Priority breakdown */}
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, 1fr)", lg: "repeat(4, 1fr)" }, gap: 1.75 }}>
           {[0, 1, 2, 3].map((i) => (
             <Skeleton key={i} variant="rounded" sx={{ height: 192, borderRadius: "16px" }} />
           ))}
         </Box>
+
+        {/* Priority × SLA-state matrix + trend chart */}
+        <Box sx={{ display: "grid", gap: "18px", gridTemplateColumns: { lg: ".92fr 1.08fr" } }}>
+          <Skeleton variant="rounded" sx={{ height: 300, borderRadius: "16px" }} />
+          <Skeleton variant="rounded" sx={{ height: 300, borderRadius: "16px" }} />
+        </Box>
+
+        {/* Closest to breach */}
+        <Skeleton variant="rounded" sx={{ height: 260, borderRadius: "16px" }} />
+
+        {/* New-issue volume */}
+        <Skeleton variant="rounded" sx={{ height: 340, borderRadius: "16px" }} />
+
+        {/* Attention set */}
+        <Skeleton variant="rounded" sx={{ height: 420, borderRadius: "16px" }} />
       </Box>
     );
   }
@@ -128,7 +150,13 @@ export default function DashboardPage() {
   const repoForId = (id: number) => overview.projects.find((p) => p.repoId === id)?.repo;
 
   return (
-    <Box>
+    <Box aria-busy={isPlaceholderData}>
+      {isError && overview && (
+        <StaleDataAlert key={errorUpdatedAt} message={errorMessage(error, "Failed to refresh the dashboard")} />
+      )}
+
+      <UnknownStatusAlert statuses={overview.unknownStatuses} />
+
       {/* All-clear banner */}
       {allClear && (
         <Box sx={{ mb: "22px", display: "flex", alignItems: "center", gap: 1.5, borderRadius: "12px", border: "1px solid color-mix(in srgb, var(--sla-ok) 35%, transparent)", bgcolor: "var(--sla-ok-tint)", px: "18px", py: 1.75 }}>
@@ -161,16 +189,13 @@ export default function DashboardPage() {
             accent="var(--sla-at-risk)"
             onClick={() => drill("at_risk")}
           />
-          {/* No onClick: there's no bucket=product_side drill-down filter in
-              the API today (see GET /issues's bucket enum) and adding one
-              wasn't part of this widget's ask ("displays a single count") —
-              flagged rather than silently inventing a new backend filter. */}
           <HeroCard
             label="On Product Team Side"
             n={overview.hero.productSide.n}
             delta={overview.hero.productSide.delta}
             spark={overview.hero.productSide.spark}
             accent="var(--sla-primary)"
+            onClick={() => drill("product_side")}
           />
         </Box>
         <CsHeroCard n={overview.hero.cs.n} byStatus={overview.hero.cs.byStatus} onDrill={(status) => drill("cs", { status })} />

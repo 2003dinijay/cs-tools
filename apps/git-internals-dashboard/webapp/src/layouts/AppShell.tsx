@@ -14,13 +14,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/layout/AppShell.tsx (Next's useRouter/
-// useSearchParams -> react-router's useSearchParams).
 import type { ReactNode } from "react";
 import { Box, MenuItem, Select, type SelectChangeEvent } from "@mui/material";
 import { Outlet, useSearchParams } from "react-router";
 import { useOverview } from "@api/hooks";
+import { FetchProgressBar, FetchProgressProvider } from "@components/FetchProgressBar";
 import { SyncButton } from "@components/SyncButton";
+import { UserProfile } from "@components/UserProfile";
+import { useFetchProgressActive } from "@lib/fetchProgress";
 
 const PRIORITY_OPTIONS = [
   { value: "Critical(P1)", label: "Critical · P1" },
@@ -55,30 +56,22 @@ function FilterSelect({
   );
 }
 
-/** The small square app-mark shown in the top nav bar. */
+/** The WSO2 pulse mark shown in the top nav bar. */
 function Logo() {
-  return (
-    <Box
-      sx={{
-        display: "flex",
-        height: 34,
-        width: 34,
-        alignItems: "center",
-        justifyContent: "center",
-        borderRadius: "9px",
-        background: "var(--sla-primary-gradient)",
-        color: "var(--sla-contrast-text)",
-        fontSize: 15,
-        fontWeight: 700,
-      }}
-    >
-      S
-    </Box>
-  );
+  return <Box component="img" src="/wso2-pulse.svg" alt="WSO2" sx={{ height: 34, width: 34, display: "block" }} />;
 }
 
 /** The signed-in app frame: top nav with global repo/priority filters, routed content below. */
 export default function AppShell({ children }: { children?: ReactNode }) {
+  return (
+    <FetchProgressProvider>
+      <AppShellContent>{children}</AppShellContent>
+    </FetchProgressProvider>
+  );
+}
+
+function AppShellContent({ children }: { children?: ReactNode }) {
+  const progressActive = useFetchProgressActive();
   const [params, setParams] = useSearchParams();
   const repo = params.get("repo") ?? undefined;
   const priority = params.get("priority") ?? undefined;
@@ -100,6 +93,7 @@ export default function AppShell({ children }: { children?: ReactNode }) {
     // Acrylic radial-gradient body backdrop (see theme/global.css); an
     // opaque background on this wrapper would hide it completely.
     <Box sx={{ minHeight: "100vh", color: "var(--sla-fg)" }}>
+      <FetchProgressBar active={progressActive} />
       <Box
         component="header"
         sx={{
@@ -136,7 +130,7 @@ export default function AppShell({ children }: { children?: ReactNode }) {
 
           <Box sx={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <FilterSelect value={repo ?? "all"} onChange={(v) => setFilter("repo", v === "all" ? "" : v)}>
-              <MenuItem value="all">All projects</MenuItem>
+              <MenuItem value="all">All Projects</MenuItem>
               {repoOptions.map((r) => (
                 <MenuItem key={r.repoId} value={r.repo}>
                   {r.name}
@@ -145,7 +139,7 @@ export default function AppShell({ children }: { children?: ReactNode }) {
             </FilterSelect>
 
             <FilterSelect value={priority ?? "all"} onChange={(v) => setFilter("priority", v === "all" ? "" : v)}>
-              <MenuItem value="all">All priorities</MenuItem>
+              <MenuItem value="all">All Priorities</MenuItem>
               {PRIORITY_OPTIONS.map((p) => (
                 <MenuItem key={p.value} value={p.value}>
                   {p.label}
@@ -154,8 +148,9 @@ export default function AppShell({ children }: { children?: ReactNode }) {
             </FilterSelect>
           </Box>
 
-          <Box sx={{ display: "flex", alignItems: "center", pl: 1 }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: "10px", pl: 1 }}>
             <SyncButton />
+            <UserProfile />
           </Box>
         </Box>
       </Box>

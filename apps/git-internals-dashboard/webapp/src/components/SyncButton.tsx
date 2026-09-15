@@ -14,9 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/SyncButton.tsx (POST /api/sync/manual ->
-// POST /sync/runs, D3).
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RefreshCw } from "@wso2/oxygen-ui-icons-react";
 import { Box, IconButton } from "@mui/material";
 import { useManualSync, useSyncStatus } from "@api/hooks";
@@ -42,11 +40,21 @@ function oldestLastSynced(repos: Array<{ lastSyncedAt: string | null }>): string
   return times.reduce((oldest, t) => (t < oldest ? t : oldest));
 }
 
-/** Manual-sync trigger button, showing last-synced time and in-flight/error state. */
+/** Manual-sync trigger button: triggers a POST /sync/runs run and shows last-synced time and in-flight/error state. */
 export function SyncButton() {
   const { data: status } = useSyncStatus();
   const [transientMessage, setTransientMessage] = useState<string | null>(null);
+  const [hovered, setHovered] = useState(false);
   const mutation = useManualSync();
+
+  // Fall back to the relative "Last synced" text a few seconds after a
+  // successful sync, instead of pinning the "Synced — N issues..." message
+  // (and the expanded box) forever.
+  useEffect(() => {
+    if (!transientMessage) return;
+    const t = setTimeout(() => setTransientMessage(null), 5000);
+    return () => clearTimeout(t);
+  }, [transientMessage]);
 
   const lastSynced = status ? oldestLastSynced(status.repos) : null;
   const errorMessage = mutation.isError
@@ -60,10 +68,32 @@ export function SyncButton() {
   else if (errorMessage) statusText = errorMessage;
   else if (transientMessage) statusText = transientMessage;
 
+  const expanded = hovered || mutation.isPending || !!errorMessage || !!transientMessage;
+
   return (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-      <Box component="span" sx={{ fontSize: 12, color: errorMessage ? "var(--sla-violated)" : "var(--sla-fg3)" }}>
-        {statusText}
+    <Box sx={{ display: "flex", alignItems: "center" }}>
+      <Box
+        sx={{
+          display: "grid",
+          gridTemplateColumns: expanded ? "1fr" : "0fr",
+          opacity: expanded ? 1 : 0,
+          marginRight: expanded ? "8px" : 0,
+          transition: "grid-template-columns 0.25s ease, opacity 0.2s ease, margin-right 0.25s ease",
+        }}
+      >
+        <Box
+          component="span"
+          sx={{
+            display: "inline-block",
+            minWidth: 0,
+            overflow: "hidden",
+            whiteSpace: "nowrap",
+            fontSize: 12,
+            color: errorMessage ? "var(--sla-violated)" : "var(--sla-fg3)",
+          }}
+        >
+          {statusText}
+        </Box>
       </Box>
       <IconButton
         onClick={() => {
@@ -77,6 +107,10 @@ export function SyncButton() {
             },
           });
         }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onFocus={() => setHovered(true)}
+        onBlur={() => setHovered(false)}
         disabled={mutation.isPending}
         aria-label="Sync now"
         title="Sync now"
