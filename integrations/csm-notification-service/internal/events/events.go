@@ -97,6 +97,7 @@ const (
 var KnownTypes = []Type{
 	TypeCaseCreated, TypeCommentAdded, TypeStatusChanged, TypeCaseAssigned, TypeCaseAcknowledged, TypeSeverityChanged, TypeIncidentCreated,
 	TypeSLAClockRegister, TypeSLATierReached, TypeCaseBillableStatusChanged,
+	TypeCRApprovalRequested,
 }
 
 // Envelope is the wire shape of every record on the event bus: Payload's
@@ -395,6 +396,10 @@ type CRApprovalRequestedPayload struct {
 	GroupName     string `json:"groupName,omitempty"`
 	RequesterName string `json:"requesterName,omitempty"`
 	ProjectName   string `json:"projectName,omitempty"`
+	// ProjectID is the project the change request belongs to, needed to build a
+	// customer-portal link: that portal nests its change-request page under the
+	// project. Absent on an internal notice, which links into the CSM portal.
+	ProjectID string `json:"projectId,omitempty"`
 	// Subject is the fully rendered subject line. Used verbatim: the flow
 	// reproduces ServiceNow's per-branch wording, and re-deriving it here would
 	// mean keeping two copies of that in step.

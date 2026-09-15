@@ -231,6 +231,27 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		if p.CaseID != entityID {
 			return fmt.Errorf("events: payload caseId %q does not match entityId %q", p.CaseID, entityID)
 		}
+	case TypeCRApprovalRequested:
+		var p CRApprovalRequestedPayload
+		if err := decodeStrict(raw, &p); err != nil {
+			return err
+		}
+		// Subject and recipients are what makes this sendable at all: the
+		// flow builds the subject (reproducing ServiceNow's per-branch
+		// wording) and resolves the audience, and a notice missing either is
+		// one this service cannot repair by retrying.
+		if p.ChangeRequestID == "" || p.State == "" || p.Subject == "" {
+			return fmt.Errorf("events: missing required field for %s", t)
+		}
+		if p.ChangeRequestID != entityID {
+			return fmt.Errorf("events: payload changeRequestId %q does not match entityId %q", p.ChangeRequestID, entityID)
+		}
+		if p.Audience != "internal" && p.Audience != "customer" {
+			return fmt.Errorf("events: %s has unknown audience %q", t, p.Audience)
+		}
+		if !validRecipients(p.Recipients) {
+			return fmt.Errorf("events: invalid recipients for %s", t)
+		}
 	default:
 		return fmt.Errorf("events: unknown event type %q", t)
 	}

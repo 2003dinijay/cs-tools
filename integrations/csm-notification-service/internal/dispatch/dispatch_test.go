@@ -158,6 +158,16 @@ func (m *mockLinkResolver) IncidentLink(incidentID string) string {
 	return "https://csm.example/operations/incidents/" + incidentID
 }
 
+// ChangeRequestLink mirrors the real resolver's audience split: a customer
+// notice links into the customer portal, under the project; everyone else
+// links into the CSM portal.
+func (m *mockLinkResolver) ChangeRequestLink(audience, changeRequestID, projectID string) string {
+	if audience == "customer" && projectID != "" {
+		return "https://customer.example/projects/" + projectID + "/operations/change-requests/" + changeRequestID
+	}
+	return "https://csm.example/operations/change-requests/" + changeRequestID
+}
+
 func (m *mockLinkResolver) ResolveLinks(ctx context.Context, emails []string, projectID, caseID string) ([]recipientlinks.RecipientLink, error) {
 	m.gotEmails = emails
 	m.gotProjectID = projectID
@@ -1661,5 +1671,105 @@ func TestDispatcher_Handle_SubjectLine_StandardFormat(t *testing.T) {
 				t.Errorf("subject = %q, want %q", mock.calls[0].subject, tt.want)
 			}
 		})
+	}
+}
+
+// crRecord builds a change_request.approval_requested record. audience picks
+// which portal the link should point at.
+func crRecord(audience, projectID string) eventbus.Record {
+	return eventbus.Record{Value: []byte(`{"type":"change_request.approval_requested","entityId":"CR-1","payload":{` +
+		`"changeRequestId":"CR-1","number":"CHG0031234","state":"REVIEW","audience":"` + audience + `",` +
+		`"projectId":"` + projectID + `","groupName":"Devops Review","team":"Choreo",` +
+		`"subject":"[WSO2 Support] [CR][Choreo] (CHG0031234) Request for approval - Review",` +
+		`"recipients":["` + testRecipient + `"]}}`)}
+}
+
+// TestDispatcher_Handle_CRApprovalRequested_UsesTheFlowsSubject: the flow
+// reproduces ServiceNow's per-branch wording, so this service must send that
+// subject verbatim rather than building one of its own.
+func TestDispatcher_Handle_CRApprovalRequested_UsesTheFlowsSubject(t *testing.T) {
+	mock := &mockEmailSender{}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+
+	if err := d.Handle(context.Background(), crRecord("internal", "")); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("sent %d emails, want 1", len(mock.calls))
+	}
+	sent := mock.calls[0]
+	if want := "[WSO2 Support] [CR][Choreo] (CHG0031234) Request for approval - Review"; sent.subject != want {
+		t.Errorf("subject = %q, want the flow's own %q", sent.subject, want)
+	}
+	if len(sent.to) != 1 || sent.to[0] != testRecipient {
+		t.Errorf("to = %v, want the payload's resolved recipients verbatim", sent.to)
+	}
+}
+
+// TestDispatcher_Handle_CRApprovalRequested_LinksByAudience is the regression
+// guard for a link that pointed at /cases/<id>: a change request is not a case,
+// and the two audiences do not even share a portal.
+func TestDispatcher_Handle_CRApprovalRequested_LinksByAudience(t *testing.T) {
+	tests := []struct {
+		name, audience, projectID, wantLink string
+	}{
+		{"internal goes to the CSM portal", "internal", "",
+			"https://csm.example/operations/change-requests/CR-1"},
+		{"customer goes to the customer portal, under the project", "customer", "PROJ-1",
+			"https://customer.example/projects/PROJ-1/operations/change-requests/CR-1"},
+		{"customer with no project falls back rather than building a broken link", "customer", "",
+			"https://csm.example/operations/change-requests/CR-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockEmailSender{}
+			d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+
+			if err := d.Handle(context.Background(), crRecord(tt.audience, tt.projectID)); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+			if len(mock.calls) != 1 {
+				t.Fatalf("sent %d emails, want 1", len(mock.calls))
+			}
+			if !strings.Contains(mock.calls[0].htmlBody, tt.wantLink) {
+				t.Errorf("body does not link to %q", tt.wantLink)
+			}
+			if strings.Contains(mock.calls[0].htmlBody, "/cases/CR-1") {
+				t.Error("body links to a case URL — a change request is not a case")
+			}
+		})
+	}
+}
+
+// TestDispatcher_Handle_CRApprovalRequested_Killswitch: EMAIL_SENDING_ENABLED
+// must silence this the same way it silences every other email here.
+func TestDispatcher_Handle_CRApprovalRequested_Killswitch(t *testing.T) {
+	mock := &mockEmailSender{}
+	d := NewDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}, &mockLinkResolver{},
+		false, false, nil, true, "", "")
+
+	if err := d.Handle(context.Background(), crRecord("internal", "")); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(mock.calls) != 0 {
+		t.Fatalf("sent %d emails with sending disabled, want 0", len(mock.calls))
+	}
+}
+
+// TestDispatcher_Handle_CRApprovalRequested_DebugMode redirects to the test
+// mailbox instead of the real approval group.
+func TestDispatcher_Handle_CRApprovalRequested_DebugMode(t *testing.T) {
+	mock := &mockEmailSender{}
+	d := NewDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}, &mockLinkResolver{},
+		true, true, []string{"debug@wso2.com"}, true, "", "")
+
+	if err := d.Handle(context.Background(), crRecord("internal", "")); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("sent %d emails, want 1", len(mock.calls))
+	}
+	if got := mock.calls[0].to; len(got) != 1 || got[0] != "debug@wso2.com" {
+		t.Errorf("to = %v, want the debug list to replace the real audience", got)
 	}
 }

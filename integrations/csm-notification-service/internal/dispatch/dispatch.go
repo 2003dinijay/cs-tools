@@ -63,6 +63,7 @@ type linkResolver interface {
 	ResolveLinks(ctx context.Context, emails []string, projectID, caseID string) ([]recipientlinks.RecipientLink, error)
 	CSMLink(caseID string) string
 	IncidentLink(incidentID string) string
+	ChangeRequestLink(audience, changeRequestID, projectID string) string
 }
 
 // Dispatcher turns a published events.Envelope into an actual notification
@@ -603,7 +604,7 @@ func (d *Dispatcher) handleCRApprovalRequested(ctx context.Context, record event
 		GroupName:     p.GroupName,
 		RequesterName: p.RequesterName,
 		ProjectName:   p.ProjectName,
-		Link:          d.links.CSMLink(p.ChangeRequestID),
+		Link:          d.links.ChangeRequestLink(p.Audience, p.ChangeRequestID, p.ProjectID),
 	})
 
 	if err := d.email.SendEmail(ctx, recipients, nil, nil, nil, p.Subject, body, nil); err != nil {
