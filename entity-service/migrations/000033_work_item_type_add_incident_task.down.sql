@@ -15,4 +15,4 @@
 -- under the License.
 
 -- Postgres cannot remove a value from an enum type; see
--- 000032_work_item_type_add_change_task.down.sql. No-op down.
+-- 000031_work_item_type_add_change_task.down.sql. No-op down.

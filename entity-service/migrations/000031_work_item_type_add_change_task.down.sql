@@ -15,6 +15,6 @@
 -- under the License.
 
 -- Postgres cannot remove a value from an enum type; ADD VALUE from
--- 000032_work_item_type_add_change_task.up.sql cannot be cleanly reversed
+-- 000031_work_item_type_add_change_task.up.sql cannot be cleanly reversed
 -- without recreating work_item_type_enum and remapping every dependent
 -- column. No-op down.
