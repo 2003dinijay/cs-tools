@@ -98,10 +98,22 @@ func newEmailClient(cfg EmailConfig, allowInsecureLoopback bool) *EmailClient {
 		Timeout:   emailTokenFetchTimeout,
 		Transport: &httpsOnlyTransport{allowInsecureLoopback: allowInsecureLoopback},
 	}
+	// A 307/308 redirect on the token endpoint would resubmit ClientID/
+	// ClientSecret to whatever host it names; refuse to follow.
+	tokenHTTPClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	tokenCtx := context.WithValue(context.Background(), oauth2.HTTPClient, tokenHTTPClient)
 	httpClient := cc.Client(tokenCtx)
 	httpClient.Timeout = 25 * time.Second
 	httpClient.Transport = &httpsOnlyTransport{base: httpClient.Transport, allowInsecureLoopback: allowInsecureLoopback}
+	// oauth2.Transport reattaches the Authorization bearer token to every
+	// request it processes, including a followed redirect to a different
+	// host. Refuse to follow so the token can never leak off-host; the 3xx
+	// response is surfaced through the normal non-2xx error path instead.
+	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 
 	return &EmailClient{
 		http:        httpClient,

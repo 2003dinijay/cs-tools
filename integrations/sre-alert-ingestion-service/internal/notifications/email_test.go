@@ -47,6 +47,38 @@ func TestNewEmailClient_NeverFailsOnZeroValueConfig(t *testing.T) {
 	}
 }
 
+// TestEmailClient_SendEscalation_DoesNotFollowRedirects guards against the
+// bearer token leaking to a redirect target: oauth2.Transport reattaches the
+// Authorization header to every request it processes, including a followed
+// redirect, so a 307 from the email service must not be followed.
+func TestEmailClient_SendEscalation_DoesNotFollowRedirects(t *testing.T) {
+	redirectTargetCalled := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectTargetCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer upstream.Close()
+	tokenSrv := emailTokenServer(t)
+
+	c := newEmailClient(EmailConfig{
+		BaseURL: upstream.URL, TokenURL: tokenSrv.URL, ClientID: "id", ClientSecret: "secret",
+		ToAddresses: []string{"sre@example.com"},
+	}, true)
+
+	err := c.SendEscalation(context.Background(), "subject", "body")
+	if err == nil {
+		t.Fatal("expected an error for an unfollowed redirect, got nil")
+	}
+	if redirectTargetCalled {
+		t.Error("client followed the redirect; the bearer token was resubmitted to the redirect target")
+	}
+}
+
 func TestEmailClient_SendEscalation_ValidatesArguments(t *testing.T) {
 	called := false
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

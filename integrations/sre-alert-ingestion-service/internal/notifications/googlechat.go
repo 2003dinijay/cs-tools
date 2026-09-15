@@ -69,13 +69,23 @@ func NewGoogleChatClient(cfg GoogleChatConfig) *GoogleChatClient {
 // false, so production code has no path to a non-HTTPS endpoint, loopback
 // included.
 func newGoogleChatClient(cfg GoogleChatConfig, allowInsecureLoopback bool) *GoogleChatClient {
-	return &GoogleChatClient{
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
 		// httpsOnlyTransport (transport.go, this package) refuses a
 		// non-HTTPS webhook URL (test-only loopback exception, never
 		// reachable via NewGoogleChatClient) — the URL carries a secret
 		// key/token in its query string, which must never go out in
 		// cleartext.
-		http:       &http.Client{Timeout: 10 * time.Second, Transport: &httpsOnlyTransport{allowInsecureLoopback: allowInsecureLoopback}},
+		Transport: &httpsOnlyTransport{allowInsecureLoopback: allowInsecureLoopback},
+	}
+	// A redirect response would resubmit the webhook URL — secret key/token
+	// query params included — to whatever host it names; refuse to follow.
+	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	return &GoogleChatClient{
+		http:       httpClient,
 		webhookURL: strings.TrimSpace(cfg.WebhookURL),
 	}
 }

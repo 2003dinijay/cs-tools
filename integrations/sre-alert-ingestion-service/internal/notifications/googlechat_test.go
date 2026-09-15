@@ -54,6 +54,33 @@ func TestGoogleChatClient_SendMessage_ValidatesArguments(t *testing.T) {
 	}
 }
 
+// TestGoogleChatClient_SendMessage_DoesNotFollowRedirects guards against the
+// webhook URL's secret key/token query parameters leaking to a redirect
+// target: a 307 would otherwise resubmit the original POST, URL included, to
+// whatever host the response names.
+func TestGoogleChatClient_SendMessage_DoesNotFollowRedirects(t *testing.T) {
+	redirectTargetCalled := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectTargetCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+
+	c := newGoogleChatClient(GoogleChatConfig{WebhookURL: srv.URL}, true)
+	err := c.SendMessage(context.Background(), "hello")
+	if err == nil {
+		t.Fatal("expected an error for an unfollowed redirect, got nil")
+	}
+	if redirectTargetCalled {
+		t.Error("client followed the redirect; the webhook URL's secret query params were resubmitted to the redirect target")
+	}
+}
+
 func TestGoogleChatClient_SendMessage_SendsExpectedRequest(t *testing.T) {
 	var gotBody chatMessage
 	var gotContentType string
