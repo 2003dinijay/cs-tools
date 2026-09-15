@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS time_card (
     updated_on TIMESTAMPTZ NOT NULL,
     created_by VARCHAR(255) NOT NULL,
     updated_by VARCHAR(255) NOT NULL,
-    case_id UUID NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    case_id UUID NOT NULL REFERENCES "case"(id) ON DELETE CASCADE,
     customer_project_id UUID REFERENCES project(id) ON DELETE SET NULL,
     user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
     approved_by_id UUID REFERENCES "user"(id) ON DELETE SET NULL,

@@ -53,11 +53,20 @@ CREATE TRIGGER users_is_system_user_change
 AFTER INSERT OR UPDATE OF is_system_user ON "user"
 FOR EACH ROW EXECUTE FUNCTION trg_users_recompute_type();
 
+-- BUGFIX: an UPDATE that reassigns a role row from one user to another (changing
+-- user_role.user_id) must recompute BOTH the old and new user's type, not just
+-- NEW's -- otherwise the user who lost the role keeps a stale user_type.
 CREATE OR REPLACE FUNCTION trg_user_roles_recompute_type() RETURNS trigger AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
         PERFORM recompute_user_type(OLD.user_id);
         RETURN OLD;
+    ELSIF TG_OP = 'UPDATE' THEN
+        PERFORM recompute_user_type(NEW.user_id);
+        IF OLD.user_id IS DISTINCT FROM NEW.user_id THEN
+            PERFORM recompute_user_type(OLD.user_id);
+        END IF;
+        RETURN NEW;
     ELSE
         PERFORM recompute_user_type(NEW.user_id);
         RETURN NEW;
@@ -69,6 +78,24 @@ DROP TRIGGER IF EXISTS user_roles_change_recompute_type ON user_role;
 CREATE TRIGGER user_roles_change_recompute_type
 AFTER INSERT OR UPDATE OR DELETE ON user_role
 FOR EACH ROW EXECUTE FUNCTION trg_user_roles_recompute_type();
+
+-- BUGFIX: a role rename (role.name) changes which users derive to INTERNAL/
+-- EXTERNAL/NOT_AVAILABLE, since recompute_user_type() matches by name, not
+-- role id. Without this, renaming e.g. 'internal' to something else leaves
+-- every affected user's user_type stale until their own row is next touched.
+CREATE OR REPLACE FUNCTION trg_role_name_recompute_type() RETURNS trigger AS $$
+BEGIN
+    PERFORM recompute_user_type(ur.user_id)
+    FROM user_role ur
+    WHERE ur.role_id = NEW.id;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS role_name_change_recompute_type ON role;
+CREATE TRIGGER role_name_change_recompute_type
+AFTER UPDATE OF name ON role
+FOR EACH ROW EXECUTE FUNCTION trg_role_name_recompute_type();
 
 -- One-time backfill for rows that existed before the triggers above.
 UPDATE "user" u
