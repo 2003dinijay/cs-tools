@@ -56,6 +56,13 @@ const (
 	TypeSLAClockRegister Type = "sla.clock.register"
 	TypeSLATierReached   Type = "sla.tier_reached"
 
+	// TypeCRApprovalRequested is published by csm-flow-service's
+	// cr_approval_notice flow when a change request enters an approval state.
+	// Unlike the case.* types, its recipients and subject arrive already
+	// resolved: the flow owns the branch-specific wording and the audience
+	// lookup, so this service renders and sends rather than deciding who.
+	TypeCRApprovalRequested Type = "change_request.approval_requested"
+
 	// TypeCaseBillableStatusChanged is Postgres-data-source-only on the
 	// entity-service side, and — like TypeSLAClockRegister/TypeSLATierReached
 	// above — not an email/Chat trigger, so dispatch.Handle's switch has no
@@ -366,4 +373,33 @@ type SLATierReachedPayload struct {
 type CaseBillableStatusChangedPayload struct {
 	CaseID     string `json:"caseId"`
 	IsBillable bool   `json:"isBillable"`
+}
+
+// CRApprovalRequestedPayload is TypeCRApprovalRequested's payload. Mirrors
+// csm-flow-service's copy; keep the two in sync by hand.
+type CRApprovalRequestedPayload struct {
+	ChangeRequestID string `json:"changeRequestId"`
+	// Number is the human-readable CR reference (e.g. "CHG0031234").
+	Number string `json:"number"`
+	// State is the approval state just entered: ASSESS / AUTHORIZE /
+	// CUSTOMER_APPROVAL / REVIEW / CUSTOMER_REVIEW.
+	State string `json:"state"`
+	// Audience is "internal" (a WSO2 approval group) or "customer" (the
+	// project's contacts). It selects the portal the link points at.
+	Audience string `json:"audience"`
+	// Team is the owning team for an internal notice (Choreo / Asgardeo / MS),
+	// empty for a customer one.
+	Team string `json:"team,omitempty"`
+	// GroupName is the approval group whose members were resolved, empty for a
+	// customer notice.
+	GroupName     string `json:"groupName,omitempty"`
+	RequesterName string `json:"requesterName,omitempty"`
+	ProjectName   string `json:"projectName,omitempty"`
+	// Subject is the fully rendered subject line. Used verbatim: the flow
+	// reproduces ServiceNow's per-branch wording, and re-deriving it here would
+	// mean keeping two copies of that in step.
+	Subject string `json:"subject"`
+	// Recipients are already resolved and de-duplicated. Never empty — a notice
+	// with nobody to send to is not published.
+	Recipients []string `json:"recipients"`
 }

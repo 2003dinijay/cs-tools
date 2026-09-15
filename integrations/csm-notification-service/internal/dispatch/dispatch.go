@@ -320,6 +320,8 @@ func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {
 		return d.handleSeverityChanged(ctx, record, env.Payload)
 	case events.TypeIncidentCreated:
 		return d.handleIncidentCreated(ctx, record, env.EntityID, env.Payload)
+	case events.TypeCRApprovalRequested:
+		return d.handleCRApprovalRequested(ctx, record, env.Payload)
 	case events.TypeSLAClockRegister, events.TypeSLATierReached:
 		// internal/slaengine's own consumer group (a different group ID, so
 		// it gets its own full copy of this same topic) is what reacts to
@@ -543,6 +545,74 @@ func (d *Dispatcher) handleStatusChanged(ctx context.Context, record eventbus.Re
 		d.forgetEmailGroups(baseKey, owned)
 	}
 	return sendErr
+}
+
+// handleCRApprovalRequested emails the people a change request is waiting on.
+//
+// UNLIKE EVERY OTHER HANDLER HERE, it does not resolve recipients or build a
+// subject. csm-flow-service's cr_approval_notice flow does both before
+// publishing: the audience comes from an approval group or a project's
+// contacts, and the subject reproduces ServiceNow's per-branch wording
+// verbatim. Re-deriving either here would mean maintaining a second copy of
+// logic that only exists to match a system being decommissioned.
+//
+// It also does not use groupByLink. That splits a case's recipients by which
+// portal each should be linked to, and needs a caseID to do it — a change
+// request has neither. Internal and customer audiences never share one notice
+// (they are separate branches of the original flow), so the audience on the
+// payload picks the portal for the whole send.
+func (d *Dispatcher) handleCRApprovalRequested(ctx context.Context, record eventbus.Record, raw json.RawMessage) error {
+	var p events.CRApprovalRequestedPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("dispatch: decode change_request.approval_requested payload: %w", err)
+	}
+	if len(p.Recipients) == 0 {
+		// The flow does not publish a notice with nobody to send to, so this is
+		// a malformed event rather than a quiet state. Dropping it beats
+		// burning retries on something no retry can fix.
+		slog.WarnContext(ctx, "dispatch: change_request.approval_requested with no recipients, dropping",
+			"changeRequestId", p.ChangeRequestID, "state", p.State)
+		return nil
+	}
+	if p.Subject == "" {
+		slog.WarnContext(ctx, "dispatch: change_request.approval_requested with no subject, dropping",
+			"changeRequestId", p.ChangeRequestID)
+		return nil
+	}
+
+	recipients := p.Recipients
+	if !d.emailSendingEnabled {
+		slog.InfoContext(ctx, "dispatch: email sending disabled, skipping CR approval notice",
+			"changeRequestId", p.ChangeRequestID, "recipients", len(recipients))
+		return nil
+	}
+	if d.emailDebugMode {
+		if len(d.emailDebugRecipients) == 0 {
+			slog.WarnContext(ctx, "dispatch: email debug mode on with no debug recipients, skipping CR approval notice",
+				"changeRequestId", p.ChangeRequestID)
+			return nil
+		}
+		recipients = d.emailDebugRecipients
+	}
+
+	body := notifications.RenderCRApprovalRequestedEmail(notifications.CRApprovalEmailData{
+		Number:        p.Number,
+		State:         p.State,
+		Audience:      p.Audience,
+		Team:          p.Team,
+		GroupName:     p.GroupName,
+		RequesterName: p.RequesterName,
+		ProjectName:   p.ProjectName,
+		Link:          d.links.CSMLink(p.ChangeRequestID),
+	})
+
+	if err := d.email.SendEmail(ctx, recipients, nil, nil, nil, p.Subject, body, nil); err != nil {
+		return fmt.Errorf("dispatch: send CR approval notice for %s: %w", p.ChangeRequestID, err)
+	}
+	slog.InfoContext(ctx, "dispatch: CR approval notice sent",
+		"changeRequestId", p.ChangeRequestID, "number", p.Number,
+		"state", p.State, "audience", p.Audience, "recipients", len(recipients))
+	return nil
 }
 
 // handleCaseAssigned's email step is tracked the same way — see

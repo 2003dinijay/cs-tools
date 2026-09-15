@@ -42,6 +42,9 @@ var internalNoteTemplateRaw string
 //go:embed templates/severity_changed.html
 var severityChangedTemplateRaw string
 
+//go:embed templates/cr_approval_requested.html
+var crApprovalRequestedTemplateRaw string
+
 // wso2LogoURL is WSO2's own official logo asset, served from wso2.cachefly.net
 // (WSO2's public CDN for site assets — not third-party hosting). An earlier
 // version embedded the logo as an inline base64 data: URI instead, avoiding
@@ -65,12 +68,13 @@ func bakeLogo(raw string) string {
 }
 
 var (
-	commentAddedTemplate    = bakeLogo(commentAddedTemplateRaw)
-	statusChangedTemplate   = bakeLogo(statusChangedTemplateRaw)
-	caseAssignedTemplate    = bakeLogo(caseAssignedTemplateRaw)
-	caseCreatedTemplate     = bakeLogo(caseCreatedTemplateRaw)
-	internalNoteTemplate    = bakeLogo(internalNoteTemplateRaw)
-	severityChangedTemplate = bakeLogo(severityChangedTemplateRaw)
+	commentAddedTemplate        = bakeLogo(commentAddedTemplateRaw)
+	statusChangedTemplate       = bakeLogo(statusChangedTemplateRaw)
+	crApprovalRequestedTemplate = bakeLogo(crApprovalRequestedTemplateRaw)
+	caseAssignedTemplate        = bakeLogo(caseAssignedTemplateRaw)
+	caseCreatedTemplate         = bakeLogo(caseCreatedTemplateRaw)
+	internalNoteTemplate        = bakeLogo(internalNoteTemplateRaw)
+	severityChangedTemplate     = bakeLogo(severityChangedTemplateRaw)
 )
 
 // htmlBlockBoundary matches the tags plainTextFromHTML treats as line
@@ -285,4 +289,77 @@ func RenderCaseCreatedEmail(data CaseCreatedEmailData) string {
 		"<!-- [COMMENT_LINK] -->", escapeHTML(data.CommentLink),
 	)
 	return replacer.Replace(tmpl)
+}
+
+// crStateLabels turn the domain state into the words a reader recognises. The
+// raw values are ServiceNow's own (ASSESS, CUSTOMER_APPROVAL, ...), which are
+// right for a payload and wrong for an email.
+var crStateLabels = map[string]string{
+	"ASSESS":            "Assess",
+	"AUTHORIZE":         "Authorize",
+	"REVIEW":            "Review",
+	"CUSTOMER_APPROVAL": "Customer Approval",
+	"CUSTOMER_REVIEW":   "Customer Review",
+}
+
+// CRApprovalEmailData holds every value substituted into the change-request
+// approval template.
+type CRApprovalEmailData struct {
+	Number        string
+	State         string
+	Audience      string
+	Team          string
+	GroupName     string
+	RequesterName string
+	ProjectName   string
+	Link          string
+}
+
+// RenderCRApprovalRequestedEmail fills in the "a change request needs your
+// approval" template.
+//
+// The SUBJECT is not built here — it arrives already rendered on the payload,
+// because csm-flow-service reproduces ServiceNow's per-branch wording verbatim
+// and keeping a second copy of that in step would guarantee they drift.
+func RenderCRApprovalRequestedEmail(d CRApprovalEmailData) string {
+	state := crStateLabels[d.State]
+	if state == "" {
+		// An unmapped state is still worth sending: better a slightly raw word
+		// in one line than no notice at all to someone waiting to approve.
+		state = d.State
+	}
+
+	audience := "your approval"
+	if d.GroupName != "" {
+		audience = d.GroupName
+	} else if d.Audience == "customer" {
+		audience = "customer approval"
+	}
+
+	var context string
+	switch {
+	case d.ProjectName != "" && d.Team != "":
+		context = "Project " + escapeHTML(d.ProjectName) + " · owned by " + escapeHTML(d.Team) + "."
+	case d.ProjectName != "":
+		context = "Project " + escapeHTML(d.ProjectName) + "."
+	case d.Team != "":
+		context = "Owned by " + escapeHTML(d.Team) + "."
+	default:
+		context = "Open the change request to review and act on it."
+	}
+
+	requester := d.RequesterName
+	if requester == "" {
+		requester = "Someone"
+	}
+
+	replacer := strings.NewReplacer(
+		"<!-- [CR_NUMBER] -->", escapeHTML(d.Number),
+		"<!-- [STATE_LABEL] -->", escapeHTML(state),
+		"<!-- [AUDIENCE_LABEL] -->", escapeHTML(audience),
+		"<!-- [REQUESTER] -->", escapeHTML(requester),
+		"<!-- [CR_LINK] -->", escapeHTML(d.Link),
+		"<!-- [CONTEXT_LINE] -->", context,
+	)
+	return replacer.Replace(crApprovalRequestedTemplate)
 }
