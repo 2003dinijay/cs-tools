@@ -43,7 +43,12 @@ import {
   loginIdentity,
   readCredentials,
 } from "./credentials";
-import { DEFAULT_SESSION, hasSession, sessionPath } from "../fixtures/test";
+import {
+  DEFAULT_SESSION,
+  hasSession,
+  sessionIdentity,
+  sessionPath,
+} from "../fixtures/test";
 
 
 /**
@@ -103,6 +108,20 @@ setup("sign in and capture the session", async ({ page, baseURL }) => {
     // when there is genuinely no way to authenticate.
     const minutesLeft = existingSessionMinutesLeft();
     const reason = (error as Error).message;
+
+    // Only fall back to a bundle belonging to THIS identity. Reusing another
+    // account's session would quietly run the whole suite as the wrong user,
+    // which is a worse outcome than stopping here.
+    const onDisk = sessionIdentity(DEFAULT_SESSION);
+    const identityMatches = !onDisk || onDisk === identity;
+
+    if (!identityMatches) {
+      throw new Error(
+        `Sign-in failed, and the session on disk belongs to "${onDisk}" rather ` +
+          `than "${identity}" — falling back to it would run the suite as the ` +
+          `wrong user.\n${reason}`,
+      );
+    }
 
     if (minutesLeft !== null && minutesLeft > 1) {
       console.warn(
@@ -182,7 +201,12 @@ setup("sign in and capture the session", async ({ page, baseURL }) => {
   // when the short-lived access token expires.
   const cookies = await page.context().cookies();
 
-  const bundle = { origin, ...storage, cookies };
+  // `identity` is persisted alongside the origin for the same reason the origin
+  // is: a bundle that does not say whose session it holds can be replayed under
+  // a different E2E_LOGIN_IDENTITY, and the whole suite then runs as the wrong
+  // user — as a Portal user the admin surfaces are simply absent, so it fails
+  // looking like missing UI rather than a wrong identity.
+  const bundle = { origin, identity, ...storage, cookies };
   const target = sessionPath(DEFAULT_SESSION);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, `${JSON.stringify(bundle, null, 2)}\n`);

@@ -94,7 +94,21 @@ export class SecurityCenterPage {
   // typing in the search box or changing a filter issues no request at all.
   //
 
-  /** Opens Security Center through the side nav, as a user would. */
+  /**
+   * Opens Security Center through the side nav, as a user would.
+   *
+   * Returns only once the page's own content has rendered, not merely once the
+   * URL says Security Center. The URL changes before the route swaps, so a
+   * caller that immediately reads something non-retrying — `tab(...).count()`,
+   * say — samples the previous page and gets zero. That does not fail loudly:
+   * it looks like the tab is absent, and the spec skips itself reporting the
+   * feature is not available when it is.
+   *
+   * The marker is "a tab bar or the report search box, whichever appears":
+   * which tab lands first depends on the project's permissions
+   * (SECURITY_PAGE_TABS is filtered), so waiting on the reports search alone
+   * would hang for a project whose first tab is Component Analysis.
+   */
   async openViaSideNav(projectId: string): Promise<void> {
     const sideNav = new SideNavPage(this.page);
     await sideNav.open(projectId);
@@ -102,6 +116,12 @@ export class SecurityCenterPage {
       SECURITY_CENTER.navItem,
       new RegExp(`/projects/${idPattern(projectId)}/${SECURITY_CENTER.pathSegment}`),
     );
+
+    await expect(async () => {
+      const tabs = await this.page.getByRole("tab").count();
+      const search = await this.searchInput().count();
+      expect(tabs + search).toBeGreaterThan(0);
+    }).toPass({ timeout: LOAD_TIMEOUT_MS });
   }
 
   /** A tab in the Security Center's tab bar. */
@@ -257,13 +277,15 @@ export class SecurityCenterPage {
    *
    * @param label - The select's label.
    * @param allOptionLabel - That select's no-filter option, to skip over.
-   * @returns The option text chosen, or null when the select offers nothing to
-   *   filter by.
+   * @returns The chosen value and how many real values were on offer, or null
+   *   when the select offers nothing to filter by. The count matters to the
+   *   caller: a filter can only be expected to NARROW a list when more than one
+   *   value exists — with a single value, matching everything is correct.
    */
   async selectFilterValue(
     label: string,
     allOptionLabel: string,
-  ): Promise<string | null> {
+  ): Promise<{ value: string; optionCount: number } | null> {
     await this.filterSelect(label).click();
 
     const options = this.page.getByRole("option");
@@ -280,6 +302,6 @@ export class SecurityCenterPage {
 
     const chosen = labels[0];
     await options.filter({ hasText: chosen }).first().click();
-    return chosen;
+    return { value: chosen, optionCount: labels.length };
   }
 }

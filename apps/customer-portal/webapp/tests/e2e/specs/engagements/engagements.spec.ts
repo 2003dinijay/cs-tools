@@ -49,6 +49,7 @@ import {
   ENGAGEMENTS,
 } from "../../utils/selectors";
 import { expectSuccess } from "../../utils/caseFlows";
+import { RECORD_ID_PATTERN, projectPathPattern } from "../../utils/ids";
 
 withSession(test);
 
@@ -82,8 +83,9 @@ test.describe("Engagements", () => {
     await engagements.rows().first().click();
 
     await expect(page).toHaveURL(
-      new RegExp(
-        `/projects/${project.id}/${ENGAGEMENTS.pathSegment}/[0-9a-f]{32}$`,
+      projectPathPattern(
+        project.id,
+        `${ENGAGEMENTS.pathSegment}/${RECORD_ID_PATTERN}$`,
       ),
     );
 

@@ -63,6 +63,10 @@ import {
 } from "../../config/testData";
 import { expectSuccess, skipWhenUnconfigured } from "../../utils/caseFlows";
 import { idPattern, projectPathPattern } from "../../utils/ids";
+import {
+  permanentWriteSkipReason,
+  permanentWritesAllowed,
+} from "../../utils/permanentWrites";
 
 withSession(test);
 
@@ -98,6 +102,10 @@ test.describe("Security Report", () => {
 
       test("create security report", async ({ page }) => {
         skipWhenUnconfigured(project);
+        test.skip(
+          !permanentWritesAllowed(),
+          permanentWriteSkipReason("a security report (a case)"),
+        );
 
         const form = new SecurityReportCreatePage(page);
         await form.openViaGetHelpMenu(project.id);

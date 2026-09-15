@@ -170,7 +170,33 @@ test.describe("Security Center — Component Analysis", () => {
     );
 
     const filtered = await security.searchComponents("");
-    expect(filtered).toBeLessThanOrEqual(total);
+
+    // Every row on the page must actually be the product that was selected.
+    // This is the assertion that a filter is doing its job — a count that merely
+    // fails to grow proves nothing, because a filter that is ignored entirely
+    // returns the whole list and satisfies it.
+    const rows = security.componentRows();
+    const rendered = await rows.count();
+    expect(rendered, "a matching product should render rows").toBeGreaterThan(0);
+    for (let i = 0; i < rendered; i += 1) {
+      await expect(
+        rows.nth(i),
+        `row ${i + 1} should be for "${chosen!.value}"`,
+      ).toContainText(chosen!.value);
+    }
+
+    // And the result set must be strictly smaller — but only when there was more
+    // than one product to choose between. On a project with a single product,
+    // matching everything is the correct answer, not a broken filter.
+    if (chosen!.optionCount > 1) {
+      expect(
+        filtered,
+        `"${chosen!.value}" is 1 of ${chosen!.optionCount} products, so it ` +
+          `should narrow ${total} records`,
+      ).toBeLessThan(total);
+    } else {
+      expect(filtered).toBeLessThanOrEqual(total);
+    }
 
     // Clear Filters must restore the full set. This is the half of filtering
     // that users actually get stuck on, and it is cheap to assert.
@@ -181,7 +207,8 @@ test.describe("Security Center — Component Analysis", () => {
     expect(restored).toBe(total);
 
     console.log(
-      `Product "${chosen}": ${filtered} of ${total} record(s), ` +
+      `Product "${chosen!.value}" (1 of ${chosen!.optionCount}): ` +
+        `${filtered} of ${total} record(s), ` +
         `${restored} after clearing filters`,
     );
   });

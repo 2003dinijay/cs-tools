@@ -389,6 +389,12 @@ test.describe("Novera Chat", () => {
 
       const novera = SETTINGS.aiAssistant.novera;
 
+      // The switch renders disabled while the project details load, and
+      // `isChecked()` does not retry — so wait for it to become interactive
+      // before reading it, or the branch below decides on a state that is still
+      // arriving.
+      await expect(settings.noveraToggle()).toBeEnabled({ timeout: 30_000 });
+
       // Tick it if it is not already ticked. The switch reverts when the write
       // is rejected, so the assertions that follow are what establish the state
       // — not the click.
@@ -661,6 +667,13 @@ test.describe("Novera Chat", () => {
       !project.id,
       `${NOVERA_CHAT_INPUT.projectType} needs a project id.`,
     );
+
+    // The only test here that settles TWICE — once after submitting the issue
+    // (inside getHelpAndSubmit) and again after raising the case — so 100s of
+    // the describe's 180s budget is spent waiting before any of its own work
+    // begins. That leaves too little for a create, a history search and the
+    // detail load on a slow backend.
+    test.setTimeout(300_000);
 
     try {
       const { chat, conversationId } = await getHelpAndSubmit(page);
