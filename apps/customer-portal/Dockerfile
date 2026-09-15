@@ -107,6 +107,18 @@ RUN pnpm install --frozen-lockfile
 # root.
 COPY webapp/ ./
 
+# Never boot a dev server in here. Real env beats .env.e2e in the config's
+# precedence chain, so this holds even if that tracked file is changed to target
+# localhost for host runs — the image could not serve the app anyway, since
+# public/config.js is git-ignored and not copied.
+#
+# E2E_BASE_URL is deliberately NOT given a default: baking an environment into
+# an image is how a container ends up writing to the wrong tenant. It comes from
+# .env.e2e or from -e at run time, and the entrypoint rejects an unreachable
+# one (localhost) with an actionable message rather than letting every test fail
+# on a connection error.
+ENV E2E_NO_WEBSERVER=1
+
 # Relative to WORKDIR (/app/webapp), where `COPY webapp/ ./` put the webapp's
 # contents — so NOT `webapp/node_modules/...`, which would resolve to
 # /app/webapp/webapp and fail at startup.
