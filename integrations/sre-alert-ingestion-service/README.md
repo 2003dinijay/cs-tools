@@ -86,6 +86,7 @@ Copy `.env.example` to `.env` and fill in the values:
 | `SRE_ALERT_CALLER_ID` | A real, provisioned platform user id — see "Known limitations" |
 | `SRE_ALERT_MAX_RETRIES` | Retryable-failure count before escalation (default `3`) |
 | `SRE_ALERT_POLL_INTERVAL_SECONDS` | How often the worker scans the buffer (default `15`) |
+| `SRE_ALERT_GROUP_WINDOW_MINUTES` | How far back the incident-grouping search looks for an attachable incident (default `15`) |
 | `TWILIO_ACCOUNT_SID` | Twilio account SID |
 | `TWILIO_AUTH_TOKEN` | Twilio auth token |
 | `TWILIO_FROM_NUMBER` | Twilio-provisioned caller-ID number (E.164) |
@@ -238,6 +239,43 @@ that reaches mechanism 2 hits "search 401'd, proceeding to create anyway" —
 that check is **structurally correct and ready to work**, but **not yet
 actually effective in production**. Mechanism 3 has no such dependency —
 it works today, unconditionally.
+
+## Cross-alert incident grouping
+
+The dedup mechanisms above stop a *single* alert from creating two
+incidents. Grouping is a different problem: multiple *distinct* alerts
+reporting the same underlying condition (e.g. a "firing" event and its
+later "resolved" event) should land on one incident, not one each.
+
+For any inbound alert carrying `uniqueIdentifier`, `internal/handler.buildSubject`
+tags the incident's `Subject` with `csmclient.GroupTag(source,
+uniqueIdentifier)` — deliberately the *same* value across every alert for
+that condition, unlike the per-row dedup tag. Before creating a new
+incident, `internal/worker.tryGroup` searches for that tag via one
+`POST /incidents/search` call (`csmclient.SearchOpenIncidentByGroupTag`),
+filtered to still-open incidents (`state` not Resolved/Closed/Cancelled)
+created within `SRE_ALERT_GROUP_WINDOW_MINUTES` (default 15). A match
+attaches this alert to that incident instead of calling `POST /incidents`
+again; no match, or the search call itself failing, both fail open to the
+normal create-or-dedup flow above — same fail-open posture as everywhere
+else in this service.
+
+Every successful delivery (a fresh create, or an attach via grouping) also
+records a best-effort `CreateAlertIncidentMapping` call — a CSM-side audit
+trail of which alerts fed which incident, kept for visibility even though
+the grouping *decision* itself no longer reads it back.
+
+This design mirrors, in spirit, a ServiceNow prod flow ("Create Incident
+from Alert") found during design — a hash + time-window match — but is not
+a port of it: that flow's referenced hash column doesn't actually exist on
+any live SN table (confirmed by direct schema read), so there was no
+working field-level mechanism to copy. The 15-minute window is the one
+concrete, prod-confirmed parameter kept from that design; the tag itself,
+and the search-based implementation, are this service's own — and unlike
+the SN flow (permanently disabled) or a Postgres-side mapping table (a
+dependency this service exists specifically to avoid), this mechanism has
+no dependency beyond the same `POST /incidents/search` call the dedup
+mechanism above already makes.
 
 ## Known limitations
 

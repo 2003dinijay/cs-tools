@@ -114,8 +114,8 @@ func MapToIncident(req AlertRequest, alertNumber, callerID string) csmclient.Cre
 
 // buildSubject composes CreateIncidentRequest.Subject from the buffered
 // alert row's own human-readable alert number and the alert's metric name
-// and source, e.g. "[alert:ALT0000123] [azure] high_error_rate alert:
-// svc-checkout".
+// and source, e.g. "[alert:ALT0000123] [group:azure:uid-123] [azure]
+// high_error_rate alert: svc-checkout".
 //
 // The leading csmclient.DedupTag(alertNumber) is not cosmetic: it's this
 // service's own dedup key for internal/worker's pre-retry
@@ -126,10 +126,23 @@ func MapToIncident(req AlertRequest, alertNumber, callerID string) csmclient.Cre
 // buffered alert (this service's own Postgres sequence — see
 // internal/store.PostgresStore.Enqueue) and is this row's externally-facing
 // identifier, unlike AlertRequest.UniqueIdentifier, which is
-// vendor-supplied and optional. Full human-readable detail still belongs in
-// AdditionalComments/WorkNotes, not here — this stays short and scannable.
+// vendor-supplied and optional.
+//
+// When req.UniqueIdentifier is set, csmclient.GroupTag(req.Source,
+// req.UniqueIdentifier) is also embedded — deliberately the *same* value
+// across every alert reporting this condition, unlike the per-row dedup
+// tag — so a later alert for the same condition can find this incident via
+// internal/worker.tryGroup's search and attach instead of creating a new
+// one. Omitted entirely when there's no UniqueIdentifier to group by.
+//
+// Full human-readable detail still belongs in AdditionalComments/WorkNotes,
+// not here — this stays short and scannable.
 func buildSubject(alertNumber string, req AlertRequest) string {
-	return fmt.Sprintf("%s [%s] %s alert: %s", csmclient.DedupTag(alertNumber), req.Source, req.MetricName, req.Service)
+	tags := csmclient.DedupTag(alertNumber)
+	if req.UniqueIdentifier != "" {
+		tags += " " + csmclient.GroupTag(req.Source, req.UniqueIdentifier)
+	}
+	return fmt.Sprintf("%s [%s] %s alert: %s", tags, req.Source, req.MetricName, req.Service)
 }
 
 // deriveAlertStatus maps an inbound alert onto this service's own

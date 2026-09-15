@@ -228,6 +228,32 @@ func TestMapToIncident_SubjectStartsWithDedupTag(t *testing.T) {
 	}
 }
 
+// TestMapToIncident_SubjectIncludesGroupTagWhenUniqueIdentifierSet pins the
+// contract internal/worker.tryGroup's search depends on
+// (csmclient.GroupTag's doc comment): an alert with a UniqueIdentifier gets
+// both tags in its Subject, dedup tag first, group tag second.
+func TestMapToIncident_SubjectIncludesGroupTagWhenUniqueIdentifierSet(t *testing.T) {
+	req := AlertRequest{Source: "azure", Severity: "critical", Service: "svc-checkout", MetricName: "error_rate", Description: "d", UniqueIdentifier: "uid-123"}
+	out := MapToIncident(req, "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed", "caller-1")
+	want := csmclient.DedupTag("1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed") + " " + csmclient.GroupTag("azure", "uid-123") + " [azure] error_rate alert: svc-checkout"
+	if out.Subject != want {
+		t.Errorf("Subject = %q, want %q", out.Subject, want)
+	}
+}
+
+// TestMapToIncident_SubjectOmitsGroupTagWhenNoUniqueIdentifier confirms the
+// group tag is left out entirely (not an empty "[group::]") when there's
+// nothing to group by — internal/worker.attempt already gates tryGroup on
+// UniqueIdentifier != "", but the Subject itself must not carry a
+// meaningless tag either.
+func TestMapToIncident_SubjectOmitsGroupTagWhenNoUniqueIdentifier(t *testing.T) {
+	req := AlertRequest{Source: "azure", Severity: "critical", Service: "svc-checkout", MetricName: "error_rate", Description: "d"}
+	out := MapToIncident(req, "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed", "caller-1")
+	if strings.Contains(out.Subject, "[group:") {
+		t.Errorf("Subject = %q, want no group tag when UniqueIdentifier is empty", out.Subject)
+	}
+}
+
 // TestDeriveAlertStatus pins deriveAlertStatus's severity->FIRING/RESOLVED
 // mapping: "ok" (case-insensitively, surrounding whitespace trimmed) is the
 // sole severity value treated as RESOLVED, matching the one signal

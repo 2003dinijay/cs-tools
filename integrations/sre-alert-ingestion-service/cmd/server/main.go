@@ -74,6 +74,7 @@ func main() {
 	w := worker.New(dbStore, csmClient, twilioClient, worker.Config{
 		MaxRetries:   envInt("SRE_ALERT_MAX_RETRIES", 3),
 		PollInterval: time.Duration(envInt("SRE_ALERT_POLL_INTERVAL_SECONDS", 15)) * time.Second,
+		GroupWindow:  time.Duration(envInt("SRE_ALERT_GROUP_WINDOW_MINUTES", 15)) * time.Minute,
 	})
 
 	// callerID: a real, operator-provisioned CSM user id. CSM has no
