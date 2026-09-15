@@ -15,7 +15,7 @@
 // under the License.
 
 // Package jobs holds the cross-replica job mutex and the in-process
-// recompute scheduler (SPEC §8, port of v3's src/server/jobs/{lock,recompute}.ts).
+// recompute scheduler that keeps issue SLA state up to date.
 package jobs
 
 import (
@@ -30,6 +30,10 @@ import (
 
 // lockKey is an arbitrary fixed key, unique to this app's job lock.
 const lockKey = 847_362_915
+
+// lockReleaseTimeout bounds how long release() waits for the advisory-lock
+// unlock Exec. Overridable only via Apply (production) or tests.
+var lockReleaseTimeout = 5 * time.Second
 
 // Lock is a cross-replica mutex for the recompute tick and manual sync, so
 // they never interleave — including across multiple Choreo replicas under
@@ -105,23 +109,23 @@ func (l *Lock) release() {
 	if conn == nil {
 		return
 	}
-	unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	unlockCtx, cancel := context.WithTimeout(context.Background(), lockReleaseTimeout)
 	defer cancel()
 	if _, err := conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, lockKey); err != nil {
 		slog.Error("joblock: failed to release advisory lock; dropping connection", "err", err)
 		// The advisory lock is scoped to this session. If we can't unlock it
 		// explicitly, closing the session releases it server-side anyway —
 		// otherwise every future acquire on every replica would see
-		// locked=false forever (AUDIT-FINDINGS A3). getConn reconnects
-		// lazily on the next attempt.
+		// locked=false forever. getConn reconnects lazily on the next
+		// attempt.
 		l.dropConn(unlockCtx)
 	}
 }
 
 // Running reports whether this replica currently holds the lock (the
-// in-process fast-path flag) — SPEC §6.9's GET /sync/status "running" field
-// reflects this replica's activity only; watermarks and lastRun come from
-// the DB and are shared across replicas.
+// in-process fast-path flag). The GET /sync/status "running" field reflects
+// this replica's activity only; watermarks and lastRun come from the DB and
+// are shared across replicas.
 func (l *Lock) Running() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

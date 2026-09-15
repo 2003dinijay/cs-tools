@@ -24,8 +24,8 @@ import (
 	"time"
 )
 
-// TestLoggerResponseWriterUnwrapsForResponseController guards
-// AUDIT-FINDINGS A4: PostSyncRuns extends its write deadline via
+// TestLoggerResponseWriterUnwrapsForResponseController guards against a
+// regression where PostSyncRuns extends its write deadline via
 // http.NewResponseController(w).SetWriteDeadline, but w is Logger's wrapped
 // responseWriter by the time a handler sees it. Without an Unwrap() method,
 // NewResponseController cannot reach the underlying connection and

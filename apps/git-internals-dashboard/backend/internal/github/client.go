@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 )
 
 // graphQLPath is a var (not const) so titles_test.go can point FetchTitles
@@ -36,8 +38,8 @@ import (
 var graphQLPath = "https://api.github.com/graphql"
 
 // Overridable only by tests, so retry/pagination pacing tests don't take
-// real wall-clock seconds; production always uses the zero-value (real)
-// timings below.
+// real wall-clock seconds; production code never reassigns these and always
+// uses the real timings below.
 var (
 	gqlTimeout          = 60 * time.Second
 	gqlRetryBackoffUnit = 2 * time.Second
@@ -50,6 +52,19 @@ var (
 	gqlRetryAfterCap = 60 * time.Second
 )
 
+// Apply sets every package-level tuning var from cfg. Boot-only: call once,
+// in main(), before any Client is constructed — not safe to call
+// concurrently with in-flight requests.
+func Apply(cfg appconfig.GitHub) {
+	gqlTimeout = time.Duration(cfg.RequestTimeoutSeconds) * time.Second
+	gqlRetryBackoffUnit = time.Duration(cfg.RetryBackoffUnitSeconds) * time.Second
+	gqlMaxRetries = cfg.MaxRetries
+	searchPageDelay = time.Duration(cfg.SearchPageDelayMs) * time.Millisecond
+	detailPageDelay = time.Duration(cfg.DetailPageDelayMs) * time.Millisecond
+	gqlRetryAfterCap = time.Duration(cfg.RetryAfterCapSeconds) * time.Second
+	titlesTimeout = time.Duration(cfg.TitlesRequestTimeoutSeconds) * time.Second
+}
+
 type httpClient struct {
 	token    string
 	endpoint string
@@ -57,7 +72,7 @@ type httpClient struct {
 }
 
 // NewClient returns a Client that talks to the real GitHub GraphQL API using
-// token (a fine-grained PAT with Issues:Read + Projects:Read, SPEC §5.2).
+// token (a fine-grained PAT with Issues:Read + Projects:Read).
 func NewClient(token string) Client {
 	return &httpClient{token: token, endpoint: graphQLPath, hc: &http.Client{}}
 }
@@ -81,8 +96,8 @@ var nonRetryableStatuses = map[int]bool{
 	http.StatusUnprocessableEntity: true,
 }
 
-// gql posts one GraphQL request with a status-aware retry policy
-// (AUDIT-FINDINGS A5): 400/401/404/422 never retry; a 403/429 carrying
+// gql posts one GraphQL request with a status-aware retry policy:
+// 400/401/404/422 never retry; a 403/429 carrying
 // Retry-After sleeps that long (capped) instead of the default linear
 // backoff, so this client doesn't hammer through GitHub's secondary rate
 // limit — repeatedly doing so is what gets a PAT temporarily banned by
@@ -472,18 +487,37 @@ func (c *httpClient) FetchIssueDetail(ctx context.Context, owner, name string, n
 		}
 	}
 
-	// Ascending by time — the SLA interval walk depends on this.
-	sort.SliceStable(events, func(i, j int) bool { return events[i].CreatedAt < events[j].CreatedAt })
+	// Ascending by time — the SLA interval walk depends on this. Sorted by
+	// parsed time.Time, not string comparison: GitHub's CreatedAt is
+	// normally whole-second "...Z", but mixed fractional-second precision
+	// would misorder lexicographically (e.g. "...:00.500Z" < "...:00Z").
+	// CreatedAt itself is left untouched — it feeds the dedupe key verbatim.
+	// A parse failure sorts as the zero time, leaving that event's relative
+	// order to SliceStable's stability rather than failing the whole fetch.
+	// Sorted as (event, parsedTime) pairs, not events alongside a separate
+	// parallel slice: sort.SliceStable only permutes the slice it's given,
+	// so a same-indexed side slice would desync from events on every swap.
+	type timedEvent struct {
+		event StatusEvent
+		at    time.Time
+	}
+	timed := make([]timedEvent, len(events))
+	for i, e := range events {
+		t, _ := time.Parse(time.RFC3339, e.CreatedAt)
+		timed[i] = timedEvent{event: e, at: t}
+	}
+	sort.SliceStable(timed, func(i, j int) bool { return timed[i].at.Before(timed[j].at) })
+	for i, te := range timed {
+		events[i] = te.event
+	}
 	return &IssueDetail{Number: number, Events: events, ProjectStatuses: projectStatuses}, nil
 }
 
-// strPtr returns a pointer to s.
 func strPtr(s string) *string { return &s }
 
 // SleepOrDone sleeps for d, or returns ctx.Err() early if ctx is canceled
-// first. Exported so internal/sync's own inter-issue pacing (AUDIT-FINDINGS
-// B4) doesn't need a second identical copy — sync already depends on this
-// package.
+// first. Exported so internal/sync's own inter-issue pacing doesn't need a
+// second identical copy — sync already depends on this package.
 func SleepOrDone(ctx context.Context, d time.Duration) error {
 	select {
 	case <-ctx.Done():

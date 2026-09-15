@@ -14,7 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/IssueTimelineRow.tsx.
 import { useState } from "react";
 import { Box, Skeleton } from "@mui/material";
 import { useIssue } from "@api/hooks";
@@ -26,6 +25,15 @@ import { fmtAge, fmtDateTime, shortPriority, SLA_STATE_LABEL, SLA_STATE_COLOR } 
 import { safeHttpUrl } from "@lib/url";
 
 const MONO = "var(--font-mono)";
+
+// Deterministic per-issue pseudo-random skeleton width (30%-85%), so a row's
+// placeholder doesn't jitter width across re-renders while other rows'
+// titles resolve, but still varies row-to-row like real title lengths do.
+function skeletonWidthPct(id: number): number {
+  const frac = Math.sin(id * 12.9898) * 43758.5453;
+  const unit = frac - Math.floor(frac);
+  return 30 + unit * 55;
+}
 
 const STATE_BG: Record<SlaState, string> = {
   NO_SLA: "var(--sla-no-sla-tint)",
@@ -99,13 +107,13 @@ export function IssueTimelineRow({
             target="_blank"
             rel="noopener noreferrer"
             title="Open issue on GitHub"
-            sx={{ display: "flex", minWidth: 0, alignItems: "center", gap: "10px", color: "inherit", textDecoration: "none", "&:hover": { color: "var(--sla-primary)" } }}
+            sx={{ display: "flex", flex: 1, minWidth: 0, alignItems: "center", gap: "10px", color: "inherit", textDecoration: "none", "&:hover": { color: "var(--sla-primary)" } }}
           >
             <Box component="span" sx={{ flexShrink: 0, fontWeight: 600, lineHeight: 1, color: "var(--sla-primary)", fontFamily: MONO, fontSize: 12.5 }}>
               #{issue.number}
             </Box>
             {titleLoading ? (
-              <Skeleton variant="text" sx={{ height: 14, width: "100%", maxWidth: 420 }} />
+              <Skeleton variant="text" sx={{ height: 14, width: `${skeletonWidthPct(issue.id)}%`, maxWidth: 420 }} />
             ) : title ? (
               <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 13 }}>
                 {title}

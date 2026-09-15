@@ -14,17 +14,25 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// TanStack React Query hooks (SPEC §11). Port of v3's src/lib/api.ts hooks.
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+// TanStack React Query hooks wrapping the api client's endpoint functions.
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./endpoints";
 import type { IssueFilters } from "./types";
 
-/** GET /metrics/overview, optionally scoped to repo/priority; polls every 60s. */
+/**
+ * GET /metrics/overview, optionally scoped to repo/priority; polls every 60s.
+ * Keeps the previous filter's data on screen (isPlaceholderData) while a new
+ * filter's fetch is in flight, instead of flipping isLoading. staleTime
+ * mirrors the backend's overviewCacheTTL (30s, metrics.go), so toggling a
+ * filter off and back on inside that window is a pure client cache hit.
+ */
 export function useOverview(repo?: string, priority?: string) {
   return useQuery({
     queryKey: ["overview", repo, priority],
     queryFn: () => api.getOverview({ repo, priority }),
     refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
   });
 }
 
@@ -43,19 +51,25 @@ export function makeIsCsStatus(csStatuses: string[] | undefined) {
   return (status: string | null | undefined): boolean => csStatuses != null && csStatuses.includes(status ?? "");
 }
 
-/** GET /metrics/timeseries for the given filters. */
+/**
+ * GET /metrics/timeseries for the given filters. staleTime mirrors the
+ * backend's timeseriesCacheTTL (60s, metrics.go); see useOverview.
+ */
 export function useTimeseries(params: { repo?: string; metric?: string; days?: number; groupBy?: string }) {
   return useQuery({
     queryKey: ["timeseries", params],
     queryFn: () => api.getTimeseries(params),
+    placeholderData: keepPreviousData,
+    staleTime: 60_000,
   });
 }
 
-/** GET /issues for the given filters. */
+/** GET /issues for the given filters. Keeps the previous filter's rows on screen while a new fetch is in flight. */
 export function useIssues(filters: IssueFilters) {
   return useQuery({
     queryKey: ["issues", filters],
     queryFn: () => api.listIssues(filters),
+    placeholderData: keepPreviousData,
   });
 }
 

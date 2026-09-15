@@ -25,23 +25,25 @@ import (
 	"time"
 
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/apierror"
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/config"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/taxonomy"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// IssuesHandler serves GET /issues and GET /issues/{id} (SPEC §6.3/§6.4).
+// IssuesHandler serves GET /issues and GET /issues/{id}.
 // Privacy: the row shape it returns carries no title, labels, assignees,
-// opener, or event actors — see SPEC's non-negotiable #1.
+// opener, or event actors.
 type IssuesHandler struct {
 	pool *pgxpool.Pool
 	cfg  *config.AppConfig
+	api  appconfig.API
 }
 
 // NewIssuesHandler creates an IssuesHandler.
-func NewIssuesHandler(pool *pgxpool.Pool, cfg *config.AppConfig) *IssuesHandler {
-	return &IssuesHandler{pool: pool, cfg: cfg}
+func NewIssuesHandler(pool *pgxpool.Pool, cfg *config.AppConfig, api appconfig.API) *IssuesHandler {
+	return &IssuesHandler{pool: pool, cfg: cfg, api: api}
 }
 
 type slaWire struct {
@@ -51,6 +53,10 @@ type slaWire struct {
 	PctConsumed    *float64 `json:"pctConsumed"`
 	SlaState       string   `json:"slaState"`
 	SlaRunning     bool     `json:"slaRunning"`
+	// BreachedEver is sticky: true once pct_consumed has ever reached 1.0,
+	// regardless of the issue's current sla_state — SlaState alone can't
+	// serve compliance reporting since TERMINAL masks a resolved VIOLATED.
+	BreachedEver bool `json:"breachedEver"`
 }
 
 type issueWire struct {
@@ -83,12 +89,13 @@ type issueRow struct {
 	PctConsumed     *float64
 	SlaState        *string
 	SlaRunning      *bool
+	BreachedEver    *bool
 }
 
 const issueListSelect = `
 	i.id, i.github_number, i.state, i.html_url, r.owner, r.name, i.priority, i.current_status,
 	i.github_created_at, i.github_updated_at,
-	s.budget_hours, s.consumed_hours, s.remaining_hours, s.pct_consumed, s.sla_state, s.sla_running
+	s.budget_hours, s.consumed_hours, s.remaining_hours, s.pct_consumed, s.sla_state, s.sla_running, s.breached_ever
 `
 
 const issueListFrom = `
@@ -104,7 +111,7 @@ func scanIssueRow(row pgx.Row) (issueRow, error) {
 	err := row.Scan(
 		&r.ID, &r.GithubNumber, &r.State, &r.HTMLURL, &r.Owner, &r.Name, &r.Priority, &r.CurrentStatus,
 		&r.GithubCreatedAt, &r.GithubUpdatedAt,
-		&r.BudgetHours, &r.ConsumedHours, &r.RemainingHours, &r.PctConsumed, &r.SlaState, &r.SlaRunning,
+		&r.BudgetHours, &r.ConsumedHours, &r.RemainingHours, &r.PctConsumed, &r.SlaState, &r.SlaRunning, &r.BreachedEver,
 	)
 	return r, err
 }
@@ -133,6 +140,10 @@ func toIssueWire(r issueRow) issueWire {
 		if r.SlaRunning != nil {
 			running = *r.SlaRunning
 		}
+		breachedEver := false
+		if r.BreachedEver != nil {
+			breachedEver = *r.BreachedEver
+		}
 		w.Sla = &slaWire{
 			BudgetHours:    r.BudgetHours,
 			ConsumedHours:  consumed,
@@ -140,6 +151,7 @@ func toIssueWire(r issueRow) issueWire {
 			PctConsumed:    r.PctConsumed,
 			SlaState:       *r.SlaState,
 			SlaRunning:     running,
+			BreachedEver:   breachedEver,
 		}
 	}
 	return w
@@ -147,17 +159,17 @@ func toIssueWire(r issueRow) issueWire {
 
 // ListIssues handles GET /issues.
 func (h *IssuesHandler) ListIssues(w http.ResponseWriter, r *http.Request) {
-	q, errMsg := parseIssuesQuery(r.URL.Query())
+	q, errMsg := parseIssuesQuery(r.URL.Query(), h.api)
 	if errMsg != "" {
 		apierror.ValidationFailed(w, errMsg)
 		return
 	}
 
-	whereSQL, args := buildIssuesWhere(taxonomy.CsStatuses(h.cfg), q)
+	whereSQL, args := buildIssuesWhere(taxonomy.CsStatuses(h.cfg), taxonomy.ProductSideStatuses(h.cfg), q)
 
 	orderSQL := "i.github_updated_at DESC"
 	if q.Order == "budget_desc" {
-		// Uses the issue_sla.pct_consumed index (SPEC §4).
+		// Uses the issue_sla.pct_consumed index.
 		orderSQL = "s.pct_consumed DESC NULLS LAST"
 	}
 

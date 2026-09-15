@@ -14,9 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/server/config/index.test.ts. Load has no memoization
-// (unlike the TS loadConfig singleton) — see HANDBACK.md — so the "memoizes
-// until reset" case has no Go counterpart; every other case is ported as-is.
+// Load re-reads the config file from disk on every call rather than caching
+// it in a singleton, so each call here reflects only that call's
+// SLA_CONFIG_PATH and file state.
 package config
 
 import (
@@ -60,8 +60,7 @@ func TestLoadHonorsSlaConfigPathOverride(t *testing.T) {
 }
 
 // TestLoadValidatesTheCommittedConfig guards against the repo's actual
-// backend/config/sla-config.yaml (a verbatim copy of v3's) ever drifting
-// into an invalid state.
+// backend/config/sla-config.yaml ever drifting into an invalid state.
 func TestLoadValidatesTheCommittedConfig(t *testing.T) {
 	t.Setenv("SLA_CONFIG_PATH", "")
 	// Load()'s default path is relative to the process cwd, which for `go

@@ -14,9 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/server/db/ingest.test.ts — DB-backed against the
-// docker-composed Postgres (SPEC §15); skips cleanly with a log line when
-// DATABASE_URL is unreachable so `go test` still runs without Docker.
+// DB-backed against the docker-composed Postgres; skips cleanly with a log
+// line when DATABASE_URL is unreachable so `go test` still runs without
+// Docker.
 package ingest
 
 import (

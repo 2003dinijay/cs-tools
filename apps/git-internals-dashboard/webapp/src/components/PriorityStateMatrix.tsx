@@ -14,7 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/PriorityStateMatrix.tsx.
 import { Box } from "@mui/material";
 import type { Overview, MatrixRow } from "@api/types";
 import { acrylicSurfaceSx } from "@lib/surfaces";
@@ -143,15 +142,11 @@ function Row({
   const accent = P_ACCENT[row.code] ?? "var(--sla-no-sla)";
   return (
     <>
-      {/* White text is a deliberate, documented exception: this badge's
-          background rotates across 4 distinct accent hues (error/warning/
-          info/grey per priority), and no single Oxygen UI contrastText token
-          maps to "whichever of 4 hues is active" — the same approach MUI's
-          own multi-hue Chip/Avatar examples take. Pre-existing, unchanged by
-          this pass: contrast is weakest on the P4/grey tile, a known
-          tradeoff of the shared-white-text approach, not a regression here.
-          See --sla-contrast-text for the single-hue case (used elsewhere)
-          where a real token does apply. */}
+      {/* White text is a deliberate exception: the badge's background
+          rotates across 4 accent hues (one per priority), and no single
+          Oxygen UI contrastText token covers all 4 — contrast is weakest on
+          the P4/grey tile. See --sla-contrast-text for the single-hue case
+          (used elsewhere) where a real token does apply. */}
       <Box component="span" sx={{ borderRadius: "6px", py: 0.75, textAlign: "center", fontSize: 12, fontWeight: 700, lineHeight: 1, color: "#fff", fontFamily: MONO, bgcolor: accent }}>
         {row.code}
       </Box>

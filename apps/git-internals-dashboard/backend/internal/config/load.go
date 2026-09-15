@@ -28,8 +28,7 @@ import (
 // rawSettings mirrors Settings but with every field optional (nil = absent
 // from the YAML), so a default is applied only when the key is missing
 // entirely — an explicit value, even an invalid one like 0, must reach
-// Validate rather than being silently replaced (port of zod's
-// z.number().default(...), which only substitutes on undefined).
+// Validate rather than being silently replaced.
 type rawSettings struct {
 	AtRiskThreshold          *float64 `yaml:"atRiskThreshold"`
 	RecomputeIntervalMinutes *int     `yaml:"recomputeIntervalMinutes"`
@@ -37,6 +36,7 @@ type rawSettings struct {
 	SnapshotHourUtc          *int     `yaml:"snapshotHourUtc"`
 	SeedSnapshotDays         *int     `yaml:"seedSnapshotDays"`
 	SeedClosedLookbackDays   *int     `yaml:"seedClosedLookbackDays"`
+	UnknownStatusPolicy      *string  `yaml:"unknownStatusPolicy"`
 }
 
 // resolve builds a Settings from r, substituting defaultSettings' value for
@@ -61,6 +61,9 @@ func (r rawSettings) resolve() Settings {
 	if r.SeedClosedLookbackDays != nil {
 		s.SeedClosedLookbackDays = *r.SeedClosedLookbackDays
 	}
+	if r.UnknownStatusPolicy != nil {
+		s.UnknownStatusPolicy = UnknownStatusPolicy(*r.UnknownStatusPolicy)
+	}
 	return s
 }
 
@@ -71,6 +74,7 @@ type rawAppConfig struct {
 	Taxonomy Taxonomy      `yaml:"taxonomy"`
 	Budgets  []BudgetEntry `yaml:"budgets"`
 	Settings rawSettings   `yaml:"settings"`
+	Holidays []string      `yaml:"holidays"`
 }
 
 // configPath resolves SLA_CONFIG_PATH (absolute path recommended) or falls
@@ -86,7 +90,7 @@ func configPath() string {
 	return filepath.Join("config", "sla-config.yaml")
 }
 
-// Load reads, parses, and validates the SLA config (SPEC §5.1). Every call
+// Load reads, parses, and validates the SLA config. Every call
 // re-reads the file from disk — callers that want a single immutable
 // snapshot for the process lifetime (the normal case) call this once at
 // boot and pass the result down, rather than relying on any hidden
@@ -108,6 +112,7 @@ func Load() (*AppConfig, error) {
 		Taxonomy: parsed.Taxonomy,
 		Budgets:  parsed.Budgets,
 		Settings: parsed.Settings.resolve(),
+		Holidays: parsed.Holidays,
 	}
 	if cfg.Taxonomy.Aliases == nil {
 		cfg.Taxonomy.Aliases = []AliasEntry{}

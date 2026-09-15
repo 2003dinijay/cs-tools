@@ -14,8 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/server/db/normalize.test.ts — every case there has a
-// direct counterpart here.
+// Tests BuildStatusNormalizer: alias mapping to canonical names, whitespace
+// trimming, and nil passthrough.
 package ingest
 
 import (

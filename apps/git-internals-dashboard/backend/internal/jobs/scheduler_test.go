@@ -177,10 +177,10 @@ func seedIngestedIssues(t *testing.T, pool *pgxpool.Pool, n int) (issueIDs []int
 	return issueIDs, repositoryID
 }
 
-// TestRunTickOnceWalksAllPagesViaKeysetPagination (AUDIT-FINDINGS B1): with
-// a page size smaller than the fixture set, RunTickOnce must still process
-// every issue exactly once — proving the i.id > lastID walk correctly
-// advances across page boundaries rather than looping or skipping rows.
+// TestRunTickOnceWalksAllPagesViaKeysetPagination verifies that with a page
+// size smaller than the fixture set, RunTickOnce still processes every
+// issue exactly once — proving the i.id > lastID walk correctly advances
+// across page boundaries rather than looping or skipping rows.
 func TestRunTickOnceWalksAllPagesViaKeysetPagination(t *testing.T) {
 	pool := testPool(t)
 	const pageSize, issueCount = 2, 5
@@ -267,4 +267,110 @@ func TestRunTickOnceUpdatesIssueSlaAndSnapshot(t *testing.T) {
 	}
 
 	_ = repositoryID
+}
+
+// TestRunTickOnceFreezesConsumptionOnceIssueIsClosedOnGithub is a
+// scheduler-level regression: a GitHub-closed issue whose board status is
+// still an accruing one must stop gaining consumed_hours between ticks and
+// report TERMINAL, instead of accruing forever because the board was never
+// moved to a terminal status.
+func TestRunTickOnceFreezesConsumptionOnceIssueIsClosedOnGithub(t *testing.T) {
+	pool := testPool(t)
+	issueID, _ := seedIngestedIssue(t, pool)
+	runtime := ingest.BuildRuntimeConfig(tickTestAppConfig)
+	ctx := context.Background()
+
+	// Close the issue on GitHub 6h after it was opened, while its board
+	// status ("Open") still accrues — the scenario a missing "closed ->
+	// Done" board automation leaves behind.
+	closedAt, _ := time.Parse(time.RFC3339, "2026-01-01T06:00:00Z")
+	if _, err := pool.Exec(ctx, `UPDATE issues SET state = 'CLOSED', github_closed_at = $2 WHERE id = $1`, issueID, closedAt); err != nil {
+		t.Fatalf("close issue: %v", err)
+	}
+
+	firstTick, _ := time.Parse(time.RFC3339, "2026-01-02T00:00:00Z")
+	if _, err := RunTickOnce(ctx, pool, runtime, firstTick); err != nil {
+		t.Fatalf("first RunTickOnce: %v", err)
+	}
+	var slaState string
+	var consumedHours float64
+	if err := pool.QueryRow(ctx, `SELECT sla_state, consumed_hours FROM issue_sla WHERE issue_id = $1`, issueID).Scan(&slaState, &consumedHours); err != nil {
+		t.Fatalf("query issue_sla after first tick: %v", err)
+	}
+	if slaState != "TERMINAL" {
+		t.Errorf("expected TERMINAL once closed, got %s", slaState)
+	}
+	closeTo(t, consumedHours, 6)
+
+	// A later tick must not accrue any further: consumed_hours stays frozen
+	// at closure instead of growing with wall-clock time.
+	secondTick, _ := time.Parse(time.RFC3339, "2026-01-05T00:00:00Z")
+	if _, err := RunTickOnce(ctx, pool, runtime, secondTick); err != nil {
+		t.Fatalf("second RunTickOnce: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT sla_state, consumed_hours FROM issue_sla WHERE issue_id = $1`, issueID).Scan(&slaState, &consumedHours); err != nil {
+		t.Fatalf("query issue_sla after second tick: %v", err)
+	}
+	if slaState != "TERMINAL" {
+		t.Errorf("expected TERMINAL to persist, got %s", slaState)
+	}
+	closeTo(t, consumedHours, 6)
+}
+
+// closeTo fails the test with label unless got is within 1e-5 of want.
+func closeTo(t *testing.T, got, want float64) {
+	t.Helper()
+	if got < want-1e-5 || got > want+1e-5 {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestRunTickOnceSurfacesAndReclassifiesUnknownStatuses is a
+// scheduler-level regression: a status absent from taxonomy.statuses must
+// be surfaced in unknown_statuses (for GET /metrics/overview to warn on),
+// and must disappear again once the taxonomy is updated to recognize it —
+// the table tracks "unknown right now", not "ever seen".
+func TestRunTickOnceSurfacesAndReclassifiesUnknownStatuses(t *testing.T) {
+	pool := testPool(t)
+	issueID, _ := seedIngestedIssue(t, pool)
+	runtime := ingest.BuildRuntimeConfig(tickTestAppConfig)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, `UPDATE issues SET current_status = 'Mystery Column' WHERE id = $1`, issueID); err != nil {
+		t.Fatalf("set unknown status: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM unknown_statuses WHERE status = 'Mystery Column'`)
+	})
+
+	now, _ := time.Parse(time.RFC3339, "2026-01-02T00:00:00Z")
+	if _, err := RunTickOnce(ctx, pool, runtime, now); err != nil {
+		t.Fatalf("RunTickOnce: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT occurrence_count FROM unknown_statuses WHERE status = 'Mystery Column'`).Scan(&count); err != nil {
+		t.Fatalf("query unknown_statuses: %v", err)
+	}
+	if count < 1 {
+		t.Errorf("expected occurrence_count >= 1, got %d", count)
+	}
+
+	// Reclassify: taxonomy now recognizes the status -> it must be dropped
+	// from unknown_statuses on the very next tick.
+	reclassifiedCfg := *tickTestAppConfig
+	reclassifiedCfg.Taxonomy.Statuses = append(append([]config.StatusEntry{}, tickTestAppConfig.Taxonomy.Statuses...),
+		config.StatusEntry{Name: "Mystery Column", Category: config.CategoryOther, AccruesSla: false})
+	reclassifiedRuntime := ingest.BuildRuntimeConfig(&reclassifiedCfg)
+	if _, err := RunTickOnce(ctx, pool, reclassifiedRuntime, now.Add(time.Hour)); err != nil {
+		t.Fatalf("second RunTickOnce: %v", err)
+	}
+
+	var stillThere int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM unknown_statuses WHERE status = 'Mystery Column'`).Scan(&stillThere); err != nil {
+		t.Fatalf("query unknown_statuses after reclassify: %v", err)
+	}
+	if stillThere != 0 {
+		t.Errorf("expected 'Mystery Column' dropped after reclassification, got %d rows", stillThere)
+	}
 }

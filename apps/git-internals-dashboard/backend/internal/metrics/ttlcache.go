@@ -15,7 +15,7 @@
 // under the License.
 
 // Package metrics builds the /metrics/overview and /metrics/timeseries
-// responses (SPEC §6.6/§6.7, ports of v3's overview.ts/timeseries.ts).
+// responses.
 package metrics
 
 import (
@@ -24,8 +24,8 @@ import (
 )
 
 // TTLCache is a minimal in-process TTL cache with a max-entry bound (evicts
-// the oldest-inserted entry first once at capacity). Port of v3's
-// ttl-cache.ts. Process-local by design: correct for the values cached here
+// the oldest-inserted entry first once at capacity). Process-local by
+// design: correct for the values cached here
 // (overview/timeseries responses, issue titles) where a few seconds/minutes
 // of staleness or a cache miss on the "wrong" replica is harmless — never
 // used for anything requiring cross-replica consistency (see internal/jobs

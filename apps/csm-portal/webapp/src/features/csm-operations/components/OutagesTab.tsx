@@ -32,9 +32,13 @@ import {
 import { Megaphone, Plus } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type ChangeEvent, type JSX } from "react";
 import { useLocation } from "react-router";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useNavTransition } from "@hooks/useNavTransition";
 import QueryErrorState from "@components/QueryErrorState";
+import { getColumnPreferencesUserKey } from "@hooks/useColumnPreferences";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
+import { useFilterBarCollapsed } from "@hooks/useFilterBarCollapsed";
+import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { useSearchOutages } from "@features/csm-operations/api/useOutages";
 import {
@@ -72,7 +76,13 @@ export default function OutagesTab(): JSX.Element {
   const navigate = useNavTransition();
   const location = useLocation();
   const [filters, setFilters] = useState<OutageFilters>(DEFAULT_OUTAGE_FILTERS);
-  const [isFiltersOpen, setIsFiltersOpen] = useState(true);
+  const currentUserEmail = useIdTokenClaims()?.email;
+  const currentUserId = useCurrentUser().user?.id;
+  const [isFiltersOpen, setIsFiltersOpen] = useFilterBarCollapsed(
+    "outages",
+    getColumnPreferencesUserKey({ id: currentUserId, email: currentUserEmail }),
+    true,
+  );
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
   const debouncedSearch = useDebouncedValue(filters.search.trim(), 300);
@@ -136,7 +146,7 @@ export default function OutagesTab(): JSX.Element {
         onChange={handleFiltersChange}
         onReset={handleReset}
         isFiltersOpen={isFiltersOpen}
-        onFiltersToggle={() => setIsFiltersOpen((prev) => !prev)}
+        onFiltersToggle={() => setIsFiltersOpen(!isFiltersOpen)}
       />
 
       {data?.beginFromDefaulted && (

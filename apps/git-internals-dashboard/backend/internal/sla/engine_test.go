@@ -14,8 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/server/db/sla.test.ts — every vector there has a direct
-// counterpart here, read line by line rather than sampled.
+// Test vectors for ComputeSla, StatusAsOf, and WithCurrentStatusBoundary,
+// covering budget accrual, coverage windows, terminal/reopen handling, and
+// the current-status boundary event.
 package sla
 
 import (
@@ -135,6 +136,20 @@ func TestComputeSlaTerminalStatusWinsRegardlessOfPctConsumed(t *testing.T) {
 	if r.SlaRunning {
 		t.Errorf("expected slaRunning=false")
 	}
+	// BreachedEver must still report the real breach (pct=1.25) even though
+	// SlaState reports TERMINAL, not VIOLATED.
+	if !r.BreachedEver {
+		t.Errorf("expected BreachedEver=true despite SlaState=TERMINAL")
+	}
+}
+
+// TestComputeSlaBreachedEverFalseWhenUnderBudget verifies BreachedEver is
+// false while pct never reached 1.0.
+func TestComputeSlaBreachedEverFalseWhenUnderBudget(t *testing.T) {
+	r := ComputeSla(strp("High(P2)"), []StatusEvent{ev("Open", 0)}, strp("Open"), testCfg, at(10))
+	if r.BreachedEver {
+		t.Errorf("expected BreachedEver=false, pct never reached 1.0")
+	}
 }
 
 // TestComputeSlaIgnoresEventsAfterNow verifies an event later than `now`
@@ -208,6 +223,84 @@ func TestComputeSlaFallsBackTo24x7WhenNoCoverageEntry(t *testing.T) {
 	open := StatusEvent{Status: strp("Open"), OccurredAt: mon0105_09ist}
 	r := ComputeSla(strp("High(P2)"), []StatusEvent{open}, strp("Open"), testCfg, mon0105_09ist.Add(24*time.Hour))
 	closeTo(t, "consumedHours", r.ConsumedHours, 24) // full wall-clock — no business-hours mask
+}
+
+// --- 12x5 with holidays ---
+
+// mon0105Holiday is the IST-calendar-day index of Mon 2026-01-05, the day
+// mon0105_09ist falls on.
+var mon0105Holiday = func() int64 {
+	d, err := time.Parse("2006-01-02", "2026-01-05")
+	if err != nil {
+		panic(err)
+	}
+	return HolidayDayIndex(d)
+}()
+
+// TestComputeSla12x5SkipsHolidayEntirely verifies a configured holiday
+// removes that whole day's window from accrual, even though it's an
+// ordinary weekday.
+func TestComputeSla12x5SkipsHolidayEntirely(t *testing.T) {
+	cfg := testCfg12x5
+	cfg.Holidays = map[int64]bool{mon0105Holiday: true}
+	open := StatusEvent{Status: strp("Open"), OccurredAt: mon0105_09ist}
+	r := ComputeSla(strp("High(P2)"), []StatusEvent{open}, strp("Open"), cfg, mon0105_09ist.Add(24*time.Hour))
+	closeTo(t, "consumedHours", r.ConsumedHours, 0)
+}
+
+// TestComputeSla12x5SlaRunningFalseDuringHoliday verifies slaRunning is
+// false during a configured holiday, even mid-business-hours.
+func TestComputeSla12x5SlaRunningFalseDuringHoliday(t *testing.T) {
+	cfg := testCfg12x5
+	cfg.Holidays = map[int64]bool{mon0105Holiday: true}
+	r := ComputeSla(strp("High(P2)"), []StatusEvent{{Status: strp("Open"), OccurredAt: mon0105_09ist}}, strp("Open"), cfg, mon0105_09ist)
+	if r.SlaRunning {
+		t.Errorf("expected slaRunning=false during a configured holiday")
+	}
+}
+
+// TestComputeSla12x5HolidayDoesNotAffect24x7 verifies a holiday only removes
+// hours from Coverage12x5Ist — a 24x7 budget is unaffected.
+func TestComputeSla12x5HolidayDoesNotAffect24x7(t *testing.T) {
+	cfg := testCfg // High(P2) here has no Coverage entry -> falls back to 24x7
+	cfg.Holidays = map[int64]bool{mon0105Holiday: true}
+	open := StatusEvent{Status: strp("Open"), OccurredAt: mon0105_09ist}
+	r := ComputeSla(strp("High(P2)"), []StatusEvent{open}, strp("Open"), cfg, mon0105_09ist.Add(24*time.Hour))
+	closeTo(t, "consumedHours", r.ConsumedHours, 24)
+}
+
+// TestComputeSla12x5HolidayMatchesMinuteByMinuteOracle differentially
+// verifies covered12x5IstMs/within12x5Ist agree with holidays involved: a
+// full week (one weekday marked a holiday), checked minute by minute.
+func TestComputeSla12x5HolidayMatchesMinuteByMinuteOracle(t *testing.T) {
+	start := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC) // Monday 00:00 UTC
+	end := start.AddDate(0, 0, 7)
+
+	var holidayDate time.Time
+	for d := start; d.Before(end); d = d.AddDate(0, 0, 1) {
+		ist := time.UnixMilli(d.UnixMilli() + istOffsetMs).UTC()
+		if ist.Weekday() == time.Wednesday {
+			holidayDate = time.Date(ist.Year(), ist.Month(), ist.Day(), 0, 0, 0, 0, time.UTC)
+			break
+		}
+	}
+	holidays := map[int64]bool{HolidayDayIndex(holidayDate): true}
+
+	startMs, endMs := start.UnixMilli(), end.UnixMilli()
+	got := covered12x5IstMs(startMs, endMs, holidays)
+
+	var want int64
+	for ms := startMs; ms < endMs; ms += 60_000 {
+		if within12x5Ist(ms, holidays) {
+			want += 60_000
+		}
+	}
+	if got != want {
+		t.Errorf("covered12x5IstMs=%d, minute-by-minute oracle=%d", got, want)
+	}
+	if want == 0 {
+		t.Fatalf("oracle computed zero covered ms — test isn't exercising the window")
+	}
 }
 
 // --- statusAsOf ---
@@ -298,5 +391,131 @@ func TestWithCurrentStatusBoundaryAgreementIsNoOp(t *testing.T) {
 		if !statusEqual(out[i].Status, events[i].Status) || !out[i].OccurredAt.Equal(events[i].OccurredAt) {
 			t.Errorf("expected out[%d]=%+v to equal events[%d]=%+v", i, out[i], i, events[i])
 		}
+	}
+}
+
+// TestWithCurrentStatusBoundaryIgnoresFutureDatedLastEvent reproduces a
+// skewed/contradictory last event stamped after now: it must not anchor the
+// divergence clamp — the paused hour (9->10, board says WOC since h=9) must
+// not accrue.
+func TestWithCurrentStatusBoundaryIgnoresFutureDatedLastEvent(t *testing.T) {
+	now := at(10)
+	events := []StatusEvent{
+		ev("Open", 0),
+		{Status: strp("In Progress"), OccurredAt: now.Add(2 * time.Minute)}, // skewed, future-dated
+	}
+	out := WithCurrentStatusBoundary(events, strp("WOC"), timep(at(9)), now)
+	r := ComputeSla(strp("High(P2)"), out, strp("WOC"), testCfg, now)
+	closeTo(t, "consumedHours", r.ConsumedHours, 9)
+}
+
+// TestWithCurrentStatusBoundaryFutureLastEventAgreeingWithCurrentStatusStillGetsBoundary
+// covers the agreement-case variant: the (unfiltered) last event is
+// future-dated and its status equals currentStatus. Before the fix, matching
+// on the unfiltered last event short-circuited to "no boundary needed",
+// silently losing the pause at currentStatusAt once ComputeSla dropped the
+// future event on its own filter. The boundary must instead be derived from
+// currentStatusAt.
+func TestWithCurrentStatusBoundaryFutureLastEventAgreeingWithCurrentStatusStillGetsBoundary(t *testing.T) {
+	now := at(10)
+	events := []StatusEvent{
+		ev("Open", 0),
+		{Status: strp("WOC"), OccurredAt: now.Add(2 * time.Minute)}, // skewed, agrees with currentStatus
+	}
+	out := WithCurrentStatusBoundary(events, strp("WOC"), timep(at(9)), now)
+	if len(out) != 2 {
+		t.Fatalf("expected boundary event to be appended (not suppressed), got %d events: %+v", len(out), out)
+	}
+	last := out[len(out)-1]
+	if last.Status == nil || *last.Status != "WOC" || !last.OccurredAt.Equal(at(9)) {
+		t.Errorf("expected boundary {WOC, at(9)}, got %+v", last)
+	}
+	r := ComputeSla(strp("High(P2)"), out, strp("WOC"), testCfg, now)
+	closeTo(t, "consumedHours", r.ConsumedHours, 9)
+}
+
+// TestWithCurrentStatusBoundaryEmptyTimelineClampsFutureCurrentStatusAt
+// verifies a future-dated currentStatusAt clamps to now rather than
+// producing an event ComputeSla then filters out entirely.
+func TestWithCurrentStatusBoundaryEmptyTimelineClampsFutureCurrentStatusAt(t *testing.T) {
+	out := WithCurrentStatusBoundary([]StatusEvent{}, strp("Open"), timep(at(15)), at(10))
+	if len(out) != 1 || out[0].Status == nil || *out[0].Status != "Open" || !out[0].OccurredAt.Equal(at(10)) {
+		t.Fatalf("expected boundary clamped to now=at(10), got %+v", out)
+	}
+}
+
+// TestAdjustForClosureCapsClockAndForcesTerminal verifies a closed issue's
+// clock freezes at closedAt and its state reports TERMINAL regardless of
+// board status.
+func TestAdjustForClosureCapsClockAndForcesTerminal(t *testing.T) {
+	closedAt := at(5)
+	cfg, now := AdjustForClosure(testCfg, at(10), true, &closedAt)
+	if !now.Equal(at(5)) {
+		t.Errorf("expected now capped to closedAt=at(5), got %v", now)
+	}
+	if !cfg.IsTerminal(strp("In Progress")) {
+		t.Errorf("expected closed cfg to report terminal regardless of board status")
+	}
+}
+
+// TestAdjustForClosureNoopWhenNotClosed verifies an open issue's cfg/now
+// pass through unchanged.
+func TestAdjustForClosureNoopWhenNotClosed(t *testing.T) {
+	cfg, now := AdjustForClosure(testCfg, at(10), false, nil)
+	if !now.Equal(at(10)) {
+		t.Errorf("expected now unchanged, got %v", now)
+	}
+	if cfg.IsTerminal(strp("In Progress")) {
+		t.Errorf("expected original IsTerminal to still apply (In Progress isn't terminal)")
+	}
+}
+
+// TestAdjustForClosureTerminalEvenWithoutClosedAt verifies a closed issue
+// with an unknown closedAt still reports terminal, just without capping the
+// clock (nothing sane to cap it to).
+func TestAdjustForClosureTerminalEvenWithoutClosedAt(t *testing.T) {
+	cfg, now := AdjustForClosure(testCfg, at(10), true, nil)
+	if !now.Equal(at(10)) {
+		t.Errorf("expected now unchanged when closedAt is unknown, got %v", now)
+	}
+	if !cfg.IsTerminal(strp("In Progress")) {
+		t.Errorf("expected terminal regardless of missing closedAt")
+	}
+}
+
+// TestAdjustForClosureNoOverrideBeforeClosedAt is the regression for the
+// seed's per-day replay: a caller re-derives (cfg, now) once per historical
+// instant, and an instant that precedes closedAt must compute exactly as if
+// the issue were still open — otherwise every pre-closure day gets rewritten
+// to TERMINAL too, erasing real VIOLATED/AT_RISK history from the trend.
+func TestAdjustForClosureNoOverrideBeforeClosedAt(t *testing.T) {
+	closedAt := at(10)
+	cfg, now := AdjustForClosure(testCfg, at(5), true, &closedAt) // "now" precedes closedAt
+	if !now.Equal(at(5)) {
+		t.Errorf("expected now unchanged for an instant before closedAt, got %v", now)
+	}
+	if cfg.IsTerminal(strp("In Progress")) {
+		t.Errorf("expected no terminal override for an instant before closedAt")
+	}
+	if !cfg.IsTerminal(strp("Resolved")) {
+		t.Errorf("expected the original IsTerminal to still apply for a genuinely terminal status")
+	}
+}
+
+// TestComputeSlaClosureCapsConsumptionAndReportsTerminal is an engine-level
+// regression: closing the GitHub issue while its board status still accrues
+// must freeze consumption at closure and stop the clock (SlaRunning=false),
+// not keep accruing indefinitely.
+func TestComputeSlaClosureCapsConsumptionAndReportsTerminal(t *testing.T) {
+	events := []StatusEvent{ev("Open", 0)}
+	closedAt := at(5)
+	cfg, now := AdjustForClosure(testCfg, at(10), true, &closedAt)
+	r := ComputeSla(strp("High(P2)"), events, strp("In Progress"), cfg, now)
+	closeTo(t, "consumedHours", r.ConsumedHours, 5)
+	if r.SlaState != Terminal {
+		t.Errorf("expected TERMINAL, got %s", r.SlaState)
+	}
+	if r.SlaRunning {
+		t.Errorf("expected SlaRunning=false once terminal")
 	}
 }

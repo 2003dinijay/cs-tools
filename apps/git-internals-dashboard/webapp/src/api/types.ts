@@ -14,10 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/lib/api.ts types, adjusted for D3's renames (camelCase
-// `slaState` query param instead of `sla_state`; `POST /sync/runs` instead of
-// `POST /api/sync/manual`). Wire shapes of successful responses are
-// otherwise frozen 1:1 from v3 (SPEC §6).
+// Wire types for the backend API's request/response shapes. Fields and
+// query params use camelCase (e.g. `slaState`, not `sla_state`).
 export type SlaState = "NO_SLA" | "OK" | "AT_RISK" | "VIOLATED" | "TERMINAL";
 
 export interface Sla {
@@ -109,6 +107,13 @@ export interface VolumeProject {
   weeks: VolumeWeek[];
 }
 
+export interface UnknownStatus {
+  status: string;
+  occurrenceCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
 export interface Overview {
   refreshedAt: string;
   filters: { repo: string | null; priority: string | null };
@@ -126,6 +131,7 @@ export interface Overview {
     grandTotal: number;
   };
   volume: VolumeProject[];
+  unknownStatuses: UnknownStatus[];
 }
 
 export interface TimeseriesSeries {
@@ -187,6 +193,7 @@ export type BucketKey =
   | "at_risk"
   | "on_track"
   | "cs"
+  | "product_side"
   | "tracked"
   | "untracked"
   | "attention";

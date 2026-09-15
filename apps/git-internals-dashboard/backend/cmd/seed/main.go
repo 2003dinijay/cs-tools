@@ -14,9 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Idempotent seed (SPEC §9, port of v3's seed/seed.ts). Resets the tables it
-// owns, then rebuilds from real GitHub data (if GITHUB_TOKEN is set) or
-// synthetic fixtures (if not). Run via `make seed`.
+// Idempotent seed. Resets the tables it owns, then rebuilds from real
+// GitHub data (if GITHUB_TOKEN is set) or synthetic fixtures (if not). Run
+// via `make seed`.
 //
 // PRIVACY: persists no titles, assignees, openers, labels, or actors.
 package main
@@ -32,15 +32,23 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/config"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/db"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/github"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/ingest"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/sla"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const dayMs = 24 * time.Hour
+
+// progressInterval controls how often the slow per-issue loops (GitHub
+// detail fetch, DB ingest + snapshot backfill) print a heartbeat. Neither
+// loop otherwise prints anything between the per-repo issue count and its
+// completion, which reads as "stuck" for large repos.
+const progressInterval = 25
 
 var interIssueDelay = 150 * time.Millisecond // courtesy gap for the secondary rate limiter; overridable by tests
 
@@ -56,13 +64,21 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	appCfg, err := appconfig.Load()
+	if err != nil {
+		fatal("invalid app-config.yaml", err)
+	}
+	// Boot-only: must run before any github.Client is constructed below.
+	github.Apply(appCfg.GitHub)
+	interIssueDelay = time.Duration(appCfg.Seed.InterIssueDelayMs) * time.Millisecond
+
 	app, err := config.Load()
 	if err != nil {
 		fatal("invalid sla-config.yaml", err)
 	}
 	runtime := ingest.BuildRuntimeConfig(app)
 
-	pool, err := db.NewPool(ctx, mustEnv("DATABASE_URL"))
+	pool, err := db.NewPoolWithConfig(ctx, mustEnv("DATABASE_URL"), appCfg.Database)
 	if err != nil {
 		fatal("failed to connect to postgres", err)
 	}
@@ -88,11 +104,12 @@ func main() {
 	}
 
 	fmt.Println("[seed] syncing config to db...")
+	syncStart := time.Now()
 	syncSummary, err := db.SyncConfigToDB(ctx, pool, app)
 	if err != nil {
 		fatal("config sync failed", err)
 	}
-	fmt.Printf("[seed] config sync: %d repos active, %d disabled\n", syncSummary.ActiveRepos, syncSummary.DisabledRepos)
+	fmt.Printf("[seed] config sync: %d repos active, %d disabled (%s)\n", syncSummary.ActiveRepos, syncSummary.DisabledRepos, time.Since(syncStart).Round(time.Millisecond))
 
 	now := time.Now().UTC()
 	stateCounts := map[string]int{}
@@ -107,18 +124,21 @@ func main() {
 			fatal(fmt.Sprintf("repository %s/%s not found — config sync should have created it", r.Owner, r.Name), err)
 		}
 
+		gatherStart := time.Now()
 		pairs, err := gatherRepoIssues(ctx, client, now, r, repoIndex, app.Settings.SeedClosedLookbackDays)
 		if err != nil {
 			fatal(fmt.Sprintf("failed to gather issues for %s/%s", r.Owner, r.Name), err)
 		}
-		fmt.Printf("[seed]   %s/%s: %d issues\n", r.Owner, r.Name, len(pairs))
+		fmt.Printf("[seed]   %s/%s: %d issues (gathered in %s)\n", r.Owner, r.Name, len(pairs), time.Since(gatherStart).Round(time.Second))
 
 		source := "synthetic"
 		if token != "" {
 			source = "github"
 		}
 
-		for _, pair := range pairs {
+		fmt.Printf("[seed]     ingesting %d issues + backfilling %d days of snapshots each...\n", len(pairs), app.Settings.SeedSnapshotDays)
+		ingestStart := time.Now()
+		for i, pair := range pairs {
 			result, err := ingest.IngestIssue(ctx, pool, pair, ingest.Context{
 				RepositoryID: repoID,
 				SlaProjectID: slaProjectID,
@@ -142,6 +162,10 @@ func main() {
 			// shared ingest.
 			if err := writeSnapshots(ctx, pool, pair, result, repoID, now, app.Settings.SeedSnapshotDays, runtime); err != nil {
 				fatal(fmt.Sprintf("failed to backfill snapshots for %s/%s#%d", r.Owner, r.Name, pair.Node.Number), err)
+			}
+
+			if (i+1)%progressInterval == 0 || i+1 == len(pairs) {
+				fmt.Printf("[seed]     ingested %d/%d issues (%s elapsed)\n", i+1, len(pairs), time.Since(ingestStart).Round(time.Second))
 			}
 		}
 
@@ -195,14 +219,19 @@ func gatherRepoIssues(ctx context.Context, client github.Client, now time.Time, 
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("[seed]     %s/%s: fetching details for %d issues from GitHub...\n", r.Owner, r.Name, len(nodes))
+	fetchStart := time.Now()
 	out := make([]ingest.Pair, 0, len(nodes))
-	for _, node := range nodes {
+	for i, node := range nodes {
 		detail, err := client.FetchIssueDetail(ctx, r.Owner, r.Name, node.Number)
 		if err != nil {
 			return nil, err
 		}
 		if detail != nil {
 			out = append(out, ingest.Pair{Node: node, Detail: *detail})
+		}
+		if (i+1)%progressInterval == 0 || i+1 == len(nodes) {
+			fmt.Printf("[seed]     fetched %d/%d issue details (%s elapsed)\n", i+1, len(nodes), time.Since(fetchStart).Round(time.Second))
 		}
 		select {
 		case <-ctx.Done():
@@ -242,8 +271,7 @@ func fatal(msg string, err error) {
 }
 
 // loadDotEnv reads a .env file and sets any unset environment variables from
-// it (csm-portal's loadDotEnv pattern). Silently ignored if the file does
-// not exist.
+// it. Silently ignored if the file does not exist.
 func loadDotEnv(path string) {
 	f, err := os.Open(path) // #nosec G304 -- path is always the hardcoded literal ".env" at the only call site
 	if err != nil {
@@ -275,7 +303,7 @@ func loadDotEnv(path string) {
 // replaying its reconciled event log (result.SlaEvents) as of each past
 // day's end, from max(the issue's first event, the snapshotDays window
 // start) through today. Never touched again after the seed writes it — the
-// recompute scheduler only ever upserts *today's* row (SPEC §8.2).
+// recompute scheduler only ever upserts *today's* row.
 func writeSnapshots(ctx context.Context, pool *pgxpool.Pool, pair ingest.Pair, result ingest.Result, repositoryID int32, now time.Time, snapshotDays int, runtime *ingest.RuntimeConfig) error {
 	firstMs := now
 	if len(result.SlaEvents) > 0 {
@@ -291,21 +319,45 @@ func writeSnapshots(ctx context.Context, pool *pgxpool.Pool, pair ingest.Pair, r
 	day := startOfUTCDay(start)
 	today := startOfUTCDay(now)
 
-	for !day.After(today) {
-		through := endOfUTCDay(day)
-		statusThatDay := sla.StatusAsOf(result.SlaEvents, through)
-		r := sla.ComputeSla(result.Priority, result.SlaEvents, statusThatDay, runtime.Cfg, through)
-		_, err := pool.Exec(ctx, `
+	closed := pair.Node.State == "CLOSED"
+	var closedAt *time.Time
+	if pair.Node.ClosedAt != nil {
+		if t, err := time.Parse(time.RFC3339, *pair.Node.ClosedAt); err == nil {
+			closedAt = &t
+		}
+	}
+
+	// Batched: one round trip for the whole snapshot window instead of one
+	// Exec per day (up to snapshotDays, default 90) — same win as
+	// ingest.IngestIssue's event-log batching, and the dominant cost when the
+	// seed targets a remote DB (each unbatched round trip pays full network
+	// latency).
+	batch := &pgx.Batch{}
+	days := make([]time.Time, 0, snapshotDays)
+	for d := day; !d.After(today); d = d.Add(dayMs) {
+		through := endOfUTCDay(d)
+		// Days on/after closure replay with the closure-capped clock, same
+		// as the live projection: consumption freezes and the state reports
+		// TERMINAL from the day of closure onward.
+		cfg, effectiveThrough := sla.AdjustForClosure(runtime.Cfg, through, closed, closedAt)
+		statusThatDay := sla.StatusAsOf(result.SlaEvents, effectiveThrough)
+		r := sla.ComputeSla(result.Priority, result.SlaEvents, statusThatDay, cfg, effectiveThrough)
+		days = append(days, d)
+		batch.Queue(`
 			INSERT INTO sla_snapshots (
 				snapshot_date, issue_id, repository_id, priority, current_status,
 				budget_hours, consumed_hours, remaining_hours, pct_consumed, sla_state, sla_running
 			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		`, day, result.IssueID, repositoryID, result.Priority, statusThatDay,
+		`, d, result.IssueID, repositoryID, result.Priority, statusThatDay,
 			r.BudgetHours, r.ConsumedHours, r.RemainingHours, r.PctConsumed, string(r.SlaState), r.SlaRunning)
-		if err != nil {
-			return fmt.Errorf("insert sla_snapshot for %s: %w", day.Format("2006-01-02"), err)
-		}
-		day = day.Add(dayMs)
 	}
-	return nil
+
+	br := pool.SendBatch(ctx, batch)
+	for _, d := range days {
+		if _, err := br.Exec(); err != nil {
+			_ = br.Close()
+			return fmt.Errorf("insert sla_snapshot for %s: %w", d.Format("2006-01-02"), err)
+		}
+	}
+	return br.Close()
 }

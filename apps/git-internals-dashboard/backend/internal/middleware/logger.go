@@ -36,9 +36,9 @@ func (rw *responseWriter) WriteHeader(code int) {
 }
 
 // Unwrap exposes the underlying ResponseWriter so http.NewResponseController
-// (used by PostSyncRuns to extend its write deadline, AUDIT-FINDINGS A4) can
-// see through this wrapper to the connection-level methods it needs —
-// without it, SetWriteDeadline/SetReadDeadline silently no-op.
+// (used by PostSyncRuns to extend its write deadline) can see through this
+// wrapper to the connection-level methods it needs — without it,
+// SetWriteDeadline/SetReadDeadline silently no-op.
 func (rw *responseWriter) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter
 }

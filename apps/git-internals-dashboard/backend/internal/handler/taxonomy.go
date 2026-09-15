@@ -23,7 +23,7 @@ import (
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/taxonomy"
 )
 
-// TaxonomyHandler serves the config-driven status taxonomy (SPEC §6.2).
+// TaxonomyHandler serves the config-driven status taxonomy.
 // Pure, synchronous reads over the in-process config — no DB round-trip, no
 // TTL cache needed (the config itself is already an immutable snapshot
 // loaded once at boot).

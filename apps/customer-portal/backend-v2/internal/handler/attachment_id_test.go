@@ -57,24 +57,6 @@ func TestIsAttachmentID(t *testing.T) {
 	}
 }
 
-func TestToSysID(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"26051dbc-3baa-8f50-9140-4c6aa5e45a1c", "26051dbc3baa8f5091404c6aa5e45a1c"},
-		{"26051DBC-3BAA-8F50-9140-4C6AA5E45A1C", "26051dbc3baa8f5091404c6aa5e45a1c"},
-		{"26051dbc3baa8f5091404c6aa5e45a1c", "26051dbc3baa8f5091404c6aa5e45a1c"},
-		{"4e8431b1-1b8c-0310-0bb3-da47b04bcba6", "4e8431b11b8c03100bb3da47b04bcba6"},
-		{"4E8431B1-1B8C-0310-0BB3-DA47B04BCBA6", "4e8431b11b8c03100bb3da47b04bcba6"},
-	}
-	for _, tc := range cases {
-		if got := toSysID(tc.in); got != tc.want {
-			t.Errorf("toSysID(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
 func TestToDashedID(t *testing.T) {
 	cases := []struct {
 		in   string

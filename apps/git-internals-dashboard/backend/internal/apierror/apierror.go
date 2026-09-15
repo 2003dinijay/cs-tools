@@ -15,8 +15,8 @@
 // under the License.
 
 // Package apierror defines the uniform JSON error envelope every non-2xx
-// response returns (SPEC §6) and the helpers that write it, so no handler
-// hand-rolls its own error shape.
+// response returns and the helpers that write it, so no handler hand-rolls
+// its own error shape.
 package apierror
 
 import (
@@ -25,7 +25,7 @@ import (
 	"net/http"
 )
 
-// Machine-readable error codes used across the API (SPEC §6).
+// Machine-readable error codes used across the API.
 const (
 	CodeValidationFailed = "validation_failed"
 	CodeNotFound         = "not_found"
@@ -63,7 +63,7 @@ func NotFound(w http.ResponseWriter, message string) {
 }
 
 // Internal logs err with the given context and writes a fixed 500 response
-// that never leaks err's detail to the caller (csm-portal convention).
+// that never leaks err's detail to the caller.
 func Internal(w http.ResponseWriter, r *http.Request, msg string, err error) {
 	slog.ErrorContext(r.Context(), msg, "err", err)
 	Write(w, http.StatusInternalServerError, CodeInternal, "internal server error")

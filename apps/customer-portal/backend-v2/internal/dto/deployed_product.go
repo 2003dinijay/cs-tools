@@ -19,7 +19,6 @@ package dto
 import (
 	"encoding/json"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
@@ -134,12 +133,6 @@ func MapSearchDeployedProducts(r entity.SearchDeployedProductsResponse) SearchDe
 	}
 }
 
-// ToSysID normalizes a dashed UUID or bare 32-hex string into a 32-character
-// ServiceNow sysid (IdString) format by stripping hyphens.
-func ToSysID(id string) string {
-	return strings.ReplaceAll(id, "-", "")
-}
-
 // DeployedProductSearchFilters contains optional filters for searching deployed products.
 type DeployedProductSearchFilters struct {
 	ProductCategories []string `json:"productCategories,omitempty"`
@@ -177,13 +170,20 @@ type DeployedProductCreateRequest struct {
 
 // BuildEntityCreateDeployedProductRequest translates the portal's create
 // request into entity-service's request shape, forcing DeploymentID from
-// the path and normalizing all identifiers to sysids.
+// the path and normalizing every identifier to a canonical dashed UUID.
+//
+// Dashed, not sysid: entity-service validates projectId/deploymentId/
+// productId/versionId with validateUUIDs and performs the sysid conversion
+// itself (see snDeployedProductService.CreateDeployedProduct). Sending a
+// hyphen-stripped sysid failed that validation outright —
+// "projectId contains invalid UUID" — so creating a deployed product could
+// never succeed. Same direction as the call-request builders.
 func BuildEntityCreateDeployedProductRequest(deploymentID string, req DeployedProductCreateRequest) entity.CreateDeployedProductRequest {
 	return entity.CreateDeployedProductRequest{
-		ProjectID:    ToSysID(req.ProjectID),
-		DeploymentID: ToSysID(deploymentID),
-		ProductID:    ToSysID(req.ProductID),
-		VersionID:    ToSysID(req.VersionID),
+		ProjectID:    toDashedID(req.ProjectID),
+		DeploymentID: toDashedID(deploymentID),
+		ProductID:    toDashedID(req.ProductID),
+		VersionID:    toDashedID(req.VersionID),
 		Cores:        req.Cores,
 		TPS:          req.TPS,
 		Description:  req.Description,
@@ -225,10 +225,10 @@ type DeployedProductUpdateRequest struct {
 // reliable source (see PatchDeployment's doc comment on entityDeployment
 // Client for the same reasoning).
 func BuildEntityUpdateDeployedProductRequest(id, deploymentID string, req DeployedProductUpdateRequest) entity.UpdateDeployedProductRequest {
-	depSysID := ToSysID(deploymentID)
+	dashedDeploymentID := toDashedID(deploymentID)
 	out := entity.UpdateDeployedProductRequest{
-		ID:           ToSysID(id),
-		DeploymentID: &depSysID,
+		ID:           toDashedID(id),
+		DeploymentID: &dashedDeploymentID,
 		Cores:        req.Cores,
 		TPS:          req.TPS,
 		Active:       req.Active,

@@ -35,6 +35,7 @@ import {
   useColumnPreferences,
 } from "@hooks/useColumnPreferences";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
+import { useFilterBarCollapsed } from "@hooks/useFilterBarCollapsed";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
@@ -285,7 +286,6 @@ export default function CsmIssuesView({
 
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
-  const [isFiltersOpen, setIsFiltersOpen] = useState(true);
   const [sortField, setSortField] = useState<CasesSortField>(
     DEFAULT_CASES_SORT.field,
   );
@@ -397,6 +397,11 @@ export default function CsmIssuesView({
   const api = useBackendApi();
   const currentUserEmail = useIdTokenClaims()?.email;
   const currentUserId = useCurrentUser().user?.id;
+  const [isFiltersOpen, setIsFiltersOpen] = useFilterBarCollapsed(
+    "cases",
+    getColumnPreferencesUserKey({ id: currentUserId, email: currentUserEmail }),
+    true,
+  );
 
   // "Customise columns" — off unless a caller opts in (see `enableColumnCustomization`'s
   // doc). `showSeverityColumn` mirrors the exact gate `CasesList` itself is given below
@@ -620,7 +625,7 @@ export default function CsmIssuesView({
         onChange={setFilters}
         onReset={() => setFilters(DEFAULT_CASES_FILTERS)}
         isFiltersOpen={isFiltersOpen}
-        onFiltersToggle={() => setIsFiltersOpen((v) => !v)}
+        onFiltersToggle={() => setIsFiltersOpen(!isFiltersOpen)}
         availableAssigneeUsers={availableAssigneeUsers}
         availableProjects={availableProjects}
         showSeverityFilter={showSeverityFilter}

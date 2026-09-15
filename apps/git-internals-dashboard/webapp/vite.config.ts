@@ -40,8 +40,8 @@ const viteConfig = defineConfig({
   build: {
     rollupOptions: {
       output: {
-        // AUDIT-FINDINGS B9: split the largest third-party dependencies out
-        // of the single main chunk (was 2.3MB) so a change to app code
+        // Split the largest third-party dependencies out of the single
+        // main chunk (was 2.3MB) so a change to app code
         // doesn't force re-downloading these on every deploy, and the
         // browser can cache/parallelize them separately.
         manualChunks: {

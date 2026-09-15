@@ -60,7 +60,7 @@ the app reads `window.config` directly.
 | `GID_AUTH_CLIENT_ID` | OAuth2 client id (SPA/PKCE — no client secret) | `<client-id>` |
 | `GID_AUTH_SIGN_IN_REDIRECT_URL` | Sign-in callback URL | `http://localhost:5173` |
 | `GID_AUTH_SIGN_OUT_REDIRECT_URL` | Sign-out callback URL | `http://localhost:5173` |
-| `GID_AUTH_SCOPES` | OIDC scopes, space-separated | `openid profile` |
+| `GID_AUTH_SCOPES` | OIDC scopes, space-separated — `email` is required for the user menu's email display | `openid profile email` |
 | `GID_BACKEND_BASE_URL` | Backend API base URL — no `/api` prefix | `http://localhost:8080` |
 | `GID_LOG_LEVEL` | Reserved for future console log gating | `ERROR` |
 

@@ -134,7 +134,7 @@ const metricsQuietFixtureRepo = "test-owner/test-metrics-quiet"
 
 // seedQuietRepoFixture creates an enabled repository with no issues at all —
 // the case where a repo has no current open non-terminal issue and must
-// still show up in Projects/Volume (SPEC §6.6 covers every enabled repo).
+// still show up in Projects/Volume, which cover every enabled repo.
 func seedQuietRepoFixture(t *testing.T, pool *pgxpool.Pool) (repositoryID int32) {
 	t.Helper()
 	ctx := context.Background()
@@ -218,8 +218,8 @@ func TestBuildOverviewProjectsCard(t *testing.T) {
 		t.Fatalf("BuildOverview: %v", err)
 	}
 
-	// Projects always reflects ALL enabled repos (SPEC §6.6), so we look up
-	// our fixture's row by name rather than asserting the whole list.
+	// Projects always reflects ALL enabled repos, so we look up our
+	// fixture's row by name rather than asserting the whole list.
 	p := findProject(overview.Projects, metricsFixtureRepo)
 	if p == nil {
 		t.Fatalf("expected a project entry for %s, got %+v", metricsFixtureRepo, overview.Projects)
@@ -331,5 +331,60 @@ func TestBuildOverviewPriorityFilterNarrowsHero(t *testing.T) {
 	}
 	if overview.Hero.AtRisk.N != 0 {
 		t.Errorf("expected hero.atRisk.n=0 when filtered to Critical(P1), got %d", overview.Hero.AtRisk.N)
+	}
+}
+
+// TestBuildOverviewSurfacesUnknownStatuses verifies the unrecognized-status
+// dashboard signal: rows in unknown_statuses (as the recompute tick left
+// them) come back on Overview, most-frequent first, independent of any
+// repo/priority filter.
+func TestBuildOverviewSurfacesUnknownStatuses(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM unknown_statuses WHERE status IN ('Overview Test Mystery A', 'Overview Test Mystery B')`)
+	})
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO unknown_statuses (status, occurrence_count, first_seen_at, last_seen_at) VALUES
+			('Overview Test Mystery A', 3, $1, $1),
+			('Overview Test Mystery B', 7, $1, $1)
+	`, now); err != nil {
+		t.Fatalf("seed unknown_statuses: %v", err)
+	}
+
+	overview, err := BuildOverview(ctx, pool, metricsTestConfig, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildOverview: %v", err)
+	}
+
+	byStatus := make(map[string]UnknownStatus, len(overview.UnknownStatuses))
+	for _, u := range overview.UnknownStatuses {
+		byStatus[u.Status] = u
+	}
+	a, ok := byStatus["Overview Test Mystery A"]
+	if !ok {
+		t.Fatalf("expected 'Overview Test Mystery A' in overview.unknownStatuses, got %+v", overview.UnknownStatuses)
+	}
+	if a.OccurrenceCount != 3 {
+		t.Errorf("expected occurrenceCount=3, got %d", a.OccurrenceCount)
+	}
+	if _, ok := byStatus["Overview Test Mystery B"]; !ok {
+		t.Fatalf("expected 'Overview Test Mystery B' in overview.unknownStatuses, got %+v", overview.UnknownStatuses)
+	}
+
+	// Most-frequent first: B (7) must be ordered before A (3).
+	var idxA, idxB int
+	for i, u := range overview.UnknownStatuses {
+		if u.Status == "Overview Test Mystery A" {
+			idxA = i
+		}
+		if u.Status == "Overview Test Mystery B" {
+			idxB = i
+		}
+	}
+	if idxB > idxA {
+		t.Errorf("expected higher-occurrence status B before A, got order %+v", overview.UnknownStatuses)
 	}
 }

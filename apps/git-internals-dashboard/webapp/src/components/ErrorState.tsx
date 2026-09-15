@@ -14,11 +14,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Shared fallback for a TanStack Query request that rejected with no cached
-// data to fall back on — without this, isLoading simply goes false and
-// data-dependent UI (a chart, a list, a detail panel) renders as if the
-// request had succeeded with nothing in it, silently misreporting an error
-// as "no data" or an empty state.
+// Fallback UI for a TanStack Query request that rejected with no cached
+// data — without this, isLoading simply goes false and data-dependent UI
+// (a chart, a list, a detail panel) renders as if the request had
+// succeeded with nothing in it, silently misreporting an error as an
+// empty state.
 import { Box } from "@mui/material";
 
 interface ErrorStateProps {
@@ -28,7 +28,7 @@ interface ErrorStateProps {
   compact?: boolean;
 }
 
-/** A message plus a Retry button, for a query that rejected with no cached data to fall back on. */
+/** A message plus a Retry button, shown in place of the missing data (see the file-level comment above for why this exists). */
 export function ErrorState({ message, onRetry, compact = false }: ErrorStateProps) {
   return (
     <Box

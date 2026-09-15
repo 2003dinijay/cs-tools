@@ -14,9 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Deterministic fixtures used ONLY when GITHUB_TOKEN is empty (port of v3's
-// seed/synthetic.ts). Emits the same (node, detail) pairs as internal/github
-// so main.go has one ingestion path regardless of data source.
+// Deterministic fixtures used ONLY when GITHUB_TOKEN is empty. Emits the
+// same (node, detail) pairs as internal/github so main.go has one ingestion
+// path regardless of data source.
 //
 // PRIVACY: fixtures contain no titles, assignees, or actors — matching what
 // the real GitHub path returns. At runtime the title proxy returns null for

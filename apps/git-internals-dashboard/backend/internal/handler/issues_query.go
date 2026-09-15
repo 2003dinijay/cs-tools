@@ -23,18 +23,20 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 )
 
 var (
 	repoParamRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 	// qParamRe caps at 9 digits: issues.github_number is a Postgres integer
 	// (max 2,147,483,647, 10 digits), so a 10-digit value could exceed
-	// int32 range even though it would just never match (AUDIT-FINDINGS
-	// B10) — 9 digits keeps every accepted value unambiguously in range.
+	// int32 range even though it would just never match anyway — 9 digits
+	// keeps every accepted value unambiguously in range.
 	qParamRe = regexp.MustCompile(`^\d{1,9}$`)
 )
 
-// issuesQuery is GET /issues's validated query params (SPEC §6.3).
+// issuesQuery is GET /issues's validated query params.
 type issuesQuery struct {
 	Repo     string
 	Priority string
@@ -47,12 +49,11 @@ type issuesQuery struct {
 	Order    string
 }
 
-// parseIssuesQuery validates v exactly per the SPEC §6.3 table and returns a
-// non-empty error message on the first violation found (unknown query
-// parameter names are ignored, matching v3's zod object schema, which has no
-// .strict() call).
-func parseIssuesQuery(v url.Values) (issuesQuery, string) {
-	q := issuesQuery{Limit: 200, Order: "updated_desc"}
+// parseIssuesQuery validates v against lim and returns a non-empty error
+// message on the first violation found. Unknown query parameter names are
+// intentionally ignored rather than rejected.
+func parseIssuesQuery(v url.Values, lim appconfig.API) (issuesQuery, string) {
+	q := issuesQuery{Limit: lim.IssuesDefaultLimit, Order: "updated_desc"}
 
 	if repo := v.Get("repo"); repo != "" {
 		if !repoParamRe.MatchString(repo) {
@@ -61,8 +62,8 @@ func parseIssuesQuery(v url.Values) (issuesQuery, string) {
 		q.Repo = repo
 	}
 	if priority := v.Get("priority"); priority != "" {
-		if len(priority) > 50 {
-			return q, "priority must be at most 50 characters"
+		if len(priority) > lim.PriorityParamMaxLength {
+			return q, fmt.Sprintf("priority must be at most %d characters", lim.PriorityParamMaxLength)
 		}
 		q.Priority = priority
 	}
@@ -81,8 +82,8 @@ func parseIssuesQuery(v url.Values) (issuesQuery, string) {
 		}
 	}
 	if status := v.Get("status"); status != "" {
-		if len(status) > 50 {
-			return q, "status must be at most 50 characters"
+		if len(status) > lim.StatusParamMaxLength {
+			return q, fmt.Sprintf("status must be at most %d characters", lim.StatusParamMaxLength)
 		}
 		q.Status = status
 	}
@@ -94,17 +95,17 @@ func parseIssuesQuery(v url.Values) (issuesQuery, string) {
 	}
 	if limitStr := v.Get("limit"); limitStr != "" {
 		n, err := strconv.Atoi(limitStr)
-		if err != nil || n < 1 || n > 500 {
-			return q, "limit must be an integer between 1 and 500"
+		if err != nil || n < 1 || n > lim.IssuesMaxLimit {
+			return q, fmt.Sprintf("limit must be an integer between 1 and %d", lim.IssuesMaxLimit)
 		}
 		q.Limit = n
 	}
 	if bucket := v.Get("bucket"); bucket != "" {
 		switch bucket {
-		case "all", "violated", "at_risk", "on_track", "cs", "tracked", "untracked", "attention":
+		case "all", "violated", "at_risk", "on_track", "cs", "product_side", "tracked", "untracked", "attention":
 			q.Bucket = bucket
 		default:
-			return q, "bucket must be one of all, violated, at_risk, on_track, cs, tracked, untracked, attention"
+			return q, "bucket must be one of all, violated, at_risk, on_track, cs, product_side, tracked, untracked, attention"
 		}
 	}
 	if order := v.Get("order"); order != "" {
@@ -155,14 +156,13 @@ type statusFilter struct {
 }
 
 // buildIssuesWhere translates q into a SQL WHERE clause body (without the
-// "WHERE" keyword) plus its parameter args — a precise port of v3's
-// src/app/api/issues/route.ts bucket switch: every bucket overrides the base
-// scope exactly as that switch statement does field-by-field (e.g. "cs"
-// clears the sla filter so NO_SLA issues on the CS side are included;
-// "attention" = VIOLATED ∪ AT_RISK ∪ current CS statuses). csStatuses must be
-// sortOrder-ascending status names categorized CS_SIDE.
-func buildIssuesWhere(csStatuses []string, q issuesQuery) (string, []any) {
-	// Base scope (SPEC §6.3): open, non-terminal issues from enabled repos.
+// "WHERE" keyword) plus its parameter args. Each bucket overrides the base
+// scope field-by-field (e.g. "cs" clears the sla filter so NO_SLA issues on
+// the CS side are included; "attention" = VIOLATED ∪ AT_RISK ∪ current CS
+// statuses). csStatuses and productSideStatuses must be sortOrder-ascending
+// status names categorized CS_SIDE and PRODUCT_SIDE respectively.
+func buildIssuesWhere(csStatuses, productSideStatuses []string, q issuesQuery) (string, []any) {
+	// Base scope: open, non-terminal issues from enabled repos.
 	state := "OPEN"
 	sla := slaFilter{mode: "notTerminal"}
 	var priority priorityFilter
@@ -194,6 +194,17 @@ func buildIssuesWhere(csStatuses []string, q issuesQuery) (string, []any) {
 			status = statusFilter{mode: "in", values: csStatuses}
 		}
 		sla = slaFilter{mode: "none"}
+	case "product_side":
+		// Mirrors overview.go's hero.productSide count: base open/non-terminal
+		// scope (sla stays "notTerminal"), narrowed to statuses currently
+		// categorized PRODUCT_SIDE. As with "cs" above, narrow to a single
+		// status when one is requested, otherwise show all PRODUCT_SIDE
+		// statuses.
+		if q.Status != "" && slices.Contains(productSideStatuses, q.Status) {
+			status = statusFilter{mode: "eq", value: q.Status}
+		} else {
+			status = statusFilter{mode: "in", values: productSideStatuses}
+		}
 	case "tracked":
 		priority = priorityFilter{mode: "notNull"}
 	case "untracked":
@@ -202,7 +213,7 @@ func buildIssuesWhere(csStatuses []string, q issuesQuery) (string, []any) {
 	case "attention":
 		sla = slaFilter{mode: "none"}
 		attention = true
-	default: // "all" or unset — keep base scope; honour explicit params.
+	default: // "all" or unset — keep base scope; honor explicit params.
 		if q.SlaState != "" {
 			sla = slaFilter{mode: "eq", value: q.SlaState}
 		}

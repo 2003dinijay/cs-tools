@@ -14,12 +14,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/lib/surfaces.ts. Shared "acrylic" surface treatment
-// (translucent background + backdrop blur) for card-like containers,
-// matching Oxygen UI's Acrylic Purple material. Components use plain `Box`
-// rather than `Card`/`Paper` (for full control over the existing bespoke
-// layout), so this is reproduced explicitly and spread into each
-// component's `sx`.
+// Shared "acrylic" surface treatment (translucent background + backdrop
+// blur) for card-like containers, matching Oxygen UI's Acrylic Purple
+// material. Components use plain `Box` rather than `Card`/`Paper` (for
+// full control over the existing bespoke layout), so this is reproduced
+// explicitly and spread into each component's `sx`.
 export const acrylicSurfaceSx = {
   bgcolor: "var(--sla-card)",
   backdropFilter: "var(--sla-blur)",

@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/ingest"
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/sla"
 	"github.com/jackc/pgx/v5"
@@ -31,6 +32,14 @@ import (
 // Overridable only by tests, so a keyset-pagination test can force multiple
 // pages without seeding hundreds of rows.
 var recomputePageSize = 200
+
+// Apply sets every package-level tuning var from cfg. Boot-only: call once,
+// in main(), before the recompute scheduler or any lock release runs — not
+// safe to call concurrently with in-flight jobs.
+func Apply(cfg appconfig.Jobs) {
+	recomputePageSize = cfg.RecomputePageSize
+	lockReleaseTimeout = time.Duration(cfg.LockReleaseTimeoutSeconds) * time.Second
+}
 
 // TickSummary reports what one RunTickOnce pass did.
 type TickSummary struct {
@@ -47,14 +56,16 @@ type recomputeIssue struct {
 	Priority        *string
 	CurrentStatus   *string
 	CurrentStatusAt *time.Time
+	State           string
+	GithubClosedAt  *time.Time
 	Events          []sla.StatusEvent
 }
 
-// RunTickOnce is one recompute pass (port of v3's runTickOnce, SPEC §8.2).
-// It does NOT call GitHub: currentStatus, priority, and the event log stay
-// frozen at their last-synced values — this only advances the open interval
-// of already-known state (the issue_sla projection and today's sla_snapshots
-// row). SyncRun/watermark belong to internal/sync.
+// RunTickOnce is one recompute pass. It does NOT call GitHub: currentStatus,
+// priority, and the event log stay frozen at their last-synced values — this
+// only advances the open interval of already-known state (the issue_sla
+// projection and today's sla_snapshots row). SyncRun/watermark belong to
+// internal/sync.
 func RunTickOnce(ctx context.Context, pool *pgxpool.Pool, runtime *ingest.RuntimeConfig, now time.Time) (TickSummary, error) {
 	snapshotDate := startOfUTCDay(now)
 	unknownStatuses := make(map[string]int)
@@ -70,10 +81,10 @@ func RunTickOnce(ctx context.Context, pool *pgxpool.Pool, runtime *ingest.Runtim
 
 	var lastID int32
 	for {
-		// Keyset pagination (AUDIT-FINDINGS B1): OFFSET re-scans and discards
-		// every prior row on each page, making a full tick O(N²/pageSize).
-		// Walking i.id > lastID does strictly less work per page and stays
-		// correct even if rows shift between pages.
+		// Keyset pagination: OFFSET re-scans and discards every prior row on
+		// each page, making a full tick O(N²/pageSize). Walking i.id > lastID
+		// does strictly less work per page and stays correct even if rows
+		// shift between pages.
 		page, err := fetchIssuePage(ctx, pool, recomputePageSize, lastID)
 		if err != nil {
 			return TickSummary{}, err
@@ -82,18 +93,18 @@ func RunTickOnce(ctx context.Context, pool *pgxpool.Pool, runtime *ingest.Runtim
 			break
 		}
 
-		// Batch this page's writes (AUDIT-FINDINGS B2): 2 statements/issue as
-		// separate round trips (up to 400 for a full page) dominates tick
-		// latency. pgx.Batch pipelines them into one round trip — but a
-		// pipeline terminated by a single Sync (what pool.SendBatch sends)
-		// runs as ONE implicit transaction server-side: a genuine SQL error
-		// anywhere in the page rolls back every statement in it, unlike the
-		// old one-exec-per-issue loop where each statement committed on its
-		// own (verified empirically: a batch with a constraint-violating
-		// second statement left zero rows from the first). This is fine
-		// here — every statement is idempotent and a failed page is retried
-		// wholesale on the next tick — but it is a real behavior change, not
-		// "isolation unchanged". Same SQL, same conflict clauses either way.
+		// Batch this page's writes: 2 statements/issue as separate round trips
+		// (up to 400 for a full page) dominates tick latency. pgx.Batch
+		// pipelines them into one round trip — but a pipeline terminated by a
+		// single Sync (what pool.SendBatch sends) runs as ONE implicit
+		// transaction server-side: a genuine SQL error anywhere in the page
+		// rolls back every statement in it, unlike the old one-exec-per-issue
+		// loop where each statement committed on its own (verified
+		// empirically: a batch with a constraint-violating second statement
+		// left zero rows from the first). This is fine here — every
+		// statement is idempotent and a failed page is retried wholesale on
+		// the next tick — but it is a real behavior change: same SQL, same
+		// conflict clauses, different transaction semantics.
 		batch := &pgx.Batch{}
 		for _, issue := range page {
 			currentStatus := runtime.Normalize(issue.CurrentStatus)
@@ -106,8 +117,13 @@ func RunTickOnce(ctx context.Context, pool *pgxpool.Pool, runtime *ingest.Runtim
 				events[i] = sla.StatusEvent{Status: status, OccurredAt: e.OccurredAt}
 			}
 
-			slaEvents := sla.WithCurrentStatusBoundary(events, currentStatus, issue.CurrentStatusAt, now)
-			result := sla.ComputeSla(issue.Priority, slaEvents, currentStatus, runtime.Cfg, now)
+			// A GitHub closure caps the clock at closure and reports TERMINAL
+			// from then on, regardless of board status (see
+			// sla.AdjustForClosure) — closing the board item is only a
+			// process guarantee, not a code one.
+			slaCfg, slaNow := sla.AdjustForClosure(runtime.Cfg, now, issue.State == "CLOSED", issue.GithubClosedAt)
+			slaEvents := sla.WithCurrentStatusBoundary(events, currentStatus, issue.CurrentStatusAt, slaNow)
+			result := sla.ComputeSla(issue.Priority, slaEvents, currentStatus, slaCfg, slaNow)
 
 			queueUpdateIssueSla(batch, issue.ID, issue.Priority, result, now)
 			// Recomputing today's row on every tick is idempotent and keeps
@@ -128,7 +144,46 @@ func RunTickOnce(ctx context.Context, pool *pgxpool.Pool, runtime *ingest.Runtim
 		}
 	}
 
+	if err := replaceUnknownStatuses(ctx, pool, unknownStatuses, now); err != nil {
+		return TickSummary{}, err
+	}
+
 	return TickSummary{Processed: processed, StateCounts: stateCounts, UnknownStatuses: unknownStatuses}, nil
+}
+
+// replaceUnknownStatuses syncs the unknown_statuses table to exactly this
+// tick's results — surfaced via GET /metrics/overview so an unrecognized
+// board status gets noticed and classified instead of silently
+// pausing (or, under unknownStatusPolicy=accrue, silently accruing)
+// forever. A status this tick no longer sees (reclassified into the
+// taxonomy, or the board column renamed again) is dropped rather than kept
+// forever; one this tick still sees keeps its original first_seen_at. All
+// in one transaction so a concurrent overview read never observes a
+// mid-replace empty set.
+func replaceUnknownStatuses(ctx context.Context, pool *pgxpool.Pool, statuses map[string]int, now time.Time) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) // no-op once Commit succeeds
+
+	seen := make([]string, 0, len(statuses))
+	for status := range statuses {
+		seen = append(seen, status)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM unknown_statuses WHERE status != ALL($1::text[])`, seen); err != nil {
+		return err
+	}
+	for status, count := range statuses {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO unknown_statuses (status, occurrence_count, first_seen_at, last_seen_at)
+			VALUES ($1, $2, $3, $3)
+			ON CONFLICT (status) DO UPDATE SET occurrence_count = $2, last_seen_at = $3
+		`, status, count, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // startOfUTCDay returns t truncated to 00:00:00.000 UTC on its own day —
@@ -143,7 +198,7 @@ func startOfUTCDay(t time.Time) time.Time {
 // attached.
 func fetchIssuePage(ctx context.Context, pool *pgxpool.Pool, limit int, lastID int32) ([]recomputeIssue, error) {
 	rows, err := pool.Query(ctx, `
-		SELECT i.id, i.repository_id, i.priority, i.current_status, i.current_status_at
+		SELECT i.id, i.repository_id, i.priority, i.current_status, i.current_status_at, i.state, i.github_closed_at
 		FROM issues i
 		JOIN repositories r ON r.id = i.repository_id
 		WHERE r.enabled = true AND i.id > $2
@@ -159,7 +214,7 @@ func fetchIssuePage(ctx context.Context, pool *pgxpool.Pool, limit int, lastID i
 	ids := make([]int32, 0)
 	for rows.Next() {
 		var it recomputeIssue
-		if err := rows.Scan(&it.ID, &it.RepositoryID, &it.Priority, &it.CurrentStatus, &it.CurrentStatusAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.RepositoryID, &it.Priority, &it.CurrentStatus, &it.CurrentStatusAt, &it.State, &it.GithubClosedAt); err != nil {
 			return nil, err
 		}
 		issues = append(issues, it)
@@ -202,16 +257,17 @@ func fetchIssuePage(ctx context.Context, pool *pgxpool.Pool, limit int, lastID i
 	return issues, nil
 }
 
-// queueUpdateIssueSla and queueUpsertSnapshot queue exactly the same
-// statements updateIssueSla/upsertSnapshot used to run standalone; batching
-// only changes how they're sent, never the SQL or conflict clauses.
+// queueUpdateIssueSla queues one issue's issue_sla update.
 func queueUpdateIssueSla(batch *pgx.Batch, issueID int32, priority *string, r sla.Result, now time.Time) {
 	batch.Queue(`
 		UPDATE issue_sla SET
 			priority = $2, budget_hours = $3, consumed_hours = $4, remaining_hours = $5,
-			pct_consumed = $6, sla_state = $7, sla_running = $8, computed_at = $9, computed_through = $10
+			pct_consumed = $6, sla_state = $7, sla_running = $8,
+			-- Sticky: see the matching comment in ingest.go's upsert.
+			breached_ever = issue_sla.breached_ever OR $9,
+			computed_at = $10, computed_through = $11
 		WHERE issue_id = $1
-	`, issueID, priority, r.BudgetHours, r.ConsumedHours, r.RemainingHours, r.PctConsumed, string(r.SlaState), r.SlaRunning, now, now)
+	`, issueID, priority, r.BudgetHours, r.ConsumedHours, r.RemainingHours, r.PctConsumed, string(r.SlaState), r.SlaRunning, r.BreachedEver, now, now)
 }
 
 // queueUpsertSnapshot queues the day's sla_snapshots upsert for one issue.
@@ -262,8 +318,7 @@ func execRecomputeBatch(ctx context.Context, pool *pgxpool.Pool, batch *pgx.Batc
 }
 
 // Scheduler runs RunTickOnce on a fixed interval, guarded by a Lock so a
-// tick never interleaves with a manual sync — on this replica or any other
-// (port of v3's startRecomputeJob).
+// tick never interleaves with a manual sync — on this replica or any other.
 type Scheduler struct {
 	pool     *pgxpool.Pool
 	lock     *Lock

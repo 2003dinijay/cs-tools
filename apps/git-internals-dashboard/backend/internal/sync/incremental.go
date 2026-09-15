@@ -14,10 +14,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package sync is the manual incremental sync (SPEC §8.3, port of v3's
-// src/server/db/sync/incremental.ts): one GitHub fetch pass per enabled
-// repository, using the same shared ingest as the seed. No scheduling
-// concerns here — that's internal/jobs.
+// Package sync is the manual incremental sync: one GitHub fetch pass per
+// enabled repository, using the same shared ingest as the seed. No
+// scheduling concerns here — that's internal/jobs.
 //
 // Known, documented limitation: an issue that stops matching a repo's
 // issueQuery (e.g. a label removed) no longer appears in incremental results
@@ -39,8 +38,8 @@ import (
 )
 
 // sanitizeSyncErrorMaxLen bounds the classification persisted to
-// sync_runs.error and returned via the API (AUDIT-FINDINGS A2) — well over
-// any classification this package produces, kept only as a hard cap.
+// sync_runs.error and returned via the API — well over any classification
+// this package produces, kept only as a hard cap.
 const sanitizeSyncErrorMaxLen = 200
 
 // Overridable only by tests, so the courtesy pacing between issues doesn't
@@ -64,7 +63,7 @@ type RepoResult struct {
 	Error           string `json:"error,omitempty"`
 }
 
-// Summary is the wire shape POST /sync/runs returns (SPEC §6.8).
+// Summary is the wire shape POST /sync/runs returns.
 type Summary struct {
 	StartedAt  time.Time    `json:"startedAt"`
 	FinishedAt time.Time    `json:"finishedAt"`
@@ -84,10 +83,10 @@ type repoRow struct {
 // Run performs one incremental sync pass over every enabled repository.
 // Per-repo failures are isolated: a failing repo's watermark is left
 // untouched and an error sync_runs row is recorded, but the loop continues
-// with the remaining repos (SPEC §8.3). Callers (the POST /sync/runs
-// handler) are responsible for the GITHUB_TOKEN presence check and for
-// constructing client — this package has no env-var concerns of its own, so
-// it stays testable against a stubbed GithubClient with no network at all.
+// with the remaining repos. Callers (the POST /sync/runs handler) are
+// responsible for the GITHUB_TOKEN presence check and for constructing
+// client — this package has no env-var concerns of its own, so it stays
+// testable against a stubbed GithubClient with no network at all.
 func Run(ctx context.Context, pool *pgxpool.Pool, client GithubClient, cfg *config.AppConfig, runtime *ingest.RuntimeConfig) (Summary, error) {
 	overlap := time.Duration(cfg.Settings.SyncOverlapMinutes) * time.Minute
 	lookback := time.Duration(cfg.Settings.SeedClosedLookbackDays) * 24 * time.Hour
@@ -128,7 +127,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, client GithubClient, cfg *conf
 		// Full detail (possibly including raw GitHub response body, GraphQL
 		// error text, or a wrapped network/DB error chain) is logged here and
 		// only here — sync_runs.error and the API response carry the
-		// sanitized classification (AUDIT-FINDINGS A2).
+		// sanitized classification instead.
 		slog.ErrorContext(ctx, "sync: repo failed", "repo", repoLabel, "err", syncErr)
 		message := sanitizeSyncError(syncErr)
 		// Do not advance this repo's watermark — continue with the rest.
@@ -187,10 +186,10 @@ func syncOneRepo(ctx context.Context, pool *pgxpool.Pool, client GithubClient, r
 
 // sanitizeSyncError reduces a per-repo sync failure to a short, stable
 // classification safe to persist in sync_runs.error and return via
-// GET /sync/status / POST /sync/runs (AUDIT-FINDINGS A2). The raw err —
-// which may carry up to 500 bytes of GitHub response body, a GraphQL error
-// message, or a wrapped network/DB error chain — must be logged separately
-// by the caller and is never included here.
+// GET /sync/status / POST /sync/runs. The raw err — which may carry up to
+// 500 bytes of GitHub response body, a GraphQL error message, or a wrapped
+// network/DB error chain — must be logged separately by the caller and is
+// never included here.
 func sanitizeSyncError(err error) string {
 	var apiErr *github.APIError
 	if errors.As(err, &apiErr) {

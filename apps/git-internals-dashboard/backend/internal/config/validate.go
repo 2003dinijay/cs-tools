@@ -19,12 +19,12 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ValidationError aggregates every rule violation found in one config, so a
 // misconfigured deploy sees every problem at once instead of fixing them one
-// failed boot at a time (port of schema.ts's superRefine, which collects all
-// zod issues rather than failing on the first).
+// failed boot at a time.
 type ValidationError struct {
 	Issues []string
 }
@@ -34,9 +34,9 @@ func (e *ValidationError) Error() string {
 	return "invalid SLA config:\n  " + strings.Join(e.Issues, "\n  ")
 }
 
-// Validate checks cfg against every rule schema.ts enforces: required
-// fields, valid enum values, numeric ranges, uniqueness, and alias targets.
-// Returns nil when cfg is valid.
+// Validate checks cfg against every configuration rule: required fields,
+// valid enum values, numeric ranges, uniqueness, and alias targets. Returns
+// nil when cfg is valid.
 func Validate(cfg *AppConfig) error {
 	var issues []string
 	add := func(format string, args ...any) {
@@ -144,6 +144,21 @@ func Validate(cfg *AppConfig) error {
 	}
 	if cfg.Settings.SeedClosedLookbackDays <= 0 {
 		add("settings.seedClosedLookbackDays: must be positive")
+	}
+	if !cfg.Settings.UnknownStatusPolicy.valid() {
+		add("settings.unknownStatusPolicy: invalid enum value %q", cfg.Settings.UnknownStatusPolicy)
+	}
+
+	seenHoliday := make(map[string]bool, len(cfg.Holidays))
+	for i, h := range cfg.Holidays {
+		if _, err := time.Parse("2006-01-02", h); err != nil {
+			add("holidays.%d: invalid date %q, want YYYY-MM-DD", i, h)
+			continue
+		}
+		if seenHoliday[h] {
+			add("duplicate holiday: %s", h)
+		}
+		seenHoliday[h] = true
 	}
 
 	if len(issues) == 0 {

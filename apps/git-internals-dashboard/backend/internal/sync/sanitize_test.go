@@ -26,8 +26,8 @@ import (
 	"github.com/binara-sachin/git-internals-dashboard/backend/internal/github"
 )
 
-// AUDIT-FINDINGS A2: sanitizeSyncError must never leak a raw response-body
-// snippet, GraphQL message text, or a wrapped network/DB error chain.
+// sanitizeSyncError must never leak a raw response-body snippet, GraphQL
+// message text, or a wrapped network/DB error chain.
 func TestSanitizeSyncErrorClassifications(t *testing.T) {
 	secret := "internal-hostname-or-detail-that-must-not-leak"
 	apiHTTPErr := github.NewHTTPStatusError(http.StatusBadGateway, 0, secret)

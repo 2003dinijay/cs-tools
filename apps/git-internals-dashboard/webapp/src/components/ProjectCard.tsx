@@ -14,7 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/components/ProjectCard.tsx.
 import type { MouseEvent } from "react";
 import { Box } from "@mui/material";
 import type { OverviewProject } from "@api/types";

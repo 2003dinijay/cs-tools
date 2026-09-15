@@ -26,6 +26,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/binara-sachin/git-internals-dashboard/backend/internal/appconfig"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -41,7 +42,7 @@ func postTitles(h *TitlesHandler, body string) *httptest.ResponseRecorder {
 // (invalid JSON, empty/too-many/non-positive ids, oversized body) is
 // rejected with 400.
 func TestPostTitlesValidation400s(t *testing.T) {
-	h := NewTitlesHandler(nil, "")
+	h := NewTitlesHandler(nil, "", appconfig.Default().Cache.Titles, appconfig.Default().GitHub.TitlesBatchSize, appconfig.Default().API)
 
 	cases := []struct {
 		name string
@@ -52,7 +53,7 @@ func TestPostTitlesValidation400s(t *testing.T) {
 		{"too many ids", `{"ids": [` + strings.TrimSuffix(strings.Repeat("1,", 201), ",") + `]}`},
 		{"non-positive id", `{"ids": [1, 0]}`},
 		{"negative id", `{"ids": [-1]}`},
-		{"body too large", `{"ids": [1], "padding": "` + strings.Repeat("x", titlesMaxBodyBytes+1) + `"}`},
+		{"body too large", `{"ids": [1], "padding": "` + strings.Repeat("x", appconfig.Default().API.TitlesMaxBodyBytes+1) + `"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -75,7 +76,7 @@ func TestPostTitlesNullsWhenNoGithubToken(t *testing.T) {
 		t.Fatalf("lookup issue id: %v", err)
 	}
 
-	h := NewTitlesHandler(pool, "") // no token
+	h := NewTitlesHandler(pool, "", appconfig.Default().Cache.Titles, appconfig.Default().GitHub.TitlesBatchSize, appconfig.Default().API) // no token
 	rec := postTitles(h, `{"ids": [`+strconv.Itoa(int(issueID))+`]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
@@ -93,7 +94,7 @@ func TestPostTitlesNullsWhenNoGithubToken(t *testing.T) {
 // resolves to a present-but-null title instead of erroring or being
 // omitted.
 func TestPostTitlesNullForUnknownID(t *testing.T) {
-	h := NewTitlesHandler(testPool(t), "")
+	h := NewTitlesHandler(testPool(t), "", appconfig.Default().Cache.Titles, appconfig.Default().GitHub.TitlesBatchSize, appconfig.Default().API)
 	rec := postTitles(h, `{"ids": [999999999]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)

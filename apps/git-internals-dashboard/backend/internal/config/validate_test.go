@@ -14,8 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/server/config/schema.test.ts — every case there has a
-// direct counterpart here.
+// Tests for Validate: required fields, enum values, duplicate/uniqueness
+// checks, alias targets, and default application.
 package config
 
 import (
@@ -158,5 +158,58 @@ func TestValidateRejectsEmptyRepos(t *testing.T) {
 	cfg.Repos = nil
 	if err := Validate(cfg); err == nil {
 		t.Fatal("expected validation error for empty repos")
+	}
+}
+
+// TestValidateAcceptsWellFormedHolidays verifies a list of valid ISO dates
+// passes.
+func TestValidateAcceptsWellFormedHolidays(t *testing.T) {
+	cfg := validFixture()
+	cfg.Holidays = []string{"2026-01-26", "2026-08-15"}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("expected well-formed holidays to pass, got: %v", err)
+	}
+}
+
+// TestValidateRejectsMalformedHoliday verifies a holiday string that isn't a
+// YYYY-MM-DD date fails validation.
+func TestValidateRejectsMalformedHoliday(t *testing.T) {
+	cfg := validFixture()
+	cfg.Holidays = []string{"26/01/2026"}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for malformed holiday date")
+	}
+	if !hasIssueContaining(err, "invalid date") {
+		t.Errorf("expected an 'invalid date' issue, got: %v", err)
+	}
+}
+
+// TestValidateRejectsDuplicateHoliday verifies the same holiday date listed
+// twice fails validation.
+func TestValidateRejectsDuplicateHoliday(t *testing.T) {
+	cfg := validFixture()
+	cfg.Holidays = []string{"2026-01-26", "2026-01-26"}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for duplicate holiday")
+	}
+	if !hasIssueContaining(err, "duplicate holiday") {
+		t.Errorf("expected a 'duplicate holiday' issue, got: %v", err)
+	}
+}
+
+// TestValidateRejectsBadUnknownStatusPolicy verifies an unrecognized
+// unknownStatusPolicy value fails validation rather than silently falling
+// through to one branch.
+func TestValidateRejectsBadUnknownStatusPolicy(t *testing.T) {
+	cfg := validFixture()
+	cfg.Settings.UnknownStatusPolicy = "ignore"
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for bad unknownStatusPolicy")
+	}
+	if !hasIssueContaining(err, "unknownStatusPolicy") {
+		t.Errorf("expected an 'unknownStatusPolicy' issue, got: %v", err)
 	}
 }

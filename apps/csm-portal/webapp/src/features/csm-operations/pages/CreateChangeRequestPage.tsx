@@ -45,7 +45,7 @@ import { usePostChangeRequest } from "@features/csm-operations/api/usePostChange
 import { usePatchChangeRequest } from "@features/csm-operations/api/usePatchChangeRequest";
 import { useGetUsersMe } from "@features/settings/api/useGetUsersMe";
 import { useSearchGroups } from "@api/useSearchGroups";
-import { useSearchUsersByName } from "@api/useSearchUsersByName";
+import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
 import { useSearchParentRecordsForSelect } from "@features/csm-operations/api/useSearchParentRecordsForSelect";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
 import {
@@ -729,7 +729,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
                 value={assignedEngineerId}
                 onChange={setAssignedEngineerId}
                 disabled={isSubmitting}
-                useSearch={useSearchUsersByName}
+                useSearch={useSearchInternalUsersByName}
                 // useSearchUsersByName filters out any user without an id,
                 // so every option here is guaranteed to have one.
                 getId={(u) => u.id!}
@@ -745,7 +745,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
                 value={requestedById}
                 onChange={setRequestedById}
                 disabled={isSubmitting}
-                useSearch={useSearchUsersByName}
+                useSearch={useSearchInternalUsersByName}
                 // useSearchUsersByName filters out any user without an id,
                 // so every option here is guaranteed to have one.
                 getId={(u) => u.id!}

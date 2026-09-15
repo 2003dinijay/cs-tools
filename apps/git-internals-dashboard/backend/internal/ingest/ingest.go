@@ -49,11 +49,11 @@ type RepoRef struct {
 }
 
 // Context is everything IngestIssue needs beyond the (node, detail) pair
-// itself. This function is the ONLY write path for GitHub-derived data
-// (SPEC §8.5): the seed, the incremental sync, and any future webhook
-// handler all call it, and it must not know or care which transport
-// produced pair — that is the entire webhook-readiness requirement (D6). Do
-// not implement any webhook route.
+// itself. IngestIssue is the ONLY write path for GitHub-derived data: the
+// seed, the incremental sync, and any future webhook handler all call it,
+// and it must not know or care which transport produced pair — that keeps
+// it ready for a webhook handler to be added later without changing this
+// function. Do not implement any webhook route.
 type Context struct {
 	RepositoryID int32
 	SlaProjectID int32 // DB projects.id
@@ -78,8 +78,8 @@ type Result struct {
 var priorityRe = regexp.MustCompile(`^Priority/(.+)$`)
 
 // extractPriority reads the first "Priority/<tier>" label and discards the
-// rest — labels are read transiently to derive priority only (SPEC's
-// non-negotiable #1: no labels are ever persisted).
+// rest — labels are read transiently to derive priority only; no label
+// value is ever written to the database.
 func extractPriority(labels []string) *string {
 	for _, l := range labels {
 		if m := priorityRe.FindStringSubmatch(l); m != nil {
@@ -119,11 +119,10 @@ type normalizedEvent struct {
 	Status         *string
 }
 
-// IngestIssue is the transport-agnostic write path for one GitHub issue
-// (port of v3's ingestIssuePair, SPEC §8.5): priority extraction, scoped
-// current status, alias normalization, a guarded leading "derived" event,
-// event insert with dedupe, issue upsert, boundary reconciliation, computeSla,
-// and the issue_sla upsert.
+// IngestIssue is the transport-agnostic write path for one GitHub issue:
+// priority extraction, scoped current status, alias normalization, a
+// guarded leading "derived" event, event insert with dedupe, issue upsert,
+// boundary reconciliation, computeSla, and the issue_sla upsert.
 func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Context) (Result, error) {
 	node, detail := pair.Node, pair.Detail
 	normalize := ictx.Runtime.Normalize
@@ -219,11 +218,6 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 		currentStatusAt = &t
 	}
 
-	// SLA event list (ascending), reconciled with the project-scoped current
-	// status — this is what both the current projection and the snapshot
-	// replay walk.
-	slaEvents := sla.WithCurrentStatusBoundary(slaInputEvents, currentStatus, currentStatusAt, ictx.Now)
-
 	githubCreatedAt, err := time.Parse(time.RFC3339, node.CreatedAt)
 	if err != nil {
 		return Result{}, fmt.Errorf("ingest: parse issue createdAt %q: %w", node.CreatedAt, err)
@@ -240,6 +234,18 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 		}
 		githubClosedAt = &t
 	}
+
+	// A GitHub closure caps the SLA clock at the moment of closure and makes
+	// the issue terminal regardless of board status — the board is only
+	// process-guaranteed (a workflow or a human) to reach a terminal status
+	// on closure, not guaranteed by code.
+	closed := node.State == "CLOSED"
+	slaCfg, slaNow := sla.AdjustForClosure(ictx.Runtime.Cfg, ictx.Now, closed, githubClosedAt)
+
+	// SLA event list (ascending), reconciled with the project-scoped current
+	// status — this is what both the current projection and the snapshot
+	// replay walk.
+	slaEvents := sla.WithCurrentStatusBoundary(slaInputEvents, currentStatus, currentStatusAt, slaNow)
 
 	// The issue upsert, its event log, and its SLA projection must land
 	// together: a failure partway through (e.g. the event batch or the SLA
@@ -283,13 +289,13 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 	// The leading event (if any) is marked source "derived" so every future
 	// consumer reproduces the same numbers from the DB alone.
 	//
-	// Batched (AUDIT-FINDINGS B2): one round trip for the whole event log
-	// instead of one Exec per event — same SQL, same conflict clause, same
-	// per-row RowsAffected counting. Incidental benefit: a pgx batch sent
-	// this way runs as one implicit transaction, so this issue's event log
-	// now writes all-or-nothing instead of possibly-partial on a mid-loop
-	// failure — a slice of B3's "transaction per issue" idea, delivered here
-	// without wrapping the rest of IngestIssue's writes.
+	// Batched: one round trip for the whole event log instead of one Exec
+	// per event — same SQL, same conflict clause, same per-row RowsAffected
+	// counting. Incidental benefit: a pgx batch sent this way runs as one
+	// implicit transaction, so this issue's event log now writes
+	// all-or-nothing instead of possibly-partial on a mid-loop failure,
+	// without needing to wrap the rest of IngestIssue's writes in the same
+	// transaction.
 	eventsInserted := 0
 	if len(persistedEvents) > 0 {
 		batch := &pgx.Batch{}
@@ -325,17 +331,21 @@ func IngestIssue(ctx context.Context, pool *pgxpool.Pool, pair Pair, ictx Contex
 	}
 
 	// Current SLA projection.
-	r := sla.ComputeSla(priority, slaEvents, currentStatus, ictx.Runtime.Cfg, ictx.Now)
+	r := sla.ComputeSla(priority, slaEvents, currentStatus, slaCfg, slaNow)
 	_, err = tx.Exec(ctx, `
 		INSERT INTO issue_sla (
 			issue_id, priority, budget_hours, consumed_hours, remaining_hours,
-			pct_consumed, sla_state, sla_running, computed_at, computed_through
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			pct_consumed, sla_state, sla_running, breached_ever, computed_at, computed_through
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (issue_id) DO UPDATE SET
 			priority = $2, budget_hours = $3, consumed_hours = $4, remaining_hours = $5,
-			pct_consumed = $6, sla_state = $7, sla_running = $8, computed_at = $9, computed_through = $10
+			pct_consumed = $6, sla_state = $7, sla_running = $8,
+			-- Sticky: once true, stays true even if a later priority change
+			-- (or closure/reopen) drops pct back under 1.0.
+			breached_ever = issue_sla.breached_ever OR $9,
+			computed_at = $10, computed_through = $11
 	`, issueID, priority, r.BudgetHours, r.ConsumedHours, r.RemainingHours,
-		r.PctConsumed, string(r.SlaState), r.SlaRunning, ictx.Now, ictx.Now)
+		r.PctConsumed, string(r.SlaState), r.SlaRunning, r.BreachedEver, ictx.Now, ictx.Now)
 	if err != nil {
 		return Result{}, fmt.Errorf("ingest: upsert issue_sla: %w", err)
 	}

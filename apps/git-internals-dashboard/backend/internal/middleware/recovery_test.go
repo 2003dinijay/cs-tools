@@ -52,11 +52,11 @@ func TestRecoveryConvertsPanicToEnvelope(t *testing.T) {
 	}
 }
 
-// TestRecoveryRepanicsErrAbortHandler (AUDIT-FINDINGS A6): net/http uses
-// panic(http.ErrAbortHandler) as the sanctioned "abort this response, don't
-// log a stack trace" signal. Recovery must let it propagate rather than
-// converting it into a logged "panic recovered" plus a 500 envelope write on
-// a connection net/http already intends to drop.
+// TestRecoveryRepanicsErrAbortHandler verifies net/http's sanctioned "abort
+// this response, don't log a stack trace" signal —
+// panic(http.ErrAbortHandler) — propagates through Recovery rather than
+// being converted into a logged "panic recovered" plus a 500 envelope write
+// on a connection net/http already intends to drop.
 func TestRecoveryRepanicsErrAbortHandler(t *testing.T) {
 	handler := Recovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic(http.ErrAbortHandler)

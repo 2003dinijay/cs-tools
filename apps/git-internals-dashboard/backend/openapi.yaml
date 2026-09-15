@@ -16,7 +16,7 @@ servers:
 paths:
   /healthz:
     get:
-      summary: Liveness probe. No dependencies checked.
+      summary: Liveness probe. No dependencies checked; see GET /readyz for readiness.
       operationId: getHealthz
       responses:
         "200":
@@ -28,6 +28,27 @@ paths:
                 properties:
                   ok:
                     type: boolean
+
+  /readyz:
+    get:
+      summary: >
+        Readiness probe: a bounded DB ping plus connection-pool stats,
+        briefly cached. 503 while draining after SIGTERM. Never checks
+        GitHub reachability or application tables.
+      operationId: getReadyz
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+        "503":
+          description: Not ready — database unreachable/timed out, pool saturated, or draining.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
 
   /taxonomy:
     get:
@@ -83,7 +104,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [all, violated, at_risk, on_track, cs, tracked, untracked, attention]
+            enum: [all, violated, at_risk, on_track, cs, product_side, tracked, untracked, attention]
         - name: order
           in: query
           schema:
@@ -343,6 +364,38 @@ components:
           items:
             type: string
 
+    Readiness:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready, draining]
+        checks:
+          type: object
+          properties:
+            database:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [ok, unreachable, timeout, pool_saturated]
+                latencyMs:
+                  type: integer
+        pool:
+          type: object
+          nullable: true
+          properties:
+            acquired:
+              type: integer
+            idle:
+              type: integer
+            total:
+              type: integer
+            max:
+              type: integer
+            utilizationPercent:
+              type: integer
+
     IssueSla:
       type: object
       nullable: true
@@ -362,6 +415,13 @@ components:
           $ref: '#/components/schemas/SlaState'
         slaRunning:
           type: boolean
+        breachedEver:
+          type: boolean
+          description: >-
+            Sticky: true once pctConsumed has ever reached 1.0, regardless
+            of the issue's current slaState — slaState alone can't serve
+            compliance reporting since a resolved issue reports TERMINAL
+            even if it was VIOLATED beforehand.
 
     Issue:
       type: object

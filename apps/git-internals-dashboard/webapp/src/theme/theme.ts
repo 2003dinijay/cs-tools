@@ -14,7 +14,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Port of v3's src/lib/theme.ts.
 import { AcrylicPurpleTheme } from "@wso2/oxygen-ui";
 
 // Acrylic Purple is Oxygen UI's frosted-glass material theme: translucent
