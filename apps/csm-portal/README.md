@@ -162,10 +162,13 @@ plaintext/no-TLS code path anywhere in these services.
 
 The local compose stack described below therefore runs a **real, local Apache Kafka
 broker** (the official `apache/kafka` image, KRaft mode, Apache 2.0 licensed) configured
-to accept the exact same protocol: TLS (via a throwaway CA generated fresh on every
-`docker compose up`) and SASL/PLAIN with the literal username `$ConnectionString` that the
-Go client hardcodes. Production is Azure Event Hub; local dev is real Kafka speaking the
-same wire protocol — no application code differs between the two.
+to accept the same protocol: TLS (via a throwaway CA) and SASL/PLAIN with the literal
+username `$ConnectionString` that the Go client hardcodes. The CA and broker cert are
+generated once into the persistent `csm-dev-certs` volume; a normal `docker compose up` /
+`docker compose down` cycle reuses them, and they are only regenerated when that volume is
+empty or has been removed with `docker compose down -v`. Production is Azure Event Hub;
+local dev is real Kafka speaking the same wire protocol — no application code differs
+between the two.
 
 The topic used everywhere is `case-events`, plus a `case-events-dlq` dead-letter topic for
 `csm-notification-service`.
@@ -287,10 +290,13 @@ docker exec $(docker ps -qf name=csm-platform-postgres-1) \
 **entity-service reads it back:**
 
 ```sh
-curl http://localhost:8081/health
+curl http://localhost:8081/accounts/00000000-0000-0000-0000-000000000301
 ```
-(the case/project/deployment/product search endpoints have a known bug on this branch —
-see [Known issues](#known-issues) below.)
+(`GET /health` always returns `{"status":"ok"}` without touching the database, so it proves
+nothing about the seeded data; this instead does a plain by-id get against the account row
+the seed data above creates. The `search` endpoints, including `/accounts/search`, have a
+known bug on this branch — see [Known issues](#known-issues) below — which is why this uses
+the by-id get rather than a search.)
 
 **A BFF round-trips to entity-service and Postgres** (get a token as shown above, then):
 

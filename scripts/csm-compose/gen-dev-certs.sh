@@ -49,9 +49,12 @@ openssl req -newkey rsa:2048 -nodes \
   -addext "subjectAltName=DNS:kafka,DNS:localhost,IP:127.0.0.1"
 
 echo "[certgen] signing kafka broker cert with local CA"
+# alpine:3.20's /bin/sh is BusyBox ash, which does not support process
+# substitution (<(...)) -- write the extension to a real file instead.
+printf 'subjectAltName=DNS:kafka,DNS:localhost,IP:127.0.0.1\n' > "$OUT/kafka.ext"
 openssl x509 -req -in "$OUT/kafka.csr" -CA "$OUT/ca.crt" -CAkey "$OUT/ca.key" \
   -CAcreateserial -days 3650 -out "$OUT/kafka.crt" \
-  -extfile <(printf "subjectAltName=DNS:kafka,DNS:localhost,IP:127.0.0.1")
+  -extfile "$OUT/kafka.ext"
 
 echo "[certgen] bundling PKCS12 keystore for the Kafka broker"
 openssl pkcs12 -export \

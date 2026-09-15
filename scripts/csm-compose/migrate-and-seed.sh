@@ -39,28 +39,47 @@ $PSQL -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = '${SRE_ALERT_DB
 # entity-service ships no migration tool and its raw .up.sql files are not
 # all safely re-runnable (most guard with IF NOT EXISTS, but at least one
 # ADD CONSTRAINT does not -- a real gap in those files, not something to
-# patch here). So this script applies them at most once per database
-# lifetime, gated on whether the schema already looks migrated, rather than
-# re-running the full set on every `docker compose up`.
-if $PSQL -d "${ENTITY_DB_NAME}" -tc "SELECT 1 FROM information_schema.tables WHERE table_name = 'work_item'" | grep -q 1; then
-  echo "[migrate] entity-service schema already present, skipping migrations"
-else
-  echo "[migrate] applying entity-service migrations"
-  for f in $(ls /migrations/entity-service/*.up.sql | sort); do
-    echo "[migrate]   $f"
-    $PSQL -d "${ENTITY_DB_NAME}" -f "$f"
-  done
-fi
+# patch here). So this script tracks which migrations have actually been
+# applied in a per-database schema_migrations table, applying only the ones
+# missing from it on every `docker compose up`, rather than gating on a
+# single application table's presence (e.g. entity-service's "work_item",
+# created partway through the set by migration 000016 -- a later migration
+# failing after that point would leave the schema incomplete but still look
+# "migrated" forever after, since work_item already exists).
+#
+# Each migration file is applied and recorded in one transaction (`psql -1`):
+# if the file's SQL fails partway through, nothing from it is recorded, so
+# the same migration is retried -- from scratch -- on the next run instead
+# of being silently skipped with a half-applied schema.
+ensure_migrations_table() {
+  db="$1"
+  $PSQL -d "$db" -c \
+    "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+}
 
-if $PSQL -d "${SRE_ALERT_DB_NAME}" -tc "SELECT 1 FROM information_schema.tables WHERE table_name = 'alert_buffer'" | grep -q 1; then
-  echo "[migrate] sre-alert-ingestion-service schema already present, skipping migrations"
-else
-  echo "[migrate] applying sre-alert-ingestion-service migrations"
-  for f in $(ls /migrations/sre-alert-ingestion-service/*.up.sql | sort); do
-    echo "[migrate]   $f"
-    $PSQL -d "${SRE_ALERT_DB_NAME}" -f "$f"
+apply_pending_migrations() {
+  db="$1"; dir="$2"
+  ensure_migrations_table "$db"
+  for f in $(ls "${dir}"/*.up.sql | sort); do
+    version="$(basename "$f" .up.sql)"
+    already="$($PSQL -d "$db" -tAc "SELECT 1 FROM schema_migrations WHERE version = '${version}'")"
+    if [ "$already" = "1" ]; then
+      continue
+    fi
+    echo "[migrate]   applying $f"
+    tmp="$(mktemp)"
+    cat "$f" > "$tmp"
+    printf "\nINSERT INTO schema_migrations (version) VALUES ('%s');\n" "$version" >> "$tmp"
+    $PSQL -d "$db" -1 -f "$tmp"
+    rm -f "$tmp"
   done
-fi
+}
+
+echo "[migrate] applying entity-service migrations (if any are pending)"
+apply_pending_migrations "${ENTITY_DB_NAME}" /migrations/entity-service
+
+echo "[migrate] applying sre-alert-ingestion-service migrations (if any are pending)"
+apply_pending_migrations "${SRE_ALERT_DB_NAME}" /migrations/sre-alert-ingestion-service
 
 echo "[migrate] loading entity-service seed data"
 $PSQL -d "${ENTITY_DB_NAME}" -f /migrations/seed-entity-service.sql

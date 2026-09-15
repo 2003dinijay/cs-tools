@@ -24,6 +24,16 @@
 # Everything under scripts/csm-compose/ is local-dev tooling only -- it is
 # never shipped or deployed anywhere else; Choreo builds and deploys every
 # component in this file from source through its own pipeline.
+#
+# Every Dockerfile this stack builds from lives under docker/local/, not
+# inside the component's own source directory: Choreo never reads or uses
+# these Dockerfiles (it builds every component from source via its own
+# buildpack), so keeping them out of tree avoids anyone mistaking a
+# docker-compose build artifact for how the component is actually built and
+# deployed. Each service below still sets `build.context` to the component's
+# own directory (so COPY/ADD inside the Dockerfile resolve unchanged) and
+# points `build.dockerfile` back at docker/local/ with a relative `../`
+# path.
 
 name: csm-platform
 
@@ -45,7 +55,7 @@ services:
       POSTGRES_PASSWORD: devpassword
       POSTGRES_DB: postgres
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - csm-pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -166,6 +176,7 @@ services:
   entity-service:
     build:
       context: ./entity-service
+      dockerfile: ../docker/local/entity-service.Dockerfile
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -193,6 +204,7 @@ services:
   csm-portal-backend:
     build:
       context: ./apps/csm-portal/backend
+      dockerfile: ../../../docker/local/csm-portal-backend.Dockerfile
     depends_on:
       - entity-service
       - mock-oidc
@@ -218,7 +230,7 @@ services:
   csm-portal-webapp:
     build:
       context: .
-      dockerfile: apps/csm-portal/webapp/Dockerfile
+      dockerfile: docker/local/csm-portal-webapp.Dockerfile
     depends_on:
       - csm-portal-backend
       - mock-oidc
@@ -234,6 +246,7 @@ services:
   customer-portal-backend-v2:
     build:
       context: ./apps/customer-portal/backend-v2
+      dockerfile: ../../../docker/local/customer-portal-backend-v2.Dockerfile
     depends_on:
       - entity-service
       - mock-oidc
@@ -268,7 +281,7 @@ services:
   customer-portal-webapp:
     build:
       context: .
-      dockerfile: apps/customer-portal/webapp/Dockerfile
+      dockerfile: docker/local/customer-portal-webapp.Dockerfile
     depends_on:
       - customer-portal-backend-v2
       - mock-oidc
@@ -286,6 +299,7 @@ services:
   csm-integration-service:
     build:
       context: ./integrations/csm-integration-service
+      dockerfile: ../../docker/local/csm-integration-service.Dockerfile
     depends_on:
       - entity-service
       - mock-oidc
@@ -301,6 +315,7 @@ services:
   csm-notification-service:
     build:
       context: ./integrations/csm-notification-service
+      dockerfile: ../../docker/local/csm-notification-service.Dockerfile
     depends_on:
       kafka:
         condition: service_healthy
@@ -333,6 +348,7 @@ services:
   csm-portal-activity-stream-service:
     build:
       context: ./integrations/csm-portal-activity-stream-service
+      dockerfile: ../../docker/local/csm-portal-activity-stream-service.Dockerfile
     depends_on:
       kafka:
         condition: service_healthy
@@ -364,6 +380,7 @@ services:
   customer-portal-activity-stream-service:
     build:
       context: ./integrations/customer-portal-activity-stream-service
+      dockerfile: ../../docker/local/customer-portal-activity-stream-service.Dockerfile
     depends_on:
       kafka:
         condition: service_healthy
@@ -395,6 +412,7 @@ services:
   sre-alert-ingestion-service:
     build:
       context: ./integrations/sre-alert-ingestion-service
+      dockerfile: ../../docker/local/sre-alert-ingestion-service.Dockerfile
     depends_on:
       migrate:
         condition: service_completed_successfully
