@@ -32,7 +32,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// UserRepository defines the persistence operations for the users table.
+// UserRepository defines the persistence operations for the "user" table
+// (migration 000001).
 type UserRepository interface {
 	// SearchUsers returns a filtered, paginated slice of users together with
 	// the total count of rows that match the filter (before pagination).
@@ -54,17 +55,30 @@ func NewUserRepository(db *pgxpool.Pool) UserRepository {
 	return &userRepo{db: db}
 }
 
+// userColumns is the column list shared by GetUserByEmail and SearchUsers.
+// The "user" table (migration 000001) has no phone/timezone column at all --
+// unlike account.phone, there is nothing to select for domain.User's Phone/
+// Timezone fields, so both are simply left nil (Go's pointer zero value)
+// rather than queried. Postgres-backed PatchMe/TimeZone support does not
+// exist today regardless (UserService has no PatchMe method at all -- only
+// the ServiceNow-backed SNUserService does).
+const userColumns = `id, user_name, first_name, last_name, email, user_type, created_on, updated_on`
+
+// prefixUserColumns is userColumns qualified with the "u" alias SearchUsers'
+// query uses (needed once EXISTS subqueries reference u.id for role
+// filtering); GetUserByEmail queries the unaliased table directly and uses
+// userColumns as-is.
+const prefixUserColumns = `u.id, u.user_name, u.first_name, u.last_name, u.email, u.user_type, u.created_on, u.updated_on`
+
+func scanUser(row interface{ Scan(...any) error }) (domain.User, error) {
+	var u domain.User
+	err := row.Scan(&u.ID, &u.UserName, &u.FirstName, &u.LastName, &u.Email, &u.UserType, &u.CreatedOn, &u.UpdatedOn)
+	return u, err
+}
+
 // GetUserByEmail implements UserRepository.
 func (r *userRepo) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
-	var u domain.User
-	err := r.db.QueryRow(ctx,
-		`SELECT id, user_name, first_name, last_name, email, phone, timezone, user_type, created_at, updated_at
-		 FROM users WHERE email = $1`, email,
-	).Scan(
-		&u.ID, &u.UserName, &u.FirstName, &u.LastName,
-		&u.Email, &u.Phone, &u.Timezone, &u.UserType,
-		&u.CreatedOn, &u.UpdatedOn,
-	)
+	u, err := scanUser(r.db.QueryRow(ctx, `SELECT `+userColumns+` FROM "user" WHERE email = $1`, email))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, &apierror.NotFoundError{Msg: "no user found with email: " + email}
 	}
@@ -86,7 +100,7 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 		pattern := "%" + escaped + "%"
 		// Both branches reference the same positional parameter — PostgreSQL allows $N to appear multiple times.
 		where += fmt.Sprintf(
-			" AND (user_name ILIKE $%d ESCAPE '\\' OR email ILIKE $%d ESCAPE '\\')",
+			" AND (u.user_name ILIKE $%d ESCAPE '\\' OR u.email ILIKE $%d ESCAPE '\\')",
 			argIdx, argIdx,
 		)
 		filterArgs = append(filterArgs, pattern)
@@ -94,33 +108,42 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 	}
 
 	if len(req.Filters.UserNames) > 0 {
-		placeholders := make([]string, len(req.Filters.UserNames))
-		for i, un := range req.Filters.UserNames {
-			placeholders[i] = fmt.Sprintf("$%d", argIdx)
-			filterArgs = append(filterArgs, un)
-			argIdx++
-		}
-		where += " AND user_name = ANY(ARRAY[" + strings.Join(placeholders, ",") + "])"
+		where += fmt.Sprintf(" AND u.user_name = ANY($%d::text[])", argIdx)
+		filterArgs = append(filterArgs, req.Filters.UserNames)
+		argIdx++
 	}
 
 	if len(req.Filters.Emails) > 0 {
-		placeholders := make([]string, len(req.Filters.Emails))
-		for i, em := range req.Filters.Emails {
-			placeholders[i] = fmt.Sprintf("$%d", argIdx)
-			filterArgs = append(filterArgs, em)
-			argIdx++
-		}
-		where += " AND email = ANY(ARRAY[" + strings.Join(placeholders, ",") + "])"
+		where += fmt.Sprintf(" AND u.email = ANY($%d::text[])", argIdx)
+		filterArgs = append(filterArgs, req.Filters.Emails)
+		argIdx++
 	}
 
-	countQuery := "SELECT COUNT(*) FROM users " + where
+	if len(req.Filters.RoleIDs) > 0 {
+		// RoleIDs holds role NAMEs (role.name, migration 000004), not UUIDs,
+		// despite the field's name -- see domain.UserRole's own doc comment
+		// ("deliberately an open string type"). Matches if the user holds
+		// ANY of the given roles (OR semantics), via user_role (migration
+		// 000006).
+		roleNames := make([]string, len(req.Filters.RoleIDs))
+		for i, role := range req.Filters.RoleIDs {
+			roleNames[i] = string(role)
+		}
+		where += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
+			WHERE ur.user_id = u.id AND r.name = ANY($%d::text[])
+		)`, argIdx)
+		filterArgs = append(filterArgs, roleNames)
+		argIdx++
+	}
+
+	const fromClause = `FROM "user" u`
+
+	countQuery := "SELECT COUNT(*) " + fromClause + " " + where
 
 	dataQuery := fmt.Sprintf(
-		`SELECT id, user_name, first_name, last_name, email, phone, timezone, user_type, created_at, updated_at
-		 FROM users %s
-		 ORDER BY created_at DESC, id
-		 LIMIT $%d OFFSET $%d`,
-		where, argIdx, argIdx+1,
+		`SELECT %s %s %s ORDER BY u.created_on DESC, u.id LIMIT $%d OFFSET $%d`,
+		prefixUserColumns, fromClause, where, argIdx, argIdx+1,
 	)
 	dataArgs := append(append([]any{}, filterArgs...), req.Pagination.Limit, req.Pagination.Offset)
 
@@ -146,12 +169,8 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 
 		result := make([]domain.User, 0, req.Pagination.Limit)
 		for rows.Next() {
-			var u domain.User
-			if err := rows.Scan(
-				&u.ID, &u.UserName, &u.FirstName, &u.LastName,
-				&u.Email, &u.Phone, &u.Timezone, &u.UserType,
-				&u.CreatedOn, &u.UpdatedOn,
-			); err != nil {
+			u, err := scanUser(rows)
+			if err != nil {
 				return fmt.Errorf("scan user: %w", err)
 			}
 			result = append(result, u)

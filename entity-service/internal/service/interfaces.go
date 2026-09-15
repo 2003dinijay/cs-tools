@@ -225,7 +225,10 @@ type ProjectStatsService interface {
 }
 
 // ProjectContactService defines the operations available on project contacts.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// The Postgres-backed implementation (projectContactService) reads from
+// project_contact (migration 000022), joined through account_contact to
+// "user" and through project_contact_group/project_group_role/project_role
+// (migrations 000023-000025) for roles.
 type ProjectContactService interface {
 	// SearchProjectContacts returns a paginated list of contacts associated with
 	// the project identified by projectID.
@@ -237,7 +240,9 @@ type ProjectContactService interface {
 }
 
 // AccountContactService defines the operations available on account contacts.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// The Postgres-backed implementation (accountContactService) reads from the
+// account_contact table (migration 000020), joined against "user" to
+// resolve a display name/email where possible.
 type AccountContactService interface {
 	// SearchAccountContacts returns a paginated list of contacts associated with
 	// the account identified by accountID.
@@ -341,7 +346,9 @@ type CaseService interface {
 	// UpdateCase updates the state, severity, watch list, assignee, or internal-only
 	// fix-ETA estimate (best-case/most-likely/worst-case) of a case.
 	// A ValidationError is returned for invalid values or malformed UUID; a NotFoundError if no case matches.
-	// WatchList, AssigneeEmail, BestCaseFixEta, MostLikelyFixEta, and WorstCaseFixEta are
+	// WatchList is supported by both data sources (Postgres via work_item_watcher,
+	// migration 000040) and is mutually exclusive with State/Severity/WorkState.
+	// AssigneeEmail, BestCaseFixEta, MostLikelyFixEta, and WorstCaseFixEta are
 	// only supported for the ServiceNow data source.
 	// Transitioning State to closed is rejected with a ValidationError if the case has any
 	// open task that is visible to the customer (the authoritative case-close gate).
@@ -513,6 +520,13 @@ type ChangeRequestService interface {
 }
 
 // TimeCardService defines the operations available on the time-cards entity.
+// The Postgres-backed implementation (timeCardService) resolves the caller's
+// identity from their x-user-id-token the same way caseService does for case
+// comments (see repository.TimeCardRepository), rather than forwarding a
+// token to a downstream service the way the ServiceNow-backed implementation
+// does -- so "SN enforces authorization" below applies to that implementation
+// only; the Postgres-backed one enforces submitter/state checks itself
+// (e.g. UpdateTimeCardFields' "AND state = 'submitted'" guard).
 type TimeCardService interface {
 	// SearchTimeCards returns a paginated list of time cards filtered by optional
 	// project IDs, case, user, approver, date range, and states.
@@ -522,9 +536,8 @@ type TimeCardService interface {
 	// UpdateTimeCard edits an editable (submitted) time card, or transitions its
 	// state (approve/reject) when req.State is set. SN enforces authorization.
 	UpdateTimeCard(ctx context.Context, req domain.UpdateTimeCardRequest) (domain.TimeCardMutationResponse, error)
-	// SearchCaseTimeCards returns a paginated list of time cards grouped and rolled up by
-	// case, using the same filters as SearchTimeCards. Supported by the ServiceNow data
-	// source only.
+	// SearchCaseTimeCards returns a paginated list of time cards grouped and
+	// rolled up by case, using the same filters as SearchTimeCards.
 	SearchCaseTimeCards(ctx context.Context, req domain.SearchTimeCardsRequest) (domain.SearchCaseTimeCardsResponse, error)
 	// DeleteTimeCard permanently deletes a time card. Matches UpdateTimeCard's
 	// trust model exactly: this only validates the ID's shape and forwards the
@@ -567,7 +580,12 @@ type ITServiceService interface {
 
 // CommentService defines generic comment search operations across all reference types
 // (case, conversation, change_request, etc.).
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// The Postgres-backed implementation (commentService) supports referenceType
+// "case", "conversation", "change_request", and "incident" -- every work_item
+// subtype the comment table's work_item_id foreign key can point at (see
+// repository.ReferenceTypeToWorkItemType). "deployment" is ServiceNow-only:
+// deployment is its own standalone table (migration 000013), not a work_item
+// subtype, so a Postgres-backed comment can never reference one.
 type CommentService interface {
 	// SearchComments returns a paginated list of comments for the given reference entity.
 	SearchComments(ctx context.Context, req domain.SearchCommentsRequest) (domain.SearchCommentsResponse, error)
@@ -610,7 +628,11 @@ type TaskService interface {
 }
 
 // ProductVulnerabilityService defines the operations available on product vulnerabilities.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// The Postgres-backed implementation (productVulnerabilityService) reads
+// from the product_vulnerability table (migration 000034), which mirrors
+// ServiceNow's own record 1:1 -- see that migration's own doc comment.
+// SyncProductVulnerabilities is the one method with no Postgres equivalent
+// (see its own doc comment for why).
 type ProductVulnerabilityService interface {
 	// SearchProductVulnerabilities returns a paginated list of vulnerabilities filtered by
 	// optional priority, product name, product version, and search query.
@@ -622,13 +644,16 @@ type ProductVulnerabilityService interface {
 	GetProductVulnerability(ctx context.Context, id string) (domain.ProductVulnerabilityView, error)
 
 	// GetVulnerabilityMeta returns the valid severity choices for product vulnerabilities.
-	// Supported by the ServiceNow data source only.
 	GetVulnerabilityMeta(ctx context.Context) (domain.VulnerabilityMetaResponse, error)
 	// SyncProductVulnerabilities replaces the full set of product vulnerabilities with the
 	// given items. This is a full-replace sync: ServiceNow deletes any existing record whose
 	// WSO2ID is not present in items and upserts everything that is. Callers MUST submit the
 	// complete current set, never a partial delta, or downstream records will be deleted.
-	// Supported by the ServiceNow data source only.
+	// Supported by the ServiceNow data source only: the full-replace semantics need a stable
+	// external join key with a database-enforced uniqueness guarantee to upsert against, and
+	// product_vulnerability has no UNIQUE constraint on any column other than its own
+	// generated id -- adding one is a schema change, out of scope here (see
+	// productVulnerabilityService.SyncProductVulnerabilities).
 	SyncProductVulnerabilities(ctx context.Context, items []domain.ProductVulnerabilitySyncItem) (domain.ProductVulnerabilitySyncResult, error)
 }
 

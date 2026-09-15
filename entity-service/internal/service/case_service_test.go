@@ -100,6 +100,18 @@ func (s *stubCaseRepo) ConfirmCaseAttachment(ctx context.Context, id string) (do
 	}
 	panic("not implemented")
 }
+func (s *stubCaseRepo) AddCaseTag(context.Context, string, string, string) (domain.Tag, error) {
+	panic("not implemented")
+}
+func (s *stubCaseRepo) RemoveCaseTag(context.Context, string, string, string) error {
+	panic("not implemented")
+}
+func (s *stubCaseRepo) SearchTags(context.Context, string, string, int) ([]domain.Tag, error) {
+	panic("not implemented")
+}
+func (s *stubCaseRepo) SetCaseWatchList(context.Context, string, []string, string) ([]domain.WatchListUser, time.Time, error) {
+	panic("not implemented")
+}
 
 // stubUserRepo is a minimal repository.UserRepository; SearchCases doesn't
 // exercise it beyond the createdBy-current-user path, which these tests don't

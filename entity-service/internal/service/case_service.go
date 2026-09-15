@@ -376,14 +376,28 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
-	if req.WatchList != nil || req.AssigneeEmail != nil ||
+	if req.AssigneeEmail != nil ||
 		req.RelatedCaseID != nil || req.ParentID != nil || req.AutocloseHoldUntil != nil ||
 		req.Subject != nil || req.Description != nil || req.DeploymentID != nil || req.DeployedProductID != nil ||
 		req.BestCaseFixEta != nil || req.MostLikelyFixEta != nil || req.WorstCaseFixEta != nil ||
 		req.Type != nil || req.EngagementType != nil || req.CatalogID != nil ||
 		req.CatalogItemID != nil || len(req.Variables) > 0 {
-		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "watchList, assigneeEmail, relatedCaseId, parentId, autocloseHoldUntil, subject, description, deploymentId, deployedProductId, bestCaseFixEta, mostLikelyFixEta, worstCaseFixEta, type, engagementType, catalogId, catalogItemId, and variables are only supported for the ServiceNow data source"}
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "assigneeEmail, relatedCaseId, parentId, autocloseHoldUntil, subject, description, deploymentId, deployedProductId, bestCaseFixEta, mostLikelyFixEta, worstCaseFixEta, type, engagementType, catalogId, catalogItemId, and variables are only supported for the ServiceNow data source"}
 	}
+
+	// WatchList is mutually exclusive with State/Severity/WorkState (see this
+	// method's own doc comment in interfaces.go) and has its own persistence
+	// path (work_item_watcher, migration 000040) entirely separate from the
+	// state/severity/workState UPDATE below -- split out into its own branch
+	// with an early return so this addition can't disturb that existing,
+	// already-in-production logic (including its billable-status side effect).
+	if req.WatchList != nil {
+		if req.State != nil || req.Severity != nil || req.WorkState != nil {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "watchList cannot be combined with state, severity, or workState"}
+		}
+		return s.updateCaseWatchList(ctx, req)
+	}
+
 	fieldCount := 0
 	if req.State != nil {
 		fieldCount++
@@ -432,6 +446,37 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			State:     c.State,
 			Severity:  c.Severity,
 			WorkState: c.WorkState,
+		},
+	}, nil
+}
+
+// updateCaseWatchList implements UpdateCase's WatchList branch: replacing
+// the case's watch list wholesale with req's user ids via
+// CaseRepository.SetCaseWatchList. An explicitly empty (non-nil) WatchList
+// clears the watch list -- validateUUIDs on an empty slice is a no-op, so
+// that reaches the repository as an empty replacement, not an error.
+func (s *caseService) updateCaseWatchList(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
+	userIDs := *req.WatchList
+	if err := validateUUIDs("watchList", userIDs); err != nil {
+		return domain.UpdateCaseResponse{}, err
+	}
+
+	actor, err := s.resolveActor(ctx)
+	if err != nil {
+		return domain.UpdateCaseResponse{}, err
+	}
+
+	watchers, updatedOn, err := s.repo.SetCaseWatchList(ctx, req.ID, userIDs, actor.Email)
+	if err != nil {
+		return domain.UpdateCaseResponse{}, err
+	}
+
+	return domain.UpdateCaseResponse{
+		Message: "Case updated successfully",
+		Case: domain.UpdatedCase{
+			ID:        req.ID,
+			UpdatedOn: updatedOn,
+			WatchList: watchers,
 		},
 	}, nil
 }
@@ -872,20 +917,36 @@ func (s *caseService) GetAttachment(_ context.Context, _ string) (domain.Attachm
 
 // AddCaseTag implements CaseService.
 //
-// TEMPORARY, DETECTION-ONLY: case tags have no real Postgres storage yet —
-// no case_tags table/migration/repository exists on this data source, so
-// this remains a stub that reports the tag itself as unsupported (matching
-// the two sibling stubs below) — no tag is ever persisted, and no time
-// card's billable status is ever actually changed by this method. The one
-// addition, ahead of real tag storage at explicit request: a "patch" label
-// on a case currently at LOW severity (S4) is DETECTED (and only logged,
-// nothing more) as a special case of detectBillableStatusChange's normal
-// "entering S4 makes time cards billable" rule — see
-// detectPatchTagBillableOverride's own doc comment for exactly what this
-// does and doesn't do yet.
+// Persists via tag/work_item_tag (migration 000021), added after this
+// method was written as a detection-only stub (see
+// detectPatchTagBillableOverride's own doc comment for that history) — it
+// now actually attaches label to caseID, idempotently (a repeat call for an
+// already-attached label, case-insensitively, returns the existing tag
+// rather than erroring or duplicating). The "patch" + LOW-severity detection
+// still only logs: (a) case tags having real storage is now true, but (b)
+// no consumer exists yet for events.TypeCaseBillableStatusChanged (bulk-
+// flipping every time card's IsBillable for caseId), so the actual publish
+// stays commented out in detectPatchTagBillableOverride until that exists.
 func (s *caseService) AddCaseTag(ctx context.Context, caseID, label string) (domain.Tag, error) {
+	if err := validateUUIDs("caseId", []string{caseID}); err != nil {
+		return domain.Tag{}, err
+	}
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return domain.Tag{}, &apierror.ValidationError{Msg: "label is required"}
+	}
+	if len(label) > 255 {
+		return domain.Tag{}, &apierror.ValidationError{Msg: "label must not exceed 255 characters"}
+	}
+
+	actor, err := s.resolveActor(ctx)
+	if err != nil {
+		return domain.Tag{}, err
+	}
+
 	s.detectPatchTagBillableOverride(ctx, caseID, label)
-	return domain.Tag{}, &apierror.ServiceUnavailableError{Msg: "case tags are only supported for the ServiceNow data source"}
+
+	return s.repo.AddCaseTag(ctx, caseID, label, actor.Email)
 }
 
 // detectPatchTagBillableOverride DETECTS AND LOGS ONLY — it does not
@@ -906,10 +967,10 @@ func (s *caseService) AddCaseTag(ctx context.Context, caseID, label string) (dom
 //
 // Same commented-out-publish posture as detectBillableStatusChange: logs
 // only, since there is still no time_cards consumer to act on
-// events.TypeCaseBillableStatusChanged (see that type's own doc comment) —
-// and, unlike detectBillableStatusChange, no way to even publish from a
-// real code path yet, since AddCaseTag itself never succeeds on this data
-// source (see its own doc comment).
+// events.TypeCaseBillableStatusChanged (see that type's own doc comment).
+// AddCaseTag itself now succeeds (see its own doc comment) -- the remaining
+// gap is purely the missing consumer, not the tag storage this was
+// originally blocked on.
 func (s *caseService) detectPatchTagBillableOverride(ctx context.Context, caseID, label string) {
 	if !strings.EqualFold(strings.TrimSpace(label), "patch") {
 		return
@@ -945,12 +1006,40 @@ func (s *caseService) detectPatchTagBillableOverride(ctx context.Context, caseID
 	slog.InfoContext(ctx, "add case tag: patch tag detected on an S4 case, time cards would need to become non-billable once a real tag/time-card path exists (detection only, no action taken)", "caseId", caseID, "isBillable", false)
 }
 
-func (s *caseService) RemoveCaseTag(_ context.Context, _, _ string) error {
-	return &apierror.ServiceUnavailableError{Msg: "case tags are only supported for the ServiceNow data source"}
+// RemoveCaseTag implements CaseService.
+func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) error {
+	if err := validateUUIDs("caseId", []string{caseID}); err != nil {
+		return err
+	}
+	if err := validateUUIDs("tagId", []string{tagID}); err != nil {
+		return err
+	}
+	actor, err := s.resolveActor(ctx)
+	if err != nil {
+		return err
+	}
+	return s.repo.RemoveCaseTag(ctx, caseID, tagID, actor.Email)
 }
 
-func (s *caseService) SearchTags(_ context.Context, _ domain.SearchTagsRequest) ([]domain.Tag, error) {
-	return nil, &apierror.ServiceUnavailableError{Msg: "case tags are only supported for the ServiceNow data source"}
+// SearchTags implements CaseService.
+func (s *caseService) SearchTags(ctx context.Context, req domain.SearchTagsRequest) ([]domain.Tag, error) {
+	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
+		return nil, err
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > maxLimit {
+		return nil, &apierror.ValidationError{Msg: fmt.Sprintf("limit cannot exceed %d", maxLimit)}
+	}
+
+	actor, err := s.resolveActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.repo.SearchTags(ctx, req.Filters.SearchQuery, actor.Email, limit)
 }
 
 func (s *caseService) GetCaseFeedback(_ context.Context, _ string) (domain.CaseEmojiFeedback, error) {
