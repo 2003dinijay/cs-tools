@@ -8,8 +8,11 @@ test("rfc6238 vectors", () => {
   expect(generateTotp(seed, 1234567890_000)).toBe("005924");
   expect(generateTotp(seed, 2000000000_000)).toBe("279037");
   expect(millisUntilNextTotp(59_000)).toBe(1000);
-  expect(generateTotp("csqo 7kj5 ikwh 65hq", 59_000)).toBe(
-    generateTotp("CSQO7KJ5IKWH65HQ", 59_000),
+  // Spaces and case, as authenticator enrolment screens display a seed.
+  // Deliberately an arbitrary value — never a real account's seed, which would
+  // put a live second factor in a tracked file.
+  expect(generateTotp("jbsw y3dp ehpk 3pxp", 59_000)).toBe(
+    generateTotp("JBSWY3DPEHPK3PXP", 59_000),
   );
   expect(() => generateTotp("not-base32-1!", 0)).toThrow(/not valid base32/);
 });
