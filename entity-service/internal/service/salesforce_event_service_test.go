@@ -165,16 +165,26 @@ func TestHandleEvent_UnknownEntityIgnored(t *testing.T) {
 	repo := &stubSalesforceAccountRepo{}
 	svc := NewSalesforceEventService(repo, sf)
 
-	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
-		EventType:   domain.SalesforceEventCreated,
-		Entity:      "Contact",
-		ReferenceID: "003xx",
-	})
-	if err != nil {
-		t.Fatalf("HandleEvent: %v", err)
-	}
-	if sf.calls != 0 || repo.upsertCalls != 0 || repo.deleteCalls != 0 {
-		t.Error("unknown entity must not fetch or persist")
+	for _, eventType := range []string{
+		domain.SalesforceEventCreated,
+		domain.SalesforceEventUndefined,
+	} {
+		t.Run(eventType, func(t *testing.T) {
+			sf.calls = 0
+			repo.upsertCalls = 0
+			repo.deleteCalls = 0
+			err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
+				EventType:   eventType,
+				Entity:      "Contact",
+				ReferenceID: "003xx",
+			})
+			if err != nil {
+				t.Fatalf("HandleEvent: %v", err)
+			}
+			if sf.calls != 0 || repo.upsertCalls != 0 || repo.deleteCalls != 0 {
+				t.Error("unknown entity must not fetch or persist")
+			}
+		})
 	}
 }
 

@@ -10853,9 +10853,11 @@ components:
             envelope value from Apex but this endpoint returns 400 for it.
         entity:
           type: string
+          pattern: '.*\S.*'
           description: Salesforce sObject name. Non-Account values are ignored with 204.
         referenceId:
           type: string
+          pattern: '.*\S.*'
           description: Salesforce record Id.
 
     ErrorResponse:

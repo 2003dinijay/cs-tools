@@ -55,11 +55,11 @@ func (s *salesforceEventService) HandleEvent(ctx context.Context, req domain.Sal
 	if strings.TrimSpace(req.ReferenceID) == "" {
 		return &apierror.ValidationError{Msg: "referenceId is required"}
 	}
-	if req.EventType == domain.SalesforceEventUndefined {
-		return &apierror.ValidationError{Msg: "eventType UNDEFINED is not supported"}
-	}
 	if !strings.EqualFold(req.Entity, domain.SalesforceEntityAccount) {
 		return nil
+	}
+	if req.EventType == domain.SalesforceEventUndefined {
+		return &apierror.ValidationError{Msg: "eventType UNDEFINED is not supported"}
 	}
 
 	switch req.EventType {
