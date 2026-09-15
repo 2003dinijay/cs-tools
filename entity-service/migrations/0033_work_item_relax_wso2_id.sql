@@ -14,4 +14,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+-- change_request has no wso2_id data. contact_user_id is already nullable
+-- (0021_work_item_table.sql), so only wso2_id needs relaxing here. UNIQUE on
+-- wso2_id stays untouched.
+ALTER TABLE work_item ALTER COLUMN wso2_id DROP NOT NULL;

@@ -14,4 +14,10 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+-- product_id was already being written to by the u_wso2_product mapping
+-- field but the column was never added to work_item.
+ALTER TABLE work_item ADD COLUMN IF NOT EXISTS product_id UUID REFERENCES product(id) ON DELETE SET NULL;
+ALTER TABLE work_item ADD COLUMN IF NOT EXISTS product_version_id UUID REFERENCES product_version(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_work_item_product_id ON work_item (product_id);
+CREATE INDEX IF NOT EXISTS idx_work_item_product_version_id ON work_item (product_version_id);

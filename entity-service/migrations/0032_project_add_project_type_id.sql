@@ -14,4 +14,5 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+ALTER TABLE project ADD COLUMN IF NOT EXISTS project_type_id UUID REFERENCES project_type(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_project_project_type_id ON project (project_type_id);

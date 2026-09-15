@@ -14,4 +14,12 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+CREATE TABLE IF NOT EXISTS role (
+    id UUID PRIMARY KEY,
+    created_on TIMESTAMPTZ NOT NULL,
+    updated_on TIMESTAMPTZ NOT NULL,
+    created_by VARCHAR(255),
+    updated_by VARCHAR(255),
+    name VARCHAR(100) NOT NULL UNIQUE,
+    description VARCHAR(255)
+);

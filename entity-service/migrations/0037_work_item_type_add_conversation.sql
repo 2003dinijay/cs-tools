@@ -14,4 +14,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+-- Kept in its own transaction: ALTER TYPE ... ADD VALUE can't run in the same
+-- transaction as a statement that uses the new value.
+ALTER TYPE work_item_type_enum ADD VALUE IF NOT EXISTS 'CONVERSATION';

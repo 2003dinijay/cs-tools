@@ -14,4 +14,15 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+CREATE TABLE IF NOT EXISTS project_contact_group (
+    id UUID PRIMARY KEY,
+    created_on TIMESTAMPTZ NOT NULL,
+    updated_on TIMESTAMPTZ NOT NULL,
+    created_by VARCHAR(255) NOT NULL,
+    updated_by VARCHAR(255) NOT NULL,
+    project_group_id UUID NOT NULL REFERENCES project_group(id) ON DELETE CASCADE,
+    project_contact_id UUID NOT NULL REFERENCES project_contact(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_contact_group_project_group_id ON project_contact_group (project_group_id);
+CREATE INDEX IF NOT EXISTS idx_project_contact_group_project_contact_id ON project_contact_group (project_contact_id);

@@ -14,4 +14,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+ALTER TABLE team_member ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'member';
+
+ALTER TABLE team_member ADD CONSTRAINT team_member_role_check CHECK (role IN ('member', 'lead'));

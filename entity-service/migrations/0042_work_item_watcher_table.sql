@@ -14,4 +14,14 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+-- Junction table fanned out from task.watch_list via expand_list, same shape
+-- as project_group_role: one row per (work_item, watching user) pair.
+CREATE TABLE IF NOT EXISTS work_item_watcher (
+    id UUID PRIMARY KEY,
+    work_item_id UUID NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+    UNIQUE (work_item_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_item_watcher_work_item_id ON work_item_watcher (work_item_id);
+CREATE INDEX IF NOT EXISTS idx_work_item_watcher_user_id ON work_item_watcher (user_id);

@@ -14,4 +14,4 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+ALTER TABLE work_item ADD COLUMN IF NOT EXISTS description TEXT;

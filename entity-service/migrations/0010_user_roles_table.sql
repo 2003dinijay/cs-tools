@@ -14,4 +14,14 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+CREATE TABLE IF NOT EXISTS user_role (
+    id UUID PRIMARY KEY,
+    created_on TIMESTAMPTZ NOT NULL,
+    updated_on TIMESTAMPTZ NOT NULL,
+    created_by VARCHAR(255),
+    updated_by VARCHAR(255),
+    user_id UUID NOT NULL REFERENCES "user"(id),
+    role_id UUID NOT NULL REFERENCES role(id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_role_user_id ON user_role (user_id);
+CREATE INDEX IF NOT EXISTS idx_user_role_role_id ON user_role (role_id);

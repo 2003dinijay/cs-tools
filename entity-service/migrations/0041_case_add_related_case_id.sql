@@ -14,4 +14,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+ALTER TABLE "case" ADD COLUMN IF NOT EXISTS related_case_id UUID REFERENCES "case"(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_case_related_case_id ON "case" (related_case_id);

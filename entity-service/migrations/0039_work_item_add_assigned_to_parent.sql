@@ -14,4 +14,12 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+ALTER TABLE work_item ADD COLUMN IF NOT EXISTS assigned_to_id UUID REFERENCES "user"(id) ON DELETE SET NULL;
+
+-- Self-referential (work_item -> work_item), deliberately SET NULL not CASCADE - a
+-- self-referential cascade could ripple through an entire chain of child records, a much
+-- less predictable blast radius than any other FK relationship in this schema.
+ALTER TABLE work_item ADD COLUMN IF NOT EXISTS parent_id UUID REFERENCES work_item(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_work_item_assigned_to_id ON work_item (assigned_to_id);
+CREATE INDEX IF NOT EXISTS idx_work_item_parent_id ON work_item (parent_id);

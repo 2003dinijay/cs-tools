@@ -14,4 +14,16 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS case_attachments;
+DO $$ BEGIN
+    CREATE TYPE project_role_enum AS ENUM ('ADMIN', 'SECURITY_CONTACT', 'BUSINESS_CONTACT', 'PORTAL_USER', 'LEAD_USER');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+CREATE TABLE IF NOT EXISTS project_role (
+    id UUID PRIMARY KEY,
+    created_on TIMESTAMPTZ NOT NULL,
+    updated_on TIMESTAMPTZ NOT NULL,
+    created_by VARCHAR(255) NOT NULL,
+    updated_by VARCHAR(255) NOT NULL,
+    role project_role_enum NOT NULL,
+    UNIQUE (role)
+);
