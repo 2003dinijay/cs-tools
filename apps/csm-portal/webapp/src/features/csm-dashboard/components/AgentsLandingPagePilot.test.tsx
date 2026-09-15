@@ -310,33 +310,49 @@ describe("AgentsLandingPagePilot", () => {
     expect(screen.queryByText(/{{currentTeam}}/)).not.toBeInTheDocument();
   });
 
-  it("shows a local-draft note when a dashboard_designer has an unsaved draft for this dashboard", async () => {
+  it("shows a local-draft note, and renders the DRAFT's widgets (not the deployed ones), when a dashboard_designer has an unsaved draft for this dashboard", async () => {
     currentUserMock.mockReturnValue({
       user: { id: "u-1", roles: ["dashboard_designer"] },
       isLoading: false,
       isError: false,
     });
     getMock.mockResolvedValue(DASHBOARD_DETAIL);
-    postMock.mockResolvedValue(searchResponseFor(3));
+    postMock.mockResolvedValue(searchResponseFor(9));
     saveDashboardDraft({
       id: "agents_pilot",
       sourceDashboardId: "agents_pilot",
       displayName: "Engineer overview (draft)",
       isDefault: true,
       isTeamBased: false,
-      widgets: [],
+      widgets: [
+        {
+          widgetId: "draft_only_widget",
+          displayName: "Draft Only Widget",
+          resourceType: "case",
+          shape: "count",
+          gridWidth: 3,
+          query: {},
+        },
+      ] as BeDashboardWidget[],
       emptySections: [],
     });
 
     renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
 
     await waitFor(() =>
-      expect(screen.getByText(/You have an unsaved local draft for this dashboard/)).toBeInTheDocument(),
+      expect(
+        screen.getByText(/You're viewing your unsaved local draft of this dashboard/),
+      ).toBeInTheDocument(),
     );
     expect(screen.getByText("open it in the dashboard builder")).toBeInTheDocument();
+    // The draft's own widget renders...
+    await waitFor(() => expect(screen.getByText("Draft Only Widget")).toBeInTheDocument());
+    // ...and the deployed dashboard's widgets do NOT — the draft fully
+    // replaces them here, it isn't merged with what's deployed.
+    expect(screen.queryByText("My Patches")).not.toBeInTheDocument();
   });
 
-  it("does not show the local-draft note for a viewer without dashboard-builder access, even with a stored draft", async () => {
+  it("shows the DEPLOYED widgets (not the draft's), with no note, for a viewer without dashboard-builder access, even with a stored draft", async () => {
     getMock.mockResolvedValue(DASHBOARD_DETAIL);
     postMock.mockResolvedValue(searchResponseFor(3));
     saveDashboardDraft({
@@ -345,13 +361,23 @@ describe("AgentsLandingPagePilot", () => {
       displayName: "Engineer overview (draft)",
       isDefault: true,
       isTeamBased: false,
-      widgets: [],
+      widgets: [
+        {
+          widgetId: "draft_only_widget",
+          displayName: "Draft Only Widget",
+          resourceType: "case",
+          shape: "count",
+          gridWidth: 3,
+          query: {},
+        },
+      ] as BeDashboardWidget[],
       emptySections: [],
     });
 
     renderWithClient(<AgentsLandingPagePilot dashboardId="agents_pilot" />);
 
     await waitFor(() => expect(screen.getByText("My Patches")).toBeInTheDocument());
+    expect(screen.queryByText("Draft Only Widget")).not.toBeInTheDocument();
     expect(screen.queryByText(/unsaved local draft/)).not.toBeInTheDocument();
   });
 

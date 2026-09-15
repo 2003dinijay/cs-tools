@@ -31,9 +31,13 @@ import {
 import { Plus } from "@wso2/oxygen-ui-icons-react";
 import { useCallback, useMemo, useState, type ChangeEvent, type JSX } from "react";
 import { useLocation, useSearchParams } from "react-router";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useNavTransition } from "@hooks/useNavTransition";
 import QueryErrorState from "@components/QueryErrorState";
+import { getColumnPreferencesUserKey } from "@hooks/useColumnPreferences";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
+import { useFilterBarCollapsed } from "@hooks/useFilterBarCollapsed";
+import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { useSearchProblems } from "@features/csm-operations/api/useSearchProblems";
 import {
   buildProblemSearchFilters,
@@ -69,7 +73,13 @@ export default function ProblemsTab(): JSX.Element {
     () => readProblemFiltersFromUrl(searchParams),
     [searchParams],
   );
-  const [isFiltersOpen, setIsFiltersOpen] = useState(true);
+  const currentUserEmail = useIdTokenClaims()?.email;
+  const currentUserId = useCurrentUser().user?.id;
+  const [isFiltersOpen, setIsFiltersOpen] = useFilterBarCollapsed(
+    "problems",
+    getColumnPreferencesUserKey({ id: currentUserId, email: currentUserEmail }),
+    true,
+  );
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
   const debouncedSearch = useDebouncedValue(filters.search.trim(), 300);
@@ -142,7 +152,7 @@ export default function ProblemsTab(): JSX.Element {
         onChange={handleFiltersChange}
         onReset={handleReset}
         isFiltersOpen={isFiltersOpen}
-        onFiltersToggle={() => setIsFiltersOpen((prev) => !prev)}
+        onFiltersToggle={() => setIsFiltersOpen(!isFiltersOpen)}
       />
 
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>

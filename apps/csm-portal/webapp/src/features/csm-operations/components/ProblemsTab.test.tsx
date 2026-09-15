@@ -45,6 +45,15 @@ vi.mock("@features/csm-dashboard/api/useTeams", () => ({
   useTeams: () => ({ data: [], isLoading: false }),
 }));
 
+// Only the filter-section collapsed state's storage key derives from the
+// signed-in user (same mocks as IncidentsTab.test.tsx/ChangeRequestsTab.test.tsx).
+vi.mock("@context/current-user/CurrentUserContext", () => ({
+  useCurrentUser: () => ({ user: { id: "user-1" }, isLoading: false, isError: false }),
+}));
+vi.mock("@hooks/useIdTokenClaims", () => ({
+  useIdTokenClaims: () => ({ email: "user@example.test" }),
+}));
+
 const mockedUseSearch = vi.mocked(useSearchProblems);
 
 function mockResult(overrides: Partial<ReturnType<typeof useSearchProblems>>): void {
