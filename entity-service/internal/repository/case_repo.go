@@ -35,6 +35,33 @@ import (
 // Addressable because CaseNumberRef.Type is an optional (pointer) field.
 var parentRefTypeCase = "case"
 
+// caseSeverityToEnum/caseSeverityFromEnum map domain.CaseSeverity's values
+// (catastrophic/critical/high/medium/low) to "case".severity's real
+// case_severity_enum labels (migration 000018: 'S0'..'S4' -- an entirely
+// different label set, not a case-only difference from the domain value the
+// way state/issue_type/work_state are). No migration comment or other
+// mapping table in this schema states the intended correspondence; this
+// follows the standard S0=most-severe/S4=least-severe ITSM convention,
+// matching the domain enum's own catastrophic-to-low ordering. Flagged here
+// in case that assumption turns out to be wrong -- without it, severity
+// can't be written or filtered on Postgres at all (every value the API
+// accepts fails "invalid input value for enum case_severity_enum").
+var caseSeverityToEnum = map[domain.CaseSeverity]string{
+	domain.CaseSeverityCatastrophic: "S0",
+	domain.CaseSeverityCritical:     "S1",
+	domain.CaseSeverityHigh:         "S2",
+	domain.CaseSeverityMedium:       "S3",
+	domain.CaseSeverityLow:          "S4",
+}
+
+var caseSeverityFromEnum = map[string]domain.CaseSeverity{
+	"S0": domain.CaseSeverityCatastrophic,
+	"S1": domain.CaseSeverityCritical,
+	"S2": domain.CaseSeverityHigh,
+	"S3": domain.CaseSeverityMedium,
+	"S4": domain.CaseSeverityLow,
+}
+
 // CaseRepository defines the persistence operations for the case entity,
 // split across work_item (migration 000016, fields common to every
 // work_item type) and "case" (migration 000018, a shared-PK extension
@@ -217,21 +244,21 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
 	var cv domain.CaseView
 	var (
-		aeID, aeName           *string
-		pcID, pcNum, pcType    *string
-		rcID, rcNum            *string
-		accountID, accountName *string
-		workState              *string
-		description            *string
-		depID, depName         string
-		dpID, dpDisplayName    string
-		prodID, prodName       string
-		creatorEmail           string
-		creatorID, creatorName *string
+		aeID, aeName                          *string
+		pcID, pcNum, pcType                   *string
+		rcID, rcNum                           *string
+		accountID, accountName                *string
+		severity, issueType, state, workState *string
+		description                           *string
+		depID, depName                        *string
+		dpID, dpDisplayName                   *string
+		prodID, prodName                      *string
+		creatorEmail                          string
+		creatorID, creatorName                *string
 	)
 	err := r.db.QueryRow(ctx,
 		`SELECT wi.id, wi.number, wi.wso2_id,
-		        wi.description, c.severity, c.issue_type, c.state, c.work_state,
+		        wi.description, c.severity::TEXT, c.issue_type::TEXT, c.state::TEXT, c.work_state::TEXT,
 		        wi.created_on, wi.updated_on, c.closed_on,
 		        wi.subject,
 		        wi.created_by, creator.id, COALESCE(creator.name, NULLIF(TRIM(CONCAT_WS(' ', creator.first_name, creator.last_name)), '')),
@@ -248,9 +275,9 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		 LEFT JOIN "user" creator ON LOWER(creator.email) = LOWER(wi.created_by)
 		 JOIN project p ON p.id = wi.project_id
 		 LEFT JOIN account a ON a.id = wi.account_id
-		 JOIN deployment d ON d.id = wi.deployment_id
-		 JOIN deployed_product dp ON dp.id = wi.deployed_product_id
-		 JOIN product prod ON prod.id = dp.product_id
+		 LEFT JOIN deployment d ON d.id = wi.deployment_id
+		 LEFT JOIN deployed_product dp ON dp.id = wi.deployed_product_id
+		 LEFT JOIN product prod ON prod.id = dp.product_id
 		 LEFT JOIN product_version pv ON pv.id = dp.version_id
 		 LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id
 		 LEFT JOIN work_item pw ON pw.id = wi.parent_id
@@ -259,7 +286,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		 WHERE wi.id = $1 AND wi.type = 'CASE'`, id,
 	).Scan(
 		&cv.ID, &cv.Number, &cv.InternalID,
-		&description, &cv.Severity, &cv.IssueType, &cv.State, &workState,
+		&description, &severity, &issueType, &state, &workState,
 		&cv.CreatedOn, &cv.UpdatedOn, &cv.ClosedOn,
 		&cv.Subject,
 		&creatorEmail, &creatorID, &creatorName,
@@ -284,19 +311,40 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 	if description != nil {
 		cv.Description = *description
 	}
+	// case_state_enum/case_issue_type_enum are UPPER_SNAKE_CASE while the
+	// domain values are lowercase; case_severity_enum's 'S0'..'S4' labels
+	// have no case-only relationship to the domain value at all -- see
+	// caseSeverityToEnum's own comment.
+	if severity != nil {
+		cv.Severity = caseSeverityFromEnum[*severity]
+	}
+	if issueType != nil {
+		cv.IssueType = domain.CaseIssueType(strings.ToLower(*issueType))
+	}
+	if state != nil {
+		cv.State = domain.CaseState(strings.ToLower(*state))
+	}
 	// wi.type = 'CASE' is the query's own WHERE clause, so hardcoding this
 	// is accurate, not a guess -- cheaper than adding another SELECT/Scan
 	// column for a value the query already guarantees.
 	caseType := "case"
 	cv.Type = &caseType
-	cv.DeploymentDetails = &domain.EntityRef{ID: depID, Name: depName}
-	cv.DeployedProductDetails = &domain.DeployedProductRef{
-		ID:          &dpID,
-		DisplayName: &dpDisplayName,
-		// The catalogue product the deployed instance was created from. Both
-		// joins are inner, so this data source always has one when it has a
-		// deployed product.
-		Product: &domain.EntityRef{ID: prodID, Name: prodName},
+	// deployment_id/deployed_product_id (and deployed_product.product_id) are
+	// all nullable on work_item (migration 000016) -- a case with no
+	// deployment linked is a valid state, same as SearchCases already treats
+	// it (see that query's own comment). These were previously INNER joins,
+	// which meant a case missing either link came back zero rows here
+	// (misreported as 404 "case not found") while still appearing fine in
+	// SearchCases's result list.
+	if depID != nil {
+		cv.DeploymentDetails = &domain.EntityRef{ID: *depID, Name: stringOrEmpty(depName)}
+	}
+	if dpID != nil {
+		dpRef := &domain.DeployedProductRef{ID: dpID, DisplayName: dpDisplayName}
+		if prodID != nil {
+			dpRef.Product = &domain.EntityRef{ID: *prodID, Name: stringOrEmpty(prodName)}
+		}
+		cv.DeployedProductDetails = dpRef
 	}
 	if accountID != nil {
 		name := ""
@@ -308,7 +356,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		cv.AccountDetails = &domain.AccountRef{ID: *accountID, Name: name}
 	}
 	if workState != nil {
-		ws := domain.CaseWorkState(*workState)
+		ws := domain.CaseWorkState(strings.ToLower(*workState))
 		cv.WorkState = &ws
 	}
 	// work_item.created_by is a free-text VARCHAR (an email), not a UUID FK
@@ -507,13 +555,17 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 // updated_case)" guard means it only actually touches a row when the case
 // update did -- so a nonexistent id updates nothing anywhere and the final
 // join returns zero rows, not a partial update.
+// updateCaseQuery's $2/$3/$4 arrive already converted to their real enum
+// labels by UpdateCase below (state/work_state upper-cased, severity mapped
+// through caseSeverityToEnum) -- case_state_enum's "CLOSED" is what $2 = ”
+// compares a non-empty state against here, not the domain value "closed".
 const updateCaseQuery = `
 	WITH updated_case AS (
 		UPDATE "case"
 		SET state      = CASE WHEN $2 <> '' THEN $2::case_state_enum ELSE state END,
 		    severity   = CASE WHEN $3 <> '' THEN $3::case_severity_enum ELSE severity END,
 		    work_state = CASE WHEN $4 <> '' THEN $4::case_work_state_enum ELSE work_state END,
-		    closed_on  = CASE WHEN $2 = 'closed' THEN NOW() WHEN $2 <> '' AND $2 <> 'closed' THEN NULL ELSE closed_on END
+		    closed_on  = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END
 		WHERE id = $1
 		RETURNING id, severity, issue_type, state, work_state, closed_on
 	),
@@ -525,7 +577,8 @@ const updateCaseQuery = `
 		          subject, description, created_on, updated_on
 	)
 	SELECT uwi.id, uwi.number, uwi.wso2_id, uwi.created_by, uwi.project_id, uwi.deployment_id, uwi.deployed_product_id,
-	       uwi.subject, uwi.description, uc.severity, uc.issue_type, uc.state, uc.work_state,
+	       uwi.subject, uwi.description,
+	       uc.severity::TEXT, uc.issue_type::TEXT, uc.state::TEXT, uc.work_state::TEXT,
 	       uwi.created_on, uwi.updated_on, uc.closed_on
 	FROM updated_work_item uwi
 	JOIN updated_case uc ON uc.id = uwi.id`
@@ -533,17 +586,26 @@ const updateCaseQuery = `
 // scanUpdatedCase is shared by both branches of UpdateCase below.
 func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 	var c domain.Case
-	var workStateRaw *string
+	var severity, issueType, state, workStateRaw *string
 	if err := row.Scan(
 		&c.ID, &c.Number, &c.InternalID, &c.CreatedBy,
 		&c.ProjectID, &c.DeploymentID, &c.DeployedProductID,
-		&c.Subject, &c.Description, &c.Severity, &c.IssueType, &c.State, &workStateRaw,
+		&c.Subject, &c.Description, &severity, &issueType, &state, &workStateRaw,
 		&c.CreatedOn, &c.UpdatedOn, &c.ClosedOn,
 	); err != nil {
 		return domain.Case{}, err
 	}
+	if severity != nil {
+		c.Severity = caseSeverityFromEnum[*severity]
+	}
+	if issueType != nil {
+		c.IssueType = domain.CaseIssueType(strings.ToLower(*issueType))
+	}
+	if state != nil {
+		c.State = domain.CaseState(strings.ToLower(*state))
+	}
 	if workStateRaw != nil {
-		ws := domain.CaseWorkState(*workStateRaw)
+		ws := domain.CaseWorkState(strings.ToLower(*workStateRaw))
 		c.WorkState = &ws
 	}
 	return c, nil
@@ -553,15 +615,15 @@ func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, domain.CaseSeverity, error) {
 	state := ""
 	if req.State != nil {
-		state = string(*req.State)
+		state = strings.ToUpper(string(*req.State))
 	}
 	severity := ""
 	if req.Severity != nil {
-		severity = string(*req.Severity)
+		severity = caseSeverityToEnum[*req.Severity]
 	}
 	workState := ""
 	if req.WorkState != nil {
-		workState = string(*req.WorkState)
+		workState = strings.ToUpper(string(*req.WorkState))
 	}
 
 	// req.Severity == nil: severity can't change, so there's nothing to
@@ -586,8 +648,8 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var previousSeverity domain.CaseSeverity
-	err = tx.QueryRow(ctx, `SELECT severity FROM "case" WHERE id = $1 FOR UPDATE`, req.ID).Scan(&previousSeverity)
+	var previousSeverityRaw *string
+	err = tx.QueryRow(ctx, `SELECT severity::TEXT FROM "case" WHERE id = $1 FOR UPDATE`, req.ID).Scan(&previousSeverityRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Case{}, "", &apierror.NotFoundError{Msg: "case not found"}
 	}
@@ -602,6 +664,10 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 
 	if err := tx.Commit(ctx); err != nil {
 		return domain.Case{}, "", fmt.Errorf("update case: commit tx: %w", err)
+	}
+	var previousSeverity domain.CaseSeverity
+	if previousSeverityRaw != nil {
+		previousSeverity = caseSeverityFromEnum[*previousSeverityRaw]
 	}
 	return c, previousSeverity, nil
 }
@@ -858,10 +924,18 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	// one -- applying any of these filters therefore implicitly narrows the
 	// result to case-type rows, since a non-case row's joined c.* columns
 	// are always NULL and can never equal a non-NULL filter value.
+	//
+	// domain.CaseState/CaseIssueType/CaseWorkState/EngagementType are all
+	// lowercase_snake_case (e.g. "work_in_progress"), while their real
+	// case_state_enum/case_issue_type_enum/case_work_state_enum/
+	// engagement_type_enum labels are UPPER_SNAKE_CASE -- strings.ToUpper
+	// bridges that (values match 1:1 once cased); a bare string(...) cast
+	// fails with "invalid input value for enum ..." on every one of these.
+	// Severity is the one exception -- see caseSeverityToEnum's own comment.
 	if len(req.Parsed.States) > 0 {
 		stateStrings := make([]string, len(req.Parsed.States))
 		for i, s := range req.Parsed.States {
-			stateStrings[i] = string(s)
+			stateStrings[i] = strings.ToUpper(string(s))
 		}
 		where += fmt.Sprintf(" AND c.state = ANY($%d::case_state_enum[])", argIdx)
 		filterArgs = append(filterArgs, stateStrings)
@@ -871,7 +945,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	if len(req.Parsed.Severities) > 0 {
 		severityStrings := make([]string, len(req.Parsed.Severities))
 		for i, s := range req.Parsed.Severities {
-			severityStrings[i] = string(s)
+			severityStrings[i] = caseSeverityToEnum[s]
 		}
 		where += fmt.Sprintf(" AND c.severity = ANY($%d::case_severity_enum[])", argIdx)
 		filterArgs = append(filterArgs, severityStrings)
@@ -881,7 +955,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	if len(req.Parsed.IssueTypes) > 0 {
 		issueTypeStrings := make([]string, len(req.Parsed.IssueTypes))
 		for i, it := range req.Parsed.IssueTypes {
-			issueTypeStrings[i] = string(it)
+			issueTypeStrings[i] = strings.ToUpper(string(it))
 		}
 		where += fmt.Sprintf(" AND c.issue_type = ANY($%d::case_issue_type_enum[])", argIdx)
 		filterArgs = append(filterArgs, issueTypeStrings)
@@ -896,7 +970,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		// filters above.
 		engTypeStrings := make([]string, len(req.Parsed.EngagementTypes))
 		for i, et := range req.Parsed.EngagementTypes {
-			engTypeStrings[i] = string(et)
+			engTypeStrings[i] = strings.ToUpper(string(et))
 		}
 		where += fmt.Sprintf(" AND eng.type = ANY($%d::engagement_type_enum[])", argIdx)
 		filterArgs = append(filterArgs, engTypeStrings)
@@ -914,7 +988,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	if len(req.Parsed.WorkStates) > 0 {
 		workStateStrings := make([]string, len(req.Parsed.WorkStates))
 		for i, ws := range req.Parsed.WorkStates {
-			workStateStrings[i] = string(ws)
+			workStateStrings[i] = strings.ToUpper(string(ws))
 		}
 		where += fmt.Sprintf(" AND c.work_state = ANY($%d::case_work_state_enum[])", argIdx)
 		filterArgs = append(filterArgs, workStateStrings)
@@ -991,8 +1065,8 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 
 	dataQuery := fmt.Sprintf(
 		`SELECT wi.id, wi.number, wi.wso2_id,
-		        wi.type::TEXT, wi.subject, wi.description, c.severity, c.issue_type, c.state,
-		        eng.type::TEXT, c.work_state, wi.created_on, wi.updated_on,
+		        wi.type::TEXT, wi.subject, wi.description, c.severity::TEXT, c.issue_type::TEXT, c.state::TEXT,
+		        eng.type::TEXT, c.work_state::TEXT, wi.created_on, wi.updated_on,
 		        wi.created_by,
 		        p.id, p.name,
 		        d.id, d.name,
@@ -1065,12 +1139,29 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			cv.Type = strings.ToLower(caseType)
 			cv.Subject = &subject
 			cv.Description = description
-			cv.Severity = severity
-			cv.IssueType = issueType
-			cv.EngagementType = engagementType
-			cv.WorkState = workState
+			// case_severity_enum/case_issue_type_enum/case_work_state_enum/
+			// engagement_type_enum are all UPPER_SNAKE_CASE (case_severity_enum
+			// is 'S0'..'S4', an entirely different label set -- see
+			// caseSeverityToEnum's own comment); the domain values these
+			// response fields carry are lowercase.
+			if severity != nil {
+				mapped := string(caseSeverityFromEnum[*severity])
+				cv.Severity = &mapped
+			}
+			if issueType != nil {
+				lower := strings.ToLower(*issueType)
+				cv.IssueType = &lower
+			}
+			if engagementType != nil {
+				lower := strings.ToLower(*engagementType)
+				cv.EngagementType = &lower
+			}
+			if workState != nil {
+				lower := strings.ToLower(*workState)
+				cv.WorkState = &lower
+			}
 			if state != nil {
-				cv.State = *state
+				cv.State = strings.ToLower(*state)
 			}
 			cv.CreatedOn = createdAt.UTC().Format(time.RFC3339)
 			cv.UpdatedOn = updatedAt.UTC().Format(time.RFC3339)
