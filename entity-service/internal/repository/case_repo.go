@@ -62,6 +62,52 @@ var caseSeverityFromEnum = map[string]domain.CaseSeverity{
 	"S4": domain.CaseSeverityLow,
 }
 
+// caseLikeWorkItemTypes is validCaseType's (case_service.go) five values,
+// spelled as the real work_item_type_enum labels: the work_item types
+// GetCaseByID/SearchCases treat as "a case" -- each is a shared-PK
+// work_item extension with its own state/cause/close_notes/closed_on/
+// resolved_on columns (migrations 000018/000019), unlike CHANGE_REQUEST,
+// INCIDENT, PROBLEM, and the rest of work_item_type_enum, which are surfaced
+// through entirely different endpoints.
+const caseLikeWorkItemTypes = `'{CASE,ENGAGEMENT,SERVICE_REQUEST,SECURITY_REPORT_ANALYSIS,ANNOUNCEMENT}'::work_item_type_enum[]`
+
+// caseLikeStateColumns COALESCEs state across every case-like work_item
+// extension table (aliased c/eng/sr/sra/ann) -- exactly one is non-null for
+// a given row, since each is a shared-PK extension keyed to a specific
+// wi.type. All five share the same case_state_enum label set except
+// announcement_state_enum, whose CLOSE (not CLOSED) is normalized here so
+// the response's lowercased state doesn't diverge from every other type's
+// "closed" for what is otherwise the same concept.
+const caseLikeStateColumn = `COALESCE(c.state::TEXT, eng.state::TEXT, sr.state::TEXT, sra.state::TEXT,
+	CASE WHEN ann.state::TEXT = 'CLOSE' THEN 'CLOSED' ELSE ann.state::TEXT END)`
+
+// caseLikeCauseColumn/caseLikeCloseNotesColumn/caseLikeResolvedOnColumn
+// mirror caseLikeStateColumn for the other three columns every case-like
+// extension table shares. *_cause_enum's label sets are identical across all
+// five tables (unlike state), so cause needs no per-branch normalization.
+const caseLikeCauseColumn = `COALESCE(c.cause::TEXT, eng.cause::TEXT, sr.cause::TEXT, sra.cause::TEXT, ann.cause::TEXT)`
+const caseLikeCloseNotesColumn = `COALESCE(c.close_notes, eng.close_notes, sr.close_notes, sra.close_notes, ann.close_notes)`
+const caseLikeResolvedOnColumn = `COALESCE(c.resolved_on, eng.resolved_on, sr.resolved_on, sra.resolved_on, ann.resolved_on)`
+const caseLikeClosedOnColumn = `COALESCE(c.closed_on, eng.closed_on, sr.closed_on, sra.closed_on, ann.closed_on)`
+
+// caseLikeJoins LEFT-joins every case-like work_item extension table other
+// than "case" itself (each caller already joins "case" under its own alias,
+// since some callers need it INNER/LEFT differently and some don't select
+// from it at all). Every join is on the shared-PK pattern (migrations
+// 000018/000019): <table>.id = wi.id.
+const caseLikeJoins = `
+	LEFT JOIN engagement eng ON eng.id = wi.id
+	LEFT JOIN service_request sr ON sr.id = wi.id
+	LEFT JOIN security_report_analysis sra ON sra.id = wi.id
+	LEFT JOIN announcement ann ON ann.id = wi.id`
+
+// caseEscalationLevelFromEnum strips case_escalation_level_enum's 'EL'
+// prefix ('EL0'..'EL5') to the "0".."5" id CaseView.EscalationLevel's own
+// doc comment specifies.
+func caseEscalationLevelFromEnum(raw string) string {
+	return strings.TrimPrefix(raw, "EL")
+}
+
 // CaseRepository defines the persistence operations for the case entity,
 // split across work_item (migration 000016, fields common to every
 // work_item type) and "case" (migration 000018, a shared-PK extension
@@ -235,31 +281,39 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 
 // GetCaseByID implements CaseRepository.
 //
-// case.id IS work_item.id (a shared-PK extension, migration 000018) -- the
-// case-specific fields (severity/issue_type/state/work_state/closed_on) come
-// from "case", everything else (number, subject, created_on/updated_on,
-// created_by, project/deployment/deployed-product/account ids, assignee,
-// parent) from work_item, since those are common to every work_item type,
-// not just cases.
+// Serves all five case-like work_item types (caseLikeWorkItemTypes), not
+// just CASE -- ENGAGEMENT/SERVICE_REQUEST/SECURITY_REPORT_ANALYSIS/
+// ANNOUNCEMENT previously 404'd here even though SearchCases already
+// returned them. severity/issue_type/work_state/resolution_code/
+// current_escalation_level/is_escalated only ever come from "case" (no
+// other extension table has them); state/cause/close_notes/resolved_on/
+// closed_on are COALESCEd across whichever extension table actually matches
+// wi.type (caseLike*Column consts) since exactly one ever does.
 func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
 	var cv domain.CaseView
 	var (
-		aeID, aeName                          *string
-		pcID, pcNum, pcType                   *string
-		rcID, rcNum                           *string
-		accountID, accountName                *string
-		severity, issueType, state, workState *string
-		description                           *string
-		depID, depName                        *string
-		dpID, dpDisplayName                   *string
-		prodID, prodName                      *string
-		creatorEmail                          string
-		creatorID, creatorName                *string
+		aeID, aeName                                  *string
+		pcID, pcNum, pcType                           *string
+		rcID, rcNum                                   *string
+		accountID, accountName                        *string
+		severity, issueType, workState, caseType      *string
+		state, cause, resolutionNotes, resolutionCode *string
+		escalationLevel                               *string
+		isEscalated                                   *bool
+		resolvedOn                                    *time.Time
+		description                                   *string
+		depID, depName                                *string
+		dpID, dpDisplayName                           *string
+		prodID, prodName                              *string
+		creatorEmail                                  string
+		creatorID, creatorName                        *string
 	)
 	err := r.db.QueryRow(ctx,
-		`SELECT wi.id, wi.number, wi.wso2_id,
-		        wi.description, c.severity::TEXT, c.issue_type::TEXT, c.state::TEXT, c.work_state::TEXT,
-		        wi.created_on, wi.updated_on, c.closed_on,
+		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT,
+		        wi.description, c.severity::TEXT, c.issue_type::TEXT, c.work_state::TEXT,
+		        `+caseLikeStateColumn+`, `+caseLikeCauseColumn+`, `+caseLikeCloseNotesColumn+`,
+		        c.resolution_code::TEXT, c.current_escalation_level::TEXT, c.is_escalated,
+		        wi.created_on, wi.updated_on, `+caseLikeClosedOnColumn+`, `+caseLikeResolvedOnColumn+`,
 		        wi.subject,
 		        wi.created_by, creator.id, COALESCE(creator.name, NULLIF(TRIM(CONCAT_WS(' ', creator.first_name, creator.last_name)), '')),
 		        p.id, p.name,
@@ -271,7 +325,8 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		        pw.id, pw.number, pw.type::TEXT,
 		        rc_wi.id, rc_wi.number
 		 FROM work_item wi
-		 JOIN "case" c ON c.id = wi.id
+		 LEFT JOIN "case" c ON c.id = wi.id
+		 `+caseLikeJoins+`
 		 LEFT JOIN "user" creator ON LOWER(creator.email) = LOWER(wi.created_by)
 		 JOIN project p ON p.id = wi.project_id
 		 LEFT JOIN account a ON a.id = wi.account_id
@@ -283,11 +338,13 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		 LEFT JOIN work_item pw ON pw.id = wi.parent_id
 		 LEFT JOIN "case" rc ON rc.id = c.related_case_id
 		 LEFT JOIN work_item rc_wi ON rc_wi.id = rc.id
-		 WHERE wi.id = $1 AND wi.type = 'CASE'`, id,
+		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)`, id,
 	).Scan(
-		&cv.ID, &cv.Number, &cv.InternalID,
-		&description, &severity, &issueType, &state, &workState,
-		&cv.CreatedOn, &cv.UpdatedOn, &cv.ClosedOn,
+		&cv.ID, &cv.Number, &cv.InternalID, &caseType,
+		&description, &severity, &issueType, &workState,
+		&state, &cause, &resolutionNotes,
+		&resolutionCode, &escalationLevel, &isEscalated,
+		&cv.CreatedOn, &cv.UpdatedOn, &cv.ClosedOn, &resolvedOn,
 		&cv.Subject,
 		&creatorEmail, &creatorID, &creatorName,
 		&cv.ProjectDetails.ID, &cv.ProjectDetails.Name,
@@ -324,11 +381,27 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 	if state != nil {
 		cv.State = domain.CaseState(strings.ToLower(*state))
 	}
-	// wi.type = 'CASE' is the query's own WHERE clause, so hardcoding this
-	// is accurate, not a guess -- cheaper than adding another SELECT/Scan
-	// column for a value the query already guarantees.
-	caseType := "case"
-	cv.Type = &caseType
+	if cause != nil {
+		c := domain.CaseCause(*cause)
+		cv.Cause = &c
+	}
+	if resolutionNotes != nil {
+		cv.ResolutionNotes = resolutionNotes
+	}
+	if resolutionCode != nil {
+		rc := domain.CaseResolutionCode(*resolutionCode)
+		cv.ResolutionCode = &rc
+	}
+	if escalationLevel != nil {
+		el := caseEscalationLevelFromEnum(*escalationLevel)
+		cv.EscalationLevel = &el
+	}
+	cv.IsEscalated = isEscalated
+	cv.ResolvedOn = resolvedOn
+	if caseType != nil {
+		lower := strings.ToLower(*caseType)
+		cv.Type = &lower
+	}
 	// deployment_id/deployed_product_id (and deployed_product.product_id) are
 	// all nullable on work_item (migration 000016) -- a case with no
 	// deployment linked is a valid state, same as SearchCases already treats
@@ -905,6 +978,13 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		where += fmt.Sprintf(" AND wi.type = ANY($%d::work_item_type_enum[])", argIdx)
 		filterArgs = append(filterArgs, typeStrings)
 		argIdx++
+	} else {
+		// No explicit types filter: default to the five case-like types
+		// (validCaseType in case_service.go), not every work_item_type_enum
+		// value -- otherwise this would also return change requests,
+		// incidents, and every other work_item type mixed into "case"
+		// search results.
+		where += " AND wi.type = ANY(" + caseLikeWorkItemTypes + ")"
 	}
 
 	if len(req.Parsed.ProjectIDs) > 0 {
@@ -1050,7 +1130,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	// (see validateCreateCaseRequest) -- an INNER join would silently drop
 	// them from every search result.
 	joins := `LEFT JOIN "case" c ON c.id = wi.id
-		 LEFT JOIN engagement eng ON eng.id = wi.id
+		 ` + caseLikeJoins + `
 		 JOIN project p ON p.id = wi.project_id
 		 LEFT JOIN deployment d ON d.id = wi.deployment_id
 		 LEFT JOIN deployed_product dp ON dp.id = wi.deployed_product_id
@@ -1065,8 +1145,8 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 
 	dataQuery := fmt.Sprintf(
 		`SELECT wi.id, wi.number, wi.wso2_id,
-		        wi.type::TEXT, wi.subject, wi.description, c.severity::TEXT, c.issue_type::TEXT, c.state::TEXT,
-		        eng.type::TEXT, c.work_state::TEXT, wi.created_on, wi.updated_on,
+		        wi.type::TEXT, wi.subject, wi.description, c.severity::TEXT, c.issue_type::TEXT, `+caseLikeStateColumn+`,
+		        eng.type::TEXT, c.work_state::TEXT, c.current_escalation_level::TEXT, wi.created_on, wi.updated_on,
 		        wi.created_by,
 		        p.id, p.name,
 		        d.id, d.name,
@@ -1106,7 +1186,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			var cv domain.SearchCaseView
 			var caseType, subject string
 			var description *string
-			var severity, issueType, engagementType, workState, state *string
+			var severity, issueType, engagementType, workState, state, escalationLevel *string
 			var createdAt, updatedAt time.Time
 			var aeID, aeName *string
 			var pcID, pcNumber *string
@@ -1118,7 +1198,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			if err := rows.Scan(
 				&cv.ID, &cv.Number, &cv.InternalID,
 				&caseType, &subject, &description, &severity, &issueType, &state,
-				&engagementType, &workState, &createdAt, &updatedAt,
+				&engagementType, &workState, &escalationLevel, &createdAt, &updatedAt,
 				&creatorEmail,
 				&cv.Project.ID, &cv.Project.Name,
 				&depID, &depName,
@@ -1162,6 +1242,10 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			}
 			if state != nil {
 				cv.State = strings.ToLower(*state)
+			}
+			if escalationLevel != nil {
+				el := caseEscalationLevelFromEnum(*escalationLevel)
+				cv.EscalationLevel = &el
 			}
 			cv.CreatedOn = createdAt.UTC().Format(time.RFC3339)
 			cv.UpdatedOn = updatedAt.UTC().Format(time.RFC3339)

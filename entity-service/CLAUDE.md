@@ -1020,6 +1020,48 @@ product, account, deployment, deployed_product, split across
     conflict loop — either way, the exact prefix/padding/format needs a
     real answer, not an invented one.
 
+## Case-like work_item types, GetMe roles/groups, and groups
+
+**GetCaseByID/SearchCases now serve all five case-like work_item types**
+(`validCaseType` in `case_service.go`: case/engagement/service_request/
+security_report_analysis/announcement), not just `CASE`. Previously
+`GetCaseByID` hard-filtered `wi.type = 'CASE'`, so the other four 404'd on
+detail lookup even though `SearchCases` already returned them; `SearchCases`
+itself defaulted to *no* type restriction when the caller passed no `types`
+filter, which meant every work_item type (including change requests,
+incidents...) leaked into unfiltered case search results. Both are fixed via
+`caseLikeWorkItemTypes`/`caseLikeJoins`/`caseLike*Column` (`case_repo.go`):
+`state`/`cause`/`close_notes`/`resolved_on`/`closed_on` are `COALESCE`d
+across whichever of the five extension tables actually matches (exactly one
+ever does, since each is a shared-PK extension keyed to a specific
+`wi.type`) — `announcement_state_enum`'s `CLOSE` (not `CLOSED`) is
+normalized to match the other four's vocabulary. `severity`/`issue_type`/
+`work_state`/`resolution_code`/`current_escalation_level`/`is_escalated`
+remain `"case"`-only, since no other extension table has those columns.
+`GetCaseByID` also now populates `Cause`/`ResolutionCode`/`ResolutionNotes`/
+`ResolvedOn`/`EscalationLevel`/`IsEscalated` for the first time — real
+columns that were simply never selected before, not previously believed
+unavailable. `EscalationLevel` strips `case_escalation_level_enum`'s `EL`
+prefix (`'EL2'` -> `"2"`) per `CaseView.EscalationLevel`'s own doc comment.
+
+**`GetMe.Roles`/`GetMe.Groups`** were hardcoded to empty slices even though
+the tables to back them already existed and were queried elsewhere:
+`UserRepository.GetUserRoles`/`GetUserGroups` (`user_repo.go`) join
+`user_role`/`role` and `team_member`/`team` respectively for the caller's
+own id.
+
+**`POST /groups/search`** is now Postgres-backed too (`group_repo.go`),
+against `team` (migration 000028) — "mirror[s] a hand-curated allow-list of
+ServiceNow's OOB sys_user_group / sys_user_grmember tables" per that
+migration's own comment, the same concept `GroupService` searches.
+`domain.Group.Active` has no backing column and is hardcoded `true`;
+`Parent` has no hierarchy column on `team` and is always `nil`.
+
+**Not wired up**: `project_type` has no corresponding field anywhere on
+`domain.Project`/`ProjectDetail` today, so there is nothing to populate
+without first adding a new response field — left alone pending that
+decision, not overlooked.
+
 ## IT services (CMDB services)
 
 `service` (migration 000048) is a standalone table — no FK to or from any

@@ -584,8 +584,10 @@ type ConfigurationItemService interface {
 	SearchConfigurationItems(ctx context.Context, req domain.SearchConfigurationItemsRequest) (domain.SearchConfigurationItemsResponse, error)
 }
 
-// GroupService defines the operations available on the groups entity.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// GroupService defines the operations available on the groups entity. On
+// Postgres this is backed by the team table (migration 000028); Group.Active
+// is always true and Group.Parent always nil there -- see
+// GroupRepository's own doc comment.
 type GroupService interface {
 	// SearchGroups returns a paginated list of groups filtered by optional search query.
 	SearchGroups(ctx context.Context, req domain.SearchGroupsRequest) (domain.SearchGroupsResponse, error)

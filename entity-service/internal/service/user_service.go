@@ -205,6 +205,14 @@ func (s *userService) GetMe(ctx context.Context) (domain.GetUserMeResponse, erro
 	if err != nil {
 		return domain.GetUserMeResponse{}, err
 	}
+	roles, err := s.repo.GetUserRoles(ctx, user.ID)
+	if err != nil {
+		return domain.GetUserMeResponse{}, err
+	}
+	groups, err := s.repo.GetUserGroups(ctx, user.ID)
+	if err != nil {
+		return domain.GetUserMeResponse{}, err
+	}
 
 	firstName := user.FirstName
 	return domain.GetUserMeResponse{
@@ -213,7 +221,7 @@ func (s *userService) GetMe(ctx context.Context) (domain.GetUserMeResponse, erro
 		FirstName: &firstName,
 		LastName:  user.LastName,
 		TimeZone:  user.Timezone,
-		Roles:     []string{},
-		Groups:    []domain.UserGroupRef{},
+		Roles:     roles,
+		Groups:    groups,
 	}, nil
 }

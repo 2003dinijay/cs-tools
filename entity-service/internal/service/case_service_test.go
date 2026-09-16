@@ -133,6 +133,16 @@ func (s stubUserRepo) GetUserByEmail(ctx context.Context, email string) (domain.
 	panic("not implemented")
 }
 
+// GetUserRoles/GetUserGroups return empty rather than panicking: GetMe calls
+// both unconditionally after GetUserByEmail succeeds, and none of this
+// stub's existing test cases care about their contents.
+func (stubUserRepo) GetUserRoles(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (stubUserRepo) GetUserGroups(context.Context, string) ([]domain.UserGroupRef, error) {
+	return nil, nil
+}
+
 // TestCaseService_SearchCases_RejectsUnsupportedPostgresFields proves the
 // Postgres-backed SearchCases path rejects each of the 9 filter fields
 // ParseCaseFieldFilters accepts but the Postgres repository has no query
