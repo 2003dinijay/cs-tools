@@ -200,6 +200,7 @@ func main() {
 
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
 	mux.HandleFunc("GET /projects/{id}", projectHandler.GetProject)
+	mux.HandleFunc("PATCH /projects/{id}", projectHandler.PatchProject)
 	mux.HandleFunc("GET /projects/{id}/filters", projectStatsHandler.GetProjectFilters)
 	mux.HandleFunc("GET /projects/{id}/features", projectStatsHandler.GetProjectFeatures)
 	mux.HandleFunc("GET /projects/{id}/stats", projectStatsHandler.GetProjectDashboardStats)

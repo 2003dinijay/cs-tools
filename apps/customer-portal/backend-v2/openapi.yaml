@@ -167,6 +167,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+    patch:
+      summary: Update a project's AI chat assistant settings.
+      description: |
+        Patches the AI chat assistant (Novera) settings for a project.
+        Exactly one field may be supplied per request; sending both or
+        neither is rejected with 400.
+      operationId: patchProjectsId
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectUpdateRequest'
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdatedProject'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
 
   /projects/{id}/filters:
     get:
@@ -5962,6 +6013,36 @@ components:
         activationDate:
           type: string
 
+    ProjectUpdateRequest:
+      type: object
+      description: |
+        AI chat assistant settings. Exactly one property may be present per
+        request — the upstream rejects anything else.
+      properties:
+        hasAgent:
+          type: boolean
+          description: Whether the AI assistant is enabled for the project.
+        hasKbReferences:
+          type: boolean
+          description: Whether the assistant cites knowledge-base articles.
+      additionalProperties: false
+      oneOf:
+        - required: [hasAgent]
+        - required: [hasKbReferences]
+    UpdatedProject:
+      type: object
+      description: The project as it stands after the patch.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        hasAgent:
+          type: boolean
+        hasKbReferences:
+          type: boolean
     ProjectDetails:
       type: object
       properties:

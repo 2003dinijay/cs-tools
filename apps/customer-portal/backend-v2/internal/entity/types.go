@@ -207,6 +207,49 @@ type ProjectFeatures struct {
 	SrProductCategories            []string           `json:"srProductCategories,omitempty"`
 }
 
+// UpdateProjectRequest is the body for PATCH /projects/{id}, which patches a
+// project's AI chat assistant (Novera) settings.
+//
+// Both fields are pointers and omitempty: entity-service accepts exactly ONE
+// per request, so a bool would make "false" indistinguishable from "absent"
+// and every request would look like it set both.
+type UpdateProjectRequest struct {
+	// HasAgent turns the AI assistant on or off for the project.
+	HasAgent *bool `json:"hasAgent,omitempty"`
+	// HasKbReferences controls whether the assistant cites knowledge-base
+	// articles in its answers.
+	HasKbReferences *bool `json:"hasKbReferences,omitempty"`
+}
+
+// FieldCount reports how many settings the request actually sets. The upstream
+// rejects anything other than one, and checking here turns a 400 round trip
+// into an immediate, specific error.
+func (r UpdateProjectRequest) FieldCount() int {
+	n := 0
+	if r.HasAgent != nil {
+		n++
+	}
+	if r.HasKbReferences != nil {
+		n++
+	}
+	return n
+}
+
+// UpdateProjectResponse is entity-service's reply to PATCH /projects/{id}.
+type UpdateProjectResponse struct {
+	Message string            `json:"message"`
+	Project UpdatedProjectRef `json:"project"`
+}
+
+// UpdatedProjectRef is the project as it stands after the patch. Only the
+// fields the caller needs to confirm the change; entity-service returns more.
+type UpdatedProjectRef struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	HasAgent        *bool  `json:"hasAgent,omitempty"`
+	HasKbReferences *bool  `json:"hasKbReferences,omitempty"`
+}
+
 // ProjectMetadataResponse is entity-service's response for GET /projects/{id}/metadata.
 type ProjectMetadataResponse struct {
 	CaseStates                  []ChoiceListItem     `json:"caseStates"`
