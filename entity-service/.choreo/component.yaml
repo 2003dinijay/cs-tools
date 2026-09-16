@@ -10,3 +10,20 @@ endpoints:
     networkVisibilities:
       - Organization
     schemaFilePath: openapi.yaml
+
+  # Published separately from the API above, and publicly, so external
+  # alerting can poll it without credentials. It is backed by its own
+  # listener on its own port (internal/server/health.go), not by another
+  # basePath on port 8080 — that listener's mux carries only the one route
+  # below, so nothing else in this service is reachable at public visibility
+  # even if this file is later edited wrongly. Do not point this endpoint at
+  # port 8080.
+  - name: entity-service-health
+    displayName: Entity Service Health
+    service:
+      basePath: /
+      port: 8081
+    type: REST
+    networkVisibilities:
+      - Public
+    schemaFilePath: health-openapi.yaml

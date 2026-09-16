@@ -115,8 +115,42 @@ HTTP Request
 | DB_PASSWORD | Yes      | —         | Database password |
 | DB_NAME     | Yes      | postgres  | Database name     |
 | DB_SSLMODE  | No       | require   | SSL mode          |
+| SERVER_PORT | No       | 8080      | Main API listener port |
+| HEALTH_PORT | No       | 8081      | Health probe listener port; must differ from `SERVER_PORT` |
 
 > `.env` file is loaded automatically if present. Absent `.env` is silently ignored; a malformed one causes a fatal startup error.
+
+## Health probes
+
+The service listens on **two** ports. `SERVER_PORT` (8080) carries the API and is published at
+**Organization** visibility. `HEALTH_PORT` (8081) carries nothing but the health probes and is
+published at **Public** visibility, so external alerting can poll it without credentials — see
+`.choreo/component.yaml`, which declares one Choreo endpoint per port.
+
+The split is deliberate and is the security boundary itself: what is publicly reachable is decided
+by which mux a handler is registered on (`internal/server/health.go`), not by a gateway path rule
+in another system that fails open if it is ever wrong. Nothing but the two probes below is
+reachable on the public port, whatever happens to that config. **Do not point the public Choreo
+endpoint at port 8080, and do not register business routes on the health mux.**
+
+| Probe | Port | Answers |
+| ----- | ---- | ------- |
+| `GET /health` | 8080 and 8081 | Always `200 {"status":"ok"}`. Pure liveness — makes no dependency calls, so a database outage never gets the instance restarted or pulled from rotation. |
+| `GET /health/db` | 8081 only | `200 {"status":"ok","database":"up"}` only when a round trip to PostgreSQL actually came back. Everything else is `503`: `database: "down"` when the round trip failed, `database: "not_configured"` when this deployment has no pool at all. |
+
+Two probes rather than one combined check, so alerting can tell "the component is down" apart from
+"the component is up but its database is not".
+
+`/health/db` reports success only for a confirmed round trip, which is why a deployment with no
+pool (`DATA_SOURCE=servicenow`, or `DB_*` config quietly dropped) also answers 503 rather than
+200 — it cannot answer the question the probe asks, and a 200 there would hide a real
+misconfiguration. **A `DATA_SOURCE=servicenow` deployment will therefore report 503 on
+`/health/db` continuously; alert on `/health` alone in those environments.**
+
+Failure bodies deliberately carry no error detail — no driver message, host, or port. The
+endpoint is public, so it reports only whether the dependency is up, never anything about the
+infrastructure behind it. Both probes send `Cache-Control: no-store`, since a cached 200 would
+keep reporting healthy straight through an outage.
 
 ### Directory vocabularies — moved
 
