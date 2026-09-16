@@ -19,6 +19,8 @@ package productconsumption
 import (
 	"context"
 	"fmt"
+
+	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/apierror"
 )
 
 // LicenseDownloadRequest is the input for ProcessLicenseDownload.
@@ -52,7 +54,7 @@ func (c *Client) ProcessLicenseDownload(ctx context.Context, req LicenseDownload
 
 	if status == statusPending {
 		if statusRes.Result.Name == nil || statusRes.Result.Description == nil {
-			return License{}, fmt.Errorf("productconsumption: application name and description are required for application creation")
+			return License{}, apierror.NewDataError("application is PENDING but the licensing service supplied no name/description for project %s", req.ProjectID)
 		}
 		app, err := c.createApplication(ctx, ApplicationCreateRequest{
 			Name:        *statusRes.Result.Name,
@@ -73,7 +75,7 @@ func (c *Client) ProcessLicenseDownload(ctx context.Context, req LicenseDownload
 	}
 
 	if applicationID == nil {
-		return License{}, fmt.Errorf("productconsumption: application ID is required")
+		return License{}, apierror.NewDataError("no application id for project %s after reaching status %d", req.ProjectID, status)
 	}
 
 	if status == statusCreated {
@@ -126,7 +128,7 @@ func (c *Client) ProcessLicenseDownload(ctx context.Context, req LicenseDownload
 		return license.Result.License, nil
 	}
 
-	return License{}, fmt.Errorf("productconsumption: unexpected application status: %d", status)
+	return License{}, apierror.NewDataError("application status %d is outside the set this flow handles", status)
 }
 
 // getConsumptionStatus calls POST /projects/{projectId}/consumption/status.
