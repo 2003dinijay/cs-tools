@@ -34,7 +34,7 @@ import {
 
 const { DateTimePicker, LocalizationProvider } = DatePickers;
 import { ArrowLeft, Link2 } from "@wso2/oxygen-ui-icons-react";
-import { useRef, useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
@@ -49,11 +49,16 @@ import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
 import { useSearchParentRecordsForSelect } from "@features/csm-operations/api/useSearchParentRecordsForSelect";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
 import {
+  changeRequestDraftKey,
   changeRequestStateLabel,
+  clearChangeRequestDraft,
   CLONE_SOURCE_GAP_MESSAGE,
   decodeParentRecordValue,
   encodeParentRecordValue,
+  loadChangeRequestDraft,
   parentRecordLabel,
+  saveChangeRequestDraft,
+  type ChangeRequestDraftContext,
   type CloneChangeRequestNavState,
   type CreateChangeRequestFromIncidentNavState,
   type ParentRecordOption,
@@ -212,10 +217,30 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const backState = location.state as { from?: string } | undefined;
   const backTarget = backState?.from ?? OPERATIONS_CHANGE_REQUESTS_PATH;
 
+  // This route unmounts (losing all local state) whenever the user navigates
+  // to another operations tab, and remounts fresh on the way back — without
+  // this, that remount re-seeds every field from the *original*
+  // cloneState/fromCaseState/fromIncidentState again, discarding anything
+  // typed in between. `draftKey` scopes a sessionStorage draft to this exact
+  // entry context (see `changeRequestDraftKey`'s doc comment for why); `draft`
+  // is read once, at mount, via a lazy `useState` initializer — every field
+  // below seeds from it in preference to the nav-state source when present.
+  const draftContext: ChangeRequestDraftContext = cloneState
+    ? { kind: "clone", sourceNumber: cloneState.sourceNumber }
+    : fromCaseState
+      ? { kind: "case", caseId: fromCaseState.caseId }
+      : fromIncidentState
+        ? { kind: "incident", incidentId: fromIncidentState.incidentId }
+        : { kind: "new" };
+  const draftKey = changeRequestDraftKey(draftContext);
+  const [draft] = useState(() => loadChangeRequestDraft(draftKey));
+
   // Slice on seed as well as on change: a source record at or beyond the cap
   // would otherwise load untrimmed, show a negative characters-left count, and
   // submit over-length if the user never edits the field.
-  const [subject, setSubject] = useState((cloneState?.subject ?? "").slice(0, SUBJECT_MAX));
+  const [subject, setSubject] = useState(
+    draft?.subject ?? (cloneState?.subject ?? "").slice(0, SUBJECT_MAX),
+  );
   // Pre-selected to match the legacy ServiceNow form's own defaults, rather
   // than leaving every dropdown blank — most change requests are Normal
   // type, Low impact. Priority has no default there either ("-- None --"),
@@ -226,27 +251,34 @@ export default function CreateChangeRequestPage(): JSX.Element {
   // editable here at all — see BeCreateChangeRequestPayload's doc comment:
   // `category` is 99.9% left at its default on real records and `risk`
   // isn't a field on the real ServiceNow CR form.
-  const [type, setType] = useState<string>(cloneState?.type ?? "normal");
-  const [impact, setImpact] = useState<string>(cloneState?.impact ?? "low");
-  const [priority, setPriority] = useState<string>(UNSET);
+  const [type, setType] = useState<string>(draft?.type ?? cloneState?.type ?? "normal");
+  const [impact, setImpact] = useState<string>(draft?.impact ?? cloneState?.impact ?? "low");
+  const [priority, setPriority] = useState<string>(draft?.priority ?? UNSET);
   // Always "new" regardless of the source record's own state/schedule/
   // approval — cloning must never carry an approval or a stale window
-  // across into the new change request.
-  const [state, setState] = useState<string>("new");
-  const [plannedStartDate, setPlannedStartDate] = useState("");
-  const [plannedEndDate, setPlannedEndDate] = useState("");
-  const [description, setDescription] = useState(cloneState?.description ?? "");
-  const [justification, setJustification] = useState(cloneState?.justification ?? "");
-  const [implementationPlan, setImplementationPlan] = useState("");
-  const [riskImpactAnalysis, setRiskImpactAnalysis] = useState("");
-  const [backoutPlan, setBackoutPlan] = useState("");
-  const [testPlan, setTestPlan] = useState(cloneState?.testPlan ?? "");
-  const [isPlanningVisibleToCustomers, setIsPlanningVisibleToCustomers] = useState(false);
-  const [groupId, setGroupId] = useState("");
-  const [assignedEngineerId, setAssignedEngineerId] = useState(
-    cloneState?.assignedEngineerId ?? "",
+  // across into the new change request. A restored draft is the one
+  // exception: it reflects wherever the user's own in-progress edit left this
+  // field (still just "new"/"assess"/"authorize" — the same options remain
+  // selectable either way), not the clone source's state.
+  const [state, setState] = useState<string>(draft?.state ?? "new");
+  const [plannedStartDate, setPlannedStartDate] = useState(draft?.plannedStartDate ?? "");
+  const [plannedEndDate, setPlannedEndDate] = useState(draft?.plannedEndDate ?? "");
+  const [description, setDescription] = useState(draft?.description ?? cloneState?.description ?? "");
+  const [justification, setJustification] = useState(
+    draft?.justification ?? cloneState?.justification ?? "",
   );
-  const [requestedById, setRequestedById] = useState("");
+  const [implementationPlan, setImplementationPlan] = useState(draft?.implementationPlan ?? "");
+  const [riskImpactAnalysis, setRiskImpactAnalysis] = useState(draft?.riskImpactAnalysis ?? "");
+  const [backoutPlan, setBackoutPlan] = useState(draft?.backoutPlan ?? "");
+  const [testPlan, setTestPlan] = useState(draft?.testPlan ?? cloneState?.testPlan ?? "");
+  const [isPlanningVisibleToCustomers, setIsPlanningVisibleToCustomers] = useState(
+    draft?.isPlanningVisibleToCustomers ?? false,
+  );
+  const [groupId, setGroupId] = useState(draft?.groupId ?? "");
+  const [assignedEngineerId, setAssignedEngineerId] = useState(
+    draft?.assignedEngineerId ?? cloneState?.assignedEngineerId ?? "",
+  );
+  const [requestedById, setRequestedById] = useState(draft?.requestedById ?? "");
   // The service request or incident this change request was raised from,
   // when picked — encoded as `"sr:<id>"`/`"inc:<id>"` (see
   // `encodeParentRecordValue`) since the underlying picker searches both
@@ -259,11 +291,12 @@ export default function CreateChangeRequestPage(): JSX.Element {
   // different record instead) can still be corrected without leaving the
   // form.
   const [parentValue, setParentValue] = useState(
-    fromCaseState
-      ? encodeParentRecordValue("service_request", fromCaseState.caseId)
-      : fromIncidentState
-        ? encodeParentRecordValue("incident", fromIncidentState.incidentId)
-        : "",
+    draft?.parentValue ??
+      (fromCaseState
+        ? encodeParentRecordValue("service_request", fromCaseState.caseId)
+        : fromIncidentState
+          ? encodeParentRecordValue("incident", fromIncidentState.incidentId)
+          : ""),
   );
   // Decoded once per render — `undefined` when nothing is selected or the
   // value doesn't parse (never expected in practice, but AsyncEntitySelect's
@@ -300,13 +333,65 @@ export default function CreateChangeRequestPage(): JSX.Element {
   // emptiness) gates it so manually clearing the field afterward sticks.
   // Adjusted during render (React's recommended pattern for this) rather
   // than in an effect, which would call setState synchronously post-commit.
+  // Starts already "done" when restoring a draft — the restored
+  // `requestedById` already reflects whatever this field held (auto-filled,
+  // cleared, or reassigned) when the user last edited it, and auto-fill
+  // running again here would stomp a deliberate clear.
   const { data: me } = useGetUsersMe();
   const meLabel = me ? userLabel(me) : undefined;
-  const autoFilledRequester = useRef(false);
+  const autoFilledRequester = useRef(draft !== null);
   if (me?.id && !autoFilledRequester.current) {
     autoFilledRequester.current = true;
     setRequestedById(me.id);
   }
+
+  // Writes the form's current values back to this entry context's draft on
+  // every change, so a later unmount/remount (switching operations tabs and
+  // back) restores them instead of re-seeding from the original clone/case/
+  // incident source. See `changeRequestDraftKey`'s doc comment for why the
+  // key is scoped per entry context.
+  useEffect(() => {
+    saveChangeRequestDraft(draftKey, {
+      subject,
+      type,
+      impact,
+      priority,
+      state,
+      plannedStartDate,
+      plannedEndDate,
+      description,
+      justification,
+      implementationPlan,
+      riskImpactAnalysis,
+      backoutPlan,
+      testPlan,
+      isPlanningVisibleToCustomers,
+      groupId,
+      assignedEngineerId,
+      requestedById,
+      parentValue,
+    });
+  }, [
+    draftKey,
+    subject,
+    type,
+    impact,
+    priority,
+    state,
+    plannedStartDate,
+    plannedEndDate,
+    description,
+    justification,
+    implementationPlan,
+    riskImpactAnalysis,
+    backoutPlan,
+    testPlan,
+    isPlanningVisibleToCustomers,
+    groupId,
+    assignedEngineerId,
+    requestedById,
+    parentValue,
+  ]);
 
   const isSubmitting = postChangeRequest.isPending || patchChangeRequest.isPending;
   // `isIncidentParentSelected` blocks submit entirely rather than just
@@ -346,6 +431,13 @@ export default function CreateChangeRequestPage(): JSX.Element {
 
     postChangeRequest.mutate(payload, {
       onSuccess: (created) => {
+        // The change request this draft was building now exists — drop it so
+        // a later visit to this same entry context (e.g. cloning the same
+        // source record again) starts clean rather than restoring this
+        // already-submitted content. Cleared regardless of how the follow-up
+        // PATCH below resolves; that's a separate, already-created record's
+        // linkage, not a reason to keep this draft around.
+        clearChangeRequestDraft(draftKey);
         const createdId = created.changeRequest.id;
         // POST /change-requests can't carry the originating-service-request
         // link (it isn't an accepted create field), so it's set with a
@@ -391,6 +483,15 @@ export default function CreateChangeRequestPage(): JSX.Element {
         showError(msg, err);
       },
     });
+  };
+
+  // Explicit "I'm abandoning this" signal from the user, unlike navigating to
+  // another operations tab mid-edit (which the draft above exists to survive)
+  // — Back and Cancel both drop the draft before leaving, so returning to
+  // this same entry context later starts clean.
+  const handleCancel = (): void => {
+    clearChangeRequestDraft(draftKey);
+    navigate(backTarget);
   };
 
   // Shared renderer for a "-- Select --" dropdown, matching the pattern used
@@ -468,7 +569,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
       <Button
         variant="text"
         startIcon={<ArrowLeft size={16} />}
-        onClick={() => navigate(backTarget)}
+        onClick={handleCancel}
         sx={{ mb: 1 }}
       >
         Back
@@ -758,7 +859,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
         </Box>
 
         <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1.5, mt: 2.5 }}>
-          <Button variant="outlined" onClick={() => navigate(backTarget)}>
+          <Button variant="outlined" onClick={handleCancel}>
             Cancel
           </Button>
           <Button

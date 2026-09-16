@@ -513,3 +513,114 @@ export interface CreateChangeRequestFromIncidentNavState {
   incidentNumber?: string;
   incidentSubject?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Create-form in-progress draft persistence
+//
+// CreateChangeRequestPage is a normal route (`/change-requests/new`), not a
+// tab kept alive by a persistent tab router — navigating to another
+// operations tab unmounts it, and navigating back remounts it fresh, which
+// would otherwise re-seed every field from the *original* clone/service-
+// request/incident source again and silently discard anything the user had
+// typed. sessionStorage (not a backend draft) closes that gap: the form
+// writes its own state back on every change and restores from it on mount,
+// scoped per browser tab (sessionStorage, not localStorage) so two tabs
+// editing different change requests never collide.
+
+/** Every field CreateChangeRequestPage keeps as local state, persisted as a
+ * single JSON draft so restoring it is a straight round-trip into useState's
+ * initializers. */
+export interface ChangeRequestDraft {
+  subject: string;
+  type: string;
+  impact: string;
+  priority: string;
+  state: string;
+  plannedStartDate: string;
+  plannedEndDate: string;
+  description: string;
+  justification: string;
+  implementationPlan: string;
+  riskImpactAnalysis: string;
+  backoutPlan: string;
+  testPlan: string;
+  isPlanningVisibleToCustomers: boolean;
+  groupId: string;
+  assignedEngineerId: string;
+  requestedById: string;
+  parentValue: string;
+}
+
+/** Which of the create form's three entry points (or none — opened fresh) a
+ * draft belongs to. Mirrors the mutually-exclusive nav-state shapes the page
+ * itself narrows on. */
+export type ChangeRequestDraftContext =
+  | { kind: "clone"; sourceNumber?: string }
+  | { kind: "case"; caseId: string }
+  | { kind: "incident"; incidentId: string }
+  | { kind: "new" };
+
+const DRAFT_STORAGE_PREFIX = "csm.createChangeRequest.draft.";
+
+/**
+ * The sessionStorage key an in-progress draft is saved under, scoped to the
+ * specific entry context the form was opened with. This is deliberate, not
+ * incidental: a single shared key would mean navigating to this same route
+ * for a *different* clone source (or a from-scratch change request, or a
+ * different originating service request/incident) would silently load a
+ * stale, mismatched draft left over from an earlier, unrelated in-progress
+ * edit — arguably worse than today's bug, since the wrong content would look
+ * plausible rather than obviously reset.
+ */
+export function changeRequestDraftKey(context: ChangeRequestDraftContext): string {
+  switch (context.kind) {
+    case "clone":
+      // Falls back to a fixed suffix on the (unexpected) case where a cloned
+      // record carries no number at all, rather than collapsing into the
+      // same key as the from-scratch path.
+      return `${DRAFT_STORAGE_PREFIX}clone:${context.sourceNumber ?? "unknown"}`;
+    case "case":
+      return `${DRAFT_STORAGE_PREFIX}case:${context.caseId}`;
+    case "incident":
+      return `${DRAFT_STORAGE_PREFIX}incident:${context.incidentId}`;
+    case "new":
+      return `${DRAFT_STORAGE_PREFIX}new`;
+  }
+}
+
+/** Reads back a previously saved draft for `key`, or `null` when there is
+ * none — including when sessionStorage is unavailable or the stored value
+ * doesn't parse, so a corrupt/foreign entry degrades to "no draft" rather
+ * than throwing during render. */
+export function loadChangeRequestDraft(key: string): ChangeRequestDraft | null {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as ChangeRequestDraft) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persists the form's current field values under `key`. Best-effort:
+ * sessionStorage can throw (quota, private-mode restrictions) and losing
+ * draft persistence is a degraded experience, not a reason to break the
+ * form, so a failure here is swallowed. */
+export function saveChangeRequestDraft(key: string, draft: ChangeRequestDraft): void {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(draft));
+  } catch {
+    // See doc comment above.
+  }
+}
+
+/** Removes the draft at `key` — called once the change request this draft
+ * was building has actually been created, or the user explicitly cancels, so
+ * a later visit to the same entry context starts clean instead of restoring
+ * stale content. */
+export function clearChangeRequestDraft(key: string): void {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // See saveChangeRequestDraft's doc comment.
+  }
+}
