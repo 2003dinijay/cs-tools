@@ -31,3 +31,5 @@ CREATE TABLE IF NOT EXISTS service_offering (
     consumer_type service_consumer_type_enum,
     state service_state_enum
 );
+
+CREATE INDEX IF NOT EXISTS idx_service_offering_parent_id ON service_offering (parent_id);
