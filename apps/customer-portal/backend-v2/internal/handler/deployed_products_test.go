@@ -46,7 +46,7 @@ func (f *fakeDeployedProductEntity) SearchDeployedProducts(_ context.Context, re
 			{
 				ID:         "dp123456789012345678901234567890",
 				Deployment: entity.EntityRef{ID: "dep1", Name: "Prod"},
-				Product:    entity.EntityRef{ID: "prod1", Name: "APIM"},
+				Product:    entity.ProductEntityRef{ID: "prod1", Name: "APIM"},
 				Cores:      &cores,
 				TPS:        &tps,
 				Category:   &cat,

@@ -7412,6 +7412,33 @@ components:
           format: date-time
           nullable: true
 
+    ProductRef:
+      type: object
+      description: >
+        A reference to a product, carrying the short key ServiceNow holds
+        alongside the display name.
+
+        Distinct from EntityRef because abbreviation is the only identifier the
+        product-updates catalogue understands: that service keys its update
+        levels as "wso2am"/"wso2is"/"wso2mi", while name is the display form
+        ("WSO2 API Manager"). The two vocabularies share nothing, so without
+        this field a caller cannot look up a deployed product's update levels.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        abbreviation:
+          type: string
+          nullable: true
+          description: >
+            Populated from ServiceNow only. The Postgres products table has no
+            equivalent column, so this is absent on that data source.
+      required:
+        - id
+        - name
+
     DeployedProductView:
       type: object
       properties:
@@ -7420,7 +7447,7 @@ components:
         deployment:
           $ref: '#/components/schemas/EntityRef'
         product:
-          $ref: '#/components/schemas/EntityRef'
+          $ref: '#/components/schemas/ProductRef'
         version:
           nullable: true
           allOf:
@@ -7434,6 +7461,12 @@ components:
         category:
           type: string
           nullable: true
+        description:
+          type: string
+          nullable: true
+          description: >
+            The customer's own note about this deployed product. Editable via
+            the update endpoint, so it is readable here too.
         updates:
           type: array
           nullable: true

@@ -6545,7 +6545,7 @@ components:
         deployment:
           $ref: '#/components/schemas/IdLabelRef'
         product:
-          $ref: '#/components/schemas/IdLabelRef'
+          $ref: '#/components/schemas/ProductRef'
         version:
           $ref: '#/components/schemas/DeployedProductVersion'
         cores:
@@ -6554,10 +6554,68 @@ components:
           type: number
         category:
           type: string
+        description:
+          type: string
+          description: >
+            The customer's own note about this deployed product. Editable via
+            PATCH, so it is returned here too — a client needs the current value
+            to show before changing it.
+        updates:
+          type: array
+          description: >
+            Update-level history recorded against this deployed product.
+            Omitted when none has been recorded. Together with
+            product.abbreviation this is what lets the Updates page work out
+            which update levels are still pending for a deployment.
+          items:
+            $ref: '#/components/schemas/ProductUpdate'
         createdOn:
           type: string
         updatedOn:
           type: string
+
+    ProductRef:
+      description: >
+        A product reference carrying the short product key alongside the
+        display label.
+
+        Distinct from IdLabelRef because abbreviation is the only identifier the
+        product-updates service recognises: it keys its catalogue as
+        "wso2am"/"wso2is"/"wso2mi", while label is the display name
+        ("WSO2 API Manager"). The two vocabularies have nothing in common, so a
+        deployed product cannot be matched to its update levels without it.
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        abbreviation:
+          type: string
+          description: >
+            Omitted when entity-service runs against Postgres, whose products
+            table has no equivalent column.
+      required:
+        - id
+        - label
+
+    ProductUpdate:
+      description: One update-level change recorded against a deployed product.
+      type: object
+      properties:
+        updateLevel:
+          type: integer
+        date:
+          type: string
+          format: date
+          description: >
+            A date-only "YYYY-MM-DD" string, passed through exactly as the
+            upstream records it rather than reformatted as a timestamp.
+        details:
+          type: string
+      required:
+        - updateLevel
+        - date
 
     SearchDeployedProductsResponse:
       description: >

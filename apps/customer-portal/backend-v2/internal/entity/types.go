@@ -1041,26 +1041,60 @@ func (v *DeployedProductVersionRef) UnmarshalJSON(data []byte) error {
 type DeployedProductView struct {
 	ID         string                     `json:"id"`
 	Deployment EntityRef                  `json:"deployment"`
-	Product    EntityRef                  `json:"product"`
+	Product    ProductEntityRef           `json:"product"`
 	Version    *DeployedProductVersionRef `json:"version"`
 	Cores      *string                    `json:"cores"`
 	TPS        *string                    `json:"tps"`
 	Category   *string                    `json:"category"`
-	CreatedOn  time.Time                  `json:"createdOn"`
-	UpdatedOn  time.Time                  `json:"updatedOn"`
+	// Description is the customer's own note about this deployed product.
+	// Editable via PATCH, so the read path must carry it too — without it a
+	// client cannot show the current value before changing it.
+	Description *string `json:"description"`
+	// Updates is the deployed product's update-level history as recorded
+	// upstream. entity-service has always returned it; this backend simply
+	// never decoded it, which left the portal unable to work out which update
+	// levels are still pending for a deployment.
+	Updates   []ProductUpdateEntry `json:"updates"`
+	CreatedOn time.Time            `json:"createdOn"`
+	UpdatedOn time.Time            `json:"updatedOn"`
+}
+
+// ProductEntityRef mirrors entity-service's ProductRef: a product reference
+// carrying the short key ServiceNow holds alongside the display name.
+//
+// Abbreviation ("wso2am", "wso2is") is the only identifier the product-updates
+// service recognises — it keys update levels by that, while Name is the display
+// form ("WSO2 API Manager"). The two vocabularies have no overlap, so dropping
+// this field is what left deployed products unmatchable against the update
+// catalogue.
+type ProductEntityRef struct {
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	Abbreviation *string `json:"abbreviation,omitempty"`
+}
+
+// ProductUpdateEntry mirrors entity-service's ProductUpdateEntry — one
+// update-level change recorded against a deployed product.
+type ProductUpdateEntry struct {
+	UpdateLevel int `json:"updateLevel"`
+	// Date is a date-only "YYYY-MM-DD" string, matching the upstream wire format.
+	Date    string  `json:"date"`
+	Details *string `json:"details"`
 }
 
 func (d *DeployedProductView) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID         string                     `json:"id"`
-		Deployment EntityRef                  `json:"deployment"`
-		Product    EntityRef                  `json:"product"`
-		Version    *DeployedProductVersionRef `json:"version"`
-		Cores      json.RawMessage            `json:"cores"`
-		TPS        json.RawMessage            `json:"tps"`
-		Category   json.RawMessage            `json:"category"`
-		CreatedOn  any                        `json:"createdOn"`
-		UpdatedOn  any                        `json:"updatedOn"`
+		ID          string                     `json:"id"`
+		Deployment  EntityRef                  `json:"deployment"`
+		Product     ProductEntityRef           `json:"product"`
+		Version     *DeployedProductVersionRef `json:"version"`
+		Cores       json.RawMessage            `json:"cores"`
+		TPS         json.RawMessage            `json:"tps"`
+		Category    json.RawMessage            `json:"category"`
+		Description *string                    `json:"description"`
+		Updates     []ProductUpdateEntry       `json:"updates"`
+		CreatedOn   any                        `json:"createdOn"`
+		UpdatedOn   any                        `json:"updatedOn"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -1069,6 +1103,8 @@ func (d *DeployedProductView) UnmarshalJSON(data []byte) error {
 	d.Deployment = raw.Deployment
 	d.Product = raw.Product
 	d.Version = raw.Version
+	d.Updates = raw.Updates
+	d.Description = raw.Description
 
 	if len(raw.Cores) > 0 && string(raw.Cores) != "null" {
 		var s string

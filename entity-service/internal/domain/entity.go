@@ -1165,16 +1165,40 @@ type DeployedProductVersionRef struct {
 type DeployedProductView struct {
 	ID         string                     `json:"id"`
 	Deployment EntityRef                  `json:"deployment"`
-	Product    EntityRef                  `json:"product"`
+	Product    ProductRef                 `json:"product"`
 	Version    *DeployedProductVersionRef `json:"version"`
 	Cores      *int                       `json:"cores"`
 	TPS        *float64                   `json:"tps"`
 	Category   *string                    `json:"category"`
+	// Description is the customer's own free-text note about this deployed
+	// product. It is editable through the update endpoint, so it has to be
+	// readable here too — otherwise a client cannot show the current value
+	// before changing it.
+	Description *string `json:"description"`
 	// Updates is the deployed product's update-level history, most-recent-first as
 	// returned by the backing data source. Nil/empty when none have been recorded.
 	Updates   []ProductUpdateEntry `json:"updates"`
 	CreatedOn time.Time            `json:"createdOn"`
 	UpdatedOn time.Time            `json:"updatedOn"`
+}
+
+// ProductRef is a reference to a product, carrying the short key ServiceNow
+// holds alongside the display name.
+//
+// It exists rather than reusing EntityRef because Abbreviation is the only
+// identifier the product-updates catalogue understands: that service keys its
+// update levels as "wso2am"/"wso2is"/"wso2mi", while Name is the display form
+// ("WSO2 API Manager"). Without this field a caller has no way to look up a
+// deployed product's update levels, since the two vocabularies share nothing.
+//
+// It is the same key ServiceNow matches on in cmdb_software_product_model, so
+// it is the product's identity rather than a convenience alias.
+type ProductRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Abbreviation is absent on the Postgres data source, whose products table
+	// has no equivalent column — it is populated only from ServiceNow.
+	Abbreviation *string `json:"abbreviation,omitempty"`
 }
 
 // ProductUpdateEntry records a single update-level change applied to a deployed product
