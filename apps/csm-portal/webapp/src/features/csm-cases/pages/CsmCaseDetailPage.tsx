@@ -1215,9 +1215,16 @@ export default function CsmCaseDetailPage(): JSX.Element {
         // (Wait on WSO2, Close, etc.) proceeds as before. Must run before
         // `proceedLifecycleTransition`, which is exactly what "Proceed
         // anyway" on the confirm dialog goes on to call.
+        //
+        // `CaseActionBar` already disables these two buttons while
+        // `isCommentsLoading`, so this shouldn't normally fire mid-load —
+        // but guard here too rather than trust `hasPublicComment(undefined)`
+        // (which reads as "no public comment") to answer correctly for a
+        // case whose comments just haven't arrived yet.
         if (
           (action === "request_info" || action === "propose_solution") &&
           targetState &&
+          !isCommentsLoading &&
           !hasPublicComment(comments)
         ) {
           setNoPublicCommentConfirm({ action, targetState });
@@ -1449,6 +1456,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
     [
       data,
       comments,
+      isCommentsLoading,
       showError,
       showSuccess,
       patchCase,
@@ -2366,6 +2374,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               isPending={patchCase.isPending && !isAcknowledging}
               onAcknowledge={onAcknowledge}
               isAcknowledging={isAcknowledging}
+              commentsLoading={isCommentsLoading}
             />
           </Box>
         )}
