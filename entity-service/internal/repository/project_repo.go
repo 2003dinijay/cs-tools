@@ -29,7 +29,17 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// ProjectRepository defines the persistence operations for the projects table.
+// ProjectRepository defines the persistence operations for the project
+// table (migration 000009). domain.Project.SubscriptionType/ClosureStatus
+// and domain.ProjectAccountRef.Tier have no corresponding column anywhere in
+// the migrations (SubscriptionType/ClosureStatus are ServiceNow vocabulary
+// with values -- e.g. "managed_cloud_subscription", "read_only" -- that
+// don't match any of project's several different closure-state columns;
+// account has no tier-like column at all), so they are left as their zero
+// value rather than guessed at. AgentEnabled/KbReferencesEnabled DO have a
+// clear real-column match (account.ai_gen_response_enabled/
+// smart_knowledge_base_suggestions_enabled) despite the name difference and
+// are populated from them.
 type ProjectRepository interface {
 	// SearchProjects returns a filtered, paginated slice of projects together
 	// with the total count of matching rows before pagination.
@@ -59,23 +69,18 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 	if req.SearchQuery != "" {
 		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(req.SearchQuery)
 		pattern := "%" + escaped + "%"
-		// All three ILIKE branches reference the same positional parameter — PostgreSQL
-		// allows a single $N to appear multiple times in one query.
-		where += fmt.Sprintf(
-			" AND (name ILIKE $%d ESCAPE '\\' OR key ILIKE $%d ESCAPE '\\' OR subscription_type::TEXT ILIKE $%d ESCAPE '\\')",
-			argIdx, argIdx, argIdx,
-		)
+		where += fmt.Sprintf(" AND (name ILIKE $%d ESCAPE '\\' OR key ILIKE $%d ESCAPE '\\')", argIdx, argIdx)
 		filterArgs = append(filterArgs, pattern)
 		argIdx++
 	}
 
-	countQuery := "SELECT COUNT(*) FROM projects " + where
+	countQuery := "SELECT COUNT(*) FROM project " + where
 
 	dataQuery := fmt.Sprintf(
-		`SELECT id, account_id, sf_id, name, key, subscription_type, closure_status,
-		        start_date, end_date, created_at, updated_at
-		 FROM projects %s
-		 ORDER BY created_at DESC, id
+		`SELECT id, account_id, sf_id, name, key,
+		        start_date, end_date, created_on, updated_on
+		 FROM project %s
+		 ORDER BY created_on DESC, id
 		 LIMIT $%d OFFSET $%d`,
 		where, argIdx, argIdx+1,
 	)
@@ -104,11 +109,13 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		for rows.Next() {
 			var p domain.Project
 			if err := rows.Scan(
-				&p.ID, &p.AccountID, &p.SfID, &p.Name, &p.Key, &p.SubscriptionType, &p.ClosureStatus,
+				&p.ID, &p.AccountID, &p.SfID, &p.Name, &p.Key,
 				&p.StartDate, &p.EndDate, &p.CreatedOn, &p.UpdatedOn,
 			); err != nil {
 				return fmt.Errorf("scan project: %w", err)
 			}
+			// SubscriptionType/ClosureStatus have no real column -- see this
+			// repository's own doc comment.
 			result = append(result, p)
 		}
 		if err := rows.Err(); err != nil {
@@ -128,25 +135,34 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 // GetProjectByID implements ProjectRepository.
 func (r *projectRepo) GetProjectByID(ctx context.Context, id string) (domain.ProjectDetailsView, error) {
 	var v domain.ProjectDetailsView
+	// account.ai_gen_response_enabled/smart_knowledge_base_suggestions_enabled
+	// are nullable BOOLEAN columns, but ProjectAccountRef.AgentEnabled/
+	// KbReferencesEnabled are plain (non-pointer) bool -- scan into *bool
+	// and treat a NULL column as false, not an error.
+	var agentEnabled, kbReferencesEnabled *bool
 	err := r.db.QueryRow(ctx,
-		`SELECT p.id, p.sf_id, p.name, p.key, p.subscription_type,
-		        p.start_date, p.end_date, p.created_at, p.updated_at,
-		        a.id, a.name, a.activation_date, a.tier::TEXT, a.region,
-		        a.agent_enabled, a.kb_references_enabled
-		 FROM projects p
-		 JOIN accounts a ON p.account_id = a.id
+		`SELECT p.id, p.sf_id, p.name, p.key,
+		        p.start_date, p.end_date, p.created_on, p.updated_on,
+		        a.id, a.name, a.activation_date, a.region,
+		        a.ai_gen_response_enabled, a.smart_knowledge_base_suggestions_enabled
+		 FROM project p
+		 JOIN account a ON p.account_id = a.id
 		 WHERE p.id = $1`, id,
 	).Scan(
-		&v.ID, &v.SfID, &v.Name, &v.Key, &v.SubscriptionType,
+		&v.ID, &v.SfID, &v.Name, &v.Key,
 		&v.StartDate, &v.EndDate, &v.CreatedOn, &v.UpdatedOn,
-		&v.Account.ID, &v.Account.Name, &v.Account.ActivationDate, &v.Account.Tier, &v.Account.Region,
-		&v.Account.AgentEnabled, &v.Account.KbReferencesEnabled,
+		&v.Account.ID, &v.Account.Name, &v.Account.ActivationDate, &v.Account.Region,
+		&agentEnabled, &kbReferencesEnabled,
 	)
+	// v.SubscriptionType and v.Account.Tier have no real column -- see this
+	// repository's own doc comment; left as their zero value.
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProjectDetailsView{}, &apierror.NotFoundError{Msg: "project not found"}
 	}
 	if err != nil {
 		return domain.ProjectDetailsView{}, fmt.Errorf("get project by id: %w", err)
 	}
+	v.Account.AgentEnabled = agentEnabled != nil && *agentEnabled
+	v.Account.KbReferencesEnabled = kbReferencesEnabled != nil && *kbReferencesEnabled
 	return v, nil
 }

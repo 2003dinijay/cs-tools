@@ -26,7 +26,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// DeployedProductRepository defines the persistence operations for the deployed_products table.
+// DeployedProductRepository defines the persistence operations for the
+// deployed_product table (migration 000014).
 type DeployedProductRepository interface {
 	// SearchDeployedProducts returns a filtered, paginated slice of enriched deployed-product
 	// views together with the total count of matching rows before pagination.
@@ -56,19 +57,26 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 		argIdx++
 	}
 
-	countQuery := "SELECT COUNT(*) FROM deployed_products dp " + where
+	countQuery := "SELECT COUNT(*) FROM deployed_product dp " + where
 
+	// update_level_info (JSONB) -- domain.DeployedProductView.Updates -- is
+	// deliberately not selected here: its actual JSON shape isn't confirmed
+	// against any real payload, so it's left unpopulated (nil, the correct
+	// "none recorded" value per that field's own doc comment) rather than
+	// guessed at. cores/tps/category, in contrast, are plain scalar columns
+	// with an unambiguous mapping, so they are selected.
 	dataQuery := fmt.Sprintf(
-		`SELECT dp.id, dp.created_at, dp.updated_at,
+		`SELECT dp.id, dp.created_on, dp.updated_on,
+		        dp.core_count, dp.tps_count, dp.product_category::TEXT,
 		        d.id, d.name,
 		        p.id, p.name,
 		        pv.id, pv.version, pv.release_date, pv.support_eol_date
-		 FROM deployed_products dp
-		 JOIN deployments d      ON dp.deployment_id      = d.id
-		 JOIN products p         ON dp.product_id         = p.id
-		 LEFT JOIN product_versions pv ON dp.product_version_id = pv.id
+		 FROM deployed_product dp
+		 JOIN deployment d ON dp.deployment_id = d.id
+		 JOIN product p ON dp.product_id = p.id
+		 LEFT JOIN product_version pv ON dp.version_id = pv.id
 		 %s
-		 ORDER BY dp.created_at DESC, dp.id
+		 ORDER BY dp.created_on DESC, dp.id
 		 LIMIT $%d OFFSET $%d`,
 		where, argIdx, argIdx+1,
 	)
@@ -101,6 +109,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 			var pvReleaseDate, pvEoLDate *time.Time
 			if err := rows.Scan(
 				&dp.ID, &dp.CreatedOn, &dp.UpdatedOn,
+				&dp.Cores, &dp.TPS, &dp.Category,
 				&dp.Deployment.ID, &dp.Deployment.Name,
 				&dp.Product.ID, &dp.Product.Name,
 				&pvID, &pvName, &pvReleaseDate, &pvEoLDate,
