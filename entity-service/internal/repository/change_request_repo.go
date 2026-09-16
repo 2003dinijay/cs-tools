@@ -540,10 +540,18 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 		crIdx++
 	}
 	if req.PlannedStartOn != nil {
-		addCR("start_on = $%d", *req.PlannedStartOn)
+		// ::text::timestamptz, not left uncast: assigning a bare Go string
+		// parameter directly to a TIMESTAMPTZ column makes Postgres infer
+		// that parameter's OID as timestamptz, and pgx v5's timestamptz
+		// codec has no encode plan for a raw string once that happens (it
+		// expects time.Time/pgtype.Timestamptz). Casting through text first
+		// keeps the parameter bound as text -- matching a Go string's own
+		// default codec -- with the timestamptz conversion then happening
+		// server-side.
+		addCR("start_on = $%d::text::timestamptz", *req.PlannedStartOn)
 	}
 	if req.PlannedEndOn != nil {
-		addCR("end_on = $%d", *req.PlannedEndOn)
+		addCR("end_on = $%d::text::timestamptz", *req.PlannedEndOn)
 	}
 	if req.Impact != nil {
 		addCR("impact = $%d::change_request_impact_enum", strings.ToUpper(string(*req.Impact)))
