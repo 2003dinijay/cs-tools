@@ -42,8 +42,10 @@ type LicenseDownloadRequest struct {
 // credentials) that must not be repeated once done.
 func (c *Client) ProcessLicenseDownload(ctx context.Context, req LicenseDownloadRequest) (License, error) {
 	statusRes, err := c.getConsumptionStatus(ctx, req.ProjectID, ConsumptionStatusRequest{
-		Email:        req.Email,
-		DeploymentID: req.DeploymentID,
+		Email: req.Email,
+		// In the body as well as the path: the service matches on it either
+		// way, and a dashed id matches nothing.
+		DeploymentID: uuidToSysID(req.DeploymentID),
 	})
 	if err != nil {
 		return License{}, fmt.Errorf("productconsumption: get consumption status: %w", err)
@@ -134,7 +136,7 @@ func (c *Client) ProcessLicenseDownload(ctx context.Context, req LicenseDownload
 // getConsumptionStatus calls POST /projects/{projectId}/consumption/status.
 func (c *Client) getConsumptionStatus(ctx context.Context, projectID string, req ConsumptionStatusRequest) (ConsumptionResult, error) {
 	var out ConsumptionResult
-	err := c.postJSON(ctx, fmt.Sprintf("/projects/%s/consumption/status", pathEscape(projectID)), req, &out)
+	err := c.postJSON(ctx, fmt.Sprintf("/projects/%s/consumption/status", pathEscape(uuidToSysID(projectID))), req, &out)
 	return out, err
 }
 
@@ -149,7 +151,7 @@ func (c *Client) createApplication(ctx context.Context, req ApplicationCreateReq
 // product-consumption service's own per-project state record.
 func (c *Client) updateProjectStatus(ctx context.Context, projectID string, req UpdateProjectStatusRequest) (ConsumptionResult, error) {
 	var out ConsumptionResult
-	err := c.patchJSON(ctx, fmt.Sprintf("/projects/%s", pathEscape(projectID)), req, &out)
+	err := c.patchJSON(ctx, fmt.Sprintf("/projects/%s", pathEscape(uuidToSysID(projectID))), req, &out)
 	return out, err
 }
 
@@ -179,7 +181,7 @@ func (c *Client) generateSecretKeys(ctx context.Context) (SecretKeysResponse, er
 // getDeploymentLicense calls POST /projects/{projectId}/deployments/{deploymentId}/license.
 func (c *Client) getDeploymentLicense(ctx context.Context, projectID, deploymentID string, req DeploymentLicenseRequest) (LicenseResponse, error) {
 	var out LicenseResponse
-	path := fmt.Sprintf("/projects/%s/deployments/%s/license", pathEscape(projectID), pathEscape(deploymentID))
+	path := fmt.Sprintf("/projects/%s/deployments/%s/license", pathEscape(uuidToSysID(projectID)), pathEscape(uuidToSysID(deploymentID)))
 	err := c.postJSON(ctx, path, req, &out)
 	return out, err
 }
