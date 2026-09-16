@@ -43,6 +43,7 @@ func sampleDeployedProduct() entity.SearchDeployedProductsResponse {
 					Name:         "WSO2 API Manager",
 					Abbreviation: abbrevPtr("wso2am"),
 				},
+				Description: abbrevPtr("API"),
 				Updates: []entity.ProductUpdateEntry{
 					{UpdateLevel: 70, Date: "2026-05-07", Details: abbrevPtr("initial update")},
 				},
@@ -96,6 +97,23 @@ func TestMapSearchDeployedProducts_ExposesUpdateHistory(t *testing.T) {
 	}
 }
 
+// TestMapSearchDeployedProducts_ExposesDescription guards the third field of
+// this class. The Manage Products dialog prefills its description editor from
+// this value and diffs against it to decide whether to send a change, so an
+// absent description made an existing one invisible in the UI. The v1 Ballerina
+// backend has always returned it.
+func TestMapSearchDeployedProducts_ExposesDescription(t *testing.T) {
+	out := MapSearchDeployedProducts(sampleDeployedProduct())
+
+	got := out.DeployedProducts[0].Description
+	if got == nil {
+		t.Fatal("description was dropped")
+	}
+	if *got != "API" {
+		t.Errorf("description = %q, want %q", *got, "API")
+	}
+}
+
 // TestMapSearchDeployedProducts_SerialisedKeys pins the JSON field names the
 // frontend will read. A struct-tag typo would otherwise pass every assertion
 // above while shipping an unusable response.
@@ -108,7 +126,8 @@ func TestMapSearchDeployedProducts_SerialisedKeys(t *testing.T) {
 	}
 
 	var decoded struct {
-		Product *struct {
+		Description *string `json:"description"`
+		Product     *struct {
 			ID           string  `json:"id"`
 			Label        string  `json:"label"`
 			Abbreviation *string `json:"abbreviation"`
@@ -133,6 +152,9 @@ func TestMapSearchDeployedProducts_SerialisedKeys(t *testing.T) {
 	if len(decoded.Updates) != 1 || decoded.Updates[0].UpdateLevel != 70 {
 		t.Errorf("updates absent or wrong in the wire form: %s", encoded)
 	}
+	if decoded.Description == nil || *decoded.Description != "API" {
+		t.Errorf("description absent from the wire form: %s", encoded)
+	}
 }
 
 // TestMapSearchDeployedProducts_OmitsAbsentOptionalFields covers the Postgres
@@ -143,6 +165,7 @@ func TestMapSearchDeployedProducts_OmitsAbsentOptionalFields(t *testing.T) {
 	in := sampleDeployedProduct()
 	in.DeployedProducts[0].Product.Abbreviation = nil
 	in.DeployedProducts[0].Updates = nil
+	in.DeployedProducts[0].Description = nil
 
 	out := MapSearchDeployedProducts(in)
 	encoded, err := json.Marshal(out.DeployedProducts[0])
@@ -161,6 +184,9 @@ func TestMapSearchDeployedProducts_OmitsAbsentOptionalFields(t *testing.T) {
 	if _, present := product["abbreviation"]; present {
 		t.Errorf("abbreviation should be omitted when the data source has none: %s", encoded)
 	}
+	if _, present := raw["description"]; present {
+		t.Errorf("description should be omitted when there is none: %s", encoded)
+	}
 }
 
 // TestDeployedProductViewUnmarshal_DecodesBothFields guards the hand-written
@@ -171,6 +197,7 @@ func TestDeployedProductViewUnmarshal_DecodesBothFields(t *testing.T) {
 		"id": "dp-1",
 		"deployment": {"id": "dep-1", "name": "Primary Production"},
 		"product": {"id": "prod-1", "name": "WSO2 Identity Server", "abbreviation": "wso2is"},
+		"description": "API",
 		"cores": 2,
 		"tps": 100.0,
 		"updates": [{"updateLevel": 70, "date": "2026-05-07", "details": "initial update"}],
@@ -187,5 +214,8 @@ func TestDeployedProductViewUnmarshal_DecodesBothFields(t *testing.T) {
 	}
 	if len(view.Updates) != 1 || view.Updates[0].UpdateLevel != 70 {
 		t.Errorf("updates not decoded: %+v", view.Updates)
+	}
+	if view.Description == nil || *view.Description != "API" {
+		t.Errorf("description not decoded: %+v", view.Description)
 	}
 }
