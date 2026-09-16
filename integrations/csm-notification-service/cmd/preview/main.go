@@ -124,6 +124,20 @@ func render(env events.Envelope, links *recipientlinks.Resolver) (subject string
 			ProjectName:   p.ProjectName,
 			Link:          links.ChangeRequestLink(p.Audience, p.ChangeRequestID, p.ProjectID),
 		}), nil
+	case events.TypeCRPlanDateNotice:
+		var p events.CRPlanDateNoticePayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return "", nil, "", fmt.Errorf("decode plan date payload: %w", err)
+		}
+		return p.Subject, p.Recipients, notifications.RenderCRPlanDateNoticeEmail(notifications.CRPlanDateEmailData{
+			Kind:             p.Kind,
+			Number:           p.Number,
+			ActorName:        p.ActorName,
+			ProjectName:      p.ProjectName,
+			ShortDescription: p.ShortDescription,
+			Description:      p.Description,
+			Link:             links.ChangeRequestLink(p.Audience, p.ChangeRequestID, p.ProjectID),
+		}), nil
 	default:
 		return "", nil, "", fmt.Errorf("no preview for %q yet — add a case in cmd/preview", env.Type)
 	}
