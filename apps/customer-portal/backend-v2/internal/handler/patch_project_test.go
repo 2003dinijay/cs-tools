@@ -48,8 +48,6 @@ func (f *fakeEntityProjectClient) UpdateProject(_ context.Context, id string, re
 	}, nil
 }
 
-func boolPtr(b bool) *bool { return &b }
-
 // TestPatchProject_RouteExists is the regression test for the bug this fixes:
 // the Ballerina backend served PATCH /projects/{id} and backend-v2 did not, so
 // toggling the AI assistant returned 404 from the mux rather than reaching any

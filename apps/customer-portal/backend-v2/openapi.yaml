@@ -6032,6 +6032,7 @@ components:
     UpdatedProject:
       type: object
       description: The project as it stands after the patch.
+      required: [id, name]
       properties:
         id:
           type: string

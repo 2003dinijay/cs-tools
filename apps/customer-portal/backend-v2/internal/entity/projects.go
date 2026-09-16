@@ -36,10 +36,6 @@ func (c *Client) GetProject(ctx context.Context, id string) (ProjectDetailsView,
 	return out, err
 }
 
-// GetProjectMetadata calls GET /projects/{id}/metadata.
-//
-// NOTE: only entity-service's ServiceNow data source supports this route —
-// see cs-tools/entity-service/internal/server/routes.go.
 // UpdateProject patches a project's AI-assistant settings via
 // PATCH /projects/{id}.
 //
@@ -51,6 +47,10 @@ func (c *Client) UpdateProject(ctx context.Context, id string, req UpdateProject
 	return out, err
 }
 
+// GetProjectMetadata calls GET /projects/{id}/metadata.
+//
+// NOTE: only entity-service's ServiceNow data source supports this route —
+// see cs-tools/entity-service/internal/server/routes.go.
 func (c *Client) GetProjectMetadata(ctx context.Context, id string) (ProjectMetadataResponse, error) {
 	var out ProjectMetadataResponse
 	err := c.getJSON(ctx, fmt.Sprintf("/projects/%s/metadata", url.PathEscape(id)), &out)
