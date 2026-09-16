@@ -6607,6 +6607,7 @@ components:
           type: integer
         date:
           type: string
+          format: date
           description: >
             A date-only "YYYY-MM-DD" string, passed through exactly as the
             upstream records it rather than reformatted as a timestamp.
