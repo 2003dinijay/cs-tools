@@ -7460,6 +7460,12 @@ components:
         category:
           type: string
           nullable: true
+        description:
+          type: string
+          nullable: true
+          description: >
+            The customer's own note about this deployed product. Editable via
+            the update endpoint, so it is readable here too.
         updates:
           type: array
           nullable: true
