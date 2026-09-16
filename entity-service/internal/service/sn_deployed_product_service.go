@@ -102,6 +102,11 @@ func fromSNProductUpdates(updates []snProductUpdate) []domain.ProductUpdateEntry
 type snDeployedProductRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// Abbreviation is the short product key ("wso2am", "wso2is"), carried by
+	// the upstream ReferenceTableItem record for the product reference and
+	// absent on the others. It is the only identifier the product-updates
+	// catalogue recognises — see domain.ProductRef.
+	Abbreviation *string `json:"abbreviation"`
 }
 
 type snDeployedProductVersion struct {
@@ -396,14 +401,18 @@ func (s *snDeployedProductService) SearchDeployedProducts(ctx context.Context, r
 		views = append(views, domain.DeployedProductView{
 			ID:         sysidToUUID(dp.ID),
 			Deployment: domain.EntityRef{ID: sysidToUUID(dp.Deployment.ID), Name: dp.Deployment.Name},
-			Product:    domain.EntityRef{ID: sysidToUUID(dp.Product.ID), Name: dp.Product.Name},
-			Version:    versionRef,
-			Cores:      dp.Cores,
-			TPS:        dp.TPS,
-			Category:   category,
-			Updates:    fromSNProductUpdates(dp.Updates),
-			CreatedOn:  createdOn,
-			UpdatedOn:  updatedOn,
+			Product: domain.ProductRef{
+				ID:           sysidToUUID(dp.Product.ID),
+				Name:         dp.Product.Name,
+				Abbreviation: dp.Product.Abbreviation,
+			},
+			Version:   versionRef,
+			Cores:     dp.Cores,
+			TPS:       dp.TPS,
+			Category:  category,
+			Updates:   fromSNProductUpdates(dp.Updates),
+			CreatedOn: createdOn,
+			UpdatedOn: updatedOn,
 		})
 	}
 
