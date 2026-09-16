@@ -46,6 +46,10 @@ vi.mock("@features/csm-cases/api/usePostCsmCase", () => ({
 }));
 vi.mock("@features/csm-cases/api/useCsmCaseAttachments", () => ({
   usePostCsmCaseAttachment: () => ({ mutateAsync: vi.fn(), uploadProgress: null }),
+  // AttachmentsField (rendered once a catalog item is selected, per the
+  // read-access gating tests below driving selection that far) reads this
+  // constant directly, not through the hook.
+  MAX_ATTACHMENT_SIZE_BYTES: 10 * 1024 * 1024,
 }));
 vi.mock("@hooks/useEngineerDisplayName", () => ({
   useEngineerDisplayName: () => "Test Engineer",
@@ -84,8 +88,16 @@ vi.mock("@features/csm-cases/api/useDeployedProductOptions", () => ({
     refetch: vi.fn(),
   }),
 }));
+// A single catalog with a single catalog item, so the read-access gating
+// tests below can drive selection all the way to a submittable state and
+// prove canSubmit's own gate, not just an earlier field being empty.
 vi.mock("@features/csm-operations/api/useSearchCatalogs", () => ({
-  useSearchCatalogs: () => ({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
+  useSearchCatalogs: () => ({
+    data: [{ id: "cat-1", name: "Support Catalog", catalogItems: [{ id: "item-1", name: "Restart service" }] }],
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  }),
 }));
 vi.mock("@features/csm-operations/api/useCatalogItemVariables", () => ({
   useCatalogItemVariables: () => ({ data: [], isLoading: false, isError: false }),
@@ -124,6 +136,24 @@ function selectProjectAndDeployment(): void {
   fireEvent.change(screen.getByLabelText("Project"), { target: { value: "proj-1" } });
   fireEvent.mouseDown(screen.getByLabelText(/deployment/i));
   fireEvent.click(screen.getByRole("option", { name: "Production" }));
+}
+
+/** Drives every field canSubmit requires (project, deployment, deployed
+ * product, catalog, catalog item) so the read-access gating tests exercise
+ * canSubmit's own hasNoSrReadAccess check — not a disabled button that's
+ * actually disabled because an earlier, unrelated field is still empty. */
+function selectFullFlow(): void {
+  selectProjectAndDeployment();
+  fireEvent.mouseDown(screen.getByLabelText(/deployed product/i));
+  fireEvent.click(screen.getByRole("option", { name: "API Manager 4.3.0" }));
+  // Negative lookahead distinguishes the "Catalog" field's accessible name
+  // (which MUI renders with a trailing required-asterisk, e.g. "Catalog *")
+  // from the separate "Catalog item" field, which a plain /^catalog/i would
+  // also match.
+  fireEvent.mouseDown(screen.getByLabelText(/^catalog(?!\s*item)/i));
+  fireEvent.click(screen.getByRole("option", { name: "Support Catalog" }));
+  fireEvent.mouseDown(screen.getByLabelText(/catalog item/i));
+  fireEvent.click(screen.getByRole("option", { name: "Restart service" }));
 }
 
 describe("CreateServiceRequestPage — deployed-product filtering by srProductCategories", () => {
@@ -191,5 +221,57 @@ describe("CreateServiceRequestPage — deployed-product filtering by srProductCa
     // A metadata-fetch failure must never surface as a form-blocking error —
     // it's a narrowing-only feature, so it fails open silently.
     expect(screen.queryByText(/failed to load deployed products/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("CreateServiceRequestPage — gating on hasServiceRequestReadAccess", () => {
+  beforeEach(() => {
+    navigateMock.mockReset();
+    postCaseMutateAsyncMock.mockReset();
+    showErrorMock.mockReset();
+    projectMetadataResult = { data: undefined, isLoading: false, isError: false };
+  });
+
+  it("blocks submission and shows the ineligibility error once metadata resolves hasServiceRequestReadAccess: false", () => {
+    projectMetadataResult = {
+      data: { features: { hasServiceRequestReadAccess: false } },
+      isLoading: false,
+      isError: false,
+    };
+    render(<CreateServiceRequestPage />);
+    // Every other canSubmit requirement is satisfied here, so a disabled
+    // button below can only be explained by hasNoSrReadAccess itself.
+    selectFullFlow();
+
+    expect(
+      screen.getByText(/isn't eligible to raise service requests/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create service request/i })).toBeDisabled();
+  });
+
+  it("allows submission when metadata resolves hasServiceRequestReadAccess: true", () => {
+    projectMetadataResult = {
+      data: { features: { hasServiceRequestReadAccess: true } },
+      isLoading: false,
+      isError: false,
+    };
+    render(<CreateServiceRequestPage />);
+    selectFullFlow();
+
+    expect(
+      screen.queryByText(/isn't eligible to raise service requests/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create service request/i })).toBeEnabled();
+  });
+
+  it("fails open (no error, not blocked on this check alone) while metadata is still undefined", () => {
+    projectMetadataResult = { data: undefined, isLoading: false, isError: false };
+    render(<CreateServiceRequestPage />);
+    selectFullFlow();
+
+    expect(
+      screen.queryByText(/isn't eligible to raise service requests/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create service request/i })).toBeEnabled();
   });
 });
