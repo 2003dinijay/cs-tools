@@ -37,16 +37,17 @@ type snDeployedProductsResponse struct {
 }
 
 type snDeployedProduct struct {
-	ID         string                    `json:"id"`
-	Deployment snDeployedProductRef      `json:"deployment"`
-	Product    snDeployedProductRef      `json:"product"`
-	Version    *snDeployedProductVersion `json:"version"`
-	Cores      *int                      `json:"cores"`
-	TPS        *float64                  `json:"tps"` // Ballerina decimal? serialises as 100.0
-	Category   *snDeployedProductRef     `json:"category"`
-	Updates    []snProductUpdate         `json:"updates"`
-	CreatedOn  string                    `json:"createdOn"`
-	UpdatedOn  string                    `json:"updatedOn"`
+	ID          string                    `json:"id"`
+	Deployment  snDeployedProductRef      `json:"deployment"`
+	Product     snDeployedProductRef      `json:"product"`
+	Version     *snDeployedProductVersion `json:"version"`
+	Cores       *int                      `json:"cores"`
+	TPS         *float64                  `json:"tps"` // Ballerina decimal? serialises as 100.0
+	Category    *snDeployedProductRef     `json:"category"`
+	Description *string                   `json:"description"`
+	Updates     []snProductUpdate         `json:"updates"`
+	CreatedOn   string                    `json:"createdOn"`
+	UpdatedOn   string                    `json:"updatedOn"`
 }
 
 // snProductUpdate is the wire shape of a single deployed-product update-history entry,
@@ -399,8 +400,9 @@ func (s *snDeployedProductService) SearchDeployedProducts(ctx context.Context, r
 		}
 
 		views = append(views, domain.DeployedProductView{
-			ID:         sysidToUUID(dp.ID),
-			Deployment: domain.EntityRef{ID: sysidToUUID(dp.Deployment.ID), Name: dp.Deployment.Name},
+			ID:          sysidToUUID(dp.ID),
+			Deployment:  domain.EntityRef{ID: sysidToUUID(dp.Deployment.ID), Name: dp.Deployment.Name},
+			Description: dp.Description,
 			Product: domain.ProductRef{
 				ID:           sysidToUUID(dp.Product.ID),
 				Name:         dp.Product.Name,
