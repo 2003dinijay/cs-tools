@@ -19,9 +19,9 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
@@ -46,7 +46,11 @@ type scopeFakeEntity struct {
 	// pageLimit, when non-zero, serves the ids in pages of this size so the
 	// paging loop can be exercised.
 	pageLimit int
-	searchErr error
+	// forceHasMore reports HasMore on every page regardless of how many ids
+	// are left, modelling an upstream whose paging metadata is wrong or
+	// hostile. The helper must not take it at its word.
+	forceHasMore bool
+	searchErr    error
 
 	searchCalls int
 	updateCalls int
@@ -80,7 +84,7 @@ func (f *scopeFakeEntity) SearchDeployments(_ context.Context, req entity.Search
 		Total:       len(ids),
 		Limit:       limit,
 		Offset:      req.Pagination.Offset,
-		HasMore:     end < len(ids),
+		HasMore:     f.forceHasMore || end < len(ids),
 	}, nil
 }
 
@@ -213,13 +217,24 @@ func TestPatchDeployment_FindsDeploymentOnALaterPage(t *testing.T) {
 	}
 }
 
-// TestPatchDeployment_StopsWhenUpstreamNeverClearsHasMore guards the loop
-// bound. An upstream that always reports HasMore must not spin this handler
-// forever.
-func TestPatchDeployment_StopsWhenUpstreamNeverClearsHasMore(t *testing.T) {
-	fake := &scopeFakeEntity{byProject: map[string][]string{scopeProjectID: {}}}
-	// An empty page with HasMore set is the shape that would loop.
-	fake.pageLimit = 1
+// TestPatchDeployment_StopsAtThePageCap guards the loop bound, with enough
+// non-matching deployments that the walk would genuinely run past it.
+//
+// The fixture is deliberately one page larger than the cap allows: with the cap
+// the walk makes exactly deploymentScopeCheckMaxPages calls, and without it the
+// walk would make one more and still terminate — so removing the cap fails this
+// test on a count rather than hanging it.
+func TestPatchDeployment_StopsAtThePageCap(t *testing.T) {
+	reachable := deploymentScopeCheckMaxPages * deploymentScopeCheckPageLimit
+	ids := make([]string, 0, reachable+1)
+	for i := range reachable + 1 {
+		ids = append(ids, uuidForIndex(i))
+	}
+
+	fake := &scopeFakeEntity{
+		byProject: map[string][]string{scopeProjectID: ids},
+		pageLimit: deploymentScopeCheckPageLimit,
+	}
 
 	w := httptest.NewRecorder()
 	patchDeploymentMux(fake).ServeHTTP(w, authedRequest(http.MethodPatch,
@@ -228,8 +243,31 @@ func TestPatchDeployment_StopsWhenUpstreamNeverClearsHasMore(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Code)
 	}
-	if fake.searchCalls > deploymentScopeCheckMaxPages {
-		t.Fatalf("searchCalls = %d, exceeds the page cap %d", fake.searchCalls, deploymentScopeCheckMaxPages)
+	if fake.searchCalls != deploymentScopeCheckMaxPages {
+		t.Fatalf("searchCalls = %d, want exactly the page cap %d", fake.searchCalls, deploymentScopeCheckMaxPages)
+	}
+}
+
+// TestPatchDeployment_StopsOnEmptyPageDespiteHasMore covers the loop's other
+// stop condition. An upstream that reports HasMore on a page it returned
+// nothing for would otherwise spin the walk all the way to the page cap on
+// every single update.
+func TestPatchDeployment_StopsOnEmptyPageDespiteHasMore(t *testing.T) {
+	fake := &scopeFakeEntity{
+		byProject:    map[string][]string{scopeProjectID: {}},
+		pageLimit:    deploymentScopeCheckPageLimit,
+		forceHasMore: true,
+	}
+
+	w := httptest.NewRecorder()
+	patchDeploymentMux(fake).ServeHTTP(w, authedRequest(http.MethodPatch,
+		"/projects/"+scopeProjectID+"/deployments/"+scopeDeploymentID, validPatchBody))
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if fake.searchCalls != 1 {
+		t.Fatalf("searchCalls = %d, want 1 — an empty page must end the walk", fake.searchCalls)
 	}
 }
 
@@ -288,9 +326,10 @@ func TestPatchDeployment_UpstreamSearchFailureIsNotA404(t *testing.T) {
 	}
 }
 
-// uuidForIndex builds a distinct, valid-looking deployment id for bulk fixtures.
+// uuidForIndex builds a distinct, valid-looking deployment id for bulk
+// fixtures. The index occupies the whole final group, so ids stay unique well
+// past the page cap — an earlier version wrapped after 256 and would have
+// silently repeated across a fixture this size.
 func uuidForIndex(i int) string {
-	hex := "0123456789abcdef"
-	suffix := string([]byte{hex[(i/16)%16], hex[i%16]})
-	return "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb" + strings.ToLower(suffix)
+	return fmt.Sprintf("bbbbbbbb-bbbb-bbbb-bbbb-%012x", i)
 }
