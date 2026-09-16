@@ -774,6 +774,55 @@ helper: decodes `x-user-id-token`'s `email` claim without a `"user"` table
 lookup, since nothing on these paths needs the caller's platform id today,
 only their claimed email.
 
+## Change requests
+
+`change_request` (migration 000047) is a shared-PK extension of `work_item`,
+same pattern as `"case"` (`change_request.id` IS `work_item.id`). `SearchChangeRequests`,
+`AggregateChangeRequests`, `GetChangeRequest`, and `PatchChangeRequest` are
+wired up to it (`change_request_repo.go`/`change_request_service.go`);
+`CreateChangeRequest` and both approval methods (`GetChangeRequestApprovals`,
+`DecideChangeRequestApproval`) are not, for two different reasons:
+
+- **`CreateChangeRequest`**: `work_item.number` has no DB default and no
+  backing sequence anywhere in `migrations/` — the exact same blocker
+  `CaseRepository.CreateCase` has (see "Fixing the plural/singular
+  table-name mismatch" below). Deferred for the same reason: generating it
+  needs a product decision (sequence + migration vs. Go-side generation,
+  and the exact number format) this change doesn't make unilaterally.
+- **`GetChangeRequestApprovals`/`DecideChangeRequestApproval`**: these
+  model multiple approval *stages*, each with multiple *approvers* and
+  per-approver status (`domain.ChangeRequestApproval`/`ChangeRequestApprover`).
+  This schema has only one summary `change_request.approval` column
+  (`REQUESTED`/`APPROVED`/`REJECTED`/`NOT_REQUESTED`) — no approval-stage or
+  approver table at all. There's nothing to serve either method from
+  without a schema change, so both always return a `ServiceUnavailableError`
+  on Postgres.
+
+**Fields with no real column anywhere, left unset rather than guessed at**
+(see `ChangeRequestRepository`'s own doc comment for the full list):
+`ServiceID`, `ServiceOfferingID`, `ConfigurationItemID`, `GroupID`, and
+`AssignedTeamID` (no CMDB/group tables exist in this schema at all); `Type`
+(`domain.ChangeRequestType` — standard/normal/emergency/... — has **no**
+relationship to `change_request.change_request_type`, whose real enum
+values are `INFRA`/`GENERAL`, a completely different classification, not a
+subset of the domain enum); `ApprovedBy`/`ApprovedOn`/`LegalNextStates` on
+`domain.ChangeRequest` (no approver/date columns for the first two;
+`LegalNextStates` is a ServiceNow workflow-engine computation with nothing
+to derive it from here). `Duration` (`cr.calendar_duration`, an `INTERVAL`)
+is also left unset — no confirmed display format to render it in.
+
+**Linking happens entirely through `PATCH`, never at creation** —
+`CreateChangeRequestRequest` has no project/case field at all;
+`PatchChangeRequestRequest.ProjectID`/`DeploymentID`/`DeployedProductID`/
+`AssignedEngineerID` map directly to their `work_item` columns, and
+`CaseID` maps to `work_item.parent_id` (`domain.LinkedChangeRequestRef`'s
+own doc comment already describes this as "the reverse of
+`PatchChangeRequestRequest.CaseID`" — confirmed here as the generic
+`work_item.parent_id` self-reference, migration 000036, not case-specific).
+Because of this, `SearchChangeRequestView.Project`/`Case` can be empty
+(`EntityRef{}`)/`nil` for a change request that exists but hasn't been
+linked yet — a real, valid state for this schema, not a bug.
+
 ## Fixing the plural/singular table-name mismatch
 
 `case_repo.go`, `project_repo.go`, `product_repo.go`, `product_version_repo.go`,

@@ -239,10 +239,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		)
 	}
 
-	var changeRequestHandler *handler.ChangeRequestHandler
+	changeRequestRepo := repository.NewChangeRequestRepository(db)
+	var activeChangeRequestSvc service.ChangeRequestService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		changeRequestHandler = handler.NewChangeRequestHandler(service.NewServiceNowChangeRequestService(serviceNowIntegrationServiceClient))
+		activeChangeRequestSvc = service.NewServiceNowChangeRequestService(serviceNowIntegrationServiceClient)
+	} else {
+		activeChangeRequestSvc = service.NewChangeRequestService(changeRequestRepo)
 	}
+	changeRequestHandler := handler.NewChangeRequestHandler(activeChangeRequestSvc)
 
 	timeCardRepo := repository.NewTimeCardRepository(db)
 	var activeTimeCardSvc service.TimeCardService
@@ -497,15 +501,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /cases/{id}/escalations", caseEscalationHandler.CreateCaseEscalation)
 	}
 
-	if changeRequestHandler != nil {
-		mux.HandleFunc("POST /change-requests", changeRequestHandler.CreateChangeRequest)
-		mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
-		mux.HandleFunc("POST /change-requests/aggregate", changeRequestHandler.AggregateChangeRequests)
-		mux.HandleFunc("GET /change-requests/{id}", changeRequestHandler.GetChangeRequest)
-		mux.HandleFunc("PATCH /change-requests/{id}", changeRequestHandler.PatchChangeRequest)
-		mux.HandleFunc("GET /change-requests/{id}/approvals", changeRequestHandler.GetChangeRequestApprovals)
-		mux.HandleFunc("POST /change-requests/{id}/approvals/decision", changeRequestHandler.DecideChangeRequestApproval)
-	}
+	mux.HandleFunc("POST /change-requests", changeRequestHandler.CreateChangeRequest)
+	mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
+	mux.HandleFunc("POST /change-requests/aggregate", changeRequestHandler.AggregateChangeRequests)
+	mux.HandleFunc("GET /change-requests/{id}", changeRequestHandler.GetChangeRequest)
+	mux.HandleFunc("PATCH /change-requests/{id}", changeRequestHandler.PatchChangeRequest)
+	mux.HandleFunc("GET /change-requests/{id}/approvals", changeRequestHandler.GetChangeRequestApprovals)
+	mux.HandleFunc("POST /change-requests/{id}/approvals/decision", changeRequestHandler.DecideChangeRequestApproval)
 
 	mux.HandleFunc("POST /time-cards/search", timeCardHandler.SearchTimeCards)
 	mux.HandleFunc("POST /time-cards", timeCardHandler.CreateTimeCard)
