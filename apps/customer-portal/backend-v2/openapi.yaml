@@ -6554,6 +6554,12 @@ components:
           type: number
         category:
           type: string
+        description:
+          type: string
+          description: >
+            The customer's own note about this deployed product. Editable via
+            PATCH, so it is returned here too — a client needs the current value
+            to show before changing it.
         updates:
           type: array
           description: >
