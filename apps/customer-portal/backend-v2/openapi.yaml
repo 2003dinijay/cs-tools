@@ -6669,8 +6669,8 @@ components:
 
     UpdateDeployedProductRequest:
       description: >
-        Provide either cores/tps/description or active=false, but not both.
-        deploymentId is always injected server-side from the
+        Provide either cores/tps/description/updates or active=false, but not
+        both. deploymentId is always injected server-side from the
         {deploymentId} path parameter (an IDOR-style scope guard) — the
         request body carries no deploymentId field.
       type: object
@@ -6681,6 +6681,15 @@ components:
           type: number
         description:
           type: string
+        updates:
+          type: array
+          description: >
+            Replaces the deployed product's update-level history wholesale, so
+            the array must carry every entry that should remain. An explicit
+            empty array clears the history; omitting the field leaves it
+            untouched.
+          items:
+            $ref: '#/components/schemas/ProductUpdate'
         active:
           type: boolean
 
