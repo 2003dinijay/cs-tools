@@ -1331,29 +1331,44 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 	// "user"; attachment rows join it directly, since case_attachments.
 	// uploaded_by is a real UUID FK (migration 000043) -- see this file's
 	// other created_by fixes for why the two differ.
+	//
+	// The comment branch's email join is wrapped in its own DISTINCT ON
+	// (cm.id) subquery: "user".email has no unique constraint (migration
+	// 000001 only makes user_name UNIQUE), so two user rows sharing an
+	// address would otherwise fan a single comment out into one activity
+	// row per match, while countQuery below still counts that comment row
+	// once -- putting the page's rows and its total out of sync.
 	const dataQuery = `
 		WITH activity AS (
 			SELECT
 				c.id, 'comment' AS kind, c.content, c.created_on AS created_on,
-				c.created_by AS email, u1.first_name AS first_name, u1.last_name AS last_name,
-				c.type::text AS comment_type,
+				c.email, c.first_name, c.last_name, c.name, c.type::text AS comment_type,
 				NULL::text AS file_name, NULL::text AS content_type, NULL::bigint AS size_bytes
-			FROM comment c
-			LEFT JOIN "user" u1 ON LOWER(u1.email) = LOWER(c.created_by)
-			WHERE c.work_item_id = $1
+			FROM (
+				SELECT DISTINCT ON (cm.id)
+					cm.id, cm.content, cm.created_on, cm.created_by AS email,
+					u1.first_name, u1.last_name,
+					COALESCE(u1.name, NULLIF(TRIM(CONCAT_WS(' ', u1.first_name, u1.last_name)), '')) AS name,
+					cm.type
+				FROM comment cm
+				LEFT JOIN "user" u1 ON LOWER(u1.email) = LOWER(cm.created_by)
+				WHERE cm.work_item_id = $1
+				ORDER BY cm.id, u1.id
+			) c
 
 			UNION ALL
 
 			SELECT
 				a.id, 'attachment' AS kind, COALESCE(a.description, '') AS content, a.created_at AS created_on,
-				u2.email AS email, u2.first_name, u2.last_name,
+				u2.email, u2.first_name, u2.last_name,
+				COALESCE(u2.name, NULLIF(TRIM(CONCAT_WS(' ', u2.first_name, u2.last_name)), '')) AS name,
 				NULL::text AS comment_type,
 				a.filename, a.mime_type, a.size_bytes
 			FROM case_attachments a
 			JOIN "user" u2 ON u2.id = a.uploaded_by
 			WHERE a.case_id = $1 AND a.status = 'complete'
 		)
-		SELECT id, kind, content, created_on, email, first_name, last_name, comment_type, file_name, content_type, size_bytes
+		SELECT id, kind, content, created_on, email, first_name, last_name, name, comment_type, file_name, content_type, size_bytes
 		FROM activity
 		ORDER BY created_on DESC, id
 		LIMIT $2 OFFSET $3`
@@ -1380,14 +1395,14 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 		result := make([]domain.CaseActivity, 0, req.Pagination.Limit)
 		for rows.Next() {
 			var (
-				id, kind, content          string
-				createdOn                  time.Time
-				email, firstName, lastName *string
-				commentTypeRaw             *string
-				fileName, contentType      *string
-				sizeBytes                  *int64
+				id, kind, content                string
+				createdOn                        time.Time
+				email, firstName, lastName, name *string
+				commentTypeRaw                   *string
+				fileName, contentType            *string
+				sizeBytes                        *int64
 			)
-			if err := rows.Scan(&id, &kind, &content, &createdOn, &email, &firstName, &lastName, &commentTypeRaw, &fileName, &contentType, &sizeBytes); err != nil {
+			if err := rows.Scan(&id, &kind, &content, &createdOn, &email, &firstName, &lastName, &name, &commentTypeRaw, &fileName, &contentType, &sizeBytes); err != nil {
 				return fmt.Errorf("scan case activity: %w", err)
 			}
 			a := domain.CaseActivity{
@@ -1397,10 +1412,11 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 				CreatedByFirstName: stringOrEmpty(firstName),
 				CreatedByLastName:  stringOrEmpty(lastName),
 			}
-			name := strings.TrimSpace(stringOrEmpty(firstName) + " " + stringOrEmpty(lastName))
 			// CreatedBy.ID is always null on this feed by contract -- see
-			// CaseActivity's own doc comment.
-			a.CreatedBy = domain.NewUserReference("", stringOrEmpty(email), name)
+			// CaseActivity's own doc comment. Name resolves the same way
+			// every other read in this service does: "user".name first,
+			// falling back to first_name+last_name only if name is unset.
+			a.CreatedBy = domain.NewUserReference("", stringOrEmpty(email), stringOrEmpty(name))
 			switch kind {
 			case "comment":
 				a.Type = domain.ActivityTypeComment

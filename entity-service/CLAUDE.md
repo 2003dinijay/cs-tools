@@ -747,7 +747,15 @@ changed.
   `CaseActivity.DownloadURL` is left empty for attachment entries — this
   service builds no portal links or absolute URLs to itself (same posture
   as the Event Hub section above); a caller resolves the actual bytes via
-  `GET /attachments/{id}/content`.
+  `GET /attachments/{id}/content`. The comment branch's `"user"` join is by
+  email (`comment.created_by` is a free-text VARCHAR, not a FK), and
+  `"user".email` has no unique constraint (migration 000001 only makes
+  `user_name` UNIQUE) — so that join is wrapped in its own `DISTINCT ON
+  (cm.id)` subquery to guarantee one activity row per comment even if two
+  user rows share an address. Without it, a shared address would fan one
+  comment out into multiple feed rows while the sibling `COUNT` query (which
+  never joins `"user"`) still counted it once, so the page and its `total`
+  would disagree.
 
 **Pre-existing bug fixed as a side effect, not scope creep**: `user_repo.go`
 queried a `users` table with `created_at`/`updated_at`/`phone`/`timezone`
@@ -779,7 +787,12 @@ only their claimed email.
 `change_request` (migration 000047) is a shared-PK extension of `work_item`,
 same pattern as `"case"` (`change_request.id` IS `work_item.id`). `SearchChangeRequests`,
 `AggregateChangeRequests`, `GetChangeRequest`, and `PatchChangeRequest` are
-wired up to it (`change_request_repo.go`/`change_request_service.go`);
+wired up to it (`change_request_repo.go`/`change_request_service.go`).
+`changeRequestService.SearchChangeRequests` validates `req.SortBy` against
+the same `validChangeRequestSortField`/`validChangeRequestSortOrder` maps
+`sn_change_request_service.go` already used, so an unrecognized `sortBy`
+value is a 400 on both data sources instead of silently falling back to
+`created_on DESC` only on Postgres.
 `CreateChangeRequest` and both approval methods (`GetChangeRequestApprovals`,
 `DecideChangeRequestApproval`) are not, for two different reasons:
 
@@ -1015,6 +1028,8 @@ All shared types live in `internal/domain/entity.go`. Conventions:
 | `*ServiceUnavailableError` | 503      | Downstream dependency temporarily down   |
 
 `apierror.WriteJSON(w, status, msg)` writes `{"code": <status>, "message": "<msg>"}`.
+
+**Never put `pgErr.Detail` verbatim in a `ValidationError.Msg`.** `writeServiceError`'s own comment states a `ValidationError`'s message is always safe to return to the caller as-is, but a Postgres foreign-key violation's `Detail` field quotes the real table and column name (e.g. `` Key (assigned_to_id)=(...) is not present in table "user". ``) — handing an API caller schema internals. When a `23503` can be attributed to a specific request field (e.g. via `pgErr.ConstraintName`, since none of this schema's inline `REFERENCES` get an explicit `CONSTRAINT` name, so Postgres's default `<table>_<column>_fkey` naming applies), name that field instead. See `change_request_repo.go`'s `changeRequestPatchFKField` map for the pattern. Several older `23503` handlers elsewhere in `internal/repository/` (`case_repo.go`, `time_card_repo.go`) still return `pgErr.Detail` this way — a known pre-existing gap, not newly introduced, and not yet fixed.
 
 ## Database migrations
 

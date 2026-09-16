@@ -479,6 +479,20 @@ func scanChangeRequestViewAndDetail(row pgx.Row, createdBy *string, justificatio
 	return v, nil
 }
 
+// changeRequestPatchFKField maps work_item's FK constraints touched by
+// PatchChangeRequest back to the request field that set them. None of these
+// FKs are given an explicit CONSTRAINT name in the migrations, so Postgres's
+// default "<table>_<column>_fkey" naming applies. Naming the field here
+// keeps a 23503 violation's client-facing message useful without echoing
+// pgErr.Detail, which quotes the real table/column name.
+var changeRequestPatchFKField = map[string]string{
+	"work_item_project_id_fkey":          "projectId",
+	"work_item_parent_id_fkey":           "caseId",
+	"work_item_deployment_id_fkey":       "deploymentId",
+	"work_item_deployed_product_id_fkey": "deployedProductId",
+	"work_item_assigned_to_id_fkey":      "assignedEngineerId",
+}
+
 // PatchChangeRequest implements ChangeRequestRepository.
 func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, req domain.PatchChangeRequestRequest, actorEmail string) (domain.ChangeRequest, error) {
 	tx, err := r.db.Begin(ctx)
@@ -526,7 +540,11 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 			return domain.ChangeRequest{}, &apierror.NotFoundError{Msg: "change request not found"}
 		}
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return domain.ChangeRequest{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
+			field := changeRequestPatchFKField[pgErr.ConstraintName]
+			if field == "" {
+				field = "one or more referenced fields"
+			}
+			return domain.ChangeRequest{}, &apierror.ValidationError{Msg: field + " does not refer to an existing record"}
 		}
 		return domain.ChangeRequest{}, fmt.Errorf("patch change request work_item: %w", err)
 	}
@@ -593,7 +611,7 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 		crQuery := fmt.Sprintf(`UPDATE change_request SET %s WHERE id = $%d`, strings.Join(crSets, ", "), crIdx)
 		if _, err := tx.Exec(ctx, crQuery, crArgs...); err != nil {
 			if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {
-				return domain.ChangeRequest{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
+				return domain.ChangeRequest{}, &apierror.ValidationError{Msg: "one or more referenced fields do not refer to an existing record"}
 			}
 			return domain.ChangeRequest{}, fmt.Errorf("patch change request: %w", err)
 		}

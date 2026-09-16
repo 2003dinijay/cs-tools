@@ -80,6 +80,15 @@ func (s *changeRequestService) SearchChangeRequests(ctx context.Context, req dom
 	if err := validateChangeRequestFilters(req.Filters); err != nil {
 		return domain.SearchChangeRequestsResponse{}, err
 	}
+	// Reuses validChangeRequestSortField/validChangeRequestSortOrder (defined
+	// in sn_change_request_service.go) so an invalid sortBy is a 400 on both
+	// data sources instead of silently falling back to created_on DESC here.
+	if req.SortBy.Field != "" && !validChangeRequestSortField[req.SortBy.Field] {
+		return domain.SearchChangeRequestsResponse{}, &apierror.ValidationError{Msg: "sortBy.field contains invalid value: " + string(req.SortBy.Field)}
+	}
+	if req.SortBy.Order != "" && !validChangeRequestSortOrder[req.SortBy.Order] {
+		return domain.SearchChangeRequestsResponse{}, &apierror.ValidationError{Msg: "sortBy.order contains invalid value: " + string(req.SortBy.Order)}
+	}
 	parsed, err := ParseChangeRequestFieldFilters(req.Filters.Filters, time.Now().UTC())
 	if err != nil {
 		return domain.SearchChangeRequestsResponse{}, err
