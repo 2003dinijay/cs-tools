@@ -56,11 +56,12 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 		argIdx++
 	}
 
-	// TODO(phase 2): req.ProductCategories is not yet applied for the PostgreSQL data
-	// source. The deployed_products schema has no category column today, and wiring one
-	// up is out of scope for the CSM/phase-1 PDP-filter work this field was added for
-	// (SN is the only data source that currently needs it). Filter it in here once the
-	// Postgres cohort's product-category modeling lands.
+	// TODO(phase 2): req.ProductCategories is not applied here. The deployed_products
+	// schema has no category column today, so deployedProductService rejects any
+	// non-empty ProductCategories before this method is ever called (see
+	// deployed_product_service.go) rather than silently ignoring it. Filter it in here
+	// once the Postgres cohort's product-category modeling lands, and drop that
+	// rejection at the same time.
 
 	countQuery := "SELECT COUNT(*) FROM deployed_products dp " + where
 

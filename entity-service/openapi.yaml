@@ -7399,7 +7399,7 @@ components:
           type: array
           items:
             type: string
-          description: Optional filter by product category (e.g. "pdp"). Combines with deploymentIds rather than replacing it.
+          description: Optional filter by product category (e.g. "pdp"). Combines with deploymentIds rather than replacing it. Supported only for the ServiceNow-backed data source; a non-empty value returns 400 when the active data source is PostgreSQL.
 
     DeployedProductVersionRef:
       type: object
