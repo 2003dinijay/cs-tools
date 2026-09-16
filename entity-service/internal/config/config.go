@@ -19,6 +19,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 )
@@ -42,6 +43,15 @@ type Config struct {
 	DBName     string
 	DBSSLMode  string
 	ServerPort string
+	// HealthPort is the listen port for the separate, minimal health
+	// server (internal/server.NewHealthServer). It is deliberately NOT
+	// ServerPort: that mux carries every business route and is exposed at
+	// organization visibility, while the health server is exposed
+	// publicly so external alerting can reach it without credentials.
+	// Separate listeners mean the public deployment surface is only ever
+	// the handful of routes registered on the health mux — no basePath or
+	// gateway rule stands between a misconfiguration and the whole API.
+	HealthPort string
 	// DataSource controls which backend is used. Defaults to "postgres".
 	DataSource DataSource
 	// ServiceNowIntegrationServiceBaseURL is the base URL for the ServiceNow integration service API.
@@ -84,6 +94,7 @@ func Load() *Config {
 		DBName:                                   os.Getenv("DB_NAME"),
 		DBSSLMode:                                os.Getenv("DB_SSLMODE"),
 		ServerPort:                               getEnvOrDefault("SERVER_PORT", "8080"),
+		HealthPort:                               getEnvOrDefault("HEALTH_PORT", "8081"),
 		DataSource:                               DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
 		ServiceNowIntegrationServiceBaseURL:      os.Getenv("SERVICENOW_INTEGRATION_SERVICE_BASE_URL"),
 		ServiceNowIntegrationServiceTokenURL:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL"),
@@ -105,12 +116,40 @@ func getEnvOrDefault(key, defaultVal string) string {
 }
 
 // Validate checks that the configuration is self-consistent. It returns an
-// error if DATA_SOURCE is an unrecognised value, if DB_USER/DB_PASSWORD/DB_NAME
+// error if SERVER_PORT/HEALTH_PORT are unusable or resolve to the same
+// port, if DATA_SOURCE is an
+// unrecognised value, if DB_USER/DB_PASSWORD/DB_NAME
 // are missing when DATA_SOURCE=postgres (see db.NewPoolIfNeeded), if
 // SERVICENOW_INTEGRATION_SERVICE_BASE_URL is missing when
 // DATA_SOURCE=servicenow, or if EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/
 // EVENT_HUB_TOPIC are only partially set.
 func (c *Config) Validate() error {
+	// The health server is a separate listener precisely so that only its
+	// own routes are reachable at public visibility (see HealthPort). Two
+	// listeners cannot share a port: the second ListenAndServe would fail
+	// with "address already in use" after the first has already started
+	// serving, leaving the process up but one of the two ports dead. Reject
+	// that at startup, where it is unambiguous.
+	//
+	// Resolved to numbers first rather than compared as strings: "8080" and
+	// "08080" are the same TCP port but not the same string, so a string
+	// comparison would wave that pair through into exactly the half-dead
+	// startup described above. Resolving also rejects a port that could
+	// never be bound at all ("http-alt-typo", "99999") here, with the
+	// offending variable named, instead of at ListenAndServe time inside a
+	// goroutine.
+	serverPortNum, err := net.LookupPort("tcp", c.ServerPort)
+	if err != nil {
+		return fmt.Errorf("invalid SERVER_PORT %q: %w", c.ServerPort, err)
+	}
+	healthPortNum, err := net.LookupPort("tcp", c.HealthPort)
+	if err != nil {
+		return fmt.Errorf("invalid HEALTH_PORT %q: %w", c.HealthPort, err)
+	}
+	if serverPortNum == healthPortNum {
+		return fmt.Errorf("HEALTH_PORT (%s) must differ from SERVER_PORT (%s)", c.HealthPort, c.ServerPort)
+	}
+
 	switch c.DataSource {
 	case DataSourcePostgres, DataSourceServiceNow:
 		// valid
