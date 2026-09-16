@@ -163,3 +163,32 @@ func TestPatchProject_RejectsNonUUID(t *testing.T) {
 		t.Error("upstream was called with a non-UUID project id")
 	}
 }
+
+// TestPatchProject_RejectsUnknownFields: the Ballerina payload this replaces is
+// a closed record (record {| ... |}), so it rejects a property it does not
+// declare, and openapi.yaml says additionalProperties: false. Without a strict
+// decode, a caller misspelling hasKbReferences would get 200 and no change.
+func TestPatchProject_RejectsUnknownFields(t *testing.T) {
+	tests := []struct{ name, body string }{
+		{"a valid field plus an unknown one", `{"hasAgent":true,"bogus":1}`},
+		{"a plausible misspelling", `{"hasKbReference":true}`},
+		{"only an unknown field", `{"enabled":true}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeEntityProjectClient{}
+			rec := httptest.NewRecorder()
+			req := authedRequest(http.MethodPatch, "/projects/"+testProjectID, tt.body)
+			req.SetPathValue("id", testProjectID)
+
+			NewProjectHandler(fake).PatchProject(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400. body: %s", rec.Code, rec.Body.String())
+			}
+			if fake.called {
+				t.Error("the project was updated despite an undocumented property in the request")
+			}
+		})
+	}
+}

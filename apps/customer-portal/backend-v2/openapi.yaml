@@ -6026,6 +6026,9 @@ components:
           type: boolean
           description: Whether the assistant cites knowledge-base articles.
       additionalProperties: false
+      oneOf:
+        - required: [hasAgent]
+        - required: [hasKbReferences]
     UpdatedProject:
       type: object
       description: The project as it stands after the patch.

@@ -17,6 +17,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -126,8 +127,15 @@ func (h *ProjectHandler) PatchProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Strict decode. The Ballerina payload this replaces is a CLOSED record
+	// (record {| ... |}), so it rejects a property it does not declare, and
+	// openapi.yaml says additionalProperties: false. Silently dropping an
+	// unknown field would mean a caller misspelling hasKbReferences gets a 200
+	// and no change.
 	var req entity.UpdateProjectRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}
@@ -145,5 +153,5 @@ func (h *ProjectHandler) PatchProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The Ballerina resource returns response.project, not the whole envelope.
-	writeJSONValue(w, http.StatusOK, result.Project)
+	writeJSONValue(w, http.StatusOK, dto.MapUpdatedProject(result.Project))
 }
