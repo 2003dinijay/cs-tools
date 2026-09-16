@@ -49,11 +49,16 @@ type DeployedProductVersion struct {
 type DeployedProductSummary struct {
 	ID         string                  `json:"id"`
 	Deployment *IDLabelRef             `json:"deployment,omitempty"`
-	Product    *ProductRef     `json:"product,omitempty"`
+	Product    *ProductRef             `json:"product,omitempty"`
 	Version    *DeployedProductVersion `json:"version,omitempty"`
 	Cores      *int                    `json:"cores,omitempty"`
 	TPS        *float64                `json:"tps,omitempty"`
 	Category   *string                 `json:"category,omitempty"`
+	// Description is the customer's own note about this deployed product. The
+	// Manage Products dialog prefills its editor from this value and diffs
+	// against it to decide whether to send a change, so omitting it made an
+	// existing description invisible.
+	Description *string `json:"description,omitempty"`
 	// Updates is the update-level history recorded against this deployed
 	// product, which the Updates page needs alongside the product's
 	// abbreviation to work out which levels are still pending. Customer-facing
@@ -167,16 +172,17 @@ func MapSearchDeployedProducts(r entity.SearchDeployedProductsResponse) SearchDe
 	items := make([]DeployedProductSummary, 0, len(r.DeployedProducts))
 	for _, d := range r.DeployedProducts {
 		items = append(items, DeployedProductSummary{
-			ID:         d.ID,
-			Deployment: entityRefToIDLabel(&d.Deployment),
-			Product:    deployedProductRef(d.Product),
-			Version:    mapDeployedProductVersion(d.Version),
-			Cores:      parseCores(d.Cores),
-			TPS:        parseTPS(d.TPS),
-			Category:   d.Category,
-			Updates:    mapProductUpdates(d.Updates),
-			CreatedOn:  d.CreatedOn,
-			UpdatedOn:  d.UpdatedOn,
+			ID:          d.ID,
+			Deployment:  entityRefToIDLabel(&d.Deployment),
+			Product:     deployedProductRef(d.Product),
+			Version:     mapDeployedProductVersion(d.Version),
+			Cores:       parseCores(d.Cores),
+			TPS:         parseTPS(d.TPS),
+			Category:    d.Category,
+			Description: d.Description,
+			Updates:     mapProductUpdates(d.Updates),
+			CreatedOn:   d.CreatedOn,
+			UpdatedOn:   d.UpdatedOn,
 		})
 	}
 	return SearchDeployedProductsResponse{
