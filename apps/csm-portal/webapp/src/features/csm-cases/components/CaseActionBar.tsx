@@ -489,6 +489,15 @@ interface CaseActionBarProps {
   onAcknowledge?: () => void | Promise<unknown>;
   /** True while the acknowledge PATCH is in flight. */
   isAcknowledging?: boolean;
+  /**
+   * True while the case's comments are still loading. `request_info` and
+   * `propose_solution` gate on whether a public comment already exists
+   * (see `CsmCaseDetailPage`'s no-public-comment confirm dialog) — while
+   * `undefined` comments read as "none yet", so those two buttons stay
+   * disabled here rather than risk a false "no public comment" prompt for a
+   * case that actually has one, just not loaded yet.
+   */
+  commentsLoading?: boolean;
 }
 
 /**
@@ -530,6 +539,7 @@ export default function CaseActionBar({
   isPending = false,
   onAcknowledge,
   isAcknowledging = false,
+  commentsLoading = false,
 }: CaseActionBarProps): JSX.Element {
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [stateMenuAnchor, setStateMenuAnchor] = useState<HTMLElement | null>(null);
@@ -546,8 +556,21 @@ export default function CaseActionBar({
   const secondary = buildSecondaryItems(caseDetail);
 
   const runPrimary = (p: PrimaryButton): void => {
-    if (p.targetState === "closed" && closeBlockedReason) return;
+    if (blockedReason(p)) return;
     void onAction(p.action, p.targetState);
+  };
+
+  // Reason a given transition button is disabled, or undefined if it isn't.
+  // `request_info`/`propose_solution` gate on the no-public-comment confirm
+  // in CsmCaseDetailPage, which needs the comments query resolved to answer
+  // correctly — while it's still loading, disable rather than risk a false
+  // "no public comment" prompt for a case that actually has one.
+  const blockedReason = (p: PrimaryButton): string | undefined => {
+    if (p.targetState === "closed" && closeBlockedReason) return closeBlockedReason;
+    if (commentsLoading && (p.action === "request_info" || p.action === "propose_solution")) {
+      return "Loading comments…";
+    }
+    return undefined;
   };
 
   return (
@@ -579,21 +602,21 @@ export default function CaseActionBar({
         // itself as one click rather than "Change state" → pick the only item.
         (() => {
           const p = primary[0];
-          const blocked = p.targetState === "closed" && !!closeBlockedReason;
+          const reason = blockedReason(p);
           const button = (
             <Button
               size="small"
               variant="contained"
               color={p.color}
               startIcon={isPending ? <CircularProgress size={14} color="inherit" /> : p.icon}
-              disabled={blocked || isPending}
+              disabled={!!reason || isPending}
               onClick={() => runPrimary(p)}
             >
               {p.label}
             </Button>
           );
-          return blocked ? (
-            <Tooltip title={closeBlockedReason}>
+          return reason ? (
+            <Tooltip title={reason}>
               <Box component="span">{button}</Box>
             </Tooltip>
           ) : (
@@ -619,13 +642,13 @@ export default function CaseActionBar({
             onClose={() => setStateMenuAnchor(null)}
           >
             {primary.map((p) => {
-              const blocked = p.targetState === "closed" && !!closeBlockedReason;
+              const reason = blockedReason(p);
               const menuItem = (
                 <MenuItem
                   key={p.targetState}
-                  disabled={blocked}
+                  disabled={!!reason}
                   onClick={() => {
-                    if (blocked) return;
+                    if (reason) return;
                     setStateMenuAnchor(null);
                     runPrimary(p);
                   }}
@@ -637,8 +660,8 @@ export default function CaseActionBar({
                   {p.label}
                 </MenuItem>
               );
-              return blocked ? (
-                <Tooltip key={p.targetState} title={closeBlockedReason}>
+              return reason ? (
+                <Tooltip key={p.targetState} title={reason}>
                   <Box component="span" sx={{ display: "block" }}>
                     {menuItem}
                   </Box>

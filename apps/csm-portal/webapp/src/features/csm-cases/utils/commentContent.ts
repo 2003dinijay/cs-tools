@@ -173,3 +173,22 @@ export function linkifyBareUrls(html: string): string {
     '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;word-break:break-all;">$1</a>',
   );
 }
+
+/**
+ * Whether at least one **customer-visible** comment (`internal` falsy) with
+ * real displayable content exists on the case. Used to gate the "no public
+ * comment yet" confirmation before a WIP case moves to Awaiting info or
+ * Solution proposed — an internal-only work note, or a comment that strips
+ * down to nothing renderable (see {@link hasDisplayableContent}), doesn't
+ * count: the customer would still have no explanation for the transition.
+ * `undefined`/empty `comments` (still loading, or a case with none yet)
+ * correctly returns `false` rather than throwing.
+ */
+export function hasPublicComment(
+  comments: CsmCaseComment[] | undefined,
+): boolean {
+  if (!comments) return false;
+  return comments.some(
+    (comment) => !comment.internal && hasDisplayableContent(comment),
+  );
+}
