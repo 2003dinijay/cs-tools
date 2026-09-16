@@ -883,6 +883,34 @@ Fixed by matching `SearchCases`'s join type; `CaseView.DeploymentDetails`/
 `DeployedProductDetails` are already pointer fields, so this needed no
 domain/contract change, only nil-checks in the scan.
 
+## Fixing user_repo.go's NULL-scan crash and user_type-casing bug
+
+`POST /users/search` failed on every call whose results included a user with
+no `first_name` set: `scanUser` scanned `"user".first_name`/`last_name`
+(both nullable, migration 000001) directly into `domain.User`'s required
+(non-pointer) `FirstName`/`LastName` string fields — pgx v5 can't scan `NULL`
+into a plain `*string` destination. `email` (also nullable on `"user"`) had
+the same latent bug, not yet hit in production but certain to fail the same
+way. Fixed by scanning all three into intermediate `*string` vars and
+`stringOrEmpty(...)`-defaulting them, same pattern as every other nullable
+column fix in this file.
+
+**`user_type` had a casing/mapping bug on top of the same NULL-scan risk**:
+`user_type_enum`'s real labels (migration 000007) are `SYSTEM`/`INTERNAL`/
+`EXTERNAL`/`NOT_AVAILABLE`, scanned directly into `domain.UserType` (whose
+values are lowercase `internal`/`customer`/`system`/`external`) with no
+translation at all — never exercised before because `user_type` was
+previously always `NULL` in practice or never appeared in a search result
+that got fully inspected. `userTypeFromEnum` now maps `EXTERNAL` to
+`UserTypeCustomer` specifically, not `UserTypeExternal` — see
+`UserTypeExternal`'s own doc comment: "the postgres source emits customer,
+ServiceNow emits external" for the same underlying concept (confirmed
+against `recompute_user_type`'s trigger logic, migration 000007: `EXTERNAL`
+is derived from `external`/`partner`/`customer`/... roles). `NOT_AVAILABLE`
+(the trigger's fallback for a user with no matching role at all) has no
+domain equivalent and is left `""` — same as a `NULL` `user_type` — rather
+than inventing a fifth `UserType` value nothing else expects.
+
 ## Fixing the plural/singular table-name mismatch
 
 `case_repo.go`, `project_repo.go`, `product_repo.go`, `product_version_repo.go`,

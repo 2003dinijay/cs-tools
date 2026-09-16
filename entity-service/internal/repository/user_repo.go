@@ -62,18 +62,45 @@ func NewUserRepository(db *pgxpool.Pool) UserRepository {
 // rather than queried. Postgres-backed PatchMe/TimeZone support does not
 // exist today regardless (UserService has no PatchMe method at all -- only
 // the ServiceNow-backed SNUserService does).
-const userColumns = `id, user_name, first_name, last_name, email, user_type, created_on, updated_on`
+const userColumns = `id, user_name, first_name, last_name, email, user_type::TEXT, created_on, updated_on`
 
 // prefixUserColumns is userColumns qualified with the "u" alias SearchUsers'
 // query uses (needed once EXISTS subqueries reference u.id for role
 // filtering); GetUserByEmail queries the unaliased table directly and uses
 // userColumns as-is.
-const prefixUserColumns = `u.id, u.user_name, u.first_name, u.last_name, u.email, u.user_type, u.created_on, u.updated_on`
+const prefixUserColumns = `u.id, u.user_name, u.first_name, u.last_name, u.email, u.user_type::TEXT, u.created_on, u.updated_on`
+
+// userTypeFromEnum maps "user".user_type's real user_type_enum labels
+// (migration 000007) to domain.UserType. EXTERNAL becomes UserTypeCustomer,
+// not UserTypeExternal -- see UserTypeExternal's own doc comment: "the
+// postgres source emits customer, ServiceNow emits external" for the same
+// underlying concept. NOT_AVAILABLE (recompute_user_type's fallback when a
+// user holds no role at all) has no domain equivalent and is left "" (the
+// zero value), same as a NULL user_type.
+var userTypeFromEnum = map[string]domain.UserType{
+	"SYSTEM":   domain.UserTypeSystem,
+	"INTERNAL": domain.UserTypeInternal,
+	"EXTERNAL": domain.UserTypeCustomer,
+}
 
 func scanUser(row interface{ Scan(...any) error }) (domain.User, error) {
 	var u domain.User
-	err := row.Scan(&u.ID, &u.UserName, &u.FirstName, &u.LastName, &u.Email, &u.UserType, &u.CreatedOn, &u.UpdatedOn)
-	return u, err
+	var firstName, lastName, email, userType *string
+	err := row.Scan(&u.ID, &u.UserName, &firstName, &lastName, &email, &userType, &u.CreatedOn, &u.UpdatedOn)
+	if err != nil {
+		return domain.User{}, err
+	}
+	// first_name/last_name/email/user_type (migration 000001/000007) all
+	// have no NOT NULL constraint; the domain.User fields they fill are
+	// required (non-pointer), so a NULL column becomes "" rather than
+	// failing the scan.
+	u.FirstName = stringOrEmpty(firstName)
+	u.LastName = stringOrEmpty(lastName)
+	u.Email = stringOrEmpty(email)
+	if userType != nil {
+		u.UserType = userTypeFromEnum[*userType]
+	}
+	return u, nil
 }
 
 // GetUserByEmail implements UserRepository.
