@@ -19,15 +19,22 @@
 // SRE_ALERT_AUTH_USERS entries ("username:bcryptHash") without any other
 // tooling.
 //
+// Always hashes at bcrypt.DefaultCost — not configurable, deliberately.
+// internal/middleware.BasicAuth's username-enumeration defense (comparing
+// against a fixed dummy hash on every unknown username) only removes the
+// timing signal if every real credential's bcrypt cost matches that dummy's;
+// a hash generated at a different cost would take a different amount of
+// wall-clock time to compare, reopening the same side channel. See
+// ParseBasicAuthUsers, which rejects any hash whose cost isn't DefaultCost
+// for the same reason.
+//
 // Usage:
 //
 //	echo -n 'the-password' | go run ./cmd/gen-basic-auth-hash
-//	go run ./cmd/gen-basic-auth-hash -cost 12 <<< 'the-password'
 package main
 
 import (
 	"bufio"
-	"flag"
 	"fmt"
 	"os"
 
@@ -35,9 +42,6 @@ import (
 )
 
 func main() {
-	cost := flag.Int("cost", bcrypt.DefaultCost, "bcrypt cost factor")
-	flag.Parse()
-
 	reader := bufio.NewReader(os.Stdin)
 	line, err := reader.ReadString('\n')
 	if err != nil && line == "" {
@@ -50,7 +54,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), *cost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gen-basic-auth-hash: failed to hash password:", err)
 		os.Exit(1)

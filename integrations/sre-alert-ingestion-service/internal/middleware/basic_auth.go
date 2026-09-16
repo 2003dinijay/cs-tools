@@ -77,6 +77,17 @@ func ParseBasicAuthUsers(raw string) (BasicAuthUsers, error) {
 		if !looksLikeBcryptHash(hash) {
 			return nil, fmt.Errorf("malformed entry for username %q in SRE_ALERT_AUTH_USERS: value is not a bcrypt hash", username)
 		}
+		// BasicAuth's username-enumeration defense compares every unknown
+		// username against a fixed dummyHash at bcrypt.DefaultCost, so that
+		// path takes the same wall-clock time as a known-username wrong-
+		// password compare. That only holds if every real hash here was
+		// also generated at DefaultCost — a hash at a different cost would
+		// make its own username distinguishable by timing alone, regardless
+		// of password correctness. Reject rather than silently accept a
+		// mismatched cost.
+		if cost, cerr := bcrypt.Cost([]byte(hash)); cerr != nil || cost != bcrypt.DefaultCost {
+			return nil, fmt.Errorf("malformed entry for username %q in SRE_ALERT_AUTH_USERS: hash must be bcrypt.DefaultCost (%d)", username, bcrypt.DefaultCost)
+		}
 		if _, dup := users[username]; dup {
 			return nil, fmt.Errorf("duplicate username %q in SRE_ALERT_AUTH_USERS", username)
 		}

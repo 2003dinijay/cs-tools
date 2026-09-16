@@ -26,9 +26,13 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/sre-alert-ingestion-service/internal/middleware"
 )
 
+// mustHash hashes at bcrypt.DefaultCost — the only cost ParseBasicAuthUsers
+// accepts (see its own doc comment on why a mismatched cost reopens the
+// username-enumeration timing side channel BasicAuth's dummy-hash compare
+// exists to close).
 func mustHash(t *testing.T, password string) string {
 	t.Helper()
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		t.Fatalf("bcrypt.GenerateFromPassword: %v", err)
 	}
@@ -148,6 +152,10 @@ func TestParseBasicAuthUsers_Malformed(t *testing.T) {
 	t.Parallel()
 
 	validHash := mustHash(t, "s3cret")
+	wrongCostHash, err := bcrypt.GenerateFromPassword([]byte("s3cret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt.GenerateFromPassword: %v", err)
+	}
 
 	cases := []struct {
 		name string
@@ -161,6 +169,7 @@ func TestParseBasicAuthUsers_Malformed(t *testing.T) {
 		{"non-bcrypt-looking hash", "datadog:plaintext-password"},
 		{"empty entry between commas", "datadog:" + validHash + ",,grafana:" + validHash},
 		{"duplicate username", "datadog:" + validHash + ",datadog:" + validHash},
+		{"hash at a non-default cost breaks timing parity with BasicAuth's dummy hash", "datadog:" + string(wrongCostHash)},
 	}
 
 	for _, tc := range cases {
