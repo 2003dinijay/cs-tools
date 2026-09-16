@@ -101,14 +101,12 @@ export function useGetCsmCaseAttachments(
       if (!caseId) return [];
 
       const allAttachments: BeAttachment[] = [];
+      let offset = 0;
       for (let page = 0; page < MAX_ATTACHMENT_PAGES; page += 1) {
         const payload: BeAttachmentSearchPayload = {
           referenceId: caseId,
           referenceType,
-          pagination: {
-            offset: page * ATTACHMENTS_PAGE_LIMIT,
-            limit: ATTACHMENTS_PAGE_LIMIT,
-          },
+          pagination: { offset, limit: ATTACHMENTS_PAGE_LIMIT },
         };
         const response = await api.post<
           BeAttachmentSearchPayload,
@@ -116,7 +114,8 @@ export function useGetCsmCaseAttachments(
         >("/attachments/search", payload);
         const rows = response.attachments ?? [];
         allAttachments.push(...rows);
-        if (rows.length < ATTACHMENTS_PAGE_LIMIT || !response.hasMore) break;
+        if (!response.hasMore || rows.length === 0) break;
+        offset += rows.length;
       }
       return allAttachments.map(uiAttachmentFromBe);
     },
