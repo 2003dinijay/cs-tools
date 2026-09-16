@@ -96,6 +96,7 @@ import ChangeSeverityDialog from "@features/csm-cases/components/ChangeSeverityD
 import ChangeCaseTypeDialog, {
   type CaseTypeTransferSubmission,
 } from "@features/csm-cases/components/ChangeCaseTypeDialog";
+import { hasPublicComment } from "@features/csm-cases/utils/commentContent";
 import { caseTypeTransferLabel } from "@features/csm-cases/utils/caseTypeTransfer";
 import SetAutocloseHoldDialog from "@features/csm-cases/components/SetAutocloseHoldDialog";
 import EditCaseDetailsDialog, {
@@ -712,6 +713,15 @@ export default function CsmCaseDetailPage(): JSX.Element {
     kind: "close" | "propose_solution";
     targetState: BeCaseState;
   } | null>(null);
+  // Drives the "no public comment yet" confirm dialog for a WIP case moving
+  // to Awaiting info or Solution proposed — see the gate in `onAction` and
+  // `hasPublicComment`. Null hides the dialog; set to the action that was
+  // about to run so "Proceed anyway" can hand it straight to
+  // `proceedLifecycleTransition`.
+  const [noPublicCommentConfirm, setNoPublicCommentConfirm] = useState<{
+    action: "request_info" | "propose_solution";
+    targetState: BeCaseState;
+  } | null>(null);
   const [severityOpen, setSeverityOpen] = useState(false);
   const [changeCaseTypeOpen, setChangeCaseTypeOpen] = useState(false);
   const [logTimeOpen, setLogTimeOpen] = useState(false);
@@ -768,6 +778,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
     clearComposerDraft();
     setAssignOpen(false);
     setResolutionDialog(null);
+    setNoPublicCommentConfirm(null);
     setSeverityOpen(false);
     setChangeCaseTypeOpen(false);
     setLogTimeOpen(false);
@@ -1089,6 +1100,46 @@ export default function CsmCaseDetailPage(): JSX.Element {
     [data, findMyOngoingCases, patchCase, showError, resolveOngoingConflict],
   );
 
+  // The actual lifecycle transition, once any confirmation gate ahead of it
+  // (the no-public-comment check below, ISSU-026's own Post Resolution
+  // Activity dialog) has already been satisfied. Split out from `onAction` so
+  // the no-public-comment confirm dialog's "Proceed anyway" button can invoke
+  // exactly this — the same transition `onAction` would have run directly had
+  // there already been a public comment on the case.
+  const proceedLifecycleTransition = useCallback(
+    (action: CaseLifecycleAction, targetState: BeCaseState) => {
+      // ISSU-026: closing or proposing a solution records the Post
+      // Resolution Activity first — open that dialog instead of PATCHing
+      // immediately. Must run before the generic `targetState` PATCH below.
+      if (action === "close" || action === "propose_solution") {
+        setResolutionDialog({ kind: action, targetState });
+        return;
+      }
+
+      if (targetState === "work_in_progress" && data) {
+        void startWork(LIFECYCLE_TOAST[action], LIFECYCLE_SEVERITY[action]);
+        return;
+      }
+
+      // Real state transition via PATCH /cases/{id}; the detail + list
+      // queries refetch on success so the new state shows.
+      patchCase.mutate(
+        { state: targetState },
+        {
+          onSuccess: () =>
+            setFeedback({
+              message: LIFECYCLE_TOAST[action],
+              severity: LIFECYCLE_SEVERITY[action],
+              sticky: true,
+            }),
+          onError: (err) =>
+            showError("Could not update the case. Please try again.", err),
+        },
+      );
+    },
+    [data, startWork, patchCase, showError],
+  );
+
   const onAction = useCallback(
     (
       action: CaseLifecycleAction | { secondary: string },
@@ -1156,38 +1207,25 @@ export default function CsmCaseDetailPage(): JSX.Element {
           return;
         }
 
-        // ISSU-026: closing or proposing a solution records the Post
-        // Resolution Activity first — open that dialog instead of PATCHing
-        // immediately. Must run before the generic `targetState` PATCH below.
-        if ((action === "close" || action === "propose_solution") && targetState) {
-          setResolutionDialog({ kind: action, targetState });
-          return;
-        }
-
-        if (targetState === "work_in_progress" && data) {
-          void startWork(LIFECYCLE_TOAST[action], LIFECYCLE_SEVERITY[action]);
+        // Confirm before a WIP case moves to Awaiting info or Solution
+        // proposed with zero public comment on it yet — the customer would
+        // otherwise see the case pause on them, or a solution appear, with no
+        // explanation of why or what's proposed. Only these two transitions
+        // are gated (mirrors the defect report); every other transition
+        // (Wait on WSO2, Close, etc.) proceeds as before. Must run before
+        // `proceedLifecycleTransition`, which is exactly what "Proceed
+        // anyway" on the confirm dialog goes on to call.
+        if (
+          (action === "request_info" || action === "propose_solution") &&
+          targetState &&
+          !hasPublicComment(comments)
+        ) {
+          setNoPublicCommentConfirm({ action, targetState });
           return;
         }
 
         if (targetState) {
-          // Real state transition via PATCH /cases/{id}; the detail + list
-          // queries refetch on success so the new state shows.
-          patchCase.mutate(
-            { state: targetState },
-            {
-              onSuccess: () =>
-                setFeedback({
-                  message: LIFECYCLE_TOAST[action],
-                  severity: LIFECYCLE_SEVERITY[action],
-                  sticky: true,
-                }),
-              onError: (err) =>
-                showError(
-                  "Could not update the case. Please try again.",
-                  err,
-                ),
-            },
-          );
+          proceedLifecycleTransition(action, targetState);
           return;
         }
         // No backend state change (e.g. assign_to_me — no assignee field yet):
@@ -1410,12 +1448,14 @@ export default function CsmCaseDetailPage(): JSX.Element {
     },
     [
       data,
+      comments,
       showError,
       showSuccess,
       patchCase,
       findMyOngoingCases,
       startWork,
       resolveOngoingConflict,
+      proceedLifecycleTransition,
       currentUserEmail,
       navigate,
     ],
@@ -1458,6 +1498,17 @@ export default function CsmCaseDetailPage(): JSX.Element {
       sticky: true,
     });
   }, []);
+
+  // "Proceed anyway" on the no-public-comment confirm dialog: run the exact
+  // transition that was held back, same as if `onAction` had found a public
+  // comment already there. "Add a comment first" just closes the dialog with
+  // no PATCH — the case stays put and the engineer can use the composer.
+  const onConfirmNoPublicComment = useCallback(() => {
+    if (!noPublicCommentConfirm) return;
+    const { action, targetState } = noPublicCommentConfirm;
+    setNoPublicCommentConfirm(null);
+    proceedLifecycleTransition(action, targetState);
+  }, [noPublicCommentConfirm, proceedLifecycleTransition]);
 
   // Assign the case to the chosen engineer via PATCH { assigneeEmail }. The
   // detail query is invalidated by the hook, so the assignee display refreshes
@@ -2931,6 +2982,37 @@ export default function CsmCaseDetailPage(): JSX.Element {
           onSubmit={onResolutionSubmit}
         />
       )}
+
+      <Dialog
+        open={!!noPublicCommentConfirm}
+        onClose={() => setNoPublicCommentConfirm(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>No public comment on this case yet</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            {noPublicCommentConfirm?.action === "propose_solution"
+              ? "This case has no public comment yet, and the customer won't be told what the proposed solution is unless one is added. Add a public comment first, or proceed and record the Post Resolution Activity anyway."
+              : "This case has no public comment yet, so the customer won't see why it's now waiting on them. Add a public comment first, or proceed anyway."}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            color="inherit"
+            onClick={() => setNoPublicCommentConfirm(null)}
+          >
+            Add a comment first
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            onClick={onConfirmNoPublicComment}
+          >
+            Proceed anyway
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {severityOpen && (
         <ChangeSeverityDialog

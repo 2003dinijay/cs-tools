@@ -142,6 +142,13 @@ Comments in the timeline are color/role-tagged (Customer, WSO2, System, AI Agent
 scan who said what at a glance, and each has a permalink (click the timestamp) for referencing
 a specific comment.
 
+Moving a case to **Awaiting info** or **Solution proposed** while it has no public comment yet
+(only internal notes, or none at all) shows a confirm dialog first — the customer would
+otherwise see the case pause on them, or a solution appear, with no explanation of why or
+what's proposed. **Add a comment first** closes the dialog with no change to the case;
+**Proceed anyway** goes ahead with the transition regardless. No other state transition is
+gated this way.
+
 **Request update…**, in the case's **More** menu, posts a customer-visible comment nudging the
 customer for a response — pick a first, second, or final reminder (each shown as a read-only
 preview of the exact wording that will be posted) or write a custom message instead. It's only
