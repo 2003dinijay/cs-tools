@@ -1170,6 +1170,11 @@ type DeployedProductView struct {
 	Cores      *int                       `json:"cores"`
 	TPS        *float64                   `json:"tps"`
 	Category   *string                    `json:"category"`
+	// Description is the customer's own free-text note about this deployed
+	// product. It is editable through the update endpoint, so it has to be
+	// readable here too — otherwise a client cannot show the current value
+	// before changing it.
+	Description *string `json:"description"`
 	// Updates is the deployed product's update-level history, most-recent-first as
 	// returned by the backing data source. Nil/empty when none have been recorded.
 	Updates   []ProductUpdateEntry `json:"updates"`
