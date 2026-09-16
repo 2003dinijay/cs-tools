@@ -161,6 +161,32 @@ func TestConfig_Validate_ServiceNowRequiresIntegrationServiceFields(t *testing.T
 	}
 }
 
+func TestConfig_Validate_RejectsPortsThatResolveToTheSameNumber(t *testing.T) {
+	// A string comparison would wave "8080"/"08080" through: different
+	// strings, same TCP port, so both listeners race for one port and the
+	// process ends up half dead.
+	c := baseValidConfig()
+	c.ServerPort = "8080"
+	c.HealthPort = "08080"
+	if err := c.Validate(); err == nil {
+		t.Error("Validate() = nil, want an error when the two ports resolve to the same number")
+	}
+}
+
+func TestConfig_Validate_RejectsUnbindablePort(t *testing.T) {
+	// Caught here, naming the offending variable, rather than at
+	// ListenAndServe time inside a goroutine.
+	for _, port := range []string{"99999", "not-a-port", "-1"} {
+		t.Run(port, func(t *testing.T) {
+			c := baseValidConfig()
+			c.HealthPort = port
+			if err := c.Validate(); err == nil {
+				t.Errorf("Validate() = nil, want an error for HEALTH_PORT %q", port)
+			}
+		})
+	}
+}
+
 func TestConfig_Validate_RejectsHealthPortCollidingWithServerPort(t *testing.T) {
 	// The health listener is a separate server precisely so only its own
 	// routes are reachable at public visibility. Sharing a port would mean

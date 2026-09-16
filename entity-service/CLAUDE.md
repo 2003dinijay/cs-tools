@@ -61,6 +61,13 @@ convenience:
 Both are declared as separate Choreo endpoints in `.choreo/component.yaml`, the public one
 against its own `health-openapi.yaml`.
 
+**`.choreo/component.yaml` hardcodes both ports and nothing reconciles them with the env vars at
+deploy time.** Overriding `HEALTH_PORT` in a Choreo deployment routes public health traffic to a
+port with no listener, and the symptom — a health endpoint that never answers — is
+indistinguishable from the outage it exists to report. Leave `HEALTH_PORT` unset there; override
+it locally only, and if the port ever has to change, change `component.yaml` in the same commit.
+`SERVER_PORT` has carried this same coupling since before the health endpoint existed.
+
 What is publicly reachable is decided by *which mux a handler is registered on* — true in this
 process, visible in one file — rather than by a gateway basePath rule that lives in another
 system and fails open if it is ever wrong. **Never register a business route on the health mux,

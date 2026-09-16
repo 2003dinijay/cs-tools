@@ -19,6 +19,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 )
@@ -115,7 +116,8 @@ func getEnvOrDefault(key, defaultVal string) string {
 }
 
 // Validate checks that the configuration is self-consistent. It returns an
-// error if HEALTH_PORT and SERVER_PORT collide, if DATA_SOURCE is an
+// error if SERVER_PORT/HEALTH_PORT are unusable or resolve to the same
+// port, if DATA_SOURCE is an
 // unrecognised value, if DB_USER/DB_PASSWORD/DB_NAME
 // are missing when DATA_SOURCE=postgres (see db.NewPoolIfNeeded), if
 // SERVICENOW_INTEGRATION_SERVICE_BASE_URL is missing when
@@ -127,8 +129,24 @@ func (c *Config) Validate() error {
 	// listeners cannot share a port: the second ListenAndServe would fail
 	// with "address already in use" after the first has already started
 	// serving, leaving the process up but one of the two ports dead. Reject
-	// the collision at startup, where it is unambiguous.
-	if c.HealthPort == c.ServerPort {
+	// that at startup, where it is unambiguous.
+	//
+	// Resolved to numbers first rather than compared as strings: "8080" and
+	// "08080" are the same TCP port but not the same string, so a string
+	// comparison would wave that pair through into exactly the half-dead
+	// startup described above. Resolving also rejects a port that could
+	// never be bound at all ("http-alt-typo", "99999") here, with the
+	// offending variable named, instead of at ListenAndServe time inside a
+	// goroutine.
+	serverPortNum, err := net.LookupPort("tcp", c.ServerPort)
+	if err != nil {
+		return fmt.Errorf("invalid SERVER_PORT %q: %w", c.ServerPort, err)
+	}
+	healthPortNum, err := net.LookupPort("tcp", c.HealthPort)
+	if err != nil {
+		return fmt.Errorf("invalid HEALTH_PORT %q: %w", c.HealthPort, err)
+	}
+	if serverPortNum == healthPortNum {
 		return fmt.Errorf("HEALTH_PORT (%s) must differ from SERVER_PORT (%s)", c.HealthPort, c.ServerPort)
 	}
 

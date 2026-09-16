@@ -116,7 +116,7 @@ HTTP Request
 | DB_NAME     | Yes      | postgres  | Database name     |
 | DB_SSLMODE  | No       | require   | SSL mode          |
 | SERVER_PORT | No       | 8080      | Main API listener port |
-| HEALTH_PORT | No       | 8081      | Health probe listener port; must differ from `SERVER_PORT` |
+| HEALTH_PORT | No       | 8081      | Health probe listener port; must differ from `SERVER_PORT`, and must be left at its default in Choreo deployments (see below) |
 
 > `.env` file is loaded automatically if present. Absent `.env` is silently ignored; a malformed one causes a fatal startup error.
 
@@ -126,6 +126,12 @@ The service listens on **two** ports. `SERVER_PORT` (8080) carries the API and i
 **Organization** visibility. `HEALTH_PORT` (8081) carries nothing but the health probes and is
 published at **Public** visibility, so external alerting can poll it without credentials — see
 `.choreo/component.yaml`, which declares one Choreo endpoint per port.
+
+`.choreo/component.yaml` declares both ports statically and nothing reconciles them with the
+environment at deploy time, so **overriding `SERVER_PORT` or `HEALTH_PORT` in a Choreo deployment
+routes traffic to a port with no listener.** For the health endpoint that is particularly
+unhelpful: a probe that never answers looks exactly like the outage it exists to report. Override
+these locally only.
 
 The split is deliberate and is the security boundary itself: what is publicly reachable is decided
 by which mux a handler is registered on (`internal/server/health.go`), not by a gateway path rule
