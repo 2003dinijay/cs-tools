@@ -198,6 +198,14 @@ func summarizeErr(err error) string {
 	// err.Error() for a *url.Error, because that appends the full request URL
 	// (which for other clients can carry filter query params); url.Error.Err on
 	// its own does not.
+	// The upstream answered, but with data the caller could not use. Checked
+	// first: it is the one category here that is NOT a transport or decode
+	// failure, and reporting it as one would point debugging at the network.
+	var dataErr *apierror.DataError
+	if errors.As(err, &dataErr) {
+		return dataErr.Error()
+	}
+
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "upstream request timed out"
