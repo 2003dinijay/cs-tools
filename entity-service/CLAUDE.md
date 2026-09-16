@@ -793,6 +793,17 @@ the same `validChangeRequestSortField`/`validChangeRequestSortOrder` maps
 `sn_change_request_service.go` already used, so an unrecognized `sortBy`
 value is a 400 on both data sources instead of silently falling back to
 `created_on DESC` only on Postgres.
+
+**`scanChangeRequestView`/`scanChangeRequestViewAndDetail` had a
+scan-destination bug** found in production logs: `wi.created_on`/
+`wi.updated_on` (`TIMESTAMPTZ`) were scanned directly into
+`&v.CreatedOn`/`&v.UpdatedOn`, both `string` fields on
+`SearchChangeRequestView` (RFC3339-formatted, like `PlannedStartOn`) — pgx
+v5 can't scan a binary-format timestamptz into a `*string`
+(`SearchChangeRequests` failed on every call with "can't scan into dest\[20\]
+... cannot scan timestamptz ... in binary format"). Fixed the same way
+`PlannedStartOn`/`PlannedEndOn` already were: scan into an intermediate
+`time.Time`, then `.UTC().Format(time.RFC3339)` into the string field.
 `CreateChangeRequest` and both approval methods (`GetChangeRequestApprovals`,
 `DecideChangeRequestApproval`) are not, for two different reasons:
 
@@ -835,6 +846,42 @@ own doc comment already describes this as "the reverse of
 Because of this, `SearchChangeRequestView.Project`/`Case` can be empty
 (`EntityRef{}`)/`nil` for a change request that exists but hasn't been
 linked yet — a real, valid state for this schema, not a bug.
+
+## Fixing case enum-casing/mapping bugs and GetCaseByID's false 404s
+
+Found in production logs after the plural/singular fix shipped: every
+`case_state_enum`/`case_issue_type_enum`/`case_work_state_enum`/
+`engagement_type_enum` filter and write in `case_repo.go` cast a
+`domain.CaseState`/`CaseIssueType`/`CaseWorkState`/`EngagementType` value
+(all lowercase, e.g. `"work_in_progress"`) straight into its Postgres enum
+column (all `UPPER_SNAKE_CASE`, e.g. `'WORK_IN_PROGRESS'`), so every
+`SearchCases` state/severity/issueType/workState/engagementType filter and
+every `UpdateCase` state/severity/workState write failed with `invalid input
+value for enum ... (SQLSTATE 22P02)`. Fixed with `strings.ToUpper(...)` at
+every write/filter site and `strings.ToLower(...)` at every read site
+(`GetCaseByID`, `SearchCases`, `scanUpdatedCase`) — for state, issue type,
+work state, and engagement type, whose domain and real-column values match
+1:1 once case-folded.
+
+**Severity is the one exception**: `case_severity_enum`'s real labels are
+`'S0'`..`'S4'`, completely unrelated to `domain.CaseSeverity`'s
+catastrophic/critical/high/medium/low — case-folding alone can't bridge
+that. `caseSeverityToEnum`/`caseSeverityFromEnum` (`case_repo.go`) map
+between them using the standard S0=most-severe/S4=least-severe ITSM
+convention, since no migration comment or other table states the intended
+correspondence. Flagged in the maps' own doc comment in case that
+assumption is ever wrong — but without some mapping, severity can't be
+written or filtered on Postgres at all.
+
+**`GetCaseByID` also had a separate, unrelated bug**: it inner-joined
+`deployment`/`deployed_product`/`product` (all nullable FKs on `work_item`,
+same as `SearchCases` already documented for the same three tables), so any
+case missing one of those links came back zero rows — misreported as 404
+"case not found" — while still appearing correctly in `SearchCases`'s
+result list, since that query already used `LEFT JOIN` for these three.
+Fixed by matching `SearchCases`'s join type; `CaseView.DeploymentDetails`/
+`DeployedProductDetails` are already pointer fields, so this needed no
+domain/contract change, only nil-checks in the scan.
 
 ## Fixing the plural/singular table-name mismatch
 
@@ -944,6 +991,22 @@ product, account, deployment, deployed_product, split across
     the already-stated design), or Go-side generation with a retry-on-
     conflict loop — either way, the exact prefix/padding/format needs a
     real answer, not an invented one.
+
+## IT services (CMDB services)
+
+`service` (migration 000048) is a standalone table — no FK to or from any
+other table in this schema. `ITServiceRepository.SearchITServices`
+(`it_service_repo.go`) wires `POST /services/search` up to it on Postgres;
+previously this route only existed on the ServiceNow data source.
+`domain.ITService.Class` is mapped from `service.category` (a free-text
+`VARCHAR`) — the same choice already made for `product.category` ->
+`domain.Product.Class` in `product_repo.go`, since there's no column
+literally named "class". `BusinessCriticality` maps 1:1 (case-folded) via
+`itServiceBusinessCriticalityFromEnum`. `ServiceClassification`
+(business_service/technology_management_service/application_service on the
+ServiceNow data source) has no corresponding column on `service` at all —
+`category`/`subcategory` are free text, not drawn from that three-value set
+— so it is always left `nil` on Postgres rather than guessed at.
 
 ## Adding a new entity
 

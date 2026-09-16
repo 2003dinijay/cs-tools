@@ -131,6 +131,7 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 		aeID, aeName           *string
 		startOn, endOn         *time.Time
 		impact, state          *string
+		createdOn, updatedOn   time.Time
 	)
 	err := row.Scan(
 		&v.ID, &v.Number, &v.Subject, &v.Description,
@@ -141,7 +142,7 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 		&prodID, &prodName,
 		&aeID, &aeName,
 		&startOn, &endOn, &impact, &state,
-		&v.CreatedOn, &v.UpdatedOn,
+		&createdOn, &updatedOn,
 	)
 	if err != nil {
 		return domain.SearchChangeRequestView{}, err
@@ -180,6 +181,8 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 		lower := strings.ToLower(*state)
 		v.State = &lower
 	}
+	v.CreatedOn = createdOn.UTC().Format(time.RFC3339)
+	v.UpdatedOn = updatedOn.UTC().Format(time.RFC3339)
 	return v, nil
 }
 
@@ -425,6 +428,7 @@ func scanChangeRequestViewAndDetail(row pgx.Row, createdBy *string, justificatio
 		aeID, aeName           *string
 		startOn, endOn         *time.Time
 		impact, state          *string
+		createdOn, updatedOn   time.Time
 	)
 	err := row.Scan(
 		&v.ID, &v.Number, &v.Subject, &v.Description,
@@ -435,7 +439,7 @@ func scanChangeRequestViewAndDetail(row pgx.Row, createdBy *string, justificatio
 		&prodID, &prodName,
 		&aeID, &aeName,
 		&startOn, &endOn, &impact, &state,
-		&v.CreatedOn, &v.UpdatedOn,
+		&createdOn, &updatedOn,
 		createdBy, justification, impactDescription, serviceOutage, communicationPlan, rollbackPlan, testPlan,
 		isCustomerApproved, isCustomerReviewed,
 	)
@@ -476,6 +480,8 @@ func scanChangeRequestViewAndDetail(row pgx.Row, createdBy *string, justificatio
 		lower := strings.ToLower(*state)
 		v.State = &lower
 	}
+	v.CreatedOn = createdOn.UTC().Format(time.RFC3339)
+	v.UpdatedOn = updatedOn.UTC().Format(time.RFC3339)
 	return v, nil
 }
 

@@ -321,10 +321,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		instanceHandler = handler.NewInstanceHandler(service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient))
 	}
 
-	var itServiceHandler *handler.ITServiceHandler
+	itServiceRepo := repository.NewITServiceRepository(db)
+	var activeITServiceSvc service.ITServiceService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		itServiceHandler = handler.NewITServiceHandler(service.NewServiceNowITServiceService(serviceNowIntegrationServiceClient))
+		activeITServiceSvc = service.NewServiceNowITServiceService(serviceNowIntegrationServiceClient)
+	} else {
+		activeITServiceSvc = service.NewITServiceService(itServiceRepo)
 	}
+	itServiceHandler := handler.NewITServiceHandler(activeITServiceSvc)
 
 	var serviceOfferingHandler *handler.ServiceOfferingHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -525,9 +529,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("GET /products/vulnerabilities/meta", productVulnerabilityHandler.GetVulnerabilityMeta)
 	mux.HandleFunc("POST /products/vulnerabilities/sync", productVulnerabilityHandler.SyncProductVulnerabilities)
 
-	if itServiceHandler != nil {
-		mux.HandleFunc("POST /services/search", itServiceHandler.SearchITServices)
-	}
+	mux.HandleFunc("POST /services/search", itServiceHandler.SearchITServices)
 
 	if serviceOfferingHandler != nil {
 		mux.HandleFunc("POST /service-offerings/search", serviceOfferingHandler.SearchServiceOfferings)

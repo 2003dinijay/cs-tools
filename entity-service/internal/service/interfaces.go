@@ -600,9 +600,11 @@ type ServiceOfferingService interface {
 }
 
 // ITServiceService defines the operations available on the CMDB IT services entity.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// On Postgres this is backed by the standalone service table (migration
+// 000048); ServiceClassification always comes back nil there -- see
+// ITServiceRepository's own doc comment for why.
 type ITServiceService interface {
-	// SearchITServices returns a paginated list of CMDB services from ServiceNow.
+	// SearchITServices returns a paginated list of services.
 	SearchITServices(ctx context.Context, req domain.SearchITServicesRequest) (domain.SearchITServicesResponse, error)
 }
 
