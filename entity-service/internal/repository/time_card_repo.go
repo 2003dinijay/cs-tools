@@ -273,10 +273,17 @@ func timeCardWhereClause(f *domain.SearchTimeCardsFilters) (string, []any) {
 		add("tc.approved_by_id = $%d", *f.ApprovedByID)
 	}
 	if f.StartDate != nil {
-		add("tc.work_date >= $%d::date", *f.StartDate)
+		// ::text::date, not a direct ::date cast: pgx v5's date codec has no
+		// encode plan for a raw Go string once the server infers the
+		// parameter's OID as `date` (which a direct cast does) -- casting
+		// through text first keeps the parameter bound as text (matching a
+		// Go string's own default codec), with the date conversion then
+		// happening server-side. See the identical fix in
+		// change_request_repo.go's PlannedStartOn/PlannedEndOn handling.
+		add("tc.work_date >= $%d::text::date", *f.StartDate)
 	}
 	if f.EndDate != nil {
-		add("tc.work_date <= $%d::date", *f.EndDate)
+		add("tc.work_date <= $%d::text::date", *f.EndDate)
 	}
 	if len(f.States) > 0 {
 		states := make([]string, len(f.States))
@@ -497,7 +504,7 @@ func (r *timeCardRepo) CreateTimeCard(ctx context.Context, req domain.CreateTime
 			providing_solution_minutes, patching_minutes
 		) VALUES (
 			gen_random_uuid(), NOW(), NOW(), $1, $1,
-			$2, $3, $1, $4::date, $5, 'submitted',
+			$2, $3, $1, $4::text::date, $5, 'submitted',
 			$6, $7, $8, $9, $10, $11, $12
 		) RETURNING id`
 
@@ -553,7 +560,7 @@ func (r *timeCardRepo) UpdateTimeCardFields(ctx context.Context, req domain.Upda
 	// placeholder rather than appended again.
 	actorArg := argIdx - 1
 	if req.Date != nil {
-		add("work_date = $%d::date", *req.Date)
+		add("work_date = $%d::text::date", *req.Date)
 	}
 	if req.IsBillable != nil {
 		add("is_billable = $%d", *req.IsBillable)

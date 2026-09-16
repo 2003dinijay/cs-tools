@@ -737,6 +737,25 @@ changed.
   user holds *any* of the given roles). `GetMe`'s `Roles` is still always
   empty — nothing has asked for it on that path, this only wires up the
   search filter.
+- **Case activities** (`CaseRepository.SearchCaseActivities`): merges
+  `comment` and complete `case_attachments` rows into one newest-first feed
+  via a `UNION ALL` CTE — was previously an unconditional
+  `ServiceUnavailableError` stub. There is no field-change audit table in
+  this schema, so `req.IncludeFieldChanges` has no effect on this data
+  source; an absent field-change history is a valid state per
+  `SearchCaseActivitiesRequest`'s own doc comment, not an error.
+  `CaseActivity.DownloadURL` is left empty for attachment entries — this
+  service builds no portal links or absolute URLs to itself (same posture
+  as the Event Hub section above); a caller resolves the actual bytes via
+  `GET /attachments/{id}/content`. The comment branch's `"user"` join is by
+  email (`comment.created_by` is a free-text VARCHAR, not a FK), and
+  `"user".email` has no unique constraint (migration 000001 only makes
+  `user_name` UNIQUE) — so that join is wrapped in its own `DISTINCT ON
+  (cm.id)` subquery to guarantee one activity row per comment even if two
+  user rows share an address. Without it, a shared address would fan one
+  comment out into multiple feed rows while the sibling `COUNT` query (which
+  never joins `"user"`) still counted it once, so the page and its `total`
+  would disagree.
 
 **Pre-existing bug fixed as a side effect, not scope creep**: `user_repo.go`
 queried a `users` table with `created_at`/`updated_at`/`phone`/`timezone`
@@ -762,6 +781,60 @@ again. `resolveCallerEmail` (`account_contact_service.go`) is the shared
 helper: decodes `x-user-id-token`'s `email` claim without a `"user"` table
 lookup, since nothing on these paths needs the caller's platform id today,
 only their claimed email.
+
+## Change requests
+
+`change_request` (migration 000047) is a shared-PK extension of `work_item`,
+same pattern as `"case"` (`change_request.id` IS `work_item.id`). `SearchChangeRequests`,
+`AggregateChangeRequests`, `GetChangeRequest`, and `PatchChangeRequest` are
+wired up to it (`change_request_repo.go`/`change_request_service.go`).
+`changeRequestService.SearchChangeRequests` validates `req.SortBy` against
+the same `validChangeRequestSortField`/`validChangeRequestSortOrder` maps
+`sn_change_request_service.go` already used, so an unrecognized `sortBy`
+value is a 400 on both data sources instead of silently falling back to
+`created_on DESC` only on Postgres.
+`CreateChangeRequest` and both approval methods (`GetChangeRequestApprovals`,
+`DecideChangeRequestApproval`) are not, for two different reasons:
+
+- **`CreateChangeRequest`**: `work_item.number` has no DB default and no
+  backing sequence anywhere in `migrations/` — the exact same blocker
+  `CaseRepository.CreateCase` has (see "Fixing the plural/singular
+  table-name mismatch" below). Deferred for the same reason: generating it
+  needs a product decision (sequence + migration vs. Go-side generation,
+  and the exact number format) this change doesn't make unilaterally.
+- **`GetChangeRequestApprovals`/`DecideChangeRequestApproval`**: these
+  model multiple approval *stages*, each with multiple *approvers* and
+  per-approver status (`domain.ChangeRequestApproval`/`ChangeRequestApprover`).
+  This schema has only one summary `change_request.approval` column
+  (`REQUESTED`/`APPROVED`/`REJECTED`/`NOT_REQUESTED`) — no approval-stage or
+  approver table at all. There's nothing to serve either method from
+  without a schema change, so both always return a `ServiceUnavailableError`
+  on Postgres.
+
+**Fields with no real column anywhere, left unset rather than guessed at**
+(see `ChangeRequestRepository`'s own doc comment for the full list):
+`ServiceID`, `ServiceOfferingID`, `ConfigurationItemID`, `GroupID`, and
+`AssignedTeamID` (no CMDB/group tables exist in this schema at all); `Type`
+(`domain.ChangeRequestType` — standard/normal/emergency/... — has **no**
+relationship to `change_request.change_request_type`, whose real enum
+values are `INFRA`/`GENERAL`, a completely different classification, not a
+subset of the domain enum); `ApprovedBy`/`ApprovedOn`/`LegalNextStates` on
+`domain.ChangeRequest` (no approver/date columns for the first two;
+`LegalNextStates` is a ServiceNow workflow-engine computation with nothing
+to derive it from here). `Duration` (`cr.calendar_duration`, an `INTERVAL`)
+is also left unset — no confirmed display format to render it in.
+
+**Linking happens entirely through `PATCH`, never at creation** —
+`CreateChangeRequestRequest` has no project/case field at all;
+`PatchChangeRequestRequest.ProjectID`/`DeploymentID`/`DeployedProductID`/
+`AssignedEngineerID` map directly to their `work_item` columns, and
+`CaseID` maps to `work_item.parent_id` (`domain.LinkedChangeRequestRef`'s
+own doc comment already describes this as "the reverse of
+`PatchChangeRequestRequest.CaseID`" — confirmed here as the generic
+`work_item.parent_id` self-reference, migration 000036, not case-specific).
+Because of this, `SearchChangeRequestView.Project`/`Case` can be empty
+(`EntityRef{}`)/`nil` for a change request that exists but hasn't been
+linked yet — a real, valid state for this schema, not a bug.
 
 ## Fixing the plural/singular table-name mismatch
 
@@ -955,6 +1028,8 @@ All shared types live in `internal/domain/entity.go`. Conventions:
 | `*ServiceUnavailableError` | 503      | Downstream dependency temporarily down   |
 
 `apierror.WriteJSON(w, status, msg)` writes `{"code": <status>, "message": "<msg>"}`.
+
+**Never put `pgErr.Detail` verbatim in a `ValidationError.Msg`.** `writeServiceError`'s own comment states a `ValidationError`'s message is always safe to return to the caller as-is, but a Postgres foreign-key violation's `Detail` field quotes the real table and column name (e.g. `` Key (assigned_to_id)=(...) is not present in table "user". ``) — handing an API caller schema internals. When a `23503` can be attributed to a specific request field (e.g. via `pgErr.ConstraintName`, since none of this schema's inline `REFERENCES` get an explicit `CONSTRAINT` name, so Postgres's default `<table>_<column>_fkey` naming applies), name that field instead. See `change_request_repo.go`'s `changeRequestPatchFKField` map for the pattern. Several older `23503` handlers elsewhere in `internal/repository/` (`case_repo.go`, `time_card_repo.go`) still return `pgErr.Detail` this way — a known pre-existing gap, not newly introduced, and not yet fixed.
 
 ## Database migrations
 
