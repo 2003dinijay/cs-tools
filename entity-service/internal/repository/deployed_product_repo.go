@@ -49,7 +49,15 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 	filterArgs := []any{}
 	argIdx := 1
 
-	where := "WHERE 1=1"
+	// deployed_product.deployment_id/product_id are both nullable (migration
+	// 000014 sets them NULL when the parent deployment/product is deleted).
+	// The data query below inner-joins both and so can never return such a
+	// row; without these predicates the count query would still include it,
+	// inflating total relative to what's actually returned.
+	// DeployedProductView.Deployment/Product are non-pointer EntityRef
+	// values, so switching to LEFT joins isn't a safe alternative -- that
+	// would need a response-contract change and nullable scan handling.
+	where := "WHERE dp.deployment_id IS NOT NULL AND dp.product_id IS NOT NULL"
 
 	if len(req.DeploymentIDs) > 0 {
 		where += fmt.Sprintf(" AND dp.deployment_id = ANY($%d::uuid[])", argIdx)

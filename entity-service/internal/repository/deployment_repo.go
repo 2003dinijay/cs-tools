@@ -49,7 +49,15 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	filterArgs := []any{}
 	argIdx := 1
 
-	where := "WHERE 1=1"
+	// deployment.project_id is nullable (migration 000013 sets it NULL when
+	// the owning project is deleted). The data query below inner-joins
+	// project and so can never return such a row; without this predicate
+	// the count query would still include it, inflating total relative to
+	// what's actually returned. DeploymentView.Project is a non-pointer
+	// EntityRef, so switching the join to LEFT instead isn't a safe
+	// alternative -- that would need a response-contract change (a nullable
+	// Project field) and nullable scan handling, not just a query fix.
+	where := "WHERE d.project_id IS NOT NULL"
 
 	if len(req.ProjectIDs) > 0 {
 		// Cast the parameter to uuid[] so the column stays uncast and idx_deployments_project_id is usable.

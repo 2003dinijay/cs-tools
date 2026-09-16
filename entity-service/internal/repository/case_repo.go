@@ -212,6 +212,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		rcID, rcNum            *string
 		accountID, accountName *string
 		workState              *string
+		description            *string
 		depID, depName         string
 		dpID, dpDisplayName    string
 		prodID, prodName       string
@@ -248,7 +249,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		 WHERE wi.id = $1 AND wi.type = 'CASE'`, id,
 	).Scan(
 		&cv.ID, &cv.Number, &cv.InternalID,
-		&cv.Description, &cv.Severity, &cv.IssueType, &cv.State, &workState,
+		&description, &cv.Severity, &cv.IssueType, &cv.State, &workState,
 		&cv.CreatedOn, &cv.UpdatedOn, &cv.ClosedOn,
 		&cv.Subject,
 		&creatorEmail, &creatorID, &creatorName,
@@ -267,6 +268,17 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 	if err != nil {
 		return domain.CaseView{}, fmt.Errorf("get case by id: %w", err)
 	}
+	// work_item.description (migration 000035) has no NOT NULL constraint,
+	// unlike subject; CaseView.Description is a required (non-pointer)
+	// string, so a NULL column becomes "" rather than left unset.
+	if description != nil {
+		cv.Description = *description
+	}
+	// wi.type = 'CASE' is the query's own WHERE clause, so hardcoding this
+	// is accurate, not a guess -- cheaper than adding another SELECT/Scan
+	// column for a value the query already guarantees.
+	caseType := "case"
+	cv.Type = &caseType
 	cv.DeploymentDetails = &domain.EntityRef{ID: depID, Name: depName}
 	cv.DeployedProductDetails = &domain.DeployedProductRef{
 		ID:          &dpID,
@@ -1008,7 +1020,8 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		result := make([]domain.SearchCaseView, 0, req.Pagination.Limit)
 		for rows.Next() {
 			var cv domain.SearchCaseView
-			var caseType, subject, description string
+			var caseType, subject string
+			var description *string
 			var severity, issueType, engagementType, workState, state *string
 			var createdAt, updatedAt time.Time
 			var aeID, aeName *string
@@ -1041,7 +1054,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			}
 			cv.Type = strings.ToLower(caseType)
 			cv.Subject = &subject
-			cv.Description = &description
+			cv.Description = description
 			cv.Severity = severity
 			cv.IssueType = issueType
 			cv.EngagementType = engagementType
