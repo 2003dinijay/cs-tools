@@ -106,9 +106,22 @@ func main() {
 	alertHandler := handler.NewAlertHandler(dbStore, mustEnv("SRE_ALERT_CALLER_ID"))
 	healthHandler := handler.NewHealthHandler(dbStore)
 
+	// SRE_ALERT_AUTH_USERS is required: this service's only inbound
+	// authentication is HTTP Basic Auth on POST /alerts (see the wiring
+	// comment below), so a missing/malformed value must fail startup, not
+	// silently leave the route unauthenticated. See internal/middleware.BasicAuth
+	// and cmd/gen-basic-auth-hash for the credential format and how to
+	// generate a hash.
+	authUsers, err := middleware.ParseBasicAuthUsers(mustEnv("SRE_ALERT_AUTH_USERS"))
+	if err != nil {
+		slog.Error("invalid SRE_ALERT_AUTH_USERS", "err", err)
+		os.Exit(1)
+	}
+	basicAuth := middleware.BasicAuth(authUsers)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler.Health)
-	mux.HandleFunc("POST /alerts", alertHandler.CreateAlert)
+	mux.Handle("POST /alerts", basicAuth(http.HandlerFunc(alertHandler.CreateAlert)))
 
 	addr := ":" + envOrDefault("PORT", "8080")
 
@@ -133,9 +146,17 @@ func main() {
 
 	slog.Info("SRE Alert Ingestion Service started", "addr", addr)
 
-	// No Auth layer in this middleware chain — inbound requests are trusted at the
-	// Choreo API Manager gateway, not validated again in this service, matching
-	// csm-integration-service's own convention. See this service's CLAUDE.md.
+	// This service is deployed on AKS with no gateway/ingress auth layer in
+	// front of it — unlike this repo's other integrations/* services, which
+	// sit behind Choreo's API Manager and trust inbound requests at the
+	// gateway. So POST /alerts authenticates every request itself, end to
+	// end, via the per-route HTTP Basic Auth middleware wired above
+	// (middleware.BasicAuth) — that is this service's sole inbound
+	// authentication enforcement point, not a layer added on top of
+	// something else. GET /health deliberately stays unauthenticated so
+	// liveness/readiness probes don't need credentials. The outer chain
+	// below (SecurityHeaders/CorrelationID/Logger) applies to every route
+	// but performs no authentication of its own.
 	srv := &http.Server{
 		Handler: middleware.SecurityHeaders(
 			middleware.CorrelationID(
