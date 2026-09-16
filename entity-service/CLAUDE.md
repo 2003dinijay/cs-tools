@@ -747,8 +747,8 @@ service makes (`GetUserByEmail`, used by `CreateCaseComment`, `AddCaseTag`/
 `RemoveCaseTag`/`SearchTags`, `SetCaseWatchList`, `CreateTimeCard`/
 `UpdateTimeCard`/`DeleteTimeCard`/`TransitionTimeCardState`, `resolveActor`)
 depended on this, so it had to be fixed here rather than deferred — see
-"Known pre-existing schema/repository mismatch" below for the sibling repos
-that still have this problem and haven't been touched.
+"Fixing the plural/singular table-name mismatch" below for the five sibling
+repos that had the same problem and are now fixed too.
 
 **Threading the caller's identity to the repository layer**: several of the
 methods above (`SearchAccountContacts`, `SearchProjectContacts`,
@@ -763,22 +763,114 @@ helper: decodes `x-user-id-token`'s `email` claim without a `"user"` table
 lookup, since nothing on these paths needs the caller's platform id today,
 only their claimed email.
 
-**Known pre-existing schema/repository mismatch (not fixed here)**:
+## Fixing the plural/singular table-name mismatch
+
 `case_repo.go`, `project_repo.go`, `product_repo.go`, `product_version_repo.go`,
-`deployment_repo.go`, and `deployed_product_repo.go` all query plural,
+`deployment_repo.go`, and `deployed_product_repo.go` used to query plural,
 unquoted table names (`cases`, `projects`, `products`, `accounts`,
-`deployments`, `deployed_products`, `case_comments`) that do not exist
-anywhere in `migrations/`, which instead define singular/quoted `"case"`,
-project, product, account, deployment, deployed_product, split across
-`work_item`+`case`. These repositories cannot function against this
-migration set as they stand. The new methods added to `case_repo.go` in
-this section and the one above (tags, watch list, comments via
-`comment_repo.go`) deliberately query only the *real* tables
-(`work_item`, `tag`, `work_item_tag`, `work_item_watcher`, `"user"`) and are
-unaffected by this bug, but the rest of `case_repo.go` (`CreateCase`,
-`GetCaseByID`'s own case/project/account/deployment joins, `SearchCases`,
-etc.) is not, and needs its own dedicated fix — out of scope for adding new
-queries on top of it.
+`deployments`, `deployed_products`, `case_comments`) that never existed in
+`migrations/`, which instead define singular/quoted `"case"`, project,
+product, account, deployment, deployed_product, split across
+`work_item`+`"case"`. All six are now fixed **except one method** —
+`case_repo.go`'s `CreateCase`, see below.
+
+- **`product_version_repo.go`**: pure rename (`product_versions` →
+  `product_version`, `created_at`/`updated_at` → `created_on`/`updated_on`).
+  No other column was wrong.
+- **`deployment_repo.go`**: same rename, plus one semantic bug beyond
+  naming: `deployment.created_by` is a plain `VARCHAR` audit string (an
+  email, this codebase's own convention — see e.g. `commentService` writing
+  the caller's email into `comment.created_by`), never a UUID FK, so
+  `JOIN "user" u ON d.created_by = u.id` would either fail to type-check or
+  silently match nothing even after the table rename. Fixed by resolving
+  the creator via `LEFT JOIN "user" u ON LOWER(u.email) = LOWER(d.created_by)`
+  — `CreatedBy` comes back `nil` (not a fabricated `EntityRef` with an empty
+  id) when the email doesn't resolve to a known user.
+- **`deployed_product_repo.go`**: rename, plus `dp.product_version_id` →
+  the real column `dp.version_id`. Also newly populates `Cores`/`TPS`/
+  `Category` from `core_count`/`tps_count`/`product_category` — real columns
+  that existed but were never selected at all (a distinct, adjacent gap,
+  fixed in the same pass since it was a one-line addition once the query
+  was being rewritten anyway). `update_level_info` (JSONB) → `Updates` is
+  still not populated: its actual JSON shape isn't confirmed against any
+  real payload, so it's deliberately left nil rather than guessed at.
+- **`product_repo.go`**: `class`/`product_class_enum` don't exist anywhere
+  in the migrations. The real, unambiguous equivalent is
+  `product.category` (`product_category_enum`: `SOFTWARE`/`SERVICE`) —
+  `domain.Product.Class`'s own values (`"software"`/`"service"`) match it
+  1:1 once case-folded; `manufacturer`/`business_unit`/`unit` are different
+  classification axes on the same table, not substitutes for this one.
+- **`project_repo.go`**: rename, plus two fields with **no real column at
+  all** (`subscriptionType`, `closureStatus`/`account.tier` — ServiceNow
+  vocabulary with values like `"managed_cloud_subscription"`/`"read_only"`
+  that don't match any of `project`'s several different closure-state
+  columns, and `account` has no tier-like column whatsoever) — left as
+  their zero value rather than mapped to a guessed-at column, with a doc
+  comment explaining why. `AgentEnabled`/`KbReferencesEnabled` *do* have a
+  clear real-column match despite the name difference
+  (`account.ai_gen_response_enabled`/`smart_knowledge_base_suggestions_enabled`)
+  and are populated from them (both nullable `BOOLEAN`s, treated as `false`
+  when `NULL`).
+- **`case_repo.go`**: the largest of the six — `work_item`+`"case"` is a
+  genuine two-table split (not a single mis-named table), so every method
+  needed a real rewrite, not just a rename:
+  - `GetCaseByID`/`SearchCases`: case-specific fields
+    (severity/issue_type/state/work_state/closed_on) come from `"case"`;
+    everything else (number, subject, description, created_on/updated_on,
+    created_by, the project/deployment/deployed-product/account ids,
+    assignee, parent) comes from `work_item`, since those are common to
+    every work_item type, not case-only. `SearchCases` LEFT JOINs `"case"`
+    (it can return non-case types too — `service_request`, `engagement`,
+    `security_report_analysis` — and `"announcement"` rows have no
+    deployment/deployed-product at all), so applying a state/severity/
+    issue-type/work-state filter implicitly narrows results to case-type
+    rows, since a non-case row's joined `"case"` columns are always `NULL`.
+    `EngagementTypes` filters/selects from the separate `engagement` table
+    (`eng.type`, migration 000019) the same way, LEFT joined. `ParentCase`
+    now resolves its `Type` from the parent's own real `work_item.type`
+    (via `work_item.parent_id`, migration 000036 — a generic self-reference
+    across every work_item type, not case-specific) instead of always
+    hardcoding `"case"`; `RelatedCase` (`"case".related_case_id`, migration
+    000038) is genuinely case-specific, so hardcoding `"case"` there is
+    still correct. `account_id` is read directly off `work_item.account_id`
+    (a real, direct column — migration 000016) rather than derived
+    transitively through the project, since work_item has its own.
+  - `CreateCaseComment`/`SearchCaseComments`: now target the real
+    generic `comment` table (migration 000037, keyed by `work_item_id`, not
+    `case_id`) instead of the nonexistent `case_comments` — sharing the
+    same `comment_type_enum` mapping `commentTypeToEnum` in
+    `comment_service.go` uses (`caseCommentTypeEnum`/`caseCommentEnumType`
+    in `case_repo.go`, kept local rather than importing the service package
+    per this repo's own layering rule). `CreateCaseComment` refuses
+    `CommentTypeActivity` for the same reason `commentService.CreateComment`
+    does (`APPROVAL_HISTORY` is ServiceNow-audit-trail-only). This also
+    required a one-line, tightly-coupled fix in `case_service.go`:
+    `CreateCaseComment` used to pass the resolved user's **UUID** as
+    `req.CreatedBy` (matching the old, nonexistent `case_comments` table's
+    assumed UUID FK); it now passes the user's **email**, matching
+    `comment.created_by`'s real `VARCHAR` shape — this was a necessary,
+    coupled fix, not scope creep, since the two bugs are the same
+    underlying wrong-schema assumption surfacing in two layers.
+  - `UpdateCase`: now a single `WITH` CTE updating both `"case"`
+    (state/severity/work_state/closed_on) and `work_item` (updated_on) in
+    one round trip — the `work_item` CTE's `AND EXISTS (SELECT 1 FROM
+    updated_case)` guard means a nonexistent id updates nothing in either
+    table, not a partial update.
+  - **`CreateCase` is still broken, deliberately** — this is the one
+    method that can't be fixed with a rename. `work_item.number` and
+    `work_item.wso2_id` are both `UNIQUE` with no DB default and **no
+    backing sequence anywhere in `migrations/`** — despite this file's own
+    "Database migrations" section documenting the intended design
+    ("generated from dedicated sequences via column defaults"), no
+    `CREATE SEQUENCE` for either one was ever actually added, and the
+    intended number *format* isn't specified anywhere either (ServiceNow's
+    own case numbers look like `"CS0023001"`, but that's not proven to be
+    the intended Postgres-native format). Explicitly deferred per product
+    decision rather than guessed at. Whoever picks this up next needs to
+    decide: a new migration adding sequences + column defaults (fulfilling
+    the already-stated design), or Go-side generation with a retry-on-
+    conflict loop — either way, the exact prefix/padding/format needs a
+    real answer, not an invented one.
 
 ## Adding a new entity
 

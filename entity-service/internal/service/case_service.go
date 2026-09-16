@@ -332,7 +332,9 @@ func (s *caseService) CreateCaseComment(ctx context.Context, req domain.CreateCa
 	if err != nil {
 		return domain.CreateCaseCommentResponse{}, err
 	}
-	req.CreatedBy = user.ID
+	// comment.created_by (migration 000037) is a free-text VARCHAR, not a
+	// UUID FK -- see CaseRepository.CreateCaseComment's own doc comment.
+	req.CreatedBy = user.Email
 	c, err := s.repo.CreateCaseComment(ctx, req)
 	if err != nil {
 		return domain.CreateCaseCommentResponse{}, err
