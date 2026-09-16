@@ -390,7 +390,9 @@ type CaseService interface {
 	// SearchCaseActivities returns a paginated activity feed (comments, attachments, and
 	// optionally field changes) for the case identified by req.CaseID. Field-change entries
 	// are included only when req.IncludeFieldChanges is set. A ValidationError is returned
-	// for invalid input. Supported by the ServiceNow data source only.
+	// for invalid input. The Postgres-backed implementation merges comments and complete
+	// attachments only -- there is no field-change audit table in this schema, so
+	// req.IncludeFieldChanges has no effect there.
 	SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error)
 	// GetCaseAttachmentContent returns the raw binary content and its Content-Type
 	// for the attachment identified by attachmentID.

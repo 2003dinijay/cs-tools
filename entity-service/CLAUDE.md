@@ -737,6 +737,17 @@ changed.
   user holds *any* of the given roles). `GetMe`'s `Roles` is still always
   empty — nothing has asked for it on that path, this only wires up the
   search filter.
+- **Case activities** (`CaseRepository.SearchCaseActivities`): merges
+  `comment` and complete `case_attachments` rows into one newest-first feed
+  via a `UNION ALL` CTE — was previously an unconditional
+  `ServiceUnavailableError` stub. There is no field-change audit table in
+  this schema, so `req.IncludeFieldChanges` has no effect on this data
+  source; an absent field-change history is a valid state per
+  `SearchCaseActivitiesRequest`'s own doc comment, not an error.
+  `CaseActivity.DownloadURL` is left empty for attachment entries — this
+  service builds no portal links or absolute URLs to itself (same posture
+  as the Event Hub section above); a caller resolves the actual bytes via
+  `GET /attachments/{id}/content`.
 
 **Pre-existing bug fixed as a side effect, not scope creep**: `user_repo.go`
 queried a `users` table with `created_at`/`updated_at`/`phone`/`timezone`

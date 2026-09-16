@@ -112,6 +112,9 @@ func (s *stubCaseRepo) SearchTags(context.Context, string, string, int) ([]domai
 func (s *stubCaseRepo) SetCaseWatchList(context.Context, string, []string, string) ([]domain.WatchListUser, time.Time, error) {
 	panic("not implemented")
 }
+func (s *stubCaseRepo) SearchCaseActivities(context.Context, domain.SearchCaseActivitiesRequest) ([]domain.CaseActivity, int, error) {
+	panic("not implemented")
+}
 
 // stubUserRepo is a minimal repository.UserRepository; SearchCases doesn't
 // exercise it beyond the createdBy-current-user path, which these tests don't

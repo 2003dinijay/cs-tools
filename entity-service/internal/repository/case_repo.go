@@ -130,6 +130,16 @@ type CaseRepository interface {
 	// caseID does not exist; a ValidationError if any userID does not
 	// exist.
 	SetCaseWatchList(ctx context.Context, caseID string, userIDs []string, callerEmail string) ([]domain.WatchListUser, time.Time, error)
+	// SearchCaseActivities returns a paginated, newest-first feed combining
+	// the case's comments (comment, migration 000037) and complete
+	// attachments (case_attachments, migration 000043) into one merged
+	// timeline, together with the total matching count. There is no
+	// field-change audit table in this schema, so entries of that kind are
+	// never produced regardless of req.IncludeFieldChanges -- an absent
+	// field-change history is a valid state (see
+	// SearchCaseActivitiesRequest's own doc comment: "only comment and
+	// attachment entries are returned" is the documented default already).
+	SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) ([]domain.CaseActivity, int, error)
 }
 
 type caseRepo struct {
@@ -1307,4 +1317,123 @@ func (r *caseRepo) SearchTags(ctx context.Context, searchQuery, _ string, limit 
 		return nil, fmt.Errorf("iterate tags: %w", err)
 	}
 	return tags, nil
+}
+
+// SearchCaseActivities implements CaseRepository.
+func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) ([]domain.CaseActivity, int, error) {
+	const countQuery = `
+		SELECT
+			(SELECT COUNT(*) FROM comment WHERE work_item_id = $1) +
+			(SELECT COUNT(*) FROM case_attachments WHERE case_id = $1 AND status = 'complete')`
+
+	// UNION ALL merges the two tables into one timeline. Comment rows
+	// resolve their (free-text VARCHAR) author by email match against
+	// "user"; attachment rows join it directly, since case_attachments.
+	// uploaded_by is a real UUID FK (migration 000043) -- see this file's
+	// other created_by fixes for why the two differ.
+	const dataQuery = `
+		WITH activity AS (
+			SELECT
+				c.id, 'comment' AS kind, c.content, c.created_on AS created_on,
+				c.created_by AS email, u1.first_name AS first_name, u1.last_name AS last_name,
+				c.type::text AS comment_type,
+				NULL::text AS file_name, NULL::text AS content_type, NULL::bigint AS size_bytes
+			FROM comment c
+			LEFT JOIN "user" u1 ON LOWER(u1.email) = LOWER(c.created_by)
+			WHERE c.work_item_id = $1
+
+			UNION ALL
+
+			SELECT
+				a.id, 'attachment' AS kind, COALESCE(a.description, '') AS content, a.created_at AS created_on,
+				u2.email AS email, u2.first_name, u2.last_name,
+				NULL::text AS comment_type,
+				a.filename, a.mime_type, a.size_bytes
+			FROM case_attachments a
+			JOIN "user" u2 ON u2.id = a.uploaded_by
+			WHERE a.case_id = $1 AND a.status = 'complete'
+		)
+		SELECT id, kind, content, created_on, email, first_name, last_name, comment_type, file_name, content_type, size_bytes
+		FROM activity
+		ORDER BY created_on DESC, id
+		LIMIT $2 OFFSET $3`
+
+	var total int
+	var activity []domain.CaseActivity
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	eg.Go(func() error {
+		if err := r.db.QueryRow(egCtx, countQuery, req.CaseID).Scan(&total); err != nil {
+			return fmt.Errorf("count case activities: %w", err)
+		}
+		return nil
+	})
+
+	eg.Go(func() error {
+		rows, err := r.db.Query(egCtx, dataQuery, req.CaseID, req.Pagination.Limit, req.Pagination.Offset)
+		if err != nil {
+			return fmt.Errorf("query case activities: %w", err)
+		}
+		defer rows.Close()
+
+		result := make([]domain.CaseActivity, 0, req.Pagination.Limit)
+		for rows.Next() {
+			var (
+				id, kind, content          string
+				createdOn                  time.Time
+				email, firstName, lastName *string
+				commentTypeRaw             *string
+				fileName, contentType      *string
+				sizeBytes                  *int64
+			)
+			if err := rows.Scan(&id, &kind, &content, &createdOn, &email, &firstName, &lastName, &commentTypeRaw, &fileName, &contentType, &sizeBytes); err != nil {
+				return fmt.Errorf("scan case activity: %w", err)
+			}
+			a := domain.CaseActivity{
+				ID:                 id,
+				Content:            content,
+				CreatedOn:          createdOn,
+				CreatedByFirstName: stringOrEmpty(firstName),
+				CreatedByLastName:  stringOrEmpty(lastName),
+			}
+			name := strings.TrimSpace(stringOrEmpty(firstName) + " " + stringOrEmpty(lastName))
+			// CreatedBy.ID is always null on this feed by contract -- see
+			// CaseActivity's own doc comment.
+			a.CreatedBy = domain.NewUserReference("", stringOrEmpty(email), name)
+			switch kind {
+			case "comment":
+				a.Type = domain.ActivityTypeComment
+				if commentTypeRaw != nil {
+					if ct, ok := caseCommentEnumType[*commentTypeRaw]; ok {
+						a.CommentType = &ct
+					}
+				}
+			case "attachment":
+				a.Type = domain.ActivityTypeAttachment
+				a.FileName = stringOrEmpty(fileName)
+				a.ContentType = stringOrEmpty(contentType)
+				if sizeBytes != nil {
+					a.SizeBytes = int(*sizeBytes)
+				}
+				// DownloadURL is deliberately left empty: this service
+				// builds no portal links or absolute URLs to itself (see
+				// CLAUDE.md's Event Hub section for the same "no portal
+				// base URL" posture) -- a caller resolves the actual bytes
+				// via GET /attachments/{id}/content.
+			}
+			result = append(result, a)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate case activities: %w", err)
+		}
+		activity = result
+		return nil
+	})
+
+	if err := eg.Wait(); err != nil {
+		return nil, 0, err
+	}
+
+	return activity, total, nil
 }

@@ -885,8 +885,34 @@ func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.Sear
 	}, nil
 }
 
-func (s *caseService) SearchCaseActivities(_ context.Context, _ domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error) {
-	return domain.SearchCaseActivitiesResponse{}, &apierror.ServiceUnavailableError{Msg: "case activities are only supported for the ServiceNow data source"}
+// SearchCaseActivities implements CaseService.
+//
+// Merges comments and complete attachments into one feed -- see
+// CaseRepository.SearchCaseActivities's own doc comment. There is no
+// field-change audit table in this schema, so req.IncludeFieldChanges has
+// no effect: an absent field-change history is a valid state, not an error,
+// per this request's own doc comment ("only comment and attachment entries
+// are returned" is the documented default already).
+func (s *caseService) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error) {
+	if err := validateUUIDs("caseId", []string{req.CaseID}); err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+
+	activity, total, err := s.repo.SearchCaseActivities(ctx, req)
+	if err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+
+	return domain.SearchCaseActivitiesResponse{
+		Activity: activity,
+		Total:    total,
+		Limit:    req.Pagination.Limit,
+		Offset:   req.Pagination.Offset,
+		HasMore:  req.Pagination.Offset+len(activity) < total,
+	}, nil
 }
 
 // GetCaseAttachmentContent implements CaseService for the CSM-native
