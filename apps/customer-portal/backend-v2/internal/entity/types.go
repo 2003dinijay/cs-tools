@@ -1250,7 +1250,16 @@ type UpdateDeployedProductRequest struct {
 	Cores        *int            `json:"cores,omitempty"`
 	TPS          *float64        `json:"tps,omitempty"`
 	Description  json.RawMessage `json:"description,omitempty"`
-	Active       *bool           `json:"active,omitempty"`
+	// Updates whole-array-replaces the deployed product's update-level history.
+	//
+	// It is a pointer to a slice, not a slice, so that a caller-supplied empty
+	// array (clear the history) stays distinguishable from an absent field
+	// (leave it alone): encoding/json's omitempty drops a zero-length slice
+	// regardless of nil-ness, so only a non-nil pointer to an empty slice
+	// serialises as "[]" rather than being dropped. entity-service's own SN
+	// payload uses the same shape for the same reason.
+	Updates *[]ProductUpdateEntry `json:"updates,omitempty"`
+	Active  *bool                 `json:"active,omitempty"`
 }
 
 // UpdatedDeployedProduct carries the fields that may change after an update.

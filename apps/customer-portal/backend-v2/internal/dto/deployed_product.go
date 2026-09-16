@@ -275,7 +275,15 @@ type DeployedProductUpdateRequest struct {
 	Cores       *int     `json:"cores,omitempty"`
 	TPS         *float64 `json:"tps,omitempty"`
 	Description *string  `json:"description,omitempty"`
-	Active      *bool    `json:"active,omitempty"`
+	// Updates replaces the deployed product's update-level history wholesale —
+	// this is how the Manage Products dialog's Update History tab saves, and it
+	// sends updates on its own with no other field set.
+	//
+	// A pointer to a slice so that an explicit empty array (the user deleted
+	// every entry) is not confused with an absent field; see
+	// entity.UpdateDeployedProductRequest.Updates.
+	Updates *[]ProductUpdate `json:"updates,omitempty"`
+	Active  *bool            `json:"active,omitempty"`
 }
 
 // BuildEntityUpdateDeployedProductRequest translates the portal's update
@@ -298,6 +306,17 @@ func BuildEntityUpdateDeployedProductRequest(id, deploymentID string, req Deploy
 		if raw, err := json.Marshal(*req.Description); err == nil {
 			out.Description = raw
 		}
+	}
+	if req.Updates != nil {
+		entries := make([]entity.ProductUpdateEntry, 0, len(*req.Updates))
+		for _, u := range *req.Updates {
+			entries = append(entries, entity.ProductUpdateEntry{
+				UpdateLevel: u.UpdateLevel,
+				Date:        u.Date,
+				Details:     u.Details,
+			})
+		}
+		out.Updates = &entries
 	}
 	return out
 }

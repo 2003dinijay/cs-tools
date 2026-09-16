@@ -160,11 +160,18 @@ func (h *DeployedProductHandler) PatchDeployedProduct(w http.ResponseWriter, r *
 	}
 	req := dto.BuildEntityUpdateDeployedProductRequest(id, deploymentID, portalReq)
 	// entity-service requires exactly one of the detail-fields group
-	// (cores/tps/description) or active=false — never both, never neither.
-	detailFieldsSet := req.Cores != nil || req.TPS != nil || len(req.Description) > 0
+	// (cores/tps/description/updates) or active=false — never both, never
+	// neither. Mirrors its own hasDetailFields check in
+	// snDeployedProductService.UpdateDeployedProduct; keep the two in step.
+	//
+	// updates counts as a detail field there, and omitting it here rejected the
+	// Update History tab's save outright: that dialog sends updates on its own,
+	// which satisfied neither branch and came back as "provide either ... or
+	// active".
+	detailFieldsSet := req.Cores != nil || req.TPS != nil || len(req.Description) > 0 || req.Updates != nil
 	activeSet := req.Active != nil
 	if detailFieldsSet == activeSet {
-		writeError(w, http.StatusBadRequest, "Provide either cores/tps/description or active, but not both.")
+		writeError(w, http.StatusBadRequest, "Provide either cores/tps/description/updates or active, but not both.")
 		return
 	}
 
