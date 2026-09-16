@@ -28,16 +28,15 @@ import (
 func TestHealthServer_ServesOnlyHealthRoutes(t *testing.T) {
 	srv := NewHealthServer(":0", nil)
 
-	// Both probes are routed. Their status codes differ by design and are
-	// asserted in the handler's own tests; here it only matters that
-	// neither is a 404, i.e. that both are actually registered. This server
-	// is built with no pool, so /health/db answers 503.
-	served := map[string]int{"/health": http.StatusOK, "/health/db": http.StatusServiceUnavailable}
-	for path, want := range served {
+	// Both probes are routed. What matters here is that neither is a 404,
+	// i.e. that both are actually registered; the exact body each returns
+	// is asserted in the handler's own tests.
+	served := []string{"/health", "/health/database"}
+	for _, path := range served {
 		rec := httptest.NewRecorder()
 		srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		if rec.Code != want {
-			t.Errorf("GET %s = %d, want %d", path, rec.Code, want)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want %d", path, rec.Code, http.StatusOK)
 		}
 	}
 

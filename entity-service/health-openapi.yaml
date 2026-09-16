@@ -25,7 +25,7 @@ paths:
       summary: >-
         Component probe. Answers 200 whenever the process is up and serving.
         Makes no dependency calls of its own, so a database outage never
-        shows up here — that is what /health/db is for.
+        shows up here — that is what /health/database is for.
       operationId: getHealth
       security: []
       responses:
@@ -37,47 +37,49 @@ paths:
                 $ref: "#/components/schemas/ComponentHealthResponse"
               example:
                 status: ok
-  /health/db:
+  /health/database:
     get:
       summary: >-
-        Database probe. Answers 200 only when a round trip to PostgreSQL
-        actually came back, so any non-200 — or no answer at all — is a
-        usable alert condition on its own.
+        Database probe. Answers 503 when a round trip to PostgreSQL fails,
+        so a database outage is a usable alert condition on its own.
       operationId: getHealthDatabase
       security: []
       responses:
         "200":
-          description: The database answered.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DatabaseHealthResponse"
-              example:
-                status: ok
-                database: up
-        "503":
           description: >-
-            The database is not confirmed up: `down` when the round trip
-            failed, or `not_configured` when this deployment has no
-            connection pool at all and therefore cannot answer the question.
-            The body carries no error detail by design — this endpoint is
-            public, so it reports only whether the dependency is up, never
-            anything about the infrastructure behind it.
+            Nothing to alert on. `database: up` when the round trip
+            succeeded, or `database: not_configured` for a deployment that
+            runs without a connection pool at all — this probe alerts on a
+            PostgreSQL outage, and such a deployment has no PostgreSQL to be
+            out.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/DatabaseHealthResponse"
               examples:
-                databaseDown:
-                  summary: The round trip to PostgreSQL failed
+                databaseUp:
+                  summary: The round trip to PostgreSQL succeeded
                   value:
-                    status: unavailable
-                    database: down
+                    status: ok
+                    database: up
                 databaseNotConfigured:
-                  summary: This deployment has no connection pool
+                  summary: This deployment runs without a connection pool
                   value:
-                    status: unavailable
+                    status: ok
                     database: not_configured
+        "503":
+          description: >-
+            The round trip to PostgreSQL failed. The body carries no error
+            detail by design — this endpoint is public, so it reports only
+            whether the dependency is up, never anything about the
+            infrastructure behind it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatabaseHealthResponse"
+              example:
+                status: unavailable
+                database: down
 components:
   schemas:
     ComponentHealthResponse:

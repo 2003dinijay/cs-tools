@@ -68,7 +68,7 @@ func NewHealthServer(addr string, db *pgxpool.Pool) *http.Server {
 	// loses that distinction exactly when it matters most.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handler.HealthCheck)
-	mux.HandleFunc("GET /health/db", healthHandler.DatabaseCheck)
+	mux.HandleFunc("GET /health/database", healthHandler.DatabaseCheck)
 
 	return &http.Server{
 		Addr: addr,

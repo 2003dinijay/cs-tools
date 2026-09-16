@@ -70,15 +70,15 @@ listener rather than a second basePath.
 | Probe | Where | Behaviour |
 |---|---|---|
 | `GET /health` | both listeners | Always `200 {"status":"ok"}`. Dependency-free by design: a liveness probe that fails on a database outage would have the orchestrator restart or drain an instance that is working fine. |
-| `GET /health/db` | health listener only | `200 {"status":"ok","database":"up"}` only after a real `Ping` round trip. Everything else is `503` — `"down"` on failure, `"not_configured"` with no pool. |
+| `GET /health/database` | health listener only | `200 {"status":"ok","database":"up"}` after a successful `Ping`, `503 {"status":"unavailable","database":"down"}` when it fails. |
 
 Conventions to preserve when touching these:
 
-- **Not-OK is the default in `DatabaseCheck`.** Success is assigned only inside the branch where
-  `Ping` returned nil. A no-pool deployment (`DATA_SOURCE=servicenow`, or `DB_*` dropped by
-  accident) answers 503 too: the probe cannot confirm what it is asked to confirm, and a 200
-  there would hide a real misconfiguration. The consequence is deliberate — a ServiceNow-mode
-  deployment reports 503 on `/health/db` continuously, and should be alerted on via `/health`.
+- **Only a deployment that has a pool can fail `DatabaseCheck`.** This probe alerts on a
+  *PostgreSQL* outage; a no-pool deployment (`DATA_SOURCE=servicenow`) has no PostgreSQL to be
+  out, so it answers `200` with `database: "not_configured"`. A 503 there would alert
+  continuously against a database that is not supposed to exist. The distinct `database` value
+  is what keeps the case visible to anyone reading the body.
 - **Failure bodies carry no detail.** No driver message, host, or port — pgx errors routinely
   embed all three, and this endpoint is unauthenticated and public. Report only whether the
   dependency is up. There is a test asserting this specifically.

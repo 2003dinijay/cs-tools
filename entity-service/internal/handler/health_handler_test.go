@@ -48,7 +48,7 @@ func TestDatabaseCheck_Up(t *testing.T) {
 	pinger := &stubPinger{}
 	rec := httptest.NewRecorder()
 
-	NewHealthHandler(pinger).DatabaseCheck(rec, httptest.NewRequest(http.MethodGet, "/health/db", nil))
+	NewHealthHandler(pinger).DatabaseCheck(rec, httptest.NewRequest(http.MethodGet, "/health/database", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -69,7 +69,7 @@ func TestDatabaseCheck_DownReturns503(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	NewHealthHandler(&stubPinger{err: errors.New("connection refused")}).
-		DatabaseCheck(rec, httptest.NewRequest(http.MethodGet, "/health/db", nil))
+		DatabaseCheck(rec, httptest.NewRequest(http.MethodGet, "/health/database", nil))
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -87,29 +87,27 @@ func TestDatabaseCheck_FailureLeaksNoDetail(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	NewHealthHandler(&stubPinger{err: errors.New("dial tcp 10.0.0.5:5432: connection refused")}).
-		DatabaseCheck(rec, httptest.NewRequest(http.MethodGet, "/health/db", nil))
+		DatabaseCheck(rec, httptest.NewRequest(http.MethodGet, "/health/database", nil))
 
 	if body := rec.Body.String(); contains(body, "10.0.0.5") || contains(body, "5432") || contains(body, "dial tcp") {
 		t.Errorf("failure body leaked connection detail: %s", body)
 	}
 }
 
-func TestDatabaseCheck_NoPoolAlsoReturns503(t *testing.T) {
-	// This probe reports success only for a database round trip that came
-	// back. A deployment with no pool (DATA_SOURCE=servicenow, or DB_*
-	// config quietly dropped) cannot answer that, so it must not return
-	// 200 — the distinct `database` value is what tells this apart from an
-	// outright outage once someone looks at the body.
+func TestDatabaseCheck_NoPoolIsNotAFailure(t *testing.T) {
+	// This probe alerts on a Postgres outage, and a DATA_SOURCE=servicenow
+	// deployment has no Postgres to be out — answering 503 there would
+	// alert continuously on a database that is not supposed to exist.
 	rec := httptest.NewRecorder()
 
-	NewHealthHandler(nil).DatabaseCheck(rec, httptest.NewRequest(http.MethodGet, "/health/db", nil))
+	NewHealthHandler(nil).DatabaseCheck(rec, httptest.NewRequest(http.MethodGet, "/health/database", nil))
 
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 	got := decodeHealth(t, rec.Body.Bytes())
-	if got["status"] != statusUnavailable || got["database"] != dbStatusNotConfigured {
-		t.Errorf("body = %+v, want status %q with database %q", got, statusUnavailable, dbStatusNotConfigured)
+	if got["status"] != statusOK || got["database"] != dbStatusNotConfigured {
+		t.Errorf("body = %+v, want status %q with database %q", got, statusOK, dbStatusNotConfigured)
 	}
 }
 
@@ -117,7 +115,7 @@ func TestDatabaseCheck_NotCached(t *testing.T) {
 	// A cached 200 would keep reporting healthy straight through an outage.
 	rec := httptest.NewRecorder()
 
-	NewHealthHandler(&stubPinger{}).DatabaseCheck(rec, httptest.NewRequest(http.MethodGet, "/health/db", nil))
+	NewHealthHandler(&stubPinger{}).DatabaseCheck(rec, httptest.NewRequest(http.MethodGet, "/health/database", nil))
 
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want %q", got, "no-store")

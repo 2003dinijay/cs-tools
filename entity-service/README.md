@@ -136,16 +136,15 @@ endpoint at port 8080, and do not register business routes on the health mux.**
 | Probe | Port | Answers |
 | ----- | ---- | ------- |
 | `GET /health` | 8080 and 8081 | Always `200 {"status":"ok"}`. Pure liveness — makes no dependency calls, so a database outage never gets the instance restarted or pulled from rotation. |
-| `GET /health/db` | 8081 only | `200 {"status":"ok","database":"up"}` only when a round trip to PostgreSQL actually came back. Everything else is `503`: `database: "down"` when the round trip failed, `database: "not_configured"` when this deployment has no pool at all. |
+| `GET /health/database` | 8081 only | `200 {"status":"ok","database":"up"}` when a round trip to PostgreSQL succeeds, `503 {"status":"unavailable","database":"down"}` when it fails. |
 
 Two probes rather than one combined check, so alerting can tell "the component is down" apart from
 "the component is up but its database is not".
 
-`/health/db` reports success only for a confirmed round trip, which is why a deployment with no
-pool (`DATA_SOURCE=servicenow`, or `DB_*` config quietly dropped) also answers 503 rather than
-200 — it cannot answer the question the probe asks, and a 200 there would hide a real
-misconfiguration. **A `DATA_SOURCE=servicenow` deployment will therefore report 503 on
-`/health/db` continuously; alert on `/health` alone in those environments.**
+The database probe alerts on a **PostgreSQL** outage specifically. A deployment running without a
+connection pool (`DATA_SOURCE=servicenow`, where reads go through the ServiceNow integration
+service) has no PostgreSQL to be out, so it answers `200` with `database: "not_configured"` rather
+than a 503 that would fire continuously against a database that is not supposed to exist.
 
 Failure bodies deliberately carry no error detail — no driver message, host, or port. The
 endpoint is public, so it reports only whether the dependency is up, never anything about the

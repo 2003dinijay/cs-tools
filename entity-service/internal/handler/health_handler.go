@@ -35,13 +35,11 @@ const (
 	// dbStatusNotConfigured is reported when this deployment has no pool at
 	// all — DATA_SOURCE=servicenow, where reads go through the ServiceNow
 	// integration service and db.NewPoolIfNeeded deliberately returns no
-	// pool. It is reported with a 503 like an outright failure, because
-	// this probe exists to answer one question — "is the database up?" —
-	// and a deployment with no pool cannot answer yes. Anything short of a
-	// confirmed round trip has to read as not-OK to whatever is alerting on
-	// it; a 200 here would also hide the case where DB_* config was dropped
-	// and the service quietly came up in ServiceNow mode. The distinct
-	// `database` value is what tells the two apart once someone looks.
+	// pool. It is reported with a 200, not a 503: this probe exists to
+	// alert on a Postgres outage, and a ServiceNow-mode deployment has no
+	// Postgres to be out. Answering 503 there would alert continuously on a
+	// database that is not supposed to exist. The distinct `database` value
+	// is what still makes the difference visible to anyone reading the body.
 	dbStatusNotConfigured = "not_configured"
 )
 
@@ -87,32 +85,33 @@ func HealthCheck(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": statusOK})
 }
 
-// DatabaseCheck handles GET /health/db on the health listener. It does a
+// DatabaseCheck handles GET /health/database on the health listener. It does a
 // pooled round trip to Postgres and answers 503 when that fails, so a
 // database outage is a usable alert condition on its own.
 //
-// Responds 200 with {"status":"ok","database":"up"} only when the database
-// actually answers. Every other outcome is a 503: "down" when the ping
-// fails, "not_configured" when this deployment has no pool at all.
+// Responds 200 with {"status":"ok","database":"up"} when the database
+// answers, 503 with {"status":"unavailable","database":"down"} when the ping
+// fails, and 200 with "not_configured" for a deployment that has no pool at
+// all — that last one is not a failure, see dbStatusNotConfigured.
 //
 // The failure body carries no error detail — no driver message, host, or
 // port. This endpoint is publicly reachable by design (external alerting has
 // no credentials), so it reports only whether the dependency is up, never
 // anything about the infrastructure behind it.
 func (h *HealthHandler) DatabaseCheck(w http.ResponseWriter, r *http.Request) {
-	// Not-OK is the default: this probe only reports success for a database
-	// round trip that actually came back.
 	dbStatus := dbStatusNotConfigured
-	status := statusUnavailable
-	code := http.StatusServiceUnavailable
+	status := statusOK
+	code := http.StatusOK
 
+	// Only a deployment that actually has a pool can fail this probe: with
+	// no pool there is no Postgres to be down (see dbStatusNotConfigured).
 	if h.db != nil {
 		if err := h.db.Ping(r.Context()); err != nil {
 			dbStatus = dbStatusDown
+			status = statusUnavailable
+			code = http.StatusServiceUnavailable
 		} else {
 			dbStatus = dbStatusUp
-			status = statusOK
-			code = http.StatusOK
 		}
 	}
 
