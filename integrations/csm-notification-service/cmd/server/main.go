@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/dispatch"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
@@ -207,6 +209,14 @@ func main() {
 	// while investigating a delivery issue without also having to stop
 	// exercising the rest of the pipeline (link resolution, Chat, Twilio).
 	emailSendingEnabled := os.Getenv("EMAIL_SENDING_ENABLED") != "false"
+	// A customer-audience notice puts the recipients in BCC and uses the from
+	// address as the only To, so an unset EMAIL_FROM_ADDRESS submits [""] to
+	// the email service rather than failing here. Required whenever sending is
+	// on, which every real deployment already satisfies.
+	if emailSendingEnabled && strings.TrimSpace(os.Getenv("EMAIL_FROM_ADDRESS")) == "" {
+		slog.Error("EMAIL_FROM_ADDRESS is required when EMAIL_SENDING_ENABLED is not \"false\"")
+		os.Exit(1)
+	}
 	if !emailSendingEnabled {
 		slog.Warn("EMAIL_SENDING_ENABLED=false; case.* emails will be logged, not sent")
 	}
@@ -237,18 +247,20 @@ func main() {
 	// deliberately no third tier past the DLQ; see handleAttempts' doc
 	// comment in eventbus/consumer.go.
 	toDeadLetter := func(ctx context.Context, record eventbus.Record, handleErr error) error {
+		attrs := []any{"topic", record.Topic, "partition", record.Partition,
+			"offset", record.Offset, "dlqTopic", dlqCfg.Topic}
 		slog.WarnContext(ctx, "eventbus: handler exhausted retries, publishing to dead-letter topic",
-			"topic", record.Topic, "partition", record.Partition, "offset", record.Offset,
-			"dlqTopic", dlqCfg.Topic, "err", handleErr)
+			append(attrs, deadLetterErrAttrs(handleErr)...)...)
 		return dlqProducer.Publish(ctx, record.Key, record.Value)
 	}
 
 	// The change-request consumer dead-letters to its own topic, so a stuck
 	// change-request record cannot fill the case DLQ (and the reverse).
 	crToDeadLetter := func(ctx context.Context, record eventbus.Record, handleErr error) error {
+		attrs := []any{"topic", record.Topic, "partition", record.Partition,
+			"offset", record.Offset, "dlqTopic", crDLQCfg.Topic}
 		slog.WarnContext(ctx, "eventbus: handler exhausted retries, publishing to dead-letter topic",
-			"topic", record.Topic, "partition", record.Partition, "offset", record.Offset,
-			"dlqTopic", crDLQCfg.Topic, "err", handleErr)
+			append(attrs, deadLetterErrAttrs(handleErr)...)...)
 		return crDLQProducer.Publish(ctx, record.Key, record.Value)
 	}
 
@@ -603,4 +615,17 @@ func parseGoogleChatSpaces(raw string) []notifications.GoogleChatSpace {
 		return nil
 	}
 	return spaces
+}
+
+// deadLetterErrAttrs describes a handler failure without reproducing it. An
+// upstream failure arrives as *apierror.Error, whose Error() embeds up to 256
+// bytes of the response body -- which can carry recipient addresses or other
+// content this service is not allowed to log (see CLAUDE.md). The status code
+// and error type are enough to find the failure upstream.
+func deadLetterErrAttrs(err error) []any {
+	var apiErr *apierror.Error
+	if errors.As(err, &apiErr) {
+		return []any{"errKind", "upstream", "status", apiErr.StatusCode}
+	}
+	return []any{"errKind", fmt.Sprintf("%T", err)}
 }

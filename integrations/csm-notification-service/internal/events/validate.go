@@ -236,14 +236,23 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		if err := decodeStrict(raw, &p); err != nil {
 			return err
 		}
-		if p.ChangeRequestID == "" || p.Subject == "" || p.Kind == "" {
+		if p.ChangeRequestID == "" || p.Number == "" || p.Subject == "" || p.Kind == "" {
 			return fmt.Errorf("events: missing required field for %s", t)
 		}
 		if p.ChangeRequestID != entityID {
 			return fmt.Errorf("events: payload changeRequestId %q does not match entityId %q", p.ChangeRequestID, entityID)
 		}
-		if p.Audience != "internal" && p.Audience != "customer" {
-			return fmt.Errorf("events: %s has unknown audience %q", t, p.Audience)
+		// Kind and Audience are not independent: the kind decides who the
+		// notice is addressed to, and the audience decides the portal link
+		// and whether recipients go in To or BCC. A mismatched pair sends
+		// customer wording to an internal group, or puts an internal
+		// audience's addresses where a customer can read them.
+		switch {
+		case p.Kind == "customer_proposed" && p.Audience == "internal":
+		case p.Kind == "accepted" && p.Audience == "customer":
+		case p.Kind == "rejected" && p.Audience == "customer":
+		default:
+			return fmt.Errorf("events: %s has kind %q that does not go with audience %q", t, p.Kind, p.Audience)
 		}
 		if !validRecipients(p.Recipients) {
 			return fmt.Errorf("events: invalid recipients for %s", t)
@@ -257,7 +266,7 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		// flow builds the subject (reproducing ServiceNow's per-branch
 		// wording) and resolves the audience, and a notice missing either is
 		// one this service cannot repair by retrying.
-		if p.ChangeRequestID == "" || p.State == "" || p.Subject == "" {
+		if p.ChangeRequestID == "" || p.Number == "" || p.State == "" || p.Subject == "" {
 			return fmt.Errorf("events: missing required field for %s", t)
 		}
 		if p.ChangeRequestID != entityID {

@@ -114,3 +114,60 @@ func TestValidate_RequiresFields(t *testing.T) {
 		})
 	}
 }
+
+// The change-request notices carry an already-resolved audience, so the
+// validator is the only boundary between a malformed publisher and a real
+// mailbox. These are the rules it has to hold.
+func TestValidate_ChangeRequestRules(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	plan := func(kind, audience, number string) string {
+		return `{"changeRequestId":"` + id + `","number":"` + number +
+			`","kind":"` + kind + `","audience":"` + audience +
+			`","subject":"s","recipients":["r@x.com"]}`
+	}
+	approval := func(number string) string {
+		return `{"changeRequestId":"` + id + `","number":"` + number +
+			`","state":"ASSESS","audience":"internal","subject":"s","recipients":["r@x.com"]}`
+	}
+
+	rejected := map[string]struct {
+		typ     Type
+		payload string
+	}{
+		// Number is documented as required and is what a reader identifies the
+		// change request by; a notice without it names nothing.
+		"plan date missing number": {TypeCRPlanDateNotice, plan("accepted", "customer", "")},
+		"approval missing number":  {TypeCRApprovalRequested, approval("")},
+
+		// A mismatched kind/audience pair sends customer wording to an internal
+		// group, or puts an internal audience in BCC where the customer link is
+		// used. Each kind goes with exactly one audience.
+		"customer_proposed with customer": {TypeCRPlanDateNotice, plan("customer_proposed", "customer", "CHG1")},
+		"accepted with internal":          {TypeCRPlanDateNotice, plan("accepted", "internal", "CHG1")},
+		"rejected with internal":          {TypeCRPlanDateNotice, plan("rejected", "internal", "CHG1")},
+	}
+	for name, tc := range rejected {
+		t.Run(name, func(t *testing.T) {
+			if err := Validate(id, tc.typ, json.RawMessage(tc.payload)); err == nil {
+				t.Fatalf("Validate() = nil, want an error")
+			}
+		})
+	}
+
+	accepted := map[string]struct {
+		typ     Type
+		payload string
+	}{
+		"customer_proposed with internal": {TypeCRPlanDateNotice, plan("customer_proposed", "internal", "CHG1")},
+		"accepted with customer":          {TypeCRPlanDateNotice, plan("accepted", "customer", "CHG1")},
+		"rejected with customer":          {TypeCRPlanDateNotice, plan("rejected", "customer", "CHG1")},
+		"approval with number":            {TypeCRApprovalRequested, approval("CHG1")},
+	}
+	for name, tc := range accepted {
+		t.Run(name, func(t *testing.T) {
+			if err := Validate(id, tc.typ, json.RawMessage(tc.payload)); err != nil {
+				t.Fatalf("Validate() = %v, want nil", err)
+			}
+		})
+	}
+}
