@@ -237,8 +237,13 @@ func databaseDSN(host, port, user, password, name, sslmode string) string {
 	u := &url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(user, password),
-		Host:   host + ":" + port,
-		Path:   name,
+		// net.JoinHostPort, not "+":" + port" — a bare IPv6 literal
+		// (DB_HOST=2001:db8::1) needs brackets ("[2001:db8::1]:5432") to
+		// keep its own colons from being read as the host:port separator;
+		// JoinHostPort adds them only when host contains a colon, so
+		// hostnames and IPv4 addresses are unaffected.
+		Host: net.JoinHostPort(host, port),
+		Path: name,
 	}
 	q := u.Query()
 	q.Set("sslmode", sslmode)

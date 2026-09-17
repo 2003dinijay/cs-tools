@@ -85,6 +85,27 @@ func TestDatabaseDSN_HostPortAndSSLMode(t *testing.T) {
 	}
 }
 
+// TestDatabaseDSN_IPv6Host confirms a bare IPv6 literal in DB_HOST comes
+// back out of url.Parse as the exact address, with the configured port
+// still recognized separately — the regression net.JoinHostPort exists to
+// prevent: "host:port" string concatenation on an IPv6 address (which
+// already contains colons) produces something pgx/url.Parse reads as one
+// opaque host, silently dropping the port.
+func TestDatabaseDSN_IPv6Host(t *testing.T) {
+	dsn := databaseDSN("2001:db8::1", "5433", "alert_user", "alert_pass", "sre_alerts", "require")
+
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("url.Parse(%q) failed: %v", dsn, err)
+	}
+	if got, want := parsed.Hostname(), "2001:db8::1"; got != want {
+		t.Errorf("host = %q, want %q (dsn=%q)", got, want, dsn)
+	}
+	if got, want := parsed.Port(), "5433"; got != want {
+		t.Errorf("port = %q, want %q (dsn=%q)", got, want, dsn)
+	}
+}
+
 // TestDatabaseDSN_EmptySSLMode confirms an empty sslmode is written through
 // as an empty query value rather than being omitted or defaulted — pgx
 // applies its own default behavior for an empty sslmode, and this function
