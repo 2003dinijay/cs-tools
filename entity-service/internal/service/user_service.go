@@ -32,6 +32,10 @@ import (
 
 var uuidRE = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// emailRE matches the Ballerina `Email` constraint used by the Customer Portal
+// backend (`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`).
+var emailRE = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+
 // validateUUIDs returns a ValidationError if any element of ids is not a valid UUID.
 func validateUUIDs(field string, ids []string) error {
 	for _, id := range ids {
@@ -40,6 +44,26 @@ func validateUUIDs(field string, ids []string) error {
 		}
 	}
 	return nil
+}
+
+// derefSeverity/derefState dereference domain.CaseView/Case's now-optional
+// Severity/State (nil in practice for most real Postgres cases, but always
+// set on the ServiceNow data source) to their plain zero-valued type, for a
+// caller (map lookup, string conversion, equality check) that predates
+// those fields becoming optional and only ever runs against the
+// ServiceNow-backed path where a nil is not actually expected.
+func derefSeverity(s *domain.CaseSeverity) domain.CaseSeverity {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func derefState(s *domain.CaseState) domain.CaseState {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // validateDateRange enforces the same rules as the Ballerina reference's
@@ -205,6 +229,16 @@ func (s *userService) GetMe(ctx context.Context) (domain.GetUserMeResponse, erro
 	if err != nil {
 		return domain.GetUserMeResponse{}, err
 	}
+	roles, err := s.repo.GetUserRoles(ctx, user.ID)
+	if err != nil {
+		return domain.GetUserMeResponse{}, err
+	}
+	// GetUserMeResponse.Groups's own doc comment: best-effort, empty rather
+	// than a failed request when the lookup errors.
+	groups, err := s.repo.GetUserGroups(ctx, user.ID)
+	if err != nil {
+		groups = []domain.UserGroupRef{}
+	}
 
 	firstName := user.FirstName
 	return domain.GetUserMeResponse{
@@ -213,7 +247,7 @@ func (s *userService) GetMe(ctx context.Context) (domain.GetUserMeResponse, erro
 		FirstName: &firstName,
 		LastName:  user.LastName,
 		TimeZone:  user.Timezone,
-		Roles:     []string{},
-		Groups:    []domain.UserGroupRef{},
+		Roles:     roles,
+		Groups:    groups,
 	}, nil
 }

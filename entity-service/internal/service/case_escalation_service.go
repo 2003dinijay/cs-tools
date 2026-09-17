@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
@@ -31,7 +32,11 @@ import (
 // escalate/de-escalate actions can in principle produce more than one page's
 // worth of records, so SearchCaseEscalations below pages through every result
 // rather than returning just the first page.
-const caseEscalationSearchPageSize = 100
+// Must not exceed maxLimit (user_service.go): normalizePagination rejects any
+// Limit > maxLimit with a ValidationError, which previously made every single
+// GET /cases/{id}/escalations call fail with 400 "limit cannot exceed 50"
+// (this constant was 100).
+const caseEscalationSearchPageSize = 50
 
 type caseEscalationService struct {
 	escalations EscalationService
@@ -144,4 +149,35 @@ func caseEscalationWorkNoteContent(action domain.EscalationAction, e domain.Crea
 		content += fmt.Sprintf(" Reason: %s.", *e.Reason)
 	}
 	return content
+}
+
+// caseEscalationUnavailableMsg is the reason returned by every
+// unavailableCaseEscalationService method. It matches the 503 description the
+// OpenAPI spec documents for the case-escalation endpoints.
+const caseEscalationUnavailableMsg = "case escalations are only supported for the ServiceNow data source"
+
+// unavailableCaseEscalationService is the Postgres-data-source stand-in for
+// CaseEscalationService. Case escalations live only in the ServiceNow backing
+// store, so every operation reports a 503 rather than the route being left
+// unregistered: an unregistered route answers 404, which the OpenAPI spec
+// does not document for these paths and which callers cannot distinguish
+// from a genuinely missing resource. Mirrors unavailableTaskService's
+// handling of the same ServiceNow-only situation for tasks.
+type unavailableCaseEscalationService struct{}
+
+// NewUnavailableCaseEscalationService returns a CaseEscalationService that
+// reports every case-escalation operation as unavailable for the current
+// data source.
+func NewUnavailableCaseEscalationService() CaseEscalationService {
+	return &unavailableCaseEscalationService{}
+}
+
+// SearchCaseEscalations implements CaseEscalationService.
+func (s *unavailableCaseEscalationService) SearchCaseEscalations(_ context.Context, _ string) (domain.CaseEscalationHistory, error) {
+	return domain.CaseEscalationHistory{}, &apierror.ServiceUnavailableError{Msg: caseEscalationUnavailableMsg}
+}
+
+// CreateCaseEscalation implements CaseEscalationService.
+func (s *unavailableCaseEscalationService) CreateCaseEscalation(_ context.Context, _ string, _ *string, _ *domain.EscalationAction) (domain.CreatedEscalation, error) {
+	return domain.CreatedEscalation{}, &apierror.ServiceUnavailableError{Msg: caseEscalationUnavailableMsg}
 }

@@ -71,9 +71,32 @@ func main() {
 		APIBaseURL: os.Getenv("TWILIO_API_BASE_URL"),
 	})
 
-	w := worker.New(dbStore, csmClient, twilioClient, worker.Config{
+	googleChatClient := notifications.NewGoogleChatClient(notifications.GoogleChatConfig{
+		WebhookURL: os.Getenv("GOOGLE_CHAT_ESCALATION_WEBHOOK_URL"),
+	})
+
+	emailClient := notifications.NewEmailClient(notifications.EmailConfig{
+		BaseURL:      os.Getenv("EMAIL_SERVICE_BASE_URL"),
+		TokenURL:     os.Getenv("EMAIL_SERVICE_TOKEN_URL"),
+		ClientID:     os.Getenv("EMAIL_SERVICE_CLIENT_ID"),
+		ClientSecret: os.Getenv("EMAIL_SERVICE_CLIENT_SECRET"),
+		Scopes:       splitComma(os.Getenv("EMAIL_SERVICE_SCOPES")),
+		FromAddress:  os.Getenv("SRE_ALERT_ESCALATION_EMAIL_FROM"),
+		ToAddresses:  splitComma(os.Getenv("SRE_ALERT_ESCALATION_EMAIL_TO")),
+	})
+
+	// All three channels fire independently on escalation — deliberate
+	// redundancy, not a first-success-wins race. See
+	// notifications.MultiChannelEscalator's own doc comment.
+	escalator := notifications.NewMultiChannelEscalator(
+		twilioClient, googleChatClient, emailClient,
+		"SRE Alert Ingestion Service: incident delivery to CSM has been failing",
+	)
+
+	w := worker.New(dbStore, csmClient, escalator, worker.Config{
 		MaxRetries:   envInt("SRE_ALERT_MAX_RETRIES", 3),
 		PollInterval: time.Duration(envInt("SRE_ALERT_POLL_INTERVAL_SECONDS", 15)) * time.Second,
+		GroupWindow:  time.Duration(envInt("SRE_ALERT_GROUP_WINDOW_MINUTES", 15)) * time.Minute,
 	})
 
 	// callerID: a real, operator-provisioned CSM user id. CSM has no

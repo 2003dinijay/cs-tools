@@ -26,7 +26,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/db"
@@ -43,30 +42,44 @@ func main() {
 		log.Fatalf("invalid configuration: %v", err)
 	}
 
-	// A database is mandatory for DATA_SOURCE=postgres and optional for
-	// servicenow, where entity traffic goes to the SN integration service
-	// instead. With no database configured the two Postgres-only feature sets
-	// (event_publish_failures, sla_clocks) are left unregistered rather than
-	// failing startup — see config.Config.HasDatabase and server.NewRouter.
-	var pool *pgxpool.Pool
-	if cfg.HasDatabase() {
-		var err error
-		pool, err = db.NewPoolFromConfig(cfg)
-		if err != nil {
-			log.Fatalf("connect to database: %v", err)
-		}
+	// A database is mandatory for DATA_SOURCE=postgres and skipped entirely
+	// for servicenow, where entity traffic goes to the SN integration
+	// service instead. With no pool the Postgres-only feature sets
+	// (event_publish_failures, sla_clocks, scheduled_task_run) are left
+	// unregistered rather than failing startup — see db.NewPoolIfNeeded and
+	// server.NewRouter.
+	pool, err := db.NewPoolIfNeeded(cfg)
+	if err != nil {
+		log.Fatalf("connect to database: %v", err)
+	}
+	if pool != nil {
 		defer pool.Close()
 	} else {
-		log.Printf("no database configured (DATA_SOURCE=%s): event-publish-failures and sla-clocks endpoints are disabled", cfg.DataSource)
+		log.Printf("no database pool (DATA_SOURCE=%s): event-publish-failures, sla-clocks, and scheduled-task-run endpoints are disabled", cfg.DataSource)
 	}
 
 	addr := ":" + cfg.ServerPort
 	srv, eventPublisher := server.New(addr, pool, cfg)
 
+	// The health probe listens separately, on its own port, so that only its
+	// own route is reachable at the public visibility it is published with —
+	// see server.NewHealthServer and .choreo/component.yaml.
+	healthSrv := server.NewHealthServer(":"+cfg.HealthPort, pool)
+
 	go func() {
 		log.Printf("Customer Entity REST Service started in PORT : %s", cfg.ServerPort)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	go func() {
+		log.Printf("Health probe listening on PORT : %s", cfg.HealthPort)
+		if err := healthSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			// Fatal, like the main listener: a health endpoint that never
+			// came up is worse than one that is down, because the alerting
+			// that would have caught it is the thing that is missing.
+			log.Fatalf("health server error: %v", err)
 		}
 	}()
 
@@ -77,6 +90,13 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
+	// Health first, so the probe starts failing before in-flight API
+	// requests are drained — an orchestrator or alerting system watching it
+	// sees this instance leave rotation rather than reporting healthy right
+	// up to the moment it stops answering.
+	if err := healthSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("health server shutdown failed: %v", err)
+	}
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("graceful shutdown failed: %v", err)
 	}

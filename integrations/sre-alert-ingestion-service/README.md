@@ -86,6 +86,7 @@ Copy `.env.example` to `.env` and fill in the values:
 | `SRE_ALERT_CALLER_ID` | A real, provisioned platform user id — see "Known limitations" |
 | `SRE_ALERT_MAX_RETRIES` | Retryable-failure count before escalation (default `3`) |
 | `SRE_ALERT_POLL_INTERVAL_SECONDS` | How often the worker scans the buffer (default `15`) |
+| `SRE_ALERT_GROUP_WINDOW_MINUTES` | How far back the incident-grouping search looks for an attachable incident (default `15`) |
 | `TWILIO_ACCOUNT_SID` | Twilio account SID |
 | `TWILIO_AUTH_TOKEN` | Twilio auth token |
 | `TWILIO_FROM_NUMBER` | Twilio-provisioned caller-ID number (E.164) |
@@ -93,6 +94,14 @@ Copy `.env.example` to `.env` and fill in the values:
 | `TWILIO_VOICE` | Optional: TTS voice for the escalation call |
 | `TWILIO_LANGUAGE` | Optional: TTS language/locale |
 | `TWILIO_API_BASE_URL` | Optional: override Twilio's API base (tests / regional edge) |
+| `GOOGLE_CHAT_ESCALATION_WEBHOOK_URL` | Incoming-webhook URL for the escalation Google Chat space |
+| `EMAIL_SERVICE_BASE_URL` | Base URL of the internal email-notification service |
+| `EMAIL_SERVICE_TOKEN_URL` | OAuth2 token endpoint for the email-notification service |
+| `EMAIL_SERVICE_CLIENT_ID` | OAuth2 client ID |
+| `EMAIL_SERVICE_CLIENT_SECRET` | OAuth2 client secret |
+| `EMAIL_SERVICE_SCOPES` | Comma-separated OAuth2 scopes |
+| `SRE_ALERT_ESCALATION_EMAIL_FROM` | "From" address for escalation emails |
+| `SRE_ALERT_ESCALATION_EMAIL_TO` | Comma-separated recipient list for escalation emails |
 | `PORT` | Server listen port (default `8080`) |
 
 ## Database / migrations
@@ -182,9 +191,16 @@ Every `POST /incidents` failure is classified (`internal/worker.isRetryable`):
   which is the opposite of how a 401 is normally read.
 
 Once a row accumulates `SRE_ALERT_MAX_RETRIES` retryable failures, the
-worker places a Twilio voice call (`internal/notifications.TwilioClient.Escalate`)
-and marks the row `escalated` — terminal; this service does not resume
-retrying an escalated row automatically.
+worker escalates via `internal/notifications.MultiChannelEscalator` and
+marks the row `escalated` — terminal; this service does not resume
+retrying an escalated row automatically. Escalation fans out to every
+configured channel independently — a Twilio voice call, a Google Chat
+message, and an email — not a first-success-wins race: the whole point is
+more independent ways for SRE to notice that CSM delivery is failing.
+`Escalate` reports success if *any* channel got through; a channel that
+isn't configured is skipped, not treated as a failure, and a channel that
+fails while another succeeds is logged but doesn't block the others (see
+`MultiChannelEscalator`'s own doc comment).
 
 ## Duplicate-incident dedup
 
@@ -239,6 +255,43 @@ that check is **structurally correct and ready to work**, but **not yet
 actually effective in production**. Mechanism 3 has no such dependency —
 it works today, unconditionally.
 
+## Cross-alert incident grouping
+
+The dedup mechanisms above stop a *single* alert from creating two
+incidents. Grouping is a different problem: multiple *distinct* alerts
+reporting the same underlying condition (e.g. a "firing" event and its
+later "resolved" event) should land on one incident, not one each.
+
+For any inbound alert carrying `uniqueIdentifier`, `internal/handler.buildSubject`
+tags the incident's `Subject` with `csmclient.GroupTag(source,
+uniqueIdentifier)` — deliberately the *same* value across every alert for
+that condition, unlike the per-row dedup tag. Before creating a new
+incident, `internal/worker.tryGroup` searches for that tag via one
+`POST /incidents/search` call (`csmclient.SearchOpenIncidentByGroupTag`),
+filtered to still-open incidents (`state` not Resolved/Closed/Cancelled)
+created within `SRE_ALERT_GROUP_WINDOW_MINUTES` (default 15). A match
+attaches this alert to that incident instead of calling `POST /incidents`
+again; no match, or the search call itself failing, both fail open to the
+normal create-or-dedup flow above — same fail-open posture as everywhere
+else in this service.
+
+Every successful delivery (a fresh create, or an attach via grouping) also
+records a best-effort `CreateAlertIncidentMapping` call — a CSM-side audit
+trail of which alerts fed which incident, kept for visibility even though
+the grouping *decision* itself no longer reads it back.
+
+This design mirrors, in spirit, a ServiceNow prod flow ("Create Incident
+from Alert") found during design — a hash + time-window match — but is not
+a port of it: that flow's referenced hash column doesn't actually exist on
+any live SN table (confirmed by direct schema read), so there was no
+working field-level mechanism to copy. The 15-minute window is the one
+concrete, prod-confirmed parameter kept from that design; the tag itself,
+and the search-based implementation, are this service's own — and unlike
+the SN flow (permanently disabled) or a Postgres-side mapping table (a
+dependency this service exists specifically to avoid), this mechanism has
+no dependency beyond the same `POST /incidents/search` call the dedup
+mechanism above already makes.
+
 ## Known limitations
 
 These are deliberate, already-decided states this service does not attempt
@@ -267,12 +320,13 @@ to work around — documented here rather than as scattered code comments.
   a PagerDuty/Opsgenie lookup before placing the call) would change
   `internal/worker`'s escalation step and `internal/notifications.TwilioClient`
   accordingly.
-- **No further fallback if the Twilio escalation call itself fails.** If
-  CSM is unreachable and Twilio is *also* unreachable (or misconfigured),
-  the row is still marked `escalated` and the failure is logged — there is
-  no second notification channel. This is the worst case this service can
-  be in by design; a wider on-call/paging integration was out of scope for
-  this iteration.
+- **No further fallback if every escalation channel fails.** If CSM is
+  unreachable and Twilio, Google Chat, *and* email are all also unreachable
+  or unconfigured, the row is still marked `escalated` and every failure is
+  logged — there is no fourth channel. Three independent channels make this
+  a much smaller risk than the single-channel (Twilio-only) design this
+  replaced, but it isn't zero; a wider on-call/paging integration (e.g.
+  PagerDuty) is still out of scope for this iteration.
 - **Run exactly one instance of this worker.** `PendingBatch` has no
   claim/lease mechanism, so two instances polling concurrently can both pick
   up and dispatch the same new row (`RetryCount == 0` skips the dedup search

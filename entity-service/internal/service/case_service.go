@@ -282,6 +282,10 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	if err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
+	state := ""
+	if c.State != nil {
+		state = string(*c.State)
+	}
 	return domain.CreateCaseResponse{
 		Message: "Case created successfully.",
 		Case: domain.CreateCaseDetails{
@@ -290,7 +294,7 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 			Number:     c.Number,
 			CreatedBy:  c.CreatedBy,
 			CreatedOn:  c.CreatedOn,
-			State:      string(c.State),
+			State:      state,
 		},
 	}, nil
 }
@@ -332,7 +336,9 @@ func (s *caseService) CreateCaseComment(ctx context.Context, req domain.CreateCa
 	if err != nil {
 		return domain.CreateCaseCommentResponse{}, err
 	}
-	req.CreatedBy = user.ID
+	// comment.created_by (migration 000037) is a free-text VARCHAR, not a
+	// UUID FK -- see CaseRepository.CreateCaseComment's own doc comment.
+	req.CreatedBy = user.Email
 	c, err := s.repo.CreateCaseComment(ctx, req)
 	if err != nil {
 		return domain.CreateCaseCommentResponse{}, err
@@ -499,9 +505,9 @@ func (s *caseService) updateCaseWatchList(ctx context.Context, req domain.Update
 // yet (Postgres has no time_cards table/repo/service at all today), so
 // publishing now would produce an event nothing acts on. The detection
 // itself is real; only the actual Publish call is inert.
-func (s *caseService) detectBillableStatusChange(ctx context.Context, caseID string, oldSeverity, newSeverity domain.CaseSeverity) {
-	oldLow := oldSeverity == domain.CaseSeverityLow
-	newLow := newSeverity == domain.CaseSeverityLow
+func (s *caseService) detectBillableStatusChange(ctx context.Context, caseID string, oldSeverity, newSeverity *domain.CaseSeverity) {
+	oldLow := oldSeverity != nil && *oldSeverity == domain.CaseSeverityLow
+	newLow := newSeverity != nil && *newSeverity == domain.CaseSeverityLow
 	if oldLow == newLow {
 		return
 	}
@@ -543,6 +549,9 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	}
 
 	if err := validateUUIDs("projectId", parsed.ProjectIDs); err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+	if err := validateUUIDs("projectId", parsed.ExcludeProjectIDs); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
 	if err := validateUUIDs("deploymentId", parsed.DeploymentIDs); err != nil {
@@ -640,6 +649,13 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	}
 	if len(parsed.SreTeamIDs) > 0 {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "sreTeam" is not supported by this data source`}
+	}
+	// accountId+in has no repository query support today either (see
+	// domain.ParsedCaseFilters.AccountIDs); accountId+notIn is rejected the
+	// same way rather than silently dropping the exclusion and widening the
+	// result set.
+	if len(parsed.ExcludeAccountIDs) > 0 {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "accountId" (notIn) is not supported by this data source`}
 	}
 	if parsed.Unassigned {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "assignedUserId" (isEmpty) is not supported by this data source`}
@@ -883,8 +899,34 @@ func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.Sear
 	}, nil
 }
 
-func (s *caseService) SearchCaseActivities(_ context.Context, _ domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error) {
-	return domain.SearchCaseActivitiesResponse{}, &apierror.ServiceUnavailableError{Msg: "case activities are only supported for the ServiceNow data source"}
+// SearchCaseActivities implements CaseService.
+//
+// Merges comments and complete attachments into one feed -- see
+// CaseRepository.SearchCaseActivities's own doc comment. There is no
+// field-change audit table in this schema, so req.IncludeFieldChanges has
+// no effect: an absent field-change history is a valid state, not an error,
+// per this request's own doc comment ("only comment and attachment entries
+// are returned" is the documented default already).
+func (s *caseService) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error) {
+	if err := validateUUIDs("caseId", []string{req.CaseID}); err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+
+	activity, total, err := s.repo.SearchCaseActivities(ctx, req)
+	if err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+
+	return domain.SearchCaseActivitiesResponse{
+		Activity: activity,
+		Total:    total,
+		Limit:    req.Pagination.Limit,
+		Offset:   req.Pagination.Offset,
+		HasMore:  req.Pagination.Offset+len(activity) < total,
+	}, nil
 }
 
 // GetCaseAttachmentContent implements CaseService for the CSM-native
@@ -984,7 +1026,7 @@ func (s *caseService) detectPatchTagBillableOverride(ctx context.Context, caseID
 		slog.ErrorContext(ctx, "add case tag: patch billable override not evaluated, get case failed", "caseId", caseID)
 		return
 	}
-	if cv.Severity != domain.CaseSeverityLow {
+	if cv.Severity == nil || *cv.Severity != domain.CaseSeverityLow {
 		return
 	}
 
