@@ -53,11 +53,11 @@ A failed Event Hub publish is logged instead of recorded — see
 | `EVENT_PUBLISHING_ENABLED` | no | `false` | Must be `"true"` for `EventPublisherService` to actually get constructed, even with `EVENT_HUB_BROKER` fully configured — a separate safe-by-default kill switch |
 | `SUPPORT_ENGINEER_ROLE` | no | — | ServiceNow role name whose presence on a case comment's resolved author completes the case's "response" SLA clock — see "SLA clocks" below |
 | `CUSTOMER_ROLES` | no | — | Comma-separated ServiceNow role names whose presence on a case comment's resolved author marks a customer reply — see `applyCustomerReplyStateTransition` in "SLA clocks" below |
-| `SALESFORCE_BASE_URL` | no* | — | Salesforce instance URL for Account GET. *Required once any `SALESFORCE_*` var is set |
-| `SALESFORCE_TOKEN_URL` | no* | — | OAuth2 token endpoint (refresh_token grant) |
-| `SALESFORCE_CLIENT_ID` | no* | — | Connected-app client id |
-| `SALESFORCE_CLIENT_SECRET` | no* | — | Connected-app client secret |
-| `SALESFORCE_REFRESH_TOKEN` | no* | — | Long-lived refresh token |
+| `SALES_ENTITY_BASE_URL` | no* | — | REST `sales/sales-entity-service` base URL (not GraphQL `sales/entity-graphql-service`). *Required once any `SALES_ENTITY_*` var is set |
+| `SALES_ENTITY_TOKEN_URL` | no* | — | OAuth2 token endpoint (client_credentials grant) |
+| `SALES_ENTITY_CLIENT_ID` | no* | — | Choreo connection client id |
+| `SALES_ENTITY_CLIENT_SECRET` | no* | — | Choreo connection client secret |
+| `SALES_ENTITY_SCOPES` | no | — | Optional space-separated OAuth2 scopes for REST `sales/sales-entity-service` |
 
 `CSM_TEAM_REGISTRY` and `CSM_USER_ROLES` are **not read here**. The team registry
 and the assignable-role allow-list are organisation vocabulary and live in the CSM
@@ -116,14 +116,19 @@ it during shutdown, after `srv.Shutdown`.
 from `sales-apex-trigger-subscriber`, which dual-forwards every envelope to
 ServiceNow and to this endpoint. The subscriber has no `dataSource` switch.
 Wired in `internal/server/routes.go` only when entity-service
-`DATA_SOURCE=postgres`, a pool is available, and all five `SALESFORCE_*`
+`DATA_SOURCE=postgres`, a pool is available, and all four `SALES_ENTITY_*`
 vars are set — the same optional all-or-nothing style as Event Hub.
-`Config.Validate` rejects a partial Salesforce set at startup.
+`Config.Validate` rejects a partial REST sales-entity-service set at startup.
 
-`internal/salesforce` uses stdlib `net/http` and an OAuth2 `refresh_token`
-grant, then `GET /services/data/v54.0/sobjects/Account/{id}`. Token is
-refreshed on 401. A Salesforce 404 on CREATED/UPDATED/RESTORED is a 503 so
-the caller can retry (the event can arrive before Salesforce commits).
+`internal/salesentity` uses stdlib `net/http` and an OAuth2 `client_credentials`
+grant, then REST `POST /customer-search` with `{ids, isRealTime: true, limit: 1}`
+against Choreo id `sales/sales-entity-service` (not GraphQL
+`sales/entity-graphql-service`). Token is refreshed on 401. An empty
+search result on CREATED/UPDATED/RESTORED is a 503 so the caller can retry
+(the event can arrive before Salesforce commits). This service does not call
+Salesforce REST; the REST sales entity-service does. REST Customer has no AccountNumber,
+Account_Vertical__c, or Technical_Owner_2 — `number` falls back to Salesforce
+Id and those other columns stay null.
 Non-Account entities return 204 and are ignored (do not 400 — ASB would
 retry forever). DELETED soft-deletes by setting `deactivation_date`; never
 `DELETE FROM account` (project → account is `ON DELETE CASCADE`).

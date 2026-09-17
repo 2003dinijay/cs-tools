@@ -23,9 +23,10 @@ paths:
     post:
       summary: >-
         Ingest a Salesforce change event from sales-apex-trigger-subscriber.
-        Fetches the Salesforce Account and upserts the csm-platform account
-        table. Registered only when DATA_SOURCE=postgres and Salesforce
-        config is present.
+        Fetches the Account via REST sales/sales-entity-service POST /customer-search
+        (isRealTime true), not GraphQL sales/entity-graphql-service, and upserts
+        the csm-platform account table. Registered only when DATA_SOURCE=postgres
+        and REST sales-entity-service config is present.
       operationId: handleSalesforceEvent
       requestBody:
         required: true
