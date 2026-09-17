@@ -1427,8 +1427,11 @@ type CaseView struct {
 	// CreatedBy is the canonical user reference for the case creator. Its id is
 	// populated only where the backing data source already supplies one, and
 	// null otherwise: see UserReference.
-	CreatedBy              *UserReference      `json:"createdBy"`
-	ProjectDetails         EntityRef           `json:"project"`
+	CreatedBy *UserReference `json:"createdBy"`
+	// ProjectDetails is null for a case with no project linked -- a real,
+	// valid state on the Postgres data source (work_item.project_id has no
+	// NOT NULL constraint).
+	ProjectDetails         *EntityRef          `json:"project"`
 	DeploymentDetails      *EntityRef          `json:"deployment"`
 	DeployedProductDetails *DeployedProductRef `json:"deployedProduct"`
 	Catalog                *EntityRef          `json:"catalog"`
@@ -1822,7 +1825,10 @@ type SearchCaseView struct {
 	EngagementType *string        `json:"engagementType"`
 	WorkState      *string        `json:"workState"`
 	Type           string         `json:"type"`
-	Project        EntityRef      `json:"project"`
+	// Project is null for a case with no project linked -- a real, valid
+	// state on the Postgres data source (work_item.project_id has no NOT
+	// NULL constraint).
+	Project *EntityRef `json:"project"`
 	// ProjectKey is the project's short human-readable key (e.g. "TESTQUERYSUB").
 	// Populated for the ServiceNow data source only; null otherwise.
 	ProjectKey      *string    `json:"projectKey"`
