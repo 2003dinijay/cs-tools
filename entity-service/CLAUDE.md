@@ -1391,18 +1391,49 @@ on it.
 
 `sla`/`sla_policy` (migrations 000051/000052) back `TaskSlaService`
 (`task_sla_repo.go`) -- previously ServiceNow-only `POST /task-slas/search`/
-`GET /task-slas/{id}`. `sla.stage`/`sla_policy`'s various enum columns are
-rendered as space-separated title case (`"IN_PROGRESS"` -> `"In Progress"`)
-to match the ServiceNow-backed implementation's own display convention
-(`view.Stage = t.Stage.Label`, a human SN label, not a raw enum). Several
-fields have no confirmed rendering format and are left `nil`:
-`BusinessTimeLeft`/`BusinessElapsedTime` (the `*_duration` columns are
-`INTERVAL`, with no established "business time left" string format anywhere
-else in this codebase); `Duration`/`ScheduleSource`/`Flow`/`Workflow`/
-`IsEnableLogging`/`DurationType`/`ResetCondition` on the definition detail
-(no backing column, or -- for `ResetCondition` -- the column that exists,
-`resume_condition`, is a different concept from the `reset_action` enum
-this field would need to derive from).
+`GET /task-slas/{id}`. Both tables are real and populated in the staging
+database (66 `sla_policy` rows, 128k+ `sla` rows at the time this was
+checked) -- unlike several other recently-added tables in this codebase,
+this one could be verified against live data. `sla.stage`/`sla_policy`'s
+various enum columns are rendered as space-separated title case
+(`"IN_PROGRESS"` -> `"In Progress"`) to match the ServiceNow-backed
+implementation's own display convention (`view.Stage = t.Stage.Label`, a
+human SN label, not a raw enum).
+
+**`BusinessTimeLeft`/`BusinessElapsedTime`/`TaskSlaDefinitionDetail.Duration`
+are now populated**, via `formatDurationSeconds` (`task_sla_repo.go`),
+which renders an `EXTRACT(EPOCH FROM ...)` duration as a compact
+human-readable string (e.g. `"9 Days 22 Hours 11 Minutes"`), dropping any
+zero-value leading/trailing unit. This was previously left `nil` on the
+belief that no rendering format could be confirmed -- but checking the
+actual consumer (`apps/csm-portal/webapp`'s `caseSlaMapping.ts`/
+`CaseSlaTable.tsx`, `apps/csm-portal/microapp`'s `SlaTab.tsx`) showed it
+renders this string as a completely opaque label with no parsing at all
+(`` `${value} left}` ``/`` `${value} elapsed}` ``), so any clear
+human-readable rendering is safe -- unlike, say, `change_request_repo.go`'s
+`calendar_duration`, which stays `nil` because nothing confirms its
+consumer treats it the same way. `BusinessElapsedTime`/`BusinessTimeLeft`
+map to `sla.business_duration`/`sla.remaining_business_duration`
+respectively (confirmed against real rows: `business_duration` tracks
+elapsed *business* time so far, matching `business_elapsed_percentage`'s
+own existing semantics, and is a real, distinct value from the wall-clock
+`sla.duration`/`remaining_actual_duration` columns whenever the policy's
+schedule isn't 24x7); `TaskSlaDefinitionDetail.Duration` maps to
+`sla_policy.duration` (the SLA policy's own target duration, e.g. `"4
+Hours"`, `"15 Minutes"`) -- simply never selected before, not previously
+believed unavailable.
+
+**Still left `nil`, now confirmed rather than assumed**:
+`ScheduleSource`/`Flow`/`Workflow`/`IsEnableLogging`/`DurationType` on the
+definition detail have no backing column anywhere on `sla_policy` (checked
+directly against the live schema's full column list, not just the
+migration file); `ResetCondition` still has no matching column --
+`reset_action` (already mapped to `ResetAction`) is a different concept
+from a "reset condition" this field's name implies. `sla_policy` does have
+its own `resume_condition` column (distinct from `pause_condition`, which
+is mapped to `PauseCondition`), but `TaskSlaDefinitionDetail` has no field
+for it at all -- a real, minor gap, left unselected rather than adding a
+new response field speculatively.
 
 ## Adding a new entity
 
