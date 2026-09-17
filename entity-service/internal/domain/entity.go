@@ -1246,22 +1246,32 @@ type CaseSort struct {
 // ClosedOn and WorkState are the only nullable fields; all others are required.
 // Used as the response for write operations (create/update).
 type Case struct {
-	ID                string         `json:"id"`
-	Number            string         `json:"number"`
-	InternalID        string         `json:"internalId"`
-	CreatedBy         string         `json:"createdBy"`
-	ProjectID         string         `json:"projectId"`
-	DeploymentID      string         `json:"deploymentId"`
-	DeployedProductID string         `json:"deployedProductId"`
-	Subject           string         `json:"subject"`
-	Description       string         `json:"description"`
-	Severity          CaseSeverity   `json:"severity"`
-	IssueType         CaseIssueType  `json:"issueType"`
-	State             CaseState      `json:"state"`
-	WorkState         *CaseWorkState `json:"workState"`
-	CreatedOn         time.Time      `json:"createdOn"`
-	UpdatedOn         time.Time      `json:"updatedOn"`
-	ClosedOn          *time.Time     `json:"closedOn"`
+	ID     string `json:"id"`
+	Number string `json:"number"`
+	// InternalID (work_item.wso2_id) is null when blank -- most work_item
+	// types never have one, and even the types whose CHECK constraint
+	// requires it non-NULL (migration 000016) can still have it as an
+	// empty string.
+	InternalID        *string `json:"internalId"`
+	CreatedBy         string  `json:"createdBy"`
+	ProjectID         string  `json:"projectId"`
+	DeploymentID      string  `json:"deploymentId"`
+	DeployedProductID string  `json:"deployedProductId"`
+	Subject           string  `json:"subject"`
+	Description       string  `json:"description"`
+	// Severity/IssueType are null in practice for most real cases (confirmed
+	// against production data: ~86%/~99% of cases have no severity/issue
+	// type set on "case") -- not an edge case, the common case.
+	Severity  *CaseSeverity  `json:"severity"`
+	IssueType *CaseIssueType `json:"issueType"`
+	// State is null only for a handful of real cases, but "case".state is
+	// nullable and observed null in practice, so this stays consistent with
+	// Severity/IssueType rather than assuming it never happens.
+	State     *CaseState     `json:"state"`
+	WorkState *CaseWorkState `json:"workState"`
+	CreatedOn time.Time      `json:"createdOn"`
+	UpdatedOn time.Time      `json:"updatedOn"`
+	ClosedOn  *time.Time     `json:"closedOn"`
 }
 
 // AssignedEngineerRef is a compact reference to an assigned support engineer.
@@ -1410,14 +1420,20 @@ type DeployedProductRef struct {
 
 // CaseView is the enriched read representation of a case.
 type CaseView struct {
-	ID             string         `json:"id"`
-	Number         string         `json:"number"`
-	InternalID     string         `json:"internalId"`
-	Subject        string         `json:"subject"`
-	Description    string         `json:"description"`
-	Severity       CaseSeverity   `json:"severity"`
-	IssueType      CaseIssueType  `json:"issueType"`
-	State          CaseState      `json:"state"`
+	ID     string `json:"id"`
+	Number string `json:"number"`
+	// InternalID (work_item.wso2_id) is null when blank -- see domain.Case's
+	// own doc comment for why an empty string can occur even for a
+	// wso2_id-required work_item type.
+	InternalID  *string `json:"internalId"`
+	Subject     string  `json:"subject"`
+	Description string  `json:"description"`
+	// Severity/IssueType/State are null in practice for a large share of
+	// real cases -- see domain.Case's own doc comment for the confirmed
+	// production null rates.
+	Severity       *CaseSeverity  `json:"severity"`
+	IssueType      *CaseIssueType `json:"issueType"`
+	State          *CaseState     `json:"state"`
 	WorkState      *CaseWorkState `json:"workState"`
 	Type           *string        `json:"type"`
 	EngagementType *string        `json:"engagementType"`
@@ -1804,11 +1820,14 @@ type AggregateResponse struct {
 // SearchCaseView is the unified case representation returned in search results.
 // Fields absent for a given data source are nil.
 type SearchCaseView struct {
-	ID         string `json:"id"`
-	InternalID string `json:"internalId"`
-	Number     string `json:"number"`
-	CreatedOn  string `json:"createdOn"`
-	UpdatedOn  string `json:"updatedOn"`
+	ID string `json:"id"`
+	// InternalID (work_item.wso2_id) is null when blank -- see domain.Case's
+	// own doc comment for why an empty string can occur even for a
+	// wso2_id-required work_item type.
+	InternalID *string `json:"internalId"`
+	Number     string  `json:"number"`
+	CreatedOn  string  `json:"createdOn"`
+	UpdatedOn  string  `json:"updatedOn"`
 	// CreatedBy is the canonical user reference for the case creator. Its id is
 	// populated only where the backing data source already supplies one, and
 	// null otherwise: see UserReference.
@@ -1816,7 +1835,7 @@ type SearchCaseView struct {
 	Subject        *string        `json:"subject"`
 	Description    *string        `json:"description"`
 	IssueType      *string        `json:"issueType"`
-	State          string         `json:"state"`
+	State          *string        `json:"state"`
 	Severity       *string        `json:"severity"`
 	Catalog        *EntityRef     `json:"catalog"`
 	CatalogItem    *EntityRef     `json:"catalogItem"`
@@ -2013,11 +2032,11 @@ type CaseLabelRef struct {
 
 // UpdatedCase carries the fields of a case that may change after an update.
 type UpdatedCase struct {
-	ID        string       `json:"id"`
-	UpdatedOn time.Time    `json:"updatedOn"`
-	UpdatedBy string       `json:"updatedBy,omitempty"`
-	State     CaseState    `json:"state,omitempty"`
-	Severity  CaseSeverity `json:"severity,omitempty"`
+	ID        string        `json:"id"`
+	UpdatedOn time.Time     `json:"updatedOn"`
+	UpdatedBy string        `json:"updatedBy,omitempty"`
+	State     *CaseState    `json:"state,omitempty"`
+	Severity  *CaseSeverity `json:"severity,omitempty"`
 	// Type echoes the case's new type back on a successful transfer.
 	// EngagementType/CatalogID/CatalogItemID/Variables aren't echoed -- same as every
 	// other field this update accepts alongside a type-defining field (subject,
@@ -2842,6 +2861,8 @@ type SearchChangeRequestView struct {
 	Deployment       *EntityRef `json:"deployment"`
 	DeployedProduct  *EntityRef `json:"deployedProduct"`
 	Product          *EntityRef `json:"product"`
+	Service          *EntityRef `json:"service"`
+	ServiceOffering  *EntityRef `json:"serviceOffering"`
 	AssignedEngineer *EntityRef `json:"assignedEngineer"`
 	AssignedTeam     *EntityRef `json:"assignedTeam"`
 	PlannedStartOn   *string    `json:"plannedStartOn"`
@@ -3006,6 +3027,8 @@ type PatchChangeRequestRequest struct {
 	CaseID             *string              `json:"caseId,omitempty"`
 	DeploymentID       *string              `json:"deploymentId,omitempty"`
 	DeployedProductID  *string              `json:"deployedProductId,omitempty"`
+	ServiceID          *string              `json:"serviceId,omitempty"`
+	ServiceOfferingID  *string              `json:"serviceOfferingId,omitempty"`
 	AssignedEngineerID *string              `json:"assignedEngineerId,omitempty"`
 	AssignedTeamID     *string              `json:"assignedTeamId,omitempty"`
 	PlannedStartOn     *string              `json:"plannedStartOn,omitempty"`

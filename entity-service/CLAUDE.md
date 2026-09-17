@@ -822,10 +822,19 @@ v5 can't scan a binary-format timestamptz into a `*string`
   without a schema change, so both always return a `ServiceUnavailableError`
   on Postgres.
 
-**Fields with no real column anywhere, left unset rather than guessed at**
-(see `ChangeRequestRepository`'s own doc comment for the full list):
-`ServiceID`, `ServiceOfferingID`, `ConfigurationItemID`, `GroupID`, and
-`AssignedTeamID` (no CMDB/group tables exist in this schema at all); `Type`
+**`ServiceID`/`ServiceOfferingID` are now wired up** (migration 000050 added
+`change_request.service_id`/`service_offering_id`, FKs into `service`/
+`service_offering`, migrations 000048/000049): readable via
+`SearchChangeRequestView.Service`/`ServiceOffering` and writable via
+`PatchChangeRequestRequest.ServiceID`/`ServiceOfferingID`. `service`/
+`service_offering` also got their own Postgres implementations
+(`it_service_repo.go`/`service_offering_repo.go`) backing `POST /services/
+search` and `POST /service-offerings/search`, previously ServiceNow-only.
+
+**Fields still with no real column anywhere, left unset rather than
+guessed at** (see `ChangeRequestRepository`'s own doc comment for the full
+list): `ConfigurationItemID`, `GroupID`, and `AssignedTeamID` (no CMDB/group
+tables exist in this schema at all); `Type`
 (`domain.ChangeRequestType` — standard/normal/emergency/... — has **no**
 relationship to `change_request.change_request_type`, whose real enum
 values are `INFRA`/`GENERAL`, a completely different classification, not a
@@ -1091,6 +1100,77 @@ literally named "class". `BusinessCriticality` maps 1:1 (case-folded) via
 ServiceNow data source) has no corresponding column on `service` at all —
 `category`/`subcategory` are free text, not drawn from that three-value set
 — so it is always left `nil` on Postgres rather than guessed at.
+
+## CaseView/SearchCaseView/Case.InternalID is now optional
+
+Found via a direct query against `work_item` grouped by `type`: `wso2_id`
+(`InternalID`) is blank (`''`, not `NULL`) for a handful of real `CASE`/
+`ENGAGEMENT`/`SERVICE_REQUEST` rows, even though the
+`work_item_wso2_id_required_by_type` `CHECK` constraint (migration 000016)
+requires it `NOT NULL` for those types -- the constraint only checks
+nullness, not blankness. `InternalID` was a required (non-pointer) `string`
+field on `domain.Case`/`CaseView`/`SearchCaseView`, so those rows rendered
+`"internalId": ""` instead of `null`, violating this codebase's own "empty
+strings must never appear in responses" rule. Fixed by making all three
+`*string`, with `nilIfEmpty` (`sla_clock_repo.go`, `stringOrEmpty`'s inverse)
+collapsing both `NULL` and `''` to `nil` at every Postgres scan site
+(`GetCaseByID`, `SearchCases`, `scanUpdatedCase`). The ServiceNow-backed
+paths (`sn_case_service.go`) needed the same treatment for consistency --
+`ptrOrNilIfEmpty`/`derefOrEmpty` (`user_service.go`) are that side's
+equivalent pair, since SN's own raw case struct still carries `InternalID`
+as a plain (possibly blank) `string`.
+
+**`CaseView`/`Case`.`Severity`/`IssueType`/`State` are now optional too --
+a much bigger version of the same problem.** A direct query against
+`"case"` (7,681 real `CASE` rows) found `severity IS NULL` for **86%**
+and `issue_type IS NULL` for **99%** of them -- not an edge case, the
+common case (`state IS NULL` for only 5 rows, but still non-zero).
+`Severity`/`IssueType`/`State` were required (non-pointer) fields on both
+`domain.Case` and `CaseView`, so the overwhelming majority of real case
+responses were rendering `"severity": ""`/`"issueType": ""` -- values that
+aren't even valid `domain.CaseSeverity`/`CaseIssueType` labels, let alone
+real ones. `SearchCaseView.Severity`/`IssueType` were already `*string`
+(so already correct); only its `State` needed the same fix. Fixed by
+making all five (`Case.Severity/IssueType/State`, `CaseView.Severity/
+IssueType/State`, `SearchCaseView.State`) pointers, and
+`CaseRepository.UpdateCase`'s `previousSeverity` return value too (used by
+`caseService.detectBillableStatusChange` for the LOW-severity-boundary
+check, which now treats a nil severity as "not LOW" on either side of the
+comparison rather than crashing or silently comparing against `""`).
+
+The ServiceNow-backed path (`sn_case_service.go`) always supplies a real
+value for these three, so its many read sites (map lookups keyed by
+severity/state, string conversions, equality checks against
+`domain.CaseSeverityLow` and friends) needed dereferencing rather than a
+contract change of their own -- `derefSeverity`/`derefState`/
+`ptrOfCaseSeverity`/`ptrOfCaseIssueType` (`user_service.go`) bridge that
+without introducing a second parallel set of nil-handling logic on the SN
+side. `domain.UpdatedCase.State`/`Severity` (the `PATCH /cases/{id}`
+response) became pointers too, matching the sibling `WorkState` field's
+existing pointer convention there.
+
+## Service offerings and task SLAs
+
+`service_offering` (migration 000049) is now Postgres-backed
+(`service_offering_repo.go`): `POST /service-offerings/search`, previously
+ServiceNow-only. `parent_id` (FK into `service`, migration 000048) maps to
+`ServiceOffering.Service`; `SearchServiceOfferingsFilters.ServiceIDs` filters
+on it.
+
+`sla`/`sla_policy` (migrations 000051/000052) back `TaskSlaService`
+(`task_sla_repo.go`) -- previously ServiceNow-only `POST /task-slas/search`/
+`GET /task-slas/{id}`. `sla.stage`/`sla_policy`'s various enum columns are
+rendered as space-separated title case (`"IN_PROGRESS"` -> `"In Progress"`)
+to match the ServiceNow-backed implementation's own display convention
+(`view.Stage = t.Stage.Label`, a human SN label, not a raw enum). Several
+fields have no confirmed rendering format and are left `nil`:
+`BusinessTimeLeft`/`BusinessElapsedTime` (the `*_duration` columns are
+`INTERVAL`, with no established "business time left" string format anywhere
+else in this codebase); `Duration`/`ScheduleSource`/`Flow`/`Workflow`/
+`IsEnableLogging`/`DurationType`/`ResetCondition` on the definition detail
+(no backing column, or -- for `ResetCondition` -- the column that exists,
+`resume_condition`, is a different concept from the `reset_action` enum
+this field would need to derive from).
 
 ## Adding a new entity
 

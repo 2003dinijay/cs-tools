@@ -37,10 +37,16 @@ import (
 // shared-PK extension -- change_request.id IS work_item.id, same pattern
 // as "case").
 //
-// Several fields on the request/response contract have no real column
-// anywhere in the migrations and are always left unset rather than guessed
-// at: ServiceID, ServiceOfferingID, ConfigurationItemID, GroupID, and
-// AssignedTeamID (no CMDB/group tables exist at all in this schema); Type
+// ServiceID/ServiceOfferingID are backed by change_request.service_id/
+// service_offering_id (migration 000050), FKs into service/service_offering
+// (migrations 000048/000049).
+//
+// The remaining fields on the request/response contract have no real
+// column anywhere in the migrations and are always left unset rather than
+// guessed at: ConfigurationItemID and GroupID (no CMDB/group tables exist
+// at all in this schema); AssignedTeamID (work_item has no team FK either
+// -- see the "Fixing case enum-casing..." section's own AssignedTeam note);
+// Type
 // (domain.ChangeRequestType -- standard/normal/emergency/... -- has no
 // relationship to change_request.change_request_type, whose real enum
 // values are INFRA/GENERAL, a completely different classification, not a
@@ -102,6 +108,8 @@ const changeRequestFromJoins = `
 	LEFT JOIN deployment d ON d.id = wi.deployment_id
 	LEFT JOIN deployed_product dp ON dp.id = wi.deployed_product_id
 	LEFT JOIN product prod ON prod.id = wi.product_id
+	LEFT JOIN service svc ON svc.id = cr.service_id
+	LEFT JOIN service_offering so ON so.id = cr.service_offering_id
 	LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id
 	LEFT JOIN work_item origin_case ON origin_case.id = wi.parent_id`
 
@@ -112,6 +120,8 @@ const changeRequestSelectColumns = `
 	d.id, d.name,
 	dp.id, dp.name,
 	prod.id, prod.name,
+	svc.id, svc.name,
+	so.id, so.name,
 	ae.id, COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')),
 	cr.start_on, cr.end_on, cr.impact::TEXT, cr.state::TEXT,
 	wi.created_on, wi.updated_on`
@@ -128,6 +138,8 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 		depID, depName         *string
 		dpID, dpName           *string
 		prodID, prodName       *string
+		svcID, svcName         *string
+		soID, soName           *string
 		aeID, aeName           *string
 		startOn, endOn         *time.Time
 		impact, state          *string
@@ -140,6 +152,8 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 		&depID, &depName,
 		&dpID, &dpName,
 		&prodID, &prodName,
+		&svcID, &svcName,
+		&soID, &soName,
 		&aeID, &aeName,
 		&startOn, &endOn, &impact, &state,
 		&createdOn, &updatedOn,
@@ -161,6 +175,12 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 	}
 	if prodID != nil {
 		v.Product = &domain.EntityRef{ID: *prodID, Name: stringOrEmpty(prodName)}
+	}
+	if svcID != nil {
+		v.Service = &domain.EntityRef{ID: *svcID, Name: stringOrEmpty(svcName)}
+	}
+	if soID != nil {
+		v.ServiceOffering = &domain.EntityRef{ID: *soID, Name: stringOrEmpty(soName)}
 	}
 	if aeID != nil {
 		v.AssignedEngineer = &domain.EntityRef{ID: *aeID, Name: stringOrEmpty(aeName)}
@@ -425,6 +445,8 @@ func scanChangeRequestViewAndDetail(row pgx.Row, createdBy *string, justificatio
 		depID, depName         *string
 		dpID, dpName           *string
 		prodID, prodName       *string
+		svcID, svcName         *string
+		soID, soName           *string
 		aeID, aeName           *string
 		startOn, endOn         *time.Time
 		impact, state          *string
@@ -437,6 +459,8 @@ func scanChangeRequestViewAndDetail(row pgx.Row, createdBy *string, justificatio
 		&depID, &depName,
 		&dpID, &dpName,
 		&prodID, &prodName,
+		&svcID, &svcName,
+		&soID, &soName,
 		&aeID, &aeName,
 		&startOn, &endOn, &impact, &state,
 		&createdOn, &updatedOn,
@@ -460,6 +484,12 @@ func scanChangeRequestViewAndDetail(row pgx.Row, createdBy *string, justificatio
 	}
 	if prodID != nil {
 		v.Product = &domain.EntityRef{ID: *prodID, Name: stringOrEmpty(prodName)}
+	}
+	if svcID != nil {
+		v.Service = &domain.EntityRef{ID: *svcID, Name: stringOrEmpty(svcName)}
+	}
+	if soID != nil {
+		v.ServiceOffering = &domain.EntityRef{ID: *soID, Name: stringOrEmpty(soName)}
 	}
 	if aeID != nil {
 		v.AssignedEngineer = &domain.EntityRef{ID: *aeID, Name: stringOrEmpty(aeName)}
@@ -497,6 +527,13 @@ var changeRequestPatchFKField = map[string]string{
 	"work_item_deployment_id_fkey":       "deploymentId",
 	"work_item_deployed_product_id_fkey": "deployedProductId",
 	"work_item_assigned_to_id_fkey":      "assignedEngineerId",
+}
+
+// changeRequestPatchCRFKField mirrors changeRequestPatchFKField for the
+// change_request table's own FK columns (migration 000050).
+var changeRequestPatchCRFKField = map[string]string{
+	"change_request_service_id_fkey":          "serviceId",
+	"change_request_service_offering_id_fkey": "serviceOfferingId",
 }
 
 // PatchChangeRequest implements ChangeRequestRepository.
@@ -577,6 +614,12 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 	if req.PlannedEndOn != nil {
 		addCR("end_on = $%d::text::timestamptz", *req.PlannedEndOn)
 	}
+	if req.ServiceID != nil {
+		addCR("service_id = $%d::uuid", *req.ServiceID)
+	}
+	if req.ServiceOfferingID != nil {
+		addCR("service_offering_id = $%d::uuid", *req.ServiceOfferingID)
+	}
 	if req.Impact != nil {
 		addCR("impact = $%d::change_request_impact_enum", strings.ToUpper(string(*req.Impact)))
 	}
@@ -617,7 +660,11 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 		crQuery := fmt.Sprintf(`UPDATE change_request SET %s WHERE id = $%d`, strings.Join(crSets, ", "), crIdx)
 		if _, err := tx.Exec(ctx, crQuery, crArgs...); err != nil {
 			if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {
-				return domain.ChangeRequest{}, &apierror.ValidationError{Msg: "one or more referenced fields do not refer to an existing record"}
+				field := changeRequestPatchCRFKField[pgErr.ConstraintName]
+				if field == "" {
+					field = "one or more referenced fields"
+				}
+				return domain.ChangeRequest{}, &apierror.ValidationError{Msg: field + " does not refer to an existing record"}
 			}
 			return domain.ChangeRequest{}, fmt.Errorf("patch change request: %w", err)
 		}

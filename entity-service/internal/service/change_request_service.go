@@ -146,7 +146,7 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 		return domain.PatchChangeRequestResponse{}, err
 	}
 	ids := []string{}
-	for _, ptr := range []*string{req.ProjectID, req.CaseID, req.DeploymentID, req.DeployedProductID, req.AssignedEngineerID} {
+	for _, ptr := range []*string{req.ProjectID, req.CaseID, req.DeploymentID, req.DeployedProductID, req.ServiceID, req.ServiceOfferingID, req.AssignedEngineerID} {
 		if ptr != nil {
 			ids = append(ids, *ptr)
 		}

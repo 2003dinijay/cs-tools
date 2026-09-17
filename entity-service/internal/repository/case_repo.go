@@ -144,7 +144,7 @@ type CaseRepository interface {
 	// the CodeRabbit finding on PR #1683 this fixes.
 	//
 	// Returns a NotFoundError if no matching row exists.
-	UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (c domain.Case, previousSeverity domain.CaseSeverity, err error)
+	UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (c domain.Case, previousSeverity *domain.CaseSeverity, err error)
 	// CreateCaseAttachment inserts a new attachment metadata row for the case
 	// identified by req.ReferenceID. req.StorageKey must be non-nil: this data
 	// source stores file bytes externally in SFTPGo, never inline in Postgres.
@@ -292,6 +292,7 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
 	var cv domain.CaseView
 	var (
+		internalID                                    string
 		aeID, aeName                                  *string
 		pcID, pcNum, pcType                           *string
 		rcID, rcNum                                   *string
@@ -341,7 +342,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		 LEFT JOIN work_item rc_wi ON rc_wi.id = rc.id
 		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)`, id,
 	).Scan(
-		&cv.ID, &cv.Number, &cv.InternalID, &caseType,
+		&cv.ID, &cv.Number, &internalID, &caseType,
 		&description, &severity, &issueType, &workState,
 		&state, &cause, &resolutionNotes,
 		&resolutionCode, &escalationLevel, &isEscalated,
@@ -363,6 +364,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 	if err != nil {
 		return domain.CaseView{}, fmt.Errorf("get case by id: %w", err)
 	}
+	cv.InternalID = nilIfEmpty(internalID)
 	// work_item.description (migration 000035) has no NOT NULL constraint,
 	// unlike subject; CaseView.Description is a required (non-pointer)
 	// string, so a NULL column becomes "" rather than left unset.
@@ -374,13 +376,16 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 	// have no case-only relationship to the domain value at all -- see
 	// caseSeverityToEnum's own comment.
 	if severity != nil {
-		cv.Severity = caseSeverityFromEnum[*severity]
+		s := caseSeverityFromEnum[*severity]
+		cv.Severity = &s
 	}
 	if issueType != nil {
-		cv.IssueType = domain.CaseIssueType(strings.ToLower(*issueType))
+		it := domain.CaseIssueType(strings.ToLower(*issueType))
+		cv.IssueType = &it
 	}
 	if state != nil {
-		cv.State = domain.CaseState(strings.ToLower(*state))
+		st := domain.CaseState(strings.ToLower(*state))
+		cv.State = &st
 	}
 	if cause != nil {
 		c := domain.CaseCause(*cause)
@@ -663,23 +668,28 @@ const updateCaseQuery = `
 // scanUpdatedCase is shared by both branches of UpdateCase below.
 func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 	var c domain.Case
+	var internalID string
 	var severity, issueType, state, workStateRaw *string
 	if err := row.Scan(
-		&c.ID, &c.Number, &c.InternalID, &c.CreatedBy,
+		&c.ID, &c.Number, &internalID, &c.CreatedBy,
 		&c.ProjectID, &c.DeploymentID, &c.DeployedProductID,
 		&c.Subject, &c.Description, &severity, &issueType, &state, &workStateRaw,
 		&c.CreatedOn, &c.UpdatedOn, &c.ClosedOn,
 	); err != nil {
 		return domain.Case{}, err
 	}
+	c.InternalID = nilIfEmpty(internalID)
 	if severity != nil {
-		c.Severity = caseSeverityFromEnum[*severity]
+		s := caseSeverityFromEnum[*severity]
+		c.Severity = &s
 	}
 	if issueType != nil {
-		c.IssueType = domain.CaseIssueType(strings.ToLower(*issueType))
+		it := domain.CaseIssueType(strings.ToLower(*issueType))
+		c.IssueType = &it
 	}
 	if state != nil {
-		c.State = domain.CaseState(strings.ToLower(*state))
+		st := domain.CaseState(strings.ToLower(*state))
+		c.State = &st
 	}
 	if workStateRaw != nil {
 		ws := domain.CaseWorkState(strings.ToLower(*workStateRaw))
@@ -689,7 +699,7 @@ func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 }
 
 // UpdateCase implements CaseRepository.
-func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, domain.CaseSeverity, error) {
+func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
 	state := ""
 	if req.State != nil {
 		state = strings.ToUpper(string(*req.State))
@@ -708,10 +718,10 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 	if req.Severity == nil {
 		c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState))
 		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Case{}, "", &apierror.NotFoundError{Msg: "case not found"}
+			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
 		}
 		if err != nil {
-			return domain.Case{}, "", fmt.Errorf("update case: %w", err)
+			return domain.Case{}, nil, fmt.Errorf("update case: %w", err)
 		}
 		return c, c.Severity, nil
 	}
@@ -721,30 +731,31 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 	// see this method's own interface doc comment for why that matters.
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return domain.Case{}, "", fmt.Errorf("update case: begin tx: %w", err)
+		return domain.Case{}, nil, fmt.Errorf("update case: begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var previousSeverityRaw *string
 	err = tx.QueryRow(ctx, `SELECT severity::TEXT FROM "case" WHERE id = $1 FOR UPDATE`, req.ID).Scan(&previousSeverityRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Case{}, "", &apierror.NotFoundError{Msg: "case not found"}
+		return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
 	}
 	if err != nil {
-		return domain.Case{}, "", fmt.Errorf("update case: lock row: %w", err)
+		return domain.Case{}, nil, fmt.Errorf("update case: lock row: %w", err)
 	}
 
 	c, err := scanUpdatedCase(tx.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState))
 	if err != nil {
-		return domain.Case{}, "", fmt.Errorf("update case: %w", err)
+		return domain.Case{}, nil, fmt.Errorf("update case: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return domain.Case{}, "", fmt.Errorf("update case: commit tx: %w", err)
+		return domain.Case{}, nil, fmt.Errorf("update case: commit tx: %w", err)
 	}
-	var previousSeverity domain.CaseSeverity
+	var previousSeverity *domain.CaseSeverity
 	if previousSeverityRaw != nil {
-		previousSeverity = caseSeverityFromEnum[*previousSeverityRaw]
+		s := caseSeverityFromEnum[*previousSeverityRaw]
+		previousSeverity = &s
 	}
 	return c, previousSeverity, nil
 }
@@ -1188,6 +1199,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		result := make([]domain.SearchCaseView, 0, req.Pagination.Limit)
 		for rows.Next() {
 			var cv domain.SearchCaseView
+			var internalID string
 			var caseType, subject string
 			var description *string
 			var severity, issueType, engagementType, workState, state, escalationLevel *string
@@ -1201,7 +1213,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			var dpID, dpName *string
 			var creatorEmail string
 			if err := rows.Scan(
-				&cv.ID, &cv.Number, &cv.InternalID,
+				&cv.ID, &cv.Number, &internalID,
 				&caseType, &subject, &description, &severity, &issueType, &state,
 				&engagementType, &workState, &escalationLevel, &createdAt, &updatedAt,
 				&creatorEmail,
@@ -1215,6 +1227,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			); err != nil {
 				return fmt.Errorf("scan case: %w", err)
 			}
+			cv.InternalID = nilIfEmpty(internalID)
 			if projID != nil {
 				cv.Project = &domain.EntityRef{ID: *projID, Name: stringOrEmpty(projName)}
 			}
@@ -1249,7 +1262,8 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 				cv.WorkState = &lower
 			}
 			if state != nil {
-				cv.State = strings.ToLower(*state)
+				lower := strings.ToLower(*state)
+				cv.State = &lower
 			}
 			if escalationLevel != nil {
 				el := caseEscalationLevelFromEnum(*escalationLevel)

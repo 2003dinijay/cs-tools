@@ -42,6 +42,46 @@ func validateUUIDs(field string, ids []string) error {
 	return nil
 }
 
+// ptrOrNilIfEmpty wraps s in a pointer, or returns nil if s is blank -- for
+// building a domain field (e.g. CaseView.InternalID) that must render as
+// null rather than an empty string.
+func ptrOrNilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// derefOrEmpty is ptrOrNilIfEmpty's inverse, for a caller that needs a plain
+// string (e.g. an outbound event payload field) from a domain field that is
+// itself nil-when-blank.
+func derefOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// derefSeverity/derefState dereference domain.CaseView/Case's now-optional
+// Severity/State (nil in practice for most real Postgres cases, but always
+// set on the ServiceNow data source) to their plain zero-valued type, for a
+// caller (map lookup, string conversion, equality check) that predates
+// those fields becoming optional and only ever runs against the
+// ServiceNow-backed path where a nil is not actually expected.
+func derefSeverity(s *domain.CaseSeverity) domain.CaseSeverity {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func derefState(s *domain.CaseState) domain.CaseState {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 // validateDateRange enforces the same rules as the Ballerina reference's
 // shared validateDateRange helper: both dates must be exactly 10 characters
 // in YYYY-MM-DD format, startDate must be strictly before endDate, and the

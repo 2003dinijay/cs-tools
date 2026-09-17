@@ -64,7 +64,7 @@ func (r *groupRepo) SearchGroups(ctx context.Context, searchQuery string, limit,
 
 	countQuery := "SELECT COUNT(*) FROM team " + where
 	dataQuery := fmt.Sprintf(
-		`SELECT id, name FROM team %s ORDER BY name LIMIT $%d OFFSET $%d`,
+		`SELECT id, name FROM team %s ORDER BY name, id LIMIT $%d OFFSET $%d`,
 		where, len(args)+1, len(args)+2,
 	)
 	dataArgs := append(append([]any{}, args...), limit, offset)
