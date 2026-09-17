@@ -282,10 +282,6 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	if err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
-	internalID := ""
-	if c.InternalID != nil {
-		internalID = *c.InternalID
-	}
 	state := ""
 	if c.State != nil {
 		state = string(*c.State)
@@ -294,7 +290,7 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 		Message: "Case created successfully.",
 		Case: domain.CreateCaseDetails{
 			ID:         c.ID,
-			InternalID: internalID,
+			InternalID: c.InternalID,
 			Number:     c.Number,
 			CreatedBy:  c.CreatedBy,
 			CreatedOn:  c.CreatedOn,

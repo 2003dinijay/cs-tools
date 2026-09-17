@@ -292,6 +292,15 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
 	var cv domain.CaseView
 	var (
+		// internalID is scanned as *string even though CaseView.InternalID
+		// is a required (non-pointer) string -- wi.wso2_id can genuinely be
+		// NULL despite the work_item_wso2_id_required_by_type CHECK
+		// constraint (confirmed against real data: that constraint isn't
+		// actually enforced for a handful of pre-existing rows), so a
+		// non-pointer scan here would panic with "cannot scan NULL into
+		// *string". stringOrEmpty below converts it back to "" for the
+		// response, matching CaseView.InternalID's own doc comment on why
+		// it can't become *string.
 		internalID                                    *string
 		aeID, aeName                                  *string
 		pcID, pcNum, pcType                           *string
@@ -364,7 +373,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 	if err != nil {
 		return domain.CaseView{}, fmt.Errorf("get case by id: %w", err)
 	}
-	cv.InternalID = nilIfEmpty(stringOrEmpty(internalID))
+	cv.InternalID = stringOrEmpty(internalID)
 	// work_item.description (migration 000035) has no NOT NULL constraint,
 	// unlike subject; CaseView.Description is a required (non-pointer)
 	// string, so a NULL column becomes "" rather than left unset.
@@ -678,7 +687,7 @@ func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 	); err != nil {
 		return domain.Case{}, err
 	}
-	c.InternalID = nilIfEmpty(stringOrEmpty(internalID))
+	c.InternalID = stringOrEmpty(internalID)
 	if severity != nil {
 		s := caseSeverityFromEnum[*severity]
 		c.Severity = &s
@@ -1227,7 +1236,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			); err != nil {
 				return fmt.Errorf("scan case: %w", err)
 			}
-			cv.InternalID = nilIfEmpty(stringOrEmpty(internalID))
+			cv.InternalID = stringOrEmpty(internalID)
 			if projID != nil {
 				cv.Project = &domain.EntityRef{ID: *projID, Name: stringOrEmpty(projName)}
 			}
