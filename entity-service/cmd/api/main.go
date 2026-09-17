@@ -29,7 +29,9 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/db"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/server"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
 
 func main() {
@@ -60,6 +62,33 @@ func main() {
 
 	addr := ":" + cfg.ServerPort
 	srv, eventPublisher := server.New(addr, pool, cfg)
+
+	// Change-request notices: a background poller over event_outbox, gated on
+	// CR_NOTICES_ENABLED. Off by default because ServiceNow still sends these
+	// mails — turning it on is a paired change with disabling them there, or
+	// every approver is notified twice.
+	//
+	// Needs a pool (the outbox is a table) and a publisher (the notice goes to
+	// csm-notification-service, which sends it). Missing either is a
+	// misconfiguration worth saying out loud rather than starting silently
+	// without the feature the operator asked for.
+	crNoticeCtx, stopCRNotices := context.WithCancel(context.Background())
+	defer stopCRNotices()
+	if cfg.CRNoticesEnabled {
+		switch {
+		case pool == nil:
+			log.Printf("CR_NOTICES_ENABLED is set but there is no database pool (DATA_SOURCE=%s): change-request notices are disabled", cfg.DataSource)
+		case eventPublisher == nil:
+			log.Printf("CR_NOTICES_ENABLED is set but event publishing is not configured: change-request notices are disabled")
+		default:
+			drainer := service.NewCRNoticeDrainer(
+				repository.NewCRNoticeRepository(pool),
+				service.NewCRNoticeService(repository.NewCRNoticeRepository(pool), eventPublisher),
+				cfg.CRNoticePollInterval,
+			)
+			go drainer.Run(crNoticeCtx)
+		}
+	}
 
 	// The health probe listens separately, on its own port, so that only its
 	// own route is reachable at the public visibility it is published with —
