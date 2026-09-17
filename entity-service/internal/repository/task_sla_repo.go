@@ -32,15 +32,19 @@ import (
 
 // TaskSlaRepository defines the read operations for sla (migration 000052),
 // joined against sla_policy (migration 000051) and work_item for the task
-// reference. Several fields on TaskSlaView/TaskSlaDetail have no
-// confirmed rendering format and are left nil rather than guessed at:
-// BusinessTimeLeft/BusinessElapsedTime (sla's *_duration columns are
-// INTERVAL, with no established "business time left" string format
-// anywhere else in this codebase); Duration/ScheduleSource/Flow/Workflow/
-// IsEnableLogging/DurationType/ResetCondition on the definition detail (no
-// backing column, or -- for ResetCondition -- the column that exists is
-// resume_condition, a different concept from the reset_action enum this
-// field would need to derive from).
+// reference. BusinessTimeLeft/BusinessElapsedTime/TaskSlaDefinitionDetail.Duration
+// are rendered from real INTERVAL columns via formatDurationSeconds -- safe to
+// invent a display format for, unlike change_request_repo.go's calendar_duration
+// (left nil), because the only consumer (apps/csm-portal/webapp's
+// caseSlaMapping.ts/CaseSlaTable.tsx, apps/csm-portal/microapp's SlaTab.tsx)
+// renders this string as an opaque label with no parsing at all ("{value}
+// left"/"{value} elapsed"), so any clear human-readable rendering is safe.
+// ScheduleSource/Flow/Workflow/IsEnableLogging/DurationType/ResetCondition on
+// the definition detail remain nil: sla_policy has no backing column for any
+// of them (confirmed against the live schema, migration 000051's full column
+// list), and -- for ResetCondition specifically -- the column that does exist
+// is resume_condition, a different concept from the reset_action enum this
+// field would need to derive from.
 type TaskSlaRepository interface {
 	// SearchTaskSlas returns a filtered, paginated slice of task SLA
 	// records together with the total count of matching rows before
@@ -65,6 +69,7 @@ const taskSlaViewColumns = `
 	sla.work_item_id, wi.number, wi.type::TEXT,
 	pol.id, pol.name, pol.target::TEXT,
 	sla.business_elapsed_percentage,
+	EXTRACT(EPOCH FROM sla.business_duration), EXTRACT(EPOCH FROM sla.remaining_business_duration),
 	sla.start_on, sla.end_on`
 
 const taskSlaViewJoins = `
@@ -79,6 +84,8 @@ func scanTaskSlaView(row interface{ Scan(...any) error }) (domain.TaskSlaView, e
 		taskID, taskNumber, taskType *string
 		polID, polName, polTarget    *string
 		elapsedPct                   *float64
+		businessDurationSecs         *float64
+		remainingBusinessSecs        *float64
 		startOn, endOn               *time.Time
 	)
 	if err := row.Scan(
@@ -86,6 +93,7 @@ func scanTaskSlaView(row interface{ Scan(...any) error }) (domain.TaskSlaView, e
 		&taskID, &taskNumber, &taskType,
 		&polID, &polName, &polTarget,
 		&elapsedPct,
+		&businessDurationSecs, &remainingBusinessSecs,
 		&startOn, &endOn,
 	); err != nil {
 		return domain.TaskSlaView{}, err
@@ -110,6 +118,8 @@ func scanTaskSlaView(row interface{ Scan(...any) error }) (domain.TaskSlaView, e
 		v.SlaDefinition = def
 	}
 	v.BusinessElapsedPercentage = elapsedPct
+	v.BusinessElapsedTime = formatDurationSecondsPtr(businessDurationSecs)
+	v.BusinessTimeLeft = formatDurationSecondsPtr(remainingBusinessSecs)
 	if startOn != nil {
 		s := startOn.UTC().Format(time.RFC3339)
 		v.StartTime = &s
@@ -119,6 +129,50 @@ func scanTaskSlaView(row interface{ Scan(...any) error }) (domain.TaskSlaView, e
 		v.EndTime = &s
 	}
 	return v, nil
+}
+
+// formatDurationSecondsPtr renders an optional duration (seconds, as
+// EXTRACT(EPOCH FROM ...) returns) as a compact human-readable string (e.g.
+// "2 Days 3 Hours 15 Minutes"), or nil when the source column was NULL.
+// Negative values (possible in principle for an already-breached SLA's
+// "remaining" column) clamp to zero rather than rendering a negative
+// duration -- this codebase has no "overdue by" display convention to
+// invent instead.
+func formatDurationSecondsPtr(seconds *float64) *string {
+	if seconds == nil {
+		return nil
+	}
+	s := formatDurationSeconds(*seconds)
+	return &s
+}
+
+func formatDurationSeconds(totalSeconds float64) string {
+	if totalSeconds < 0 {
+		totalSeconds = 0
+	}
+	total := int64(totalSeconds + 0.5)
+	days := total / 86400
+	hours := (total % 86400) / 3600
+	minutes := (total % 3600) / 60
+
+	unit := func(n int64, label string) string {
+		if n == 1 {
+			return fmt.Sprintf("1 %s", label)
+		}
+		return fmt.Sprintf("%d %ss", n, label)
+	}
+
+	parts := make([]string, 0, 3)
+	if days > 0 {
+		parts = append(parts, unit(days, "Day"))
+	}
+	if hours > 0 {
+		parts = append(parts, unit(hours, "Hour"))
+	}
+	if minutes > 0 || len(parts) == 0 {
+		parts = append(parts, unit(minutes, "Minute"))
+	}
+	return strings.Join(parts, " ")
 }
 
 // taskSlaStageDisplay renders sla_stage_enum's SNAKE_UPPER_CASE labels
@@ -205,8 +259,10 @@ func (r *taskSlaRepo) GetTaskSla(ctx context.Context, id string) (domain.TaskSla
 		       pol.when_to_resume::TEXT, pol.pause_condition,
 		       pol.start_condition, pol.stop_condition,
 		       pol.timezone_source::TEXT, pol.reset_action::TEXT,
+		       EXTRACT(EPOCH FROM pol.duration),
 		       sla.schedule, sla.timezone,
 		       sla.business_elapsed_percentage,
+		       EXTRACT(EPOCH FROM sla.business_duration), EXTRACT(EPOCH FROM sla.remaining_business_duration),
 		       sla.start_on, sla.end_on
 		FROM sla
 		LEFT JOIN work_item wi ON wi.id = sla.work_item_id
@@ -224,8 +280,11 @@ func (r *taskSlaRepo) GetTaskSla(ctx context.Context, id string) (domain.TaskSla
 		whenToResume, pauseCondition  *string
 		startCondition, stopCondition *string
 		timezoneSource, resetAction   *string
+		policyDurationSecs            *float64
 		schedule, timezone            *string
 		elapsedPct                    *float64
+		businessDurationSecs          *float64
+		remainingBusinessSecs         *float64
 		startOn, endOn                *time.Time
 	)
 	err := row.Scan(
@@ -237,8 +296,10 @@ func (r *taskSlaRepo) GetTaskSla(ctx context.Context, id string) (domain.TaskSla
 		&whenToResume, &pauseCondition,
 		&startCondition, &stopCondition,
 		&timezoneSource, &resetAction,
+		&policyDurationSecs,
 		&schedule, &timezone,
 		&elapsedPct,
+		&businessDurationSecs, &remainingBusinessSecs,
 		&startOn, &endOn,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -290,12 +351,15 @@ func (r *taskSlaRepo) GetTaskSla(ctx context.Context, id string) (domain.TaskSla
 		if schedule != nil {
 			def.Schedule = schedule
 		}
+		def.Duration = formatDurationSecondsPtr(policyDurationSecs)
 		v.SlaDefinition = def
 	}
 	if schedule != nil {
 		v.Schedule = &domain.TaskSlaScheduleRef{Name: schedule, Timezone: timezone}
 	}
 	v.BusinessElapsedPercentage = elapsedPct
+	v.BusinessElapsedTime = formatDurationSecondsPtr(businessDurationSecs)
+	v.BusinessTimeLeft = formatDurationSecondsPtr(remainingBusinessSecs)
 	if startOn != nil {
 		s := startOn.UTC().Format(time.RFC3339)
 		v.StartTime = &s
