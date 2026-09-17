@@ -1154,6 +1154,76 @@ ServiceNow data source) has no corresponding column on `service` at all —
 `category`/`subcategory` are free text, not drawn from that three-value set
 — so it is always left `nil` on Postgres rather than guessed at.
 
+## time_card.state/issue_complexity became real enums; case_id now targets work_item
+
+A later migration revision changed `time_card`: `state`/`issue_complexity`
+went from plain `VARCHAR` to real enums (`time_card_state_enum`:
+`PENDING`/`SUBMITTED`/`APPROVED`/`REJECTED`/`RECALLED`/`PROCESSED`/`UNKNOWN`;
+`time_card_issue_complexity_enum`: `NOT_APPLICABLE`/`LOW`/`MEDIUM`/`HIGH`),
+and `case_id`'s FK retargeted from `"case"(id)` to `work_item(id)` -- a time
+card can now be logged against any case-like work_item type, not just
+`CASE`. Both changes broke `time_card_repo.go` in the same ways this
+codebase has hit repeatedly:
+
+- Every write (`CreateTimeCard`'s `'submitted'` literal, `UpdateTimeCardFields`/
+  `TransitionTimeCardState`/`DeleteTimeCard`'s `state = 'submitted'` checks,
+  `issue_complexity` writes) used lowercase values against columns that are
+  now `UPPER_SNAKE_CASE` enums -- fixed with `strings.ToUpper(...)` at every
+  write site, plus `::text::time_card_issue_complexity_enum`/
+  `::text::time_card_state_enum` casts on `$`-bound parameters (not literal
+  SQL text, which resolves its own type from context and only needed the
+  casing fix) to avoid the same pgx v5 codec issue this file's date fields
+  already work around -- see `TransitionTimeCardState`'s own comment, which
+  mirrors `case_repo.go`'s `updateCaseQuery` pattern exactly (one `::enum`-cast
+  usage of a placeholder, one bare-text-comparison usage of the same
+  placeholder, in the same statement).
+- Every read (`scanTimeCardView`) needed a `::TEXT` cast plus
+  `strings.ToLower(...)` back to the domain's lowercase convention, and a
+  nullable-safe scan (`state`/`issue_complexity` have no `NOT NULL`
+  constraint) -- both were previously scanned straight into `*string`
+  response fields with no case-folding.
+- `timeCardFromJoins`/`SearchCaseTimeCards`'s `JOIN "case" c ON c.id = tc.case_id`
+  would now silently exclude any time card logged against a non-`CASE`
+  work_item type (same "false exclusion via the wrong join" bug class as
+  `GetCaseByID`'s project/deployment joins). Fixed by joining `work_item`
+  directly on `tc.case_id` -- `"case"` was only ever needed for `wi.number`/
+  `wi.subject`, both already on `work_item` itself, so this also simplifies
+  the query.
+
+## case_escalation/case_escalation_notification_list back EscalationService's SearchEscalations
+
+The same migration batch added `case_escalation`/
+`case_escalation_notification_list`, finally giving `EscalationService`
+(and the case-scoped `CaseEscalationService` wrapper over it) something to
+read on Postgres -- previously entirely ServiceNow-only.
+`escalation_repo.go`/`escalation_service.go` implement `SearchEscalations`
+only; `CreateEscalation` stays a `ServiceUnavailableError` on Postgres,
+since neither an escalation-level-transition rule (does `ESCALATE` always
+mean "current level + 1", capped at `EL5`? is there a per-case-type
+override?) nor a notification-recipient rule (watchers? the assigned
+engineer? an account's own escalation contacts?) exists anywhere in this
+schema to derive from -- guessing either would be inventing business logic,
+not reading it off a table. `domain.ChoiceListItem.Label` for an escalation
+level is set to the same plain `"0".."5"` id as `ID` (`case_escalation_level_enum`'s
+`EL` prefix stripped) rather than a fabricated display string this data
+source has no real source for -- unlike the ServiceNow data source, which
+gets both `id` and `label` directly from ServiceNow's own choice-list
+payload.
+
+`routes.go`'s `caseEscalationHandler`/`escalationHandler` are now
+constructed unconditionally (Postgres or ServiceNow), since
+`CaseEscalationService` is already a thin, fully generic wrapper over
+whichever `EscalationService` it's given -- no changes needed there at all.
+
+**Not yet verifiable against real data**: `case_escalation`/
+`case_escalation_notification_list`'s migration hasn't actually been
+applied to the staging database this was checked against (same gap as
+`case_attachments`/`alert_incident_mapping`/`work_item_tag` -- see the
+"Fixing wso2_id" section's own note on checking directly against the
+database rather than trusting a migration file's presence in this repo).
+The code matches the migration's schema definition exactly; it just
+couldn't be exercised against live rows yet.
+
 ## CaseView/SearchCaseView/Case.InternalID stays a required string (fixed the panic without changing the wire type)
 
 Found via a direct query against `work_item` grouped by `type`: `wso2_id`

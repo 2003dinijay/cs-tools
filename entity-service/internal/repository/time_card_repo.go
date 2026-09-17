@@ -106,27 +106,33 @@ func NewTimeCardRepository(db *pgxpool.Pool) TimeCardRepository {
 }
 
 const timeCardSelectColumns = `
-	tc.id, tc.work_date, tc.is_billable, tc.state, tc.issue_complexity,
+	tc.id, tc.work_date, tc.is_billable, tc.state::TEXT, tc.issue_complexity::TEXT,
 	tc.analyzing_minutes, tc.setting_up_minutes, tc.reproducing_debugging_minutes,
 	tc.providing_solution_minutes, tc.patching_minutes, tc.work_log_comment, tc.lead_comment,
 	u.id, TRIM(COALESCE(u.name, CONCAT_WS(' ', u.first_name, u.last_name))),
 	ab.id, TRIM(COALESCE(ab.name, CONCAT_WS(' ', ab.first_name, ab.last_name))),
 	p.id, p.name,
-	c.id, wi.number, wi.subject`
+	wi.id, wi.number, wi.subject`
 
+// timeCardFromJoins joins work_item directly (not "case"): time_card.case_id
+// now references work_item(id) generically (migration 000039's most recent
+// revision), not "case"(id) specifically -- a time card can be logged
+// against any case-like work_item type, not just CASE. Only wi.number/
+// wi.subject are ever read for the case reference, so no "case"-specific
+// column is needed here at all.
 const timeCardFromJoins = `
 	FROM time_card tc
 	JOIN "user" u ON u.id = tc.user_id
 	LEFT JOIN "user" ab ON ab.id = tc.approved_by_id
 	LEFT JOIN project p ON p.id = tc.customer_project_id
-	JOIN "case" c ON c.id = tc.case_id
-	JOIN work_item wi ON wi.id = c.id`
+	JOIN work_item wi ON wi.id = tc.case_id`
 
 func scanTimeCardView(row interface{ Scan(...any) error }) (domain.TimeCardView, error) {
 	var (
 		v                                                      domain.TimeCardView
 		workDate                                               *time.Time
 		isBillable                                             *bool
+		state, issueComplexity                                 *string
 		analyzing, settingUp, reproducing, providing, patching int
 		userID, userName                                       string
 		approvedByID, approvedByName                           *string
@@ -134,7 +140,7 @@ func scanTimeCardView(row interface{ Scan(...any) error }) (domain.TimeCardView,
 		caseID, caseNumber, caseSubject                        string
 	)
 	err := row.Scan(
-		&v.ID, &workDate, &isBillable, &v.State, &v.IssueComplexity,
+		&v.ID, &workDate, &isBillable, &state, &issueComplexity,
 		&analyzing, &settingUp, &reproducing, &providing, &patching, &v.WorkLogComment, &v.RejectionReason,
 		&userID, &userName,
 		&approvedByID, &approvedByName,
@@ -143,6 +149,17 @@ func scanTimeCardView(row interface{ Scan(...any) error }) (domain.TimeCardView,
 	)
 	if err != nil {
 		return domain.TimeCardView{}, err
+	}
+	// time_card_state_enum/time_card_issue_complexity_enum are UPPER_SNAKE_CASE
+	// (migration 000039's most recent revision); domain.TimeCardState's own
+	// values, and every caller-supplied issueComplexity string, are lowercase.
+	if state != nil {
+		lower := strings.ToLower(*state)
+		v.State = &lower
+	}
+	if issueComplexity != nil {
+		lower := strings.ToLower(*issueComplexity)
+		v.IssueComplexity = &lower
 	}
 
 	v.TimeAnalyzing = analyzing
@@ -286,11 +303,13 @@ func timeCardWhereClause(f *domain.SearchTimeCardsFilters) (string, []any) {
 		add("tc.work_date <= $%d::text::date", *f.EndDate)
 	}
 	if len(f.States) > 0 {
+		// time_card_state_enum's labels are UPPER_SNAKE_CASE; domain.TimeCardState's
+		// own values are lowercase.
 		states := make([]string, len(f.States))
 		for i, st := range f.States {
-			states[i] = string(st)
+			states[i] = strings.ToUpper(string(st))
 		}
-		add("tc.state = ANY($%d::text[])", states)
+		add("tc.state = ANY($%d::time_card_state_enum[])", states)
 	}
 	return where, args
 }
@@ -373,7 +392,7 @@ func (r *timeCardRepo) SearchCaseTimeCards(ctx context.Context, req domain.Searc
 	countQuery := fmt.Sprintf(`SELECT COUNT(DISTINCT tc.case_id) FROM time_card tc %s`, where)
 
 	dataQuery := fmt.Sprintf(`
-		SELECT c.id, wi.number, wi.subject, wi.created_on, wi.updated_on, wi.created_by, wi.updated_by,
+		SELECT wi.id, wi.number, wi.subject, wi.created_on, wi.updated_on, wi.created_by, wi.updated_by,
 		       p.id, p.name,
 		       COALESCE(SUM(tc.analyzing_minutes + tc.setting_up_minutes + tc.reproducing_debugging_minutes + tc.providing_solution_minutes + tc.patching_minutes), 0) AS total_minutes,
 		       COUNT(tc.id) AS total_count,
@@ -382,12 +401,11 @@ func (r *timeCardRepo) SearchCaseTimeCards(ctx context.Context, req domain.Searc
 		       COALESCE(SUM(CASE WHEN NOT COALESCE(tc.is_billable, false) THEN tc.analyzing_minutes + tc.setting_up_minutes + tc.reproducing_debugging_minutes + tc.providing_solution_minutes + tc.patching_minutes ELSE 0 END), 0) AS non_billable_minutes,
 		       COUNT(*) FILTER (WHERE NOT COALESCE(tc.is_billable, false)) AS non_billable_count
 		FROM time_card tc
-		JOIN "case" c ON c.id = tc.case_id
-		JOIN work_item wi ON wi.id = c.id
+		JOIN work_item wi ON wi.id = tc.case_id
 		LEFT JOIN project p ON p.id = wi.project_id
 		%s
-		GROUP BY c.id, wi.number, wi.subject, wi.created_on, wi.updated_on, wi.created_by, wi.updated_by, p.id, p.name
-		ORDER BY wi.updated_on DESC, c.id
+		GROUP BY wi.id, wi.number, wi.subject, wi.created_on, wi.updated_on, wi.created_by, wi.updated_by, p.id, p.name
+		ORDER BY wi.updated_on DESC, wi.id
 		LIMIT $%d OFFSET $%d`, where, len(args)+1, len(args)+2)
 	dataArgs := append(append([]any{}, args...), req.Pagination.Limit, req.Pagination.Offset)
 
@@ -476,7 +494,10 @@ func (r *timeCardRepo) CreateTimeCard(ctx context.Context, req domain.CreateTime
 	}
 	defer tx.Rollback(ctx)
 
-	// The case's own project is work_item.project_id (case.id == work_item.id).
+	// The case's own project is work_item.project_id -- case_id now
+	// references work_item(id) generically (migration 000039's most recent
+	// revision), not "case"(id) specifically, so this looks up work_item
+	// directly rather than joining through "case".
 	// time_card.customer_project_id is a separate, independently-settable
 	// column, so without this check a caller could attach an unrelated
 	// existing project to a case's time card. Validate a supplied
@@ -484,7 +505,7 @@ func (r *timeCardRepo) CreateTimeCard(ctx context.Context, req domain.CreateTime
 	// supplied, leave customer_project_id NULL (unchanged behavior) rather
 	// than auto-filling it in.
 	var caseProjectID *string
-	err = tx.QueryRow(ctx, `SELECT wi.project_id FROM "case" c JOIN work_item wi ON wi.id = c.id WHERE c.id = $1`, req.CaseID).Scan(&caseProjectID)
+	err = tx.QueryRow(ctx, `SELECT project_id FROM work_item WHERE id = $1`, req.CaseID).Scan(&caseProjectID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.TimeCardView{}, &apierror.ValidationError{Msg: "case not found: " + req.CaseID}
 	}
@@ -495,6 +516,13 @@ func (r *timeCardRepo) CreateTimeCard(ctx context.Context, req domain.CreateTime
 		return domain.TimeCardView{}, &apierror.ValidationError{Msg: "projectId must match the case's own project"}
 	}
 
+	// 'SUBMITTED' (not 'submitted') and issue_complexity's ::text::enum cast:
+	// time_card_state_enum/time_card_issue_complexity_enum are UPPER_SNAKE_CASE
+	// (migration 000039's most recent revision). The ::text::enum cast on
+	// issue_complexity -- not a direct ::enum cast -- avoids the same pgx v5
+	// codec issue this file's date fields already work around: once the
+	// server infers a parameter's OID as a custom enum type, pgx has no
+	// binary encode plan for a raw Go string.
 	const insertQuery = `
 		INSERT INTO time_card (
 			id, created_on, updated_on, created_by, updated_by,
@@ -504,14 +532,20 @@ func (r *timeCardRepo) CreateTimeCard(ctx context.Context, req domain.CreateTime
 			providing_solution_minutes, patching_minutes
 		) VALUES (
 			gen_random_uuid(), NOW(), NOW(), $1, $1,
-			$2, $3, $1, $4::text::date, $5, 'submitted',
-			$6, $7, $8, $9, $10, $11, $12
+			$2, $3, $1, $4::text::date, $5, 'SUBMITTED',
+			$6::text::time_card_issue_complexity_enum, $7, $8, $9, $10, $11, $12
 		) RETURNING id`
+
+	var issueComplexity *string
+	if req.IssueComplexity != nil {
+		upper := strings.ToUpper(*req.IssueComplexity)
+		issueComplexity = &upper
+	}
 
 	var id string
 	err = tx.QueryRow(ctx, insertQuery,
 		userID, req.CaseID, nullIfEmpty(req.ProjectID), req.Date, req.IsBillable,
-		req.IssueComplexity, req.WorkLogComment,
+		issueComplexity, req.WorkLogComment,
 		req.TimeAnalyzing, req.TimeSettingUp, req.TimeReproducingDebugging, req.TimeProvidingSolution, req.TimePatching,
 	).Scan(&id)
 	if err != nil {
@@ -566,7 +600,7 @@ func (r *timeCardRepo) UpdateTimeCardFields(ctx context.Context, req domain.Upda
 		add("is_billable = $%d", *req.IsBillable)
 	}
 	if req.IssueComplexity != nil {
-		add("issue_complexity = $%d", *req.IssueComplexity)
+		add("issue_complexity = $%d::text::time_card_issue_complexity_enum", strings.ToUpper(*req.IssueComplexity))
 	}
 	if req.WorkLogComment != nil {
 		add("work_log_comment = $%d", *req.WorkLogComment)
@@ -599,7 +633,7 @@ func (r *timeCardRepo) UpdateTimeCardFields(ctx context.Context, req domain.Upda
 	// (an IDOR) purely by knowing its id. Only the submitter may edit their
 	// own card while it's submitted -- matching DeleteTimeCard's own
 	// ownership guard below.
-	query := fmt.Sprintf(`UPDATE time_card SET %s WHERE id = $%d AND user_id = $%d AND state = 'submitted' RETURNING id`, strings.Join(sets, ", "), argIdx, actorArg)
+	query := fmt.Sprintf(`UPDATE time_card SET %s WHERE id = $%d AND user_id = $%d AND state = 'SUBMITTED' RETURNING id`, strings.Join(sets, ", "), argIdx, actorArg)
 
 	var id string
 	err = tx.QueryRow(ctx, query, args...).Scan(&id)
@@ -655,10 +689,11 @@ func (r *timeCardRepo) TransitionTimeCardState(ctx context.Context, id string, s
 	// closing the gap a plain check-then-UPDATE would leave for a
 	// concurrent approver-list edit (or a second transition attempt) to
 	// race through.
-	var submitterID, currentState string
+	var submitterID string
+	var currentState *string
 	var isApprover bool
 	err = tx.QueryRow(ctx, `
-		SELECT tc.user_id, tc.state, EXISTS (
+		SELECT tc.user_id, tc.state::TEXT, EXISTS (
 			SELECT 1 FROM time_card_approver tca WHERE tca.time_card_id = tc.id AND tca.approver_id = $2
 		)
 		FROM time_card tc WHERE tc.id = $1 FOR UPDATE`, id, actorID,
@@ -672,22 +707,30 @@ func (r *timeCardRepo) TransitionTimeCardState(ctx context.Context, id string, s
 	if !isApprover || submitterID == actorID {
 		return domain.TimeCardView{}, &apierror.ForbiddenError{Msg: "only an eligible approver, other than the submitter, may approve or reject this time card"}
 	}
-	if currentState != string(domain.TimeCardStateSubmitted) {
+	// time_card_state_enum is UPPER_SNAKE_CASE; domain.TimeCardStateSubmitted
+	// is lowercase.
+	if currentState == nil || strings.ToUpper(*currentState) != strings.ToUpper(string(domain.TimeCardStateSubmitted)) {
 		return domain.TimeCardView{}, &apierror.ConflictError{Msg: "time card is not in the submitted state (it may already have been approved, rejected, processed, or recalled)"}
 	}
 
+	// $2's ::text::enum cast on SET (not a direct ::enum cast) avoids the
+	// same pgx v5 codec issue this file's date fields already work around
+	// -- see CreateTimeCard's own comment on this. The CASE WHEN comparison
+	// stays a bare text comparison against the same (already-uppercased)
+	// $2 value, matching case_repo.go's updateCaseQuery's identical pattern
+	// for case_state_enum.
 	const query = `
 		UPDATE time_card
-		SET state = $2,
+		SET state = $2::text::time_card_state_enum,
 		    lead_comment = COALESCE($3, lead_comment),
-		    approved_by_id = CASE WHEN $2 = 'approved' THEN $4::uuid ELSE approved_by_id END,
+		    approved_by_id = CASE WHEN $2 = 'APPROVED' THEN $4::uuid ELSE approved_by_id END,
 		    updated_on = NOW(),
 		    updated_by = $4
 		WHERE id = $1
 		RETURNING id`
 
 	var returnedID string
-	if err := tx.QueryRow(ctx, query, id, string(state), leadComment, actorID).Scan(&returnedID); err != nil {
+	if err := tx.QueryRow(ctx, query, id, strings.ToUpper(string(state)), leadComment, actorID).Scan(&returnedID); err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {
 			return domain.TimeCardView{}, &apierror.ValidationError{Msg: pgErr.Detail}
 		}
@@ -703,7 +746,7 @@ func (r *timeCardRepo) TransitionTimeCardState(ctx context.Context, id string, s
 
 // DeleteTimeCard implements TimeCardRepository.
 func (r *timeCardRepo) DeleteTimeCard(ctx context.Context, id, submitterID string) error {
-	tag, err := r.db.Exec(ctx, `DELETE FROM time_card WHERE id = $1 AND user_id = $2 AND state = 'submitted'`, id, submitterID)
+	tag, err := r.db.Exec(ctx, `DELETE FROM time_card WHERE id = $1 AND user_id = $2 AND state = 'SUBMITTED'`, id, submitterID)
 	if err != nil {
 		return fmt.Errorf("delete time card: %w", err)
 	}
