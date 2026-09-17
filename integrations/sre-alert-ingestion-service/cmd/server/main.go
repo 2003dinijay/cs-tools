@@ -123,6 +123,21 @@ func main() {
 	mux.HandleFunc("GET /health", healthHandler.Health)
 	mux.Handle("POST /alerts", basicAuth(http.HandlerFunc(alertHandler.CreateAlert)))
 
+	// Vendor-adapter routes: each translates one vendor's own native
+	// alert-webhook payload into AlertRequest, then reuses the exact same
+	// validation/buffering/worker/grouping/dedup/escalation path as POST
+	// /alerts above (see internal/handler.AlertHandler.enqueueAlert). One
+	// dedicated route per vendor shape, not a single shared endpoint that
+	// branches on payload shape internally — deliberately simpler to reason
+	// about, route, and test than that alternative. Same basicAuth
+	// middleware as POST /alerts: every inbound route on this service
+	// authenticates itself, with no exceptions (see the comment on srv
+	// below).
+	mux.Handle("POST /alerts/adapters/azure", basicAuth(http.HandlerFunc(alertHandler.CreateAlertFromAzure)))
+	mux.Handle("POST /alerts/adapters/site24x7", basicAuth(http.HandlerFunc(alertHandler.CreateAlertFromSite24x7)))
+	mux.Handle("POST /alerts/adapters/opensearch", basicAuth(http.HandlerFunc(alertHandler.CreateAlertFromOpenSearch)))
+	mux.Handle("POST /alerts/adapters/grafana", basicAuth(http.HandlerFunc(alertHandler.CreateAlertFromGrafana)))
+
 	addr := ":" + envOrDefault("PORT", "8080")
 
 	ln, err := net.Listen("tcp", addr)
