@@ -65,6 +65,13 @@ func (s *deployedProductService) SearchDeployedProducts(ctx context.Context, req
 	}, nil
 }
 
+// SearchProjectsByProductVersion is not supported for the PostgreSQL data
+// source: it has no deployment/deployed-product model rich enough to
+// resolve this join (see the ServiceNow implementation's own doc comment).
+func (s *deployedProductService) SearchProjectsByProductVersion(_ context.Context, _ domain.SearchProjectsByProductVersionRequest) (domain.SearchProjectsByProductVersionResponse, error) {
+	return domain.SearchProjectsByProductVersionResponse{}, &apierror.ValidationError{Msg: "SearchProjectsByProductVersion is not supported for the PostgreSQL data source"}
+}
+
 // CreateDeployedProduct is not supported for the PostgreSQL data source.
 func (s *deployedProductService) CreateDeployedProduct(_ context.Context, _ domain.CreateDeployedProductRequest) (domain.CreateDeployedProductResponse, error) {
 	return domain.CreateDeployedProductResponse{}, &apierror.ValidationError{Msg: "CreateDeployedProduct is not supported for the PostgreSQL data source"}

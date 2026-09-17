@@ -2834,6 +2834,38 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /deployed-products/projects/search:
+    post:
+      summary: >
+        Search for the projects running a given product version
+        (ServiceNow data source only).
+      operationId: searchProjectsByProductVersion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchProjectsByProductVersionRequest'
+      responses:
+        "200":
+          description: Projects running the given product version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchProjectsByProductVersionResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /call-requests:
     post:
       summary: Create a call request (ServiceNow data source only).
@@ -7530,6 +7562,43 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DeployedProductView'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    SearchProjectsByProductVersionRequest:
+      type: object
+      description: >
+        Resolves which projects are running a given product version — the
+        reverse of SearchDeployedProductsRequest's own deploymentIds filter,
+        which starts from already-known deployments rather than a
+        product/version. ServiceNow data source only.
+      required: [productId, productVersionId]
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        productId:
+          type: string
+          format: uuid
+        productVersionId:
+          type: string
+          format: uuid
+
+    SearchProjectsByProductVersionResponse:
+      type: object
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntityRef'
+          description: >
+            Each project is only {id, name} — the deployment-to-project join
+            this resolves from only ever carries that much.
         total:
           type: integer
         limit:
