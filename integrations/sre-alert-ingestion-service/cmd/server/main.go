@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -46,7 +47,15 @@ func main() {
 	// (see this service's README/CLAUDE.md: the entire point is to not share
 	// fate with CSM's own availability). Apply migrations/0001_create_alert_buffer.up.sql
 	// against this DSN before first run; this process does not run migrations itself.
-	dbStore, err := store.NewPostgresStore(mustEnv("SRE_ALERT_DATABASE_URL"))
+	//
+	// Configured as discrete DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME/
+	// DB_SSLMODE vars, not a single connection-string env var, matching
+	// entity-service's internal/config.Config — a hand-built
+	// postgres://user:password@host/db string requires the operator to
+	// manually percent-encode any reserved character in the password (a
+	// bare "?" gets read as the start of the query string), which
+	// url.UserPassword below does automatically.
+	dbStore, err := store.NewPostgresStore(buildDatabaseDSN())
 	if err != nil {
 		slog.Error("failed to connect to buffer database", "err", err)
 		os.Exit(1)
@@ -199,6 +208,42 @@ func main() {
 		slog.Warn("worker did not stop within the shutdown timeout")
 	}
 	slog.Info("SRE Alert Ingestion Service stopped")
+}
+
+// buildDatabaseDSN reads the discrete DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/
+// DB_NAME/DB_SSLMODE environment variables and builds a postgres:// DSN from
+// them via databaseDSN. DB_HOST/DB_PORT default to "localhost"/"5432";
+// DB_USER/DB_PASSWORD/DB_NAME are required (mustEnv exits the process if any
+// is unset); DB_SSLMODE has no default (an empty sslmode is a valid,
+// meaningful value — pgx applies its own default behavior for it).
+func buildDatabaseDSN() string {
+	return databaseDSN(
+		envOrDefault("DB_HOST", "localhost"),
+		envOrDefault("DB_PORT", "5432"),
+		mustEnv("DB_USER"),
+		mustEnv("DB_PASSWORD"),
+		mustEnv("DB_NAME"),
+		os.Getenv("DB_SSLMODE"),
+	)
+}
+
+// databaseDSN constructs a postgres:// connection string from discrete
+// host/port/user/password/name/sslmode parts, matching entity-service's
+// internal/config.Config.DSN(). Building it via net/url + url.UserPassword
+// (rather than string concatenation) means any reserved character in user or
+// password — "?", "@", "/", a space, etc. — is automatically percent-encoded,
+// so the resulting DSN always parses back to the exact input.
+func databaseDSN(host, port, user, password, name, sslmode string) string {
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(user, password),
+		Host:   host + ":" + port,
+		Path:   name,
+	}
+	q := u.Query()
+	q.Set("sslmode", sslmode)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func mustEnv(key string) string {
