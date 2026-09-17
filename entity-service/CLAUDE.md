@@ -1087,6 +1087,54 @@ ServiceNow data source) has no corresponding column on `service` at all —
 `category`/`subcategory` are free text, not drawn from that three-value set
 — so it is always left `nil` on Postgres rather than guessed at.
 
+## CaseView/SearchCaseView/Case.InternalID is now optional
+
+Found via a direct query against `work_item` grouped by `type`: `wso2_id`
+(`InternalID`) is blank (`''`, not `NULL`) for a handful of real `CASE`/
+`ENGAGEMENT`/`SERVICE_REQUEST` rows, even though the
+`work_item_wso2_id_required_by_type` `CHECK` constraint (migration 000016)
+requires it `NOT NULL` for those types -- the constraint only checks
+nullness, not blankness. `InternalID` was a required (non-pointer) `string`
+field on `domain.Case`/`CaseView`/`SearchCaseView`, so those rows rendered
+`"internalId": ""` instead of `null`, violating this codebase's own "empty
+strings must never appear in responses" rule. Fixed by making all three
+`*string`, with `nilIfEmpty` (`sla_clock_repo.go`, `stringOrEmpty`'s inverse)
+collapsing both `NULL` and `''` to `nil` at every Postgres scan site
+(`GetCaseByID`, `SearchCases`, `scanUpdatedCase`). The ServiceNow-backed
+paths (`sn_case_service.go`) needed the same treatment for consistency --
+`ptrOrNilIfEmpty`/`derefOrEmpty` (`user_service.go`) are that side's
+equivalent pair, since SN's own raw case struct still carries `InternalID`
+as a plain (possibly blank) `string`.
+
+**`CaseView`/`Case`.`Severity`/`IssueType`/`State` are now optional too --
+a much bigger version of the same problem.** A direct query against
+`"case"` (7,681 real `CASE` rows) found `severity IS NULL` for **86%**
+and `issue_type IS NULL` for **99%** of them -- not an edge case, the
+common case (`state IS NULL` for only 5 rows, but still non-zero).
+`Severity`/`IssueType`/`State` were required (non-pointer) fields on both
+`domain.Case` and `CaseView`, so the overwhelming majority of real case
+responses were rendering `"severity": ""`/`"issueType": ""` -- values that
+aren't even valid `domain.CaseSeverity`/`CaseIssueType` labels, let alone
+real ones. `SearchCaseView.Severity`/`IssueType` were already `*string`
+(so already correct); only its `State` needed the same fix. Fixed by
+making all five (`Case.Severity/IssueType/State`, `CaseView.Severity/
+IssueType/State`, `SearchCaseView.State`) pointers, and
+`CaseRepository.UpdateCase`'s `previousSeverity` return value too (used by
+`caseService.detectBillableStatusChange` for the LOW-severity-boundary
+check, which now treats a nil severity as "not LOW" on either side of the
+comparison rather than crashing or silently comparing against `""`).
+
+The ServiceNow-backed path (`sn_case_service.go`) always supplies a real
+value for these three, so its many read sites (map lookups keyed by
+severity/state, string conversions, equality checks against
+`domain.CaseSeverityLow` and friends) needed dereferencing rather than a
+contract change of their own -- `derefSeverity`/`derefState`/
+`ptrOfCaseSeverity`/`ptrOfCaseIssueType` (`user_service.go`) bridge that
+without introducing a second parallel set of nil-handling logic on the SN
+side. `domain.UpdatedCase.State`/`Severity` (the `PATCH /cases/{id}`
+response) became pointers too, matching the sibling `WorkState` field's
+existing pointer convention there.
+
 ## Service offerings and task SLAs
 
 `service_offering` (migration 000049) is now Postgres-backed

@@ -282,15 +282,23 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	if err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
+	internalID := ""
+	if c.InternalID != nil {
+		internalID = *c.InternalID
+	}
+	state := ""
+	if c.State != nil {
+		state = string(*c.State)
+	}
 	return domain.CreateCaseResponse{
 		Message: "Case created successfully.",
 		Case: domain.CreateCaseDetails{
 			ID:         c.ID,
-			InternalID: c.InternalID,
+			InternalID: internalID,
 			Number:     c.Number,
 			CreatedBy:  c.CreatedBy,
 			CreatedOn:  c.CreatedOn,
-			State:      string(c.State),
+			State:      state,
 		},
 	}, nil
 }
@@ -501,9 +509,9 @@ func (s *caseService) updateCaseWatchList(ctx context.Context, req domain.Update
 // yet (Postgres has no time_cards table/repo/service at all today), so
 // publishing now would produce an event nothing acts on. The detection
 // itself is real; only the actual Publish call is inert.
-func (s *caseService) detectBillableStatusChange(ctx context.Context, caseID string, oldSeverity, newSeverity domain.CaseSeverity) {
-	oldLow := oldSeverity == domain.CaseSeverityLow
-	newLow := newSeverity == domain.CaseSeverityLow
+func (s *caseService) detectBillableStatusChange(ctx context.Context, caseID string, oldSeverity, newSeverity *domain.CaseSeverity) {
+	oldLow := oldSeverity != nil && *oldSeverity == domain.CaseSeverityLow
+	newLow := newSeverity != nil && *newSeverity == domain.CaseSeverityLow
 	if oldLow == newLow {
 		return
 	}
@@ -1012,7 +1020,7 @@ func (s *caseService) detectPatchTagBillableOverride(ctx context.Context, caseID
 		slog.ErrorContext(ctx, "add case tag: patch billable override not evaluated, get case failed", "caseId", caseID)
 		return
 	}
-	if cv.Severity != domain.CaseSeverityLow {
+	if cv.Severity == nil || *cv.Severity != domain.CaseSeverityLow {
 		return
 	}
 

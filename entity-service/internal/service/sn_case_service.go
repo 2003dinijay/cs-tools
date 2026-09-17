@@ -1118,10 +1118,10 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 		ProjectID:    cv.ProjectDetails.ID,
 		CaseID:       caseID,
 		CaseNumber:   cv.Number,
-		WSO2CaseID:   cv.InternalID,
+		WSO2CaseID:   derefOrEmpty(cv.InternalID),
 		CaseTitle:    cv.Subject,
 		CaseType:     strings.ToUpper(req.Type),
-		Priority:     strings.ToUpper(string(cv.Severity)),
+		Priority:     strings.ToUpper(string(derefSeverity(cv.Severity))),
 		Product:      product,
 		Team:         caseTeamName(cv),
 		CreatedAt:    cv.CreatedOn.Format(time.RFC3339),
@@ -1173,9 +1173,9 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 // existing, accepted limitation shared by every case.*/incident.* event
 // this service publishes, not something specific to SLA registration.
 func (s *snCaseService) publishSLAClockRegister(ctx context.Context, cv domain.CaseView, req domain.CreateCaseRequest, caseID string) {
-	durations, ok := slaDurations[cv.Severity]
+	durations, ok := slaDurations[derefSeverity(cv.Severity)]
 	if !ok || len(durations) == 0 {
-		slog.WarnContext(ctx, "sn create case: sla.clock.register not published, no SLA duration policy for severity", "caseId", caseID, "severity", cv.Severity)
+		slog.WarnContext(ctx, "sn create case: sla.clock.register not published, no SLA duration policy for severity", "caseId", caseID, "severity", derefSeverity(cv.Severity))
 		return
 	}
 	durationStrings := make(map[string]string, len(durations))
@@ -1187,15 +1187,15 @@ func (s *snCaseService) publishSLAClockRegister(ctx context.Context, cv domain.C
 		CaseID:              caseID,
 		Durations:           durationStrings,
 		CaseCreatedAt:       cv.CreatedOn.Format(time.RFC3339),
-		AvoidWeekendDueDate: slaAvoidWeekendClockTypes[cv.Severity],
+		AvoidWeekendDueDate: slaAvoidWeekendClockTypes[derefSeverity(cv.Severity)],
 		CaseNumber:          cv.Number,
-		WSO2CaseID:          cv.InternalID,
+		WSO2CaseID:          derefOrEmpty(cv.InternalID),
 		CaseTitle:           cv.Subject,
 		CaseType:            strings.ToUpper(req.Type),
 		Product:             caseProductName(cv),
 		Team:                caseTeamName(cv),
-		Priority:            strings.ToUpper(string(cv.Severity)),
-		State:               strings.ToUpper(string(cv.State)),
+		Priority:            strings.ToUpper(string(derefSeverity(cv.Severity))),
+		State:               strings.ToUpper(string(derefState(cv.State))),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "sn create case: encode sla.clock.register payload failed", "caseId", caseID, "error", err)
@@ -1302,7 +1302,7 @@ func (s *snCaseService) publishCommentAdded(ctx context.Context, req domain.Crea
 		ProjectID:      cv.ProjectDetails.ID,
 		CaseID:         req.CaseID,
 		CaseNumber:     cv.Number,
-		WSO2CaseID:     cv.InternalID,
+		WSO2CaseID:     derefOrEmpty(cv.InternalID),
 		CaseTitle:      cv.Subject,
 		CaseComment:    req.Content,
 		CommentID:      commentID,
@@ -1448,7 +1448,7 @@ func (s *snCaseService) applyCustomerReplyStateTransition(ctx context.Context, r
 		slog.ErrorContext(ctx, "sn create comment: customer reply state transition not evaluated, get case failed", "caseId", req.CaseID)
 		return
 	}
-	if cv.State != domain.CaseStateAwaitingInfo && cv.State != domain.CaseStateSolutionProposed {
+	if derefState(cv.State) != domain.CaseStateAwaitingInfo && derefState(cv.State) != domain.CaseStateSolutionProposed {
 		return
 	}
 
@@ -1524,7 +1524,7 @@ func (s *snCaseService) publishStatusChanged(ctx context.Context, caseID, newSta
 		ProjectID:  before.ProjectDetails.ID,
 		CaseID:     caseID,
 		CaseNumber: before.Number,
-		WSO2CaseID: before.InternalID,
+		WSO2CaseID: derefOrEmpty(before.InternalID),
 		CaseTitle:  before.Subject,
 		NewStatus:  newStatus,
 		Recipients: recipients,
@@ -1670,7 +1670,7 @@ func (s *snCaseService) publishSeverityChanged(ctx context.Context, caseID, oldS
 		ProjectID:   before.ProjectDetails.ID,
 		CaseID:      caseID,
 		CaseNumber:  before.Number,
-		WSO2CaseID:  before.InternalID,
+		WSO2CaseID:  derefOrEmpty(before.InternalID),
 		CaseTitle:   before.Subject,
 		OldSeverity: strings.ToUpper(oldSeverity),
 		NewSeverity: strings.ToUpper(newSeverity),
@@ -1730,7 +1730,7 @@ func (s *snCaseService) publishCaseAssigned(ctx context.Context, caseID, assigne
 		ProjectID:     before.ProjectDetails.ID,
 		CaseID:        caseID,
 		CaseNumber:    before.Number,
-		WSO2CaseID:    before.InternalID,
+		WSO2CaseID:    derefOrEmpty(before.InternalID),
 		CaseTitle:     before.Subject,
 		Recipients:    recipients,
 	})
@@ -1779,8 +1779,8 @@ func (s *snCaseService) publishCaseAcknowledged(ctx context.Context, caseID, ack
 	payload, err := json.Marshal(events.CaseAcknowledgedPayload{
 		CaseID:           caseID,
 		CaseNumber:       cv.Number,
-		WSO2CaseID:       cv.InternalID,
-		Severity:         strings.ToUpper(string(cv.Severity)),
+		WSO2CaseID:       derefOrEmpty(cv.InternalID),
+		Severity:         strings.ToUpper(string(derefSeverity(cv.Severity))),
 		Product:          product,
 		Team:             caseTeamName(cv),
 		AcknowledgerName: acknowledgerName,
@@ -1829,15 +1829,15 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	cv := domain.CaseView{
 		ID:              sysidToUUID(c.ID),
 		Number:          c.Number,
-		InternalID:      c.InternalID,
+		InternalID:      ptrOrNilIfEmpty(c.InternalID),
 		Subject:         c.Title,
 		Duration:        c.Duration,
 		EscalationLevel: snEscalationLevelToDomain(c.EscalationLevel),
 		IsEscalated:     c.IsEscalated,
 		Description:     c.Description,
-		Severity:        snSeverityToSeverity(c.Severity),
-		IssueType:       snIssueTypeToEnum(c.IssueType),
-		State:           state,
+		Severity:        ptrOfCaseSeverity(snSeverityToSeverity(c.Severity)),
+		IssueType:       ptrOfCaseIssueType(snIssueTypeToEnum(c.IssueType)),
+		State:           &state,
 		WorkState:       snWorkStateLabelToEnum(c.WorkState),
 		Type:            snCaseTypeToDomain(c.CaseType),
 		EngagementType:  snLabelStr(c.EngagementType),
@@ -2879,7 +2879,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		switch {
 		case err != nil:
 			slog.ErrorContext(ctx, "sn update case: enrich case for case.status_changed publish failed", "caseId", req.ID)
-		case cv.State == *req.State:
+		case derefState(cv.State) == *req.State:
 			slog.InfoContext(ctx, "sn update case: case.status_changed not published, state is unchanged", "caseId", req.ID)
 		default:
 			caseBeforeUpdate = cv
@@ -2902,7 +2902,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		switch {
 		case err != nil:
 			slog.ErrorContext(ctx, "sn update case: enrich case for case.severity_changed publish failed", "caseId", req.ID)
-		case cv.Severity == *req.Severity:
+		case derefSeverity(cv.Severity) == *req.Severity:
 			slog.InfoContext(ctx, "sn update case: case.severity_changed not published, severity is unchanged", "caseId", req.ID)
 		default:
 			caseBeforeSeverity = cv
@@ -2961,11 +2961,12 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	if snResp.Case.State != nil {
 		state, err := snCaseStateLabelToEnum(snResp.Case.State)
 		if err == nil {
-			resp.Case.State = state
+			resp.Case.State = &state
 		}
 	}
 	if snResp.Case.Severity != nil {
-		resp.Case.Severity = snSeverityToSeverity(snResp.Case.Severity)
+		severity := snSeverityToSeverity(snResp.Case.Severity)
+		resp.Case.Severity = &severity
 	}
 	if snResp.Case.Type != nil {
 		if t := snCaseTypeToDomain(snResp.Case.Type); t != nil {
@@ -3055,7 +3056,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	// the case's own current state just redundantly re-applies the same
 	// effect harmlessly.
 	if req.State != nil && snResp.Case.State != nil {
-		s.applyCaseStateSLAEffects(ctx, req.ID, resp.Case.State)
+		s.applyCaseStateSLAEffects(ctx, req.ID, derefState(resp.Case.State))
 	}
 	if publishCaseAssign {
 		assigneeName := *req.AssigneeEmail
@@ -3079,8 +3080,8 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	// pre-update severity (e.g. a stale echo), publishing anyway would
 	// send a false case.severity_changed event with identical old/new
 	// values.
-	if publishSeverityChange && resp.Case.Severity != "" && resp.Case.Severity != caseBeforeSeverity.Severity {
-		s.publishSeverityChanged(ctx, req.ID, string(caseBeforeSeverity.Severity), string(resp.Case.Severity), caseBeforeSeverity)
+	if publishSeverityChange && resp.Case.Severity != nil && derefSeverity(resp.Case.Severity) != derefSeverity(caseBeforeSeverity.Severity) {
+		s.publishSeverityChanged(ctx, req.ID, string(derefSeverity(caseBeforeSeverity.Severity)), string(derefSeverity(resp.Case.Severity)), caseBeforeSeverity)
 	}
 
 	return resp, nil
@@ -4121,9 +4122,9 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		workStateLabel := snWorkStateLabelStr(c.WorkState)
 		engagementTypeLabel := snLabelStr(c.EngagementType)
 
-		stateLabel := ""
+		var stateLabel *string
 		if c.State != nil {
-			stateLabel = c.State.Label
+			stateLabel = &c.State.Label
 		}
 		caseTypeDomain := ""
 		if t := snCaseTypeToDomain(c.CaseType); t != nil {
@@ -4138,7 +4139,7 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 		cv := domain.SearchCaseView{
 			ID:         sysidToUUID(c.ID),
 			Number:     c.Number,
-			InternalID: c.InternalID,
+			InternalID: ptrOrNilIfEmpty(c.InternalID),
 			CreatedOn:  c.CreatedOn,
 			UpdatedOn:  updatedOn,
 			// The case search carries no id for the creator, only the email and

@@ -136,6 +136,18 @@ func stringOrEmpty(s *string) string {
 	return *s
 }
 
+// nilIfEmpty is stringOrEmpty's inverse: it collapses both a nil column and
+// an empty-string column value to nil, for a response field (e.g.
+// domain.CaseView.InternalID) that must never render as an empty string --
+// see that field's own doc comment for why a NOT-NULL-constrained column
+// can still hold "".
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 // Register implements SLAClockRepository.
 func (r *slaClockRepo) Register(ctx context.Context, req domain.RegisterSLAClockRequest) (domain.SLAClock, error) {
 	query := `
