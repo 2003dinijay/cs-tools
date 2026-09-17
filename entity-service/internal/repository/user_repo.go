@@ -44,6 +44,12 @@ type UserRepository interface {
 	// GetUserByEmail returns the user with the given email address, or a
 	// NotFoundError if no matching user exists.
 	GetUserByEmail(ctx context.Context, email string) (domain.User, error)
+	// GetUserRoles returns the role names assigned to userID via user_role
+	// (migration 000006), empty if none.
+	GetUserRoles(ctx context.Context, userID string) ([]string, error)
+	// GetUserGroups returns every team userID belongs to via team_member
+	// (migration 000028), empty if none.
+	GetUserGroups(ctx context.Context, userID string) ([]domain.UserGroupRef, error)
 }
 
 type userRepo struct {
@@ -214,4 +220,56 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 	}
 
 	return users, total, nil
+}
+
+// GetUserRoles implements UserRepository.
+func (r *userRepo) GetUserRoles(ctx context.Context, userID string) ([]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT r.name FROM user_role ur
+		JOIN role r ON r.id = ur.role_id
+		WHERE ur.user_id = $1
+		ORDER BY r.name`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query user roles: %w", err)
+	}
+	defer rows.Close()
+
+	roles := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan user role: %w", err)
+		}
+		roles = append(roles, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate user roles: %w", err)
+	}
+	return roles, nil
+}
+
+// GetUserGroups implements UserRepository.
+func (r *userRepo) GetUserGroups(ctx context.Context, userID string) ([]domain.UserGroupRef, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT t.id, t.name FROM team_member tm
+		JOIN team t ON t.id = tm.team_id
+		WHERE tm.user_id = $1
+		ORDER BY t.name`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query user groups: %w", err)
+	}
+	defer rows.Close()
+
+	groups := []domain.UserGroupRef{}
+	for rows.Next() {
+		var g domain.UserGroupRef
+		if err := rows.Scan(&g.ID, &g.Name); err != nil {
+			return nil, fmt.Errorf("scan user group: %w", err)
+		}
+		groups = append(groups, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate user groups: %w", err)
+	}
+	return groups, nil
 }

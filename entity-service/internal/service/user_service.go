@@ -205,6 +205,16 @@ func (s *userService) GetMe(ctx context.Context) (domain.GetUserMeResponse, erro
 	if err != nil {
 		return domain.GetUserMeResponse{}, err
 	}
+	roles, err := s.repo.GetUserRoles(ctx, user.ID)
+	if err != nil {
+		return domain.GetUserMeResponse{}, err
+	}
+	// GetUserMeResponse.Groups's own doc comment: best-effort, empty rather
+	// than a failed request when the lookup errors.
+	groups, err := s.repo.GetUserGroups(ctx, user.ID)
+	if err != nil {
+		groups = []domain.UserGroupRef{}
+	}
 
 	firstName := user.FirstName
 	return domain.GetUserMeResponse{
@@ -213,7 +223,7 @@ func (s *userService) GetMe(ctx context.Context) (domain.GetUserMeResponse, erro
 		FirstName: &firstName,
 		LastName:  user.LastName,
 		TimeZone:  user.Timezone,
-		Roles:     []string{},
-		Groups:    []domain.UserGroupRef{},
+		Roles:     roles,
+		Groups:    groups,
 	}, nil
 }

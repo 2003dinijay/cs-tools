@@ -335,10 +335,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		serviceOfferingHandler = handler.NewServiceOfferingHandler(service.NewServiceNowServiceOfferingService(serviceNowIntegrationServiceClient))
 	}
 
-	var groupHandler *handler.GroupHandler
+	groupRepo := repository.NewGroupRepository(db)
+	var activeGroupSvc service.GroupService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		groupHandler = handler.NewGroupHandler(service.NewServiceNowGroupService(serviceNowIntegrationServiceClient))
+		activeGroupSvc = service.NewServiceNowGroupService(serviceNowIntegrationServiceClient)
+	} else {
+		activeGroupSvc = service.NewGroupService(groupRepo)
 	}
+	groupHandler := handler.NewGroupHandler(activeGroupSvc)
 
 	var configurationItemHandler *handler.ConfigurationItemHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -535,9 +539,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /service-offerings/search", serviceOfferingHandler.SearchServiceOfferings)
 	}
 
-	if groupHandler != nil {
-		mux.HandleFunc("POST /groups/search", groupHandler.SearchGroups)
-	}
+	mux.HandleFunc("POST /groups/search", groupHandler.SearchGroups)
 
 	if configurationItemHandler != nil {
 		mux.HandleFunc("POST /configuration-items/search", configurationItemHandler.SearchConfigurationItems)
