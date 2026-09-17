@@ -2836,6 +2836,8 @@ type SearchChangeRequestView struct {
 	Deployment       *EntityRef `json:"deployment"`
 	DeployedProduct  *EntityRef `json:"deployedProduct"`
 	Product          *EntityRef `json:"product"`
+	Service          *EntityRef `json:"service"`
+	ServiceOffering  *EntityRef `json:"serviceOffering"`
 	AssignedEngineer *EntityRef `json:"assignedEngineer"`
 	AssignedTeam     *EntityRef `json:"assignedTeam"`
 	PlannedStartOn   *string    `json:"plannedStartOn"`
@@ -3000,6 +3002,8 @@ type PatchChangeRequestRequest struct {
 	CaseID             *string              `json:"caseId,omitempty"`
 	DeploymentID       *string              `json:"deploymentId,omitempty"`
 	DeployedProductID  *string              `json:"deployedProductId,omitempty"`
+	ServiceID          *string              `json:"serviceId,omitempty"`
+	ServiceOfferingID  *string              `json:"serviceOfferingId,omitempty"`
 	AssignedEngineerID *string              `json:"assignedEngineerId,omitempty"`
 	AssignedTeamID     *string              `json:"assignedTeamId,omitempty"`
 	PlannedStartOn     *string              `json:"plannedStartOn,omitempty"`

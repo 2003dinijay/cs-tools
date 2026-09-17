@@ -330,10 +330,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	itServiceHandler := handler.NewITServiceHandler(activeITServiceSvc)
 
-	var serviceOfferingHandler *handler.ServiceOfferingHandler
+	serviceOfferingRepo := repository.NewServiceOfferingRepository(db)
+	var activeServiceOfferingSvc service.ServiceOfferingService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		serviceOfferingHandler = handler.NewServiceOfferingHandler(service.NewServiceNowServiceOfferingService(serviceNowIntegrationServiceClient))
+		activeServiceOfferingSvc = service.NewServiceNowServiceOfferingService(serviceNowIntegrationServiceClient)
+	} else {
+		activeServiceOfferingSvc = service.NewServiceOfferingService(serviceOfferingRepo)
 	}
+	serviceOfferingHandler := handler.NewServiceOfferingHandler(activeServiceOfferingSvc)
 
 	groupRepo := repository.NewGroupRepository(db)
 	var activeGroupSvc service.GroupService
@@ -358,10 +362,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	commentHandler := handler.NewCommentHandler(activeCommentSvc)
 
-	var taskSlaHandler *handler.TaskSlaHandler
+	taskSlaRepo := repository.NewTaskSlaRepository(db)
+	var activeTaskSlaSvc service.TaskSlaService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		taskSlaHandler = handler.NewTaskSlaHandler(service.NewServiceNowTaskSlaService(serviceNowIntegrationServiceClient))
+		activeTaskSlaSvc = service.NewServiceNowTaskSlaService(serviceNowIntegrationServiceClient)
+	} else {
+		activeTaskSlaSvc = service.NewTaskSlaService(taskSlaRepo)
 	}
+	taskSlaHandler := handler.NewTaskSlaHandler(activeTaskSlaSvc)
 
 	var snUserHandler *handler.SNUserHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -535,9 +543,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 
 	mux.HandleFunc("POST /services/search", itServiceHandler.SearchITServices)
 
-	if serviceOfferingHandler != nil {
-		mux.HandleFunc("POST /service-offerings/search", serviceOfferingHandler.SearchServiceOfferings)
-	}
+	mux.HandleFunc("POST /service-offerings/search", serviceOfferingHandler.SearchServiceOfferings)
 
 	mux.HandleFunc("POST /groups/search", groupHandler.SearchGroups)
 
@@ -548,10 +554,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("POST /comments", commentHandler.CreateComment)
 	mux.HandleFunc("POST /comments/search", commentHandler.SearchComments)
 
-	if taskSlaHandler != nil {
-		mux.HandleFunc("GET /slas/{id}", taskSlaHandler.GetTaskSla)
-		mux.HandleFunc("POST /slas/search", taskSlaHandler.SearchTaskSlas)
-	}
+	mux.HandleFunc("GET /slas/{id}", taskSlaHandler.GetTaskSla)
+	mux.HandleFunc("POST /slas/search", taskSlaHandler.SearchTaskSlas)
 
 	// Registered unconditionally; the non-ServiceNow data source is served by
 	// service.NewUnavailableTaskService, which answers 503 (see above).

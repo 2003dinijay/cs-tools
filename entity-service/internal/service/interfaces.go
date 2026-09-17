@@ -593,8 +593,9 @@ type GroupService interface {
 	SearchGroups(ctx context.Context, req domain.SearchGroupsRequest) (domain.SearchGroupsResponse, error)
 }
 
-// ServiceOfferingService defines the operations available on the service offerings entity.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// ServiceOfferingService defines the operations available on the service
+// offerings entity. On Postgres this is backed by the service_offering
+// table (migration 000049).
 type ServiceOfferingService interface {
 	// SearchServiceOfferings returns a paginated list of service offerings filtered by
 	// optional service IDs.
@@ -626,7 +627,9 @@ type CommentService interface {
 }
 
 // TaskSlaService defines the operations available on the task-slas entity.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// On Postgres this is backed by sla/sla_policy (migrations 000051/000052) --
+// see TaskSlaRepository's own doc comment for the fields with no confirmed
+// rendering format that are left nil there.
 type TaskSlaService interface {
 	// SearchTaskSlas returns a paginated list of task SLA records filtered by optional task IDs.
 	SearchTaskSlas(ctx context.Context, req domain.SearchTaskSlasRequest) (domain.SearchTaskSlasResponse, error)

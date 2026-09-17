@@ -822,10 +822,19 @@ v5 can't scan a binary-format timestamptz into a `*string`
   without a schema change, so both always return a `ServiceUnavailableError`
   on Postgres.
 
-**Fields with no real column anywhere, left unset rather than guessed at**
-(see `ChangeRequestRepository`'s own doc comment for the full list):
-`ServiceID`, `ServiceOfferingID`, `ConfigurationItemID`, `GroupID`, and
-`AssignedTeamID` (no CMDB/group tables exist in this schema at all); `Type`
+**`ServiceID`/`ServiceOfferingID` are now wired up** (migration 000050 added
+`change_request.service_id`/`service_offering_id`, FKs into `service`/
+`service_offering`, migrations 000048/000049): readable via
+`SearchChangeRequestView.Service`/`ServiceOffering` and writable via
+`PatchChangeRequestRequest.ServiceID`/`ServiceOfferingID`. `service`/
+`service_offering` also got their own Postgres implementations
+(`it_service_repo.go`/`service_offering_repo.go`) backing `POST /services/
+search` and `POST /service-offerings/search`, previously ServiceNow-only.
+
+**Fields still with no real column anywhere, left unset rather than
+guessed at** (see `ChangeRequestRepository`'s own doc comment for the full
+list): `ConfigurationItemID`, `GroupID`, and `AssignedTeamID` (no CMDB/group
+tables exist in this schema at all); `Type`
 (`domain.ChangeRequestType` — standard/normal/emergency/... — has **no**
 relationship to `change_request.change_request_type`, whose real enum
 values are `INFRA`/`GENERAL`, a completely different classification, not a
@@ -1077,6 +1086,29 @@ literally named "class". `BusinessCriticality` maps 1:1 (case-folded) via
 ServiceNow data source) has no corresponding column on `service` at all —
 `category`/`subcategory` are free text, not drawn from that three-value set
 — so it is always left `nil` on Postgres rather than guessed at.
+
+## Service offerings and task SLAs
+
+`service_offering` (migration 000049) is now Postgres-backed
+(`service_offering_repo.go`): `POST /service-offerings/search`, previously
+ServiceNow-only. `parent_id` (FK into `service`, migration 000048) maps to
+`ServiceOffering.Service`; `SearchServiceOfferingsFilters.ServiceIDs` filters
+on it.
+
+`sla`/`sla_policy` (migrations 000051/000052) back `TaskSlaService`
+(`task_sla_repo.go`) -- previously ServiceNow-only `POST /task-slas/search`/
+`GET /task-slas/{id}`. `sla.stage`/`sla_policy`'s various enum columns are
+rendered as space-separated title case (`"IN_PROGRESS"` -> `"In Progress"`)
+to match the ServiceNow-backed implementation's own display convention
+(`view.Stage = t.Stage.Label`, a human SN label, not a raw enum). Several
+fields have no confirmed rendering format and are left `nil`:
+`BusinessTimeLeft`/`BusinessElapsedTime` (the `*_duration` columns are
+`INTERVAL`, with no established "business time left" string format anywhere
+else in this codebase); `Duration`/`ScheduleSource`/`Flow`/`Workflow`/
+`IsEnableLogging`/`DurationType`/`ResetCondition` on the definition detail
+(no backing column, or -- for `ResetCondition` -- the column that exists,
+`resume_condition`, is a different concept from the `reset_action` enum
+this field would need to derive from).
 
 ## Adding a new entity
 
