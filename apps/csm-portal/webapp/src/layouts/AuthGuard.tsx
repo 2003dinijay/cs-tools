@@ -15,6 +15,7 @@
 // under the License.
 
 import { type JSX, Suspense, useEffect, useRef, useState } from "react";
+import { Box } from "@wso2/oxygen-ui";
 import { useAsgardeo } from "@asgardeo/react";
 import { ProtectedRoute } from "@asgardeo/react-router";
 import { Outlet, useLocation, useNavigate } from "react-router";
@@ -189,6 +190,48 @@ function AuthorizedAppShell(): JSX.Element {
   return <AppLayout />;
 }
 
+/**
+ * `bare` mode's counterpart to `AuthorizedAppShell` above — the exact same
+ * `/users/me` entitlement gate (loading / not-authorized / authorized),
+ * just rendered into `bare` mode's own full-viewport, chrome-free frame
+ * instead of `AppLayout`.
+ *
+ * This gate is not optional for `bare` routes: skipping it (an earlier
+ * version of this file did, rendering `<Outlet />` the instant Asgardeo
+ * sign-in succeeded) let anyone with a valid WSO2 identity reach the routed
+ * page — and the widgets it mounts, which fire their own authenticated API
+ * calls immediately — before `/users/me` had confirmed they were actually
+ * entitled to this portal at all, not just signed in to the IdP. Same class
+ * of gap `AuthorizedAppShell` exists to close for every other route.
+ *
+ * `NoPortalAccessPage` renders fine outside `AppLayout` — its own root is a
+ * `flex: 1` `Box` meant to fill whatever flex-column parent it's given,
+ * which the wrapper below (matching `BareAuthLoader`'s own frame) provides.
+ */
+function BareAuthorizedContent(): JSX.Element {
+  const { isLoading, isError, error } = useCurrentUser();
+  const notAuthorized =
+    isError && (isUnauthorizedError(error) || isForbiddenError(error));
+
+  if (isLoading) {
+    return <BareAuthLoader />;
+  }
+
+  if (notAuthorized) {
+    return (
+      <Box sx={{ height: "100dvh", width: "100%", display: "flex", flexDirection: "column" }}>
+        <NoPortalAccessPage />
+      </Box>
+    );
+  }
+
+  return (
+    <Suspense fallback={<BareAuthLoader />}>
+      <Outlet />
+    </Suspense>
+  );
+}
+
 export interface AuthGuardProps {
   /** Skips `AppLayout` (header, sidebar, banners, idle-timeout provider)
    * once authenticated, rendering a bare `<Outlet />` instead — for a route
@@ -319,17 +362,12 @@ export default function AuthGuard({ bare = false }: AuthGuardProps): JSX.Element
   // signed in, that is the ONLY recovery trigger this app needs; a token
   // expiring while the user does nothing at all needs no proactive fix.
   //
-  // In `bare` mode the authenticated content is the matched route's own
-  // element with no portal chrome — no header/sidebar/banners, and none of
-  // `AuthorizedAppShell`'s `AppLayout`-wrapped loading / not-authorized
-  // states. `AppLayout` is otherwise the only place in the tree that
-  // provides a `Suspense` boundary, so `bare` mode brings its own — falling
-  // back to `BareAuthLoader`, the same centered progress bar the pending
-  // and sign-in-redirect states show.
+  // In `bare` mode the authenticated content is `BareAuthorizedContent`
+  // rather than `AuthorizedAppShell` — the same `/users/me` entitlement
+  // gate (see that component's own doc comment for why it's not optional),
+  // just rendered without any portal chrome (no header/sidebar/banners).
   const authenticatedContent = bare ? (
-    <Suspense fallback={<BareAuthLoader />}>
-      <Outlet />
-    </Suspense>
+    <BareAuthorizedContent />
   ) : (
     <AuthorizedAppShell />
   );
