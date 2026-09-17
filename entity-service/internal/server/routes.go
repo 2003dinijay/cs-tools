@@ -26,7 +26,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/handler"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesforce"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesentity"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 	integrationservice "github.com/wso2-open-operations/cs-tools/entity-service/internal/servicenow-integration-service"
 )
@@ -115,15 +115,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
 
 	var salesforceEventHandler *handler.SalesforceEventHandler
-	if db != nil && cfg.DataSource == config.DataSourcePostgres && cfg.SalesforceConfigured() {
-		sfClient := salesforce.New(salesforce.Config{
-			BaseURL:      cfg.SalesforceBaseURL,
-			TokenURL:     cfg.SalesforceTokenURL,
-			ClientID:     cfg.SalesforceClientID,
-			ClientSecret: cfg.SalesforceClientSecret,
-			RefreshToken: cfg.SalesforceRefreshToken,
+	if db != nil && cfg.DataSource == config.DataSourcePostgres && cfg.SalesEntityConfigured() {
+		salesEntityClient := salesentity.New(cfg.SalesEntityBaseURL, salesentity.ClientCredentialsConfig{
+			TokenURL:     cfg.SalesEntityTokenURL,
+			ClientID:     cfg.SalesEntityClientID,
+			ClientSecret: cfg.SalesEntityClientSecret,
+			Scopes:       cfg.SalesEntityScopes,
 		})
-		salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventService(accountRepo, sfClient))
+		salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventService(accountRepo, salesEntityClient))
 	}
 
 	var serviceNowIntegrationServiceClient *integrationservice.Client

@@ -70,7 +70,8 @@ type AccountService interface {
 	GetAccountByID(ctx context.Context, id string) (domain.AccountDetail, error)
 }
 
-// SalesforceEventService handles POST /salesforce/events.
+// SalesforceEventService handles POST /salesforce/events. Account fetch goes
+// through REST sales/sales-entity-service POST /customer-search, not GraphQL.
 type SalesforceEventService interface {
 	HandleEvent(ctx context.Context, req domain.SalesforceEventRequest) error
 }

@@ -24,20 +24,20 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesforce"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesentity"
 )
 
-type stubSalesforceClient struct {
-	account salesforce.Account
-	err     error
-	calls   int
-	lastID  string
+type stubSalesEntityClient struct {
+	customer salesentity.Customer
+	err      error
+	calls    int
+	lastID   string
 }
 
-func (s *stubSalesforceClient) GetAccount(_ context.Context, id string) (salesforce.Account, error) {
+func (s *stubSalesEntityClient) GetCustomer(_ context.Context, id string) (salesentity.Customer, error) {
 	s.calls++
 	s.lastID = id
-	return s.account, s.err
+	return s.customer, s.err
 }
 
 type stubSalesforceAccountRepo struct {
@@ -74,34 +74,32 @@ func (s *stubSalesforceAccountRepo) LookupUserIDByEmail(_ context.Context, email
 	return nil, nil
 }
 
-func sampleSFAccount() salesforce.Account {
-	return salesforce.Account{
+func sampleStr(s string) *string { return &s }
+
+func sampleCustomer() salesentity.Customer {
+	return salesentity.Customer{
 		ID:                    "001xx0000001",
-		Name:                  "Acme",
-		AccountNumber:         "A-100",
-		Industry:              "Technology",
-		Region:                "EU",
-		GlobalPOD:             "EU",
-		Phone:                 "+494012345678",
-		SalesRegions:          "EMEA",
-		SubRegion:             "Northern Germany",
-		AccountVertical:       "Healthcare",
-		AccountStatus:         "Lost Prospect",
-		NAICSIndustry:         "Utilities",
-		SubIndustry:           "Energy",
-		AccountClassification: "Customer",
-		TechnicalOwner:        "owner@example.com",
-		TechnicalOwner2:       "owner2@example.com",
+		Name:                  sampleStr("Acme"),
+		Industry:              sampleStr("Technology"),
+		Region:                sampleStr("EU"),
+		GlobalPod:             sampleStr("EU"),
+		Phone:                 sampleStr("+494012345678"),
+		SalesRegions:          sampleStr("EMEA"),
+		SubRegion:             sampleStr("Northern Germany"),
+		Status:                sampleStr("Lost Prospect"),
+		NAICSIndustry:         sampleStr("Utilities"),
+		SubIndustry:           sampleStr("Energy"),
+		AccountClassification: sampleStr("Customer"),
+		TechnicalOwner:        sampleStr("owner@example.com"),
 	}
 }
 
 func TestHandleEvent_CreatedUpdatedRestored(t *testing.T) {
-	sf := &stubSalesforceClient{account: sampleSFAccount()}
+	se := &stubSalesEntityClient{customer: sampleCustomer()}
 	repo := &stubSalesforceAccountRepo{lookup: map[string]string{
-		"owner@example.com":  "user-1",
-		"owner2@example.com": "user-2",
+		"owner@example.com": "user-1",
 	}}
-	svc := NewSalesforceEventService(repo, sf)
+	svc := NewSalesforceEventService(repo, se)
 
 	for _, eventType := range []string{
 		domain.SalesforceEventCreated,
@@ -109,7 +107,7 @@ func TestHandleEvent_CreatedUpdatedRestored(t *testing.T) {
 		domain.SalesforceEventRestored,
 	} {
 		t.Run(eventType, func(t *testing.T) {
-			sf.calls = 0
+			se.calls = 0
 			repo.upsertCalls = 0
 			err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
 				EventType:   "  " + eventType + "  ",
@@ -119,14 +117,14 @@ func TestHandleEvent_CreatedUpdatedRestored(t *testing.T) {
 			if err != nil {
 				t.Fatalf("HandleEvent: %v", err)
 			}
-			if sf.calls != 1 || sf.lastID != "001xx0000001" {
-				t.Errorf("GetAccount calls = %d id = %q, want 1 / 001xx0000001", sf.calls, sf.lastID)
+			if se.calls != 1 || se.lastID != "001xx0000001" {
+				t.Errorf("GetCustomer calls = %d id = %q, want 1 / 001xx0000001", se.calls, se.lastID)
 			}
 			if repo.upsertCalls != 1 {
 				t.Errorf("upsert calls = %d, want 1", repo.upsertCalls)
 			}
 			got := repo.lastUpsert
-			if got.SfID != "001xx0000001" || got.Name != "Acme" || got.Number != "A-100" {
+			if got.SfID != "001xx0000001" || got.Name != "Acme" || got.Number != "001xx0000001" {
 				t.Errorf("upsert = %+v", got)
 			}
 			if got.KeepExistingPhone {
@@ -135,17 +133,20 @@ func TestHandleEvent_CreatedUpdatedRestored(t *testing.T) {
 			if got.TechnicalOwnerID == nil || *got.TechnicalOwnerID != "user-1" {
 				t.Errorf("technical owner = %v, want user-1", got.TechnicalOwnerID)
 			}
-			if got.SecondaryTechnicalOwnerID == nil || *got.SecondaryTechnicalOwnerID != "user-2" {
-				t.Errorf("secondary owner = %v, want user-2", got.SecondaryTechnicalOwnerID)
+			if got.SecondaryTechnicalOwnerID != nil {
+				t.Errorf("secondary owner = %v, want nil", got.SecondaryTechnicalOwnerID)
+			}
+			if got.AccountVertical != nil {
+				t.Errorf("account vertical = %v, want nil", got.AccountVertical)
 			}
 		})
 	}
 }
 
 func TestHandleEvent_Deleted(t *testing.T) {
-	sf := &stubSalesforceClient{}
+	se := &stubSalesEntityClient{}
 	repo := &stubSalesforceAccountRepo{}
-	svc := NewSalesforceEventService(repo, sf)
+	svc := NewSalesforceEventService(repo, se)
 
 	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
 		EventType:   domain.SalesforceEventDeleted,
@@ -155,8 +156,8 @@ func TestHandleEvent_Deleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleEvent: %v", err)
 	}
-	if sf.calls != 0 {
-		t.Errorf("GetAccount calls = %d, want 0", sf.calls)
+	if se.calls != 0 {
+		t.Errorf("GetCustomer calls = %d, want 0", se.calls)
 	}
 	if repo.deleteCalls != 1 || repo.lastDeleteID != "001xx0000001" {
 		t.Errorf("soft-delete calls = %d id = %q", repo.deleteCalls, repo.lastDeleteID)
@@ -164,16 +165,16 @@ func TestHandleEvent_Deleted(t *testing.T) {
 }
 
 func TestHandleEvent_UnknownEntityIgnored(t *testing.T) {
-	sf := &stubSalesforceClient{}
+	se := &stubSalesEntityClient{}
 	repo := &stubSalesforceAccountRepo{}
-	svc := NewSalesforceEventService(repo, sf)
+	svc := NewSalesforceEventService(repo, se)
 
 	for _, eventType := range []string{
 		domain.SalesforceEventCreated,
 		domain.SalesforceEventUndefined,
 	} {
 		t.Run(eventType, func(t *testing.T) {
-			sf.calls = 0
+			se.calls = 0
 			repo.upsertCalls = 0
 			repo.deleteCalls = 0
 			err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
@@ -184,7 +185,7 @@ func TestHandleEvent_UnknownEntityIgnored(t *testing.T) {
 			if err != nil {
 				t.Fatalf("HandleEvent: %v", err)
 			}
-			if sf.calls != 0 || repo.upsertCalls != 0 || repo.deleteCalls != 0 {
+			if se.calls != 0 || repo.upsertCalls != 0 || repo.deleteCalls != 0 {
 				t.Error("unknown entity must not fetch or persist")
 			}
 		})
@@ -192,7 +193,7 @@ func TestHandleEvent_UnknownEntityIgnored(t *testing.T) {
 }
 
 func TestHandleEvent_UndefinedAndMissingFields(t *testing.T) {
-	svc := NewSalesforceEventService(&stubSalesforceAccountRepo{}, &stubSalesforceClient{})
+	svc := NewSalesforceEventService(&stubSalesforceAccountRepo{}, &stubSalesEntityClient{})
 	cases := []struct {
 		name string
 		req  domain.SalesforceEventRequest
@@ -213,9 +214,9 @@ func TestHandleEvent_UndefinedAndMissingFields(t *testing.T) {
 	}
 }
 
-func TestHandleEvent_Salesforce404Is503(t *testing.T) {
-	sf := &stubSalesforceClient{err: &apierror.ServiceUnavailableError{Msg: "salesforce: account not found"}}
-	svc := NewSalesforceEventService(&stubSalesforceAccountRepo{}, sf)
+func TestHandleEvent_EmptySearchIs503(t *testing.T) {
+	se := &stubSalesEntityClient{err: &apierror.ServiceUnavailableError{Msg: "salesentity: customer not found"}}
+	svc := NewSalesforceEventService(&stubSalesforceAccountRepo{}, se)
 
 	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
 		EventType:   domain.SalesforceEventCreated,
@@ -228,10 +229,27 @@ func TestHandleEvent_Salesforce404Is503(t *testing.T) {
 	}
 }
 
+func TestHandleEvent_MissingNameIs503(t *testing.T) {
+	cust := sampleCustomer()
+	cust.Name = sampleStr("  ")
+	se := &stubSalesEntityClient{customer: cust}
+	svc := NewSalesforceEventService(&stubSalesforceAccountRepo{}, se)
+
+	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
+		EventType:   domain.SalesforceEventCreated,
+		Entity:      "Account",
+		ReferenceID: "001xx0000001",
+	})
+	var sue *apierror.ServiceUnavailableError
+	if !asSvcUnavailable(err, &sue) {
+		t.Fatalf("err = %v (%T), want *apierror.ServiceUnavailableError", err, err)
+	}
+}
+
 func TestHandleEvent_MissingOwnerLeavesFKNull(t *testing.T) {
-	sf := &stubSalesforceClient{account: sampleSFAccount()}
+	se := &stubSalesEntityClient{customer: sampleCustomer()}
 	repo := &stubSalesforceAccountRepo{lookup: map[string]string{}}
-	svc := NewSalesforceEventService(repo, sf)
+	svc := NewSalesforceEventService(repo, se)
 
 	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
 		EventType:   domain.SalesforceEventUpdated,
@@ -262,16 +280,16 @@ func TestMapPhone_LongerThan20OmitsUpdate(t *testing.T) {
 }
 
 func TestHandleEvent_OverlengthPhoneLeavesExisting(t *testing.T) {
-	acct := sampleSFAccount()
-	acct.Phone = "+49 40 123456789012345"
-	sf := &stubSalesforceClient{account: acct}
+	cust := sampleCustomer()
+	cust.Phone = sampleStr("+49 40 123456789012345")
+	se := &stubSalesEntityClient{customer: cust}
 	repo := &stubSalesforceAccountRepo{}
-	svc := NewSalesforceEventService(repo, sf)
+	svc := NewSalesforceEventService(repo, se)
 
 	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
 		EventType:   domain.SalesforceEventUpdated,
 		Entity:      "Account",
-		ReferenceID: acct.ID,
+		ReferenceID: cust.ID,
 	})
 	if err != nil {
 		t.Fatalf("HandleEvent: %v", err)
@@ -281,14 +299,10 @@ func TestHandleEvent_OverlengthPhoneLeavesExisting(t *testing.T) {
 	}
 }
 
-func TestMapSalesforceAccount_NumberFallsBackToId(t *testing.T) {
-	got := mapSalesforceAccount(salesforce.Account{ID: "001xx", Name: "Acme"})
+func TestMapSalesEntityCustomer_NumberIsId(t *testing.T) {
+	got := mapSalesEntityCustomer(salesentity.Customer{ID: "001xx", Name: sampleStr("Acme")})
 	if got.Number != "001xx" {
 		t.Errorf("Number = %q, want Salesforce Id", got.Number)
-	}
-	got = mapSalesforceAccount(salesforce.Account{ID: "001xx", Name: "Acme", AccountNumber: "A-1"})
-	if got.Number != "A-1" {
-		t.Errorf("Number = %q, want AccountNumber", got.Number)
 	}
 }
 

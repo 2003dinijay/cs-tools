@@ -24,24 +24,24 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesforce"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesentity"
 )
 
 const maxAccountPhoneChars = 20
 
-// SalesforceAccountClient fetches a Salesforce Account by Id.
-type SalesforceAccountClient interface {
-	GetAccount(ctx context.Context, id string) (salesforce.Account, error)
+// SalesEntityCustomerClient fetches a REST sales/sales-entity-service Customer by Salesforce Account Id.
+type SalesEntityCustomerClient interface {
+	GetCustomer(ctx context.Context, id string) (salesentity.Customer, error)
 }
 
 type salesforceEventService struct {
 	repo repository.AccountRepository
-	sf   SalesforceAccountClient
+	se   SalesEntityCustomerClient
 }
 
 // NewSalesforceEventService constructs a SalesforceEventService.
-func NewSalesforceEventService(repo repository.AccountRepository, sf SalesforceAccountClient) SalesforceEventService {
-	return &salesforceEventService{repo: repo, sf: sf}
+func NewSalesforceEventService(repo repository.AccountRepository, se SalesEntityCustomerClient) SalesforceEventService {
+	return &salesforceEventService{repo: repo, se: se}
 }
 
 // HandleEvent implements SalesforceEventService.
@@ -76,23 +76,20 @@ func (s *salesforceEventService) HandleEvent(ctx context.Context, req domain.Sal
 }
 
 func (s *salesforceEventService) upsertAccount(ctx context.Context, sfID string) error {
-	acct, err := s.sf.GetAccount(ctx, sfID)
+	cust, err := s.se.GetCustomer(ctx, sfID)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(acct.Name) == "" {
-		return &apierror.ServiceUnavailableError{Msg: "salesforce account is missing Name"}
+	if strings.TrimSpace(derefString(cust.Name)) == "" {
+		return &apierror.ServiceUnavailableError{Msg: "sales/sales-entity-service customer is missing Name"}
 	}
 
-	row := mapSalesforceAccount(acct)
-	row.TechnicalOwnerID, err = s.lookupOwner(ctx, acct.TechnicalOwner)
+	row := mapSalesEntityCustomer(cust)
+	row.TechnicalOwnerID, err = s.lookupOwner(ctx, derefString(cust.TechnicalOwner))
 	if err != nil {
 		return err
 	}
-	row.SecondaryTechnicalOwnerID, err = s.lookupOwner(ctx, acct.TechnicalOwner2)
-	if err != nil {
-		return err
-	}
+	row.SecondaryTechnicalOwnerID = nil
 	return s.repo.UpsertFromSalesforce(ctx, row)
 }
 
@@ -104,37 +101,43 @@ func (s *salesforceEventService) lookupOwner(ctx context.Context, email string) 
 	return s.repo.LookupUserIDByEmail(ctx, email)
 }
 
-func mapSalesforceAccount(acct salesforce.Account) domain.SalesforceAccountUpsert {
-	number := strings.TrimSpace(acct.AccountNumber)
-	if number == "" {
-		number = acct.ID
-	}
-	phone, keepExistingPhone := mapPhone(acct.Phone)
+func mapSalesEntityCustomer(cust salesentity.Customer) domain.SalesforceAccountUpsert {
+	phone, keepExistingPhone := mapPhone(derefString(cust.Phone))
 	return domain.SalesforceAccountUpsert{
-		SfID:              acct.ID,
-		Name:              strings.TrimSpace(acct.Name),
-		Number:            number,
-		Industry:          optionalString(acct.Industry),
-		Region:            optionalString(acct.Region),
-		GlobalPod:         optionalString(acct.GlobalPOD),
+		SfID:              cust.ID,
+		Name:              strings.TrimSpace(derefString(cust.Name)),
+		Number:            cust.ID,
+		Industry:          optionalPtr(cust.Industry),
+		Region:            optionalPtr(cust.Region),
+		GlobalPod:         optionalPtr(cust.GlobalPod),
 		Phone:             phone,
 		KeepExistingPhone: keepExistingPhone,
-		SalesRegion:       optionalString(acct.SalesRegions),
-		SubRegion:         optionalString(acct.SubRegion),
-		AccountVertical:   optionalString(acct.AccountVertical),
-		LifeCycle:         optionalString(acct.AccountStatus),
-		NAICSIndustry:     optionalString(acct.NAICSIndustry),
-		SubIndustry:       optionalString(acct.SubIndustry),
-		Classification:    optionalString(acct.AccountClassification),
+		SalesRegion:       optionalPtr(cust.SalesRegions),
+		SubRegion:         optionalPtr(cust.SubRegion),
+		AccountVertical:   nil,
+		LifeCycle:         optionalPtr(cust.Status),
+		NAICSIndustry:     optionalPtr(cust.NAICSIndustry),
+		SubIndustry:       optionalPtr(cust.SubIndustry),
+		Classification:    optionalPtr(cust.AccountClassification),
 	}
 }
 
-func optionalString(v string) *string {
-	v = strings.TrimSpace(v)
-	if v == "" {
+func derefString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+func optionalPtr(v *string) *string {
+	if v == nil {
 		return nil
 	}
-	return &v
+	trimmed := strings.TrimSpace(*v)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }
 
 func mapPhone(phone string) (*string, bool) {

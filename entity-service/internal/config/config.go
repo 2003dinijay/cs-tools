@@ -96,12 +96,15 @@ type Config struct {
 	// nothing to do with case state) — the two are read by separate
 	// processes/environments and don't interact.
 	CustomerRoles []string
-	// Salesforce* configure POST /salesforce/events. All-or-nothing like Event Hub.
-	SalesforceBaseURL      string
-	SalesforceTokenURL     string
-	SalesforceClientID     string
-	SalesforceClientSecret string
-	SalesforceRefreshToken string
+	// SalesEntity* is the Choreo connection to REST sales/sales-entity-service
+	// (POST /customer-search), not GraphQL sales/entity-graphql-service and not
+	// Salesforce. The four connection fields are all-or-nothing like Event Hub.
+	// Scopes are optional (same as SERVICENOW_INTEGRATION_SERVICE_SCOPES).
+	SalesEntityBaseURL      string
+	SalesEntityTokenURL     string
+	SalesEntityClientID     string
+	SalesEntityClientSecret string
+	SalesEntityScopes       string
 }
 
 // Load reads configuration from environment variables and returns a populated
@@ -128,11 +131,11 @@ func Load() *Config {
 		EventPublishingEnabled:                   os.Getenv("EVENT_PUBLISHING_ENABLED") == "true",
 		SupportEngineerRole:                      os.Getenv("SUPPORT_ENGINEER_ROLE"),
 		CustomerRoles:                            splitComma(os.Getenv("CUSTOMER_ROLES")),
-		SalesforceBaseURL:                        os.Getenv("SALESFORCE_BASE_URL"),
-		SalesforceTokenURL:                       os.Getenv("SALESFORCE_TOKEN_URL"),
-		SalesforceClientID:                       os.Getenv("SALESFORCE_CLIENT_ID"),
-		SalesforceClientSecret:                   os.Getenv("SALESFORCE_CLIENT_SECRET"),
-		SalesforceRefreshToken:                   os.Getenv("SALESFORCE_REFRESH_TOKEN"),
+		SalesEntityBaseURL:                       os.Getenv("SALES_ENTITY_BASE_URL"),
+		SalesEntityTokenURL:                      os.Getenv("SALES_ENTITY_TOKEN_URL"),
+		SalesEntityClientID:                      os.Getenv("SALES_ENTITY_CLIENT_ID"),
+		SalesEntityClientSecret:                  os.Getenv("SALES_ENTITY_CLIENT_SECRET"),
+		SalesEntityScopes:                        os.Getenv("SALES_ENTITY_SCOPES"),
 	}
 }
 
@@ -178,7 +181,7 @@ func (c *Config) HasDatabase() bool {
 // missing when DATA_SOURCE=postgres or only partially set in either mode, if
 // SERVICENOW_INTEGRATION_SERVICE_BASE_URL is missing when
 // DATA_SOURCE=servicenow, if EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/
-// EVENT_HUB_TOPIC are only partially set, or if the SALESFORCE_* vars are
+// EVENT_HUB_TOPIC are only partially set, or if the SALES_ENTITY_* vars are
 // only partially set.
 func (c *Config) Validate() error {
 	switch c.DataSource {
@@ -245,20 +248,19 @@ func (c *Config) Validate() error {
 	if eventHubSet && !eventHubComplete {
 		return fmt.Errorf("EVENT_HUB_BROKER, EVENT_HUB_CONNECTION_STRING, and EVENT_HUB_TOPIC must be set together or not at all")
 	}
-	salesforceSet := c.SalesforceBaseURL != "" || c.SalesforceTokenURL != "" || c.SalesforceClientID != "" || c.SalesforceClientSecret != "" || c.SalesforceRefreshToken != ""
-	if salesforceSet && !c.SalesforceConfigured() {
-		return fmt.Errorf("SALESFORCE_BASE_URL, SALESFORCE_TOKEN_URL, SALESFORCE_CLIENT_ID, SALESFORCE_CLIENT_SECRET, and SALESFORCE_REFRESH_TOKEN must be set together or not at all")
+	salesEntitySet := c.SalesEntityBaseURL != "" || c.SalesEntityTokenURL != "" || c.SalesEntityClientID != "" || c.SalesEntityClientSecret != ""
+	if salesEntitySet && !c.SalesEntityConfigured() {
+		return fmt.Errorf("SALES_ENTITY_BASE_URL, SALES_ENTITY_TOKEN_URL, SALES_ENTITY_CLIENT_ID, and SALES_ENTITY_CLIENT_SECRET must be set together or not at all")
 	}
 	return nil
 }
 
-// SalesforceConfigured reports whether every Salesforce env var is set.
-func (c *Config) SalesforceConfigured() bool {
-	return c.SalesforceBaseURL != "" &&
-		c.SalesforceTokenURL != "" &&
-		c.SalesforceClientID != "" &&
-		c.SalesforceClientSecret != "" &&
-		c.SalesforceRefreshToken != ""
+// SalesEntityConfigured reports whether every REST sales/sales-entity-service env var is set.
+func (c *Config) SalesEntityConfigured() bool {
+	return c.SalesEntityBaseURL != "" &&
+		c.SalesEntityTokenURL != "" &&
+		c.SalesEntityClientID != "" &&
+		c.SalesEntityClientSecret != ""
 }
 
 // DSN constructs a PostgreSQL connection string from the config fields.
