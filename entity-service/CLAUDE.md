@@ -35,6 +35,14 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `DB_PASSWORD` | yes*     | —       | Database password          |
 | `DB_NAME`     | yes*     | —       | Database name              |
 | `DB_SSLMODE`  | no       | —       | `disable` or `require`    |
+| `SERVER_PORT` | no       | `8080`  | Main API listen port       |
+| `HEALTH_PORT` | no       | `8081`  | Health probe listen port; `Validate` rejects it being equal to `SERVER_PORT` (see "Health probes" below) |
+| `EVENT_HUB_BROKER` | no | — | Kafka-compatible bootstrap address; feature-gates `EventPublisherService` (see "Event Hub publishing" below) |
+| `EVENT_HUB_CONNECTION_STRING` | no* | — | Event Hub namespace Shared Access Policy connection string. *Required once `EVENT_HUB_BROKER` is set |
+| `EVENT_HUB_TOPIC` | no* | — | Event Hub (Kafka topic) name. *Required once `EVENT_HUB_BROKER` is set |
+| `EVENT_PUBLISHING_ENABLED` | no | `false` | Must be `"true"` for `EventPublisherService` to actually get constructed, even with `EVENT_HUB_BROKER` fully configured — a separate safe-by-default kill switch |
+| `SUPPORT_ENGINEER_ROLE` | no | — | ServiceNow role name whose presence on a case comment's resolved author completes the case's "response" SLA clock — see "SLA clocks" below |
+| `CUSTOMER_ROLES` | no | — | Comma-separated ServiceNow role names whose presence on a case comment's resolved author marks a customer reply — see `applyCustomerReplyStateTransition` in "SLA clocks" below |
 
 \* `DB_USER`/`DB_PASSWORD`/`DB_NAME` are required when `DATA_SOURCE=postgres`
 and **optional** when `DATA_SOURCE=servicenow`, where entity reads and writes
@@ -46,18 +54,63 @@ database, `Config.HasDatabase` is false, `cmd/api/main.go` opens no pool, and
 (`/event-publish-failures*`, `/cases/{caseId}/sla-clocks*`), which then 404.
 A failed Event Hub publish is logged instead of recorded — see
 `EventPublisherService.Publish`'s nil-`failures` branch.
-| `SERVER_PORT` | no       | `8080`  | HTTP listen port           |
-| `EVENT_HUB_BROKER` | no | — | Kafka-compatible bootstrap address; feature-gates `EventPublisherService` (see "Event Hub publishing" below) |
-| `EVENT_HUB_CONNECTION_STRING` | no* | — | Event Hub namespace Shared Access Policy connection string. *Required once `EVENT_HUB_BROKER` is set |
-| `EVENT_HUB_TOPIC` | no* | — | Event Hub (Kafka topic) name. *Required once `EVENT_HUB_BROKER` is set |
-| `EVENT_PUBLISHING_ENABLED` | no | `false` | Must be `"true"` for `EventPublisherService` to actually get constructed, even with `EVENT_HUB_BROKER` fully configured — a separate safe-by-default kill switch |
-| `SUPPORT_ENGINEER_ROLE` | no | — | ServiceNow role name whose presence on a case comment's resolved author completes the case's "response" SLA clock — see "SLA clocks" below |
-| `CUSTOMER_ROLES` | no | — | Comma-separated ServiceNow role names whose presence on a case comment's resolved author marks a customer reply — see `applyCustomerReplyStateTransition` in "SLA clocks" below |
 
 `CSM_TEAM_REGISTRY` and `CSM_USER_ROLES` are **not read here**. The team registry
 and the assignable-role allow-list are organisation vocabulary and live in the CSM
 portal backend (`apps/csm-portal/backend`), resolved once at startup. This service
 holds no organisation vocabulary at all — do not reintroduce it.
+
+## Health probes
+
+The process runs **two** HTTP listeners, and the split is a security boundary, not a
+convenience:
+
+- `SERVER_PORT` (8080) — the full API (`internal/server/routes.go`), published at
+  **Organization** visibility.
+- `HEALTH_PORT` (8081) — `internal/server/health.go`, a minimal mux carrying only the two
+  probes below, published at **Public** visibility so external alerting can poll it with no
+  credentials.
+
+Both are declared as separate Choreo endpoints in `.choreo/component.yaml`, the public one
+against its own `health-openapi.yaml`.
+
+**`.choreo/component.yaml` hardcodes both ports and nothing reconciles them with the env vars at
+deploy time.** Overriding `HEALTH_PORT` in a Choreo deployment routes public health traffic to a
+port with no listener, and the symptom — a health endpoint that never answers — is
+indistinguishable from the outage it exists to report. Leave `HEALTH_PORT` unset there; override
+it locally only, and if the port ever has to change, change `component.yaml` in the same commit.
+`SERVER_PORT` has carried this same coupling since before the health endpoint existed.
+
+What is publicly reachable is decided by *which mux a handler is registered on* — true in this
+process, visible in one file — rather than by a gateway basePath rule that lives in another
+system and fails open if it is ever wrong. **Never register a business route on the health mux,
+and never point the public Choreo endpoint at 8080.** That is the whole reason this is a second
+listener rather than a second basePath.
+
+| Probe | Where | Behaviour |
+|---|---|---|
+| `GET /health` | both listeners | Always `200 {"status":"ok"}`. Dependency-free by design: a liveness probe that fails on a database outage would have the orchestrator restart or drain an instance that is working fine. |
+| `GET /health/database` | health listener only | `200 {"status":"ok","database":"up"}` after a successful `Ping`, `503 {"status":"unavailable","database":"down"}` when it fails. |
+
+Conventions to preserve when touching these:
+
+- **Only a deployment that has a pool can fail `DatabaseCheck`.** This probe alerts on a
+  *PostgreSQL* outage; a no-pool deployment (`DATA_SOURCE=servicenow`) has no PostgreSQL to be
+  out, so it answers `200` with `database: "not_configured"`. A 503 there would alert
+  continuously against a database that is not supposed to exist. The distinct `database` value
+  is what keeps the case visible to anyone reading the body.
+- **Failure bodies carry no detail.** No driver message, host, or port — pgx errors routinely
+  embed all three, and this endpoint is unauthenticated and public. Report only whether the
+  dependency is up. There is a test asserting this specifically.
+- **Both probes send `Cache-Control: no-store`.** A cached 200 keeps reporting healthy straight
+  through the outage the probe exists to catch.
+- **Pass an untyped nil, not a nil `*pgxpool.Pool`,** to `handler.NewHealthHandler`. A nil
+  pointer stored in an interface makes the interface non-nil, so the handler's own `db != nil`
+  guard would pass and `Ping` would be called on a nil pool. `server.NewHealthServer` does this
+  conversion explicitly; keep it that way.
+- **No `Logger` middleware on the health listener** — alerting polls continuously and would
+  otherwise fill the logs. `Recovery` stays, since a panic there would take down the main API
+  with it.
 
 ## Event Hub publishing
 

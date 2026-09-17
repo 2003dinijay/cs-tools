@@ -42,6 +42,14 @@ func (s *deployedProductService) SearchDeployedProducts(ctx context.Context, req
 	if err := validateUUIDs("deploymentIds", req.DeploymentIDs); err != nil {
 		return domain.SearchDeployedProductsResponse{}, err
 	}
+	// The PostgreSQL-backed deployed_products schema has no category column yet
+	// (see the repository's TODO(phase 2)), so a category filter can't be honored here.
+	// Reject it explicitly rather than silently ignoring it and returning products
+	// outside the requested category.
+	if len(req.ProductCategories) > 0 {
+		return domain.SearchDeployedProductsResponse{},
+			&apierror.ValidationError{Msg: "productCategories filtering is not supported for the PostgreSQL data source"}
+	}
 
 	views, total, err := s.repo.SearchDeployedProducts(ctx, req)
 	if err != nil {

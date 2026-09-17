@@ -26,6 +26,11 @@ func baseValidConfig() Config {
 		DBUser:     "user",
 		DBPassword: "password",
 		DBName:     "db",
+		// Both ports carry their real defaults: Load always populates them,
+		// and Validate rejects the two being equal — which a zero-value
+		// Config would be.
+		ServerPort: "8080",
+		HealthPort: "8081",
 	}
 }
 
@@ -105,6 +110,21 @@ func TestConfig_Validate_RequiresDBFields(t *testing.T) {
 	}
 }
 
+func TestConfig_Validate_ServiceNowDoesNotRequireDBFields(t *testing.T) {
+	c := Config{
+		DataSource:                               DataSourceServiceNow,
+		ServiceNowIntegrationServiceBaseURL:      "https://example.com",
+		ServiceNowIntegrationServiceTokenURL:     "https://example.com/token",
+		ServiceNowIntegrationServiceClientID:     "client-id",
+		ServiceNowIntegrationServiceClientSecret: "client-secret",
+		ServerPort:                               "8080",
+		HealthPort:                               "8081",
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil when DATA_SOURCE=servicenow has no DB credentials", err)
+	}
+}
+
 func TestConfig_Validate_ServiceNowRequiresIntegrationServiceFields(t *testing.T) {
 	base := func() Config {
 		c := baseValidConfig()
@@ -141,6 +161,32 @@ func TestConfig_Validate_ServiceNowRequiresIntegrationServiceFields(t *testing.T
 	}
 }
 
+func TestConfig_Validate_RejectsPortsThatResolveToTheSameNumber(t *testing.T) {
+	// A string comparison would wave "8080"/"08080" through: different
+	// strings, same TCP port, so both listeners race for one port and the
+	// process ends up half dead.
+	c := baseValidConfig()
+	c.ServerPort = "8080"
+	c.HealthPort = "08080"
+	if err := c.Validate(); err == nil {
+		t.Error("Validate() = nil, want an error when the two ports resolve to the same number")
+	}
+}
+
+func TestConfig_Validate_RejectsUnbindablePort(t *testing.T) {
+	// Caught here, naming the offending variable, rather than at
+	// ListenAndServe time inside a goroutine.
+	for _, port := range []string{"99999", "not-a-port", "-1"} {
+		t.Run(port, func(t *testing.T) {
+			c := baseValidConfig()
+			c.HealthPort = port
+			if err := c.Validate(); err == nil {
+				t.Errorf("Validate() = nil, want an error for HEALTH_PORT %q", port)
+			}
+		})
+	}
+}
+
 // baseValidServiceNowConfig returns a minimally valid servicenow-backed
 // Config with NO database configured — the DB-less deployment shape this
 // service must keep supporting.
@@ -151,6 +197,11 @@ func baseValidServiceNowConfig() Config {
 		ServiceNowIntegrationServiceTokenURL:     "https://example.com/token",
 		ServiceNowIntegrationServiceClientID:     "client-id",
 		ServiceNowIntegrationServiceClientSecret: "client-secret",
+		// Both ports carry their real defaults, same reasoning as
+		// baseValidConfig above — Validate rejects the two being equal,
+		// which a zero-value Config would be.
+		ServerPort: "8080",
+		HealthPort: "8081",
 	}
 }
 
@@ -218,6 +269,20 @@ func TestConfig_Validate_DatabaseAllOrNothing(t *testing.T) {
 				t.Errorf("Validate() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+func TestConfig_Validate_RejectsHealthPortCollidingWithServerPort(t *testing.T) {
+	// The health listener is a separate server precisely so only its own
+	// routes are reachable at public visibility. Sharing a port would mean
+	// the second ListenAndServe fails with "address already in use" after
+	// the first is already serving — the process stays up with one of the
+	// two ports simply dead, which is exactly the kind of failure the
+	// health endpoint is meant to surface rather than suffer from.
+	c := baseValidConfig()
+	c.HealthPort = c.ServerPort
+	if err := c.Validate(); err == nil {
+		t.Error("Validate() = nil, want an error when HEALTH_PORT equals SERVER_PORT")
 	}
 }
 

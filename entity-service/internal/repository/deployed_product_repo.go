@@ -65,6 +65,13 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 		argIdx++
 	}
 
+	// TODO(phase 2): req.ProductCategories is not applied here. The deployed_product
+	// schema has no category column today, so deployedProductService rejects any
+	// non-empty ProductCategories before this method is ever called (see
+	// deployed_product_service.go) rather than silently ignoring it. Filter it in here
+	// once the Postgres cohort's product-category modeling lands, and drop that
+	// rejection at the same time.
+
 	countQuery := "SELECT COUNT(*) FROM deployed_product dp " + where
 
 	// update_level_info (JSONB) -- domain.DeployedProductView.Updates -- is

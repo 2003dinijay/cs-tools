@@ -265,6 +265,37 @@ type AccountContactService interface {
 	SearchAccountContacts(ctx context.Context, accountID string, req domain.SearchAccountContactsRequest) (domain.SearchAccountContactsResponse, error)
 }
 
+// OpportunityService defines the operations available on the opportunity entity.
+// All methods require the ServiceNow data source; there is no Postgres fallback.
+type OpportunityService interface {
+	// SearchOpportunities returns a paginated list of opportunities matching the
+	// filters in req.
+	SearchOpportunities(ctx context.Context, req domain.SearchOpportunitiesRequest) (domain.SearchOpportunitiesResponse, error)
+	// GetOpportunityByID returns a single opportunity's detail. A NotFoundError is
+	// returned when no opportunity matches.
+	GetOpportunityByID(ctx context.Context, id string) (domain.Opportunity, error)
+}
+
+// InvoiceService defines the operations available on the invoice entity.
+// All methods require the ServiceNow data source; there is no Postgres fallback.
+type InvoiceService interface {
+	// SearchInvoices returns a paginated list of invoices matching the filters in req.
+	SearchInvoices(ctx context.Context, req domain.SearchInvoicesRequest) (domain.SearchInvoicesResponse, error)
+	// GetInvoiceByID returns a single invoice's detail. A NotFoundError is returned
+	// when no invoice matches.
+	GetInvoiceByID(ctx context.Context, id string) (domain.Invoice, error)
+}
+
+// ProjectOpportunityLinkService defines the operations available on
+// project-opportunity links. ServiceNow data source only; there is no Postgres
+// fallback, and no by-id fetch -- the underlying ServiceNow data has no
+// single-record endpoint for this resource (search only).
+type ProjectOpportunityLinkService interface {
+	// SearchProjectOpportunityLinks returns a paginated list of project-opportunity
+	// links matching the filters in req.
+	SearchProjectOpportunityLinks(ctx context.Context, req domain.SearchProjectOpportunityLinksRequest) (domain.SearchProjectOpportunityLinksResponse, error)
+}
+
 // ProductService defines the operations available on the product entity.
 type ProductService interface {
 	// SearchProducts returns a paginated list of products that match the filters
@@ -733,6 +764,18 @@ type IncidentService interface {
 	// SearchIncidentActivities returns a paginated activity feed for an incident.
 	// Confirmed as a real, distinct endpoint from SearchCaseActivities.
 	SearchIncidentActivities(ctx context.Context, req domain.SearchIncidentActivitiesRequest) (domain.SearchIncidentActivitiesResponse, error)
+
+	// HandOffIncidentToSpecialist hands an incident off to its specialist group in one
+	// call: moves the incident to the specialist group for its business service, clears
+	// the assignee, opens a runbook-gap task, and (by default) files an internal issue for
+	// the receiving team. The internal issue filing is best-effort, not atomic with the
+	// rest of the handoff: a 200 response means the handoff itself succeeded even if the
+	// issue could not be created, in which case the response's GithubIssueError is set and
+	// callers must check it rather than assume all-or-nothing. A ValidationError is
+	// returned for invalid input, a NotFoundError if the incident does not exist, and a
+	// ConflictError if the incident is not eligible (wrong business service, not in
+	// progress, or already with the specialist group for this service).
+	HandOffIncidentToSpecialist(ctx context.Context, req domain.HandOffIncidentToSpecialistRequest) (domain.HandOffIncidentToSpecialistResponse, error)
 }
 
 // ProblemService defines the operations available on the problems entity.
@@ -846,4 +889,42 @@ type InstanceService interface {
 	// SearchInstanceUsageStats returns aggregated usage statistics over req's required
 	// date range. Same filter rules as SearchInstanceMetricsStats.
 	SearchInstanceUsageStats(ctx context.Context, req domain.InstanceUsageStatsRequest) (domain.InstanceUsageStatsResponse, error)
+}
+
+// OutageService defines the operations available on the outages entity. All
+// methods require the ServiceNow data source; there is no Postgres fallback.
+type OutageService interface {
+	// CreateOutage creates a new outage. Type, Begin, and ShortDescription are
+	// required. AcknowledgePublicPublication is required when the resolved
+	// configuration item publishes to a status page; omitting it in that case
+	// returns a ConflictError.
+	CreateOutage(ctx context.Context, req domain.CreateOutageRequest) (domain.CreateOutageResponse, error)
+
+	// SearchOutages returns a paginated list of outages filtered by optional
+	// type, status, configuration item, incident, and date-range criteria.
+	// A ValidationError is returned for invalid input.
+	SearchOutages(ctx context.Context, req domain.SearchOutagesRequest) (domain.SearchOutagesResponse, error)
+
+	// GetOutageByID returns the full detail of a single outage by its UUID,
+	// including per-channel communication counts. A NotFoundError is returned
+	// if the outage does not exist.
+	GetOutageByID(ctx context.Context, id string) (domain.OutageDetail, error)
+
+	// UpdateOutage applies a partial update to an outage. Closing an outage is
+	// done by setting End; there is no separate state field or close verb.
+	// A ValidationError is returned if no field is provided.
+	UpdateOutage(ctx context.Context, req domain.PatchOutageRequest) (domain.PatchOutageResponse, error)
+
+	// AddOutageCommunication appends a communication journal entry to an
+	// outage. An external entry is a publishing action and is subject to the
+	// same publication-acknowledgement gate as CreateOutage.
+	AddOutageCommunication(ctx context.Context, req domain.AddOutageCommunicationRequest) (domain.AddOutageCommunicationResponse, error)
+
+	// SearchOutageCommunications returns a paginated list of an outage's
+	// communication journal entries, optionally filtered by channel.
+	SearchOutageCommunications(ctx context.Context, req domain.SearchOutageCommunicationsRequest) (domain.SearchOutageCommunicationsResponse, error)
+
+	// GetOutageMetadata returns the live choice lists (types, statuses,
+	// channels, monitored clouds) needed to render an outage create/edit form.
+	GetOutageMetadata(ctx context.Context) (domain.OutageMetadataResponse, error)
 }

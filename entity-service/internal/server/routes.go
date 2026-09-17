@@ -41,13 +41,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userSvc)
 
-	// event_publish_failures has no ServiceNow equivalent — it is Postgres-only
-	// regardless of cfg.DataSource. But the database itself is optional when
-	// DATA_SOURCE=servicenow (see config.Config.HasDatabase), so db may be
-	// nil here, and a nil pool panics on first query rather than at
-	// construction. Gate the whole chain on it: nil handler means the routes
-	// below are never registered, and nil service means EventPublisherService
-	// records nothing rather than dereferencing a nil pool.
+	// event_publish_failures, sla_clocks, scheduled_task_run, and
+	// alert_incident_mapping have no ServiceNow equivalent. They are
+	// Postgres-backed and registered only when a pool is available
+	// (db.NewPoolIfNeeded returns nil for DATA_SOURCE=servicenow so local
+	// SN-mode startups are not blocked). Gate the whole chain on db != nil:
+	// nil handler means the routes below are never registered, and nil
+	// service means EventPublisherService records nothing rather than
+	// dereferencing a nil pool.
 	var eventPublishFailureSvc service.EventPublishFailureService
 	var eventPublishFailureHandler *handler.EventPublishFailureHandler
 	if db != nil {
@@ -62,7 +63,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// EventPublishingEnabled, a separate safe-by-default kill switch: Event
 	// Hub can be fully configured and this still stays nil until that's
 	// explicitly turned on. nil when unset; every caller (snCaseService,
-	// snIncidentService) already handles that.
+	// snIncidentService) already handles that. eventPublishFailureSvc is
+	// nil without a pool; Publish then skips durable recording.
 	var eventPublisher service.EventPublisherService
 	if cfg.EventHubBroker != "" && cfg.EventPublishingEnabled {
 		eventPublisher = service.NewEventPublisherService(
@@ -136,6 +138,21 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		activeAccountContactSvc = service.NewAccountContactService(accountContactRepo)
 	}
 	accountContactHandler := handler.NewAccountContactHandler(activeAccountContactSvc)
+
+	var opportunityHandler *handler.OpportunityHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		opportunityHandler = handler.NewOpportunityHandler(service.NewServiceNowOpportunityService(serviceNowIntegrationServiceClient))
+	}
+
+	var invoiceHandler *handler.InvoiceHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		invoiceHandler = handler.NewInvoiceHandler(service.NewServiceNowInvoiceService(serviceNowIntegrationServiceClient))
+	}
+
+	var projectOpportunityLinkHandler *handler.ProjectOpportunityLinkHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		projectOpportunityLinkHandler = handler.NewProjectOpportunityLinkHandler(service.NewServiceNowProjectOpportunityLinkService(serviceNowIntegrationServiceClient))
+	}
 
 	projectRepo := repository.NewProjectRepository(db)
 	pgProjectSvc := service.NewProjectService(projectRepo)
@@ -232,12 +249,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		caseGithubIssueHandler = handler.NewCaseGithubIssueHandler(service.NewServiceNowCaseGithubIssueService(serviceNowIntegrationServiceClient, activeCaseSvc))
 	}
 
-	var caseEscalationHandler *handler.CaseEscalationHandler
+	// Case escalations are a ServiceNow-only entity, but the routes are
+	// registered for both data sources -- see the taskHandler comment above
+	// for why an unregistered route (bare 404) is the wrong shape for a
+	// feature the OpenAPI spec documents a 503 ErrorResponse for. The
+	// Postgres stand-in supplies that 503.
+	var activeCaseEscalationSvc service.CaseEscalationService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		caseEscalationHandler = handler.NewCaseEscalationHandler(
-			service.NewCaseEscalationService(service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient), activeCaseSvc),
-		)
+		activeCaseEscalationSvc = service.NewCaseEscalationService(service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient), activeCaseSvc)
+	} else {
+		activeCaseEscalationSvc = service.NewUnavailableCaseEscalationService()
 	}
+	caseEscalationHandler := handler.NewCaseEscalationHandler(activeCaseEscalationSvc)
 
 	changeRequestRepo := repository.NewChangeRequestRepository(db)
 	var activeChangeRequestSvc service.ChangeRequestService
@@ -306,6 +329,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		conversationHandler = handler.NewConversationHandler(service.NewServiceNowConversationService(serviceNowIntegrationServiceClient))
 	}
 
+	var outageHandler *handler.OutageHandler
+	if cfg.DataSource == config.DataSourceServiceNow {
+		outageHandler = handler.NewOutageHandler(service.NewServiceNowOutageService(serviceNowIntegrationServiceClient))
+	}
 	var globalHandler *handler.GlobalHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		globalHandler = handler.NewGlobalHandler(service.NewServiceNowGlobalService(serviceNowIntegrationServiceClient))
@@ -437,6 +464,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /accounts/search", accountHandler.SearchAccounts)
 	}
 	mux.HandleFunc("POST /accounts/{id}/contacts/search", accountContactHandler.SearchAccountContacts)
+	if opportunityHandler != nil {
+		mux.HandleFunc("POST /opportunities/search", opportunityHandler.SearchOpportunities)
+		mux.HandleFunc("GET /opportunities/{id}", opportunityHandler.GetOpportunity)
+	}
+	if invoiceHandler != nil {
+		mux.HandleFunc("POST /invoices/search", invoiceHandler.SearchInvoices)
+		mux.HandleFunc("GET /invoices/{id}", invoiceHandler.GetInvoice)
+	}
+	if projectOpportunityLinkHandler != nil {
+		mux.HandleFunc("POST /project-opportunity-links/search", projectOpportunityLinkHandler.SearchProjectOpportunityLinks)
+	}
 	mux.HandleFunc("GET /projects/{id}", projectHandler.GetProject)
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
 	mux.HandleFunc("POST /projects/{id}/contacts/search", projectContactHandler.SearchProjectContacts)
@@ -512,10 +550,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /cases/{id}/github-issues", caseGithubIssueHandler.CreateCaseGithubIssue)
 	}
 
-	if caseEscalationHandler != nil {
-		mux.HandleFunc("GET /cases/{id}/escalations", caseEscalationHandler.SearchCaseEscalations)
-		mux.HandleFunc("POST /cases/{id}/escalations", caseEscalationHandler.CreateCaseEscalation)
-	}
+	// caseEscalationHandler is always non-nil (see its construction above);
+	// unavailableCaseEscalationService answers 503 when the data source
+	// doesn't support it.
+	mux.HandleFunc("GET /cases/{id}/escalations", caseEscalationHandler.SearchCaseEscalations)
+	mux.HandleFunc("POST /cases/{id}/escalations", caseEscalationHandler.CreateCaseEscalation)
 
 	mux.HandleFunc("POST /change-requests", changeRequestHandler.CreateChangeRequest)
 	mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
@@ -572,6 +611,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /incidents/search", incidentHandler.SearchIncidents)
 		mux.HandleFunc("POST /incidents/aggregate", incidentHandler.AggregateIncidents)
 		mux.HandleFunc("POST /incidents/{id}/activities/search", incidentHandler.SearchIncidentActivities)
+		mux.HandleFunc("POST /incidents/{id}/specialist-handoffs", incidentHandler.HandOffIncidentToSpecialist)
+	}
+
+	if outageHandler != nil {
+		mux.HandleFunc("POST /outages", outageHandler.CreateOutage)
+		mux.HandleFunc("POST /outages/search", outageHandler.SearchOutages)
+		mux.HandleFunc("GET /outages/metadata", outageHandler.GetOutageMetadata)
+		mux.HandleFunc("GET /outages/{id}", outageHandler.GetOutage)
+		mux.HandleFunc("PATCH /outages/{id}", outageHandler.PatchOutage)
+		mux.HandleFunc("POST /outages/{id}/communications", outageHandler.AddOutageCommunication)
+		mux.HandleFunc("POST /outages/{id}/communications/search", outageHandler.SearchOutageCommunications)
 	}
 
 	if problemHandler != nil {
