@@ -2871,6 +2871,14 @@ const (
 	ChangeRequestTypeModel              ChangeRequestType = "model"
 	ChangeRequestTypeSiteReliabilityOps ChangeRequestType = "site_reliability_ops"
 	ChangeRequestTypeAzure              ChangeRequestType = "azure"
+	// The following four have no ServiceNow-data-source equivalent today --
+	// added for change_request.change_model (migration 000055), whose real
+	// enum values only partially overlap this type's existing ones (see
+	// changeRequestChangeModelToType in change_request_repo.go).
+	ChangeRequestTypeChangeRegistration  ChangeRequestType = "change_registration"
+	ChangeRequestTypeCloudInfrastructure ChangeRequestType = "cloud_infrastructure"
+	ChangeRequestTypeInfra               ChangeRequestType = "infra"
+	ChangeRequestTypeUnauthorizedChange  ChangeRequestType = "unauthorized_change"
 )
 
 // ChangeRequestState represents the current workflow state of a change request.

@@ -1531,31 +1531,125 @@ func (r *caseRepo) SearchTags(ctx context.Context, searchQuery, _ string, limit 
 	return tags, nil
 }
 
+// caseActivityFieldChangeLabel renders work_item_activity.field_name (a raw
+// column identifier, e.g. "assigned_to_id") as a human-readable label (e.g.
+// "Assigned To Id") -- the same space-separated title case convention
+// taskSlaStageDisplay (task_sla_repo.go) already uses for a raw enum label,
+// applied here to a raw column name instead. No field-name -> display-label
+// mapping exists anywhere else in this schema to defer to.
+func caseActivityFieldChangeLabel(fieldName string) string {
+	words := strings.Split(fieldName, "_")
+	for i, w := range words {
+		if w == "" {
+			continue
+		}
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
+}
+
+// scanCaseActivity scans one row of SearchCaseActivities' dataQuery
+// (id, kind, content, created_on, email, first_name, last_name, name,
+// comment_type, file_name, content_type, size_bytes, field_name, old_value,
+// new_value) into a domain.CaseActivity, dispatching on kind the same way
+// the query's three UNION ALL branches are discriminated.
+func scanCaseActivity(row interface{ Scan(...any) error }) (domain.CaseActivity, error) {
+	var (
+		id, kind, content                string
+		createdOn                        time.Time
+		email, firstName, lastName, name *string
+		commentTypeRaw                   *string
+		fileName, contentType            *string
+		sizeBytes                        *int64
+		fieldName, oldValue, newValue    *string
+	)
+	if err := row.Scan(&id, &kind, &content, &createdOn, &email, &firstName, &lastName, &name, &commentTypeRaw, &fileName, &contentType, &sizeBytes, &fieldName, &oldValue, &newValue); err != nil {
+		return domain.CaseActivity{}, err
+	}
+	a := domain.CaseActivity{
+		ID:                 id,
+		Content:            content,
+		CreatedOn:          createdOn,
+		CreatedByFirstName: stringOrEmpty(firstName),
+		CreatedByLastName:  stringOrEmpty(lastName),
+	}
+	// CreatedBy.ID is always null on this feed by contract -- see
+	// CaseActivity's own doc comment. Name resolves the same way every
+	// other read in this service does: "user".name first, falling back to
+	// first_name+last_name only if name is unset.
+	a.CreatedBy = domain.NewUserReference("", stringOrEmpty(email), stringOrEmpty(name))
+	switch kind {
+	case "comment":
+		a.Type = domain.ActivityTypeComment
+		if commentTypeRaw != nil {
+			if ct, ok := caseCommentEnumType[*commentTypeRaw]; ok {
+				a.CommentType = &ct
+			}
+		}
+	case "attachment":
+		a.Type = domain.ActivityTypeAttachment
+		a.FileName = stringOrEmpty(fileName)
+		a.ContentType = stringOrEmpty(contentType)
+		if sizeBytes != nil {
+			a.SizeBytes = int(*sizeBytes)
+		}
+		// DownloadURL is deliberately left empty: this service builds no
+		// portal links or absolute URLs to itself (see CLAUDE.md's Event
+		// Hub section for the same "no portal base URL" posture) -- a
+		// caller resolves the actual bytes via GET /attachments/{id}/content.
+	case "field_change":
+		a.Type = domain.ActivityTypeFieldChange
+		field := stringOrEmpty(fieldName)
+		a.Changes = []domain.FieldChange{{
+			Field:         field,
+			FieldLabel:    caseActivityFieldChangeLabel(field),
+			PreviousValue: stringOrEmpty(oldValue),
+			NewValue:      stringOrEmpty(newValue),
+		}}
+	}
+	return a, nil
+}
+
 // SearchCaseActivities implements CaseRepository.
+//
+// includeFieldChanges gates a third UNION ALL branch over work_item_activity
+// (migration 000056) -- previously there was no field-change audit table in
+// this schema at all, so SearchCaseActivitiesRequest.IncludeFieldChanges had
+// no effect. Each work_item_activity row is one single field mutation (no
+// grouping key -- e.g. a shared timestamp -- is confirmed to bundle several
+// simultaneous field changes into one activity entry the way a ServiceNow
+// journal entry might), so each row becomes its own CaseActivity with a
+// single-element Changes slice, rather than guessing at a bundling rule.
 func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) ([]domain.CaseActivity, int, error) {
-	const countQuery = `
+	includeFieldChanges := req.IncludeFieldChanges != nil && *req.IncludeFieldChanges
+
+	countQuery := `
 		SELECT
 			(SELECT COUNT(*) FROM comment WHERE work_item_id = $1) +
 			(SELECT COUNT(*) FROM case_attachments WHERE case_id = $1 AND status = 'complete')`
+	if includeFieldChanges {
+		countQuery += ` + (SELECT COUNT(*) FROM work_item_activity WHERE work_item_id = $1)`
+	}
 
-	// UNION ALL merges the two tables into one timeline. Comment rows
-	// resolve their (free-text VARCHAR) author by email match against
+	// UNION ALL merges the tables into one timeline. Comment/field-change
+	// rows resolve their (free-text VARCHAR) author by email match against
 	// "user"; attachment rows join it directly, since case_attachments.
 	// uploaded_by is a real UUID FK (migration 000043) -- see this file's
-	// other created_by fixes for why the two differ.
+	// other created_by fixes for why they differ.
 	//
-	// The comment branch's email join is wrapped in its own DISTINCT ON
-	// (cm.id) subquery: "user".email has no unique constraint (migration
-	// 000001 only makes user_name UNIQUE), so two user rows sharing an
-	// address would otherwise fan a single comment out into one activity
-	// row per match, while countQuery below still counts that comment row
-	// once -- putting the page's rows and its total out of sync.
-	const dataQuery = `
+	// The comment/field-change branches' email joins are each wrapped in
+	// their own DISTINCT ON subquery: "user".email has no unique constraint
+	// (migration 000001 only makes user_name UNIQUE), so two user rows
+	// sharing an address would otherwise fan a single row out into more than
+	// one activity entry, while countQuery above still counts it once --
+	// putting the page's rows and its total out of sync.
+	dataQuery := `
 		WITH activity AS (
 			SELECT
 				c.id, 'comment' AS kind, c.content, c.created_on AS created_on,
 				c.email, c.first_name, c.last_name, c.name, c.type::text AS comment_type,
-				NULL::text AS file_name, NULL::text AS content_type, NULL::bigint AS size_bytes
+				NULL::text AS file_name, NULL::text AS content_type, NULL::bigint AS size_bytes,
+				NULL::text AS field_name, NULL::text AS old_value, NULL::text AS new_value
 			FROM (
 				SELECT DISTINCT ON (cm.id)
 					cm.id, cm.content, cm.created_on, cm.created_by AS email,
@@ -1575,12 +1669,37 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 				u2.email, u2.first_name, u2.last_name,
 				COALESCE(u2.name, NULLIF(TRIM(CONCAT_WS(' ', u2.first_name, u2.last_name)), '')) AS name,
 				NULL::text AS comment_type,
-				a.filename, a.mime_type, a.size_bytes
+				a.filename, a.mime_type, a.size_bytes,
+				NULL::text AS field_name, NULL::text AS old_value, NULL::text AS new_value
 			FROM case_attachments a
 			JOIN "user" u2 ON u2.id = a.uploaded_by
-			WHERE a.case_id = $1 AND a.status = 'complete'
+			WHERE a.case_id = $1 AND a.status = 'complete'`
+	if includeFieldChanges {
+		dataQuery += `
+
+			UNION ALL
+
+			SELECT
+				fc.id, 'field_change' AS kind, '' AS content, fc.created_on AS created_on,
+				fc.email, fc.first_name, fc.last_name, fc.name,
+				NULL::text AS comment_type,
+				NULL::text AS file_name, NULL::text AS content_type, NULL::bigint AS size_bytes,
+				fc.field_name, fc.old_value, fc.new_value
+			FROM (
+				SELECT DISTINCT ON (wa.id)
+					wa.id, wa.created_on, wa.user_email AS email,
+					u3.first_name, u3.last_name,
+					COALESCE(u3.name, NULLIF(TRIM(CONCAT_WS(' ', u3.first_name, u3.last_name)), '')) AS name,
+					wa.field_name, wa.old_value, wa.new_value
+				FROM work_item_activity wa
+				LEFT JOIN "user" u3 ON LOWER(u3.email) = LOWER(wa.user_email)
+				WHERE wa.work_item_id = $1
+				ORDER BY wa.id, u3.id
+			) fc`
+	}
+	dataQuery += `
 		)
-		SELECT id, kind, content, created_on, email, first_name, last_name, name, comment_type, file_name, content_type, size_bytes
+		SELECT id, kind, content, created_on, email, first_name, last_name, name, comment_type, file_name, content_type, size_bytes, field_name, old_value, new_value
 		FROM activity
 		ORDER BY created_on DESC, id
 		LIMIT $2 OFFSET $3`
@@ -1606,49 +1725,9 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 
 		result := make([]domain.CaseActivity, 0, req.Pagination.Limit)
 		for rows.Next() {
-			var (
-				id, kind, content                string
-				createdOn                        time.Time
-				email, firstName, lastName, name *string
-				commentTypeRaw                   *string
-				fileName, contentType            *string
-				sizeBytes                        *int64
-			)
-			if err := rows.Scan(&id, &kind, &content, &createdOn, &email, &firstName, &lastName, &name, &commentTypeRaw, &fileName, &contentType, &sizeBytes); err != nil {
+			a, err := scanCaseActivity(rows)
+			if err != nil {
 				return fmt.Errorf("scan case activity: %w", err)
-			}
-			a := domain.CaseActivity{
-				ID:                 id,
-				Content:            content,
-				CreatedOn:          createdOn,
-				CreatedByFirstName: stringOrEmpty(firstName),
-				CreatedByLastName:  stringOrEmpty(lastName),
-			}
-			// CreatedBy.ID is always null on this feed by contract -- see
-			// CaseActivity's own doc comment. Name resolves the same way
-			// every other read in this service does: "user".name first,
-			// falling back to first_name+last_name only if name is unset.
-			a.CreatedBy = domain.NewUserReference("", stringOrEmpty(email), stringOrEmpty(name))
-			switch kind {
-			case "comment":
-				a.Type = domain.ActivityTypeComment
-				if commentTypeRaw != nil {
-					if ct, ok := caseCommentEnumType[*commentTypeRaw]; ok {
-						a.CommentType = &ct
-					}
-				}
-			case "attachment":
-				a.Type = domain.ActivityTypeAttachment
-				a.FileName = stringOrEmpty(fileName)
-				a.ContentType = stringOrEmpty(contentType)
-				if sizeBytes != nil {
-					a.SizeBytes = int(*sizeBytes)
-				}
-				// DownloadURL is deliberately left empty: this service
-				// builds no portal links or absolute URLs to itself (see
-				// CLAUDE.md's Event Hub section for the same "no portal
-				// base URL" posture) -- a caller resolves the actual bytes
-				// via GET /attachments/{id}/content.
 			}
 			result = append(result, a)
 		}
