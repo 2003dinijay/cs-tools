@@ -157,10 +157,34 @@ func main() {
 	dlqProducer := eventbus.NewProducer(dlqCfg)
 	defer dlqProducer.Close()
 
+	// The change-request notices ride their own topic, not case-events.
+	// A consumer group reads its whole topic, so sharing one would make this
+	// service's case consumer read and discard every change-request record
+	// and the change-request consumer read and discard every case one --
+	// a separate group isolates processing, only a separate topic isolates
+	// volume. entity-service publishes here (CR_EVENT_HUB_TOPIC there).
+	crCfg := eventbus.Config{
+		Broker:           eventBusCfg.Broker,
+		ConnectionString: eventBusCfg.ConnectionString,
+		Topic:            envOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
+	}
+	crDLQCfg := eventbus.Config{
+		Broker:           eventBusCfg.Broker,
+		ConnectionString: eventBusCfg.ConnectionString,
+		Topic:            envOrDefault("CR_EVENT_HUB_DLQ_TOPIC", "cr-events-dlq"),
+	}
+
+	crDLQProducer := eventbus.NewProducer(crDLQCfg)
+	defer crDLQProducer.Close()
+
 	consumerGroup := envOrDefault("EVENT_HUB_CONSUMER_GROUP", "csm-notification-service")
 	dlqConsumerGroup := envOrDefault("EVENT_HUB_DLQ_CONSUMER_GROUP", "csm-notification-service-dlq")
 	mainConsumerCount := envInt("MAIN_CONSUMER_COUNT", 1)
 	dlqConsumerCount := envInt("DLQ_CONSUMER_COUNT", 1)
+	crConsumerGroup := envOrDefault("CR_CONSUMER_GROUP", "csm-notification-service-cr")
+	crDLQConsumerGroup := envOrDefault("CR_DLQ_CONSUMER_GROUP", "csm-notification-service-cr-dlq")
+	crConsumerCount := envInt("CR_CONSUMER_COUNT", 1)
+	crDLQConsumerCount := envInt("CR_DLQ_CONSUMER_COUNT", 1)
 
 	// EMAIL_DEBUG_MODE redirects the four case.* types' actual email delivery
 	// to EMAIL_DEBUG_RECIPIENTS instead of each event's real resolved
@@ -219,6 +243,15 @@ func main() {
 		return dlqProducer.Publish(ctx, record.Key, record.Value)
 	}
 
+	// The change-request consumer dead-letters to its own topic, so a stuck
+	// change-request record cannot fill the case DLQ (and the reverse).
+	crToDeadLetter := func(ctx context.Context, record eventbus.Record, handleErr error) error {
+		slog.WarnContext(ctx, "eventbus: handler exhausted retries, publishing to dead-letter topic",
+			"topic", record.Topic, "partition", record.Partition, "offset", record.Offset,
+			"dlqTopic", crDLQCfg.Topic, "err", handleErr)
+		return crDLQProducer.Publish(ctx, record.Key, record.Value)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -261,6 +294,11 @@ func main() {
 
 	mainConsumers := startConsumers(ctx, "main", eventBusCfg, consumerGroup, mainConsumerCount, dispatcher.Handle, toDeadLetter)
 	dlqConsumers := startConsumers(ctx, "dlq", dlqCfg, dlqConsumerGroup, dlqConsumerCount, dispatcher.Handle, nil)
+	// Same dispatcher as the case consumers: it already routes on the
+	// envelope's Type, and these two only ever receive change_request.* since
+	// that is all their topic carries.
+	crConsumers := startConsumers(ctx, "cr", crCfg, crConsumerGroup, crConsumerCount, dispatcher.Handle, crToDeadLetter)
+	crDLQConsumers := startConsumers(ctx, "cr-dlq", crDLQCfg, crDLQConsumerGroup, crDLQConsumerCount, dispatcher.Handle, nil)
 
 	// The SLA timer engine is optional per deployment, gated on REDIS_ADDR or
 	// REDIS_URL being set — unset means this engine neither consumes
@@ -372,6 +410,12 @@ func main() {
 		c.Close()
 	}
 	for _, c := range dlqConsumers {
+		c.Close()
+	}
+	for _, c := range crConsumers {
+		c.Close()
+	}
+	for _, c := range crDLQConsumers {
 		c.Close()
 	}
 	for _, c := range slaConsumers {
