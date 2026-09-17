@@ -187,6 +187,53 @@ func TestSNDeployedProductService_SearchProjectsByProductVersion_MatchesAndDedup
 	}
 }
 
+// TestSNDeployedProductService_SearchProjectsByProductVersion_StableOrderForEqualNames
+// guards against a non-deterministic sort: two distinct projects sharing the
+// exact same Name must still resolve to a stable order (by ID) rather than
+// whatever order they happened to come out of the underlying Go map in.
+// Without an ID tiebreaker, a caller paginating across separate requests
+// could see the pair swap order between calls — skipping one project on one
+// page and duplicating it on another.
+func TestSNDeployedProductService_SearchProjectsByProductVersion_StableOrderForEqualNames(t *testing.T) {
+	depLow, depHigh := sysid32('1'), sysid32('2')
+	// Project IDs are UUIDs derived from sysids '1' and '9' respectively, so
+	// projLow.ID < projHigh.ID lexicographically once hyphenated.
+	projLow := domain.EntityRef{ID: sysidToUUID(sysid32('1')), Name: "Same Name"}
+	projHigh := domain.EntityRef{ID: sysidToUUID(sysid32('9')), Name: "Same Name"}
+
+	deploymentSvc := &fakeDeploymentService{deployments: []domain.DeploymentView{
+		{ID: sysidToUUID(depLow), Project: projLow},
+		{ID: sysidToUUID(depHigh), Project: projHigh},
+	}}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/deployed-products/search", func(w http.ResponseWriter, r *http.Request) {
+		items := []map[string]any{
+			deployedProductFixture(sysid32('a'), depLow, testPBVProductSysid, testPBVVersionSysid),
+			deployedProductFixture(sysid32('b'), depHigh, testPBVProductSysid, testPBVVersionSysid),
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"deployedProducts": items, "totalRecords": len(items), "offset": 0, "limit": 50,
+		})
+	})
+
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc)
+
+	resp, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
+		ProductID:        testPBVProductUUID,
+		ProductVersionID: testPBVVersionUUID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Projects) != 2 {
+		t.Fatalf("expected 2 same-named projects, got %d: %+v", len(resp.Projects), resp.Projects)
+	}
+	if resp.Projects[0].ID != projLow.ID || resp.Projects[1].ID != projHigh.ID {
+		t.Fatalf("expected equal-name projects ordered by ID ascending, got %+v", resp.Projects)
+	}
+}
+
 // TestSNDeployedProductService_SearchProjectsByProductVersion_PaginatesDedupedResult
 // verifies the caller's own pagination window is applied after, not before,
 // deduplication and sorting — a limit/offset here must slice the deduped

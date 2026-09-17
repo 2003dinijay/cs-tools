@@ -537,7 +537,12 @@ func (s *snDeployedProductService) SearchProjectsByProductVersion(ctx context.Co
 	for _, p := range matchedProjects {
 		sorted = append(sorted, p)
 	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Name == sorted[j].Name {
+			return sorted[i].ID < sorted[j].ID
+		}
+		return sorted[i].Name < sorted[j].Name
+	})
 
 	total := len(sorted)
 	start := req.Pagination.Offset
