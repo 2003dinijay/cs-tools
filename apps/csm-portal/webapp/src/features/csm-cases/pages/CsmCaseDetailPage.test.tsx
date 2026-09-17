@@ -391,6 +391,9 @@ vi.mock("@features/csm-cases/components/CaseActionBar", () => ({
       <button type="button" onClick={() => onAction({ secondary: "request_update" })}>
         stub open request update
       </button>
+      <button type="button" onClick={() => onAction({ secondary: "set_fix_eta" })}>
+        stub open set fix eta
+      </button>
       <button type="button" onClick={() => onAction("request_info", "awaiting_info")}>
         stub request info
       </button>
@@ -462,8 +465,20 @@ vi.mock("@features/csm-cases/components/LinkIncidentDialog", () => ({
 vi.mock("@features/csm-cases/components/LinkCaseDialog", () => ({
   default: () => null,
 }));
+// Probe, not `null`: the digiops-cs#3111 regression test below needs to save
+// from the dialog the way a user would and then assert the page unmounts it.
+// The dialog's own form/validation is covered in SetFixEtaDialog.test.tsx.
 vi.mock("@features/csm-cases/components/SetFixEtaDialog", () => ({
-  default: () => null,
+  default: ({ onSave }: { onSave: (patch: Record<string, unknown>) => void }) => (
+    <div data-testid="set-fix-eta-dialog-probe">
+      <button
+        type="button"
+        onClick={() => onSave({ bestCaseFixEta: "2099-06-16" })}
+      >
+        stub save fix eta
+      </button>
+    </div>
+  ),
 }));
 vi.mock("@features/csm-cases/components/CreateTaskDialog", () => ({
   default: () => null,
@@ -1815,5 +1830,43 @@ describe("CsmCaseDetailPage — no-public-comment confirm gate", () => {
     expect(
       screen.getByText(/no public comment on this case yet/i),
     ).toBeInTheDocument();
+  });
+});
+
+// Repro for digiops-cs#3111: saving a fix ETA leaves the dialog mounted. The
+// PATCH succeeds (the ETA is stored and the SLA clock stops), but the page
+// never closes the dialog on success the way its sibling dialogs (request
+// update, add tag, create task) do.
+describe("CsmCaseDetailPage — set fix ETA dialog closes on successful save", () => {
+  beforeEach(() => {
+    patchCaseMutateMock.mockClear();
+  });
+
+  it("closes the dialog after a save with share-with-customer off", () => {
+    renderPage();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    expect(screen.getByTestId("set-fix-eta-dialog-probe")).toBeInTheDocument();
+
+    // Share-with-customer off: the payload carries estimates only, no
+    // addPublicComment — exactly the reported repro path.
+    fireEvent.click(screen.getByRole("button", { name: /stub save fix eta/i }));
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
+    const [payload, mutateOptions] = patchCaseMutateMock.mock.calls[0] as [
+      Record<string, unknown>,
+      { onSuccess: () => void },
+    ];
+    expect(payload.addPublicComment).toBeUndefined();
+
+    // The backend accepted the PATCH — ETA set, SLA stopped.
+    act(() => {
+      mutateOptions.onSuccess();
+    });
+
+    expect(
+      screen.queryByTestId("set-fix-eta-dialog-probe"),
+    ).not.toBeInTheDocument();
   });
 });

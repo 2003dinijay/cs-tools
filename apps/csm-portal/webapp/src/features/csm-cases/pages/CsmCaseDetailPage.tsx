@@ -1807,6 +1807,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
     (patch: FixEtaSavePayload) => {
       patchCase.mutate(patch as BeCaseUpdatePayload, {
         onSuccess: () => {
+          // Close on success, same as every other dialog on this page. The
+          // PATCH lands either way, so leaving it open reads as a failed save
+          // and invites a second submit of an estimate that's already stored.
+          setFixEtaOpen(false);
           setFeedback({
             message: "Fix ETA updated.",
             severity: "success",
