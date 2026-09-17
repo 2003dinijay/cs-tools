@@ -32,7 +32,6 @@ CREATE TABLE IF NOT EXISTS sla (
     updated_on TIMESTAMPTZ NOT NULL,
     created_by VARCHAR(255) NOT NULL,
     updated_by VARCHAR(255) NOT NULL,
-    name VARCHAR(255) NOT NULL,
     work_item_id UUID REFERENCES work_item(id) ON DELETE CASCADE,
     sla_policy_id UUID REFERENCES sla_policy(id) ON DELETE SET NULL,
     schedule VARCHAR(255),

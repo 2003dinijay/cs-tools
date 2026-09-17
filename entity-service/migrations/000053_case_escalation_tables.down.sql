@@ -14,7 +14,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS time_card_approver;
-DROP TABLE IF EXISTS time_card;
-DROP TYPE IF EXISTS time_card_state_enum;
-DROP TYPE IF EXISTS time_card_issue_complexity_enum;
+-- case_escalation_level_enum is NOT dropped here: it's owned by
+-- 000018_case_table.up.sql, only reused here.
+DROP TABLE IF EXISTS case_escalation_notification_list;
+DROP TABLE IF EXISTS case_escalation;

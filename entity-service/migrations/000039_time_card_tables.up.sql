@@ -14,20 +14,37 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+DO $$ BEGIN
+    CREATE TYPE time_card_state_enum AS ENUM (
+        'PENDING', 'SUBMITTED', 'APPROVED', 'REJECTED', 'RECALLED', 'PROCESSED', 'UNKNOWN'
+    );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+    CREATE TYPE time_card_issue_complexity_enum AS ENUM (
+        'NOT_APPLICABLE', 'LOW', 'MEDIUM', 'HIGH'
+    );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- category is not synced at all: this table only ever receives
+-- category=task_work rows (see time_card.yaml's source_filter), so a
+-- category column would be redundant/constant.
+-- customer_project_id references "project", not a "customer_project" table - the latter
+-- is only this repo's job_key/source_table name for that data (see customer_project.yaml).
 CREATE TABLE IF NOT EXISTS time_card (
     id UUID PRIMARY KEY,
     created_on TIMESTAMPTZ NOT NULL,
     updated_on TIMESTAMPTZ NOT NULL,
     created_by VARCHAR(255) NOT NULL,
     updated_by VARCHAR(255) NOT NULL,
-    case_id UUID NOT NULL REFERENCES "case"(id) ON DELETE CASCADE,
+    case_id UUID NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
     customer_project_id UUID REFERENCES project(id) ON DELETE SET NULL,
     user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
     approved_by_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
     work_date DATE,
     is_billable BOOLEAN,
-    state VARCHAR(50),
-    issue_complexity VARCHAR(50),
+    state time_card_state_enum,
+    issue_complexity time_card_issue_complexity_enum,
     analyzing_minutes INTEGER,
     setting_up_minutes INTEGER,
     reproducing_debugging_minutes INTEGER,
