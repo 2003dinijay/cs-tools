@@ -539,9 +539,9 @@ var caseGroupByFieldValues = map[string][]string{
 }
 
 type snCaseFilters struct {
-	CaseTypes          []string `json:"caseTypes"`
-	SearchQuery        string   `json:"searchQuery,omitempty"`
-	ProjectIDs         []string `json:"projectIds,omitempty"`
+	CaseTypes   []string `json:"caseTypes"`
+	SearchQuery string   `json:"searchQuery,omitempty"`
+	ProjectIDs  []string `json:"projectIds,omitempty"`
 	// ExcludeProjectIDs is the inverse of ProjectIDs: cases whose project is
 	// none of these. See domain.ParsedCaseFilters.ExcludeProjectIDs.
 	ExcludeProjectIDs  []string `json:"excludeProjectIds,omitempty"`

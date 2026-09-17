@@ -249,18 +249,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		caseGithubIssueHandler = handler.NewCaseGithubIssueHandler(service.NewServiceNowCaseGithubIssueService(serviceNowIntegrationServiceClient, activeCaseSvc))
 	}
 
-	// Case escalations are a ServiceNow-only entity, but the routes are
-	// registered for both data sources -- see the taskHandler comment above
-	// for why an unregistered route (bare 404) is the wrong shape for a
-	// feature the OpenAPI spec documents a 503 ErrorResponse for. The
-	// Postgres stand-in supplies that 503.
-	var activeCaseEscalationSvc service.CaseEscalationService
+	// case_escalation/case_escalation_notification_list (migration 000053)
+	// now back SearchEscalations on Postgres for real -- CreateEscalation
+	// still isn't supported there (see EscalationRepository's own doc
+	// comment for why), so this supersedes an earlier unconditional
+	// unavailableCaseEscalationService stand-in that predated the schema.
+	escalationRepo := repository.NewEscalationRepository(db)
+	var activeEscalationSvc service.EscalationService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		activeCaseEscalationSvc = service.NewCaseEscalationService(service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient), activeCaseSvc)
+		activeEscalationSvc = service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient)
 	} else {
-		activeCaseEscalationSvc = service.NewUnavailableCaseEscalationService()
+		activeEscalationSvc = service.NewEscalationService(escalationRepo)
 	}
-	caseEscalationHandler := handler.NewCaseEscalationHandler(activeCaseEscalationSvc)
+	escalationHandler := handler.NewEscalationHandler(activeEscalationSvc)
+	caseEscalationHandler := handler.NewCaseEscalationHandler(service.NewCaseEscalationService(activeEscalationSvc, activeCaseSvc))
 
 	changeRequestRepo := repository.NewChangeRequestRepository(db)
 	var activeChangeRequestSvc service.ChangeRequestService
@@ -336,11 +338,6 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	var globalHandler *handler.GlobalHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		globalHandler = handler.NewGlobalHandler(service.NewServiceNowGlobalService(serviceNowIntegrationServiceClient))
-	}
-
-	var escalationHandler *handler.EscalationHandler
-	if cfg.DataSource == config.DataSourceServiceNow {
-		escalationHandler = handler.NewEscalationHandler(service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient))
 	}
 
 	// instance/usage tracking tables (migration 000054) -- see
@@ -558,9 +555,6 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /cases/{id}/github-issues", caseGithubIssueHandler.CreateCaseGithubIssue)
 	}
 
-	// caseEscalationHandler is always non-nil (see its construction above);
-	// unavailableCaseEscalationService answers 503 when the data source
-	// doesn't support it.
 	mux.HandleFunc("GET /cases/{id}/escalations", caseEscalationHandler.SearchCaseEscalations)
 	mux.HandleFunc("POST /cases/{id}/escalations", caseEscalationHandler.CreateCaseEscalation)
 
@@ -666,10 +660,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /search", globalHandler.GlobalSearch)
 	}
 
-	if escalationHandler != nil {
-		mux.HandleFunc("POST /escalations/search", escalationHandler.SearchEscalations)
-		mux.HandleFunc("POST /escalations", escalationHandler.CreateEscalation)
-	}
+	mux.HandleFunc("POST /escalations/search", escalationHandler.SearchEscalations)
+	mux.HandleFunc("POST /escalations", escalationHandler.CreateEscalation)
 
 	mux.HandleFunc("POST /instances/search", instanceHandler.SearchInstances)
 	mux.HandleFunc("POST /instances/metrics/search", instanceHandler.SearchInstanceMetrics)

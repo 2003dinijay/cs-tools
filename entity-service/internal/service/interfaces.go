@@ -856,8 +856,11 @@ type GlobalService interface {
 	GlobalSearch(ctx context.Context, req domain.GlobalSearchRequest) (domain.GlobalSearchResponse, error)
 }
 
-// EscalationService defines the operations available on the escalations entity.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// EscalationService defines the operations available on the escalations
+// entity. On Postgres, SearchEscalations is backed by case_escalation/
+// case_escalation_notification_list (migration 000053); CreateEscalation
+// requires the ServiceNow data source -- see EscalationRepository's own doc
+// comment for why.
 type EscalationService interface {
 	// SearchEscalations returns a paginated list of escalations filtered by optional case
 	// IDs and current escalation levels. A ValidationError is returned for invalid input.
