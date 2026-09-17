@@ -49,6 +49,15 @@ func (s *escalationService) SearchEscalations(ctx context.Context, req domain.Se
 			return domain.SearchEscalationsResponse{}, err
 		}
 		caseIDs = req.Filters.CaseIDs
+		for _, l := range req.Filters.CurrentLevels {
+			// case_escalation_level_enum only spans EL0..EL5 (migration
+			// 000053); an out-of-range value would otherwise reach
+			// escalationLevelToEnum and trip a Postgres enum-cast error at
+			// query time, surfacing as a 500 instead of a 400.
+			if l < 0 || l > 5 {
+				return domain.SearchEscalationsResponse{}, &apierror.ValidationError{Msg: "filters.currentLevels must be between 0 and 5"}
+			}
+		}
 		currentLevels = req.Filters.CurrentLevels
 	}
 	sortField, sortOrder := "", ""

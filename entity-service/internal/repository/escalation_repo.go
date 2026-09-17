@@ -164,7 +164,11 @@ func (r *escalationRepo) SearchEscalations(ctx context.Context, caseIDs []string
 			levels[i] = escalationLevelToEnum(l)
 		}
 		args = append(args, levels)
-		where += fmt.Sprintf(" AND ce.current_level = ANY($%d::case_escalation_level_enum[])", len(args))
+		// ::text[] before ::case_escalation_level_enum[]: this repository
+		// never registers case_escalation_level_enum/_case_escalation_level_enum
+		// with pgx, so binding a []string directly to the enum array type has
+		// no encode plan -- same fix as time_card_repo.go's state filter.
+		where += fmt.Sprintf(" AND ce.current_level = ANY($%d::text[]::case_escalation_level_enum[])", len(args))
 	}
 
 	sortCol := "ce.created_on"
@@ -228,7 +232,14 @@ func (r *escalationRepo) SearchEscalations(ctx context.Context, caseIDs []string
 		return nil, 0, err
 	}
 	for i := range escalations {
-		escalations[i].NotificationSentTo = notifiedByEscalation[escalations[i].ID]
+		// openapi.yaml declares notificationSentTo as a required, non-nullable
+		// array -- a map miss (no notification list for this escalation)
+		// returns a nil slice, which json.Encode would render as null.
+		notified := notifiedByEscalation[escalations[i].ID]
+		if notified == nil {
+			notified = []domain.EscalationNotifiedUser{}
+		}
+		escalations[i].NotificationSentTo = notified
 	}
 
 	return escalations, total, nil

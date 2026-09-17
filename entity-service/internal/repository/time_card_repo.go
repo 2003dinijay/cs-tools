@@ -309,7 +309,14 @@ func timeCardWhereClause(f *domain.SearchTimeCardsFilters) (string, []any) {
 		for i, st := range f.States {
 			states[i] = strings.ToUpper(string(st))
 		}
-		add("tc.state = ANY($%d::time_card_state_enum[])", states)
+		// ::text[] before ::time_card_state_enum[]: this repository never
+		// registers time_card_state_enum/_time_card_state_enum with pgx, so
+		// binding a []string directly to ANY($n::time_card_state_enum[])
+		// has no encode plan for that array OID. Casting through text[]
+		// first keeps the parameter bound as pgx's default []string codec,
+		// with the enum conversion happening server-side -- same fix as
+		// every other enum column in this file, just for an array bind.
+		add("tc.state = ANY($%d::text[]::time_card_state_enum[])", states)
 	}
 	return where, args
 }
@@ -504,8 +511,14 @@ func (r *timeCardRepo) CreateTimeCard(ctx context.Context, req domain.CreateTime
 	// req.ProjectID against it in this same transaction; when none is
 	// supplied, leave customer_project_id NULL (unchanged behavior) rather
 	// than auto-filling it in.
+	// The type filter matters, not just style: case_id's FK is into
+	// work_item(id) generically, with no type constraint of its own, so
+	// without this a time card could be logged against a CHANGE_REQUEST or
+	// INCIDENT id -- caseLikeWorkItemTypes (case_repo.go) is the same
+	// case/engagement/service_request/security_report_analysis/announcement
+	// set every other case-scoped query in this codebase restricts to.
 	var caseProjectID *string
-	err = tx.QueryRow(ctx, `SELECT project_id FROM work_item WHERE id = $1`, req.CaseID).Scan(&caseProjectID)
+	err = tx.QueryRow(ctx, `SELECT project_id FROM work_item WHERE id = $1 AND type = ANY(`+caseLikeWorkItemTypes+`)`, req.CaseID).Scan(&caseProjectID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.TimeCardView{}, &apierror.ValidationError{Msg: "case not found: " + req.CaseID}
 	}
