@@ -1548,6 +1548,68 @@ func caseActivityFieldChangeLabel(fieldName string) string {
 	return strings.Join(words, " ")
 }
 
+// scanCaseActivity scans one row of SearchCaseActivities' dataQuery
+// (id, kind, content, created_on, email, first_name, last_name, name,
+// comment_type, file_name, content_type, size_bytes, field_name, old_value,
+// new_value) into a domain.CaseActivity, dispatching on kind the same way
+// the query's three UNION ALL branches are discriminated.
+func scanCaseActivity(row interface{ Scan(...any) error }) (domain.CaseActivity, error) {
+	var (
+		id, kind, content                string
+		createdOn                        time.Time
+		email, firstName, lastName, name *string
+		commentTypeRaw                   *string
+		fileName, contentType            *string
+		sizeBytes                        *int64
+		fieldName, oldValue, newValue    *string
+	)
+	if err := row.Scan(&id, &kind, &content, &createdOn, &email, &firstName, &lastName, &name, &commentTypeRaw, &fileName, &contentType, &sizeBytes, &fieldName, &oldValue, &newValue); err != nil {
+		return domain.CaseActivity{}, err
+	}
+	a := domain.CaseActivity{
+		ID:                 id,
+		Content:            content,
+		CreatedOn:          createdOn,
+		CreatedByFirstName: stringOrEmpty(firstName),
+		CreatedByLastName:  stringOrEmpty(lastName),
+	}
+	// CreatedBy.ID is always null on this feed by contract -- see
+	// CaseActivity's own doc comment. Name resolves the same way every
+	// other read in this service does: "user".name first, falling back to
+	// first_name+last_name only if name is unset.
+	a.CreatedBy = domain.NewUserReference("", stringOrEmpty(email), stringOrEmpty(name))
+	switch kind {
+	case "comment":
+		a.Type = domain.ActivityTypeComment
+		if commentTypeRaw != nil {
+			if ct, ok := caseCommentEnumType[*commentTypeRaw]; ok {
+				a.CommentType = &ct
+			}
+		}
+	case "attachment":
+		a.Type = domain.ActivityTypeAttachment
+		a.FileName = stringOrEmpty(fileName)
+		a.ContentType = stringOrEmpty(contentType)
+		if sizeBytes != nil {
+			a.SizeBytes = int(*sizeBytes)
+		}
+		// DownloadURL is deliberately left empty: this service builds no
+		// portal links or absolute URLs to itself (see CLAUDE.md's Event
+		// Hub section for the same "no portal base URL" posture) -- a
+		// caller resolves the actual bytes via GET /attachments/{id}/content.
+	case "field_change":
+		a.Type = domain.ActivityTypeFieldChange
+		field := stringOrEmpty(fieldName)
+		a.Changes = []domain.FieldChange{{
+			Field:         field,
+			FieldLabel:    caseActivityFieldChangeLabel(field),
+			PreviousValue: stringOrEmpty(oldValue),
+			NewValue:      stringOrEmpty(newValue),
+		}}
+	}
+	return a, nil
+}
+
 // SearchCaseActivities implements CaseRepository.
 //
 // includeFieldChanges gates a third UNION ALL branch over work_item_activity
@@ -1663,59 +1725,9 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 
 		result := make([]domain.CaseActivity, 0, req.Pagination.Limit)
 		for rows.Next() {
-			var (
-				id, kind, content                string
-				createdOn                        time.Time
-				email, firstName, lastName, name *string
-				commentTypeRaw                   *string
-				fileName, contentType            *string
-				sizeBytes                        *int64
-				fieldName, oldValue, newValue    *string
-			)
-			if err := rows.Scan(&id, &kind, &content, &createdOn, &email, &firstName, &lastName, &name, &commentTypeRaw, &fileName, &contentType, &sizeBytes, &fieldName, &oldValue, &newValue); err != nil {
+			a, err := scanCaseActivity(rows)
+			if err != nil {
 				return fmt.Errorf("scan case activity: %w", err)
-			}
-			a := domain.CaseActivity{
-				ID:                 id,
-				Content:            content,
-				CreatedOn:          createdOn,
-				CreatedByFirstName: stringOrEmpty(firstName),
-				CreatedByLastName:  stringOrEmpty(lastName),
-			}
-			// CreatedBy.ID is always null on this feed by contract -- see
-			// CaseActivity's own doc comment. Name resolves the same way
-			// every other read in this service does: "user".name first,
-			// falling back to first_name+last_name only if name is unset.
-			a.CreatedBy = domain.NewUserReference("", stringOrEmpty(email), stringOrEmpty(name))
-			switch kind {
-			case "comment":
-				a.Type = domain.ActivityTypeComment
-				if commentTypeRaw != nil {
-					if ct, ok := caseCommentEnumType[*commentTypeRaw]; ok {
-						a.CommentType = &ct
-					}
-				}
-			case "attachment":
-				a.Type = domain.ActivityTypeAttachment
-				a.FileName = stringOrEmpty(fileName)
-				a.ContentType = stringOrEmpty(contentType)
-				if sizeBytes != nil {
-					a.SizeBytes = int(*sizeBytes)
-				}
-				// DownloadURL is deliberately left empty: this service
-				// builds no portal links or absolute URLs to itself (see
-				// CLAUDE.md's Event Hub section for the same "no portal
-				// base URL" posture) -- a caller resolves the actual bytes
-				// via GET /attachments/{id}/content.
-			case "field_change":
-				a.Type = domain.ActivityTypeFieldChange
-				field := stringOrEmpty(fieldName)
-				a.Changes = []domain.FieldChange{{
-					Field:         field,
-					FieldLabel:    caseActivityFieldChangeLabel(field),
-					PreviousValue: stringOrEmpty(oldValue),
-					NewValue:      stringOrEmpty(newValue),
-				}}
 			}
 			result = append(result, a)
 		}
