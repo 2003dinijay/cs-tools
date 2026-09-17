@@ -16,3 +16,5 @@
 
 DROP TABLE IF EXISTS time_card_approver;
 DROP TABLE IF EXISTS time_card;
+DROP TYPE IF EXISTS time_card_state_enum;
+DROP TYPE IF EXISTS time_card_issue_complexity_enum;
