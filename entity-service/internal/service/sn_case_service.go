@@ -1846,7 +1846,7 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		// The case read carries no id for the creator, only the email and full
 		// name, so the canonical reference is emitted with a null id.
 		CreatedBy:      domain.NewUserReference("", c.CreatedBy, c.CreatedByFullName),
-		ProjectDetails: domain.EntityRef{ID: sysidToUUID(c.Project.ID), Name: c.Project.Name},
+		ProjectDetails: &domain.EntityRef{ID: sysidToUUID(c.Project.ID), Name: c.Project.Name},
 	}
 
 	if depID := sysidToUUID(c.Deployment.ID); depID != "" {
@@ -4152,7 +4152,7 @@ func (s *snCaseService) SearchCases(ctx context.Context, req domain.SearchCasesR
 			EngagementType: engagementTypeLabel,
 			WorkState:      workStateLabel,
 			Type:           caseTypeDomain,
-			Project:        domain.EntityRef{ID: sysidToUUID(c.Project.ID), Name: c.Project.Name},
+			Project:        &domain.EntityRef{ID: sysidToUUID(c.Project.ID), Name: c.Project.Name},
 			ProjectKey:     c.Project.Key,
 			// BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta are already date-only
 			// "YYYY-MM-DD" strings on both sides, so no parsing/reformatting is
