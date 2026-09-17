@@ -1825,6 +1825,25 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 	if err != nil {
 		return domain.CaseView{}, fmt.Errorf("sn get case %q: %w", c.ID, err)
 	}
+	// snCaseStateLabelToEnum(nil) falls back to CaseStateOpen (a fallback
+	// for the required-field contract this used to be) rather than
+	// erroring, so that alone can't distinguish "genuinely open" from "no
+	// state reported at all" -- check c.State itself instead. Severity/
+	// IssueType have no equivalent error path (an unrecognized label
+	// silently maps to ""), so a mapped-empty result is treated the same
+	// as absent input: nil, not a pointer to "".
+	var statePtr *domain.CaseState
+	if c.State != nil {
+		statePtr = &state
+	}
+	var severityPtr *domain.CaseSeverity
+	if sev := snSeverityToSeverity(c.Severity); sev != "" {
+		severityPtr = &sev
+	}
+	var issueTypePtr *domain.CaseIssueType
+	if it := snIssueTypeToEnum(c.IssueType); it != "" {
+		issueTypePtr = &it
+	}
 
 	cv := domain.CaseView{
 		ID:              sysidToUUID(c.ID),
@@ -1835,9 +1854,9 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		EscalationLevel: snEscalationLevelToDomain(c.EscalationLevel),
 		IsEscalated:     c.IsEscalated,
 		Description:     c.Description,
-		Severity:        ptrOfCaseSeverity(snSeverityToSeverity(c.Severity)),
-		IssueType:       ptrOfCaseIssueType(snIssueTypeToEnum(c.IssueType)),
-		State:           &state,
+		Severity:        severityPtr,
+		IssueType:       issueTypePtr,
+		State:           statePtr,
 		WorkState:       snWorkStateLabelToEnum(c.WorkState),
 		Type:            snCaseTypeToDomain(c.CaseType),
 		EngagementType:  snLabelStr(c.EngagementType),

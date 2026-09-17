@@ -65,7 +65,7 @@ func (r *serviceOfferingRepo) SearchServiceOfferings(ctx context.Context, servic
 		 FROM service_offering so
 		 LEFT JOIN service s ON s.id = so.parent_id
 		 %s
-		 ORDER BY so.name LIMIT $%d OFFSET $%d`,
+		 ORDER BY so.name, so.id LIMIT $%d OFFSET $%d`,
 		where, len(args)+1, len(args)+2,
 	)
 	dataArgs := append(append([]any{}, args...), limit, offset)

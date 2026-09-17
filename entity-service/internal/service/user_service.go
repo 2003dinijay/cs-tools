@@ -82,13 +82,6 @@ func derefState(s *domain.CaseState) domain.CaseState {
 	return *s
 }
 
-// ptrOfCaseSeverity/ptrOfCaseIssueType are derefSeverity/derefState's
-// inverse, addressing a value returned from a function call (which can't be
-// addressed directly with &) into the pointer domain.CaseView.Severity/
-// IssueType now require.
-func ptrOfCaseSeverity(v domain.CaseSeverity) *domain.CaseSeverity    { return &v }
-func ptrOfCaseIssueType(v domain.CaseIssueType) *domain.CaseIssueType { return &v }
-
 // validateDateRange enforces the same rules as the Ballerina reference's
 // shared validateDateRange helper: both dates must be exactly 10 characters
 // in YYYY-MM-DD format, startDate must be strictly before endDate, and the
