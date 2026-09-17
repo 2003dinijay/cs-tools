@@ -92,6 +92,13 @@ type Config struct {
 	// approver gets the mail twice -- so it must never come on merely because
 	// a database happens to be configured.
 	CRNoticesEnabled bool
+	// CREventHubTopic is the topic the change-request notices are published
+	// to. SEPARATE FROM EventHubTopic ON PURPOSE. Every consumer group reads
+	// its whole topic, so putting these on case-events would make the case
+	// consumer read and discard every change-request record, and vice versa.
+	// A distinct topic is what actually isolates the two volumes; a distinct
+	// consumer group alone would only isolate the processing.
+	CREventHubTopic string
 	// CRNoticePollInterval is how often to poll event_outbox when the last
 	// pass came back short. A backlog drains at full speed regardless, so this
 	// governs only the idle case: notice latency against query volume.
@@ -147,6 +154,7 @@ func Load() *Config {
 		EventHubTopic:                            os.Getenv("EVENT_HUB_TOPIC"),
 		EventPublishingEnabled:                   os.Getenv("EVENT_PUBLISHING_ENABLED") == "true",
 		CRNoticesEnabled:                         os.Getenv("CR_NOTICES_ENABLED") == "true",
+		CREventHubTopic:                          getEnvOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
 		CRNoticePollInterval:                     envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
 		SupportEngineerRole:                      os.Getenv("SUPPORT_ENGINEER_ROLE"),
 		CustomerRoles:                            splitComma(os.Getenv("CUSTOMER_ROLES")),
