@@ -1029,6 +1029,20 @@ product, account, deployment, deployed_product, split across
     conflict loop — either way, the exact prefix/padding/format needs a
     real answer, not an invented one.
 
+## CaseView.ProjectDetails / SearchCaseView.Project are now optional
+
+Both were required (non-pointer) `EntityRef` fields, but `work_item.project_id`
+has no `NOT NULL` constraint and a meaningful fraction of real cases have no
+project linked. `project` was still an `INNER JOIN` in both `GetCaseByID` and
+`SearchCases`, which silently dropped/404'd those cases entirely -- the same
+class of bug the deployment/deployed-product/product joins had (see the
+enum-casing/false-404s section above), just for a required rather than
+optional field, so fixing it required a response contract change: both
+fields are now `*EntityRef`, `null` when absent, and `project` is a
+`LEFT JOIN` in both queries. The ServiceNow-backed paths
+(`sn_case_service.go`) always populate a value, so they only needed the
+pointer wrap, not a nil-check.
+
 ## Case-like work_item types, GetMe roles/groups, and groups
 
 **GetCaseByID/SearchCases now serve all five case-like work_item types**

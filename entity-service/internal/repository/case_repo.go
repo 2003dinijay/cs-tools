@@ -303,6 +303,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		isEscalated                                   *bool
 		resolvedOn                                    *time.Time
 		description                                   *string
+		projID, projName                              *string
 		depID, depName                                *string
 		dpID, dpDisplayName                           *string
 		prodID, prodName                              *string
@@ -329,7 +330,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		 LEFT JOIN "case" c ON c.id = wi.id
 		 `+caseLikeJoins+`
 		 LEFT JOIN "user" creator ON LOWER(creator.email) = LOWER(wi.created_by)
-		 JOIN project p ON p.id = wi.project_id
+		 LEFT JOIN project p ON p.id = wi.project_id
 		 LEFT JOIN account a ON a.id = wi.account_id
 		 LEFT JOIN deployment d ON d.id = wi.deployment_id
 		 LEFT JOIN deployed_product dp ON dp.id = wi.deployed_product_id
@@ -348,7 +349,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		&cv.CreatedOn, &cv.UpdatedOn, &cv.ClosedOn, &resolvedOn,
 		&cv.Subject,
 		&creatorEmail, &creatorID, &creatorName,
-		&cv.ProjectDetails.ID, &cv.ProjectDetails.Name,
+		&projID, &projName,
 		&depID, &depName,
 		&dpID, &dpDisplayName,
 		&prodID, &prodName,
@@ -407,13 +408,16 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		lower := strings.ToLower(*caseType)
 		cv.Type = &lower
 	}
-	// deployment_id/deployed_product_id (and deployed_product.product_id) are
-	// all nullable on work_item (migration 000016) -- a case with no
-	// deployment linked is a valid state, same as SearchCases already treats
-	// it (see that query's own comment). These were previously INNER joins,
-	// which meant a case missing either link came back zero rows here
-	// (misreported as 404 "case not found") while still appearing fine in
-	// SearchCases's result list.
+	// project_id/deployment_id/deployed_product_id (and deployed_product.
+	// product_id) are all nullable on work_item (migration 000016) -- a case
+	// with no project or deployment linked is a valid state, same as
+	// SearchCases already treats it (see that query's own comment). These
+	// were previously INNER joins, which meant a case missing any of them
+	// came back zero rows here (misreported as 404 "case not found") while
+	// still appearing fine in SearchCases's result list.
+	if projID != nil {
+		cv.ProjectDetails = &domain.EntityRef{ID: *projID, Name: stringOrEmpty(projName)}
+	}
 	if depID != nil {
 		cv.DeploymentDetails = &domain.EntityRef{ID: *depID, Name: stringOrEmpty(depName)}
 	}
@@ -1142,7 +1146,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	// them from every search result.
 	joins := `LEFT JOIN "case" c ON c.id = wi.id
 		 ` + caseLikeJoins + `
-		 JOIN project p ON p.id = wi.project_id
+		 LEFT JOIN project p ON p.id = wi.project_id
 		 LEFT JOIN deployment d ON d.id = wi.deployment_id
 		 LEFT JOIN deployed_product dp ON dp.id = wi.deployed_product_id
 		 LEFT JOIN product prod ON prod.id = dp.product_id
@@ -1204,6 +1208,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			var pcID, pcNumber *string
 			var rcID, rcNumber *string
 			var prodID, prodName *string
+			var projID, projName *string
 			var depID, depName *string
 			var dpID, dpName *string
 			var creatorEmail string
@@ -1212,7 +1217,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 				&caseType, &subject, &description, &severity, &issueType, &state,
 				&engagementType, &workState, &escalationLevel, &createdAt, &updatedAt,
 				&creatorEmail,
-				&cv.Project.ID, &cv.Project.Name,
+				&projID, &projName,
 				&depID, &depName,
 				&dpID, &dpName,
 				&prodID, &prodName,
@@ -1223,6 +1228,9 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 				return fmt.Errorf("scan case: %w", err)
 			}
 			cv.InternalID = nilIfEmpty(internalID)
+			if projID != nil {
+				cv.Project = &domain.EntityRef{ID: *projID, Name: stringOrEmpty(projName)}
+			}
 			if depID != nil {
 				cv.Deployment = &domain.EntityRef{ID: *depID, Name: stringOrEmpty(depName)}
 			}
