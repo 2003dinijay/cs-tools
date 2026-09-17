@@ -1104,18 +1104,24 @@ ServiceNow data source) has no corresponding column on `service` at all —
 ## CaseView/SearchCaseView/Case.InternalID is now optional
 
 Found via a direct query against `work_item` grouped by `type`: `wso2_id`
-(`InternalID`) is blank (`''`, not `NULL`) for a handful of real `CASE`/
-`ENGAGEMENT`/`SERVICE_REQUEST` rows, even though the
-`work_item_wso2_id_required_by_type` `CHECK` constraint (migration 000016)
-requires it `NOT NULL` for those types -- the constraint only checks
-nullness, not blankness. `InternalID` was a required (non-pointer) `string`
-field on `domain.Case`/`CaseView`/`SearchCaseView`, so those rows rendered
-`"internalId": ""` instead of `null`, violating this codebase's own "empty
-strings must never appear in responses" rule. Fixed by making all three
-`*string`, with `nilIfEmpty` (`sla_clock_repo.go`, `stringOrEmpty`'s inverse)
-collapsing both `NULL` and `''` to `nil` at every Postgres scan site
-(`GetCaseByID`, `SearchCases`, `scanUpdatedCase`). The ServiceNow-backed
-paths (`sn_case_service.go`) needed the same treatment for consistency --
+(`InternalID`) is `NULL` for a handful of real `CASE`/`ENGAGEMENT`/
+`SERVICE_REQUEST` rows, even though the `work_item_wso2_id_required_by_type`
+`CHECK` constraint (migration 000016) requires it `NOT NULL` for those
+types -- **the constraint is evidently not actually enforced against this
+data** (added after these rows already existed, and never backfilled/
+revalidated). Don't trust a `CHECK` constraint's claim over what a direct
+query of the actual data shows.
+
+**This was first (wrongly) diagnosed as merely blank (`''`), not `NULL`** --
+`COUNT(*) FILTER (WHERE wso2_id IS NULL OR wso2_id = '')` was used instead of
+checking nullness and blankness separately, and the fix at the time (making
+`InternalID` `*string`, but still scanning into a non-pointer `string` local
+and only guarding against blankness with `nilIfEmpty`) still crashed in
+production on the real `NULL` rows: `cannot scan NULL into *string`. Fixed
+properly by scanning into a `*string` local at every site (`GetCaseByID`,
+`SearchCases`, `scanUpdatedCase`) and composing `nilIfEmpty(stringOrEmpty(...))`
+to collapse both `NULL` and `''` to `nil` either way. The ServiceNow-backed
+paths (`sn_case_service.go`) needed the analogous treatment for consistency --
 `ptrOrNilIfEmpty`/`derefOrEmpty` (`user_service.go`) are that side's
 equivalent pair, since SN's own raw case struct still carries `InternalID`
 as a plain (possibly blank) `string`.
