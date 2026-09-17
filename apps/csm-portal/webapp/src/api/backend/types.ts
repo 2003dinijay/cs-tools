@@ -1529,6 +1529,15 @@ export interface BeAttachmentUploadTokenRequest {
   mimeType: string;
   sizeBytes: number;
   description?: string | null;
+  /**
+   * Reference entity type for the attachment being minted. Optional; the BE
+   * defaults to `"case"` when omitted. Only `"case"` is actually supported by
+   * direct-upload storage today — `"change_request"`/`"incident"` are
+   * authorized but rejected with a deterministic 422, so the webapp routes
+   * those two through the legacy base64 path instead of calling this
+   * endpoint at all.
+   */
+  referenceType?: BeReferenceType;
 }
 
 /**

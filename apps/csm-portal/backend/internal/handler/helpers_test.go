@@ -124,6 +124,25 @@ type mockEntityCaseClient struct {
 	removeCaseTagFn            func(ctx context.Context, caseID, tagID string) ([]byte, error)
 	searchTagsFn               func(ctx context.Context, body []byte) ([]byte, error)
 	getUserMeFn                func(ctx context.Context) ([]byte, error)
+	// getChangeRequestFn/getIncidentFn back the attachmentStorageEntityClient
+	// interface (see attachment_storage.go) so this same mock serves
+	// AttachmentStorageHandler's per-reference-type access checks.
+	getChangeRequestFn func(ctx context.Context, id string) ([]byte, error)
+	getIncidentFn      func(ctx context.Context, id string) ([]byte, error)
+}
+
+func (m *mockEntityCaseClient) GetChangeRequest(ctx context.Context, id string) ([]byte, error) {
+	if m.getChangeRequestFn != nil {
+		return m.getChangeRequestFn(ctx, id)
+	}
+	return []byte(`{}`), nil
+}
+
+func (m *mockEntityCaseClient) GetIncident(ctx context.Context, id string) ([]byte, error) {
+	if m.getIncidentFn != nil {
+		return m.getIncidentFn(ctx, id)
+	}
+	return []byte(`{}`), nil
 }
 
 // GetUserMe defaults to the platform user record for testUser: note the id is

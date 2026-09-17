@@ -43,6 +43,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/housekeeping"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/ledger"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/opencases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/registry"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/stalecases"
 )
@@ -150,6 +151,9 @@ func main() {
 	// if that changes.
 	const staleCaseThreshold = 30 * 24 * time.Hour
 
+	const openCasesTaskName = "open_cases_report"
+	openCasesTo, openCasesCc := recipientsFor(recipientOverrides, openCasesTaskName)
+
 	tasks := []registry.Task{
 		// This component's first real sub-cron: deletes rows from
 		// entity-service's scheduled_task_run table that succeeded or were
@@ -180,6 +184,19 @@ func main() {
 				staleCaseThreshold, staleCasesTo, staleCasesCc, alertsEnabled),
 			To: staleCasesTo,
 			Cc: staleCasesCc,
+		},
+		// Emails openCasesTo/Cc a report of every case created before
+		// yesterday that's still in "open" state (nobody has moved it out of
+		// initial triage) — see internal/opencases's own doc comment. Sends
+		// nothing (but still succeeds) if openCasesTo is empty. Default
+		// schedule is daily at 08:00 (again, TZ=UTC-dependent — see above);
+		// override via SUB_CRON_SCHEDULES if needed.
+		{
+			Name:     openCasesTaskName,
+			Schedule: scheduleFor(scheduleOverrides, openCasesTaskName, "0 8 * * *"),
+			Handler:  opencases.SendReport(entityCasesClient, emailClient, openCasesTo, openCasesCc, alertsEnabled),
+			To:       openCasesTo,
+			Cc:       openCasesCc,
 		},
 	}
 

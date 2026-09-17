@@ -433,6 +433,80 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /alert-incident-mappings:
+    post:
+      summary: >-
+        Record that a monitoring alert contributed to a CSM incident — e.g. a
+        firing event and a later resolved event for the same underlying
+        condition both map onto the same incident rather than each creating
+        its own. Has no ServiceNow equivalent — always backed by Postgres.
+      operationId: createAlertIncidentMapping
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAlertIncidentMappingRequest'
+      responses:
+        "201":
+          description: Mapping created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertIncidentMappingView'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: alertNumber is already mapped to an incident.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /alert-incident-mappings/lookup:
+    post:
+      summary: >-
+        Find every alert already grouped onto an incident for the same
+        (source, uniqueIdentifier) correlation key. Returns an empty
+        mappings array, not a 404, when nothing matches — absence is a
+        valid result for a lookup.
+      operationId: lookupAlertIncidentMappings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LookupAlertIncidentMappingsRequest'
+      responses:
+        "200":
+          description: Matching mappings, most-recent-first (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LookupAlertIncidentMappingsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /users/me:
     get:
       summary: Get the profile of the currently authenticated user.
@@ -14774,7 +14848,7 @@ components:
         as a base64 data URI. For a CSM-native (Postgres) data source attachment, content is
         always "" and storageKey is populated instead: this service holds no bytes for that
         data source, so content must be resolved externally via storageKey.
-      required: [id, referenceId, name, type, sizeBytes, createdBy, createdOn, content]
+      required: [id, referenceId, referenceType, name, type, sizeBytes, createdBy, createdOn, content]
       properties:
         id:
           type: string
@@ -14782,6 +14856,21 @@ components:
         referenceId:
           type: string
           format: uuid
+        referenceType:
+          type: string
+          nullable: true
+          enum:
+            - case
+            - conversation
+            - change_request
+            - deployment
+            - incident
+          description: >
+            The entity type referenceId points at. Always populated for CSM-native
+            (Postgres) data source attachments; null when the backing data source's
+            attachment-details lookup does not report a reference type. Callers
+            authorizing access per referenced resource must treat a null value as
+            unknown and fail closed.
         name:
           type: string
         type:
@@ -15770,11 +15859,12 @@ components:
     SLAClock:
       description: >
         A durable SLA timer running against a case. clockType is
-        caller-defined, not a fixed enum — which clock types exist and what
-        duration each gets is a policy decision made entirely by whatever
-        publishes the triggering sla.clock.register event; this service only
-        stores the result. Has no ServiceNow equivalent — always backed by
-        Postgres.
+        caller-defined, not a fixed enum, though only "response"/
+        "workaround"/"resolution" are actually used — see
+        internal/service/sla_policy.go for the duration policy. Has no
+        ServiceNow equivalent — always backed by Postgres. The eight
+        display fields (caseNumber through state) are populated once at
+        registration and are a point-in-time snapshot, not kept live.
       type: object
       properties:
         caseId:
@@ -15803,6 +15893,22 @@ components:
           type: string
           format: date-time
           nullable: true
+        caseNumber:
+          type: string
+        wso2CaseId:
+          type: string
+        caseTitle:
+          type: string
+        caseType:
+          type: string
+        product:
+          type: string
+        team:
+          type: string
+        priority:
+          type: string
+        state:
+          type: string
 
     RegisterSLAClockRequest:
       type: object
@@ -15817,6 +15923,22 @@ components:
         dueAt:
           type: string
           format: date-time
+        caseNumber:
+          type: string
+        wso2CaseId:
+          type: string
+        caseTitle:
+          type: string
+        caseType:
+          type: string
+        product:
+          type: string
+        team:
+          type: string
+        priority:
+          type: string
+        state:
+          type: string
 
     SetSLAClockTierRequest:
       type: object
@@ -15963,6 +16085,79 @@ components:
       properties:
         deletedCount:
           type: integer
+
+    AlertIncidentMappingView:
+      description: >
+        A monitoring alert that was grouped onto a CSM incident. Has no
+        ServiceNow equivalent — always backed by Postgres.
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        alertNumber:
+          type: string
+        source:
+          type: string
+        uniqueIdentifier:
+          type: string
+          nullable: true
+        service:
+          type: string
+          nullable: true
+        metricName:
+          type: string
+          nullable: true
+        alertStatus:
+          type: string
+        incidentId:
+          type: string
+        incidentNumber:
+          type: string
+          nullable: true
+        createdOn:
+          type: string
+          format: date-time
+
+    CreateAlertIncidentMappingRequest:
+      type: object
+      required: [alertNumber, source, alertStatus, incidentId]
+      additionalProperties: false
+      properties:
+        alertNumber:
+          type: string
+        source:
+          type: string
+        uniqueIdentifier:
+          type: string
+        service:
+          type: string
+        metricName:
+          type: string
+        alertStatus:
+          type: string
+        incidentId:
+          type: string
+        incidentNumber:
+          type: string
+
+    LookupAlertIncidentMappingsRequest:
+      type: object
+      required: [source, uniqueIdentifier]
+      additionalProperties: false
+      properties:
+        source:
+          type: string
+        uniqueIdentifier:
+          type: string
+
+    LookupAlertIncidentMappingsResponse:
+      type: object
+      properties:
+        mappings:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertIncidentMappingView'
 
     SearchEventPublishFailuresResponse:
       type: object

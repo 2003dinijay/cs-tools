@@ -61,7 +61,7 @@ func (s *stubCaseRepo) SearchCaseComments(ctx context.Context, req domain.Search
 	}
 	panic("not implemented")
 }
-func (s *stubCaseRepo) UpdateCase(context.Context, domain.UpdateCaseRequest) (domain.Case, error) {
+func (s *stubCaseRepo) UpdateCase(context.Context, domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
 	panic("not implemented")
 }
 func (s *stubCaseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error) {
@@ -100,6 +100,21 @@ func (s *stubCaseRepo) ConfirmCaseAttachment(ctx context.Context, id string) (do
 	}
 	panic("not implemented")
 }
+func (s *stubCaseRepo) AddCaseTag(context.Context, string, string, string) (domain.Tag, error) {
+	panic("not implemented")
+}
+func (s *stubCaseRepo) RemoveCaseTag(context.Context, string, string, string) error {
+	panic("not implemented")
+}
+func (s *stubCaseRepo) SearchTags(context.Context, string, string, int) ([]domain.Tag, error) {
+	panic("not implemented")
+}
+func (s *stubCaseRepo) SetCaseWatchList(context.Context, string, []string, string) ([]domain.WatchListUser, time.Time, error) {
+	panic("not implemented")
+}
+func (s *stubCaseRepo) SearchCaseActivities(context.Context, domain.SearchCaseActivitiesRequest) ([]domain.CaseActivity, int, error) {
+	panic("not implemented")
+}
 
 // stubUserRepo is a minimal repository.UserRepository; SearchCases doesn't
 // exercise it beyond the createdBy-current-user path, which these tests don't
@@ -118,6 +133,16 @@ func (s stubUserRepo) GetUserByEmail(ctx context.Context, email string) (domain.
 	panic("not implemented")
 }
 
+// GetUserRoles/GetUserGroups return empty rather than panicking: GetMe calls
+// both unconditionally after GetUserByEmail succeeds, and none of this
+// stub's existing test cases care about their contents.
+func (stubUserRepo) GetUserRoles(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (stubUserRepo) GetUserGroups(context.Context, string) ([]domain.UserGroupRef, error) {
+	return nil, nil
+}
+
 // TestCaseService_SearchCases_RejectsUnsupportedPostgresFields proves the
 // Postgres-backed SearchCases path rejects each of the 9 filter fields
 // ParseCaseFieldFilters accepts but the Postgres repository has no query
@@ -125,7 +150,7 @@ func (s stubUserRepo) GetUserByEmail(ctx context.Context, email string) (domain.
 // schema equivalent), rather than silently accepting the request and
 // returning a broader-than-requested result set.
 func TestCaseService_SearchCases_RejectsUnsupportedPostgresFields(t *testing.T) {
-	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{})
+	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil)
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	cases := []struct {
@@ -192,7 +217,7 @@ func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.
 					return nil, 0, nil
 				},
 			}
-			svc := NewCaseService(repo, stubUserRepo{})
+			svc := NewCaseService(repo, stubUserRepo{}, nil)
 			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 			req := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
@@ -216,7 +241,7 @@ func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.
 // The stub repository panics if reached, so a passing test proves the
 // short-circuit, not merely that the repository ignored the option.
 func TestCaseService_SearchCases_RejectsServiceNowOnlyOptions(t *testing.T) {
-	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{})
+	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil)
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	cases := []struct {
@@ -330,7 +355,7 @@ func TestCaseService_SearchCaseComments(t *testing.T) {
 				return nil, 0, nil
 			},
 		}
-		svc := NewCaseService(repo, stubUserRepo{})
+		svc := NewCaseService(repo, stubUserRepo{}, nil)
 
 		resp, err := svc.SearchCaseComments(context.Background(), domain.SearchCaseCommentsRequest{CaseID: caseID})
 		if err != nil {
@@ -358,7 +383,7 @@ func TestCaseService_SearchCaseComments(t *testing.T) {
 				return []domain.CaseComment{want}, 1, nil
 			},
 		}
-		svc := NewCaseService(repo, stubUserRepo{})
+		svc := NewCaseService(repo, stubUserRepo{}, nil)
 
 		resp, err := svc.SearchCaseComments(context.Background(), domain.SearchCaseCommentsRequest{CaseID: caseID})
 		if err != nil {
@@ -388,7 +413,7 @@ func TestCaseService_SearchCaseComments(t *testing.T) {
 				return []domain.CaseComment{newest, middle, oldest}, 5, nil
 			},
 		}
-		svc := NewCaseService(repo, stubUserRepo{})
+		svc := NewCaseService(repo, stubUserRepo{}, nil)
 
 		resp, err := svc.SearchCaseComments(context.Background(), domain.SearchCaseCommentsRequest{
 			CaseID:     caseID,
@@ -419,7 +444,7 @@ func TestCaseService_SearchCaseComments(t *testing.T) {
 				return nil, 0, nil
 			},
 		}
-		svc := NewCaseService(repo, stubUserRepo{})
+		svc := NewCaseService(repo, stubUserRepo{}, nil)
 
 		_, err := svc.SearchCaseComments(context.Background(), domain.SearchCaseCommentsRequest{CaseID: "not-a-uuid"})
 		var ve *apierror.ValidationError
@@ -438,7 +463,7 @@ func TestCaseService_SearchCaseComments(t *testing.T) {
 // CreateCase's own "only type \"case\" is supported" guard), so none of these
 // fields have anywhere to go on this data source.
 func TestCaseService_UpdateCase_RejectsTypeTransferFields(t *testing.T) {
-	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{})
+	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil)
 	ctx := context.Background()
 	strPtr := func(s string) *string { return &s }
 	engagement := domain.EngagementTypeMigration

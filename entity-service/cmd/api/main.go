@@ -42,12 +42,20 @@ func main() {
 		log.Fatalf("invalid configuration: %v", err)
 	}
 
+	// A database is mandatory for DATA_SOURCE=postgres and skipped entirely
+	// for servicenow, where entity traffic goes to the SN integration
+	// service instead. With no pool the Postgres-only feature sets
+	// (event_publish_failures, sla_clocks, scheduled_task_run) are left
+	// unregistered rather than failing startup — see db.NewPoolIfNeeded and
+	// server.NewRouter.
 	pool, err := db.NewPoolIfNeeded(cfg)
 	if err != nil {
 		log.Fatalf("connect to database: %v", err)
 	}
 	if pool != nil {
 		defer pool.Close()
+	} else {
+		log.Printf("no database pool (DATA_SOURCE=%s): event-publish-failures, sla-clocks, and scheduled-task-run endpoints are disabled", cfg.DataSource)
 	}
 
 	addr := ":" + cfg.ServerPort

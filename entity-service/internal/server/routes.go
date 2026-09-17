@@ -41,19 +41,19 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userSvc)
 
-	// event_publish_failures, sla_clocks, and scheduled_task_run have no
-	// ServiceNow equivalent. They are Postgres-backed and registered only
-	// when a pool is available (db.NewPoolIfNeeded returns nil for
-	// DATA_SOURCE=servicenow so local SN-mode startups are not blocked).
-	var eventPublishFailureHandler *handler.EventPublishFailureHandler
+	// event_publish_failures, sla_clocks, scheduled_task_run, and
+	// alert_incident_mapping have no ServiceNow equivalent. They are
+	// Postgres-backed and registered only when a pool is available
+	// (db.NewPoolIfNeeded returns nil for DATA_SOURCE=servicenow so local
+	// SN-mode startups are not blocked). Gate the whole chain on db != nil:
+	// nil handler means the routes below are never registered, and nil
+	// service means EventPublisherService records nothing rather than
+	// dereferencing a nil pool.
 	var eventPublishFailureSvc service.EventPublishFailureService
-	var slaClockHandler *handler.SLAClockHandler
-	var scheduledTaskRunHandler *handler.ScheduledTaskRunHandler
+	var eventPublishFailureHandler *handler.EventPublishFailureHandler
 	if db != nil {
 		eventPublishFailureSvc = service.NewEventPublishFailureService(repository.NewEventPublishFailureRepository(db))
 		eventPublishFailureHandler = handler.NewEventPublishFailureHandler(eventPublishFailureSvc)
-		slaClockHandler = handler.NewSLAClockHandler(service.NewSLAClockService(repository.NewSLAClockRepository(db)))
-		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
 	}
 
 	// EventPublisherService is optional, like every ServiceNow-only
@@ -77,6 +77,41 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		)
 	}
 
+	// sla_clocks has no ServiceNow equivalent either, and is gated on the pool
+	// for the same reason as event_publish_failures above. Named (not
+	// inlined) since NewServiceNowCaseService below also needs it, for its
+	// own direct, in-process pause/resume/completion calls (see that
+	// service's own applyCaseStateSLAEffects/applyResponseSLAOnComment) —
+	// both already treat a nil SLAClockService as "unconfigured, skip",
+	// the same posture every other optional-when-no-database dependency in
+	// this file has.
+	var slaClockService service.SLAClockService
+	var slaClockHandler *handler.SLAClockHandler
+	if db != nil {
+		slaClockRepo := repository.NewSLAClockRepository(db)
+		slaClockService = service.NewSLAClockService(slaClockRepo)
+		slaClockHandler = handler.NewSLAClockHandler(slaClockService)
+	}
+
+	// scheduled_task_run has no ServiceNow equivalent either — same
+	// reasoning as sla_clocks/event_publish_failures above. Backs
+	// operations/csm-scheduled-tasks; see that component's own CLAUDE.md
+	// and this service's CLAUDE.md ("Scheduled task runs").
+	var scheduledTaskRunHandler *handler.ScheduledTaskRunHandler
+	if db != nil {
+		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
+	}
+
+	// alert_incident_mapping has no ServiceNow equivalent either — same
+	// reasoning as sla_clocks/scheduled_task_run/event_publish_failures above,
+	// gated the same way: nil db means nil handler means the routes below are
+	// never registered, rather than panicking on a nil pool.
+	var alertIncidentMappingHandler *handler.AlertIncidentMappingHandler
+	if db != nil {
+		alertIncidentMappingRepo := repository.NewAlertIncidentMappingRepository(db)
+		alertIncidentMappingHandler = handler.NewAlertIncidentMappingHandler(service.NewAlertIncidentMappingService(alertIncidentMappingRepo))
+	}
+
 	accountRepo := repository.NewAccountRepository(db)
 	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
 
@@ -95,10 +130,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		snAccountHandler = handler.NewSNAccountHandler(service.NewServiceNowAccountService(serviceNowIntegrationServiceClient))
 	}
 
-	var accountContactHandler *handler.AccountContactHandler
+	accountContactRepo := repository.NewAccountContactRepository(db)
+	var activeAccountContactSvc service.AccountContactService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		accountContactHandler = handler.NewAccountContactHandler(service.NewServiceNowAccountContactService(serviceNowIntegrationServiceClient))
+		activeAccountContactSvc = service.NewServiceNowAccountContactService(serviceNowIntegrationServiceClient)
+	} else {
+		activeAccountContactSvc = service.NewAccountContactService(accountContactRepo)
 	}
+	accountContactHandler := handler.NewAccountContactHandler(activeAccountContactSvc)
 
 	var opportunityHandler *handler.OpportunityHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -125,10 +164,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	projectHandler := handler.NewProjectHandler(activeProjectSvc)
 
-	var projectContactHandler *handler.ProjectContactHandler
+	projectContactRepo := repository.NewProjectContactRepository(db)
+	var activeProjectContactSvc service.ProjectContactService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		projectContactHandler = handler.NewProjectContactHandler(service.NewServiceNowProjectContactService(serviceNowIntegrationServiceClient))
+		activeProjectContactSvc = service.NewServiceNowProjectContactService(serviceNowIntegrationServiceClient)
+	} else {
+		activeProjectContactSvc = service.NewProjectContactService(projectContactRepo)
 	}
+	projectContactHandler := handler.NewProjectContactHandler(activeProjectContactSvc)
 
 	var projectUpdateHandler *handler.ProjectUpdateHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -177,11 +220,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	deployedProductHandler := handler.NewDeployedProductHandler(activeDeployedProductSvc)
 
+	// Constructed here (rather than down near snUserHandler below) so
+	// NewServiceNowCaseService can also take it — see that constructor's
+	// own doc comment for what it uses it for (a direct, in-process role
+	// lookup backing applyResponseSLAOnComment, not routed through HTTP).
+	var snUserService service.SNUserService
+	if cfg.DataSource == config.DataSourceServiceNow {
+		snUserService = service.NewServiceNowUserService(serviceNowIntegrationServiceClient)
+	}
+
 	caseRepo := repository.NewCaseRepository(db)
-	pgCaseSvc := service.NewCaseService(caseRepo, userRepo)
+	pgCaseSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher)
 	var activeCaseSvc service.CaseService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseSvc, eventPublisher)
+		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseSvc, eventPublisher, slaClockService, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
 	} else {
 		activeCaseSvc = pgCaseSvc
 	}
@@ -210,15 +262,23 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	caseEscalationHandler := handler.NewCaseEscalationHandler(activeCaseEscalationSvc)
 
-	var changeRequestHandler *handler.ChangeRequestHandler
+	changeRequestRepo := repository.NewChangeRequestRepository(db)
+	var activeChangeRequestSvc service.ChangeRequestService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		changeRequestHandler = handler.NewChangeRequestHandler(service.NewServiceNowChangeRequestService(serviceNowIntegrationServiceClient))
+		activeChangeRequestSvc = service.NewServiceNowChangeRequestService(serviceNowIntegrationServiceClient)
+	} else {
+		activeChangeRequestSvc = service.NewChangeRequestService(changeRequestRepo)
 	}
+	changeRequestHandler := handler.NewChangeRequestHandler(activeChangeRequestSvc)
 
-	var timeCardHandler *handler.TimeCardHandler
+	timeCardRepo := repository.NewTimeCardRepository(db)
+	var activeTimeCardSvc service.TimeCardService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		timeCardHandler = handler.NewTimeCardHandler(service.NewServiceNowTimeCardService(serviceNowIntegrationServiceClient))
+		activeTimeCardSvc = service.NewServiceNowTimeCardService(serviceNowIntegrationServiceClient)
+	} else {
+		activeTimeCardSvc = service.NewTimeCardService(timeCardRepo, userRepo)
 	}
+	timeCardHandler := handler.NewTimeCardHandler(activeTimeCardSvc)
 
 	var catalogHandler *handler.CatalogHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -230,10 +290,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		feedbackHandler = handler.NewFeedbackHandler(service.NewServiceNowFeedbackService(serviceNowIntegrationServiceClient))
 	}
 
-	var productVulnerabilityHandler *handler.ProductVulnerabilityHandler
+	productVulnerabilityRepo := repository.NewProductVulnerabilityRepository(db)
+	var activeProductVulnerabilitySvc service.ProductVulnerabilityService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		productVulnerabilityHandler = handler.NewProductVulnerabilityHandler(service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient))
+		activeProductVulnerabilitySvc = service.NewServiceNowProductVulnerabilityService(serviceNowIntegrationServiceClient)
+	} else {
+		activeProductVulnerabilitySvc = service.NewProductVulnerabilityService(productVulnerabilityRepo)
 	}
+	productVulnerabilityHandler := handler.NewProductVulnerabilityHandler(activeProductVulnerabilitySvc)
 
 	var incidentHandler *handler.IncidentHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -284,39 +348,59 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		instanceHandler = handler.NewInstanceHandler(service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient))
 	}
 
-	var itServiceHandler *handler.ITServiceHandler
+	itServiceRepo := repository.NewITServiceRepository(db)
+	var activeITServiceSvc service.ITServiceService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		itServiceHandler = handler.NewITServiceHandler(service.NewServiceNowITServiceService(serviceNowIntegrationServiceClient))
+		activeITServiceSvc = service.NewServiceNowITServiceService(serviceNowIntegrationServiceClient)
+	} else {
+		activeITServiceSvc = service.NewITServiceService(itServiceRepo)
 	}
+	itServiceHandler := handler.NewITServiceHandler(activeITServiceSvc)
 
-	var serviceOfferingHandler *handler.ServiceOfferingHandler
+	serviceOfferingRepo := repository.NewServiceOfferingRepository(db)
+	var activeServiceOfferingSvc service.ServiceOfferingService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		serviceOfferingHandler = handler.NewServiceOfferingHandler(service.NewServiceNowServiceOfferingService(serviceNowIntegrationServiceClient))
+		activeServiceOfferingSvc = service.NewServiceNowServiceOfferingService(serviceNowIntegrationServiceClient)
+	} else {
+		activeServiceOfferingSvc = service.NewServiceOfferingService(serviceOfferingRepo)
 	}
+	serviceOfferingHandler := handler.NewServiceOfferingHandler(activeServiceOfferingSvc)
 
-	var groupHandler *handler.GroupHandler
+	groupRepo := repository.NewGroupRepository(db)
+	var activeGroupSvc service.GroupService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		groupHandler = handler.NewGroupHandler(service.NewServiceNowGroupService(serviceNowIntegrationServiceClient))
+		activeGroupSvc = service.NewServiceNowGroupService(serviceNowIntegrationServiceClient)
+	} else {
+		activeGroupSvc = service.NewGroupService(groupRepo)
 	}
+	groupHandler := handler.NewGroupHandler(activeGroupSvc)
 
 	var configurationItemHandler *handler.ConfigurationItemHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		configurationItemHandler = handler.NewConfigurationItemHandler(service.NewServiceNowConfigurationItemService(serviceNowIntegrationServiceClient))
 	}
 
-	var commentHandler *handler.CommentHandler
+	commentRepo := repository.NewCommentRepository(db)
+	var activeCommentSvc service.CommentService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		commentHandler = handler.NewCommentHandler(service.NewServiceNowCommentService(serviceNowIntegrationServiceClient))
+		activeCommentSvc = service.NewServiceNowCommentService(serviceNowIntegrationServiceClient)
+	} else {
+		activeCommentSvc = service.NewCommentService(commentRepo, userRepo)
 	}
+	commentHandler := handler.NewCommentHandler(activeCommentSvc)
 
-	var taskSlaHandler *handler.TaskSlaHandler
+	taskSlaRepo := repository.NewTaskSlaRepository(db)
+	var activeTaskSlaSvc service.TaskSlaService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		taskSlaHandler = handler.NewTaskSlaHandler(service.NewServiceNowTaskSlaService(serviceNowIntegrationServiceClient))
+		activeTaskSlaSvc = service.NewServiceNowTaskSlaService(serviceNowIntegrationServiceClient)
+	} else {
+		activeTaskSlaSvc = service.NewTaskSlaService(taskSlaRepo)
 	}
+	taskSlaHandler := handler.NewTaskSlaHandler(activeTaskSlaSvc)
 
 	var snUserHandler *handler.SNUserHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
-		snUserHandler = handler.NewSNUserHandler(service.NewServiceNowUserService(serviceNowIntegrationServiceClient))
+		snUserHandler = handler.NewSNUserHandler(snUserService)
 	}
 
 	// Tasks are a ServiceNow-only entity, but the routes are registered for both
@@ -336,6 +420,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 
 	mux.HandleFunc("GET /health", handler.HealthCheck)
 
+	// event_publish_failures, sla_clocks, scheduled_task_run and
+	// alert_incident_mapping are not data-source specific, but all four are
+	// Postgres-backed, and the database is optional when
+	// DATA_SOURCE=servicenow — so unlike the role catalogue and team
+	// registry below, these are registered only when a pool exists. With no
+	// database they 404 rather than panicking on a nil pool.
 	if eventPublishFailureHandler != nil {
 		mux.HandleFunc("POST /event-publish-failures", eventPublishFailureHandler.CreateEventPublishFailure)
 		mux.HandleFunc("POST /event-publish-failures/search", eventPublishFailureHandler.SearchEventPublishFailures)
@@ -351,6 +441,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("PATCH /scheduled-tasks/attempts/{id}", scheduledTaskRunHandler.UpdateScheduledTaskRunAttempt)
 		mux.HandleFunc("GET /scheduled-tasks/attempts", scheduledTaskRunHandler.ListScheduledTaskRuns)
 		mux.HandleFunc("DELETE /scheduled-tasks/attempts", scheduledTaskRunHandler.DeleteScheduledTaskRuns)
+	}
+	if alertIncidentMappingHandler != nil {
+		mux.HandleFunc("POST /alert-incident-mappings", alertIncidentMappingHandler.CreateAlertIncidentMapping)
+		mux.HandleFunc("POST /alert-incident-mappings/lookup", alertIncidentMappingHandler.LookupAlertIncidentMappings)
 	}
 
 	if snUserHandler != nil {
@@ -369,9 +463,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("GET /accounts/{id}", accountHandler.GetAccount)
 		mux.HandleFunc("POST /accounts/search", accountHandler.SearchAccounts)
 	}
-	if accountContactHandler != nil {
-		mux.HandleFunc("POST /accounts/{id}/contacts/search", accountContactHandler.SearchAccountContacts)
-	}
+	mux.HandleFunc("POST /accounts/{id}/contacts/search", accountContactHandler.SearchAccountContacts)
 	if opportunityHandler != nil {
 		mux.HandleFunc("POST /opportunities/search", opportunityHandler.SearchOpportunities)
 		mux.HandleFunc("GET /opportunities/{id}", opportunityHandler.GetOpportunity)
@@ -385,10 +477,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	mux.HandleFunc("GET /projects/{id}", projectHandler.GetProject)
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
-	if projectContactHandler != nil {
-		mux.HandleFunc("POST /projects/{id}/contacts/search", projectContactHandler.SearchProjectContacts)
-		mux.HandleFunc("GET /projects/{id}/contacts/{contactId}", projectContactHandler.GetProjectContact)
-	}
+	mux.HandleFunc("POST /projects/{id}/contacts/search", projectContactHandler.SearchProjectContacts)
+	mux.HandleFunc("GET /projects/{id}/contacts/{contactId}", projectContactHandler.GetProjectContact)
 	if projectUpdateHandler != nil {
 		mux.HandleFunc("PATCH /projects/{id}", projectUpdateHandler.UpdateProject)
 	}
@@ -466,61 +556,45 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("GET /cases/{id}/escalations", caseEscalationHandler.SearchCaseEscalations)
 	mux.HandleFunc("POST /cases/{id}/escalations", caseEscalationHandler.CreateCaseEscalation)
 
-	if changeRequestHandler != nil {
-		mux.HandleFunc("POST /change-requests", changeRequestHandler.CreateChangeRequest)
-		mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
-		mux.HandleFunc("POST /change-requests/aggregate", changeRequestHandler.AggregateChangeRequests)
-		mux.HandleFunc("GET /change-requests/{id}", changeRequestHandler.GetChangeRequest)
-		mux.HandleFunc("PATCH /change-requests/{id}", changeRequestHandler.PatchChangeRequest)
-		mux.HandleFunc("GET /change-requests/{id}/approvals", changeRequestHandler.GetChangeRequestApprovals)
-		mux.HandleFunc("POST /change-requests/{id}/approvals/decision", changeRequestHandler.DecideChangeRequestApproval)
-	}
+	mux.HandleFunc("POST /change-requests", changeRequestHandler.CreateChangeRequest)
+	mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
+	mux.HandleFunc("POST /change-requests/aggregate", changeRequestHandler.AggregateChangeRequests)
+	mux.HandleFunc("GET /change-requests/{id}", changeRequestHandler.GetChangeRequest)
+	mux.HandleFunc("PATCH /change-requests/{id}", changeRequestHandler.PatchChangeRequest)
+	mux.HandleFunc("GET /change-requests/{id}/approvals", changeRequestHandler.GetChangeRequestApprovals)
+	mux.HandleFunc("POST /change-requests/{id}/approvals/decision", changeRequestHandler.DecideChangeRequestApproval)
 
-	if timeCardHandler != nil {
-		mux.HandleFunc("POST /time-cards/search", timeCardHandler.SearchTimeCards)
-		mux.HandleFunc("POST /time-cards", timeCardHandler.CreateTimeCard)
-		mux.HandleFunc("PATCH /time-cards/{id}", timeCardHandler.UpdateTimeCard)
-		mux.HandleFunc("POST /cases/time-cards/search", timeCardHandler.SearchCaseTimeCards)
-		mux.HandleFunc("DELETE /time-cards/{id}", timeCardHandler.DeleteTimeCard)
-	}
+	mux.HandleFunc("POST /time-cards/search", timeCardHandler.SearchTimeCards)
+	mux.HandleFunc("POST /time-cards", timeCardHandler.CreateTimeCard)
+	mux.HandleFunc("PATCH /time-cards/{id}", timeCardHandler.UpdateTimeCard)
+	mux.HandleFunc("POST /cases/time-cards/search", timeCardHandler.SearchCaseTimeCards)
+	mux.HandleFunc("DELETE /time-cards/{id}", timeCardHandler.DeleteTimeCard)
 
 	if catalogHandler != nil {
 		mux.HandleFunc("POST /catalogs/search", catalogHandler.SearchCatalogs)
 		mux.HandleFunc("GET /catalogs/{catalogId}/items/{catalogItemId}/variables", catalogHandler.GetCatalogItemVariables)
 	}
 
-	if productVulnerabilityHandler != nil {
-		mux.HandleFunc("POST /products/vulnerabilities/search", productVulnerabilityHandler.SearchProductVulnerabilities)
-		mux.HandleFunc("GET /products/vulnerabilities/{id}", productVulnerabilityHandler.GetProductVulnerability)
-		mux.HandleFunc("GET /products/vulnerabilities/meta", productVulnerabilityHandler.GetVulnerabilityMeta)
-		mux.HandleFunc("POST /products/vulnerabilities/sync", productVulnerabilityHandler.SyncProductVulnerabilities)
-	}
+	mux.HandleFunc("POST /products/vulnerabilities/search", productVulnerabilityHandler.SearchProductVulnerabilities)
+	mux.HandleFunc("GET /products/vulnerabilities/{id}", productVulnerabilityHandler.GetProductVulnerability)
+	mux.HandleFunc("GET /products/vulnerabilities/meta", productVulnerabilityHandler.GetVulnerabilityMeta)
+	mux.HandleFunc("POST /products/vulnerabilities/sync", productVulnerabilityHandler.SyncProductVulnerabilities)
 
-	if itServiceHandler != nil {
-		mux.HandleFunc("POST /services/search", itServiceHandler.SearchITServices)
-	}
+	mux.HandleFunc("POST /services/search", itServiceHandler.SearchITServices)
 
-	if serviceOfferingHandler != nil {
-		mux.HandleFunc("POST /service-offerings/search", serviceOfferingHandler.SearchServiceOfferings)
-	}
+	mux.HandleFunc("POST /service-offerings/search", serviceOfferingHandler.SearchServiceOfferings)
 
-	if groupHandler != nil {
-		mux.HandleFunc("POST /groups/search", groupHandler.SearchGroups)
-	}
+	mux.HandleFunc("POST /groups/search", groupHandler.SearchGroups)
 
 	if configurationItemHandler != nil {
 		mux.HandleFunc("POST /configuration-items/search", configurationItemHandler.SearchConfigurationItems)
 	}
 
-	if commentHandler != nil {
-		mux.HandleFunc("POST /comments", commentHandler.CreateComment)
-		mux.HandleFunc("POST /comments/search", commentHandler.SearchComments)
-	}
+	mux.HandleFunc("POST /comments", commentHandler.CreateComment)
+	mux.HandleFunc("POST /comments/search", commentHandler.SearchComments)
 
-	if taskSlaHandler != nil {
-		mux.HandleFunc("GET /slas/{id}", taskSlaHandler.GetTaskSla)
-		mux.HandleFunc("POST /slas/search", taskSlaHandler.SearchTaskSlas)
-	}
+	mux.HandleFunc("GET /slas/{id}", taskSlaHandler.GetTaskSla)
+	mux.HandleFunc("POST /slas/search", taskSlaHandler.SearchTaskSlas)
 
 	// Registered unconditionally; the non-ServiceNow data source is served by
 	// service.NewUnavailableTaskService, which answers 503 (see above).

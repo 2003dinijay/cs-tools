@@ -49,6 +49,7 @@ type emailSender interface {
 type googleChatSender interface {
 	SendIncidentAlert(ctx context.Context, product, title, shortDescription, portalURL string) error
 	SendCaseCreatedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error
+	SendSecurityReportAnalysisAlert(ctx context.Context, product, caseNumber, wso2CaseID, productName, title, team, caseLink string) error
 	SendCaseAcknowledgedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error
 	SendSeverityChangedAlert(ctx context.Context, product, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error
 }
@@ -328,6 +329,18 @@ func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {
 		// consumer's retries and dead-letter an event that was never broken,
 		// just not this consumer's concern.
 		return nil
+	case events.TypeCaseBillableStatusChanged:
+		// internal/timecardengine's own consumer group (a different group
+		// ID, so it gets its own full copy of this same topic) is what
+		// reacts to this one — same shape as the SLA case above, just with
+		// its handler currently log-only rather than a real reaction (see
+		// that package's own doc comment: entity-service's Publish call for
+		// this event is itself still commented out, so neither consumer
+		// group has ever actually received one yet). Returning nil (not an
+		// error) is required here for the same reason as the SLA case:
+		// erroring would burn this consumer's retries and dead-letter an
+		// event that was never broken, just not this consumer's concern.
+		return nil
 	default:
 		return fmt.Errorf("dispatch: unknown event type %q", env.Type)
 	}
@@ -420,10 +433,20 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 		if product == "" {
 			slog.WarnContext(ctx, "dispatch: no product for case.created (payload and DEFAULT_CHAT_PRODUCT both empty); skipping Google Chat alert")
 		} else {
-			severityLabel, severityColor := severityLabelAndColor(p.Priority)
 			caseLink := d.links.CSMLink(p.CaseID)
 			title := truncateTitle(p.CaseTitle, maxChatTitleLength)
-			if chatErr := d.googleChat.SendCaseCreatedAlert(ctx, product, severityLabel, severityColor, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, p.Product, title, p.Team, caseLink); chatErr != nil {
+			var chatErr error
+			if p.CaseType == "SECURITY_REPORT_ANALYSIS" {
+				// A dedicated card: severity is never set for this case
+				// type (see entity-service's own validateCreateCaseRequest),
+				// so SendCaseCreatedAlert's severity line wouldn't apply —
+				// see SendSecurityReportAnalysisAlert's own doc comment.
+				chatErr = d.googleChat.SendSecurityReportAnalysisAlert(ctx, product, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, p.Product, title, p.Team, caseLink)
+			} else {
+				severityLabel, severityColor := severityLabelAndColor(p.Priority)
+				chatErr = d.googleChat.SendCaseCreatedAlert(ctx, product, severityLabel, severityColor, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, p.Product, title, p.Team, caseLink)
+			}
+			if chatErr != nil {
 				errs = append(errs, chatErr)
 				d.forget(chatKey)
 			}

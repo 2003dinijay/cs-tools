@@ -20,6 +20,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -32,11 +33,18 @@ import (
 type caseService struct {
 	repo     repository.CaseRepository
 	userRepo repository.UserRepository
+	// publisher is nil when Event Hub is not configured — see
+	// snCaseService.publisher's own doc comment for the same convention.
+	// Currently only ever read by UpdateCase's (inert — see
+	// events.TypeCaseBillableStatusChanged's own doc comment)
+	// case.billable_status_changed detection.
+	publisher EventPublisherService
 }
 
 // NewCaseService constructs a CaseService backed by the given repositories.
-func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepository) CaseService {
-	return &caseService{repo: repo, userRepo: userRepo}
+// publisher may be nil (see caseService.publisher's own doc comment).
+func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService) CaseService {
+	return &caseService{repo: repo, userRepo: userRepo, publisher: publisher}
 }
 
 var validCaseSortField = map[domain.CaseSortField]bool{
@@ -274,15 +282,23 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	if err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
+	internalID := ""
+	if c.InternalID != nil {
+		internalID = *c.InternalID
+	}
+	state := ""
+	if c.State != nil {
+		state = string(*c.State)
+	}
 	return domain.CreateCaseResponse{
 		Message: "Case created successfully.",
 		Case: domain.CreateCaseDetails{
 			ID:         c.ID,
-			InternalID: c.InternalID,
+			InternalID: internalID,
 			Number:     c.Number,
 			CreatedBy:  c.CreatedBy,
 			CreatedOn:  c.CreatedOn,
-			State:      string(c.State),
+			State:      state,
 		},
 	}, nil
 }
@@ -324,7 +340,9 @@ func (s *caseService) CreateCaseComment(ctx context.Context, req domain.CreateCa
 	if err != nil {
 		return domain.CreateCaseCommentResponse{}, err
 	}
-	req.CreatedBy = user.ID
+	// comment.created_by (migration 000037) is a free-text VARCHAR, not a
+	// UUID FK -- see CaseRepository.CreateCaseComment's own doc comment.
+	req.CreatedBy = user.Email
 	c, err := s.repo.CreateCaseComment(ctx, req)
 	if err != nil {
 		return domain.CreateCaseCommentResponse{}, err
@@ -368,14 +386,31 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
-	if req.WatchList != nil || req.AssigneeEmail != nil ||
+	if req.AssigneeEmail != nil ||
 		req.RelatedCaseID != nil || req.ParentID != nil || req.AutocloseHoldUntil != nil ||
 		req.Subject != nil || req.Description != nil || req.DeploymentID != nil || req.DeployedProductID != nil ||
 		req.BestCaseFixEta != nil || req.MostLikelyFixEta != nil || req.WorstCaseFixEta != nil ||
-		req.Type != nil || req.EngagementType != nil || req.CatalogID != nil ||
-		req.CatalogItemID != nil || len(req.Variables) > 0 {
-		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "watchList, assigneeEmail, relatedCaseId, parentId, autocloseHoldUntil, subject, description, deploymentId, deployedProductId, bestCaseFixEta, mostLikelyFixEta, worstCaseFixEta, type, engagementType, catalogId, catalogItemId, and variables are only supported for the ServiceNow data source"}
+		req.Type != nil || req.EngagementType != nil || req.EngagementPaymentType != nil ||
+		req.IssueType != nil || req.ResolutionCode != nil || req.Cause != nil || req.CloseNotes != nil ||
+		req.AddPublicComment != nil || req.Product != nil || req.PublicTicket != nil ||
+		req.Acknowledge != nil || req.WorkaroundProvided != nil ||
+		req.CatalogID != nil || req.CatalogItemID != nil || len(req.Variables) > 0 {
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "assigneeEmail, relatedCaseId, parentId, autocloseHoldUntil, subject, description, deploymentId, deployedProductId, bestCaseFixEta, mostLikelyFixEta, worstCaseFixEta, type, engagementType, engagementPaymentType, issueType, resolutionCode, cause, closeNotes, addPublicComment, product, publicTicket, acknowledge, workaroundProvided, catalogId, catalogItemId, and variables are only supported for the ServiceNow data source"}
 	}
+
+	// WatchList is mutually exclusive with State/Severity/WorkState (see this
+	// method's own doc comment in interfaces.go) and has its own persistence
+	// path (work_item_watcher, migration 000040) entirely separate from the
+	// state/severity/workState UPDATE below -- split out into its own branch
+	// with an early return so this addition can't disturb that existing,
+	// already-in-production logic (including its billable-status side effect).
+	if req.WatchList != nil {
+		if req.State != nil || req.Severity != nil || req.WorkState != nil {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "watchList cannot be combined with state, severity, or workState"}
+		}
+		return s.updateCaseWatchList(ctx, req)
+	}
+
 	fieldCount := 0
 	if req.State != nil {
 		fieldCount++
@@ -401,10 +436,21 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	if req.WorkState != nil && !validCaseWorkState[*req.WorkState] {
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workState contains invalid value: " + string(*req.WorkState)}
 	}
-	c, err := s.repo.UpdateCase(ctx, req)
+
+	// oldSeverity is the case's severity immediately before this update —
+	// accurate even under a concurrent update to the same case, since the
+	// repository locks the row before reading it whenever req.Severity is
+	// set (see CaseRepository.UpdateCase's own doc comment). Only meaningful
+	// when req.Severity != nil; otherwise it's just the unchanged severity.
+	c, oldSeverity, err := s.repo.UpdateCase(ctx, req)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
+
+	if req.Severity != nil {
+		s.detectBillableStatusChange(ctx, req.ID, oldSeverity, c.Severity)
+	}
+
 	return domain.UpdateCaseResponse{
 		Message: "Case updated successfully",
 		Case: domain.UpdatedCase{
@@ -415,6 +461,79 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			WorkState: c.WorkState,
 		},
 	}, nil
+}
+
+// updateCaseWatchList implements UpdateCase's WatchList branch: replacing
+// the case's watch list wholesale with req's user ids via
+// CaseRepository.SetCaseWatchList. An explicitly empty (non-nil) WatchList
+// clears the watch list -- validateUUIDs on an empty slice is a no-op, so
+// that reaches the repository as an empty replacement, not an error.
+func (s *caseService) updateCaseWatchList(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
+	userIDs := *req.WatchList
+	if err := validateUUIDs("watchList", userIDs); err != nil {
+		return domain.UpdateCaseResponse{}, err
+	}
+
+	actor, err := s.resolveActor(ctx)
+	if err != nil {
+		return domain.UpdateCaseResponse{}, err
+	}
+
+	watchers, updatedOn, err := s.repo.SetCaseWatchList(ctx, req.ID, userIDs, actor.Email)
+	if err != nil {
+		return domain.UpdateCaseResponse{}, err
+	}
+
+	return domain.UpdateCaseResponse{
+		Message: "Case updated successfully",
+		Case: domain.UpdatedCase{
+			ID:        req.ID,
+			UpdatedOn: updatedOn,
+			WatchList: watchers,
+		},
+	}, nil
+}
+
+// detectBillableStatusChange checks whether a severity update just crossed
+// the LOW boundary in either direction — entering LOW means every time
+// card on this case should become billable, leaving it means they should
+// become non-billable (see events.CaseBillableStatusChangedPayload's own
+// doc comment for why LOW is the one severity that matters here). A
+// Postgres-backed case's Type is always "case" and can never change (see
+// this file's own UpdateCase, which rejects req.Type entirely on this data
+// source), so unlike the ServiceNow data source this reduces to a single
+// severity comparison — no Type-transition case to handle.
+//
+// Publishing events.TypeCaseBillableStatusChanged is commented out below
+// rather than live — see that type's own doc comment: nothing consumes it
+// yet (Postgres has no time_cards table/repo/service at all today), so
+// publishing now would produce an event nothing acts on. The detection
+// itself is real; only the actual Publish call is inert.
+func (s *caseService) detectBillableStatusChange(ctx context.Context, caseID string, oldSeverity, newSeverity *domain.CaseSeverity) {
+	oldLow := oldSeverity != nil && *oldSeverity == domain.CaseSeverityLow
+	newLow := newSeverity != nil && *newSeverity == domain.CaseSeverityLow
+	if oldLow == newLow {
+		return
+	}
+	isBillable := newLow
+
+	// TODO: enable once a consumer exists for events.TypeCaseBillableStatusChanged
+	// (bulk-flipping every time card's IsBillable for caseId) — see that
+	// type's own doc comment for what's still missing.
+	//
+	// payload, err := json.Marshal(events.CaseBillableStatusChangedPayload{CaseID: caseID, IsBillable: isBillable})
+	// if err != nil {
+	// 	slog.ErrorContext(ctx, "case update: encode case.billable_status_changed payload failed", "caseId", caseID, "error", err)
+	// 	return
+	// }
+	// if s.publisher == nil {
+	// 	return
+	// }
+	// if err := s.publisher.Publish(ctx, events.TypeCaseBillableStatusChanged, caseID, payload); err != nil {
+	// 	slog.ErrorContext(ctx, "case update: publish case.billable_status_changed failed", "caseId", caseID)
+	// }
+
+	slog.InfoContext(ctx, "case update: severity crossed the billable boundary, event hub publish not yet enabled", "caseId", caseID, "isBillable", isBillable)
 }
 
 // SearchCases implements CaseService.
@@ -784,8 +903,34 @@ func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.Sear
 	}, nil
 }
 
-func (s *caseService) SearchCaseActivities(_ context.Context, _ domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error) {
-	return domain.SearchCaseActivitiesResponse{}, &apierror.ServiceUnavailableError{Msg: "case activities are only supported for the ServiceNow data source"}
+// SearchCaseActivities implements CaseService.
+//
+// Merges comments and complete attachments into one feed -- see
+// CaseRepository.SearchCaseActivities's own doc comment. There is no
+// field-change audit table in this schema, so req.IncludeFieldChanges has
+// no effect: an absent field-change history is a valid state, not an error,
+// per this request's own doc comment ("only comment and attachment entries
+// are returned" is the documented default already).
+func (s *caseService) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error) {
+	if err := validateUUIDs("caseId", []string{req.CaseID}); err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+
+	activity, total, err := s.repo.SearchCaseActivities(ctx, req)
+	if err != nil {
+		return domain.SearchCaseActivitiesResponse{}, err
+	}
+
+	return domain.SearchCaseActivitiesResponse{
+		Activity: activity,
+		Total:    total,
+		Limit:    req.Pagination.Limit,
+		Offset:   req.Pagination.Offset,
+		HasMore:  req.Pagination.Offset+len(activity) < total,
+	}, nil
 }
 
 // GetCaseAttachmentContent implements CaseService for the CSM-native
@@ -819,16 +964,131 @@ func (s *caseService) GetAttachment(_ context.Context, _ string) (domain.Attachm
 	return domain.Attachment{}, &apierror.ServiceUnavailableError{Msg: "attachments are only supported for the ServiceNow data source"}
 }
 
-func (s *caseService) AddCaseTag(_ context.Context, _, _ string) (domain.Tag, error) {
-	return domain.Tag{}, &apierror.ServiceUnavailableError{Msg: "case tags are only supported for the ServiceNow data source"}
+// AddCaseTag implements CaseService.
+//
+// Persists via tag/work_item_tag (migration 000021), added after this
+// method was written as a detection-only stub (see
+// detectPatchTagBillableOverride's own doc comment for that history) — it
+// now actually attaches label to caseID, idempotently (a repeat call for an
+// already-attached label, case-insensitively, returns the existing tag
+// rather than erroring or duplicating). The "patch" + LOW-severity detection
+// still only logs: (a) case tags having real storage is now true, but (b)
+// no consumer exists yet for events.TypeCaseBillableStatusChanged (bulk-
+// flipping every time card's IsBillable for caseId), so the actual publish
+// stays commented out in detectPatchTagBillableOverride until that exists.
+func (s *caseService) AddCaseTag(ctx context.Context, caseID, label string) (domain.Tag, error) {
+	if err := validateUUIDs("caseId", []string{caseID}); err != nil {
+		return domain.Tag{}, err
+	}
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return domain.Tag{}, &apierror.ValidationError{Msg: "label is required"}
+	}
+	if len(label) > 255 {
+		return domain.Tag{}, &apierror.ValidationError{Msg: "label must not exceed 255 characters"}
+	}
+
+	actor, err := s.resolveActor(ctx)
+	if err != nil {
+		return domain.Tag{}, err
+	}
+
+	s.detectPatchTagBillableOverride(ctx, caseID, label)
+
+	return s.repo.AddCaseTag(ctx, caseID, label, actor.Email)
 }
 
-func (s *caseService) RemoveCaseTag(_ context.Context, _, _ string) error {
-	return &apierror.ServiceUnavailableError{Msg: "case tags are only supported for the ServiceNow data source"}
+// detectPatchTagBillableOverride DETECTS AND LOGS ONLY — it does not
+// itself change any time card's billable status, publish an event, or
+// persist the tag (see AddCaseTag's own doc comment). It is a special case
+// of detectBillableStatusChange's normal "entering LOW/S4 severity makes
+// time cards billable" rule: a case tagged "patch" while at LOW severity
+// should eventually have its time cards non-billable regardless — WSO2
+// still covers a patch under support even for an otherwise best-efforts S4
+// case — but nothing in this codebase acts on that yet (see the TODO
+// below). Label matching is case/whitespace-insensitive, same reasoning as
+// this codebase's other free-text label lookups (e.g.
+// slaSeverityLabelAndColor in csm-notification-service). Unlike
+// detectBillableStatusChange, the eventual reaction is meant to be
+// one-directional: removing the tag (or adding any other label) should
+// never reverse it — only ever set isBillable=false, never back to true,
+// since there's no natural "un-patch" event to react to.
+//
+// Same commented-out-publish posture as detectBillableStatusChange: logs
+// only, since there is still no time_cards consumer to act on
+// events.TypeCaseBillableStatusChanged (see that type's own doc comment).
+// AddCaseTag itself now succeeds (see its own doc comment) -- the remaining
+// gap is purely the missing consumer, not the tag storage this was
+// originally blocked on.
+func (s *caseService) detectPatchTagBillableOverride(ctx context.Context, caseID, label string) {
+	if !strings.EqualFold(strings.TrimSpace(label), "patch") {
+		return
+	}
+
+	cv, err := s.repo.GetCaseByID(ctx, caseID)
+	if err != nil {
+		slog.ErrorContext(ctx, "add case tag: patch billable override not evaluated, get case failed", "caseId", caseID)
+		return
+	}
+	if cv.Severity == nil || *cv.Severity != domain.CaseSeverityLow {
+		return
+	}
+
+	// TODO: enable once (a) case tags have real Postgres storage so
+	// AddCaseTag can actually succeed, and (b) a consumer exists for
+	// events.TypeCaseBillableStatusChanged (bulk-flipping every time
+	// card's IsBillable for caseId) — see that type's own doc comment for
+	// what's still missing there.
+	//
+	// payload, err := json.Marshal(events.CaseBillableStatusChangedPayload{CaseID: caseID, IsBillable: false})
+	// if err != nil {
+	// 	slog.ErrorContext(ctx, "add case tag: encode case.billable_status_changed payload failed", "caseId", caseID, "error", err)
+	// 	return
+	// }
+	// if s.publisher == nil {
+	// 	return
+	// }
+	// if err := s.publisher.Publish(ctx, events.TypeCaseBillableStatusChanged, caseID, payload); err != nil {
+	// 	slog.ErrorContext(ctx, "add case tag: publish case.billable_status_changed failed", "caseId", caseID)
+	// }
+
+	slog.InfoContext(ctx, "add case tag: patch tag detected on an S4 case, time cards would need to become non-billable once a real tag/time-card path exists (detection only, no action taken)", "caseId", caseID, "isBillable", false)
 }
 
-func (s *caseService) SearchTags(_ context.Context, _ domain.SearchTagsRequest) ([]domain.Tag, error) {
-	return nil, &apierror.ServiceUnavailableError{Msg: "case tags are only supported for the ServiceNow data source"}
+// RemoveCaseTag implements CaseService.
+func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) error {
+	if err := validateUUIDs("caseId", []string{caseID}); err != nil {
+		return err
+	}
+	if err := validateUUIDs("tagId", []string{tagID}); err != nil {
+		return err
+	}
+	actor, err := s.resolveActor(ctx)
+	if err != nil {
+		return err
+	}
+	return s.repo.RemoveCaseTag(ctx, caseID, tagID, actor.Email)
+}
+
+// SearchTags implements CaseService.
+func (s *caseService) SearchTags(ctx context.Context, req domain.SearchTagsRequest) ([]domain.Tag, error) {
+	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
+		return nil, err
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > maxLimit {
+		return nil, &apierror.ValidationError{Msg: fmt.Sprintf("limit cannot exceed %d", maxLimit)}
+	}
+
+	actor, err := s.resolveActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.repo.SearchTags(ctx, req.Filters.SearchQuery, actor.Email, limit)
 }
 
 func (s *caseService) GetCaseFeedback(_ context.Context, _ string) (domain.CaseEmojiFeedback, error) {
@@ -860,19 +1120,20 @@ func (s *caseService) GetAttachmentByID(ctx context.Context, id string) (domain.
 	}
 
 	return domain.AttachmentDetails{
-		ID:          a.ID,
-		ReferenceID: a.ReferenceID,
-		Name:        a.Name,
-		Type:        a.Type,
-		SizeBytes:   a.SizeBytes,
-		Description: a.Description,
-		CreatedBy:   createdBy,
-		CreatedOn:   a.CreatedOn,
-		DownloadURL: a.DownloadURL,
-		PreviewURL:  a.PreviewURL,
-		Content:     nil,
-		StorageKey:  a.StorageKey,
-		Status:      a.Status,
+		ID:            a.ID,
+		ReferenceID:   a.ReferenceID,
+		ReferenceType: &a.ReferenceType,
+		Name:          a.Name,
+		Type:          a.Type,
+		SizeBytes:     a.SizeBytes,
+		Description:   a.Description,
+		CreatedBy:     createdBy,
+		CreatedOn:     a.CreatedOn,
+		DownloadURL:   a.DownloadURL,
+		PreviewURL:    a.PreviewURL,
+		Content:       nil,
+		StorageKey:    a.StorageKey,
+		Status:        a.Status,
 	}, nil
 }
 

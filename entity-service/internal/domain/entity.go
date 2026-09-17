@@ -1443,22 +1443,32 @@ type CaseSort struct {
 // ClosedOn and WorkState are the only nullable fields; all others are required.
 // Used as the response for write operations (create/update).
 type Case struct {
-	ID                string         `json:"id"`
-	Number            string         `json:"number"`
-	InternalID        string         `json:"internalId"`
-	CreatedBy         string         `json:"createdBy"`
-	ProjectID         string         `json:"projectId"`
-	DeploymentID      string         `json:"deploymentId"`
-	DeployedProductID string         `json:"deployedProductId"`
-	Subject           string         `json:"subject"`
-	Description       string         `json:"description"`
-	Severity          CaseSeverity   `json:"severity"`
-	IssueType         CaseIssueType  `json:"issueType"`
-	State             CaseState      `json:"state"`
-	WorkState         *CaseWorkState `json:"workState"`
-	CreatedOn         time.Time      `json:"createdOn"`
-	UpdatedOn         time.Time      `json:"updatedOn"`
-	ClosedOn          *time.Time     `json:"closedOn"`
+	ID     string `json:"id"`
+	Number string `json:"number"`
+	// InternalID (work_item.wso2_id) is null when blank -- most work_item
+	// types never have one, and even the types whose CHECK constraint
+	// requires it non-NULL (migration 000016) can still have it as an
+	// empty string.
+	InternalID        *string `json:"internalId"`
+	CreatedBy         string  `json:"createdBy"`
+	ProjectID         string  `json:"projectId"`
+	DeploymentID      string  `json:"deploymentId"`
+	DeployedProductID string  `json:"deployedProductId"`
+	Subject           string  `json:"subject"`
+	Description       string  `json:"description"`
+	// Severity/IssueType are null in practice for most real cases (confirmed
+	// against production data: ~86%/~99% of cases have no severity/issue
+	// type set on "case") -- not an edge case, the common case.
+	Severity  *CaseSeverity  `json:"severity"`
+	IssueType *CaseIssueType `json:"issueType"`
+	// State is null only for a handful of real cases, but "case".state is
+	// nullable and observed null in practice, so this stays consistent with
+	// Severity/IssueType rather than assuming it never happens.
+	State     *CaseState     `json:"state"`
+	WorkState *CaseWorkState `json:"workState"`
+	CreatedOn time.Time      `json:"createdOn"`
+	UpdatedOn time.Time      `json:"updatedOn"`
+	ClosedOn  *time.Time     `json:"closedOn"`
 }
 
 // AssignedEngineerRef is a compact reference to an assigned support engineer.
@@ -1607,14 +1617,20 @@ type DeployedProductRef struct {
 
 // CaseView is the enriched read representation of a case.
 type CaseView struct {
-	ID             string         `json:"id"`
-	Number         string         `json:"number"`
-	InternalID     string         `json:"internalId"`
-	Subject        string         `json:"subject"`
-	Description    string         `json:"description"`
-	Severity       CaseSeverity   `json:"severity"`
-	IssueType      CaseIssueType  `json:"issueType"`
-	State          CaseState      `json:"state"`
+	ID     string `json:"id"`
+	Number string `json:"number"`
+	// InternalID (work_item.wso2_id) is null when blank -- see domain.Case's
+	// own doc comment for why an empty string can occur even for a
+	// wso2_id-required work_item type.
+	InternalID  *string `json:"internalId"`
+	Subject     string  `json:"subject"`
+	Description string  `json:"description"`
+	// Severity/IssueType/State are null in practice for a large share of
+	// real cases -- see domain.Case's own doc comment for the confirmed
+	// production null rates.
+	Severity       *CaseSeverity  `json:"severity"`
+	IssueType      *CaseIssueType `json:"issueType"`
+	State          *CaseState     `json:"state"`
 	WorkState      *CaseWorkState `json:"workState"`
 	Type           *string        `json:"type"`
 	EngagementType *string        `json:"engagementType"`
@@ -1624,8 +1640,11 @@ type CaseView struct {
 	// CreatedBy is the canonical user reference for the case creator. Its id is
 	// populated only where the backing data source already supplies one, and
 	// null otherwise: see UserReference.
-	CreatedBy              *UserReference      `json:"createdBy"`
-	ProjectDetails         EntityRef           `json:"project"`
+	CreatedBy *UserReference `json:"createdBy"`
+	// ProjectDetails is null for a case with no project linked -- a real,
+	// valid state on the Postgres data source (work_item.project_id has no
+	// NOT NULL constraint).
+	ProjectDetails         *EntityRef          `json:"project"`
 	DeploymentDetails      *EntityRef          `json:"deployment"`
 	DeployedProductDetails *DeployedProductRef `json:"deployedProduct"`
 	Catalog                *EntityRef          `json:"catalog"`
@@ -1669,7 +1688,8 @@ type CaseView struct {
 	ResolutionCode  *CaseResolutionCode `json:"resolutionCode"`
 	Cause           *CaseCause          `json:"cause"`
 	ResolutionNotes *string             `json:"resolutionNotes"`
-	// WatchList is the set of users watching the case (ServiceNow data source only).
+	// WatchList is the set of users watching the case. For the Postgres data
+	// source this is backed by work_item_watcher (migration 000040).
 	WatchList []WatchListUser `json:"watchList,omitempty"`
 	// AutoclosureStep indicates where the case sits in ServiceNow's staged auto-closure
 	// sequence: DEFAULT -> FIRST_COMMENT -> ON_HOLD -> SECOND_COMMENT. Read-only —
@@ -2006,11 +2026,14 @@ type AggregateResponse struct {
 // SearchCaseView is the unified case representation returned in search results.
 // Fields absent for a given data source are nil.
 type SearchCaseView struct {
-	ID         string `json:"id"`
-	InternalID string `json:"internalId"`
-	Number     string `json:"number"`
-	CreatedOn  string `json:"createdOn"`
-	UpdatedOn  string `json:"updatedOn"`
+	ID string `json:"id"`
+	// InternalID (work_item.wso2_id) is null when blank -- see domain.Case's
+	// own doc comment for why an empty string can occur even for a
+	// wso2_id-required work_item type.
+	InternalID *string `json:"internalId"`
+	Number     string  `json:"number"`
+	CreatedOn  string  `json:"createdOn"`
+	UpdatedOn  string  `json:"updatedOn"`
 	// CreatedBy is the canonical user reference for the case creator. Its id is
 	// populated only where the backing data source already supplies one, and
 	// null otherwise: see UserReference.
@@ -2018,7 +2041,7 @@ type SearchCaseView struct {
 	Subject        *string        `json:"subject"`
 	Description    *string        `json:"description"`
 	IssueType      *string        `json:"issueType"`
-	State          string         `json:"state"`
+	State          *string        `json:"state"`
 	Severity       *string        `json:"severity"`
 	Catalog        *EntityRef     `json:"catalog"`
 	CatalogItem    *EntityRef     `json:"catalogItem"`
@@ -2027,7 +2050,10 @@ type SearchCaseView struct {
 	EngagementType *string        `json:"engagementType"`
 	WorkState      *string        `json:"workState"`
 	Type           string         `json:"type"`
-	Project        EntityRef      `json:"project"`
+	// Project is null for a case with no project linked -- a real, valid
+	// state on the Postgres data source (work_item.project_id has no NOT
+	// NULL constraint).
+	Project *EntityRef `json:"project"`
 	// ProjectKey is the project's short human-readable key (e.g. "TESTQUERYSUB").
 	// Populated for the ServiceNow data source only; null otherwise.
 	ProjectKey      *string    `json:"projectKey"`
@@ -2213,11 +2239,11 @@ type CaseLabelRef struct {
 
 // UpdatedCase carries the fields of a case that may change after an update.
 type UpdatedCase struct {
-	ID        string       `json:"id"`
-	UpdatedOn time.Time    `json:"updatedOn"`
-	UpdatedBy string       `json:"updatedBy,omitempty"`
-	State     CaseState    `json:"state,omitempty"`
-	Severity  CaseSeverity `json:"severity,omitempty"`
+	ID        string        `json:"id"`
+	UpdatedOn time.Time     `json:"updatedOn"`
+	UpdatedBy string        `json:"updatedBy,omitempty"`
+	State     *CaseState    `json:"state,omitempty"`
+	Severity  *CaseSeverity `json:"severity,omitempty"`
 	// Type echoes the case's new type back on a successful transfer.
 	// EngagementType/CatalogID/CatalogItemID/Variables aren't echoed -- same as every
 	// other field this update accepts alongside a type-defining field (subject,
@@ -3067,6 +3093,8 @@ type SearchChangeRequestView struct {
 	Deployment       *EntityRef `json:"deployment"`
 	DeployedProduct  *EntityRef `json:"deployedProduct"`
 	Product          *EntityRef `json:"product"`
+	Service          *EntityRef `json:"service"`
+	ServiceOffering  *EntityRef `json:"serviceOffering"`
 	AssignedEngineer *EntityRef `json:"assignedEngineer"`
 	AssignedTeam     *EntityRef `json:"assignedTeam"`
 	PlannedStartOn   *string    `json:"plannedStartOn"`
@@ -3181,8 +3209,8 @@ type SearchContactsFilters struct {
 	SearchQuery string `json:"searchQuery"`
 }
 
-// ProjectContact is a contact associated with a project. Supported by the
-// ServiceNow data source only; there is no Postgres equivalent.
+// ProjectContact is a contact associated with a project. For the Postgres
+// data source, backed by the project_contact table (migration 000022).
 type ProjectContact struct {
 	// ID is the contact's user id, for linking a row to that user's profile. Nil when
 	// the row has no contact record linked, or when the backing instance predates the
@@ -3230,8 +3258,8 @@ type SearchProjectContactsResponse struct {
 	Offset   int              `json:"offset"`
 }
 
-// AccountContact is a contact associated with an account. Supported by the
-// ServiceNow data source only; there is no Postgres equivalent.
+// AccountContact is a contact associated with an account. For the Postgres
+// data source, backed by the account_contact table (migration 000020).
 type AccountContact struct {
 	Name      string `json:"name"`
 	Email     string `json:"email"`
@@ -3262,6 +3290,8 @@ type PatchChangeRequestRequest struct {
 	CaseID             *string              `json:"caseId,omitempty"`
 	DeploymentID       *string              `json:"deploymentId,omitempty"`
 	DeployedProductID  *string              `json:"deployedProductId,omitempty"`
+	ServiceID          *string              `json:"serviceId,omitempty"`
+	ServiceOfferingID  *string              `json:"serviceOfferingId,omitempty"`
 	AssignedEngineerID *string              `json:"assignedEngineerId,omitempty"`
 	AssignedTeamID     *string              `json:"assignedTeamId,omitempty"`
 	PlannedStartOn     *string              `json:"plannedStartOn,omitempty"`
@@ -5566,16 +5596,23 @@ type CaseEmojiFeedback struct {
 // a bare string here. ReferenceType is genuinely absent from the upstream
 // response, so it is deliberately not modeled below.
 type AttachmentDetails struct {
-	ID          string    `json:"id"`
-	ReferenceID string    `json:"referenceId"`
-	Name        string    `json:"name"`
-	Type        string    `json:"type"`
-	SizeBytes   int       `json:"sizeBytes"`
-	Description *string   `json:"description"`
-	CreatedBy   string    `json:"createdBy"`
-	CreatedOn   time.Time `json:"createdOn"`
-	DownloadURL *string   `json:"downloadUrl"`
-	PreviewURL  *string   `json:"previewUrl"`
+	ID          string `json:"id"`
+	ReferenceID string `json:"referenceId"`
+	// ReferenceType identifies which entity type ReferenceID points at (see
+	// ReferenceType). Always populated for CSM-native (Postgres) data source
+	// attachments; nil (JSON null) when the backing data source's
+	// attachment-details lookup does not report a reference type. Callers
+	// authorizing access per referenced resource must treat a nil value as
+	// unknown and fail closed.
+	ReferenceType *ReferenceType `json:"referenceType"`
+	Name          string         `json:"name"`
+	Type          string         `json:"type"`
+	SizeBytes     int            `json:"sizeBytes"`
+	Description   *string        `json:"description"`
+	CreatedBy     string         `json:"createdBy"`
+	CreatedOn     time.Time      `json:"createdOn"`
+	DownloadURL   *string        `json:"downloadUrl"`
+	PreviewURL    *string        `json:"previewUrl"`
 	// Content is nil for CSM-native (Postgres) data source attachments: this
 	// service holds no bytes for them -- see CaseService.GetCaseAttachmentContent.
 	// Always non-nil for ServiceNow-sourced attachments.
@@ -6153,6 +6190,23 @@ type SLAClock struct {
 	Reached50On  *time.Time `json:"reached50On"`
 	Reached75On  *time.Time `json:"reached75On"`
 	Reached100On *time.Time `json:"reached100On"`
+	// The eight fields below are display-only, populated once at
+	// registration time from the case's own state then — not re-derived
+	// later, so State/Priority in particular can go stale relative to the
+	// case's actual current values by the time a breach fires. Nothing here
+	// participates in scheduling or breach logic; they exist purely so
+	// GET .../sla-clocks/{clockType} can supply everything
+	// csm-notification-service's slaengine needs to build a Google Chat
+	// breach card without a second lookup at tick time, since that service
+	// has no other way to reach case data.
+	CaseNumber string `json:"caseNumber,omitempty"`
+	WSO2CaseID string `json:"wso2CaseId,omitempty"`
+	CaseTitle  string `json:"caseTitle,omitempty"`
+	CaseType   string `json:"caseType,omitempty"`
+	Product    string `json:"product,omitempty"`
+	Team       string `json:"team,omitempty"`
+	Priority   string `json:"priority,omitempty"`
+	State      string `json:"state,omitempty"`
 }
 
 // RegisterSLAClockRequest is the request body for
@@ -6167,6 +6221,17 @@ type RegisterSLAClockRequest struct {
 	ClockType string    `json:"clockType"`
 	StartedAt time.Time `json:"startedAt"`
 	DueAt     time.Time `json:"dueAt"`
+	// The eight fields below are optional display data — see SLAClock's own
+	// doc comment for what they're for and why they're a point-in-time
+	// snapshot, not kept live.
+	CaseNumber string `json:"caseNumber,omitempty"`
+	WSO2CaseID string `json:"wso2CaseId,omitempty"`
+	CaseTitle  string `json:"caseTitle,omitempty"`
+	CaseType   string `json:"caseType,omitempty"`
+	Product    string `json:"product,omitempty"`
+	Team       string `json:"team,omitempty"`
+	Priority   string `json:"priority,omitempty"`
+	State      string `json:"state,omitempty"`
 }
 
 // SLATierStatus is the value of SetSLAClockTierRequest.Status.
@@ -6335,4 +6400,61 @@ type ListScheduledTaskRunsResponse struct {
 // DELETE /scheduled-task-runs?resolvedBefore=<RFC3339 timestamp>.
 type DeleteScheduledTaskRunsResponse struct {
 	DeletedCount int `json:"deletedCount"`
+}
+
+// AlertIncidentMappingView is the durable record of one monitoring alert
+// that was grouped onto a CSM incident — e.g. a firing event and a later
+// resolved event for the same underlying condition both map onto the same
+// incident rather than each creating its own. Like SLAClock and
+// ScheduledTaskRun, this is CSM-native data with no ServiceNow equivalent
+// and is always backed by Postgres regardless of DATA_SOURCE.
+//
+// Source/UniqueIdentifier together identify the correlation key a caller
+// uses to find prior alerts for the same underlying condition (see
+// LookupAlertIncidentMappingsRequest); which sources exist and how they
+// derive UniqueIdentifier is a policy decision made entirely by whatever
+// ingests the alert, not something this service tracks.
+type AlertIncidentMappingView struct {
+	ID          string `json:"id"`
+	AlertNumber string `json:"alertNumber"`
+	Source      string `json:"source"`
+	// UniqueIdentifier is the correlation key within Source used to group
+	// related alerts (e.g. the monitoring system's own alert group/fingerprint
+	// id) — optional, since not every source can supply one.
+	UniqueIdentifier *string `json:"uniqueIdentifier,omitempty"`
+	Service          *string `json:"service,omitempty"`
+	MetricName       *string `json:"metricName,omitempty"`
+	AlertStatus      string  `json:"alertStatus"`
+	IncidentID       string  `json:"incidentId"`
+	IncidentNumber   *string `json:"incidentNumber,omitempty"`
+	CreatedOn        string  `json:"createdOn"`
+}
+
+// CreateAlertIncidentMappingRequest is the request body for
+// POST /alert-incident-mappings.
+type CreateAlertIncidentMappingRequest struct {
+	AlertNumber      string  `json:"alertNumber"`
+	Source           string  `json:"source"`
+	UniqueIdentifier *string `json:"uniqueIdentifier,omitempty"`
+	Service          *string `json:"service,omitempty"`
+	MetricName       *string `json:"metricName,omitempty"`
+	AlertStatus      string  `json:"alertStatus"`
+	IncidentID       string  `json:"incidentId"`
+	IncidentNumber   *string `json:"incidentNumber,omitempty"`
+}
+
+// LookupAlertIncidentMappingsRequest is the request body for
+// POST /alert-incident-mappings/lookup — finds every alert already grouped
+// onto an incident for the same (Source, UniqueIdentifier) correlation key.
+type LookupAlertIncidentMappingsRequest struct {
+	Source           string `json:"source"`
+	UniqueIdentifier string `json:"uniqueIdentifier"`
+}
+
+// LookupAlertIncidentMappingsResponse is the response body for
+// POST /alert-incident-mappings/lookup. Mappings is most-recent-first
+// (ORDER BY created_at DESC) and empty (never null) when nothing matches —
+// absence is a valid result for a lookup, not a 404.
+type LookupAlertIncidentMappingsResponse struct {
+	Mappings []AlertIncidentMappingView `json:"mappings"`
 }
