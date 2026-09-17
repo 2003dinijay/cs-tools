@@ -80,7 +80,7 @@ export default function WallboardStatGrid({
           widgetId={widget.widgetId}
           displayName={widget.displayName}
           resourceType={widget.resourceType}
-          filters={widget.query}
+          filters={widget.query ?? {}}
           section={section}
           variant={variant}
           valueLabelGap={valueLabelGap}
