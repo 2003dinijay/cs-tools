@@ -171,7 +171,11 @@ func (c *Client) getCustomer(ctx context.Context, id string) (Customer, error) {
 		if len(customers) == 0 {
 			return Customer{}, &apierror.ServiceUnavailableError{Msg: "salesentity: customer not found"}
 		}
-		return customers[0], nil
+		cust, ok := matchingCustomer(customers, id)
+		if !ok {
+			return Customer{}, &apierror.ServiceUnavailableError{Msg: "salesentity: customer-search returned an unexpected customer"}
+		}
+		return cust, nil
 	case resp.StatusCode == http.StatusUnauthorized:
 		return Customer{}, errCustomerUnauthorized
 	case resp.StatusCode == http.StatusNotFound:
@@ -249,4 +253,28 @@ func (c *Client) invalidateToken() {
 	defer c.mu.Unlock()
 	c.cachedToken = ""
 	c.tokenExpiry = time.Time{}
+}
+
+func matchingCustomer(customers []Customer, id string) (Customer, bool) {
+	for _, cust := range customers {
+		if salesforceIDEqual(cust.ID, id) {
+			return cust, true
+		}
+	}
+	return Customer{}, false
+}
+
+// salesforceIDEqual treats 15-char and 18-char Ids for the same record as equal.
+func salesforceIDEqual(got, want string) bool {
+	if got == "" || want == "" {
+		return false
+	}
+	if strings.EqualFold(got, want) {
+		return true
+	}
+	shorter, longer := got, want
+	if len(got) > len(want) {
+		shorter, longer = want, got
+	}
+	return len(shorter) == 15 && len(longer) == 18 && strings.EqualFold(longer[:15], shorter)
 }

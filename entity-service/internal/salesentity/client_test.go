@@ -92,6 +92,37 @@ func TestGetCustomer_ServerErrorIs503(t *testing.T) {
 	}
 }
 
+func TestGetCustomer_MismatchedIDIs503(t *testing.T) {
+	client := newTestClient(t, http.StatusOK, []map[string]any{{"id": "001other", "name": "Other"}})
+	_, err := client.GetCustomer(context.Background(), "001xx")
+	var sue *apierror.ServiceUnavailableError
+	if !asSvcUnavailable(err, &sue) {
+		t.Fatalf("err = %v (%T), want *apierror.ServiceUnavailableError", err, err)
+	}
+}
+
+func TestGetCustomer_EmptyIDIs503(t *testing.T) {
+	client := newTestClient(t, http.StatusOK, []map[string]any{{"name": "Acme"}})
+	_, err := client.GetCustomer(context.Background(), "001xx")
+	var sue *apierror.ServiceUnavailableError
+	if !asSvcUnavailable(err, &sue) {
+		t.Fatalf("err = %v (%T), want *apierror.ServiceUnavailableError", err, err)
+	}
+}
+
+func TestGetCustomer_Accepts15And18CharSalesforceIDs(t *testing.T) {
+	want15 := "001xx000000ABC1"
+	want18 := want15 + "AAA"
+	client := newTestClient(t, http.StatusOK, []map[string]any{{"id": want18, "name": "Acme"}})
+	got, err := client.GetCustomer(context.Background(), want15)
+	if err != nil {
+		t.Fatalf("GetCustomer: %v", err)
+	}
+	if got.ID != want18 {
+		t.Errorf("id = %q, want %q", got.ID, want18)
+	}
+}
+
 func newTestClient(t *testing.T, searchStatus int, searchBody any) *Client {
 	t.Helper()
 	mux := http.NewServeMux()

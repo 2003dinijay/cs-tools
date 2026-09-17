@@ -89,10 +89,13 @@ func TestConfig_Validate_SalesEntityAllOrNothing(t *testing.T) {
 		tokenURL     string
 		clientID     string
 		clientSecret string
+		scopes       string
 		wantErr      bool
 	}{
 		{name: "none set", wantErr: false},
 		{name: "all four set", baseURL: "b", tokenURL: "t", clientID: "c", clientSecret: "s", wantErr: false},
+		{name: "four plus scopes", baseURL: "b", tokenURL: "t", clientID: "c", clientSecret: "s", scopes: "x", wantErr: false},
+		{name: "only scopes", scopes: "x", wantErr: true},
 		{name: "only base URL", baseURL: "b", wantErr: true},
 		{name: "only token URL", tokenURL: "t", wantErr: true},
 		{name: "only client ID", clientID: "c", wantErr: true},
@@ -107,6 +110,7 @@ func TestConfig_Validate_SalesEntityAllOrNothing(t *testing.T) {
 			c.SalesEntityTokenURL = tt.tokenURL
 			c.SalesEntityClientID = tt.clientID
 			c.SalesEntityClientSecret = tt.clientSecret
+			c.SalesEntityScopes = tt.scopes
 
 			err := c.Validate()
 			if tt.wantErr && err == nil {

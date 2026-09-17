@@ -292,7 +292,7 @@ func (c *Config) Validate() error {
 	if eventHubSet && !eventHubComplete {
 		return fmt.Errorf("EVENT_HUB_BROKER, EVENT_HUB_CONNECTION_STRING, and EVENT_HUB_TOPIC must be set together or not at all")
 	}
-	salesEntitySet := c.SalesEntityBaseURL != "" || c.SalesEntityTokenURL != "" || c.SalesEntityClientID != "" || c.SalesEntityClientSecret != ""
+	salesEntitySet := c.SalesEntityBaseURL != "" || c.SalesEntityTokenURL != "" || c.SalesEntityClientID != "" || c.SalesEntityClientSecret != "" || c.SalesEntityScopes != ""
 	if salesEntitySet && !c.SalesEntityConfigured() {
 		return fmt.Errorf("SALES_ENTITY_BASE_URL, SALES_ENTITY_TOKEN_URL, SALES_ENTITY_CLIENT_ID, and SALES_ENTITY_CLIENT_SECRET must be set together or not at all")
 	}
