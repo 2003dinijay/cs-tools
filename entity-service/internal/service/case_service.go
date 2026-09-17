@@ -901,12 +901,10 @@ func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.Sear
 
 // SearchCaseActivities implements CaseService.
 //
-// Merges comments and complete attachments into one feed -- see
-// CaseRepository.SearchCaseActivities's own doc comment. There is no
-// field-change audit table in this schema, so req.IncludeFieldChanges has
-// no effect: an absent field-change history is a valid state, not an error,
-// per this request's own doc comment ("only comment and attachment entries
-// are returned" is the documented default already).
+// Merges comments, complete attachments, and (when req.IncludeFieldChanges
+// is true) field-change entries into one feed -- see
+// CaseRepository.SearchCaseActivities's own doc comment for how
+// work_item_activity (migration 000056) backs the field-change branch.
 func (s *caseService) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error) {
 	if err := validateUUIDs("caseId", []string{req.CaseID}); err != nil {
 		return domain.SearchCaseActivitiesResponse{}, err

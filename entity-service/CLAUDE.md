@@ -1288,6 +1288,49 @@ side. `domain.UpdatedCase.State`/`Severity` (the `PATCH /cases/{id}`
 response) became pointers too, matching the sibling `WorkState` field's
 existing pointer convention there.
 
+## change_request.change_model and work_item_activity (migrations 000055/000056)
+
+Two small, unrelated migrations, both unverified against real data (neither
+table/column exists on the staging database this was developed against
+yet -- same recurring gap as several other recently-added tables in this
+codebase).
+
+**`change_model`** turned out to be `domain.ChangeRequestType`'s real
+backing column -- previously undiscovered because the *other*
+change-request-type-shaped column, `change_request.change_request_type`
+(INFRA/GENERAL), is a completely different, unrelated classification (see
+this file's own "Fixing the plural/singular table-name mismatch" section).
+`change_model`'s real enum labels (`AZURE`/`CHANGE_REGISTRATION`/
+`CLOUD_INFRASTRUCTURE`/`EMERGENCY`/`INFRA`/`NORMAL`/`STANDARD`/
+`UNAUTHORIZED_CHANGE`) only partially overlap `domain.ChangeRequestType`'s
+existing values (`standard`/`normal`/`emergency`/`azure` case-fold
+directly; `model`/`site_reliability_ops` have no equivalent on this data
+source, rejected with a `ValidationError` on `PatchChangeRequest` rather
+than silently dropped) -- the four with no existing domain constant
+(`change_registration`/`cloud_infrastructure`/`infra`/`unauthorized_change`)
+were added as new values rather than dropped, since they're genuine
+ServiceNow change-model choices, not noise.
+`changeRequestChangeModelToType`/`changeRequestTypeToChangeModel`
+(`change_request_repo.go`) hold the mapping both directions; `Type` is now
+read on `SearchChangeRequestView` and writable via `PatchChangeRequestRequest.Type`.
+
+**`work_item_activity`** is the field-change audit table this schema
+previously had none of (`CaseRepository.SearchCaseActivities`'s own doc
+comment used to say exactly that). `SearchCaseActivities` now adds a third
+`UNION ALL` branch over it, gated on `req.IncludeFieldChanges`, following
+the same "SN branch vs. Postgres branch, same service interface" pattern --
+no route/request/response shape changed, this just makes an existing,
+previously-inert request field actually work. Each `work_item_activity` row
+is one single field mutation with no confirmed grouping key (e.g. a shared
+timestamp) to bundle several simultaneous changes into one activity entry
+the way a ServiceNow journal entry might, so each row becomes its own
+`CaseActivity` with a single-element `Changes` slice rather than guessing
+at a bundling rule. `FieldChange.FieldLabel` is a humanized rendering of
+the raw `field_name` column (`caseActivityFieldChangeLabel`, the same
+space-separated-title-case convention `taskSlaStageDisplay` already uses
+for a raw enum label) -- there's no field-name-to-display-label mapping
+anywhere else in this schema to defer to instead.
+
 ## Instances and usage tracking (deployment_node, usage_count, daily_usage_summary, deployment_information)
 
 Migration 000054 added a 7-table cluster mirroring ServiceNow's product usage

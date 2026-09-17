@@ -41,19 +41,22 @@ import (
 // service_offering_id (migration 000050), FKs into service/service_offering
 // (migrations 000048/000049).
 //
+// Type (domain.ChangeRequestType) is backed by change_request.change_model
+// (migration 000055) -- NOT change_request.change_request_type, whose real
+// enum values are INFRA/GENERAL, a completely different, unrelated
+// classification. See changeRequestChangeModelToType/changeRequestTypeToChangeModel
+// for the mapping, including the four ChangeRequestType values added
+// alongside this that have no ServiceNow-data-source equivalent.
+//
 // The remaining fields on the request/response contract have no real
 // column anywhere in the migrations and are always left unset rather than
 // guessed at: ConfigurationItemID and GroupID (no CMDB/group tables exist
 // at all in this schema); AssignedTeamID (work_item has no team FK either
 // -- see the "Fixing case enum-casing..." section's own AssignedTeam note);
-// Type
-// (domain.ChangeRequestType -- standard/normal/emergency/... -- has no
-// relationship to change_request.change_request_type, whose real enum
-// values are INFRA/GENERAL, a completely different classification, not a
-// subset); ApprovedBy/ApprovedOn/LegalNextStates on domain.ChangeRequest
-// (there is a summary change_request.approval enum but no approver/date
-// columns, and LegalNextStates is a ServiceNow workflow-engine computation
-// with nothing to derive it from here).
+// ApprovedBy/ApprovedOn/LegalNextStates on domain.ChangeRequest (there is a
+// summary change_request.approval enum but no approver/date columns, and
+// LegalNextStates is a ServiceNow workflow-engine computation with nothing
+// to derive it from here).
 //
 // CreateChangeRequest has no Postgres implementation at all: work_item.number
 // has no DB default and no backing sequence anywhere in migrations/, the
@@ -123,13 +126,42 @@ const changeRequestSelectColumns = `
 	svc.id, svc.name,
 	so.id, so.name,
 	ae.id, COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')),
-	cr.start_on, cr.end_on, cr.impact::TEXT, cr.state::TEXT,
+	cr.start_on, cr.end_on, cr.impact::TEXT, cr.state::TEXT, cr.change_model::TEXT,
 	wi.created_on, wi.updated_on`
 
+// changeRequestChangeModelToType/changeRequestTypeToChangeModel map between
+// change_request.change_model's real enum labels (migration 000055) and
+// domain.ChangeRequestType. Unlike change_request.change_request_type
+// (INFRA/GENERAL -- a genuinely different, unrelated classification, see
+// this file's own package doc comment), change_model's vocabulary overlaps
+// domain.ChangeRequestType's existing values enough (AZURE/EMERGENCY/
+// NORMAL/STANDARD case-fold directly) that this is its real backing column
+// -- the four that don't already exist as domain values
+// (CHANGE_REGISTRATION/CLOUD_INFRASTRUCTURE/INFRA/UNAUTHORIZED_CHANGE) were
+// added as new ChangeRequestType constants rather than dropped, since they
+// are genuine ServiceNow change-model choices, not noise.
+var changeRequestChangeModelToType = map[string]domain.ChangeRequestType{
+	"AZURE":                domain.ChangeRequestTypeAzure,
+	"CHANGE_REGISTRATION":  domain.ChangeRequestTypeChangeRegistration,
+	"CLOUD_INFRASTRUCTURE": domain.ChangeRequestTypeCloudInfrastructure,
+	"EMERGENCY":            domain.ChangeRequestTypeEmergency,
+	"INFRA":                domain.ChangeRequestTypeInfra,
+	"NORMAL":               domain.ChangeRequestTypeNormal,
+	"STANDARD":             domain.ChangeRequestTypeStandard,
+	"UNAUTHORIZED_CHANGE":  domain.ChangeRequestTypeUnauthorizedChange,
+}
+
+var changeRequestTypeToChangeModel = func() map[domain.ChangeRequestType]string {
+	m := make(map[domain.ChangeRequestType]string, len(changeRequestChangeModelToType))
+	for enumValue, t := range changeRequestChangeModelToType {
+		m[t] = enumValue
+	}
+	return m
+}()
+
 // scanChangeRequestView scans changeRequestSelectColumns into a
-// SearchChangeRequestView. Type and Duration are never set here -- see this
-// file's own package doc comment for why (no real column / no confirmed
-// format).
+// SearchChangeRequestView. Duration is never set here -- see this file's
+// own package doc comment for why (no confirmed rendering format).
 func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchChangeRequestView, error) {
 	var v domain.SearchChangeRequestView
 	var (
@@ -143,6 +175,7 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 		aeID, aeName           *string
 		startOn, endOn         *time.Time
 		impact, state          *string
+		changeModel            *string
 		createdOn, updatedOn   time.Time
 	)
 	err := row.Scan(
@@ -155,7 +188,7 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 		&svcID, &svcName,
 		&soID, &soName,
 		&aeID, &aeName,
-		&startOn, &endOn, &impact, &state,
+		&startOn, &endOn, &impact, &state, &changeModel,
 		&createdOn, &updatedOn,
 	)
 	if err != nil {
@@ -200,6 +233,12 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 	if state != nil {
 		lower := strings.ToLower(*state)
 		v.State = &lower
+	}
+	if changeModel != nil {
+		if t, ok := changeRequestChangeModelToType[*changeModel]; ok {
+			s := string(t)
+			v.Type = &s
+		}
 	}
 	v.CreatedOn = createdOn.UTC().Format(time.RFC3339)
 	v.UpdatedOn = updatedOn.UTC().Format(time.RFC3339)
@@ -450,6 +489,7 @@ func scanChangeRequestViewAndDetail(row pgx.Row, createdBy *string, justificatio
 		aeID, aeName           *string
 		startOn, endOn         *time.Time
 		impact, state          *string
+		changeModel            *string
 		createdOn, updatedOn   time.Time
 	)
 	err := row.Scan(
@@ -462,7 +502,7 @@ func scanChangeRequestViewAndDetail(row pgx.Row, createdBy *string, justificatio
 		&svcID, &svcName,
 		&soID, &soName,
 		&aeID, &aeName,
-		&startOn, &endOn, &impact, &state,
+		&startOn, &endOn, &impact, &state, &changeModel,
 		&createdOn, &updatedOn,
 		createdBy, justification, impactDescription, serviceOutage, communicationPlan, rollbackPlan, testPlan,
 		isCustomerApproved, isCustomerReviewed,
@@ -509,6 +549,12 @@ func scanChangeRequestViewAndDetail(row pgx.Row, createdBy *string, justificatio
 	if state != nil {
 		lower := strings.ToLower(*state)
 		v.State = &lower
+	}
+	if changeModel != nil {
+		if t, ok := changeRequestChangeModelToType[*changeModel]; ok {
+			s := string(t)
+			v.Type = &s
+		}
 	}
 	v.CreatedOn = createdOn.UTC().Format(time.RFC3339)
 	v.UpdatedOn = updatedOn.UTC().Format(time.RFC3339)
@@ -625,6 +671,16 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 	}
 	if req.State != nil {
 		addCR("state = $%d::change_request_state_enum", strings.ToUpper(string(*req.State)))
+	}
+	if req.Type != nil {
+		enumValue, ok := changeRequestTypeToChangeModel[*req.Type]
+		if !ok {
+			// "model"/"site_reliability_ops" predate change_model
+			// (migration 000055) and have no real enum label there --
+			// see changeRequestChangeModelToType's own doc comment.
+			return domain.ChangeRequest{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
+		}
+		addCR("change_model = $%d::change_request_change_model_enum", enumValue)
 	}
 	if req.Justification != nil {
 		addCR("justification = $%d", *req.Justification)
