@@ -74,7 +74,11 @@ CREATE TABLE IF NOT EXISTS incident_subcategory (
     category incident_category_enum NOT NULL,
     value TEXT NOT NULL,
     label TEXT NOT NULL,
-    UNIQUE (category, value)
+    UNIQUE (category, value),
+    -- Composite target for incident's (category, subcategory_id) FK below, so
+    -- a subcategory can never be attached to an incident whose own category
+    -- doesn't match the subcategory's category.
+    UNIQUE (category, id)
 );
 
 INSERT INTO incident_subcategory (category, value, label) VALUES
@@ -125,7 +129,7 @@ CREATE TABLE IF NOT EXISTS incident (
     opened_on TIMESTAMPTZ,
     caller_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
     category incident_category_enum,
-    subcategory_id UUID REFERENCES incident_subcategory(id) ON DELETE SET NULL,
+    subcategory_id UUID,
     impact incident_impact_enum NOT NULL DEFAULT 'LOW',
     urgency incident_urgency_enum NOT NULL DEFAULT 'LOW',
     service_offering_id UUID REFERENCES service_offering(id) ON DELETE SET NULL,
@@ -136,7 +140,15 @@ CREATE TABLE IF NOT EXISTS incident (
     close_notes TEXT,
     resolved_by_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
     resolved_on TIMESTAMPTZ,
-    incident_report TEXT
+    incident_report TEXT,
+    -- Both columns stay individually nullable (an incident may have no
+    -- subcategory at all), but a non-null subcategory_id must carry a
+    -- matching category - MATCH SIMPLE alone wouldn't catch a NULL
+    -- category paired with a non-null subcategory_id, hence the CHECK.
+    CONSTRAINT incident_category_subcategory_fkey FOREIGN KEY (category, subcategory_id)
+        REFERENCES incident_subcategory (category, id) ON DELETE SET NULL (subcategory_id),
+    CONSTRAINT incident_subcategory_requires_category
+        CHECK (subcategory_id IS NULL OR category IS NOT NULL)
 );
 
 CREATE INDEX IF NOT EXISTS idx_incident_service_id ON incident (service_id);
