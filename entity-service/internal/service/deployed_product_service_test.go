@@ -10,7 +10,7 @@
 // Unless required by applicable law or agreed to in writing,
 // software distributed under the License is distributed on an
 // "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the License for the
+// KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
 
@@ -68,5 +68,22 @@ func TestDeployedProductService_SearchDeployedProducts_NoProductCategoriesReache
 	}
 	if !called {
 		t.Fatal("expected SearchDeployedProducts to reach the repository when ProductCategories is empty")
+	}
+}
+
+// TestDeployedProductService_SearchProjectsByProductVersion_RejectedOnPostgres
+// guards the PostgreSQL data source's rejection of the EOL/product-version
+// reverse query, which it has no deployment/deployed-product model rich
+// enough to resolve. The repository is never consulted, so a nil repo is
+// safe here.
+func TestDeployedProductService_SearchProjectsByProductVersion_RejectedOnPostgres(t *testing.T) {
+	svc := NewDeployedProductService(nil)
+
+	_, err := svc.SearchProjectsByProductVersion(context.Background(), domain.SearchProjectsByProductVersionRequest{
+		ProductID:        "11111111-1111-1111-1111-111111111111",
+		ProductVersionID: "22222222-2222-2222-2222-222222222222",
+	})
+	if _, ok := err.(*apierror.ValidationError); !ok {
+		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
 	}
 }
