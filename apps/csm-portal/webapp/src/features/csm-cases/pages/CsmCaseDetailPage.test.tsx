@@ -1870,3 +1870,62 @@ describe("CsmCaseDetailPage — set fix ETA dialog closes on successful save", (
     ).not.toBeInTheDocument();
   });
 });
+
+// A fix-ETA save is per-call `onSuccess` on a mutation that isn't cancelled
+// when `caseId` changes (the page stays mounted across the transition), so
+// case A's response can land while case B is on screen. Without a view-token
+// guard, that stale success closes case B's freshly opened dialog and discards
+// whatever was typed into it.
+describe("CsmCaseDetailPage — fix-ETA stale-callback guard", () => {
+  it("leaves a newly opened dialog alone when an earlier case's save resolves", () => {
+    patchCaseMutateMock.mockClear();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/cases/case-1"]}>
+          <NavigateBetweenCasesButtons />
+          <LocationProbe />
+          <Routes>
+            <Route path="/cases/:caseId" element={<CsmCaseDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Case-1: open the dialog and save. The PATCH is still in flight.
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /stub save fix eta/i }));
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
+    const [, case1Options] = patchCaseMutateMock.mock.calls[0] as [
+      unknown,
+      { onSuccess: () => void },
+    ];
+
+    // Move to case-2 and open its own fix-ETA dialog.
+    fireEvent.click(screen.getByRole("button", { name: /go to case 2/i }));
+    expect(screen.getByTestId("location-probe")).toHaveTextContent(
+      "/cases/case-2",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    expect(screen.getByTestId("set-fix-eta-dialog-probe")).toBeInTheDocument();
+
+    // Case-1's response arrives now, with case-2 on screen.
+    act(() => {
+      case1Options.onSuccess();
+    });
+
+    // Case-2's dialog belongs to a different view of the page — the stale
+    // success must not close it out from under the engineer.
+    expect(
+      screen.getByTestId("set-fix-eta-dialog-probe"),
+    ).toBeInTheDocument();
+    // …and case-1's toast must not surface on case-2 either.
+    expect(screen.queryByText(/fix eta updated/i)).not.toBeInTheDocument();
+  });
+});
