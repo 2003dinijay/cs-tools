@@ -31,11 +31,18 @@ Server starts at `http://localhost:8080`.
 - Runtime: Go `1.26+`
 - Entry point: `cmd/server/main.go`
 - Authentication:
-  - Incoming requests (`POST /alerts`): **none at the app layer.** This
-    service is fronted by Choreo's API Manager gateway (subscription + M2M
-    app auth), matching `csm-integration-service`'s own convention — see
-    that service's `CLAUDE.md` for the full rationale, which applies
-    identically here.
+  - Incoming requests (`POST /alerts`): **HTTP Basic Auth, enforced by this
+    service itself.** Unlike this repo's other `integrations/*` services,
+    this one is deployed on AKS with no gateway/ingress auth layer in front
+    of it, so it authenticates every request end to end rather than
+    trusting a Choreo API Manager gateway. Each source (Datadog, Grafana,
+    PagerDuty, etc.) gets its own username/password pair, configured via
+    `SRE_ALERT_AUTH_USERS` as comma-separated `username:bcryptHash` entries
+    — passwords are never stored in plaintext, only their bcrypt hash. Use
+    `cmd/gen-basic-auth-hash` to generate the hash for a new password. This
+    variable is required; the service refuses to start without it, and
+    fails fast on any malformed entry. `GET /health` is deliberately
+    exempt, so liveness/readiness probes don't need credentials.
   - Outbound calls to `csm-integration-service`: OAuth2 client credentials
     grant (managed automatically), always M2M.
   - Outbound calls to Twilio: HTTP Basic Auth (Account SID / Auth Token) —
@@ -84,6 +91,7 @@ Copy `.env.example` to `.env` and fill in the values:
 | `CSM_INTEGRATION_CLIENT_SECRET` | OAuth2 client secret |
 | `CSM_INTEGRATION_SCOPES` | Comma-separated OAuth2 scopes |
 | `SRE_ALERT_CALLER_ID` | A real, provisioned platform user id — see "Known limitations" |
+| `SRE_ALERT_AUTH_USERS` | Required. Comma-separated `username:bcryptHash` pairs for inbound HTTP Basic Auth on `POST /alerts` — generate a hash with `cmd/gen-basic-auth-hash` |
 | `SRE_ALERT_MAX_RETRIES` | Retryable-failure count before escalation (default `3`) |
 | `SRE_ALERT_POLL_INTERVAL_SECONDS` | How often the worker scans the buffer (default `15`) |
 | `SRE_ALERT_GROUP_WINDOW_MINUTES` | How far back the incident-grouping search looks for an attachable incident (default `15`) |

@@ -8,11 +8,11 @@ info:
     buffered before any delivery attempt is made, retried with backoff on
     failure, and escalated via an independent voice-call channel if delivery
     keeps failing — so this service is never a single point of failure on
-    the platform's own availability. Fronted by Choreo's API Manager gateway
-    (subscription + client credentials) — this service performs no inbound
-    auth of its own.
+    the platform's own availability. Deployed with no gateway/ingress auth
+    layer in front of it, so it authenticates every inbound request itself
+    via HTTP Basic Auth, one username/password pair per alert source.
 security:
-  - oauth2ClientCredentials: []
+  - basicAuth: []
 servers:
   - url: "{server}:{port}/"
     variables:
@@ -82,14 +82,13 @@ paths:
 
 components:
   securitySchemes:
-    oauth2ClientCredentials:
-      type: oauth2
-      flows:
-        clientCredentials:
-          # Placeholder — fill in with the actual token endpoint for this
-          # service's Choreo-managed API once it's provisioned.
-          tokenUrl: "<token_url>"
-          scopes: {}
+    basicAuth:
+      type: http
+      scheme: basic
+      description: >
+        One username/password pair per alert source, configured via the
+        SRE_ALERT_AUTH_USERS environment variable (bcrypt-hashed at rest).
+        See README.md's Authentication section.
 
   schemas:
     ErrorResponse:
