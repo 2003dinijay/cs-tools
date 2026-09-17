@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
@@ -303,5 +304,51 @@ func TestHandleChange_IgnoresUnrelatedEntityType(t *testing.T) {
 	}
 	if len(pub.sent) != 0 {
 		t.Fatalf("published %d notices, want none", len(pub.sent))
+	}
+}
+
+// failingPublisher fails the first publish and succeeds afterwards, which is
+// what a combined state-and-date update meets when the approval branch errors.
+type failingPublisher struct {
+	calls int
+	sent  []published
+}
+
+func (f *failingPublisher) Publish(_ context.Context, t events.Type, id string, p json.RawMessage) error {
+	f.calls++
+	if f.calls == 1 {
+		return errStub
+	}
+	f.sent = append(f.sent, published{t, id, p})
+	return nil
+}
+
+var errStub = errors.New("publish failed")
+
+// One write can move the state AND the date -- the migration that shifts the
+// plan start date does exactly that. A failure in the approval branch must not
+// cost the plan-date notice: the drainer has already claimed the row, so a
+// dropped branch is dropped for good.
+func TestHandleChange_SecondBranchRunsAfterFirstFails(t *testing.T) {
+	repo := &fakeCRRepo{details: baseDetails(), group: []string{"dev@wso2.com"}, contacts: []string{"c@acme.com"}}
+	pub := &failingPublisher{}
+
+	change := crChange(
+		map[string]map[string]any{
+			crColState:        {"from": "NEW", "to": crStateCustomerApproval},
+			crColCustomerDate: {"from": nil, "to": "2026-12-01"},
+		},
+		map[string]any{crColState: crStateCustomerApproval},
+	)
+
+	err := NewCRNoticeService(repo, pub).HandleChange(context.Background(), change)
+	if err == nil {
+		t.Fatal("want the approval branch's error to surface, got nil")
+	}
+	if pub.calls != 2 {
+		t.Fatalf("publisher called %d times, want 2 (both branches attempted)", pub.calls)
+	}
+	if len(pub.sent) != 1 || pub.sent[0].Type != events.TypeCRPlanDateNotice {
+		t.Fatalf("plan-date notice was lost; sent = %#v", pub.sent)
 	}
 }

@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -138,10 +139,14 @@ func (s *crNoticeService) HandleChange(ctx context.Context, change repository.Ou
 	if change.EntityType != CREntityType {
 		return nil
 	}
-	if err := s.approvalNotice(ctx, change); err != nil {
-		return err
-	}
-	return s.planDateNotice(ctx, change)
+	// Both branches run even if the first fails, and the errors are joined.
+	// The drainer has already claimed the row, so returning early would not
+	// retry the branch that was skipped -- it would drop it, and a combined
+	// state-and-date update would silently lose its plan-date notice.
+	return errors.Join(
+		s.approvalNotice(ctx, change),
+		s.planDateNotice(ctx, change),
+	)
 }
 
 // approvalNotice publishes the "this change request is waiting on you" notice
@@ -249,6 +254,22 @@ func (s *crNoticeService) planDateNotice(ctx context.Context, change repository.
 	case crTurnCustomerProposed:
 		// sys_updated_byNOT LIKE@wso2.com. A WSO2 user moving the date is the
 		// team editing its own plan, which is not news to the team.
+		//
+		// KNOWN GAP: this is work_item.updated_by read at drain time, not the
+		// actor who made THIS change. change_request has no updated_by of its
+		// own, so there is nothing truer to read -- the outbox snapshot is
+		// to_jsonb(NEW) of change_request and simply does not contain one. Two
+		// consequences: a write that touches change_request without touching
+		// work_item leaves the previous work_item editor standing in as the
+		// actor, and a later edit between the trigger firing and this read
+		// replaces them. Either can suppress a genuine customer proposal or
+		// admit a WSO2 one.
+		//
+		// Closing it needs csm-sync to carry ServiceNow's sys_updated_by onto
+		// change_request, after which this reads the actor off the snapshot and
+		// the question of when it was read stops existing. Tracked separately;
+		// the approval notices do not use the actor at all, so only this one
+		// branch is affected.
 		if details.ActorIsWSO2 {
 			return nil
 		}
