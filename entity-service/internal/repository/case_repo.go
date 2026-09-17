@@ -292,7 +292,16 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
 	var cv domain.CaseView
 	var (
-		internalID                                    string
+		// internalID is scanned as *string even though CaseView.InternalID
+		// is a required (non-pointer) string -- wi.wso2_id can genuinely be
+		// NULL despite the work_item_wso2_id_required_by_type CHECK
+		// constraint (confirmed against real data: that constraint isn't
+		// actually enforced for a handful of pre-existing rows), so a
+		// non-pointer scan here would panic with "cannot scan NULL into
+		// *string". stringOrEmpty below converts it back to "" for the
+		// response, matching CaseView.InternalID's own doc comment on why
+		// it can't become *string.
+		internalID                                    *string
 		aeID, aeName                                  *string
 		pcID, pcNum, pcType                           *string
 		rcID, rcNum                                   *string
@@ -364,7 +373,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 	if err != nil {
 		return domain.CaseView{}, fmt.Errorf("get case by id: %w", err)
 	}
-	cv.InternalID = nilIfEmpty(internalID)
+	cv.InternalID = stringOrEmpty(internalID)
 	// work_item.description (migration 000035) has no NOT NULL constraint,
 	// unlike subject; CaseView.Description is a required (non-pointer)
 	// string, so a NULL column becomes "" rather than left unset.
@@ -668,7 +677,7 @@ const updateCaseQuery = `
 // scanUpdatedCase is shared by both branches of UpdateCase below.
 func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 	var c domain.Case
-	var internalID string
+	var internalID *string
 	var severity, issueType, state, workStateRaw *string
 	if err := row.Scan(
 		&c.ID, &c.Number, &internalID, &c.CreatedBy,
@@ -678,7 +687,7 @@ func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 	); err != nil {
 		return domain.Case{}, err
 	}
-	c.InternalID = nilIfEmpty(internalID)
+	c.InternalID = stringOrEmpty(internalID)
 	if severity != nil {
 		s := caseSeverityFromEnum[*severity]
 		c.Severity = &s
@@ -1199,7 +1208,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		result := make([]domain.SearchCaseView, 0, req.Pagination.Limit)
 		for rows.Next() {
 			var cv domain.SearchCaseView
-			var internalID string
+			var internalID *string
 			var caseType, subject string
 			var description *string
 			var severity, issueType, engagementType, workState, state, escalationLevel *string
@@ -1227,7 +1236,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			); err != nil {
 				return fmt.Errorf("scan case: %w", err)
 			}
-			cv.InternalID = nilIfEmpty(internalID)
+			cv.InternalID = stringOrEmpty(internalID)
 			if projID != nil {
 				cv.Project = &domain.EntityRef{ID: *projID, Name: stringOrEmpty(projName)}
 			}

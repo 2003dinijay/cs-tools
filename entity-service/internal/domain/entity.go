@@ -1248,17 +1248,20 @@ type CaseSort struct {
 type Case struct {
 	ID     string `json:"id"`
 	Number string `json:"number"`
-	// InternalID (work_item.wso2_id) is null when blank -- most work_item
-	// types never have one, and even the types whose CHECK constraint
-	// requires it non-NULL (migration 000016) can still have it as an
-	// empty string.
-	InternalID        *string `json:"internalId"`
-	CreatedBy         string  `json:"createdBy"`
-	ProjectID         string  `json:"projectId"`
-	DeploymentID      string  `json:"deploymentId"`
-	DeployedProductID string  `json:"deployedProductId"`
-	Subject           string  `json:"subject"`
-	Description       string  `json:"description"`
+	// InternalID (work_item.wso2_id) stays a required, non-nullable string
+	// ("" when the column is NULL/blank) -- entity-service's own OpenAPI
+	// spec, the customer-portal Ballerina client, and backend-v2 all
+	// declare it non-nullable, so this can't become *string without a
+	// coordinated cross-repo contract change. See case_repo.go's own
+	// comment on this for the scan-side fix that avoids a NULL-scan panic
+	// without changing this wire type.
+	InternalID        string `json:"internalId"`
+	CreatedBy         string `json:"createdBy"`
+	ProjectID         string `json:"projectId"`
+	DeploymentID      string `json:"deploymentId"`
+	DeployedProductID string `json:"deployedProductId"`
+	Subject           string `json:"subject"`
+	Description       string `json:"description"`
 	// Severity/IssueType are null in practice for most real cases (confirmed
 	// against production data: ~86%/~99% of cases have no severity/issue
 	// type set on "case") -- not an edge case, the common case.
@@ -1422,12 +1425,11 @@ type DeployedProductRef struct {
 type CaseView struct {
 	ID     string `json:"id"`
 	Number string `json:"number"`
-	// InternalID (work_item.wso2_id) is null when blank -- see domain.Case's
-	// own doc comment for why an empty string can occur even for a
-	// wso2_id-required work_item type.
-	InternalID  *string `json:"internalId"`
-	Subject     string  `json:"subject"`
-	Description string  `json:"description"`
+	// InternalID (work_item.wso2_id) stays a required, non-nullable string
+	// -- see domain.Case's own doc comment for why.
+	InternalID  string `json:"internalId"`
+	Subject     string `json:"subject"`
+	Description string `json:"description"`
 	// Severity/IssueType/State are null in practice for a large share of
 	// real cases -- see domain.Case's own doc comment for the confirmed
 	// production null rates.
@@ -1821,13 +1823,12 @@ type AggregateResponse struct {
 // Fields absent for a given data source are nil.
 type SearchCaseView struct {
 	ID string `json:"id"`
-	// InternalID (work_item.wso2_id) is null when blank -- see domain.Case's
-	// own doc comment for why an empty string can occur even for a
-	// wso2_id-required work_item type.
-	InternalID *string `json:"internalId"`
-	Number     string  `json:"number"`
-	CreatedOn  string  `json:"createdOn"`
-	UpdatedOn  string  `json:"updatedOn"`
+	// InternalID (work_item.wso2_id) stays a required, non-nullable string
+	// -- see domain.Case's own doc comment for why.
+	InternalID string `json:"internalId"`
+	Number     string `json:"number"`
+	CreatedOn  string `json:"createdOn"`
+	UpdatedOn  string `json:"updatedOn"`
 	// CreatedBy is the canonical user reference for the case creator. Its id is
 	// populated only where the backing data source already supplies one, and
 	// null otherwise: see UserReference.

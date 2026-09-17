@@ -1101,24 +1101,40 @@ ServiceNow data source) has no corresponding column on `service` at all —
 `category`/`subcategory` are free text, not drawn from that three-value set
 — so it is always left `nil` on Postgres rather than guessed at.
 
-## CaseView/SearchCaseView/Case.InternalID is now optional
+## CaseView/SearchCaseView/Case.InternalID stays a required string (fixed the panic without changing the wire type)
 
 Found via a direct query against `work_item` grouped by `type`: `wso2_id`
-(`InternalID`) is blank (`''`, not `NULL`) for a handful of real `CASE`/
-`ENGAGEMENT`/`SERVICE_REQUEST` rows, even though the
-`work_item_wso2_id_required_by_type` `CHECK` constraint (migration 000016)
-requires it `NOT NULL` for those types -- the constraint only checks
-nullness, not blankness. `InternalID` was a required (non-pointer) `string`
-field on `domain.Case`/`CaseView`/`SearchCaseView`, so those rows rendered
-`"internalId": ""` instead of `null`, violating this codebase's own "empty
-strings must never appear in responses" rule. Fixed by making all three
-`*string`, with `nilIfEmpty` (`sla_clock_repo.go`, `stringOrEmpty`'s inverse)
-collapsing both `NULL` and `''` to `nil` at every Postgres scan site
-(`GetCaseByID`, `SearchCases`, `scanUpdatedCase`). The ServiceNow-backed
-paths (`sn_case_service.go`) needed the same treatment for consistency --
-`ptrOrNilIfEmpty`/`derefOrEmpty` (`user_service.go`) are that side's
-equivalent pair, since SN's own raw case struct still carries `InternalID`
-as a plain (possibly blank) `string`.
+(`InternalID`) is `NULL` for a handful of real `CASE`/`ENGAGEMENT`/
+`SERVICE_REQUEST` rows, even though the `work_item_wso2_id_required_by_type`
+`CHECK` constraint (migration 000016) requires it `NOT NULL` for those
+types -- **the constraint is evidently not actually enforced against this
+data** (added after these rows already existed, and never backfilled/
+revalidated). Don't trust a `CHECK` constraint's claim over what a direct
+query of the actual data shows.
+
+**First attempt made `InternalID` `*string`** (rendering `null` for those
+rows) but still scanned into a non-pointer `string` local, so it kept
+crashing in production with `cannot scan NULL into *string` -- fixing the
+wrong half of the problem. **Second attempt** made the scan itself
+`*string`-safe but kept the `*string` response type -- CodeRabbit caught
+that this breaks compatibility: `openapi.yaml` declares `internalId` as a
+required, non-nullable `string` in every `Case`/`CaseView`/`SearchCaseView`/
+`GlobalSearchCase` schema, and the customer-portal Ballerina client and
+backend-v2 both declare it as plain `string` too -- a Ballerina client
+deserializing `{"internalId": null}` into a non-nilable `string` field
+throws at runtime (unlike Go, which silently zero-values it). Changing the
+wire type to fix an internal scan panic isn't worth risking every other
+consumer of this response.
+
+**Final fix**: `InternalID` stays `string` on `Case`/`CaseView`/
+`SearchCaseView` (unchanged wire contract, `""` when absent, matching the
+declared OpenAPI schema and every other consumer's expectations). The panic
+is fixed entirely on the scan side: `GetCaseByID`/`SearchCases`/
+`scanUpdatedCase` (`case_repo.go`) scan `wso2_id` into a `*string` local,
+then `stringOrEmpty(...)` converts it to `""` for the response -- crash-safe
+internally, contract-identical externally. No changes needed on the
+ServiceNow-backed path (`sn_case_service.go`), since its raw case struct
+already carries `InternalID` as a plain string with no equivalent nil risk.
 
 **`CaseView`/`Case`.`Severity`/`IssueType`/`State` are now optional too --
 a much bigger version of the same problem.** A direct query against
