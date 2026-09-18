@@ -301,23 +301,23 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		// *string". stringOrEmpty below converts it back to "" for the
 		// response, matching CaseView.InternalID's own doc comment on why
 		// it can't become *string.
-		internalID                                    *string
-		aeID, aeName                                  *string
-		pcID, pcNum, pcType                           *string
-		rcID, rcNum                                   *string
-		accountID, accountName                        *string
-		severity, issueType, workState, caseType      *string
-		state, cause, resolutionNotes, resolutionCode *string
-		escalationLevel                               *string
-		isEscalated                                   *bool
-		resolvedOn                                    *time.Time
-		description                                   *string
-		projID, projName                              *string
-		depID, depName                                *string
-		dpID, dpDisplayName                           *string
-		prodID, prodName                              *string
-		creatorEmail                                  string
-		creatorID, creatorName                        *string
+		internalID                               *string
+		aeID, aeName                             *string
+		pcID, pcNum, pcType                      *string
+		rcID, rcNum                              *string
+		accountID, accountName                   *string
+		severity, issueType, workState, caseType *string
+		state, cause, closeNotes, resolutionCode *string
+		escalationLevel                          *string
+		isEscalated                              *bool
+		resolvedOn                               *time.Time
+		description                              *string
+		projID, projName                         *string
+		depID, depName                           *string
+		dpID, dpDisplayName                      *string
+		prodID, prodName                         *string
+		creatorEmail                             string
+		creatorID, creatorName                   *string
 	)
 	err := r.db.QueryRow(ctx,
 		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT,
@@ -353,7 +353,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 	).Scan(
 		&cv.ID, &cv.Number, &internalID, &caseType,
 		&description, &severity, &issueType, &workState,
-		&state, &cause, &resolutionNotes,
+		&state, &cause, &closeNotes,
 		&resolutionCode, &escalationLevel, &isEscalated,
 		&cv.CreatedOn, &cv.UpdatedOn, &cv.ClosedOn, &resolvedOn,
 		&cv.Subject,
@@ -400,8 +400,17 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		c := domain.CaseCause(*cause)
 		cv.Cause = &c
 	}
-	if resolutionNotes != nil {
-		cv.ResolutionNotes = resolutionNotes
+	// caseLikeCloseNotesColumn genuinely is "close notes" (the only such
+	// column this schema has -- "case"/engagement/service_request/
+	// security_report_analysis/announcement all name it close_notes, not
+	// resolution_notes) and belongs on CaseView.CloseNotes, not
+	// CaseView.ResolutionNotes -- a distinct field on the ServiceNow data
+	// source (sn_case_service.go sets both from two separate upstream
+	// fields) that this schema has no separate column for at all, so it's
+	// correctly left nil here rather than double-filled from the same
+	// value.
+	if closeNotes != nil {
+		cv.CloseNotes = closeNotes
 	}
 	if resolutionCode != nil {
 		rc := domain.CaseResolutionCode(*resolutionCode)

@@ -689,7 +689,18 @@ already use — no route path, request, or response shape changed.
 - **Comments**: `comment.work_item_id` is a foreign key into `work_item(id)`,
   so only reference types that are themselves work_item subtypes can be
   commented on through Postgres — see
-  `repository.ReferenceTypeToWorkItemType`. `"deployment"` has no entry:
+  `repository.ReferenceTypeToWorkItemType`. **`"case"` maps to all five
+  case-like work_item types** (`CASE`/`ENGAGEMENT`/`SERVICE_REQUEST`/
+  `SECURITY_REPORT_ANALYSIS`/`ANNOUNCEMENT`), not just literal `CASE` — found
+  live as a real bug via a HAR comparison against the ServiceNow data
+  source: a `CS`-numbered work_item whose real type was `SERVICE_REQUEST`
+  returned zero comments through `POST /comments/search` (which
+  `csm-portal-backend`'s case-scoped comment endpoint forwards to, injecting
+  `referenceType:"case"`) even though it had real comment rows, because this
+  map used to bind a single `"CASE"` value where `case_repo.go`'s own
+  `GetCaseByID`/`SearchCases` have matched all five case-like types since
+  "Case-like work_item types" landed — this file was simply never updated to
+  match. `"deployment"` has no entry:
   `deployment` (migration 000013) is its own standalone table with its own
   primary key space, not a work_item subtype, so `CreateComment`/
   `SearchComments` reject it with a `ValidationError` before any query runs.
@@ -1109,6 +1120,23 @@ product, account, deployment, deployed_product, split across
     the already-stated design), or Go-side generation with a retry-on-
     conflict loop — either way, the exact prefix/padding/format needs a
     real answer, not an invented one.
+
+## GetCaseByID's CloseNotes was silently swapped with ResolutionNotes
+
+Found via a HAR comparison against the ServiceNow data source for the same
+case: `closeNotes` was always `null` in every Postgres `GetCaseByID`
+response, while `resolutionNotes` held what was actually close-notes data.
+`caseLikeCloseNotesColumn` (`COALESCE(c.close_notes, eng.close_notes,
+sr.close_notes, sra.close_notes, ann.close_notes)`) was scanned into a
+local variable named `resolutionNotes` and assigned to
+`cv.ResolutionNotes` -- but this schema has no separate `resolution_notes`
+column anywhere (only `close_notes`, on all five case-like tables), and the
+ServiceNow-backed path (`sn_case_service.go`) treats `CloseNotes`/
+`ResolutionNotes` as genuinely distinct fields from two different upstream
+values. Fixed by scanning into `closeNotes` and assigning it to
+`cv.CloseNotes`; `cv.ResolutionNotes` now correctly stays `nil` on this data
+source (no confirmed column for it), rather than being double-filled from
+`close_notes`.
 
 ## CaseView.ProjectDetails / SearchCaseView.Project are now optional
 
