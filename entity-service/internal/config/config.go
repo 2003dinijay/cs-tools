@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 // DataSource identifies which backend the service reads from.
@@ -81,6 +82,27 @@ type Config struct {
 	// constructs EventPublisherService when both this is true AND
 	// EventHubBroker is set.
 	EventPublishingEnabled bool
+	// CRNoticesEnabled turns on the change-request notice drainer: the poller
+	// that reads event_outbox and asks csm-notification-service to send the
+	// approval and plan-start-date mails.
+	//
+	// OFF BY DEFAULT, AND THAT IS THE POINT. ServiceNow still sends these
+	// notices today. Turning this on is a paired change with disabling its
+	// ServiceNow counterparts -- two senders for one event means every
+	// approver gets the mail twice -- so it must never come on merely because
+	// a database happens to be configured.
+	CRNoticesEnabled bool
+	// CREventHubTopic is the topic the change-request notices are published
+	// to. SEPARATE FROM EventHubTopic ON PURPOSE. Every consumer group reads
+	// its whole topic, so putting these on case-events would make the case
+	// consumer read and discard every change-request record, and vice versa.
+	// A distinct topic is what actually isolates the two volumes; a distinct
+	// consumer group alone would only isolate the processing.
+	CREventHubTopic string
+	// CRNoticePollInterval is how often to poll event_outbox when the last
+	// pass came back short. A backlog drains at full speed regardless, so this
+	// governs only the idle case: notice latency against query volume.
+	CRNoticePollInterval time.Duration
 	// SupportEngineerRole is the ServiceNow role name (e.g. an org-specific
 	// "sn_*" role) whose presence on a case comment's resolved author marks
 	// that comment as a qualifying support-engineer response — see
@@ -131,6 +153,9 @@ func Load() *Config {
 		EventHubConnectionString:                 os.Getenv("EVENT_HUB_CONNECTION_STRING"),
 		EventHubTopic:                            os.Getenv("EVENT_HUB_TOPIC"),
 		EventPublishingEnabled:                   os.Getenv("EVENT_PUBLISHING_ENABLED") == "true",
+		CRNoticesEnabled:                         os.Getenv("CR_NOTICES_ENABLED") == "true",
+		CREventHubTopic:                          getEnvOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
+		CRNoticePollInterval:                     envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
 		SupportEngineerRole:                      os.Getenv("SUPPORT_ENGINEER_ROLE"),
 		CustomerRoles:                            splitComma(os.Getenv("CUSTOMER_ROLES")),
 	}
@@ -292,4 +317,19 @@ func (c *Config) DSN() string {
 	q.Set("sslmode", c.DBSSLMode)
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// envDuration reads a Go duration string (e.g. "5s", "500ms"), falling back to
+// def when unset or unparseable -- a typo should cost the override, not stop
+// the service starting.
+func envDuration(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
 }
