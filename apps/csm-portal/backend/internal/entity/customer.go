@@ -327,6 +327,12 @@ func (c *CustomerEntityClient) SearchDeployedProducts(ctx context.Context, body 
 	return c.do(ctx, http.MethodPost, "/deployed-products/search", body)
 }
 
+// SearchProjectsByProductVersion calls POST /deployed-products/projects/search on the entity service.
+// Response is returned as raw JSON; field filtering to the portal shape is deferred.
+func (c *CustomerEntityClient) SearchProjectsByProductVersion(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/deployed-products/projects/search", body)
+}
+
 // PostDeployedProduct calls POST /deployed-products on the entity service to create a new deployed product.
 // Response is returned as raw JSON; typed response structs are deferred.
 func (c *CustomerEntityClient) PostDeployedProduct(ctx context.Context, body []byte) ([]byte, error) {
