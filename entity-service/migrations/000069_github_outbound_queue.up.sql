@@ -220,6 +220,15 @@ BEGIN
       INTO to_name FROM "user" u WHERE u.id = NEW.assigned_to_id;
 
     IF NEW.type = 'CASE' THEN
+        -- UNASSIGNMENT IS NOT AN EVENT. ServiceNow's flow computed
+        --     action = isClosed ? 'closed' : (isAssigned ? 'assigned' : '')
+        -- so clearing the assignee produced no action and dispatched nothing.
+        -- Sending action='assigned' with a null assigned_to would have the
+        -- workflow post "Assigned to:" with nobody after it.
+        IF NEW.assigned_to_id IS NULL THEN
+            RETURN NULL;
+        END IF;
+
         -- client_payload of "servicenow-case-update", action=assigned.
         INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
         VALUES ('case_assigned', NEW.id, gh.owner, gh.repository, gh.github_issue_number,
