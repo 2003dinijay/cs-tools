@@ -269,11 +269,12 @@ function DashboardWidgetTile({
   // pattern, just tracked per-widget here instead of per-section.
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number | undefined>(undefined);
   // A `shape: "list"` renderer with its own "Customise columns" button
-  // (today, only `CaseWidgetList`) hands it up here via
-  // `onColumnCustomizerChange` instead of rendering it in its own row, so it
-  // can sit right next to `refreshButton` below — reported live as reading
-  // like two unrelated controls when split across two separate rows. `null`
-  // for every other resourceType, which never calls this back.
+  // (`CaseWidgetList`, or `GenericColumnList` for a `columns`-configured
+  // widget) hands it up here via `onColumnCustomizerChange` instead of
+  // rendering it in its own row, so it can sit right next to
+  // `refreshButton` below — reported live as reading like two unrelated
+  // controls when split across two separate rows. `null` for every other
+  // resourceType, which never calls this back.
   const [inlineColumnCustomizer, setInlineColumnCustomizer] = useState<ReactNode>(null);
   // Re-renders exactly when the "Last refreshed …" text below would next
   // change (adaptive shared scheduler — see RelativeTime.tsx), without
@@ -649,6 +650,8 @@ function DashboardWidgetTile({
                   isLoading={false}
                   resourceType={resourceType}
                   columns={columns ?? []}
+                  widgetId={widgetId}
+                  onColumnCustomizerChange={setInlineColumnCustomizer}
                 />
               ) : (
                 <ListRenderer
