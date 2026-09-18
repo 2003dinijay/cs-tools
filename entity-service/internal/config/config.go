@@ -105,15 +105,6 @@ type Config struct {
 	// last pass came back short. A backlog drains at full speed regardless.
 	GithubOutboundInterval time.Duration
 
-	// GithubCommentSkipAuthors lists comment authors whose comments are never
-	// pushed to GitHub. Defaults to the machine accounts; set
-	// GITHUB_COMMENT_SKIP_AUTHORS to a present-but-empty value to mirror every
-	// comment, including system-generated ones.
-	GithubCommentSkipAuthors []string
-
-	// GithubAssignedLabel is put on an issue when its case is assigned and
-	// removed when the case closes. Empty disables both.
-	GithubAssignedLabel string
 	// CSMPortalBaseURL builds the link back to a change request in comments
 	// posted to GitHub. Empty omits the link rather than rendering a broken one.
 	CSMPortalBaseURL string
@@ -185,21 +176,6 @@ func Load() *Config {
 		// LookupEnv, not Getenv: an unset variable takes the default, while a
 		// variable deliberately set to "" means "mirror everything". Getenv
 		// cannot tell those apart.
-		// Empty is meaningful (disable the label), so LookupEnv again.
-		GithubAssignedLabel: func() string {
-			v, ok := os.LookupEnv("GITHUB_LABEL_STATUS_ASSIGNED")
-			if !ok {
-				return defaultAssignedLabel
-			}
-			return strings.TrimSpace(v)
-		}(),
-		GithubCommentSkipAuthors: func() []string {
-			raw, ok := os.LookupEnv("GITHUB_COMMENT_SKIP_AUTHORS")
-			if !ok {
-				return defaultCommentSkipAuthors
-			}
-			return splitComma(raw)
-		}(),
 		CSMPortalBaseURL:             os.Getenv("CSM_PORTAL_BASE_URL"),
 		GithubLabelChangeRequest:     os.Getenv("GITHUB_LABEL_CHANGE_REQUEST"),
 		GithubLabelTypePrefix:        os.Getenv("GITHUB_LABEL_TYPE_PREFIX"),
@@ -224,16 +200,6 @@ func getEnvOrDefault(key, defaultVal string) string {
 // splitComma parses a comma-separated env var into a trimmed, non-empty
 // slice ("" for an unset/empty var, matching integrations/csm-notification-service's
 // own copy of this exact helper).
-// defaultCommentSkipAuthors are the machine accounts whose case comments are
-// not mirrored to GitHub. "system" writes the auto-closure reminders; the two
-// integration accounts wrote the old ServiceNow-era sync's own entries.
-// Duplicated here rather than imported from the service package to keep config
-// free of dependencies on the layers that consume it.
-var defaultCommentSkipAuthors = []string{"system", "github_integration", "github_pipeline"}
-
-// defaultAssignedLabel mirrors service.DefaultAssignedLabel; kept here so
-// config depends on nothing above it.
-const defaultAssignedLabel = "Status/Assigned"
 
 func splitComma(s string) []string {
 	if s == "" {

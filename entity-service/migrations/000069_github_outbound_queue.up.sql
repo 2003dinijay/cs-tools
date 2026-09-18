@@ -81,7 +81,11 @@ DECLARE
     gh RECORD;
     ev  TEXT;
     diff JSONB := '{}'::jsonb;
-    siblings JSONB := '[]'::jsonb;
+    cr_number TEXT;
+    parent_number TEXT;
+    parent_id UUID;
+    actor TEXT;
+    assignee TEXT;
     col TEXT;
     oldv JSONB;
     newv JSONB := to_jsonb(NEW);
@@ -104,19 +108,6 @@ BEGIN
 
     IF TG_OP = 'INSERT' THEN
         ev := 'cr_created';
-        -- Every change request on the same case, not just this one.
-        --
-        -- The GitHub Actions workflow ServiceNow dispatched to called back into
-        -- ServiceNow's REST API for exactly this list, so the reader of the
-        -- issue sees the whole change picture rather than one CR in isolation.
-        -- We have it one join away, so it is gathered here instead -- and at
-        -- enqueue time, which is the moment the list was actually true.
-        SELECT COALESCE(jsonb_agg(jsonb_build_object('number', s_wi.number, 'state', s_cr.state)
-                                  ORDER BY s_wi.number), '[]'::jsonb)
-          INTO siblings
-          FROM work_item s_wi
-          JOIN change_request s_cr ON s_cr.id = s_wi.id
-         WHERE s_wi.parent_id = (SELECT parent_id FROM work_item WHERE id = NEW.id);
     ELSE
         ev := 'cr_updated';
         oldv := to_jsonb(OLD);
@@ -124,7 +115,14 @@ BEGIN
         -- to, planned start, planned end. Diffing every column would enqueue
         -- pushes for changes the integration being replaced never sent, onto
         -- an issue a customer can read.
-        FOR col IN SELECT unnest(ARRAY['state','planned_start_date','planned_end_date']) LOOP
+        -- start_on / end_on ARE the planned dates -- change_request_repo.go
+        -- reads them into PlannedStartOn. An earlier version of this list named
+        -- planned_start_date and planned_end_date, which are not columns on
+        -- this table: `newv -> col` returns NULL for a missing key rather than
+        -- erroring, so both sides always compared equal and a planned-date
+        -- change never enqueued anything. ServiceNow watched those two fields,
+        -- so a quarter of the CR updates it sent were silently absent here.
+        FOR col IN SELECT unnest(ARRAY['state','start_on','end_on']) LOOP
             IF oldv -> col IS DISTINCT FROM newv -> col THEN
                 diff := diff || jsonb_build_object(col,
                     jsonb_build_object('from', oldv -> col, 'to', newv -> col));
@@ -137,9 +135,32 @@ BEGIN
         END IF;
     END IF;
 
+    -- The client_payload of "servicenow-cr-update", field for field. The
+    -- workflow in the target repository reads these names, so they are not
+    -- ours to rename.
+    SELECT wi.number, wi.updated_by, u.name, p_wi.number, cr_wi.parent_id
+      INTO cr_number, actor, assignee, parent_number, parent_id
+      FROM work_item wi
+      LEFT JOIN "user" u ON u.id = wi.assigned_to_id
+      LEFT JOIN work_item cr_wi ON cr_wi.id = wi.id
+      LEFT JOIN work_item p_wi  ON p_wi.id = cr_wi.parent_id
+     WHERE wi.id = NEW.id;
+
     INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
     VALUES (ev, NEW.id, gh.owner, gh.repository, gh.github_issue_number,
-            jsonb_build_object('changes', diff, 'siblings', siblings));
+            jsonb_build_object(
+                'github_issue_number', gh.github_issue_number,
+                'cr_number',    cr_number,
+                'cr_sys_id',    NEW.id,
+                'cr_state',     NEW.state,
+                'assigned_to',  assignee,
+                'case_sys_id',  parent_id,
+                'planned_start', NEW.start_on,
+                'planned_end',   NEW.end_on,
+                'sn_user',      actor,
+                -- Kept alongside so the worker can tell state_changed from
+                -- dates_updated without re-reading the row.
+                'changes', diff));
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -172,8 +193,7 @@ CREATE OR REPLACE FUNCTION trg_github_outbound_assignment()
 RETURNS TRIGGER AS $$
 DECLARE
     gh RECORD;
-    from_name TEXT;
-    to_name   TEXT;
+    to_name TEXT;
 BEGIN
     IF NEW.type NOT IN ('CHANGE_REQUEST', 'CASE')
        OR OLD.assigned_to_id IS NOT DISTINCT FROM NEW.assigned_to_id THEN
@@ -197,18 +217,34 @@ BEGIN
 
     SELECT COALESCE(NULLIF(TRIM(u.name), ''),
                     NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''))
-      INTO from_name FROM "user" u WHERE u.id = OLD.assigned_to_id;
-    SELECT COALESCE(NULLIF(TRIM(u.name), ''),
-                    NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''))
       INTO to_name FROM "user" u WHERE u.id = NEW.assigned_to_id;
 
-    INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
-    VALUES (CASE WHEN NEW.type = 'CASE' THEN 'case_assigned' ELSE 'cr_updated' END,
-            NEW.id, gh.owner, gh.repository, gh.github_issue_number,
-            jsonb_build_object(
-                'assignedTo', to_name,
-                'changes', jsonb_build_object('assigned_to_id',
-                    jsonb_build_object('from', from_name, 'to', to_name))));
+    IF NEW.type = 'CASE' THEN
+        -- client_payload of "servicenow-case-update", action=assigned.
+        INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
+        VALUES ('case_assigned', NEW.id, gh.owner, gh.repository, gh.github_issue_number,
+                jsonb_build_object(
+                    'action',              'assigned',
+                    'github_issue_number', gh.github_issue_number,
+                    'case_number',         NEW.number,
+                    'case_sys_id',         NEW.id,
+                    'resolution_notes',    NULL,
+                    'assigned_to',         to_name,
+                    'sn_user',             NEW.updated_by));
+    ELSE
+        -- A change request's assignment travels on "servicenow-cr-update".
+        INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
+        VALUES ('cr_updated', NEW.id, gh.owner, gh.repository, gh.github_issue_number,
+                jsonb_build_object(
+                    'github_issue_number', gh.github_issue_number,
+                    'cr_number',   NEW.number,
+                    'cr_sys_id',   NEW.id,
+                    'cr_state',    (SELECT state FROM change_request WHERE id = NEW.id),
+                    'assigned_to', to_name,
+                    'case_sys_id', NEW.parent_id,
+                    'sn_user',     NEW.updated_by,
+                    'changes',     jsonb_build_object('assigned_to_id', jsonb_build_object('to', to_name))));
+    END IF;
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -229,6 +265,9 @@ CREATE OR REPLACE FUNCTION trg_github_outbound_case()
 RETURNS TRIGGER AS $$
 DECLARE
     gh RECORD;
+    case_number TEXT;
+    actor TEXT;
+    assignee TEXT;
 BEGIN
     IF NEW.state IS NOT DISTINCT FROM OLD.state OR NEW.state <> 'CLOSED' THEN
         RETURN NULL;
@@ -245,10 +284,24 @@ BEGIN
         RETURN NULL;
     END IF;
 
+    SELECT wi.number, wi.updated_by,
+           COALESCE(NULLIF(TRIM(u.name), ''),
+                    NULLIF(TRIM(COALESCE(u.first_name,'')||' '||COALESCE(u.last_name,'')), ''))
+      INTO case_number, actor, assignee
+      FROM work_item wi LEFT JOIN "user" u ON u.id = wi.assigned_to_id
+     WHERE wi.id = NEW.id;
+
+    -- client_payload of "servicenow-case-update", action=closed.
     INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
     VALUES ('case_closed', NEW.id, gh.owner, gh.repository, NEW.github_issue_number,
-            jsonb_build_object('resolutionNotes', NEW.close_notes,
-                               'resolutionCode', NEW.resolution_code));
+            jsonb_build_object(
+                'action',              'closed',
+                'github_issue_number', NEW.github_issue_number,
+                'case_number',         case_number,
+                'case_sys_id',         NEW.id,
+                'resolution_notes',    NEW.close_notes,
+                'assigned_to',         assignee,
+                'sn_user',             actor));
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -293,9 +346,16 @@ BEGIN
 
     INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
     VALUES ('comment_added', NEW.work_item_id, gh.owner, gh.repository, gh.github_issue_number,
-            jsonb_build_object('commentId', NEW.id,
-                               'content', NEW.content,
-                               'createdBy', NEW.created_by));
+            -- client_payload of "servicenow-note". note_text goes RAW: the
+            -- workflow strips ServiceNow's [code] markers and HTML itself, and
+            -- doing it here would change what it receives.
+            jsonb_build_object(
+                'issue_number', gh.github_issue_number,
+                'note_text',    NEW.content,
+                'note_type',    NEW.type,
+                'case_number',  (SELECT number FROM work_item WHERE id = NEW.work_item_id),
+                'case_sys_id',  NEW.work_item_id,
+                'sn_user',      NEW.created_by));
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;

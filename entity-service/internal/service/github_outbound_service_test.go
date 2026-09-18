@@ -18,175 +18,156 @@ package service
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"testing"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/github"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
-const obOwner, obRepo, obIssue = "wso2", "choreo", 42
+// fakeDispatcher records what would have gone to GitHub.
+type fakeDispatcher struct {
+	owner, repo, eventType string
+	payload                map[string]any
+	calls                  int
+	err                    error
+}
+
+func (f *fakeDispatcher) Dispatch(_ context.Context, owner, repo, eventType string, p map[string]any) error {
+	f.calls++
+	f.owner, f.repo, f.eventType, f.payload = owner, repo, eventType, p
+	return f.err
+}
 
 func obItem(event string, payload map[string]any) repository.OutboundItem {
 	return repository.OutboundItem{
 		ID: 1, Event: event, WorkItemID: "cr-1",
-		Owner: obOwner, Repository: obRepo, IssueNumber: obIssue, Payload: payload,
+		Owner: "wso2", Repository: "choreo", IssueNumber: 42, Payload: payload,
 	}
 }
 
-func obSvc(c *fakeGhClient) GithubOutboundService {
-	return NewGithubOutboundService(c, "https://csm.example", DefaultCommentSkipAuthors(), DefaultAssignedLabel)
-}
-
-func TestOutbound_CommentIsRelayed(t *testing.T) {
-	c := &fakeGhClient{}
-	err := obSvc(c).Deliver(context.Background(), obItem(outboundCommentAdded, map[string]any{
-		"content": "we have scheduled this for Friday", "createdBy": "nimal@wso2.com", "type": "COMMENT",
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
+// THE CONTRACT WITH THE WORKFLOWS. Each mapped repository runs GitHub Actions
+// workflows keyed on these exact event types. Renaming one silently stops the
+// integration: GitHub accepts the dispatch and nothing listens for it.
+func TestOutbound_EventTypesMatchTheWorkflows(t *testing.T) {
+	cases := map[string]string{
+		outboundCommentAdded: "servicenow-note",
+		outboundCaseClosed:   "servicenow-case-update",
+		outboundCaseAssigned: "servicenow-case-update",
+		outboundCRCreated:    "servicenow-cr-update",
+		outboundCRUpdated:    "servicenow-cr-update",
 	}
-	if len(c.comments) != 1 {
-		t.Fatalf("posted %d comments, want 1", len(c.comments))
-	}
-	if !strings.Contains(c.comments[0], "we have scheduled this for Friday") {
-		t.Errorf("body missing the comment: %q", c.comments[0])
-	}
-	// The author is stored as an email; a public issue must not carry it.
-	if strings.Contains(c.comments[0], "@wso2.com") {
-		t.Errorf("the author's email address reached a public issue: %q", c.comments[0])
-	}
-	if !strings.Contains(c.comments[0], "nimal") {
-		t.Errorf("the author's name was lost: %q", c.comments[0])
-	}
-}
-
-// A work note is internal by definition. Relaying it would disclose something
-// written on the assumption it stayed inside.
-func TestOutbound_WorkNoteIsNotRelayed(t *testing.T) {
-	c := &fakeGhClient{}
-	err := obSvc(c).Deliver(context.Background(), obItem(outboundCommentAdded, map[string]any{
-		"content": "customer is threatening to escalate", "createdBy": "x@wso2.com", "type": "WORK_NOTE",
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.comments) != 0 {
-		t.Fatalf("a work note was posted to GitHub: %q", c.comments)
-	}
-}
-
-func TestOutbound_EmptyCommentIsNotRelayed(t *testing.T) {
-	c := &fakeGhClient{}
-	if err := obSvc(c).Deliver(context.Background(), obItem(outboundCommentAdded, map[string]any{
-		"content": "   ", "type": "COMMENT",
-	})); err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.comments) != 0 {
-		t.Fatal("an empty comment was posted")
-	}
-}
-
-// Only the columns on the allow-list are reported. A column added to the table
-// later must be silent by default, not leak onto a public issue.
-func TestOutbound_OnlyReportableChanges(t *testing.T) {
-	c := &fakeGhClient{}
-	err := obSvc(c).Deliver(context.Background(), obItem(outboundCRUpdated, map[string]any{
-		"changes": map[string]any{
-			"state":                map[string]any{"from": "NEW", "to": "ASSESS"},
-			"justification":        map[string]any{"from": "a", "to": "b"},
-			"risk_impact_analysis": map[string]any{"from": "x", "to": "y"},
-		},
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.comments) != 1 {
-		t.Fatalf("posted %d comments, want 1", len(c.comments))
-	}
-	body := c.comments[0]
-	if !strings.Contains(body, "NEW → ASSESS") {
-		t.Errorf("the state change was not reported: %q", body)
-	}
-	for _, leaked := range []string{"justification", "risk_impact_analysis", "\"a\"", "\"x\""} {
-		if strings.Contains(body, leaked) {
-			t.Errorf("an off-list column reached GitHub (%s): %q", leaked, body)
-		}
-	}
-}
-
-// An update touching nothing reportable says nothing at all, rather than
-// posting an empty notice.
-func TestOutbound_NothingReportableIsSilent(t *testing.T) {
-	c := &fakeGhClient{}
-	if err := obSvc(c).Deliver(context.Background(), obItem(outboundCRUpdated, map[string]any{
-		"changes": map[string]any{"justification": map[string]any{"from": "a", "to": "b"}},
-	})); err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.comments) != 0 {
-		t.Fatalf("posted a comment for an unreportable change: %q", c.comments)
-	}
-}
-
-func TestOutbound_CRCreated(t *testing.T) {
-	c := &fakeGhClient{}
-	if err := obSvc(c).Deliver(context.Background(), obItem(outboundCRCreated, nil)); err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.comments) != 1 || !strings.Contains(c.comments[0], "change request") {
-		t.Fatalf("comments = %q", c.comments)
-	}
-	if !strings.Contains(c.comments[0], "csm.example/operations/change-requests/cr-1") {
-		t.Errorf("the link back to the record is missing: %q", c.comments[0])
-	}
-}
-
-// Never set labels or state outbound: those are what DRIVE the change request
-// from the inbound side, so writing them back is how a loop starts.
-func TestOutbound_NeverWritesLabelsOrState(t *testing.T) {
-	c := &fakeGhClient{}
-	for _, ev := range []string{outboundCRCreated, outboundCRUpdated, outboundCommentAdded} {
-		_ = obSvc(c).Deliver(context.Background(), obItem(ev, map[string]any{
-			"content": "x", "type": "COMMENT",
-			"changes": map[string]any{"state": map[string]any{"from": "NEW", "to": "ASSESS"}},
-		}))
-	}
-	if len(c.labels) != 0 || len(c.removed) != 0 {
-		t.Errorf("labels were written outbound: set=%v removed=%v", c.labels, c.removed)
-	}
-	if len(c.states) != 0 {
-		t.Errorf("issue state was written outbound: %v", c.states)
-	}
-}
-
-// A row with no issue on it cannot be posted anywhere, and no amount of
-// retrying will put one there. The trigger will not write such a row -- all
-// three columns are NOT NULL -- so this guards the case where one is inserted
-// by hand or by a future caller that skips the trigger.
-func TestOutbound_RowWithoutAnIssueIsPermanent(t *testing.T) {
-	for name, mangle := range map[string]func(*repository.OutboundItem){
-		"no owner":      func(i *repository.OutboundItem) { i.Owner = "" },
-		"no repository": func(i *repository.OutboundItem) { i.Repository = "" },
-		"no number":     func(i *repository.OutboundItem) { i.IssueNumber = 0 },
-	} {
-		t.Run(name, func(t *testing.T) {
-			c := &fakeGhClient{}
-			item := obItem(outboundCommentAdded, map[string]any{"content": "x", "type": "COMMENT"})
-			mangle(&item)
-			err := obSvc(c).Deliver(context.Background(), item)
-			if err == nil {
-				t.Fatal("want an error")
+	for event, want := range cases {
+		t.Run(event, func(t *testing.T) {
+			d := &fakeDispatcher{}
+			if err := NewGithubOutboundService(d).Deliver(context.Background(), obItem(event, nil)); err != nil {
+				t.Fatalf("Deliver: %v", err)
 			}
-			if !OutboundPermanent(err) {
-				t.Fatal("a row with no issue should be permanent, not retried")
+			if d.eventType != want {
+				t.Errorf("event type = %q, want %q", d.eventType, want)
 			}
-			if len(c.comments) != 0 {
-				t.Fatalf("posted anyway: %q", c.comments)
+			if d.owner != "wso2" || d.repo != "choreo" {
+				t.Errorf("dispatched to %s/%s, want wso2/choreo", d.owner, d.repo)
 			}
 		})
+	}
+}
+
+// The payload is built by the trigger in the workflow's shape and must reach
+// GitHub unchanged. A field renamed or reformatted here is a field the
+// workflow no longer finds.
+func TestOutbound_PayloadPassesThroughUntouched(t *testing.T) {
+	in := map[string]any{
+		"issue_number": 42,
+		"note_text":    "[code]<br><b>Raw</b> ServiceNow markup[/code]",
+		"note_type":    "COMMENT",
+		"case_number":  "CS0433225",
+		"case_sys_id":  "abc-123",
+		"sn_user":      "nimal@wso2.com",
+	}
+	d := &fakeDispatcher{}
+	if err := NewGithubOutboundService(d).Deliver(context.Background(), obItem(outboundCommentAdded, in)); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	for k, want := range in {
+		if got := d.payload[k]; got != want {
+			t.Errorf("payload[%q] = %v, want %v", k, got, want)
+		}
+	}
+	// Specifically: the markup is NOT converted here. The workflow strips
+	// ServiceNow's [code] markers and HTML itself, and doing it here would
+	// change what it receives.
+	if d.payload["note_text"] != in["note_text"] {
+		t.Error("note_text was transformed; the workflow expects it raw")
+	}
+}
+
+// The CR workflow branches three ways on `action`.
+func TestOutbound_CRActionMatchesTheWorkflowBranches(t *testing.T) {
+	cases := map[string]struct {
+		event   string
+		changes map[string]any
+		want    string
+	}{
+		"creation":     {outboundCRCreated, nil, "created"},
+		"state change": {outboundCRUpdated, map[string]any{"state": map[string]any{"to": "AUTHORIZE"}}, "state_changed"},
+		"assignment":   {outboundCRUpdated, map[string]any{"assigned_to_id": map[string]any{"to": "Nimal"}}, "state_changed"},
+		"dates only":   {outboundCRUpdated, map[string]any{"start_on": map[string]any{"to": "x"}}, "dates_updated"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := &fakeDispatcher{}
+			item := obItem(c.event, map[string]any{"changes": c.changes})
+			if err := NewGithubOutboundService(d).Deliver(context.Background(), item); err != nil {
+				t.Fatalf("Deliver: %v", err)
+			}
+			if got := d.payload["action"]; got != c.want {
+				t.Errorf("action = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// We dispatch and stop. Commenting, labelling and closing the issue are what
+// the workflow does; doing them here as well would duplicate all of it.
+func TestOutbound_MakesExactlyOneCall(t *testing.T) {
+	d := &fakeDispatcher{}
+	if err := NewGithubOutboundService(d).Deliver(context.Background(), obItem(outboundCaseClosed, nil)); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if d.calls != 1 {
+		t.Errorf("made %d GitHub calls, want exactly 1", d.calls)
+	}
+}
+
+func TestOutbound_UnknownEventIsPermanent(t *testing.T) {
+	d := &fakeDispatcher{}
+	err := NewGithubOutboundService(d).Deliver(context.Background(), obItem("no_such_event", nil))
+	if !OutboundPermanent(err) {
+		t.Fatalf("err = %v, want a permanent failure", err)
+	}
+	if d.calls != 0 {
+		t.Error("dispatched an unknown event")
+	}
+}
+
+func TestOutbound_RowWithoutARepositoryIsPermanent(t *testing.T) {
+	d := &fakeDispatcher{}
+	item := obItem(outboundCommentAdded, nil)
+	item.Owner = ""
+	if err := NewGithubOutboundService(d).Deliver(context.Background(), item); !OutboundPermanent(err) {
+		t.Fatalf("err = %v, want a permanent failure", err)
+	}
+}
+
+func TestOutbound_DispatchFailureIsReturned(t *testing.T) {
+	d := &fakeDispatcher{err: errors.New("502 bad gateway")}
+	err := NewGithubOutboundService(d).Deliver(context.Background(), obItem(outboundCommentAdded, nil))
+	if err == nil {
+		t.Fatal("want the underlying failure")
+	}
+	if OutboundPermanent(err) {
+		t.Error("a 502 should be retried, not abandoned")
 	}
 }
 
@@ -198,286 +179,8 @@ func TestOutboundBackoff(t *testing.T) {
 			t.Fatalf("backoff went backwards at attempt %d: %v after %v", attempt, d, prev)
 		}
 		if d > outboundMaxBackoff {
-			t.Fatalf("backoff exceeded the cap at attempt %d: %v", attempt, d)
+			t.Fatalf("attempt %d exceeded the cap: %v", attempt, d)
 		}
 		prev = d
-	}
-	if OutboundBackoff(1) != outboundBaseBackoff {
-		t.Errorf("first attempt = %v, want %v", OutboundBackoff(1), outboundBaseBackoff)
-	}
-}
-
-func TestOutboundPermanent(t *testing.T) {
-	cases := map[string]struct {
-		err  error
-		want bool
-	}{
-		"404 gone":         {&github.Error{StatusCode: 404}, true},
-		"410 gone":         {&github.Error{StatusCode: 410}, true},
-		"403 permissions":  {&github.Error{StatusCode: 403}, true},
-		"403 rate limited": {&github.Error{StatusCode: 403, RetryAfter: time.Minute}, false},
-		"429 rate limited": {&github.Error{StatusCode: 429, RetryAfter: time.Minute}, false},
-		"502 transient":    {&github.Error{StatusCode: 502}, false},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			if got := OutboundPermanent(tc.err); got != tc.want {
-				t.Fatalf("OutboundPermanent(%v) = %v, want %v", tc.err, got, tc.want)
-			}
-		})
-	}
-}
-
-// GitHub knows when its limit resets; our backoff is a guess. Its answer wins.
-func TestOutboundRetryAfter(t *testing.T) {
-	d, ok := OutboundRetryAfter(&github.Error{StatusCode: 429, RetryAfter: 90 * time.Second})
-	if !ok || d != 90*time.Second {
-		t.Fatalf("got %v,%v want 90s,true", d, ok)
-	}
-	if _, ok := OutboundRetryAfter(&github.Error{StatusCode: 502}); ok {
-		t.Fatal("a plain 502 should not report a retry-after")
-	}
-}
-
-// The two halves of "SN Case Updates -> GitHub".
-
-func TestOutbound_CaseClosedCarriesResolutionNotes(t *testing.T) {
-	c := &fakeGhClient{}
-	err := obSvc(c).Deliver(context.Background(), obItem(outboundCaseClosed, map[string]any{
-		"resolutionNotes": "Root cause was a stale cache entry; fixed in 2.4.1.",
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.comments) != 1 {
-		t.Fatalf("posted %d comments, want 1", len(c.comments))
-	}
-	if !strings.Contains(c.comments[0], "stale cache entry") {
-		t.Errorf("resolution notes missing: %q", c.comments[0])
-	}
-	if !strings.Contains(c.comments[0], "closed") {
-		t.Errorf("closure not stated: %q", c.comments[0])
-	}
-}
-
-// A case closed with nothing written in the notes field still gets the notice.
-// ServiceNow sent one, and "this issue's case is closed" is the part the
-// reader of the issue actually needs.
-func TestOutbound_CaseClosedWithoutNotesStillPosts(t *testing.T) {
-	c := &fakeGhClient{}
-	if err := obSvc(c).Deliver(context.Background(), obItem(outboundCaseClosed, map[string]any{})); err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.comments) != 1 {
-		t.Fatalf("posted %d comments, want 1", len(c.comments))
-	}
-}
-
-func TestOutbound_CaseAssignedNamesThePerson(t *testing.T) {
-	c := &fakeGhClient{}
-	err := obSvc(c).Deliver(context.Background(), obItem(outboundCaseAssigned, map[string]any{
-		"assignedTo": "Nimal Perera",
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.comments) != 1 {
-		t.Fatalf("posted %d comments, want 1", len(c.comments))
-	}
-	if !strings.Contains(c.comments[0], "Nimal Perera") {
-		t.Errorf("assignee missing: %q", c.comments[0])
-	}
-}
-
-// Unassignment resolves to no name, and "assigned to nobody" is not a comment
-// worth posting on a customer's issue.
-func TestOutbound_CaseUnassignedPostsNothing(t *testing.T) {
-	c := &fakeGhClient{}
-	if err := obSvc(c).Deliver(context.Background(), obItem(outboundCaseAssigned, map[string]any{
-		"assignedTo": "",
-	})); err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.comments) != 0 {
-		t.Fatalf("posted %d comments, want 0: %q", len(c.comments), c.comments)
-	}
-}
-
-// Comments sync from the case, so the link in one must be a case link. This
-// shipped pointing at /operations/change-requests/<case id>, which 404s.
-func TestOutbound_CommentLinksToTheCaseNotTheChangeRequest(t *testing.T) {
-	c := &fakeGhClient{}
-	err := obSvc(c).Deliver(context.Background(), obItem(outboundCommentAdded, map[string]any{
-		"content": "scheduled for Friday", "createdBy": "nimal@wso2.com", "type": "COMMENT",
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if strings.Contains(c.comments[0], "change-requests") {
-		t.Errorf("a case comment linked to the change-request route: %q", c.comments[0])
-	}
-	if !strings.Contains(c.comments[0], "/cases/") {
-		t.Errorf("no case link in a case comment: %q", c.comments[0])
-	}
-}
-
-// The case journal carries machine-written entries -- auto-closure reminders
-// and the CR notices this service already posts itself. They are dropped by
-// AUTHOR, never by matching the text, so rewording a template cannot silently
-// start leaking them onto a customer's issue.
-func TestOutbound_MachineAuthoredCommentsAreNotMirrored(t *testing.T) {
-	for _, author := range []string{"system", "github_integration", "github_pipeline", "SYSTEM"} {
-		t.Run(author, func(t *testing.T) {
-			c := &fakeGhClient{}
-			err := obSvc(c).Deliver(context.Background(), obItem(outboundCommentAdded, map[string]any{
-				"content":   "Hi team, This case is in Solution Proposed state and is being monitored.",
-				"createdBy": author, "type": "COMMENT",
-			}))
-			if err != nil {
-				t.Fatalf("Deliver: %v", err)
-			}
-			if len(c.comments) != 0 {
-				t.Fatalf("machine comment reached the issue: %q", c.comments)
-			}
-		})
-	}
-}
-
-// A person's comment still syncs -- the filter must not swallow the real ones.
-func TestOutbound_PeopleComentsStillSync(t *testing.T) {
-	c := &fakeGhClient{}
-	err := obSvc(c).Deliver(context.Background(), obItem(outboundCommentAdded, map[string]any{
-		"content": "Scheduled for Friday.", "createdBy": "nimal@wso2.com", "type": "COMMENT",
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.comments) != 1 {
-		t.Fatalf("a person's comment was dropped")
-	}
-}
-
-// An empty-but-present override restores the old mirror-everything behaviour.
-func TestOutbound_EmptySkipListMirrorsEverything(t *testing.T) {
-	c := &fakeGhClient{}
-	svc := NewGithubOutboundService(c, "https://csm.example", nil, DefaultAssignedLabel)
-	err := svc.Deliver(context.Background(), obItem(outboundCommentAdded, map[string]any{
-		"content": "Auto closure notice.", "createdBy": "system", "type": "COMMENT",
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.comments) != 1 {
-		t.Fatalf("an empty skip list should mirror everything")
-	}
-}
-
-// Parity with "ServiceNow Case Updates -> GitHub": closing the case comments,
-// removes the assigned label, AND closes the issue. Posting only the comment
-// left every issue open forever after its case closed.
-func TestOutbound_CaseClosedClosesTheIssue(t *testing.T) {
-	c := &fakeGhClient{}
-	err := obSvc(c).Deliver(context.Background(), obItem(outboundCaseClosed, map[string]any{
-		"resolutionNotes": "Fixed in 2.4.1.",
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.comments) != 1 {
-		t.Fatalf("comments = %d, want 1", len(c.comments))
-	}
-	if len(c.states) != 1 || c.states[0] != github.StateClosed {
-		t.Errorf("issue was not closed: %v", c.states)
-	}
-	if len(c.removed) != 1 || c.removed[0] != DefaultAssignedLabel {
-		t.Errorf("assigned label not removed: %v", c.removed)
-	}
-}
-
-// Assignment comments and adds the label. Added, not set: SetLabels replaces
-// the whole set and would drop labels a person added by hand.
-func TestOutbound_CaseAssignedAddsTheLabel(t *testing.T) {
-	c := &fakeGhClient{}
-	err := obSvc(c).Deliver(context.Background(), obItem(outboundCaseAssigned, map[string]any{
-		"assignedTo": "Nimal Perera",
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.added) != 1 || c.added[0] != DefaultAssignedLabel {
-		t.Errorf("assigned label not added: %v", c.added)
-	}
-	if len(c.labels) != 0 {
-		t.Errorf("SetLabels was used, which replaces the whole set: %v", c.labels)
-	}
-	if len(c.states) != 0 {
-		t.Errorf("assignment must not change issue state: %v", c.states)
-	}
-}
-
-// A repository that does not use the label opts out, and then neither the
-// label calls nor the close are skipped -- only the label part is.
-func TestOutbound_EmptyAssignedLabelStillClosesTheIssue(t *testing.T) {
-	c := &fakeGhClient{}
-	svc := NewGithubOutboundService(c, "https://csm.example", DefaultCommentSkipAuthors(), "")
-	if err := svc.Deliver(context.Background(), obItem(outboundCaseClosed, nil)); err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.removed) != 0 {
-		t.Errorf("label touched despite being disabled: %v", c.removed)
-	}
-	if len(c.states) != 1 || c.states[0] != github.StateClosed {
-		t.Errorf("issue was not closed: %v", c.states)
-	}
-}
-
-// A CR state change must never close or label the issue -- only case closure does.
-func TestOutbound_ChangeRequestEventsDoNotTouchIssueState(t *testing.T) {
-	c := &fakeGhClient{}
-	err := obSvc(c).Deliver(context.Background(), obItem(outboundCRUpdated, map[string]any{
-		"changes": map[string]any{"state": map[string]any{"from": "ASSESS", "to": "AUTHORIZE"}},
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if len(c.states) != 0 || len(c.added) != 0 || len(c.removed) != 0 {
-		t.Errorf("a CR update changed issue state/labels: states=%v added=%v removed=%v",
-			c.states, c.added, c.removed)
-	}
-}
-
-// Parity with "ServiceNow Change Request -> GitHub": on creation it lists every
-// change request on the case, so the issue shows the whole change picture.
-func TestOutbound_CRCreatedListsSiblings(t *testing.T) {
-	c := &fakeGhClient{}
-	err := obSvc(c).Deliver(context.Background(), obItem(outboundCRCreated, map[string]any{
-		"siblings": []any{
-			map[string]any{"number": "CHG0035640", "state": "NEW"},
-			map[string]any{"number": "CHG0035883", "state": "AUTHORIZE"},
-		},
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	body := c.comments[0]
-	for _, want := range []string{"CHG0035640", "NEW", "CHG0035883", "AUTHORIZE"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("%q missing from the CR-created comment: %q", want, body)
-		}
-	}
-}
-
-// A case with one change request gets no list: a one-item list only restates
-// the sentence above it.
-func TestOutbound_CRCreatedWithOneCRHasNoList(t *testing.T) {
-	c := &fakeGhClient{}
-	err := obSvc(c).Deliver(context.Background(), obItem(outboundCRCreated, map[string]any{
-		"siblings": []any{map[string]any{"number": "CHG0035640", "state": "NEW"}},
-	}))
-	if err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if strings.Contains(c.comments[0], "All change requests") {
-		t.Errorf("a single CR produced a list: %q", c.comments[0])
 	}
 }

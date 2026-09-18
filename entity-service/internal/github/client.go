@@ -199,6 +199,33 @@ func (c *Client) SetLabels(ctx context.Context, issue Issue, labels []string) er
 // A label that is not there is not an error: the caller wants it gone, and it
 // is gone. GitHub says 404, which would otherwise make a retry fail where the
 // first attempt succeeded.
+// Dispatch fires a repository_dispatch event, which is how ServiceNow drove
+// this integration: it never wrote to the issue itself. A GitHub Actions
+// workflow in the target repository listens for the event type and decides
+// what to do -- comment, label, close.
+//
+//	POST /repos/{owner}/{repo}/dispatches
+//	{"event_type": "...", "client_payload": {...}}
+//
+// 204 No Content on success. A 422 means no workflow in that repository is
+// listening for the type, which GitHub reports as a validation failure rather
+// than an error -- see asError, which keeps that distinguishable.
+//
+// THE REPOSITORY IS NOT AN ISSUE. This takes owner and repo directly rather
+// than an Issue, because the event is addressed to the repository; the issue
+// number travels inside the payload where the workflow reads it.
+func (c *Client) Dispatch(ctx context.Context, owner, repository, eventType string, payload map[string]any) error {
+	if strings.TrimSpace(owner) == "" || strings.TrimSpace(repository) == "" {
+		return fmt.Errorf("github: dispatch needs an owner and a repository")
+	}
+	if strings.TrimSpace(eventType) == "" {
+		return fmt.Errorf("github: dispatch needs an event type")
+	}
+	return c.do(ctx, http.MethodPost,
+		"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repository)+"/dispatches",
+		map[string]any{"event_type": eventType, "client_payload": payload}, nil)
+}
+
 // AddLabel adds one label, leaving the others alone.
 //
 // POST, not the PUT that SetLabels uses: PUT replaces the whole set, so adding
