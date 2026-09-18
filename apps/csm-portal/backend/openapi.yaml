@@ -2783,6 +2783,67 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /deployed-products/projects/search:
+    post:
+      summary: Search for the projects running a given product version (ServiceNow data source only).
+      operationId: postDeployedProductsProjectsSearch
+      requestBody:
+        description: Product version project search payload
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectsByProductVersionSearchPayload'
+        required: true
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectsByProductVersionSearchResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "503":
+          description: Upstream service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /products/search:
     post:
       summary: Search products.
@@ -9952,6 +10013,40 @@ components:
         updatedOn:
           type: string
           format: date-time
+
+    ProjectsByProductVersionSearchPayload:
+      type: object
+      required: [productId, productVersionId]
+      properties:
+        pagination:
+          allOf:
+            - $ref: '#/components/schemas/Pagination'
+            - properties:
+                limit:
+                  default: 20
+                  maximum: 100
+        productId:
+          type: string
+          format: uuid
+        productVersionId:
+          type: string
+          format: uuid
+
+    ProjectsByProductVersionSearchResponse:
+      type: object
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntityRef'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
 
     DeployedProductCreatePayload:
       type: object

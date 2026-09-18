@@ -953,12 +953,13 @@ func (m *mockEntityTimeCardClient) DeleteTimeCard(ctx context.Context, id string
 // ----- mock entity deployment client -----
 
 type mockEntityDeploymentClient struct {
-	postDeploymentFn         func(ctx context.Context, body []byte) ([]byte, error)
-	searchDeploymentsFn      func(ctx context.Context, body []byte) ([]byte, error)
-	searchDeployedProductsFn func(ctx context.Context, body []byte) ([]byte, error)
-	patchDeploymentFn        func(ctx context.Context, deploymentID string, body []byte) ([]byte, error)
-	postDeployedProductFn    func(ctx context.Context, body []byte) ([]byte, error)
-	patchDeployedProductFn   func(ctx context.Context, deployedProductID string, body []byte) ([]byte, error)
+	postDeploymentFn                 func(ctx context.Context, body []byte) ([]byte, error)
+	searchDeploymentsFn              func(ctx context.Context, body []byte) ([]byte, error)
+	searchDeployedProductsFn         func(ctx context.Context, body []byte) ([]byte, error)
+	searchProjectsByProductVersionFn func(ctx context.Context, body []byte) ([]byte, error)
+	patchDeploymentFn                func(ctx context.Context, deploymentID string, body []byte) ([]byte, error)
+	postDeployedProductFn            func(ctx context.Context, body []byte) ([]byte, error)
+	patchDeployedProductFn           func(ctx context.Context, deployedProductID string, body []byte) ([]byte, error)
 }
 
 func (m *mockEntityDeploymentClient) PostDeployment(ctx context.Context, body []byte) ([]byte, error) {
@@ -978,6 +979,13 @@ func (m *mockEntityDeploymentClient) SearchDeployments(ctx context.Context, body
 func (m *mockEntityDeploymentClient) SearchDeployedProducts(ctx context.Context, body []byte) ([]byte, error) {
 	if m.searchDeployedProductsFn != nil {
 		return m.searchDeployedProductsFn(ctx, body)
+	}
+	return []byte(`{}`), nil
+}
+
+func (m *mockEntityDeploymentClient) SearchProjectsByProductVersion(ctx context.Context, body []byte) ([]byte, error) {
+	if m.searchProjectsByProductVersionFn != nil {
+		return m.searchProjectsByProductVersionFn(ctx, body)
 	}
 	return []byte(`{}`), nil
 }

@@ -235,6 +235,7 @@ func main() {
 	mux.HandleFunc("POST /deployments/{id}/products", deploymentHandler.PostDeployedProduct)
 	mux.HandleFunc("POST /deployments/{id}/products/search", deploymentHandler.SearchDeployedProducts)
 	mux.HandleFunc("PATCH /deployments/{deploymentId}/products/{productId}", deploymentHandler.PatchDeployedProduct)
+	mux.HandleFunc("POST /deployed-products/projects/search", deploymentHandler.SearchProjectsByProductVersion)
 	mux.HandleFunc("POST /change-requests", changeRequestHandler.CreateChangeRequest)
 	mux.HandleFunc("GET /change-requests/{id}", changeRequestHandler.GetChangeRequest)
 	mux.HandleFunc("GET /change-requests/{id}/approvals", changeRequestHandler.GetChangeRequestApprovals)
