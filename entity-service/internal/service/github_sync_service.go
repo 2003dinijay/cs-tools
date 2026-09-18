@@ -165,6 +165,14 @@ const stateClosed = "CLOSED"
 type githubSyncService struct {
 	repo repository.GithubSyncRepository
 	gh   githubIssueClient
+	// labels is the vocabulary this deployment recognises. Defaults to
+	// ServiceNow's values; overridable because a repository's labels are a
+	// deployment's business and dev need not match production.
+	labels GithubLabels
+	// mutate writes the change request. Nil leaves the sync read-only, which
+	// is how it behaved before the mutation layer existed and is still useful
+	// for a dry run against a live repository.
+	mutate repository.GithubMutationRepository
 	// integrationLogin is our own GitHub account. Events it sent are our own
 	// writes coming back and are dropped -- identity, not string-matching the
 	// comment body the way the case webhook does.
@@ -181,7 +189,26 @@ type githubIssueClient interface {
 
 // NewGithubSyncService constructs the webhook policy.
 func NewGithubSyncService(repo repository.GithubSyncRepository, gh githubIssueClient, integrationLogin string) GithubSyncService {
-	return &githubSyncService{repo: repo, gh: gh, integrationLogin: integrationLogin}
+	return NewGithubSyncServiceWithLabels(repo, gh, integrationLogin, DefaultGithubLabels())
+}
+
+// NewGithubSyncServiceWithLabels is NewGithubSyncService with an explicit
+// label vocabulary.
+func NewGithubSyncServiceWithLabels(repo repository.GithubSyncRepository, gh githubIssueClient, integrationLogin string, labels GithubLabels) GithubSyncService {
+	return &githubSyncService{repo: repo, gh: gh, integrationLogin: integrationLogin, labels: labels}
+}
+
+// WithMutations returns the service able to write change requests. Without it
+// the sync recognises and reports but changes nothing.
+func (s *githubSyncService) WithMutations(m repository.GithubMutationRepository) GithubSyncService {
+	s.mutate = m
+	return s
+}
+
+// NewGithubSyncServiceWriting is the full service: recognises, writes, and
+// pushes the resulting label changes back to the issue.
+func NewGithubSyncServiceWriting(repo repository.GithubSyncRepository, mutate repository.GithubMutationRepository, gh githubIssueClient, integrationLogin string, labels GithubLabels) GithubSyncService {
+	return &githubSyncService{repo: repo, gh: gh, integrationLogin: integrationLogin, labels: labels, mutate: mutate}
 }
 
 func skip(reason string) (Outcome, error) { return Outcome{Skipped: reason}, nil }
@@ -242,10 +269,19 @@ func (s *githubSyncService) handleComment(ctx context.Context, p IssuePayload, c
 		return skip("comment payload is absent")
 	}
 	// The CMD:: protocol ServiceNow defined is deliberately not carried over:
-	// its handler was commented out, so no command has ever executed, and the
+	// its handler was commented out, so no command ever executed, and the
 	// comment was swallowed rather than mirrored. Mirroring it is strictly
 	// better than the behaviour being replaced.
-	return Outcome{Action: "comment_mirrored", ChangeRequestID: cr.ID}, nil
+	if s.mutate == nil {
+		return Outcome{Action: "comment_pending_write", ChangeRequestID: cr.ID}, nil
+	}
+	// Attributed to the GitHub author, so a reader of the change request can
+	// see who said it rather than finding it under a service account.
+	body := fmt.Sprintf("%s (on GitHub):\n\n%s", p.Comment.User.Login, p.Comment.Body)
+	if err := s.mutate.AddComment(ctx, cr.ID, body, p.Comment.User.Login); err != nil {
+		return Outcome{}, err
+	}
+	return Outcome{Action: "comment_relayed", ChangeRequestID: cr.ID}, nil
 }
 
 // handleIssue applies an issues event.
@@ -272,11 +308,41 @@ func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, iss
 			}
 			return Outcome{Action: "close_refused", ChangeRequestID: cr.ID}, nil
 		}
+		if s.mutate == nil {
+			return Outcome{Action: "close_allowed_pending_write", ChangeRequestID: cr.ID}, nil
+		}
+		if _, err := s.mutate.SetState(ctx, cr.ID, stateClosed); err != nil {
+			return Outcome{}, err
+		}
 		return Outcome{Action: "closed", ChangeRequestID: cr.ID}, nil
 
-	case "labeled", "unlabeled", "edited", "opened":
-		if !hasChangeRequestLabels(labels) {
+	case "labeled", "unlabeled":
+		// Guards run before anything else: on a closed change request a label
+		// change is refused and put back, which must happen whether or not the
+		// issue still satisfies the label gate.
+		if cr != nil {
+			if done, out, err := s.guardLabelChange(ctx, p, issue, cr, labels); done {
+				return out, err
+			}
+		}
+		if !s.labels.Valid(labels) {
 			return skip("issue does not carry the change-request label set")
+		}
+		// A state label moves the change request.
+		if cr != nil && p.Action == "labeled" && p.Label != nil {
+			if state, ok := s.labels.StateFor(p.Label.Name); ok {
+				if s.mutate == nil {
+					return Outcome{Action: "state_pending_write", ChangeRequestID: cr.ID}, nil
+				}
+				changed, err := s.mutate.SetState(ctx, cr.ID, state)
+				if err != nil {
+					return Outcome{}, err
+				}
+				if changed {
+					return Outcome{Action: "state_changed", ChangeRequestID: cr.ID}, nil
+				}
+				return skip("already in " + state)
+			}
 		}
 		if cr == nil {
 			// Creation is gated on the label set, not on the issue being
@@ -286,9 +352,18 @@ func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, iss
 			if p.Action != "labeled" {
 				return skip("a change request is created by labelling, not by " + p.Action)
 			}
-			return Outcome{Action: "would_create", ChangeRequestID: ""}, nil
+			return s.prepareCreation(ctx, p, issue, labels)
 		}
-		return Outcome{Action: "would_update", ChangeRequestID: cr.ID}, nil
+		return s.applyUpdate(ctx, p, cr, labels)
+
+	case "edited", "opened":
+		if !s.labels.Valid(labels) {
+			return skip("issue does not carry the change-request label set")
+		}
+		if cr == nil {
+			return skip("a change request is created by labelling, not by " + p.Action)
+		}
+		return s.applyUpdate(ctx, p, cr, labels)
 	}
 	return skip("issue action " + p.Action + " is not handled")
 }
@@ -304,48 +379,226 @@ func (s *githubSyncService) comment(ctx context.Context, issue github.Issue, bod
 	return nil
 }
 
-// hasChangeRequestLabels reports whether an issue carries the full set that
-// marks it as a change request: the type label, a CRType, and exactly one
-// CRScope. Exactly one scope, not at least one -- an issue labelled both
-// Application and Infrastructure has no single answer for
-// change_request_type, and guessing would be worse than declining.
-func hasChangeRequestLabels(labels []string) bool {
-	var hasCR, hasType bool
-	scopes := 0
-	for _, l := range labels {
-		switch {
-		case l == labelChangeRequest:
-			hasCR = true
-		case strings.HasPrefix(l, labelPrefixCRType):
-			hasType = true
-		case strings.HasPrefix(l, labelPrefixCRScope):
-			scopes++
-		}
-	}
-	return hasCR && hasType && scopes == 1
+
+
+
+// githubStateLabels are the labels that drive state. They are stripped when a
+// change request is created: the record starts at its own initial state, and a
+// leftover "Implemented" on the issue would claim otherwise.
+//
+// Matches ServiceNow's issueStates exactly, including the quirk that
+// "Canceled" is NOT in it -- that list stripped Closed but not Canceled, and
+// reproducing it keeps a migrated repository looking the same either side.
+var githubStateLabels = map[string]bool{
+	"Assessed":    true,
+	"Authorized":  true,
+	"Scheduled":   true,
+	"Implemented": true,
+	"Reviewed":    true,
+	"Closed":      true,
 }
 
-// githubAttributes derives the change request's fields from the issue's
-// labels. Absent labels leave a field empty rather than defaulting: the
-// original defaulted impact and likelihood to 3 (its lowest), which is
-// indistinguishable from someone deliberately marking it low.
-func githubAttributes(labels []string) (impact, likelihood, crType string) {
-	for _, l := range labels {
-		if v, ok := githubImpactByLabel[l]; ok {
-			impact = v
-		}
-		if v, ok := githubLikelihoodByLabel[l]; ok {
-			likelihood = v
-		}
-		if v, ok := githubTypeByScope[l]; ok {
-			crType = v
+
+
+// prepareCreation normalises the issue's labels and acknowledges on the issue.
+//
+// The change request itself is not written yet -- that needs work_item number
+// generation and lands with the mutation layer. What IS done here is the part
+// that is purely about the issue: reduce the labels to the set the record will
+// own, and tell the author their issue has been picked up. Both are idempotent,
+// so running this again before the record exists changes nothing.
+func (s *githubSyncService) prepareCreation(ctx context.Context, p IssuePayload, issue github.Issue, labels []string) (Outcome, error) {
+	resolved := s.labels.ResolveOnCreate(labels)
+
+	// Writing labels is safe here and not on the outbound path: GitHub will
+	// send a "labeled" webhook for our own write, and that arrives with the
+	// integration account as sender, which HandleWebhook drops.
+	if !sameLabels(labels, resolved) {
+		if err := s.gh.SetLabels(ctx, issue, resolved); err != nil {
+			return Outcome{}, err
 		}
 	}
-	return impact, likelihood, crType
+
+	impact, likelihood, crType := s.labels.Attributes(labels)
+
+	if s.mutate == nil {
+		msg := fmt.Sprintf(
+			"Picked up as a change request.\n\n- **Type**: %s\n- **Impact**: %s\n- **Likelihood**: %s",
+			orDash(crType), orDash(impact), orDash(likelihood))
+		if err := s.comment(ctx, issue, msg); err != nil {
+			return Outcome{}, err
+		}
+		return Outcome{Action: "creation_prepared"}, nil
+	}
+
+	id, number, err := s.mutate.CreateFromIssue(ctx, repository.NewChangeRequestFromIssue{
+		Subject:      p.Issue.Title,
+		Description:  p.Issue.Body,
+		GitReference: p.Issue.HTMLURL,
+		Impact:       impact,
+		Likelihood:   likelihood,
+		Type:         crType,
+		CreatedBy:    p.Sender.Login,
+	})
+	if err != nil {
+		// Two deliveries for the same issue can race. The unique reference
+		// means the loser finds the record already there, which is the correct
+		// end state rather than an error.
+		if errors.Is(err, repository.ErrChangeRequestExists) {
+			return skip("a change request already exists for this issue")
+		}
+		return Outcome{}, err
+	}
+
+	msg := fmt.Sprintf(
+		"Change request **%s** raised.\n\n- **Type**: %s\n- **Impact**: %s\n- **Likelihood**: %s",
+		number, orDash(crType), orDash(impact), orDash(likelihood))
+	if err := s.comment(ctx, issue, msg); err != nil {
+		return Outcome{}, err
+	}
+	return Outcome{Action: "created", ChangeRequestID: id}, nil
 }
 
-// githubStateForLabel reports the state a label moves a change request into.
-func githubStateForLabel(label string) (string, bool) {
-	s, ok := githubStateByLabel[label]
-	return s, ok
+func orDash(v string) string {
+	if v == "" {
+		return "_not set_"
+	}
+	return v
+}
+
+// sameLabels reports whether two label sets are identical as sets, so an
+// unchanged set is not written back -- a pointless write would produce a
+// webhook we then have to drop.
+func sameLabels(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, s := range a {
+		seen[s]++
+	}
+	for _, s := range b {
+		seen[s]--
+		if seen[s] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// applyUpdate writes an edited issue onto its change request.
+func (s *githubSyncService) applyUpdate(ctx context.Context, p IssuePayload, cr *repository.GithubChangeRequest, labels []string) (Outcome, error) {
+	if s.mutate == nil {
+		return Outcome{Action: "update_pending_write", ChangeRequestID: cr.ID}, nil
+	}
+	impact, likelihood, crType := s.labels.Attributes(labels)
+	in := repository.NewChangeRequestFromIssue{
+		Subject:     p.Issue.Title,
+		Description: p.Issue.Body,
+		Impact:      impact,
+		Likelihood:  likelihood,
+		Type:        crType,
+		CreatedBy:   p.Sender.Login,
+	}
+	if err := s.mutate.UpdateFromIssue(ctx, cr.ID, in); err != nil {
+		return Outcome{}, err
+	}
+	return Outcome{Action: "updated", ChangeRequestID: cr.ID}, nil
+}
+
+// guardLabelChange enforces what may be changed on an issue whose change
+// request is closed, and which labels the record owns rather than the author.
+//
+// Returns done=true when it handled the event, so the caller stops.
+func (s *githubSyncService) guardLabelChange(ctx context.Context, p IssuePayload, issue github.Issue, cr *repository.GithubChangeRequest, labels []string) (bool, Outcome, error) {
+	if p.Label == nil {
+		return false, Outcome{}, nil
+	}
+	changed := p.Label.Name
+
+	// A closed change request is a finished record. Label edits are put back
+	// and answered, rather than silently ignored -- someone made a change and
+	// deserves to know it did not take.
+	if cr.State == stateClosed {
+		restored := labels
+		if p.Action == "labeled" {
+			restored = withoutLabel(labels, changed)
+		} else {
+			restored = append(append([]string{}, labels...), changed)
+		}
+		if err := s.gh.SetLabels(ctx, issue, restored); err != nil {
+			return true, Outcome{}, err
+		}
+		verb := "added to"
+		if p.Action == "unlabeled" {
+			verb = "removed from"
+		}
+		msg := fmt.Sprintf("Labels cannot be %s a **closed** change request, so `%s` has been put back.", verb, changed)
+		if err := s.comment(ctx, issue, msg); err != nil {
+			return true, Outcome{}, err
+		}
+		return true, Outcome{Action: "label_change_refused", ChangeRequestID: cr.ID}, nil
+	}
+
+	// The type is fixed at creation: a CRType label added afterwards is
+	// removed again rather than quietly changing what the record is.
+	if p.Action == "labeled" && strings.HasPrefix(changed, s.labels.TypePrefix) {
+		if err := s.gh.RemoveLabel(ctx, issue, changed); err != nil {
+			return true, Outcome{}, err
+		}
+		msg := fmt.Sprintf("The change request type is fixed at creation, so `%s` has been removed.", changed)
+		if err := s.comment(ctx, issue, msg); err != nil {
+			return true, Outcome{}, err
+		}
+		return true, Outcome{Action: "type_label_reverted", ChangeRequestID: cr.ID}, nil
+	}
+
+	// Removing a label the record owns -- its type, or a state -- puts it
+	// back: those describe the change request, not the issue.
+	if p.Action == "unlabeled" {
+		_, isState := s.labels.StateFor(changed)
+		if isState || strings.HasPrefix(changed, s.labels.TypePrefix) {
+			if err := s.gh.SetLabels(ctx, issue, append(append([]string{}, labels...), changed)); err != nil {
+				return true, Outcome{}, err
+			}
+			return true, Outcome{Action: "protected_label_restored", ChangeRequestID: cr.ID}, nil
+		}
+	}
+
+	// A new scope label replaces the old one: exactly one scope is allowed,
+	// and two would leave change_request_type ambiguous.
+	if p.Action == "labeled" && strings.HasPrefix(changed, s.labels.ScopePrefix) {
+		reduced := []string{changed}
+		for _, l := range labels {
+			if l != changed && !strings.HasPrefix(l, s.labels.ScopePrefix) {
+				reduced = append(reduced, l)
+			}
+		}
+		if !sameLabels(labels, reduced) {
+			if err := s.gh.SetLabels(ctx, issue, reduced); err != nil {
+				return true, Outcome{}, err
+			}
+		}
+		if s.mutate != nil {
+			if t, ok := s.labels.ScopeToType[changed]; ok {
+				if err := s.mutate.UpdateFromIssue(ctx, cr.ID, repository.NewChangeRequestFromIssue{
+					Subject: p.Issue.Title, Type: t, CreatedBy: p.Sender.Login,
+				}); err != nil {
+					return true, Outcome{}, err
+				}
+			}
+		}
+		return true, Outcome{Action: "scope_replaced", ChangeRequestID: cr.ID}, nil
+	}
+	return false, Outcome{}, nil
+}
+
+func withoutLabel(labels []string, drop string) []string {
+	out := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if l != drop {
+			out = append(out, l)
+		}
+	}
+	return out
 }

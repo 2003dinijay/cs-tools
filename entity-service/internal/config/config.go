@@ -107,6 +107,15 @@ type Config struct {
 	// CSMPortalBaseURL builds the link back to a change request in comments
 	// posted to GitHub. Empty omits the link rather than rendering a broken one.
 	CSMPortalBaseURL string
+	// GitHub label vocabulary overrides. Empty keeps ServiceNow's value.
+	GithubLabelChangeRequest     string
+	GithubLabelTypePrefix        string
+	GithubLabelScopePrefix       string
+	GithubLabelsScope            string
+	GithubLabelsImpact           string
+	GithubLabelsLikelihood       string
+	GithubLabelsState            string
+	GithubLabelsStrippedOnCreate string
 	// SupportEngineerRole is the ServiceNow role name (e.g. an org-specific
 	// "sn_*" role) whose presence on a case comment's resolved author marks
 	// that comment as a qualifying support-engineer response — see
@@ -164,6 +173,14 @@ func Load() *Config {
 		GithubIntegrationLogin:                   os.Getenv("GITHUB_INTEGRATION_LOGIN"),
 		GithubOutboundInterval:                   envDuration("GITHUB_OUTBOUND_INTERVAL", 15*time.Second),
 		CSMPortalBaseURL:                         os.Getenv("CSM_PORTAL_BASE_URL"),
+		GithubLabelChangeRequest:                 os.Getenv("GITHUB_LABEL_CHANGE_REQUEST"),
+		GithubLabelTypePrefix:                    os.Getenv("GITHUB_LABEL_TYPE_PREFIX"),
+		GithubLabelScopePrefix:                   os.Getenv("GITHUB_LABEL_SCOPE_PREFIX"),
+		GithubLabelsScope:                        os.Getenv("GITHUB_LABELS_SCOPE"),
+		GithubLabelsImpact:                       os.Getenv("GITHUB_LABELS_IMPACT"),
+		GithubLabelsLikelihood:                   os.Getenv("GITHUB_LABELS_LIKELIHOOD"),
+		GithubLabelsState:                        os.Getenv("GITHUB_LABELS_STATE"),
+		GithubLabelsStrippedOnCreate:             os.Getenv("GITHUB_LABELS_STRIPPED_ON_CREATE"),
 		SupportEngineerRole:                      os.Getenv("SUPPORT_ENGINEER_ROLE"),
 		CustomerRoles:                            splitComma(os.Getenv("CUSTOMER_ROLES")),
 	}

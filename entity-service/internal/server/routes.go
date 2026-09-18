@@ -17,6 +17,7 @@
 package server
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -109,16 +110,34 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	if db != nil {
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
 		if cfg.HasGithubIntegration() {
+			githubLabels, labelErr := service.NewGithubLabels(service.GithubLabelOverrides{
+				ChangeRequest:    cfg.GithubLabelChangeRequest,
+				TypePrefix:       cfg.GithubLabelTypePrefix,
+				ScopePrefix:      cfg.GithubLabelScopePrefix,
+				ScopeToType:      cfg.GithubLabelsScope,
+				Impact:           cfg.GithubLabelsImpact,
+				Likelihood:       cfg.GithubLabelsLikelihood,
+				State:            cfg.GithubLabelsState,
+				StrippedOnCreate: cfg.GithubLabelsStrippedOnCreate,
+			})
+			if labelErr != nil {
+				// A label override that does not parse would leave the sync
+				// silently recognising nothing -- the exact failure that took
+				// ServiceNow's integration down. Refuse to start instead.
+				log.Fatalf("invalid GitHub label configuration: %v", labelErr)
+			}
 			// The outbound worker is started by cmd/api, which owns process
 			// lifetime; routes.go only builds what the HTTP surface needs.
 			githubWebhookHandler = handler.NewGithubWebhookHandler(
-				service.NewGithubSyncService(
+				service.NewGithubSyncServiceWriting(
 					repository.NewGithubSyncRepository(db),
+					repository.NewGithubMutationRepository(db),
 					github.NewClient(github.Config{
 						BaseURL: cfg.GithubBaseURL,
 						Token:   cfg.GithubToken,
 					}),
 					cfg.GithubIntegrationLogin,
+					githubLabels,
 				),
 				cfg.GithubWebhookSecret,
 			)

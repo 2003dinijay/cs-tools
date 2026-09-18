@@ -133,8 +133,8 @@ func TestGithubSync_CreationRequiresLabelling(t *testing.T) {
 	}
 	got, _ := newGhSvc(&fakeGhRepo{mapping: mapped(), cr: nil}, &fakeGhClient{}).
 		HandleWebhook(context.Background(), ghDelivery("issues", "labeled", crLabels()))
-	if got.Action != "would_create" {
-		t.Fatalf("action = %q, want would_create", got.Action)
+	if got.Action != "creation_prepared" {
+		t.Fatalf("action = %q, want creation_prepared", got.Action)
 	}
 }
 
@@ -153,8 +153,8 @@ func TestGithubSync_LabelGate(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := hasChangeRequestLabels(tc.labels); got != tc.want {
-				t.Fatalf("hasChangeRequestLabels(%v) = %v, want %v", tc.labels, got, tc.want)
+			if got := DefaultGithubLabels().Valid(tc.labels); got != tc.want {
+				t.Fatalf("Valid(%v) = %v, want %v", tc.labels, got, tc.want)
 			}
 		})
 	}
@@ -189,8 +189,8 @@ func TestGithubSync_CloseAllowedFromReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleWebhook: %v", err)
 	}
-	if got.Action != "closed" {
-		t.Fatalf("action = %q, want closed", got.Action)
+	if got.Action != "close_allowed_pending_write" {
+		t.Fatalf("action = %q, want close_allowed_pending_write", got.Action)
 	}
 	if len(client.states) != 0 {
 		t.Fatalf("issue should not have been reopened: %v", client.states)
@@ -208,8 +208,8 @@ func TestGithubSync_Comments(t *testing.T) {
 	}{Body: "hello"}
 
 	got, _ := newGhSvc(repo, &fakeGhClient{}).HandleWebhook(context.Background(), d)
-	if got.Action != "comment_mirrored" {
-		t.Fatalf("action = %q, want comment_mirrored", got.Action)
+	if got.Action != "comment_pending_write" {
+		t.Fatalf("action = %q, want comment_pending_write", got.Action)
 	}
 
 	edited := ghDelivery("issue_comment", "edited", crLabels())
@@ -233,22 +233,22 @@ func TestGithubSync_StateByLabelName(t *testing.T) {
 		"Implemented": "IMPLEMENT", "Reviewed": "REVIEW",
 	}
 	for label, state := range want {
-		got, ok := githubStateForLabel(label)
+		got, ok := DefaultGithubLabels().StateFor(label)
 		if !ok || got != state {
-			t.Errorf("githubStateForLabel(%q) = %q,%v want %q", label, got, ok, state)
+			t.Errorf("StateFor(%q) = %q,%v want %q", label, got, ok, state)
 		}
 	}
 	// Closed and Canceled must not be label-driven: closing has a guard that a
 	// label would bypass.
 	for _, label := range []string{"Closed", "Canceled"} {
-		if _, ok := githubStateForLabel(label); ok {
+		if _, ok := DefaultGithubLabels().StateFor(label); ok {
 			t.Errorf("%q should not be label-driven", label)
 		}
 	}
 }
 
 func TestGithubAttributes(t *testing.T) {
-	impact, likelihood, crType := githubAttributes([]string{
+	impact, likelihood, crType := DefaultGithubLabels().Attributes([]string{
 		labelChangeRequest, "CRType/Normal", labelScopeInfra, labelImpactHigh, labelLikelihoodMed,
 	})
 	if impact != "HIGH" {
@@ -263,7 +263,7 @@ func TestGithubAttributes(t *testing.T) {
 
 	// Absent labels leave fields empty rather than defaulting to the lowest
 	// value, which would be indistinguishable from a deliberate choice.
-	impact, likelihood, crType = githubAttributes([]string{labelChangeRequest, "CRType/Normal", labelScopeApp})
+	impact, likelihood, crType = DefaultGithubLabels().Attributes([]string{labelChangeRequest, "CRType/Normal", labelScopeApp})
 	if impact != "" || likelihood != "" {
 		t.Errorf("absent labels defaulted: impact=%q likelihood=%q", impact, likelihood)
 	}
@@ -282,5 +282,375 @@ func TestGithubSync_UnhandledEvents(t *testing.T) {
 		if got.Skipped == "" {
 			t.Fatalf("event %s should have been skipped", event)
 		}
+	}
+}
+
+// The label set an issue carries once its change request exists. Mirrors what
+// ServiceNow wrote back on creation.
+func TestResolveCreationLabels(t *testing.T) {
+	cases := map[string]struct {
+		in   []string
+		want []string
+	}{
+		"keeps the type, strips state labels": {
+			in:   []string{labelChangeRequest, "CRType/Normal", labelScopeApp, "Assessed", "Implemented"},
+			want: []string{"CRType/Normal", labelChangeRequest, labelScopeApp},
+		},
+		"keeps the author's own labels": {
+			in:   []string{labelChangeRequest, "CRType/Emergency", labelScopeInfra, "bug", "priority/high"},
+			want: []string{"CRType/Emergency", labelChangeRequest, labelScopeInfra, "bug", "priority/high"},
+		},
+		"only one CRType survives": {
+			in:   []string{labelChangeRequest, "CRType/Normal", "CRType/Standard", labelScopeApp},
+			want: []string{"CRType/Normal", labelChangeRequest, labelScopeApp},
+		},
+		"Canceled is not stripped — matching ServiceNow's own list": {
+			in:   []string{labelChangeRequest, "CRType/Normal", labelScopeApp, "Canceled"},
+			want: []string{"CRType/Normal", labelChangeRequest, labelScopeApp, "Canceled"},
+		},
+		"no duplicates": {
+			in:   []string{labelChangeRequest, labelChangeRequest, "CRType/Normal", labelScopeApp},
+			want: []string{"CRType/Normal", labelChangeRequest, labelScopeApp},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := DefaultGithubLabels().ResolveOnCreate(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// The CRType label leads, so a reader of the issue sees the type first and the
+// set is stable for the same input.
+func TestResolveCreationLabels_TypeLeads(t *testing.T) {
+	got := DefaultGithubLabels().ResolveOnCreate([]string{"bug", labelChangeRequest, "CRType/Standard", labelScopeApp})
+	if len(got) == 0 || got[0] != "CRType/Standard" {
+		t.Fatalf("got %v, want CRType/Standard first", got)
+	}
+}
+
+// On creation the issue's labels are normalised and written back, and the
+// author is told the issue was picked up.
+func TestGithubSync_CreationNormalisesLabels(t *testing.T) {
+	client := &fakeGhClient{}
+	repo := &fakeGhRepo{mapping: mapped(), cr: nil}
+
+	d := ghDelivery("issues", "labeled", []string{
+		labelChangeRequest, "CRType/Normal", labelScopeInfra,
+		"Assessed",     // a state label — must be stripped
+		"bug",          // the author's own — must survive
+		labelImpactHigh,
+	})
+	got, err := newGhSvc(repo, client).HandleWebhook(context.Background(), d)
+	if err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if got.Action != "creation_prepared" {
+		t.Fatalf("action = %q", got.Action)
+	}
+
+	if len(client.labels) != 1 {
+		t.Fatalf("labels written %d times, want 1: %v", len(client.labels), client.labels)
+	}
+	written := client.labels[0]
+	if written[0] != "CRType/Normal" {
+		t.Errorf("the type label should lead: %v", written)
+	}
+	for _, gone := range []string{"Assessed"} {
+		for _, l := range written {
+			if l == gone {
+				t.Errorf("%q should have been stripped: %v", gone, written)
+			}
+		}
+	}
+	var keptBug bool
+	for _, l := range written {
+		if l == "bug" {
+			keptBug = true
+		}
+	}
+	if !keptBug {
+		t.Errorf("the author's own label was dropped: %v", written)
+	}
+
+	// And the acknowledgement names what was derived.
+	if len(client.comments) != 1 {
+		t.Fatalf("comments = %v", client.comments)
+	}
+	for _, want := range []string{"INFRA", "HIGH"} {
+		if !strings.Contains(client.comments[0], want) {
+			t.Errorf("acknowledgement missing %q: %q", want, client.comments[0])
+		}
+	}
+}
+
+// An already-correct label set is not rewritten: a pointless write produces a
+// webhook we then have to drop.
+func TestGithubSync_CreationSkipsRedundantLabelWrite(t *testing.T) {
+	client := &fakeGhClient{}
+	d := ghDelivery("issues", "labeled", []string{"CRType/Normal", labelChangeRequest, labelScopeApp})
+	if _, err := newGhSvc(&fakeGhRepo{mapping: mapped()}, client).HandleWebhook(context.Background(), d); err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if len(client.labels) != 0 {
+		t.Fatalf("labels were rewritten unnecessarily: %v", client.labels)
+	}
+}
+
+// ── the mutation layer ───────────────────────────────────────────────────────
+
+type fakeMutate struct {
+	created   []repository.NewChangeRequestFromIssue
+	updated   []repository.NewChangeRequestFromIssue
+	states    []string
+	comments  []string
+	assignees []string
+	createErr error
+}
+
+func (f *fakeMutate) CreateFromIssue(_ context.Context, in repository.NewChangeRequestFromIssue) (string, string, error) {
+	if f.createErr != nil {
+		return "", "", f.createErr
+	}
+	f.created = append(f.created, in)
+	return "cr-new", "CHG-GH-000001", nil
+}
+func (f *fakeMutate) UpdateFromIssue(_ context.Context, _ string, in repository.NewChangeRequestFromIssue) error {
+	f.updated = append(f.updated, in)
+	return nil
+}
+func (f *fakeMutate) SetState(_ context.Context, _, state string) (bool, error) {
+	f.states = append(f.states, state)
+	return true, nil
+}
+func (f *fakeMutate) AddComment(_ context.Context, _, content, _ string) error {
+	f.comments = append(f.comments, content)
+	return nil
+}
+func (f *fakeMutate) SetAssignee(_ context.Context, _, userID string) (bool, error) {
+	f.assignees = append(f.assignees, userID)
+	return true, nil
+}
+func (f *fakeMutate) UserIDForGithubLogin(context.Context, string) (string, error) { return "", nil }
+
+func writingSvc(r *fakeGhRepo, c *fakeGhClient, m *fakeMutate) GithubSyncService {
+	return NewGithubSyncServiceWriting(r, m, c, "wso2-integration-bot", DefaultGithubLabels())
+}
+
+func TestGithubSync_CreatesTheChangeRequest(t *testing.T) {
+	m := &fakeMutate{}
+	client := &fakeGhClient{}
+	d := ghDelivery("issues", "labeled", []string{labelChangeRequest, "CRType/Normal", labelScopeInfra, labelImpactHigh})
+	d.Payload.Issue.Title = "Rotate the gateway certificates"
+	d.Payload.Issue.Body = "Across all three nodes."
+
+	got, err := writingSvc(&fakeGhRepo{mapping: mapped()}, client, m).HandleWebhook(context.Background(), d)
+	if err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if got.Action != "created" {
+		t.Fatalf("action = %q, want created", got.Action)
+	}
+	if len(m.created) != 1 {
+		t.Fatalf("created %d records, want 1", len(m.created))
+	}
+	in := m.created[0]
+	if in.Subject != "Rotate the gateway certificates" || in.Type != "INFRA" || in.Impact != "HIGH" {
+		t.Errorf("wrong field mapping: %+v", in)
+	}
+	if in.GitReference != ghIssueURL {
+		t.Errorf("git reference = %q", in.GitReference)
+	}
+	// The author is told the number, not just that something happened.
+	if len(client.comments) != 1 || !strings.Contains(client.comments[0], "CHG-GH-000001") {
+		t.Errorf("acknowledgement did not name the record: %v", client.comments)
+	}
+}
+
+// Two deliveries for the same issue race; the loser finds the record already
+// there, which is the correct end state rather than an error.
+func TestGithubSync_DuplicateCreationIsNotAnError(t *testing.T) {
+	m := &fakeMutate{createErr: repository.ErrChangeRequestExists}
+	got, err := writingSvc(&fakeGhRepo{mapping: mapped()}, &fakeGhClient{}, m).
+		HandleWebhook(context.Background(), ghDelivery("issues", "labeled", crLabels()))
+	if err != nil {
+		t.Fatalf("a racing duplicate should not error: %v", err)
+	}
+	if got.Skipped == "" {
+		t.Fatalf("want a skip, got %+v", got)
+	}
+}
+
+func TestGithubSync_RelaysCommentToTheRecord(t *testing.T) {
+	m := &fakeMutate{}
+	repo := &fakeGhRepo{mapping: mapped(), cr: &repository.GithubChangeRequest{ID: "cr1"}}
+	d := ghDelivery("issue_comment", "created", crLabels())
+	d.Payload.Comment = &struct {
+		Body    string      `json:"body"`
+		HTMLURL string      `json:"html_url"`
+		User    github.User `json:"user"`
+	}{Body: "Please schedule this for the weekend.", User: github.User{Login: "octocat"}}
+
+	got, err := writingSvc(repo, &fakeGhClient{}, m).HandleWebhook(context.Background(), d)
+	if err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if got.Action != "comment_relayed" {
+		t.Fatalf("action = %q", got.Action)
+	}
+	if len(m.comments) != 1 || !strings.Contains(m.comments[0], "Please schedule this") {
+		t.Fatalf("comment not written: %v", m.comments)
+	}
+	// Attributed, so a reader sees who said it.
+	if !strings.Contains(m.comments[0], "octocat") {
+		t.Errorf("comment lost its author: %q", m.comments[0])
+	}
+}
+
+func TestGithubSync_StateLabelMovesTheRecord(t *testing.T) {
+	m := &fakeMutate{}
+	repo := &fakeGhRepo{mapping: mapped(), cr: &repository.GithubChangeRequest{ID: "cr1", State: "NEW"}}
+	d := ghDelivery("issues", "labeled", append(crLabels(), "Authorized"))
+	d.Payload.Label = &struct {
+		Name string `json:"name"`
+	}{Name: "Authorized"}
+
+	got, err := writingSvc(repo, &fakeGhClient{}, m).HandleWebhook(context.Background(), d)
+	if err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if got.Action != "state_changed" {
+		t.Fatalf("action = %q", got.Action)
+	}
+	if len(m.states) != 1 || m.states[0] != "AUTHORIZE" {
+		t.Fatalf("states = %v, want [AUTHORIZE]", m.states)
+	}
+}
+
+func TestGithubSync_CloseMovesTheRecordToClosed(t *testing.T) {
+	m := &fakeMutate{}
+	repo := &fakeGhRepo{mapping: mapped(), cr: &repository.GithubChangeRequest{ID: "cr1", State: stateReview}}
+	got, err := writingSvc(repo, &fakeGhClient{}, m).
+		HandleWebhook(context.Background(), ghDelivery("issues", "closed", crLabels()))
+	if err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if got.Action != "closed" {
+		t.Fatalf("action = %q", got.Action)
+	}
+	if len(m.states) != 1 || m.states[0] != stateClosed {
+		t.Fatalf("states = %v", m.states)
+	}
+}
+
+// ── the guards ───────────────────────────────────────────────────────────────
+
+// A closed change request is finished: a label change is put back and answered.
+func TestGithubSync_ClosedRecordRefusesLabelChanges(t *testing.T) {
+	for _, action := range []string{"labeled", "unlabeled"} {
+		t.Run(action, func(t *testing.T) {
+			client := &fakeGhClient{}
+			repo := &fakeGhRepo{mapping: mapped(), cr: &repository.GithubChangeRequest{ID: "cr1", State: stateClosed}}
+			d := ghDelivery("issues", action, append(crLabels(), "extra"))
+			d.Payload.Label = &struct {
+				Name string `json:"name"`
+			}{Name: "extra"}
+
+			got, err := writingSvc(repo, client, &fakeMutate{}).HandleWebhook(context.Background(), d)
+			if err != nil {
+				t.Fatalf("HandleWebhook: %v", err)
+			}
+			if got.Action != "label_change_refused" {
+				t.Fatalf("action = %q", got.Action)
+			}
+			if len(client.labels) != 1 {
+				t.Fatalf("labels were not put back: %v", client.labels)
+			}
+			if len(client.comments) != 1 || !strings.Contains(client.comments[0], "closed") {
+				t.Errorf("no explanation posted: %v", client.comments)
+			}
+		})
+	}
+}
+
+// The type is fixed at creation.
+func TestGithubSync_TypeLabelIsReverted(t *testing.T) {
+	client := &fakeGhClient{}
+	repo := &fakeGhRepo{mapping: mapped(), cr: &repository.GithubChangeRequest{ID: "cr1", State: "ASSESS"}}
+	d := ghDelivery("issues", "labeled", append(crLabels(), "CRType/Emergency"))
+	d.Payload.Label = &struct {
+		Name string `json:"name"`
+	}{Name: "CRType/Emergency"}
+
+	got, err := writingSvc(repo, client, &fakeMutate{}).HandleWebhook(context.Background(), d)
+	if err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if got.Action != "type_label_reverted" {
+		t.Fatalf("action = %q", got.Action)
+	}
+	if len(client.removed) != 1 || client.removed[0] != "CRType/Emergency" {
+		t.Fatalf("removed = %v", client.removed)
+	}
+}
+
+// Removing a label the record owns puts it back.
+func TestGithubSync_ProtectedLabelIsRestored(t *testing.T) {
+	for _, label := range []string{"Authorized", "CRType/Normal"} {
+		t.Run(label, func(t *testing.T) {
+			client := &fakeGhClient{}
+			repo := &fakeGhRepo{mapping: mapped(), cr: &repository.GithubChangeRequest{ID: "cr1", State: "ASSESS"}}
+			d := ghDelivery("issues", "unlabeled", crLabels())
+			d.Payload.Label = &struct {
+				Name string `json:"name"`
+			}{Name: label}
+
+			got, err := writingSvc(repo, client, &fakeMutate{}).HandleWebhook(context.Background(), d)
+			if err != nil {
+				t.Fatalf("HandleWebhook: %v", err)
+			}
+			if got.Action != "protected_label_restored" {
+				t.Fatalf("action = %q", got.Action)
+			}
+			if len(client.labels) != 1 {
+				t.Fatalf("label not restored: %v", client.labels)
+			}
+		})
+	}
+}
+
+// Exactly one scope: a new one replaces the old rather than sitting alongside.
+func TestGithubSync_ScopeLabelReplacesTheOld(t *testing.T) {
+	client := &fakeGhClient{}
+	m := &fakeMutate{}
+	repo := &fakeGhRepo{mapping: mapped(), cr: &repository.GithubChangeRequest{ID: "cr1", State: "ASSESS"}}
+	d := ghDelivery("issues", "labeled", []string{labelChangeRequest, "CRType/Normal", labelScopeApp, labelScopeInfra})
+	d.Payload.Label = &struct {
+		Name string `json:"name"`
+	}{Name: labelScopeInfra}
+
+	got, err := writingSvc(repo, client, m).HandleWebhook(context.Background(), d)
+	if err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if got.Action != "scope_replaced" {
+		t.Fatalf("action = %q", got.Action)
+	}
+	written := client.labels[0]
+	for _, l := range written {
+		if l == labelScopeApp {
+			t.Errorf("the old scope survived: %v", written)
+		}
+	}
+	if len(m.updated) != 1 || m.updated[0].Type != "INFRA" {
+		t.Errorf("the record's type was not updated: %+v", m.updated)
 	}
 }
