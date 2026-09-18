@@ -102,11 +102,22 @@ func (r *referenceDataRepo) GetProjectByID(ctx context.Context, projectID string
 
 // EnumLabels implements ReferenceDataRepository.
 func (r *referenceDataRepo) EnumLabels(ctx context.Context, enumTypeNames []string) (map[string][]string, error) {
+	// pg_type_is_visible(t.oid) scopes this to whichever single schema this
+	// connection's search_path would actually resolve typname to -- the same
+	// resolution an unqualified CREATE TYPE/enum reference in a migration
+	// gets. This deployment's schema is neither a fixed literal (verified
+	// live: it's "$user"-resolved, e.g. "csm_platform_stg_user" in staging,
+	// not "public") nor discoverable from any config/compose/migration file
+	// in this repo, so pg_type_is_visible is the only portable way to avoid
+	// scanning every schema in the database -- without it, a same-named enum
+	// type in another schema would silently merge its labels into this one's
+	// map entry.
 	rows, err := r.db.Query(ctx,
 		`SELECT t.typname::text, e.enumlabel
 		 FROM pg_type t
 		 JOIN pg_enum e ON e.enumtypid = t.oid
-		 WHERE t.typname::text = ANY($1::text[])
+		 WHERE pg_catalog.pg_type_is_visible(t.oid)
+		   AND t.typname::text = ANY($1::text[])
 		 ORDER BY t.typname, e.enumsortorder`, enumTypeNames)
 	if err != nil {
 		return nil, fmt.Errorf("enum labels: %w", err)

@@ -115,17 +115,21 @@ func (s *projectMetadataService) GetProjectMetadata(ctx context.Context, project
 	return domain.ProjectMetadataResponse{
 		CaseStates: choiceListFromLabels(labels[caseStateEnumType]),
 		// CallRequestStates: no call_request table exists in Postgres yet --
-		// the whole call-request feature is ServiceNow-only. TODO: populate
-		// once call_request gets a Postgres table.
-		CallRequestStates:    nil,
+		// the whole call-request feature is ServiceNow-only. Empty (not nil)
+		// so this still JSON-encodes as [] rather than null -- portal callers
+		// treat this field as a non-optional array. TODO: populate once
+		// call_request gets a Postgres table.
+		CallRequestStates:    make([]domain.ChoiceListItem, 0),
 		ChangeRequestStates:  choiceListFromLabels(labels[changeRequestStateEnumType]),
 		ConversationStates:   choiceListFromLabels(labels[conversationStateEnumType]),
 		TimeCardStates:       choiceListFromLabels(labels[timeCardStateEnumType]),
 		ChangeRequestImpacts: choiceListFromLabels(labels[changeRequestImpactEnumType]),
 		Severities:           choiceListFromLabels(labels[caseSeverityEnumType]),
 		// SeverityBasedAllocationTime: no per-severity SLA-allocation-time
-		// table exists in Postgres yet. TODO: populate once one does.
-		SeverityBasedAllocationTime: nil,
+		// table exists in Postgres yet. Empty (not nil) for the same
+		// JSON-shape reason as CallRequestStates above. TODO: populate once
+		// one does.
+		SeverityBasedAllocationTime: make(map[string]int),
 		IssueTypes:                  choiceListFromLabels(labels[caseIssueTypeEnumType]),
 		DeploymentTypes:             choiceListFromLabels(labels[deploymentTypeEnumType]),
 		CaseTypes:                   caseTypeRefItems,
@@ -136,8 +140,9 @@ func (s *projectMetadataService) GetProjectMetadata(ctx context.Context, project
 			// AcceptedSeverityValues and every Has*Access/product-category
 			// field below (left at zero value) have no backing column in
 			// Postgres yet -- no per-project severity-restriction or
-			// feature-entitlement table exists. TODO: populate once one does.
-			AcceptedSeverityValues: nil,
+			// feature-entitlement table exists. Empty (not nil) for the same
+			// JSON-shape reason as above. TODO: populate once one does.
+			AcceptedSeverityValues: make([]domain.ChoiceListItem, 0),
 		},
 	}, nil
 }
