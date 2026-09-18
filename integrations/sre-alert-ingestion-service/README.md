@@ -195,11 +195,68 @@ to `SERVICE_INTERRUPTION` (`internal/severity.MapCategory`).
 
 - `GET /health` — liveness/readiness; reports `503` if the buffer database
   is unreachable
-- `POST /alerts` — accepts a normalized alert, persists it to the buffer,
-  responds `202` with `{"id": "<buffered-alert-id>"}`. Never attempts
-  delivery inline — see "Architecture" above.
+- `POST /alerts` — accepts a normalized alert (this service's own generic
+  `AlertRequest` shape), persists it to the buffer, responds `202` with
+  `{"id": "<buffered-alert-id>", "alertNumber": "<human-readable-number>"}`.
+  Never attempts delivery inline — see "Architecture" above. Stays available
+  for any source that can speak `AlertRequest`'s shape directly (e.g. a
+  future in-house tool); the four vendor-adapter routes below are additive
+  to it, not a replacement.
+- `POST /alerts/adapters/azure` — accepts an Azure Monitor
+  common-alert-schema webhook payload
+- `POST /alerts/adapters/site24x7` — accepts a Site24x7 native alert-webhook
+  payload; only `STATUS` `TROUBLE`/`DOWN`/`CRITICAL` creates a buffered
+  alert, any other `STATUS` returns `200` with a small acknowledgment body
+- `POST /alerts/adapters/opensearch` — accepts this source's own native
+  alert payload
+- `POST /alerts/adapters/grafana` — accepts a Grafana native alert-webhook
+  payload; only `state == "alerting"` creates a buffered alert, any other
+  state returns `200` with a small acknowledgment body
 
-See `openapi.yaml` for the full request/response schema.
+Every adapter route translates its vendor's own native payload into
+`AlertRequest`, then reuses the exact same validation/buffering/worker/
+grouping/dedup/escalation path `POST /alerts` uses — see
+`internal/handler.AlertHandler.enqueueAlert`. Each vendor gets its own
+dedicated route (deliberately, not one shared endpoint that branches on
+payload shape internally) so each vendor's parsing/mapping stays simple to
+reason about, route, and test independently. All five routes require the
+same HTTP Basic Auth as described above.
+
+See `openapi.yaml` for the full request/response schema of every route,
+including each adapter's own native payload shape.
+
+## Vendor-adapter mapping notes
+
+These are this service's own mapping choices for each adapter — the exact
+tables live in `internal/severity` and each `internal/handler/adapter_*.go`
+file; this section is a summary, not a restatement of every line.
+
+- **Azure** (`adapter_azure.go`): `Sev0`-`Sev4` → `critical`/`major`/`minor`/
+  `warning`/`ok`; a `monitorCondition` of `"Resolved"` always forces `"ok"`
+  regardless of the reported `Sev`. `service` defaults to `"Managed
+  Services"` when `monitoringService` is absent (matching the prior
+  ServiceNow-based pipeline's own fallback for the identical gap).
+  `alertId` becomes `uniqueIdentifier` for cross-alert grouping.
+- **Site24x7** (`adapter_site24x7.go`): only `STATUS` `TROUBLE`/`DOWN`/
+  `CRITICAL` (case-sensitive) create a buffered alert; anything else is
+  acknowledged with `200` and ignored. `DOWN`/`CRITICAL` → `critical`,
+  `TROUBLE` → `warning` — a real per-status severity mapping, deliberately
+  added here since the prior ServiceNow-based pipeline had none (every
+  alert through that path got the same hardcoded low-priority
+  classification regardless of `STATUS`).
+- **OpenSearch** (`adapter_opensearch.go`): `AlertRequest.source` is always
+  the fixed literal `"opensearch"` — this source's own `source` field is a
+  human-readable title, not the originating system's identity, and maps to
+  `metricName` instead. Any unrecognized/missing severity value maps to
+  `"ok"` (a deliberate, safe-default deviation from the prior pipeline,
+  which failed open to the *highest* severity on an unrecognized value).
+- **Grafana** (`adapter_grafana.go`): only `state == "alerting"` creates a
+  buffered alert; anything else is acknowledged with `200` and ignored,
+  matching the prior pipeline's own filter. `tags.severity` `"1"`-`"4"` →
+  `critical`/`major`/`minor`/`warning`; anything else/missing → `"ok"`.
+  `tags.service` is passed through as free text (unlike the prior pipeline,
+  which only honored it when it equaled `"CHOREO"` — a routing rule tied to
+  that system's own lookup table, with no equivalent here).
 
 ## Retry / escalation behavior
 
@@ -421,7 +478,7 @@ sre-alert-ingestion-service/
 │   ├── apierror/                 # Typed upstream error type (4xx/5xx passthrough)
 │   ├── backoff/                  # Pure exponential-backoff math (no I/O)
 │   ├── csmclient/                # OAuth2 client credentials HTTP client for csm-integration-service
-│   ├── handler/                  # POST /alerts, GET /health, alert-to-incident mapping
+│   ├── handler/                  # POST /alerts + vendor adapters, GET /health, alert-to-incident mapping
 │   ├── middleware/                # X-CSM-Correlation-ID, access log, security headers
 │   ├── notifications/            # Twilio voice-call escalation channel
 │   ├── severity/                 # Severity/source/category mapping tables

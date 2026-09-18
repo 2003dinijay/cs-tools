@@ -268,6 +268,45 @@ your local `go` binary is older, `GOTOOLCHAIN=auto` (Go's own built-in
 toolchain-management feature) transparently downloads and uses 1.26 — no
 need to lower the `go.mod` version to match an older local install.
 
+## Vendor adapters: translate, then reuse `enqueueAlert` unchanged
+
+`POST /alerts` only ever accepted this service's own pre-normalized
+`AlertRequest` JSON — nothing translated a real monitoring tool's actual
+webhook payload into it. `internal/handler/adapter_azure.go`,
+`adapter_site24x7.go`, `adapter_opensearch.go`, and `adapter_grafana.go`
+close that gap: each is a dedicated `POST /alerts/adapters/<vendor>` route
+that parses one vendor's own native payload into an `AlertRequest`, then
+calls the same unexported `AlertHandler.enqueueAlert` that `CreateAlert`
+itself calls (see `internal/handler/alerts.go`) — every adapter reuses
+100% of validation/buffering/worker/grouping/dedup/escalation, none of it
+duplicated. Each adapter's own file has a pure `mapXPayload` function
+(parse+map, independently unit-tested) separate from the thin HTTP handler
+wrapping it, mirroring the `CreateAlert`/`enqueueAlert` split.
+
+One route per vendor shape, not one shared endpoint branching on payload
+shape internally, is a deliberate choice (the prior ServiceNow-based
+pipeline this replaces did the latter, ambiguously, for Azure vs. Site24x7)
+— simpler to route, reason about, and test. All four adapter routes sit
+behind the exact same `basicAuth` middleware as `POST /alerts` (wired in
+`cmd/server/main.go`) — there is no route on this service that skips
+inbound authentication, adapters included.
+
+Site24x7 and Grafana each filter on their vendor's own "is this actually
+firing" signal (`STATUS` TROUBLE/DOWN/CRITICAL; `state == "alerting"`) and
+respond `200` with a small acknowledgment body for anything else, rather
+than treating a non-matching-but-valid payload as an error — visibility the
+prior pipeline didn't have (it silently dropped non-matching statuses).
+
+`AlertRequest.Source` is always a fixed, lowercase, vendor-identifying
+literal (`"azure"`, `"site24x7"`, `"opensearch"`, `"grafana"`) chosen by the
+adapter itself, never derived from a field inside the vendor's own payload —
+OpenSearch's payload has its own `source` field that is a human-readable
+title, not the originating system's identity, and mapping it directly would
+have been wrong. `"azure"` and `"site24x7"` are the literals
+`internal/severity.MapContactType` already has entries for; keep using
+those exact strings if a new adapter's vendor gets a `ContactType` entry
+added there in the future.
+
 ## Vendor neutrality
 
 This service's own contract (`openapi.yaml`, `AlertRequest`,
