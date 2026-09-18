@@ -4999,10 +4999,16 @@ type IncidentTaskDetail struct {
 // search endpoint's own filter allow-list); all five values are accepted as
 // UpdateConversationRequest.State (the transition allow-list PATCH
 // /conversations/{id} enforces), matching the Ballerina reference's SN state
-// keys 2-6 respectively.
+// keys 2-6 respectively. OPEN (key 1) was added later: it was present in
+// ServiceNow all along but mapped nowhere, so those conversations reached
+// callers with an empty state and could not be filtered for.
 type ConversationState string
 
 const (
+	// ConversationStateOpen is a chat that has been created but has never had a
+	// reply from the assistant. It becomes ACTIVE once the assistant answers.
+	// ServiceNow state key 1.
+	ConversationStateOpen      ConversationState = "OPEN"
 	ConversationStateActive    ConversationState = "ACTIVE"
 	ConversationStateResolved  ConversationState = "RESOLVED"
 	ConversationStateConverted ConversationState = "CONVERTED"
