@@ -108,11 +108,16 @@ func (r *commentRepo) CreateComment(ctx context.Context, referenceID string, ref
 
 	// INSERT ... SELECT ... WHERE EXISTS rather than a plain INSERT, so the
 	// work_item's type is checked in the same round trip as the insert.
+	// ::text[] before ::work_item_type_enum[]: this repository never
+	// registers work_item_type_enum/_work_item_type_enum with pgx, so
+	// binding workItemTypes ([]string) directly to the enum array type has
+	// no encode plan -- same fix as every other enum array bind in this
+	// codebase (e.g. time_card_repo.go's state filter).
 	const query = `
 		INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
 		SELECT gen_random_uuid(), NOW(), $1, $2::comment_type_enum, wi.id, $3
 		FROM work_item wi
-		WHERE wi.id = $4 AND wi.type = ANY($5::work_item_type_enum[])
+		WHERE wi.id = $4 AND wi.type = ANY($5::text[]::work_item_type_enum[])
 		RETURNING ` + commentColumns
 
 	c, err := scanComment(r.db.QueryRow(ctx, query, createdBy, typeEnum, content, referenceID, workItemTypes))
@@ -133,7 +138,9 @@ func (r *commentRepo) SearchComments(ctx context.Context, referenceID string, re
 	}
 
 	args := []any{referenceID, workItemTypes}
-	where := "WHERE c.work_item_id = $1 AND wi.type = ANY($2::work_item_type_enum[])"
+	// ::text[] before ::work_item_type_enum[] -- see CreateComment's own
+	// comment on the identical bind above for why.
+	where := "WHERE c.work_item_id = $1 AND wi.type = ANY($2::text[]::work_item_type_enum[])"
 	if typeEnumFilter != nil {
 		args = append(args, *typeEnumFilter)
 		where += fmt.Sprintf(" AND c.type = $%d::comment_type_enum", len(args))
