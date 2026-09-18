@@ -147,6 +147,10 @@ paths:
                 $ref: '#/components/schemas/AlertAcceptedResponse'
         "200":
           description: Recognized but ignored — STATUS is not TROUBLE/DOWN/CRITICAL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IgnoredResponse'
         "400":
           description: BadRequest — malformed JSON.
           content:
@@ -231,6 +235,10 @@ paths:
                 $ref: '#/components/schemas/AlertAcceptedResponse'
         "200":
           description: Recognized but ignored — state is not "alerting".
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IgnoredResponse'
         "400":
           description: BadRequest — malformed JSON.
           content:
@@ -315,6 +323,26 @@ components:
           type: string
           format: uuid
           description: The buffered alert's internal id (not a platform incident id).
+        alertNumber:
+          type: string
+          description: >
+            This service's own human-readable alert number (e.g. "ALT0000123"),
+            distinct from id — see internal/store.Store.Enqueue's doc comment.
+
+    IgnoredResponse:
+      type: object
+      description: >
+        Returned when a vendor-adapter route recognized the payload as
+        well-formed but not one this integration acts on (e.g. a Site24x7
+        STATUS other than TROUBLE/DOWN/CRITICAL, or a Grafana state other
+        than "alerting") — the alert is neither buffered nor an error.
+      required: [status, reason]
+      properties:
+        status:
+          type: string
+          enum: [ignored]
+        reason:
+          type: string
 
     AzureAlertPayload:
       type: object

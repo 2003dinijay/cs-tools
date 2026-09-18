@@ -28,17 +28,29 @@ import (
 // azurePayload is Azure Monitor's own common-alert-schema webhook body,
 // modeled to only the fields this adapter actually reads — not an
 // exhaustive schema of everything Azure Monitor can send.
+//
+// Data and Essentials are pointers, not value structs, so their absence is
+// detectable after json.Unmarshal (nil) rather than silently unmarshaling
+// into a zero-value struct — see mapAzurePayload's explicit nil check
+// immediately below. A value struct would make `{}` and a real payload
+// indistinguishable, letting every AlertRequest.validate-satisfying default
+// this adapter applies (severity "ok", service "Managed Services", etc.)
+// enqueue a misleading alert instead of rejecting the malformed input.
 type azurePayload struct {
-	Data struct {
-		Essentials struct {
-			AlertID           string `json:"alertId"`
-			AlertRule         string `json:"alertRule"`
-			Severity          string `json:"severity"`
-			MonitorCondition  string `json:"monitorCondition"`
-			MonitoringService string `json:"monitoringService"`
-		} `json:"essentials"`
-		AlertContext json.RawMessage `json:"alertContext"`
-	} `json:"data"`
+	Data *azureData `json:"data"`
+}
+
+type azureData struct {
+	Essentials   *azureEssentials `json:"essentials"`
+	AlertContext json.RawMessage  `json:"alertContext"`
+}
+
+type azureEssentials struct {
+	AlertID           string `json:"alertId"`
+	AlertRule         string `json:"alertRule"`
+	Severity          string `json:"severity"`
+	MonitorCondition  string `json:"monitorCondition"`
+	MonitoringService string `json:"monitoringService"`
 }
 
 // azureSeverityTable maps Azure Monitor's own Sev0-Sev4 vocabulary onto
@@ -77,7 +89,10 @@ func mapAzurePayload(body []byte) (AlertRequest, error) {
 	if err := json.Unmarshal(body, &p); err != nil {
 		return AlertRequest{}, fmt.Errorf("azure: %w", err)
 	}
-	ess := p.Data.Essentials
+	if p.Data == nil || p.Data.Essentials == nil {
+		return AlertRequest{}, fmt.Errorf("azure: missing required data.essentials")
+	}
+	ess := *p.Data.Essentials
 
 	severity := "ok"
 	if s, ok := azureSeverityTable[strings.ToLower(strings.TrimSpace(ess.Severity))]; ok {
@@ -118,8 +133,10 @@ func mapAzurePayload(body []byte) (AlertRequest, error) {
 // summary. AlertRequest.Description is not HTML (unlike the prior
 // ServiceNow-based pipeline's own rendering) — a flat key:value listing is
 // sufficient context for an engineer, no HTML formatting attempted.
+// Callers must only invoke this after confirming p.Data.Essentials is
+// non-nil (mapAzurePayload's own nil check covers this).
 func renderAzureDescription(p azurePayload) string {
-	ess := p.Data.Essentials
+	ess := *p.Data.Essentials
 	var b strings.Builder
 	fmt.Fprintf(&b, "Azure Monitor alert: %s\n", ess.AlertRule)
 	fmt.Fprintf(&b, "Monitor condition: %s\n", ess.MonitorCondition)

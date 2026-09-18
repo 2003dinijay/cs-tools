@@ -141,6 +141,28 @@ func TestMapAzurePayload_MalformedJSON(t *testing.T) {
 	}
 }
 
+// TestMapAzurePayload_MissingEssentialsRejected guards against a payload
+// that unmarshals successfully but carries no real Azure alert data — Data
+// and Essentials are pointers specifically so this is detectable (nil)
+// rather than silently defaulting through every fallback and enqueuing a
+// misleading alert.
+func TestMapAzurePayload_MissingEssentialsRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "empty object", body: `{}`},
+		{name: "data present, essentials absent", body: `{"data":{"alertContext":{}}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := mapAzurePayload([]byte(tc.body)); err == nil {
+				t.Fatalf("mapAzurePayload(%q) should error on missing data.essentials, got nil", tc.body)
+			}
+		})
+	}
+}
+
 func TestCreateAlertFromAzure_Success(t *testing.T) {
 	store := &mockStore{}
 	h := NewAlertHandler(store, "caller-1")
