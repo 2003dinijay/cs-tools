@@ -108,6 +108,11 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		result := make([]domain.Project, 0, req.Pagination.Limit)
 		for rows.Next() {
 			var p domain.Project
+			// account_id/start_date/end_date are nullable (migration 000009);
+			// domain.Project's fields are pointers to match -- see that
+			// struct's own doc comment. A non-pointer scan here used to
+			// error "cannot scan NULL into *time.Time" the moment any of the
+			// 13-14 (of 1956) rows with a NULL date reached this query.
 			if err := rows.Scan(
 				&p.ID, &p.AccountID, &p.SfID, &p.Name, &p.Key,
 				&p.StartDate, &p.EndDate, &p.CreatedOn, &p.UpdatedOn,
@@ -140,18 +145,29 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string) (domain.Pro
 	// KbReferencesEnabled are plain (non-pointer) bool -- scan into *bool
 	// and treat a NULL column as false, not an error.
 	var agentEnabled, kbReferencesEnabled *bool
+	// account is a LEFT JOIN, not an INNER JOIN: project.account_id
+	// (migration 000009) is nullable and genuinely NULL on live data (14 of
+	// 1956 rows) -- an INNER JOIN here used to make every such project
+	// invisible (zero rows -> misreported as 404 "project not found"), the
+	// same class of false-404 GetCaseByID had for its own optional joins
+	// before that was fixed (see this file's "Case-like work_item types"
+	// history). aID/aName are scanned nullable for the same reason;
+	// ActivationDate/Region are already pointer fields on ProjectAccountRef
+	// so they tolerate NULL (whether from a real account or a LEFT JOIN
+	// producing no row at all) without a separate local var.
+	var aID, aName *string
 	err := r.db.QueryRow(ctx,
 		`SELECT p.id, p.sf_id, p.name, p.key,
 		        p.start_date, p.end_date, p.created_on, p.updated_on,
 		        a.id, a.name, a.activation_date, a.region,
 		        a.ai_gen_response_enabled, a.smart_knowledge_base_suggestions_enabled
 		 FROM project p
-		 JOIN account a ON p.account_id = a.id
+		 LEFT JOIN account a ON p.account_id = a.id
 		 WHERE p.id = $1`, id,
 	).Scan(
 		&v.ID, &v.SfID, &v.Name, &v.Key,
 		&v.StartDate, &v.EndDate, &v.CreatedOn, &v.UpdatedOn,
-		&v.Account.ID, &v.Account.Name, &v.Account.ActivationDate, &v.Account.Region,
+		&aID, &aName, &v.Account.ActivationDate, &v.Account.Region,
 		&agentEnabled, &kbReferencesEnabled,
 	)
 	// v.SubscriptionType and v.Account.Tier have no real column -- see this
@@ -161,6 +177,12 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string) (domain.Pro
 	}
 	if err != nil {
 		return domain.ProjectDetailsView{}, fmt.Errorf("get project by id: %w", err)
+	}
+	if aID != nil {
+		v.Account.ID = *aID
+	}
+	if aName != nil {
+		v.Account.Name = *aName
 	}
 	v.Account.AgentEnabled = agentEnabled != nil && *agentEnabled
 	v.Account.KbReferencesEnabled = kbReferencesEnabled != nil && *kbReferencesEnabled

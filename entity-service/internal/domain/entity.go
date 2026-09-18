@@ -419,17 +419,24 @@ const (
 	ClosureStatusSuspended  ClosureStatus = "suspended"
 )
 
-// Project represents a customer project linked to an account.
+// Project represents a customer project linked to an account. This is an
+// internal repository<->service handoff type for SearchProjects, never
+// serialized directly to a caller (ProjectView is). AccountID/StartDate/
+// EndDate are pointers because project.account_id/start_date/end_date
+// (migration 000009) are all nullable columns and genuinely NULL on live
+// data (confirmed: 14/1956, 13/1956, 14/1956 rows respectively) -- matching
+// ProjectDetailsView's own StartDate/EndDate, which document the same
+// "may legitimately be unset" reality.
 type Project struct {
 	ID               string           `json:"id"`
-	AccountID        string           `json:"accountId"`
+	AccountID        *string          `json:"accountId"`
 	SfID             string           `json:"sfId"`
 	Name             string           `json:"name"`
 	Key              string           `json:"key"`
 	SubscriptionType SubscriptionType `json:"subscriptionType"`
 	ClosureStatus    *ClosureStatus   `json:"closureStatus"`
-	StartDate        time.Time        `json:"startDate"`
-	EndDate          time.Time        `json:"endDate"`
+	StartDate        *time.Time       `json:"startDate"`
+	EndDate          *time.Time       `json:"endDate"`
 	CreatedOn        time.Time        `json:"createdOn"`
 	UpdatedOn        time.Time        `json:"updatedOn"`
 }
