@@ -62,6 +62,21 @@ type GithubOutboundService interface {
 
 type githubOutboundService struct {
 	gh githubIssueClient
+	// skipAuthors are comment authors whose comments are never mirrored.
+	//
+	// The case journal carries system-generated text as well as what people
+	// write: auto-closure reminders addressed to "Hi team", and the "Change
+	// request (CHGxxxxxxx) is created." notices this service already posts
+	// itself from its own triggers. On staging that is 7,915 and 278 case
+	// comments respectively. Neither belongs on a page a customer reads.
+	//
+	// CONFIGURABLE, WITH A DEFAULT, because what ServiceNow did here could not
+	// be established: the flow has no sys_hub_trigger_instance row, its
+	// snapshot carries no readable condition, and the linked issues sit in a
+	// private repository. Rather than guess at fidelity, the default excludes
+	// the obvious machine authors and one env var restores the old behaviour
+	// without a deploy.
+	skipAuthors map[string]bool
 	// portalBaseURL builds the link back to the change request, so someone
 	// reading the issue can reach the record. Empty omits the link rather than
 	// rendering a broken one.
@@ -69,8 +84,14 @@ type githubOutboundService struct {
 }
 
 // NewGithubOutboundService constructs the outbound pusher.
-func NewGithubOutboundService(gh githubIssueClient, portalBaseURL string) GithubOutboundService {
-	return &githubOutboundService{gh: gh, portalBaseURL: strings.TrimRight(portalBaseURL, "/")}
+func NewGithubOutboundService(gh githubIssueClient, portalBaseURL string, skipAuthors []string) GithubOutboundService {
+	skip := make(map[string]bool, len(skipAuthors))
+	for _, a := range skipAuthors {
+		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
+			skip[a] = true
+		}
+	}
+	return &githubOutboundService{gh: gh, portalBaseURL: strings.TrimRight(portalBaseURL, "/"), skipAuthors: skip}
 }
 
 // Deliver implements GithubOutboundService.
@@ -121,6 +142,12 @@ func (s *githubOutboundService) render(item repository.OutboundItem) (string, er
 		// check is belt and braces, since the cost of being wrong is internal
 		// text on a public issue.
 		if kind, ok := item.Payload["type"].(string); ok && strings.EqualFold(kind, "WORK_NOTE") {
+			return "", nil
+		}
+		// Machine-written journal entries. Dropped by AUTHOR rather than by
+		// matching the text: the spec's own rule, and a body match would break
+		// the moment somebody reworded the auto-closure template.
+		if s.skipAuthors[strings.ToLower(strings.TrimSpace(author))] {
 			return "", nil
 		}
 		// ServiceNow stored these as HTML fragments; a GitHub comment is

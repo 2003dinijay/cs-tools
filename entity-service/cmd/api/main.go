@@ -79,6 +79,7 @@ func main() {
 				service.NewGithubOutboundService(
 					github.NewClient(github.Config{BaseURL: cfg.GithubBaseURL, Token: cfg.GithubToken}),
 					cfg.CSMPortalBaseURL,
+					cfg.GithubCommentSkipAuthors,
 				),
 				cfg.GithubOutboundInterval,
 			)

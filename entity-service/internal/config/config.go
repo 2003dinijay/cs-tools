@@ -104,6 +104,12 @@ type Config struct {
 	// GithubOutboundInterval is how often to drain the outbound queue when the
 	// last pass came back short. A backlog drains at full speed regardless.
 	GithubOutboundInterval time.Duration
+
+	// GithubCommentSkipAuthors lists comment authors whose comments are never
+	// pushed to GitHub. Defaults to the machine accounts; set
+	// GITHUB_COMMENT_SKIP_AUTHORS to a present-but-empty value to mirror every
+	// comment, including system-generated ones.
+	GithubCommentSkipAuthors []string
 	// CSMPortalBaseURL builds the link back to a change request in comments
 	// posted to GitHub. Empty omits the link rather than rendering a broken one.
 	CSMPortalBaseURL string
@@ -172,17 +178,27 @@ func Load() *Config {
 		GithubWebhookSecret:                      os.Getenv("GITHUB_WEBHOOK_SECRET"),
 		GithubIntegrationLogin:                   os.Getenv("GITHUB_INTEGRATION_LOGIN"),
 		GithubOutboundInterval:                   envDuration("GITHUB_OUTBOUND_INTERVAL", 15*time.Second),
-		CSMPortalBaseURL:                         os.Getenv("CSM_PORTAL_BASE_URL"),
-		GithubLabelChangeRequest:                 os.Getenv("GITHUB_LABEL_CHANGE_REQUEST"),
-		GithubLabelTypePrefix:                    os.Getenv("GITHUB_LABEL_TYPE_PREFIX"),
-		GithubLabelScopePrefix:                   os.Getenv("GITHUB_LABEL_SCOPE_PREFIX"),
-		GithubLabelsScope:                        os.Getenv("GITHUB_LABELS_SCOPE"),
-		GithubLabelsImpact:                       os.Getenv("GITHUB_LABELS_IMPACT"),
-		GithubLabelsLikelihood:                   os.Getenv("GITHUB_LABELS_LIKELIHOOD"),
-		GithubLabelsState:                        os.Getenv("GITHUB_LABELS_STATE"),
-		GithubLabelsStrippedOnCreate:             os.Getenv("GITHUB_LABELS_STRIPPED_ON_CREATE"),
-		SupportEngineerRole:                      os.Getenv("SUPPORT_ENGINEER_ROLE"),
-		CustomerRoles:                            splitComma(os.Getenv("CUSTOMER_ROLES")),
+		// LookupEnv, not Getenv: an unset variable takes the default, while a
+		// variable deliberately set to "" means "mirror everything". Getenv
+		// cannot tell those apart.
+		GithubCommentSkipAuthors: func() []string {
+			raw, ok := os.LookupEnv("GITHUB_COMMENT_SKIP_AUTHORS")
+			if !ok {
+				return defaultCommentSkipAuthors
+			}
+			return splitComma(raw)
+		}(),
+		CSMPortalBaseURL:             os.Getenv("CSM_PORTAL_BASE_URL"),
+		GithubLabelChangeRequest:     os.Getenv("GITHUB_LABEL_CHANGE_REQUEST"),
+		GithubLabelTypePrefix:        os.Getenv("GITHUB_LABEL_TYPE_PREFIX"),
+		GithubLabelScopePrefix:       os.Getenv("GITHUB_LABEL_SCOPE_PREFIX"),
+		GithubLabelsScope:            os.Getenv("GITHUB_LABELS_SCOPE"),
+		GithubLabelsImpact:           os.Getenv("GITHUB_LABELS_IMPACT"),
+		GithubLabelsLikelihood:       os.Getenv("GITHUB_LABELS_LIKELIHOOD"),
+		GithubLabelsState:            os.Getenv("GITHUB_LABELS_STATE"),
+		GithubLabelsStrippedOnCreate: os.Getenv("GITHUB_LABELS_STRIPPED_ON_CREATE"),
+		SupportEngineerRole:          os.Getenv("SUPPORT_ENGINEER_ROLE"),
+		CustomerRoles:                splitComma(os.Getenv("CUSTOMER_ROLES")),
 	}
 }
 
@@ -196,6 +212,13 @@ func getEnvOrDefault(key, defaultVal string) string {
 // splitComma parses a comma-separated env var into a trimmed, non-empty
 // slice ("" for an unset/empty var, matching integrations/csm-notification-service's
 // own copy of this exact helper).
+// defaultCommentSkipAuthors are the machine accounts whose case comments are
+// not mirrored to GitHub. "system" writes the auto-closure reminders; the two
+// integration accounts wrote the old ServiceNow-era sync's own entries.
+// Duplicated here rather than imported from the service package to keep config
+// free of dependencies on the layers that consume it.
+var defaultCommentSkipAuthors = []string{"system", "github_integration", "github_pipeline"}
+
 func splitComma(s string) []string {
 	if s == "" {
 		return nil

@@ -240,3 +240,17 @@ func (l GithubLabels) ResolveOnCreate(issueLabels []string) []string {
 	}
 	return out
 }
+
+// DefaultCommentSkipAuthors are the comment authors whose comments are not
+// mirrored to GitHub unless GITHUB_COMMENT_SKIP_AUTHORS overrides the list.
+//
+// "system" writes the auto-closure reminders. The two integration accounts
+// wrote the old ServiceNow-era GitHub sync's own entries; nothing should push
+// those back at GitHub, whatever else is decided about machine-written text.
+//
+// Set GITHUB_COMMENT_SKIP_AUTHORS to an empty-but-present value to mirror
+// everything, which is what ServiceNow may have done -- see the type comment
+// on githubOutboundService.skipAuthors.
+func DefaultCommentSkipAuthors() []string {
+	return []string{"system", "github_integration", "github_pipeline"}
+}

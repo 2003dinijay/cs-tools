@@ -36,7 +36,7 @@ func obItem(event string, payload map[string]any) repository.OutboundItem {
 }
 
 func obSvc(c *fakeGhClient) GithubOutboundService {
-	return NewGithubOutboundService(c, "https://csm.example")
+	return NewGithubOutboundService(c, "https://csm.example", DefaultCommentSkipAuthors())
 }
 
 func TestOutbound_CommentIsRelayed(t *testing.T) {
@@ -318,5 +318,56 @@ func TestOutbound_CommentLinksToTheCaseNotTheChangeRequest(t *testing.T) {
 	}
 	if !strings.Contains(c.comments[0], "/cases/") {
 		t.Errorf("no case link in a case comment: %q", c.comments[0])
+	}
+}
+
+// The case journal carries machine-written entries -- auto-closure reminders
+// and the CR notices this service already posts itself. They are dropped by
+// AUTHOR, never by matching the text, so rewording a template cannot silently
+// start leaking them onto a customer's issue.
+func TestOutbound_MachineAuthoredCommentsAreNotMirrored(t *testing.T) {
+	for _, author := range []string{"system", "github_integration", "github_pipeline", "SYSTEM"} {
+		t.Run(author, func(t *testing.T) {
+			c := &fakeGhClient{}
+			err := obSvc(c).Deliver(context.Background(), obItem(outboundCommentAdded, map[string]any{
+				"content":   "Hi team, This case is in Solution Proposed state and is being monitored.",
+				"createdBy": author, "type": "COMMENT",
+			}))
+			if err != nil {
+				t.Fatalf("Deliver: %v", err)
+			}
+			if len(c.comments) != 0 {
+				t.Fatalf("machine comment reached the issue: %q", c.comments)
+			}
+		})
+	}
+}
+
+// A person's comment still syncs -- the filter must not swallow the real ones.
+func TestOutbound_PeopleComentsStillSync(t *testing.T) {
+	c := &fakeGhClient{}
+	err := obSvc(c).Deliver(context.Background(), obItem(outboundCommentAdded, map[string]any{
+		"content": "Scheduled for Friday.", "createdBy": "nimal@wso2.com", "type": "COMMENT",
+	}))
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if len(c.comments) != 1 {
+		t.Fatalf("a person's comment was dropped")
+	}
+}
+
+// An empty-but-present override restores the old mirror-everything behaviour.
+func TestOutbound_EmptySkipListMirrorsEverything(t *testing.T) {
+	c := &fakeGhClient{}
+	svc := NewGithubOutboundService(c, "https://csm.example", nil)
+	err := svc.Deliver(context.Background(), obItem(outboundCommentAdded, map[string]any{
+		"content": "Auto closure notice.", "createdBy": "system", "type": "COMMENT",
+	}))
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if len(c.comments) != 1 {
+		t.Fatalf("an empty skip list should mirror everything")
 	}
 }
