@@ -7584,6 +7584,14 @@ components:
         reverse of SearchDeployedProductsRequest's own deploymentIds filter,
         which starts from already-known deployments rather than a
         product/version. ServiceNow data source only.
+
+
+        The result always excludes projects with a Restricted or Suspended
+        closure state, and projects on a Cloud Support or Cloud Evaluation
+        Support subscription — this is not a caller-supplied filter. It
+        mirrors the real ServiceNow flow this replaces ("DRY RUN - Create
+        [EOL] Product Announcements"), whose own first step applies this
+        exact exclusion unconditionally, with no way to opt out.
       required: [productId, productVersionId]
       properties:
         pagination:
@@ -7594,35 +7602,6 @@ components:
         productVersionId:
           type: string
           format: uuid
-        excludeClosureStates:
-          type: array
-          items:
-            type: string
-            enum: [Open, Suspended, Restricted]
-          description: >-
-            Excludes projects whose closure state is any of the given values,
-            applied on top of the product/version match — see
-            SearchProjectsRequest's field of the same name. ServiceNow data
-            source only.
-        excludeSubscriptionTypes:
-          type: array
-          items:
-            type: string
-            enum:
-              - development_support
-              - managed_cloud_subscription
-              - evaluation_subscription
-              - subscription
-              - cloud_evaluation_support
-              - internal
-              - platformer_subscription
-              - cloud_support
-              - professional_services
-          description: >-
-            Excludes projects whose subscription type is any of the given
-            values, applied on top of the product/version match — see
-            SearchProjectsRequest's field of the same name. ServiceNow data
-            source only.
 
     SearchProjectsByProductVersionResponse:
       type: object

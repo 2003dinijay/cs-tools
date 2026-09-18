@@ -460,6 +460,21 @@ const maxProjectsByProductVersionDeploymentPages = 200
 // pages through before giving up — same reasoning as the constant above.
 const maxProjectsByProductVersionDeployedProductPages = 200
 
+// mandatoryExcludeClosureStates and mandatoryExcludeSubscriptionTypes are the
+// fixed exclusions SearchProjectsByProductVersion always applies — not a
+// caller-supplied filter. This mirrors the real ServiceNow flow it replaces
+// ("DRY RUN - Create [EOL] Product Announcements"), whose own first step
+// ("Look Up Customer Project Records") applies this exact same four-condition
+// exclusion unconditionally: Project Type is not Cloud Evaluation Support,
+// Project Type is not Cloud Support, WSO2 Closure State is not Restricted,
+// WSO2 Closure State is not Suspended. That flow gives whoever triggers it no
+// way to opt out; this endpoint doesn't either.
+var mandatoryExcludeClosureStates = []string{"Restricted", "Suspended"}
+var mandatoryExcludeSubscriptionTypes = []domain.SubscriptionType{
+	domain.SubscriptionTypeCloudSupport,
+	domain.SubscriptionTypeCloudEvaluationSupport,
+}
+
 // SearchProjectsByProductVersion implements DeployedProductService. There is
 // no upstream query that goes directly from "product X, version Y" to the
 // projects running it — SearchDeployedProducts only accepts DeploymentIDs as
@@ -472,8 +487,9 @@ const maxProjectsByProductVersionDeployedProductPages = 200
 // the ones matching the requested product+version, joining back to the
 // project via the first pass. The result is deduplicated by project (a
 // project can have several deployments, or several matching deployed
-// products on one deployment); the caller's own pagination is applied only
-// at the very end, over the deduplicated, name-sorted set.
+// products on one deployment), then intersected with the mandatory-exclusion
+// eligible set above (see fetchEligibleProjectIDs) before the caller's own
+// pagination is applied, over the deduplicated, name-sorted set.
 func (s *snDeployedProductService) SearchProjectsByProductVersion(ctx context.Context, req domain.SearchProjectsByProductVersionRequest) (domain.SearchProjectsByProductVersionResponse, error) {
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchProjectsByProductVersionResponse{}, err
@@ -483,16 +499,6 @@ func (s *snDeployedProductService) SearchProjectsByProductVersion(ctx context.Co
 	}
 	if err := validateUUIDs("productVersionId", []string{req.ProductVersionID}); err != nil {
 		return domain.SearchProjectsByProductVersionResponse{}, err
-	}
-	for _, v := range req.ExcludeClosureStates {
-		if _, ok := validClosureStatuses[v]; !ok {
-			return domain.SearchProjectsByProductVersionResponse{}, &apierror.ValidationError{Msg: "excludeClosureStates must each be one of: Open, Suspended, Restricted"}
-		}
-	}
-	for _, t := range req.ExcludeSubscriptionTypes {
-		if _, ok := validSubscriptionTypes[t]; !ok {
-			return domain.SearchProjectsByProductVersionResponse{}, &apierror.ValidationError{Msg: "excludeSubscriptionTypes contains invalid value: " + string(t)}
-		}
 	}
 
 	deploymentProjects, err := s.fetchAllDeploymentProjects(ctx)
@@ -550,15 +556,13 @@ func (s *snDeployedProductService) SearchProjectsByProductVersion(ctx context.Co
 		}
 	}
 
-	if len(req.ExcludeClosureStates) > 0 || len(req.ExcludeSubscriptionTypes) > 0 {
-		eligible, err := s.fetchEligibleProjectIDs(ctx, req.ExcludeClosureStates, req.ExcludeSubscriptionTypes)
-		if err != nil {
-			return domain.SearchProjectsByProductVersionResponse{}, err
-		}
-		for id := range matchedProjects {
-			if _, ok := eligible[id]; !ok {
-				delete(matchedProjects, id)
-			}
+	eligible, err := s.fetchEligibleProjectIDs(ctx, mandatoryExcludeClosureStates, mandatoryExcludeSubscriptionTypes)
+	if err != nil {
+		return domain.SearchProjectsByProductVersionResponse{}, err
+	}
+	for id := range matchedProjects {
+		if _, ok := eligible[id]; !ok {
+			delete(matchedProjects, id)
 		}
 	}
 

@@ -1254,23 +1254,19 @@ type SearchDeployedProductsResponse struct {
 // back to the projects running it. ServiceNow data source only — the
 // Postgres data source rejects a call outright (see that data source's own
 // implementation).
+//
+// The result is always restricted to projects eligible for an announcement
+// at all (excluding Restricted/Suspended closure states and Cloud Support/
+// Cloud Evaluation Support subscriptions) — this is not a caller-supplied
+// filter. It mirrors the real ServiceNow flow this replaces ("DRY RUN -
+// Create [EOL] Product Announcements"), whose own first step applies this
+// exact same exclusion unconditionally, with no way for whoever triggers
+// the flow to opt out of it. See SearchProjectsByProductVersion's own doc
+// comment in the service layer for how it's applied.
 type SearchProjectsByProductVersionRequest struct {
 	Pagination       Pagination `json:"pagination"`
 	ProductID        string     `json:"productId"`
 	ProductVersionID string     `json:"productVersionId"`
-	// ExcludeClosureStates and ExcludeSubscriptionTypes mirror
-	// SearchProjectsRequest's own fields of the same name (see those doc
-	// comments for the full "no upstream filter, applied in Go" reasoning).
-	// An EOL/product-version announcement's real audience is the
-	// intersection of "projects running this version" and "projects
-	// eligible for an announcement at all" — a Restricted/Suspended project,
-	// or one on a Cloud Support/Cloud Evaluation Support subscription,
-	// must never receive one just because it happens to run the affected
-	// version. Applied by cross-referencing ProjectService.SearchProjects
-	// (already the source of truth for this exclusion logic) rather than
-	// duplicating it here.
-	ExcludeClosureStates     []string           `json:"excludeClosureStates,omitempty"`
-	ExcludeSubscriptionTypes []SubscriptionType `json:"excludeSubscriptionTypes,omitempty"`
 }
 
 // SearchProjectsByProductVersionResponse is the paginated result. Each
