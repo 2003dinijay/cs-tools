@@ -83,12 +83,12 @@ func (s *problemService) SearchProblems(ctx context.Context, req domain.SearchPr
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchProblemsResponse{}, err
 	}
-	states, _, err := parseProblemFieldFiltersPostgres(req.Filters.Filters)
+	states, assignedUserIDs, err := parseProblemFieldFiltersPostgres(req.Filters.Filters)
 	if err != nil {
 		return domain.SearchProblemsResponse{}, err
 	}
 
-	views, total, err := s.repo.SearchProblems(ctx, req, states)
+	views, total, err := s.repo.SearchProblems(ctx, req, states, assignedUserIDs)
 	if err != nil {
 		return domain.SearchProblemsResponse{}, err
 	}
@@ -106,13 +106,13 @@ func (s *problemService) AggregateProblems(ctx context.Context, req domain.Aggre
 	if !validProblemAggregateField[req.GroupBy] {
 		return domain.AggregateResponse{}, &apierror.ValidationError{Msg: "groupBy contains invalid value: " + req.GroupBy}
 	}
-	states, _, err := parseProblemFieldFiltersPostgres(req.Filters.Filters)
+	states, assignedUserIDs, err := parseProblemFieldFiltersPostgres(req.Filters.Filters)
 	if err != nil {
 		return domain.AggregateResponse{}, err
 	}
 
 	searchReq := domain.SearchProblemsRequest{Filters: req.Filters}
-	return s.repo.AggregateProblems(ctx, searchReq, states, req.GroupBy, req.MaxGroups)
+	return s.repo.AggregateProblems(ctx, searchReq, states, assignedUserIDs, req.GroupBy, req.MaxGroups)
 }
 
 // GetProblem implements ProblemService.

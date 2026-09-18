@@ -176,7 +176,7 @@ func incidentWhereClause(f domain.SearchIncidentsFilters, priorities, states, se
 const incidentSelectColumns = `
 	wi.id, wi.number, wi.subject, inc.opened_on,
 	caller.id, COALESCE(caller.name, NULLIF(TRIM(CONCAT_WS(' ', caller.first_name, caller.last_name)), '')),
-	inc.priority::TEXT, inc.state::TEXT,
+	inc.priority::TEXT, inc.state::TEXT, inc.category::TEXT,
 	parent_wi.id, parent_wi.number,
 	parent_inc.id, parent_inc_wi.number,
 	ae.id, COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')),
@@ -187,7 +187,7 @@ func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchI
 		id, number, subject          string
 		openedOn                     *time.Time
 		callerID, callerName         *string
-		priority, state              *string
+		priority, state, category    *string
 		parentID, parentNumber       *string
 		parentIncID, parentIncNumber *string
 		aeID, aeName                 *string
@@ -197,7 +197,7 @@ func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchI
 	if err := row.Scan(
 		&id, &number, &subject, &openedOn,
 		&callerID, &callerName,
-		&priority, &state,
+		&priority, &state, &category,
 		&parentID, &parentNumber,
 		&parentIncID, &parentIncNumber,
 		&aeID, &aeName,
@@ -207,7 +207,7 @@ func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchI
 	}
 	v := domain.SearchIncidentView{
 		ID: &id, Number: &number, Subject: &subject,
-		Priority: priority, State: state,
+		Priority: priority, State: state, Category: category,
 		CreatedOn: createdOn.UTC().Format(time.RFC3339), CreatedBy: createdBy,
 		UpdatedOn: updatedOn.UTC().Format(time.RFC3339), UpdatedBy: updatedBy,
 	}
@@ -487,6 +487,20 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 // (that table is case-specific by name and FK), so this feed never has an
 // "attachment" kind entry, unlike SearchCaseActivities.
 func (r *incidentRepo) SearchIncidentActivities(ctx context.Context, req domain.SearchIncidentActivitiesRequest) ([]domain.CaseActivity, int, error) {
+	// Confirm req.IncidentID is actually an incident before reading its
+	// activity feed -- comment/work_item_activity are both keyed by the
+	// generic work_item_id with no type filter of their own, so without
+	// this check a caller could pass any other work_item's UUID (a case,
+	// change request, ...) through this endpoint and read that record's
+	// comments/field changes instead.
+	var exists bool
+	if err := r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM incident WHERE id = $1)`, req.IncidentID).Scan(&exists); err != nil {
+		return nil, 0, fmt.Errorf("check incident exists: %w", err)
+	}
+	if !exists {
+		return nil, 0, &apierror.NotFoundError{Msg: "incident not found"}
+	}
+
 	includeFieldChanges := req.IncludeFieldChanges != nil && *req.IncludeFieldChanges
 
 	countQuery := `SELECT (SELECT COUNT(*) FROM comment WHERE work_item_id = $1)`

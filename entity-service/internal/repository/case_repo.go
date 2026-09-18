@@ -1621,6 +1621,21 @@ func scanCaseActivity(row interface{ Scan(...any) error }) (domain.CaseActivity,
 // journal entry might), so each row becomes its own CaseActivity with a
 // single-element Changes slice, rather than guessing at a bundling rule.
 func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) ([]domain.CaseActivity, int, error) {
+	// Confirm req.CaseID is actually a case-like work item before reading
+	// its activity feed -- comment/case_attachments/work_item_activity are
+	// all keyed by the generic work_item_id with no type filter of their
+	// own, so without this check a caller could pass any other work_item's
+	// UUID (a change request, incident, ...) through this endpoint and read
+	// that record's comments/attachments/field changes instead. Same class
+	// of gap as IncidentRepository.SearchIncidentActivities' own fix.
+	var exists bool
+	if err := r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_item WHERE id = $1 AND type = ANY(`+caseLikeWorkItemTypes+`))`, req.CaseID).Scan(&exists); err != nil {
+		return nil, 0, fmt.Errorf("check case exists: %w", err)
+	}
+	if !exists {
+		return nil, 0, &apierror.NotFoundError{Msg: "case not found"}
+	}
+
 	includeFieldChanges := req.IncludeFieldChanges != nil && *req.IncludeFieldChanges
 
 	countQuery := `

@@ -1408,6 +1408,20 @@ already uses for `incident.problem_id`'s own reverse lookup -- left as a
 known, flagged gap rather than built out further given the size of this
 change, not because either is infeasible.
 
+**`SearchIncidentActivities`/`SearchCaseActivities` verify the id is
+actually an incident/case-like work item before reading its activity
+feed** (`EXISTS (SELECT 1 FROM incident WHERE id = $1)` and the
+`caseLikeWorkItemTypes`-filtered equivalent respectively) -- found as a
+real IDOR during review: `comment`/`case_attachments`/`work_item_activity`
+are all keyed by the generic `work_item_id` with no type filter of their
+own, so without this check a caller could pass any other work item's UUID
+(a change request, a different case, ...) through either endpoint and read
+that record's comments/attachments/field changes instead of a 404.
+`SearchCaseActivities`'s copy of this gap pre-dated this change (inherited
+from the original comment/attachment UNION ALL implementation) and was
+fixed alongside the new incident one rather than left for later, since it's
+the identical bug.
+
 ## change_request.change_model and work_item_activity (migrations 000055/000056)
 
 Two small, unrelated migrations, both unverified against real data (neither

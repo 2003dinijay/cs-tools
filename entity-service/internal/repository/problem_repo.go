@@ -56,11 +56,11 @@ import (
 type ProblemRepository interface {
 	// SearchProblems returns a filtered, paginated slice of problems
 	// together with the total count of matching rows before pagination.
-	SearchProblems(ctx context.Context, req domain.SearchProblemsRequest, states []string) ([]domain.SearchProblemView, int, error)
+	SearchProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs []string) ([]domain.SearchProblemView, int, error)
 	// AggregateProblems returns server-side aggregated counts of problems
 	// per value of groupBy, capped to the top maxGroups buckets with the
 	// remainder folded into the returned OthersCount.
-	AggregateProblems(ctx context.Context, req domain.SearchProblemsRequest, states []string, groupBy string, maxGroups int) (domain.AggregateResponse, error)
+	AggregateProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs []string, groupBy string, maxGroups int) (domain.AggregateResponse, error)
 	// GetProblem returns the full detail of a single problem by its UUID,
 	// or a NotFoundError if no matching row exists.
 	GetProblem(ctx context.Context, id string) (domain.ProblemDetail, error)
@@ -87,7 +87,7 @@ const problemFromJoins = `
 	LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id
 	LEFT JOIN "user" rb ON rb.id = pr.resolved_by_id`
 
-func problemWhereClause(f domain.SearchProblemsFilters, states []string) (string, []any) {
+func problemWhereClause(f domain.SearchProblemsFilters, states, assignedUserIDs []string) (string, []any) {
 	where := "WHERE wi.type = 'PROBLEM'"
 	args := []any{}
 	argIdx := 1
@@ -110,6 +110,9 @@ func problemWhereClause(f domain.SearchProblemsFilters, states []string) (string
 	}
 	if len(states) > 0 {
 		add("pr.state = ANY($%d::text[]::problem_state_enum[])", states)
+	}
+	if len(assignedUserIDs) > 0 {
+		add("wi.assigned_to_id = ANY($%d::uuid[])", assignedUserIDs)
 	}
 	// assignmentGroupId has no backing column -- see this file's own package
 	// doc comment; deliberately not applied here.
@@ -134,8 +137,8 @@ func scanSearchProblemView(row interface{ Scan(...any) error }) (domain.SearchPr
 }
 
 // SearchProblems implements ProblemRepository.
-func (r *problemRepo) SearchProblems(ctx context.Context, req domain.SearchProblemsRequest, states []string) ([]domain.SearchProblemView, int, error) {
-	where, args := problemWhereClause(req.Filters, states)
+func (r *problemRepo) SearchProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs []string) ([]domain.SearchProblemView, int, error) {
+	where, args := problemWhereClause(req.Filters, states, assignedUserIDs)
 
 	countQuery := "SELECT COUNT(*) " + problemFromJoins + " " + where
 	dataQuery := fmt.Sprintf(
@@ -198,13 +201,13 @@ var problemAggregateColumns = map[string]string{
 }
 
 // AggregateProblems implements ProblemRepository.
-func (r *problemRepo) AggregateProblems(ctx context.Context, req domain.SearchProblemsRequest, states []string, groupBy string, maxGroups int) (domain.AggregateResponse, error) {
+func (r *problemRepo) AggregateProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs []string, groupBy string, maxGroups int) (domain.AggregateResponse, error) {
 	col, ok := problemAggregateColumns[groupBy]
 	if !ok {
 		return domain.AggregateResponse{}, &apierror.ValidationError{Msg: "groupBy=" + groupBy + " is not supported on the PostgreSQL data source"}
 	}
 
-	where, args := problemWhereClause(req.Filters, states)
+	where, args := problemWhereClause(req.Filters, states, assignedUserIDs)
 
 	query := fmt.Sprintf(`
 		SELECT %s AS bucket, COUNT(*) AS bucket_count

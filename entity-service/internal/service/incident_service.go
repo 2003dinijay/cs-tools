@@ -43,10 +43,18 @@ func incidentStateToEnum(s domain.IncidentState) string {
 // callers must reject it with a ValidationError, not silently drop or bind
 // it.
 func incidentPriorityToEnum(p domain.IncidentPriority) (string, bool) {
-	if p == domain.IncidentPriorityPlanning {
+	switch p {
+	case domain.IncidentPriorityCritical, domain.IncidentPriorityHigh, domain.IncidentPriorityModerate, domain.IncidentPriorityLow:
+		return string(p), true
+	default:
+		// Rejects IncidentPriorityPlanning (no incident_priority_enum
+		// equivalent) and any other value JSON decoding let through --
+		// domain.IncidentPriority is a plain string type with no decode-time
+		// validation, so a caller-supplied value outside the enum's actual
+		// four labels must be caught here, not left to fail as a raw
+		// Postgres enum-cast error.
 		return "", false
 	}
-	return string(p), true
 }
 
 // parseIncidentFieldFiltersPostgres translates SearchIncidentsFilters for
