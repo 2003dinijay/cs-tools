@@ -204,6 +204,17 @@ function AuthorizedAppShell(): JSX.Element {
  * entitled to this portal at all, not just signed in to the IdP. Same class
  * of gap `AuthorizedAppShell` exists to close for every other route.
  *
+ * Deliberately stricter than `AuthorizedAppShell` on one point: an `isError`
+ * that ISN'T a confirmed 401/403 (a transient 5xx or network failure on
+ * `/users/me`) holds here on `BareAuthLoader` rather than falling through to
+ * the outlet the way `AuthorizedAppShell` does for normal routes. Failing
+ * open there is a reasonable default for a route a signed-in employee is
+ * actively driving — worst case they briefly see the wrong loading state and
+ * retry. `/cs-monitor-dashboard` is this fix's whole reason to exist: an
+ * unattended kiosk with no one to notice or retry, where "wait a bit longer"
+ * costs nothing and "fire real widget queries without confirmed entitlement
+ * because `/users/me` hiccuped" is exactly the CWE-862 gap being closed.
+ *
  * `NoPortalAccessPage` renders fine outside `AppLayout` — its own root is a
  * `flex: 1` `Box` meant to fill whatever flex-column parent it's given,
  * which the wrapper below (matching `BareAuthLoader`'s own frame) provides.
@@ -223,6 +234,15 @@ function BareAuthorizedContent(): JSX.Element {
         <NoPortalAccessPage />
       </Box>
     );
+  }
+
+  // `isError` here means `/users/me` failed for a reason OTHER than a
+  // confirmed 401/403 (see `notAuthorized` above) — entitlement is simply
+  // unknown, not confirmed. Hold on the loader rather than falling through
+  // to the outlet; see this function's own doc comment for why that's the
+  // right default specifically for an unattended kiosk route.
+  if (isError) {
+    return <BareAuthLoader />;
   }
 
   return (
