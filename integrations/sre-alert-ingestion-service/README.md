@@ -16,9 +16,21 @@ restarts and a regional failover, not just an in-process retry loop.
 
 ```bash
 # from integrations/sre-alert-ingestion-service
-psql "$SRE_ALERT_DATABASE_URL" -f migrations/0001_create_alert_buffer.up.sql
+PGHOST="${DB_HOST:-localhost}" PGPORT="${DB_PORT:-5432}" \
+PGUSER="$DB_USER" PGPASSWORD="$DB_PASSWORD" \
+PGDATABASE="$DB_NAME" PGSSLMODE="$DB_SSLMODE" \
+psql -f migrations/0001_create_alert_buffer.up.sql
 go run ./cmd/server/main.go
 ```
+
+(the server itself reads `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`/`DB_NAME`/
+`DB_SSLMODE` directly and builds its own DSN via `net/url` + `url.UserPassword`,
+which percent-encodes the password automatically — the one-liner above is
+only for driving `psql` by hand, and passes credentials as `PG*` environment
+settings rather than embedding them in a URI on purpose: libpq's own URI
+form requires percent-encoding any reserved character in the user-info part
+— `@` ends it early, `?` starts a query string — and shell quoting doesn't
+perform that encoding, it only protects the string from the shell itself)
 
 The server automatically loads `.env` from the working directory on startup
 (silently ignored if absent).
@@ -84,7 +96,12 @@ Copy `.env.example` to `.env` and fill in the values:
 
 | Variable | Description |
 |---|---|
-| `SRE_ALERT_DATABASE_URL` | Buffer database connection string (`postgres://...`) |
+| `DB_HOST` | Buffer database host (default `localhost`) |
+| `DB_PORT` | Buffer database port (default `5432`) |
+| `DB_USER` | Buffer database user. Required |
+| `DB_PASSWORD` | Buffer database password. Required — may contain any character, including `?`/`@`/`/`/spaces; the DSN is built in code via `url.UserPassword`, which percent-encodes it automatically |
+| `DB_NAME` | Buffer database name. Required |
+| `DB_SSLMODE` | Buffer database `sslmode`. No default — empty is a valid value (pgx applies its own default behavior); a managed Postgres (e.g. Azure Database for PostgreSQL) will typically need `require` |
 | `CSM_INTEGRATION_BASE_URL` | Base URL of `csm-integration-service` |
 | `CSM_INTEGRATION_TOKEN_URL` | OAuth2 token endpoint for `csm-integration-service` |
 | `CSM_INTEGRATION_CLIENT_ID` | OAuth2 client ID |
@@ -125,7 +142,10 @@ Migrations follow this repo's `up`/`down` SQL-pair convention (matching
 `psql`, not from application code:
 
 ```bash
-psql "$SRE_ALERT_DATABASE_URL" -f migrations/0001_create_alert_buffer.up.sql
+PGHOST="${DB_HOST:-localhost}" PGPORT="${DB_PORT:-5432}" \
+PGUSER="$DB_USER" PGPASSWORD="$DB_PASSWORD" \
+PGDATABASE="$DB_NAME" PGSSLMODE="$DB_SSLMODE" \
+psql -f migrations/0001_create_alert_buffer.up.sql
 ```
 
 Driver: `github.com/jackc/pgx/v5` via `database/sql` (the `pgx/v5/stdlib`
