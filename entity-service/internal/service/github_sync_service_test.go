@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -28,19 +29,46 @@ import (
 const ghIssueURL = "https://github.com/wso2/choreo/issues/42"
 
 type fakeGhRepo struct {
-	mapping *repository.RepoMapping
-	cr      *repository.GithubChangeRequest
+	claimed    map[string]bool
+	linked     map[string]string
+	mappingErr error
+	mapping    *repository.RepoMapping
+	cr         *repository.GithubChangeRequest
 }
 
 func (f *fakeGhRepo) RepoMapping(context.Context, string, string) (*repository.RepoMapping, error) {
-	return f.mapping, nil
+	return f.mapping, f.mappingErr
 }
 func (f *fakeGhRepo) ChangeRequestByGitReference(context.Context, string) (*repository.GithubChangeRequest, error) {
 	return f.cr, nil
 }
-func (f *fakeGhRepo) ClaimDelivery(context.Context, string, string, string) error { return nil }
-func (f *fakeGhRepo) ReleaseDelivery(context.Context, string) error               { return nil }
-func (f *fakeGhRepo) LinkDelivery(context.Context, string, string) error          { return nil }
+
+// Behaves like the table it stands in for: a second claim on the same id is
+// refused. A fake that always returned nil is why the missing claim call went
+// unnoticed.
+func (f *fakeGhRepo) ClaimDelivery(_ context.Context, id, _, _ string) error {
+	if f.claimed == nil {
+		f.claimed = map[string]bool{}
+	}
+	if f.claimed[id] {
+		return repository.ErrDeliverySeen
+	}
+	f.claimed[id] = true
+	return nil
+}
+
+func (f *fakeGhRepo) ReleaseDelivery(_ context.Context, id string) error {
+	delete(f.claimed, id)
+	return nil
+}
+
+func (f *fakeGhRepo) LinkDelivery(_ context.Context, id, crID string) error {
+	if f.linked == nil {
+		f.linked = map[string]string{}
+	}
+	f.linked[id] = crID
+	return nil
+}
 
 type fakeGhClient struct {
 	comments []string
@@ -345,8 +373,8 @@ func TestGithubSync_CreationNormalisesLabels(t *testing.T) {
 
 	d := ghDelivery("issues", "labeled", []string{
 		labelChangeRequest, "CRType/Normal", labelScopeInfra,
-		"Assessed",     // a state label — must be stripped
-		"bug",          // the author's own — must survive
+		"Assessed", // a state label — must be stripped
+		"bug",      // the author's own — must survive
 		labelImpactHigh,
 	})
 	got, err := newGhSvc(repo, client).HandleWebhook(context.Background(), d)
@@ -652,5 +680,40 @@ func TestGithubSync_ScopeLabelReplacesTheOld(t *testing.T) {
 	}
 	if len(m.updated) != 1 || m.updated[0].Type != "INFRA" {
 		t.Errorf("the record's type was not updated: %+v", m.updated)
+	}
+}
+
+// GitHub retries any delivery it did not get a 2xx for. Replaying one must not
+// redo the work -- an issue labelled once must not become two change requests.
+//
+// This shipped broken: ClaimDelivery, ReleaseDelivery and LinkDelivery were all
+// implemented, none were called, and the fake returned nil unconditionally so
+// nothing noticed.
+func TestHandleWebhook_ReplayedDeliveryIsRefused(t *testing.T) {
+	r := &fakeGhRepo{mapping: mapped()}
+	svc := newGhSvc(r, &fakeGhClient{})
+	d := ghDelivery("issues", "labeled", crLabels())
+
+	if _, err := svc.HandleWebhook(context.Background(), d); err != nil {
+		t.Fatalf("first delivery: %v", err)
+	}
+	_, err := svc.HandleWebhook(context.Background(), d)
+	if !errors.Is(err, repository.ErrDeliverySeen) {
+		t.Fatalf("replay was processed again; err = %v, want ErrDeliverySeen", err)
+	}
+}
+
+// A delivery that failed must be retryable: the claim is released so GitHub's
+// retry is not mistaken for a replay of something that already succeeded.
+func TestHandleWebhook_FailedDeliveryReleasesItsClaim(t *testing.T) {
+	r := &fakeGhRepo{mappingErr: errors.New("database is down")}
+	svc := newGhSvc(r, &fakeGhClient{})
+	d := ghDelivery("issues", "labeled", crLabels())
+
+	if _, err := svc.HandleWebhook(context.Background(), d); err == nil {
+		t.Fatal("want the underlying failure")
+	}
+	if r.claimed[d.ID] {
+		t.Error("the claim survived a failure, so GitHub's retry would be refused as a replay")
 	}
 }

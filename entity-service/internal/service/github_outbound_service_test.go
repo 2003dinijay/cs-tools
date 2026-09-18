@@ -26,11 +26,12 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
-const obRef = "https://github.com/wso2/choreo/issues/42"
+const obOwner, obRepo, obIssue = "wso2", "choreo", 42
 
 func obItem(event string, payload map[string]any) repository.OutboundItem {
 	return repository.OutboundItem{
-		ID: 1, Event: event, WorkItemID: "cr-1", GitReference: obRef, Payload: payload,
+		ID: 1, Event: event, WorkItemID: "cr-1",
+		Owner: obOwner, Repository: obRepo, IssueNumber: obIssue, Payload: payload,
 	}
 }
 
@@ -161,16 +162,31 @@ func TestOutbound_NeverWritesLabelsOrState(t *testing.T) {
 	}
 }
 
-func TestOutbound_UnparseableReferenceIsPermanent(t *testing.T) {
-	c := &fakeGhClient{}
-	item := obItem(outboundCommentAdded, map[string]any{"content": "x", "type": "COMMENT"})
-	item.GitReference = "not a url"
-	err := obSvc(c).Deliver(context.Background(), item)
-	if err == nil {
-		t.Fatal("want an error")
-	}
-	if !OutboundPermanent(err) {
-		t.Fatal("an unparseable reference should be permanent, not retried")
+// A row with no issue on it cannot be posted anywhere, and no amount of
+// retrying will put one there. The trigger will not write such a row -- all
+// three columns are NOT NULL -- so this guards the case where one is inserted
+// by hand or by a future caller that skips the trigger.
+func TestOutbound_RowWithoutAnIssueIsPermanent(t *testing.T) {
+	for name, mangle := range map[string]func(*repository.OutboundItem){
+		"no owner":      func(i *repository.OutboundItem) { i.Owner = "" },
+		"no repository": func(i *repository.OutboundItem) { i.Repository = "" },
+		"no number":     func(i *repository.OutboundItem) { i.IssueNumber = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := &fakeGhClient{}
+			item := obItem(outboundCommentAdded, map[string]any{"content": "x", "type": "COMMENT"})
+			mangle(&item)
+			err := obSvc(c).Deliver(context.Background(), item)
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			if !OutboundPermanent(err) {
+				t.Fatal("a row with no issue should be permanent, not retried")
+			}
+			if len(c.comments) != 0 {
+				t.Fatalf("posted anyway: %q", c.comments)
+			}
+		})
 	}
 }
 
@@ -284,5 +300,23 @@ func TestOutbound_CaseUnassignedPostsNothing(t *testing.T) {
 	}
 	if len(c.comments) != 0 {
 		t.Fatalf("posted %d comments, want 0: %q", len(c.comments), c.comments)
+	}
+}
+
+// Comments sync from the case, so the link in one must be a case link. This
+// shipped pointing at /operations/change-requests/<case id>, which 404s.
+func TestOutbound_CommentLinksToTheCaseNotTheChangeRequest(t *testing.T) {
+	c := &fakeGhClient{}
+	err := obSvc(c).Deliver(context.Background(), obItem(outboundCommentAdded, map[string]any{
+		"content": "scheduled for Friday", "createdBy": "nimal@wso2.com", "type": "COMMENT",
+	}))
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if strings.Contains(c.comments[0], "change-requests") {
+		t.Errorf("a case comment linked to the change-request route: %q", c.comments[0])
+	}
+	if !strings.Contains(c.comments[0], "/cases/") {
+		t.Errorf("no case link in a case comment: %q", c.comments[0])
 	}
 }

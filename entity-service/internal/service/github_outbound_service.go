@@ -75,12 +75,13 @@ func NewGithubOutboundService(gh githubIssueClient, portalBaseURL string) Github
 
 // Deliver implements GithubOutboundService.
 func (s *githubOutboundService) Deliver(ctx context.Context, item repository.OutboundItem) error {
-	issue, err := github.ParseIssueURL(item.GitReference)
-	if err != nil {
-		// A reference we cannot parse will never become parseable. Surfacing
-		// it as a permanent failure is more useful than retrying six times.
-		return fmt.Errorf("%w: %v", ErrOutboundPermanent, err)
+	// Taken from the row, not parsed out of a URL. The trigger resolved these
+	// against the mapping as it stood when the change happened, which is the
+	// issue this row is about even if the case has since been re-linked.
+	if item.Owner == "" || item.Repository == "" || item.IssueNumber <= 0 {
+		return fmt.Errorf("%w: queue row %d has no issue to post to", ErrOutboundPermanent, item.ID)
 	}
+	issue := github.Issue{Owner: item.Owner, Repository: item.Repository, Number: item.IssueNumber}
 
 	body, err := s.render(item)
 	if err != nil {
@@ -125,8 +126,12 @@ func (s *githubOutboundService) render(item repository.OutboundItem) (string, er
 		if strings.TrimSpace(content) == "" {
 			return "", nil
 		}
+		// The CASE, not the change request: the trigger for this event fires on
+		// comments against the case and enqueues the case's id. Linking it as a
+		// change request produced a /operations/change-requests/ URL with a
+		// case id in it -- a 404 for anyone who clicked it.
 		return fmt.Sprintf("**%s** commented on %s:\n\n%s",
-			displayAuthor(author), s.changeRequestLink(item.WorkItemID), content), nil
+			displayAuthor(author), s.caseLink(item.WorkItemID), content), nil
 
 	case outboundCRCreated:
 		return fmt.Sprintf("A change request has been raised for this issue: %s",

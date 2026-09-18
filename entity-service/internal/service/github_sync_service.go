@@ -101,15 +101,15 @@ func (p IssuePayload) LabelNames() []string {
 // places -- hardcoded in the processor AND in github.label.* properties -- and
 // the two could disagree.
 const (
-	labelChangeRequest   = "Type/ChangeRequest"
-	labelPrefixCRType    = "CRType/"
-	labelPrefixCRScope   = "CRScope/"
-	labelScopeApp        = "CRScope/Application"
-	labelScopeInfra      = "CRScope/Infrastructure"
-	labelImpactHigh      = "Impact 1"
-	labelImpactMedium    = "Impact 2"
-	labelLikelihoodHigh  = "Likelihood 1"
-	labelLikelihoodMed   = "Likelihood 2"
+	labelChangeRequest  = "Type/ChangeRequest"
+	labelPrefixCRType   = "CRType/"
+	labelPrefixCRScope  = "CRScope/"
+	labelScopeApp       = "CRScope/Application"
+	labelScopeInfra     = "CRScope/Infrastructure"
+	labelImpactHigh     = "Impact 1"
+	labelImpactMedium   = "Impact 2"
+	labelLikelihoodHigh = "Likelihood 1"
+	labelLikelihoodMed  = "Likelihood 2"
 )
 
 // githubStateByLabel maps a state label onto change_request_state_enum.
@@ -214,9 +214,24 @@ func NewGithubSyncServiceWriting(repo repository.GithubSyncRepository, mutate re
 func skip(reason string) (Outcome, error) { return Outcome{Skipped: reason}, nil }
 
 // HandleWebhook implements GithubSyncService.
+//
+// THE DELIVERY CLAIM WRAPS EVERY WRITE. GitHub retries any delivery it did not
+// get a 2xx for, and an issue labelled once must not become two change
+// requests -- the spec calls idempotency mandatory here, unlike the CR
+// notification flows where a duplicate is only a duplicate email.
+//
+// The claim is taken before any write and released if the work fails, so a
+// retry after a genuine failure still runs. ClaimDelivery, ReleaseDelivery and
+// LinkDelivery were all implemented and none of them were called; a replayed
+// delivery was reprocessed in full, and the handler's ErrDeliverySeen branch
+// was unreachable.
 func (s *githubSyncService) HandleWebhook(ctx context.Context, d Delivery) (Outcome, error) {
 	p := d.Payload
 
+	// The cheap guards come first, deliberately outside the claim: they touch
+	// nothing, so recording a delivery we are going to ignore would fill the
+	// log with rows that protect nothing.
+	//
 	// Our own writes come back as webhooks. Dropping them by sender identity
 	// is what stops a comment we posted from being synced back as a new one.
 	if s.integrationLogin != "" && strings.EqualFold(p.Sender.Login, s.integrationLogin) {
@@ -225,6 +240,39 @@ func (s *githubSyncService) HandleWebhook(ctx context.Context, d Delivery) (Outc
 	if d.Event != "issues" && d.Event != "issue_comment" {
 		return skip("event " + d.Event + " is not handled")
 	}
+
+	if err := s.repo.ClaimDelivery(ctx, d.ID, d.Event, p.Action); err != nil {
+		// ErrDeliverySeen travels up to the handler, which answers 200 so
+		// GitHub stops retrying something already applied.
+		return Outcome{}, err
+	}
+
+	out, err := s.handleClaimed(ctx, d)
+	if err != nil {
+		// Release so GitHub's retry can run. A failed release is logged, not
+		// returned: the original error is the one worth surfacing, and a
+		// stuck claim blocks one delivery rather than corrupting anything.
+		if rerr := s.repo.ReleaseDelivery(ctx, d.ID); rerr != nil {
+			slog.ErrorContext(ctx, "github: could not release delivery claim",
+				"delivery", d.ID, "err", rerr)
+		}
+		return Outcome{}, err
+	}
+
+	if out.ChangeRequestID != "" {
+		if lerr := s.repo.LinkDelivery(ctx, d.ID, out.ChangeRequestID); lerr != nil {
+			// The work is committed. Failing now would re-run it on GitHub's
+			// retry, so losing the audit link is the smaller loss.
+			slog.WarnContext(ctx, "github: could not link delivery to change request",
+				"delivery", d.ID, "err", lerr)
+		}
+	}
+	return out, nil
+}
+
+// handleClaimed is the body of HandleWebhook, run with the delivery claimed.
+func (s *githubSyncService) handleClaimed(ctx context.Context, d Delivery) (Outcome, error) {
+	p := d.Payload
 
 	// An unmapped repository is one we do not handle. This replaces
 	// ServiceNow's separate git.valid.org.list -- the mapping table IS the
@@ -379,9 +427,6 @@ func (s *githubSyncService) comment(ctx context.Context, issue github.Issue, bod
 	return nil
 }
 
-
-
-
 // githubStateLabels are the labels that drive state. They are stripped when a
 // change request is created: the record starts at its own initial state, and a
 // leftover "Implemented" on the issue would claim otherwise.
@@ -397,8 +442,6 @@ var githubStateLabels = map[string]bool{
 	"Reviewed":    true,
 	"Closed":      true,
 }
-
-
 
 // prepareCreation normalises the issue's labels and acknowledges on the issue.
 //
