@@ -550,11 +550,11 @@ func (r *instanceRepo) SearchInstanceUsageStats(ctx context.Context, filters dom
 	}
 
 	query := fmt.Sprintf(
-		`SELECT dus.summary_date, dn.id, dus.usage_type, SUM(dus.value)
+		`SELECT dus.summary_date, dn.id, dus.count_type, SUM(dus.value)
 		 FROM deployment_node dn
 		 JOIN daily_usage_summary dus ON dus.deployment_node_id = dn.id
 		 %s %s
-		 GROUP BY dus.summary_date, dn.id, dus.usage_type`,
+		 GROUP BY dus.summary_date, dn.id, dus.count_type`,
 		instanceRefJoins, where,
 	)
 
