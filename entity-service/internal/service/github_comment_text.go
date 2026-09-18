@@ -42,10 +42,15 @@ var (
 	snParaClose   = regexp.MustCompile(`(?i)</p\s*>|</div\s*>`)
 	snBold        = regexp.MustCompile(`(?is)<(b|strong)\s*>(.*?)</(b|strong)\s*>`)
 	snItalic      = regexp.MustCompile(`(?is)<(i|em)\s*>(.*?)</(i|em)\s*>`)
+	snImage       = regexp.MustCompile(`(?is)<img[^>]*?\ssrc=["']([^"']+)["'][^>]*>`)
 	snAnyTag      = regexp.MustCompile(`(?s)<[^>]*>`)
 	snBlankRuns   = regexp.MustCompile(`\n{3,}`)
 	snTrailWS     = regexp.MustCompile(`[ \t]+\n`)
 )
+
+// snMetaHeader matches the metadata line ServiceNow puts at the top of a
+// journal entry, e.g. "Additional comments - Nimal Perera (Work notes)".
+var snMetaHeader = regexp.MustCompile(`^[^\n]*\((?:Work notes|Additional comments|GitHub Comment|GitHub Actions)\)[^\n]*\n`)
 
 // snToMarkdown converts a ServiceNow comment body into GitHub Markdown.
 //
@@ -57,6 +62,10 @@ func snToMarkdown(s string) string {
 	}
 
 	s = snCodeWrapper.ReplaceAllString(s, "")
+	// ServiceNow's first line is the entry's own metadata header, not content.
+	// The workflow dropped it unconditionally; we drop it only when it looks
+	// like a header, so a one-line comment is never swallowed.
+	s = snMetaHeader.ReplaceAllString(s, "")
 	// Underline has no Markdown equivalent and bold is the closest intent;
 	// emitting <u> would leave a tag on the page, which is what we are fixing.
 	s = regexp.MustCompile(`(?is)<u\s*>(.*?)</u\s*>`).ReplaceAllString(s, "$1")
@@ -66,6 +75,10 @@ func snToMarkdown(s string) string {
 	// as literal asterisks.
 	s = emphasise(s, snBold, "**")
 	s = emphasise(s, snItalic, "_")
+	// An <img> carries the only copy of an attachment's URL. Stripping the tag
+	// with everything else threw the link away and left the reader with a gap
+	// where a screenshot had been; the workflow kept the URL as text, so we do.
+	s = snImage.ReplaceAllString(s, "$1")
 	s = snParaClose.ReplaceAllString(s, "\n\n")
 	s = snBreak.ReplaceAllString(s, "\n")
 	// Whatever is left is presentational: opening <p>, <span style=…>, tables.

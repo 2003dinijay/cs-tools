@@ -97,3 +97,30 @@ func TestOutbound_NoRawTagsReachTheIssue(t *testing.T) {
 func tCtx() context.Context { return context.Background() }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+// Parity with the GitHub Actions workflow this replaces: it kept an image's
+// URL as text rather than deleting the tag, and dropped ServiceNow's metadata
+// header line.
+func TestSNToMarkdown_WorkflowParity(t *testing.T) {
+	cases := map[string]struct{ in, want string }{
+		"image url survives": {
+			in:   `<p>See <img alt="shot" src="https://sn.example/sys_attachment.do?sys_id=abc"> here</p>`,
+			want: "See https://sn.example/sys_attachment.do?sys_id=abc here",
+		},
+		"metadata header dropped": {
+			in:   "Additional comments - Nimal Perera (Additional comments)\n<p>The upgrade is scheduled.</p>",
+			want: "The upgrade is scheduled.",
+		},
+		"a one-line comment is not swallowed": {
+			in:   "The upgrade is scheduled.",
+			want: "The upgrade is scheduled.",
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := snToMarkdown(c.in); got != c.want {
+				t.Errorf("snToMarkdown(%q)\n got: %q\nwant: %q", c.in, got, c.want)
+			}
+		})
+	}
+}

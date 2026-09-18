@@ -36,7 +36,7 @@ func obItem(event string, payload map[string]any) repository.OutboundItem {
 }
 
 func obSvc(c *fakeGhClient) GithubOutboundService {
-	return NewGithubOutboundService(c, "https://csm.example", DefaultCommentSkipAuthors())
+	return NewGithubOutboundService(c, "https://csm.example", DefaultCommentSkipAuthors(), DefaultAssignedLabel)
 }
 
 func TestOutbound_CommentIsRelayed(t *testing.T) {
@@ -360,7 +360,7 @@ func TestOutbound_PeopleComentsStillSync(t *testing.T) {
 // An empty-but-present override restores the old mirror-everything behaviour.
 func TestOutbound_EmptySkipListMirrorsEverything(t *testing.T) {
 	c := &fakeGhClient{}
-	svc := NewGithubOutboundService(c, "https://csm.example", nil)
+	svc := NewGithubOutboundService(c, "https://csm.example", nil, DefaultAssignedLabel)
 	err := svc.Deliver(context.Background(), obItem(outboundCommentAdded, map[string]any{
 		"content": "Auto closure notice.", "createdBy": "system", "type": "COMMENT",
 	}))
@@ -369,5 +369,115 @@ func TestOutbound_EmptySkipListMirrorsEverything(t *testing.T) {
 	}
 	if len(c.comments) != 1 {
 		t.Fatalf("an empty skip list should mirror everything")
+	}
+}
+
+// Parity with "ServiceNow Case Updates -> GitHub": closing the case comments,
+// removes the assigned label, AND closes the issue. Posting only the comment
+// left every issue open forever after its case closed.
+func TestOutbound_CaseClosedClosesTheIssue(t *testing.T) {
+	c := &fakeGhClient{}
+	err := obSvc(c).Deliver(context.Background(), obItem(outboundCaseClosed, map[string]any{
+		"resolutionNotes": "Fixed in 2.4.1.",
+	}))
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if len(c.comments) != 1 {
+		t.Fatalf("comments = %d, want 1", len(c.comments))
+	}
+	if len(c.states) != 1 || c.states[0] != github.StateClosed {
+		t.Errorf("issue was not closed: %v", c.states)
+	}
+	if len(c.removed) != 1 || c.removed[0] != DefaultAssignedLabel {
+		t.Errorf("assigned label not removed: %v", c.removed)
+	}
+}
+
+// Assignment comments and adds the label. Added, not set: SetLabels replaces
+// the whole set and would drop labels a person added by hand.
+func TestOutbound_CaseAssignedAddsTheLabel(t *testing.T) {
+	c := &fakeGhClient{}
+	err := obSvc(c).Deliver(context.Background(), obItem(outboundCaseAssigned, map[string]any{
+		"assignedTo": "Nimal Perera",
+	}))
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if len(c.added) != 1 || c.added[0] != DefaultAssignedLabel {
+		t.Errorf("assigned label not added: %v", c.added)
+	}
+	if len(c.labels) != 0 {
+		t.Errorf("SetLabels was used, which replaces the whole set: %v", c.labels)
+	}
+	if len(c.states) != 0 {
+		t.Errorf("assignment must not change issue state: %v", c.states)
+	}
+}
+
+// A repository that does not use the label opts out, and then neither the
+// label calls nor the close are skipped -- only the label part is.
+func TestOutbound_EmptyAssignedLabelStillClosesTheIssue(t *testing.T) {
+	c := &fakeGhClient{}
+	svc := NewGithubOutboundService(c, "https://csm.example", DefaultCommentSkipAuthors(), "")
+	if err := svc.Deliver(context.Background(), obItem(outboundCaseClosed, nil)); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if len(c.removed) != 0 {
+		t.Errorf("label touched despite being disabled: %v", c.removed)
+	}
+	if len(c.states) != 1 || c.states[0] != github.StateClosed {
+		t.Errorf("issue was not closed: %v", c.states)
+	}
+}
+
+// A CR state change must never close or label the issue -- only case closure does.
+func TestOutbound_ChangeRequestEventsDoNotTouchIssueState(t *testing.T) {
+	c := &fakeGhClient{}
+	err := obSvc(c).Deliver(context.Background(), obItem(outboundCRUpdated, map[string]any{
+		"changes": map[string]any{"state": map[string]any{"from": "ASSESS", "to": "AUTHORIZE"}},
+	}))
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if len(c.states) != 0 || len(c.added) != 0 || len(c.removed) != 0 {
+		t.Errorf("a CR update changed issue state/labels: states=%v added=%v removed=%v",
+			c.states, c.added, c.removed)
+	}
+}
+
+// Parity with "ServiceNow Change Request -> GitHub": on creation it lists every
+// change request on the case, so the issue shows the whole change picture.
+func TestOutbound_CRCreatedListsSiblings(t *testing.T) {
+	c := &fakeGhClient{}
+	err := obSvc(c).Deliver(context.Background(), obItem(outboundCRCreated, map[string]any{
+		"siblings": []any{
+			map[string]any{"number": "CHG0035640", "state": "NEW"},
+			map[string]any{"number": "CHG0035883", "state": "AUTHORIZE"},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	body := c.comments[0]
+	for _, want := range []string{"CHG0035640", "NEW", "CHG0035883", "AUTHORIZE"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("%q missing from the CR-created comment: %q", want, body)
+		}
+	}
+}
+
+// A case with one change request gets no list: a one-item list only restates
+// the sentence above it.
+func TestOutbound_CRCreatedWithOneCRHasNoList(t *testing.T) {
+	c := &fakeGhClient{}
+	err := obSvc(c).Deliver(context.Background(), obItem(outboundCRCreated, map[string]any{
+		"siblings": []any{map[string]any{"number": "CHG0035640", "state": "NEW"}},
+	}))
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if strings.Contains(c.comments[0], "All change requests") {
+		t.Errorf("a single CR produced a list: %q", c.comments[0])
 	}
 }

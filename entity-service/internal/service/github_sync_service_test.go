@@ -75,6 +75,7 @@ type fakeGhClient struct {
 	states   []github.State
 	labels   [][]string
 	removed  []string
+	added    []string
 }
 
 func (f *fakeGhClient) CreateComment(_ context.Context, _ github.Issue, body string) (*github.Comment, error) {
@@ -83,6 +84,10 @@ func (f *fakeGhClient) CreateComment(_ context.Context, _ github.Issue, body str
 }
 func (f *fakeGhClient) SetLabels(_ context.Context, _ github.Issue, l []string) error {
 	f.labels = append(f.labels, l)
+	return nil
+}
+func (f *fakeGhClient) AddLabel(_ context.Context, _ github.Issue, l string) error {
+	f.added = append(f.added, l)
 	return nil
 }
 func (f *fakeGhClient) RemoveLabel(_ context.Context, _ github.Issue, l string) error {

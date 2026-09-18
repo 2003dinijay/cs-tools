@@ -81,6 +81,7 @@ DECLARE
     gh RECORD;
     ev  TEXT;
     diff JSONB := '{}'::jsonb;
+    siblings JSONB := '[]'::jsonb;
     col TEXT;
     oldv JSONB;
     newv JSONB := to_jsonb(NEW);
@@ -103,6 +104,19 @@ BEGIN
 
     IF TG_OP = 'INSERT' THEN
         ev := 'cr_created';
+        -- Every change request on the same case, not just this one.
+        --
+        -- The GitHub Actions workflow ServiceNow dispatched to called back into
+        -- ServiceNow's REST API for exactly this list, so the reader of the
+        -- issue sees the whole change picture rather than one CR in isolation.
+        -- We have it one join away, so it is gathered here instead -- and at
+        -- enqueue time, which is the moment the list was actually true.
+        SELECT COALESCE(jsonb_agg(jsonb_build_object('number', s_wi.number, 'state', s_cr.state)
+                                  ORDER BY s_wi.number), '[]'::jsonb)
+          INTO siblings
+          FROM work_item s_wi
+          JOIN change_request s_cr ON s_cr.id = s_wi.id
+         WHERE s_wi.parent_id = (SELECT parent_id FROM work_item WHERE id = NEW.id);
     ELSE
         ev := 'cr_updated';
         oldv := to_jsonb(OLD);
@@ -125,7 +139,7 @@ BEGIN
 
     INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
     VALUES (ev, NEW.id, gh.owner, gh.repository, gh.github_issue_number,
-            jsonb_build_object('changes', diff));
+            jsonb_build_object('changes', diff, 'siblings', siblings));
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;

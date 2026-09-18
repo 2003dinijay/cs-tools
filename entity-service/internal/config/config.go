@@ -110,6 +110,10 @@ type Config struct {
 	// GITHUB_COMMENT_SKIP_AUTHORS to a present-but-empty value to mirror every
 	// comment, including system-generated ones.
 	GithubCommentSkipAuthors []string
+
+	// GithubAssignedLabel is put on an issue when its case is assigned and
+	// removed when the case closes. Empty disables both.
+	GithubAssignedLabel string
 	// CSMPortalBaseURL builds the link back to a change request in comments
 	// posted to GitHub. Empty omits the link rather than rendering a broken one.
 	CSMPortalBaseURL string
@@ -181,6 +185,14 @@ func Load() *Config {
 		// LookupEnv, not Getenv: an unset variable takes the default, while a
 		// variable deliberately set to "" means "mirror everything". Getenv
 		// cannot tell those apart.
+		// Empty is meaningful (disable the label), so LookupEnv again.
+		GithubAssignedLabel: func() string {
+			v, ok := os.LookupEnv("GITHUB_LABEL_STATUS_ASSIGNED")
+			if !ok {
+				return defaultAssignedLabel
+			}
+			return strings.TrimSpace(v)
+		}(),
 		GithubCommentSkipAuthors: func() []string {
 			raw, ok := os.LookupEnv("GITHUB_COMMENT_SKIP_AUTHORS")
 			if !ok {
@@ -218,6 +230,10 @@ func getEnvOrDefault(key, defaultVal string) string {
 // Duplicated here rather than imported from the service package to keep config
 // free of dependencies on the layers that consume it.
 var defaultCommentSkipAuthors = []string{"system", "github_integration", "github_pipeline"}
+
+// defaultAssignedLabel mirrors service.DefaultAssignedLabel; kept here so
+// config depends on nothing above it.
+const defaultAssignedLabel = "Status/Assigned"
 
 func splitComma(s string) []string {
 	if s == "" {

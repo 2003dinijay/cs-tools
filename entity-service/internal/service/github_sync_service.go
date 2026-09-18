@@ -184,6 +184,7 @@ type githubIssueClient interface {
 	CreateComment(ctx context.Context, issue github.Issue, body string) (*github.Comment, error)
 	SetLabels(ctx context.Context, issue github.Issue, labels []string) error
 	RemoveLabel(ctx context.Context, issue github.Issue, label string) error
+	AddLabel(ctx context.Context, issue github.Issue, label string) error
 	SetState(ctx context.Context, issue github.Issue, state github.State) error
 }
 

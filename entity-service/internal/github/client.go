@@ -199,6 +199,19 @@ func (c *Client) SetLabels(ctx context.Context, issue Issue, labels []string) er
 // A label that is not there is not an error: the caller wants it gone, and it
 // is gone. GitHub says 404, which would otherwise make a retry fail where the
 // first attempt succeeded.
+// AddLabel adds one label, leaving the others alone.
+//
+// POST, not the PUT that SetLabels uses: PUT replaces the whole set, so adding
+// a status label with it would silently drop every label a person had put on
+// the issue by hand.
+func (c *Client) AddLabel(ctx context.Context, issue Issue, label string) error {
+	if err := issue.valid(); err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPost, issue.path()+"/labels",
+		map[string]any{"labels": []string{label}}, nil)
+}
+
 func (c *Client) RemoveLabel(ctx context.Context, issue Issue, label string) error {
 	if err := issue.valid(); err != nil {
 		return err

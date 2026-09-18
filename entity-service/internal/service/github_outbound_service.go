@@ -77,6 +77,10 @@ type githubOutboundService struct {
 	// the obvious machine authors and one env var restores the old behaviour
 	// without a deploy.
 	skipAuthors map[string]bool
+	// assignedLabel is put on the issue when the case is assigned and taken
+	// off when it closes, matching the workflow this replaces. Empty disables
+	// both, for a repository that does not use the label.
+	assignedLabel string
 	// portalBaseURL builds the link back to the change request, so someone
 	// reading the issue can reach the record. Empty omits the link rather than
 	// rendering a broken one.
@@ -84,14 +88,14 @@ type githubOutboundService struct {
 }
 
 // NewGithubOutboundService constructs the outbound pusher.
-func NewGithubOutboundService(gh githubIssueClient, portalBaseURL string, skipAuthors []string) GithubOutboundService {
+func NewGithubOutboundService(gh githubIssueClient, portalBaseURL string, skipAuthors []string, assignedLabel string) GithubOutboundService {
 	skip := make(map[string]bool, len(skipAuthors))
 	for _, a := range skipAuthors {
 		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
 			skip[a] = true
 		}
 	}
-	return &githubOutboundService{gh: gh, portalBaseURL: strings.TrimRight(portalBaseURL, "/"), skipAuthors: skip}
+	return &githubOutboundService{gh: gh, portalBaseURL: strings.TrimRight(portalBaseURL, "/"), skipAuthors: skip, assignedLabel: strings.TrimSpace(assignedLabel)}
 }
 
 // Deliver implements GithubOutboundService.
@@ -116,6 +120,46 @@ func (s *githubOutboundService) Deliver(ctx context.Context, item repository.Out
 
 	if _, err := s.gh.CreateComment(ctx, issue, body); err != nil {
 		return err
+	}
+	return s.applyIssueState(ctx, issue, item)
+}
+
+// applyIssueState mirrors the case's state onto the issue itself.
+//
+// WHY THIS EXISTS, HAVING ONCE BEEN REFUSED. An earlier version of this file
+// said "comments only, deliberately", reasoning that writing labels or state
+// back would fight the inbound half, since label and state changes on an issue
+// are what drive the change request. That was overcautious: our own writes
+// return as webhooks whose sender is the integration account, and the loop
+// guard drops them by identity before any of that logic runs.
+//
+// Reading the GitHub Actions workflows ServiceNow dispatched to settled it.
+// "ServiceNow Case Updates -> GitHub" does three things on closure -- comments,
+// removes the assigned label, and CLOSES THE ISSUE -- and two on assignment.
+// Posting only the comment left every issue open forever after its case closed.
+//
+// Failures here are returned, so the row is retried. The comment is already
+// posted, and a retry re-posts it; that is the accepted trade, because an issue
+// left open after its case closed is the worse outcome and the queue has no
+// per-step resume.
+func (s *githubOutboundService) applyIssueState(ctx context.Context, issue github.Issue, item repository.OutboundItem) error {
+	switch item.Event {
+	case outboundCaseAssigned:
+		if s.assignedLabel == "" {
+			return nil
+		}
+		// Added, not set: SetLabels replaces the whole set and would drop
+		// every label a person put on the issue by hand.
+		return s.gh.AddLabel(ctx, issue, s.assignedLabel)
+
+	case outboundCaseClosed:
+		if s.assignedLabel != "" {
+			// Already absent is success -- RemoveLabel treats 404 that way.
+			if err := s.gh.RemoveLabel(ctx, issue, s.assignedLabel); err != nil {
+				return err
+			}
+		}
+		return s.gh.SetState(ctx, issue, github.StateClosed)
 	}
 	return nil
 }
@@ -165,8 +209,15 @@ func (s *githubOutboundService) render(item repository.OutboundItem) (string, er
 			displayAuthor(author), s.caseLink(item.WorkItemID), content), nil
 
 	case outboundCRCreated:
-		return fmt.Sprintf("A change request has been raised for this issue: %s",
-			s.changeRequestLink(item.WorkItemID)), nil
+		// The whole change picture for the case, matching the workflow this
+		// replaces: it called back into ServiceNow for the sibling list rather
+		// than announcing one CR in isolation.
+		msg := fmt.Sprintf("A change request has been raised for this issue: %s",
+			s.changeRequestLink(item.WorkItemID))
+		if list := describeSiblings(item.Payload["siblings"]); list != "" {
+			msg += "\n\n**All change requests for this case:**\n" + list
+		}
+		return msg, nil
 
 	case outboundCRUpdated:
 		changes, _ := item.Payload["changes"].(map[string]any)
@@ -343,3 +394,27 @@ func OutboundPermanent(err error) bool {
 }
 
 var _ = slog.Default
+
+// describeSiblings renders the case's other change requests as a list. Empty
+// when there are none to show, so a case with a single CR does not get a
+// one-item list restating what the sentence above it already said.
+func describeSiblings(raw any) string {
+	rows, ok := raw.([]any)
+	if !ok || len(rows) < 2 {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range rows {
+		m, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		number, _ := m["number"].(string)
+		state, _ := m["state"].(string)
+		if number == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "- %s — %s\n", number, displayValue(state))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}

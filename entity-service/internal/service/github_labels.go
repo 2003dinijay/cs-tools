@@ -254,3 +254,9 @@ func (l GithubLabels) ResolveOnCreate(issueLabels []string) []string {
 func DefaultCommentSkipAuthors() []string {
 	return []string{"system", "github_integration", "github_pipeline"}
 }
+
+// DefaultAssignedLabel is the label the outbound sync puts on an issue when
+// its case is assigned and removes when the case closes. Taken from the
+// GitHub Actions workflow this replaces, which hardcoded it.
+// Override with GITHUB_LABEL_STATUS_ASSIGNED; empty disables the behaviour.
+const DefaultAssignedLabel = "Status/Assigned"
