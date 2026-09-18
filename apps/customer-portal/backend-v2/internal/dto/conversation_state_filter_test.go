@@ -21,23 +21,38 @@ import (
 	"testing"
 )
 
-// ServiceNow's conversation-state choice list carries "Open" as id 1, which this
-// backend has never mapped. Skipping it left States empty, and an empty States
-// is "no state filter" to entity-service rather than "no matches" — so filtering
-// by Open returned every conversation in the project (1072 of them on staging)
-// while looking like a working filter.
+// ServiceNow's conversation-state choice list carries "Open" as id 1 — a chat
+// created but never answered by the assistant. Neither this backend nor
+// entity-service mapped it, so it was skipped, which left States empty. An empty
+// States is "no state filter" to entity-service rather than "no matches", so
+// filtering by Open returned every conversation in the project (1072 of them on
+// staging) while looking like a working filter. The same gap left 163
+// conversations rendering with no state at all.
 
-// TestBuildEntitySearchConversationsRequest_RejectsUnmappedState is the
-// regression: id 1 must be refused, never dropped.
-func TestBuildEntitySearchConversationsRequest_RejectsUnmappedState(t *testing.T) {
-	_, err := BuildEntitySearchConversationsRequest("p-1", ConversationSearchRequest{
+// TestBuildEntitySearchConversationsRequest_MapsOpenState covers the state that
+// was missing: Open must translate, not be refused and not be dropped.
+func TestBuildEntitySearchConversationsRequest_MapsOpenState(t *testing.T) {
+	got, err := BuildEntitySearchConversationsRequest("p-1", ConversationSearchRequest{
 		Filters: ConversationSearchFilters{StateKeys: []int{1}},
 	})
-	if err == nil {
-		t.Fatal("expected an error for the unmapped Open state, got nil")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !errors.Is(err, ErrUnsupportedConversationState) {
-		t.Fatalf("error = %v, want ErrUnsupportedConversationState", err)
+	if len(got.Filters.States) != 1 || got.Filters.States[0] != "OPEN" {
+		t.Fatalf("states = %v, want [OPEN]", got.Filters.States)
+	}
+}
+
+// Open renders with its own label rather than falling back to the raw enum —
+// these conversations previously showed no state at all.
+func TestConversationStateRef_LabelsOpen(t *testing.T) {
+	state := "OPEN"
+	got := conversationStateRef(&state)
+	if got == nil {
+		t.Fatal("expected a state ref for OPEN")
+	}
+	if got.ID != "1" || got.Label != "Open" {
+		t.Fatalf("ref = %+v, want {ID:1 Label:Open}", got)
 	}
 }
 
@@ -56,7 +71,7 @@ func TestBuildEntitySearchConversationsRequest_RejectsArbitraryUnknownState(t *t
 // silently broaden the filter to the states it happened to understand.
 func TestBuildEntitySearchConversationsRequest_RejectsPartiallyMappedStates(t *testing.T) {
 	_, err := BuildEntitySearchConversationsRequest("p-1", ConversationSearchRequest{
-		Filters: ConversationSearchFilters{StateKeys: []int{2, 1}},
+		Filters: ConversationSearchFilters{StateKeys: []int{2, 98}},
 	})
 	if !errors.Is(err, ErrUnsupportedConversationState) {
 		t.Fatalf("error = %v, want ErrUnsupportedConversationState", err)
@@ -89,5 +104,24 @@ func TestBuildEntitySearchConversationsRequest_NoStateFilterIsAllowed(t *testing
 	}
 	if len(got.Filters.States) != 0 {
 		t.Fatalf("states = %v, want empty", got.Filters.States)
+	}
+}
+
+// Every state ServiceNow offers in the choice list must now be filterable.
+// This is the invariant the original bug broke: a state present in the
+// dropdown but absent from the map produced an unfiltered search.
+func TestBuildEntitySearchConversationsRequest_EveryOfferedStateIsFilterable(t *testing.T) {
+	// Exactly the ids /projects/{id}/filters returns.
+	for _, id := range []int{1, 2, 3, 4, 5, 6} {
+		got, err := BuildEntitySearchConversationsRequest("p-1", ConversationSearchRequest{
+			Filters: ConversationSearchFilters{StateKeys: []int{id}},
+		})
+		if err != nil {
+			t.Errorf("state id %d is offered in the filter list but cannot be filtered: %v", id, err)
+			continue
+		}
+		if len(got.Filters.States) != 1 {
+			t.Errorf("state id %d translated to %v, want exactly one state", id, got.Filters.States)
+		}
 	}
 }
