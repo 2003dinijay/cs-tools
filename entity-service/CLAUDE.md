@@ -1121,6 +1121,44 @@ product, account, deployment, deployed_product, split across
     conflict loop — either way, the exact prefix/padding/format needs a
     real answer, not an invented one.
 
+## SearchProjects crashed on any page containing a NULL start_date/end_date/account_id
+
+Found while auditing whether `GetProjectByID`/`SearchProjects` still work
+correctly. `project.start_date`/`end_date`/`account_id` (migration 000009)
+are all nullable, but `domain.Project` (the internal repository<->service
+handoff type `SearchProjects` uses -- never serialized directly; `ProjectView`
+is what actually reaches a caller) had non-pointer `time.Time`/`string`
+fields for them, so `project_repo.go`'s scan failed with `cannot scan NULL
+into *time.Time` the moment any of the 13-14 (of 1956) rows with a NULL date
+reached the query -- confirmed live, and this wasn't a rare edge case: the
+very first unfiltered page (most-recently-created projects first) already
+contained one. Fixed by making `Project.AccountID`/`StartDate`/`EndDate`
+pointers, matching `ProjectDetailsView`'s own already-pointer `StartDate`/
+`EndDate` (which already carries a doc comment for exactly this "ServiceNow
+may legitimately leave either unset" reality). Also fixed a second, smaller
+gap found in the same pass: `project_service.go`'s mapping into `ProjectView`
+never set `StartDate` at all (only `EndDate`), even though `ProjectView.
+StartDate` is a real, already-documented field -- both now pass through
+directly rather than being re-boxed through a local copy. `ProjectView.
+Account` staying `nil` for Postgres-sourced results is unrelated and
+unchanged -- that one's already documented as "(ServiceNow data source
+only)", a deliberate scope boundary, not a bug. Verified by paging through
+all 1956 projects (every NULL row included) with no error afterward.
+
+## CreateCase is still completely broken for the Postgres data source (deliberately, pending a product decision)
+
+Re-confirmed still true, verified live (`ERROR: relation "cases" does not
+exist (SQLSTATE 42P01)`) -- see `case_repo.go`'s own doc comment on
+`CreateCase` and "Fixing the plural/singular table-name mismatch" above for
+the full history. Restated here because it's easy to mistake for "just needs
+a table rename" (the same class of bug every other method in this file had):
+fixing the table/column names alone would only trade this error for a `NOT
+NULL`/unique-constraint failure, because `work_item.number`/`wso2_id` have no
+DB default, no backing sequence anywhere in `migrations/`, and no confirmed
+intended format. **Do not guess a fix here** -- the product decision (DB
+sequence + column default vs. Go-side generation with retry-on-conflict, and
+the actual number format) has been deferred twice now, not overlooked.
+
 ## GetCaseByID's CloseNotes was silently swapped with ResolutionNotes
 
 Found via a HAR comparison against the ServiceNow data source for the same

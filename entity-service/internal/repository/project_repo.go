@@ -108,6 +108,11 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		result := make([]domain.Project, 0, req.Pagination.Limit)
 		for rows.Next() {
 			var p domain.Project
+			// account_id/start_date/end_date are nullable (migration 000009);
+			// domain.Project's fields are pointers to match -- see that
+			// struct's own doc comment. A non-pointer scan here used to
+			// error "cannot scan NULL into *time.Time" the moment any of the
+			// 13-14 (of 1956) rows with a NULL date reached this query.
 			if err := rows.Scan(
 				&p.ID, &p.AccountID, &p.SfID, &p.Name, &p.Key,
 				&p.StartDate, &p.EndDate, &p.CreatedOn, &p.UpdatedOn,
