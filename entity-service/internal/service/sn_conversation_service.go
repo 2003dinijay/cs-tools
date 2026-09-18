@@ -81,9 +81,9 @@ type snConversationFilters struct {
 }
 
 // snConversationStateKeyMap maps domain ConversationState enums to SN numeric state keys.
-// Covers all 6 states (used by UpdateConversation and to interpret
-// GetConversation's state, which may be any of them), though search filters
-// (validConversationState) only ever accept ACTIVE/RESOLVED.
+// Covers all 6 states — every state the SN choice list offers is both readable
+// (GetConversation, search results) and filterable (validConversationState).
+// Only the write path (validConversationUpdateState) is narrower.
 var snConversationStateKeyMap = map[domain.ConversationState]int{
 	domain.ConversationStateOpen:      1,
 	domain.ConversationStateActive:    2,

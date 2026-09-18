@@ -4994,14 +4994,15 @@ type IncidentTaskDetail struct {
 	ClosedOn        *string        `json:"closedOn"`
 }
 
-// ConversationState represents the state of a conversation. Only ACTIVE and
-// RESOLVED are accepted as SearchConversationsFilters.States values (the
-// search endpoint's own filter allow-list); all five transition states
-// (excluding OPEN, which a conversation only ever starts in and is never
-// PATCHed back to) are accepted as UpdateConversationRequest.State (the
-// transition allow-list PATCH /conversations/{id} enforces), matching the
-// Ballerina reference's SN state keys 2-6 respectively. OPEN (SN state key 1)
-// is a read-only state a conversation may already be in when fetched.
+// ConversationState represents the state of a conversation. All six values are
+// accepted as SearchConversationsFilters.States values — every state the SN
+// choice list offers must be filterable, or a state present in the dropdown
+// silently returns an unfiltered search. Writes are narrower: the five
+// transition states (excluding OPEN) are accepted as
+// UpdateConversationRequest.State, the allow-list PATCH /conversations/{id}
+// enforces, matching the Ballerina reference's SN state keys 2-6 respectively.
+// OPEN (SN state key 1) is a read-only state a conversation starts in and is
+// never PATCHed back to.
 type ConversationState string
 
 const (
