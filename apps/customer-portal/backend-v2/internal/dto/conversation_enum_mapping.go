@@ -61,14 +61,35 @@ func conversationStateRef(state *string) *IDLabelRef {
 }
 
 // conversationIDsToEnums converts the frontend's numeric stateKeys filter to
-// entity-service's own enum vocabulary, silently skipping any id with no
-// known mapping.
-func conversationIDsToEnums(ids []int) []string {
+// entity-service's own enum vocabulary.
+//
+// An id with no known mapping is an error, not something to drop. Skipping it
+// used to leave States empty, and an empty States is not "match nothing" to
+// entity-service — it is "no state filter at all", so the search returned every
+// conversation in the project. Filtering by ServiceNow's "Open" state (id 1,
+// which this backend has never mapped) therefore returned all 1072
+// conversations instead of none, and the caller had no way to tell the filter
+// had been ignored.
+//
+// The second return value reports the first unmapped id so the caller can
+// refuse the request rather than answer it wrongly.
+func conversationIDsToEnums(ids []int) ([]string, int, bool) {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if enum, ok := conversationStateIDToEnum[strconv.Itoa(id)]; ok {
-			out = append(out, enum)
+		enum, ok := conversationStateIDToEnum[strconv.Itoa(id)]
+		if !ok {
+			return nil, id, false
 		}
+		out = append(out, enum)
 	}
-	return out
+	return out, 0, true
+}
+
+// supportedConversationStateID reports whether the frontend may offer this
+// state as a filter option. Used to trim the metadata the portal exposes so a
+// caller is never shown a state the search cannot apply — see
+// MapProjectFilters.
+func supportedConversationStateID(id string) bool {
+	_, ok := conversationStateIDToEnum[id]
+	return ok
 }
