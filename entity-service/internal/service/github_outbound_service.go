@@ -123,6 +123,10 @@ func (s *githubOutboundService) render(item repository.OutboundItem) (string, er
 		if kind, ok := item.Payload["type"].(string); ok && strings.EqualFold(kind, "WORK_NOTE") {
 			return "", nil
 		}
+		// ServiceNow stored these as HTML fragments; a GitHub comment is
+		// Markdown. Converted before the emptiness check, since a body that is
+		// nothing but markup has no text in it to post.
+		content = snToMarkdown(content)
 		if strings.TrimSpace(content) == "" {
 			return "", nil
 		}
