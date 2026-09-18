@@ -139,11 +139,18 @@ type snDeployedProductService struct {
 	// cfg.DataSource is already ServiceNow, and it wires the matching
 	// DeploymentService from that same branch.
 	deploymentSvc DeploymentService
+	// projectSvc is used only by SearchProjectsByProductVersion, to resolve
+	// which of the product-version-matched projects are actually eligible
+	// for an announcement (excludeClosureStates/excludeSubscriptionTypes) —
+	// see that method's own doc comment. Same practice as deploymentSvc:
+	// always the ServiceNow-backed ProjectService, wired from the same
+	// routes.go branch.
+	projectSvc ProjectService
 }
 
 // NewServiceNowDeployedProductService constructs a DeployedProductService backed by the SN integration service.
-func NewServiceNowDeployedProductService(client *integrationservice.Client, deploymentSvc DeploymentService) DeployedProductService {
-	return &snDeployedProductService{client: client, deploymentSvc: deploymentSvc}
+func NewServiceNowDeployedProductService(client *integrationservice.Client, deploymentSvc DeploymentService, projectSvc ProjectService) DeployedProductService {
+	return &snDeployedProductService{client: client, deploymentSvc: deploymentSvc, projectSvc: projectSvc}
 }
 
 // snCreateDeployedProductPayload is the Choreo POST /deployed-products request body.
@@ -453,6 +460,21 @@ const maxProjectsByProductVersionDeploymentPages = 200
 // pages through before giving up — same reasoning as the constant above.
 const maxProjectsByProductVersionDeployedProductPages = 200
 
+// mandatoryExcludeClosureStates and mandatoryExcludeSubscriptionTypes are the
+// fixed exclusions SearchProjectsByProductVersion always applies — not a
+// caller-supplied filter. This mirrors the real ServiceNow flow it replaces
+// ("DRY RUN - Create [EOL] Product Announcements"), whose own first step
+// ("Look Up Customer Project Records") applies this exact same four-condition
+// exclusion unconditionally: Project Type is not Cloud Evaluation Support,
+// Project Type is not Cloud Support, WSO2 Closure State is not Restricted,
+// WSO2 Closure State is not Suspended. That flow gives whoever triggers it no
+// way to opt out; this endpoint doesn't either.
+var mandatoryExcludeClosureStates = []string{"Restricted", "Suspended"}
+var mandatoryExcludeSubscriptionTypes = []domain.SubscriptionType{
+	domain.SubscriptionTypeCloudSupport,
+	domain.SubscriptionTypeCloudEvaluationSupport,
+}
+
 // SearchProjectsByProductVersion implements DeployedProductService. There is
 // no upstream query that goes directly from "product X, version Y" to the
 // projects running it — SearchDeployedProducts only accepts DeploymentIDs as
@@ -465,8 +487,9 @@ const maxProjectsByProductVersionDeployedProductPages = 200
 // the ones matching the requested product+version, joining back to the
 // project via the first pass. The result is deduplicated by project (a
 // project can have several deployments, or several matching deployed
-// products on one deployment); the caller's own pagination is applied only
-// at the very end, over the deduplicated, name-sorted set.
+// products on one deployment), then intersected with the mandatory-exclusion
+// eligible set above (see fetchEligibleProjectIDs) before the caller's own
+// pagination is applied, over the deduplicated, name-sorted set.
 func (s *snDeployedProductService) SearchProjectsByProductVersion(ctx context.Context, req domain.SearchProjectsByProductVersionRequest) (domain.SearchProjectsByProductVersionResponse, error) {
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchProjectsByProductVersionResponse{}, err
@@ -533,6 +556,16 @@ func (s *snDeployedProductService) SearchProjectsByProductVersion(ctx context.Co
 		}
 	}
 
+	eligible, err := s.fetchEligibleProjectIDs(ctx, mandatoryExcludeClosureStates, mandatoryExcludeSubscriptionTypes)
+	if err != nil {
+		return domain.SearchProjectsByProductVersionResponse{}, err
+	}
+	for id := range matchedProjects {
+		if _, ok := eligible[id]; !ok {
+			delete(matchedProjects, id)
+		}
+	}
+
 	sorted := make([]domain.EntityRef, 0, len(matchedProjects))
 	for _, p := range matchedProjects {
 		sorted = append(sorted, p)
@@ -593,6 +626,46 @@ func (s *snDeployedProductService) fetchAllDeploymentProjects(ctx context.Contex
 	return nil, &apierror.ServiceUnavailableError{Msg: fmt.Sprintf(
 		"too many deployments to resolve product/version matches safely (exceeded %d pages of %d)",
 		maxProjectsByProductVersionDeploymentPages, maxLimit,
+	)}
+}
+
+// maxProjectsByProductVersionEligiblePages bounds the eligible-project
+// enumeration loop in fetchEligibleProjectIDs against a wrong/always-true
+// upstream hasMore, same convention as the other bounds in this file.
+const maxProjectsByProductVersionEligiblePages = 200
+
+// fetchEligibleProjectIDs pages through every project matching the given
+// exclude filters via ProjectService.SearchProjects — the single source of
+// truth for this exclusion logic (see SearchProjectsByProductVersion's own
+// doc comment for why an EOL announcement's real audience is this set
+// intersected with the product-version match, not the product-version match
+// alone) — and returns their ids as a set. Bounded and fails loudly rather
+// than truncating, same reasoning as fetchAllDeploymentProjects: a partial
+// eligible set here would silently exclude projects that are actually
+// eligible, under-counting the real audience.
+func (s *snDeployedProductService) fetchEligibleProjectIDs(ctx context.Context, excludeClosureStates []string, excludeSubscriptionTypes []domain.SubscriptionType) (map[string]struct{}, error) {
+	result := make(map[string]struct{})
+	offset := 0
+	for page := 0; page < maxProjectsByProductVersionEligiblePages; page++ {
+		resp, err := s.projectSvc.SearchProjects(ctx, domain.SearchProjectsRequest{
+			Pagination:               domain.Pagination{Limit: maxLimit, Offset: offset},
+			ExcludeClosureStates:     excludeClosureStates,
+			ExcludeSubscriptionTypes: excludeSubscriptionTypes,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range resp.Projects {
+			result[p.ID] = struct{}{}
+		}
+		offset += len(resp.Projects)
+		if !resp.HasMore || len(resp.Projects) == 0 {
+			return result, nil
+		}
+	}
+	return nil, &apierror.ServiceUnavailableError{Msg: fmt.Sprintf(
+		"too many projects to resolve eligible-project exclusions safely (exceeded %d pages of %d)",
+		maxProjectsByProductVersionEligiblePages, maxLimit,
 	)}
 }
 
