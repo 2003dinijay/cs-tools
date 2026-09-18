@@ -1121,6 +1121,26 @@ product, account, deployment, deployed_product, split across
     conflict loop — either way, the exact prefix/padding/format needs a
     real answer, not an invented one.
 
+## GetProjectByID 404'd on any project with no linked account
+
+Found in the same audit pass as the SearchProjects fix below, by explicitly
+testing a project confirmed to have `account_id IS NULL` (not just spot
+checking one that had an account, which the first pass over this endpoint
+missed). `GetProjectByID`'s `JOIN account a ON p.account_id = a.id` was an
+INNER JOIN, so a project with no linked account produced zero rows and came
+back as `&apierror.NotFoundError{Msg: "project not found"}` even though the
+project genuinely exists -- confirmed live against one of the 14 (of 1956)
+such projects. Same class of false-404 `GetCaseByID` already had for its own
+optional joins (see "Case-like work_item types" history above) before that
+was fixed. Fixed the same way: `JOIN` -> `LEFT JOIN`, with `a.id`/`a.name`
+scanned into nullable locals and left as `ProjectAccountRef`'s zero value
+(`""`, not fabricated) when no account matched -- `Account` stays a required,
+always-present object on the wire (`ProjectDetailsView.Account` has no
+`omitempty` and no doc comment claiming otherwise), just with empty fields,
+rather than changing the JSON contract to nullable. `ActivationDate`/`Region`
+already tolerated a LEFT JOIN's NULLs without any change, since
+`ProjectAccountRef` already types them as pointers.
+
 ## SearchProjects crashed on any page containing a NULL start_date/end_date/account_id
 
 Found while auditing whether `GetProjectByID`/`SearchProjects` still work
