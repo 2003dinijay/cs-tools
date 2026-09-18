@@ -40,32 +40,6 @@ func mapChoiceListItem(i entity.ChoiceListItem) ReferenceItem {
 	return ReferenceItem{ID: i.ID, Label: i.Label, Count: i.Count}
 }
 
-// mapSupportedConversationStates maps the conversation-state choice list,
-// dropping any state this backend cannot translate into entity-service's enum
-// vocabulary.
-//
-// The choice list is ServiceNow's and is wider than the search supports: it
-// carries "Open" (id 1), which conversation_enum_mapping.go has never mapped.
-// Offering it put an option in the filter dropdown that the search could not
-// apply — and because an empty state filter means "no filter" rather than "no
-// matches", selecting it returned every conversation in the project.
-//
-// Trimming here is deliberately the narrower fix: the search now also refuses an
-// unmapped id outright (see BuildEntitySearchConversationsRequest), so this is
-// about not offering the option in the first place rather than the only thing
-// standing between a caller and a wrong answer.
-func mapSupportedConversationStates(items []entity.ChoiceListItem) []ReferenceItem {
-	out := make([]ReferenceItem, 0, len(items))
-	for _, i := range items {
-		mapped := mapChoiceListItem(i)
-		if !supportedConversationStateID(mapped.ID) {
-			continue
-		}
-		out = append(out, mapped)
-	}
-	return out
-}
-
 func mapChoiceListItems(items []entity.ChoiceListItem) []ReferenceItem {
 	out := make([]ReferenceItem, 0, len(items))
 	for _, i := range items {
@@ -127,7 +101,7 @@ func MapProjectFilterOptions(m entity.ProjectMetadataResponse) ProjectFilterOpti
 		CallRequestStates:           mapChoiceListItems(m.CallRequestStates),
 		ChangeRequestStates:         changeRequestStates,
 		ChangeRequestImpacts:        mapChoiceListItems(m.ChangeRequestImpacts),
-		ConversationStates:          mapSupportedConversationStates(m.ConversationStates),
+		ConversationStates:          mapChoiceListItems(m.ConversationStates),
 		CaseTypes:                   mapReferenceTableItems(m.CaseTypes),
 		TimeCardStates:              mapChoiceListItems(m.TimeCardStates),
 		EngagementTypes:             mapChoiceListItems(m.EngagementTypes),

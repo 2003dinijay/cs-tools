@@ -84,12 +84,3 @@ func conversationIDsToEnums(ids []int) ([]string, int, bool) {
 	}
 	return out, 0, true
 }
-
-// supportedConversationStateID reports whether the frontend may offer this
-// state as a filter option. Used to trim the metadata the portal exposes so a
-// caller is never shown a state the search cannot apply — see
-// MapProjectFilters.
-func supportedConversationStateID(id string) bool {
-	_, ok := conversationStateIDToEnum[id]
-	return ok
-}

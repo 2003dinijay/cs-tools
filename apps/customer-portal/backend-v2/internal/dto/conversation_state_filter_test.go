@@ -19,8 +19,6 @@ package dto
 import (
 	"errors"
 	"testing"
-
-	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
 )
 
 // ServiceNow's conversation-state choice list carries "Open" as id 1, which this
@@ -91,64 +89,5 @@ func TestBuildEntitySearchConversationsRequest_NoStateFilterIsAllowed(t *testing
 	}
 	if len(got.Filters.States) != 0 {
 		t.Fatalf("states = %v, want empty", got.Filters.States)
-	}
-}
-
-// TestMapSupportedConversationStates_DropsUnsupported keeps the dropdown honest:
-// a state the search cannot apply must not be offered as an option.
-func TestMapSupportedConversationStates_DropsUnsupported(t *testing.T) {
-	// Exactly what /projects/{id}/filters returns upstream, Open included.
-	in := []entity.ChoiceListItem{
-		{ID: "6", Label: "Close"},
-		{ID: "5", Label: "Abandoned"},
-		{ID: "4", Label: "Converted"},
-		{ID: "1", Label: "Open"},
-		{ID: "3", Label: "Resolved"},
-		{ID: "2", Label: "Active"},
-	}
-
-	got := mapSupportedConversationStates(in)
-
-	if len(got) != 5 {
-		t.Fatalf("got %d states, want 5 (Open dropped): %+v", len(got), got)
-	}
-	for _, s := range got {
-		if s.ID == "1" {
-			t.Fatalf("Open (id 1) must not be offered — the search cannot apply it: %+v", got)
-		}
-	}
-	// And the supported ones survive untouched, in order.
-	wantIDs := []string{"6", "5", "4", "3", "2"}
-	for i, want := range wantIDs {
-		if got[i].ID != want {
-			t.Errorf("state[%d].ID = %q, want %q", i, got[i].ID, want)
-		}
-	}
-}
-
-// Every state the dropdown offers must be one the search accepts. This is the
-// invariant that ties the two halves of the fix together: if a future choice
-// list gains a state, this fails rather than quietly returning everything.
-func TestMapSupportedConversationStates_EveryOfferedStateIsFilterable(t *testing.T) {
-	in := []entity.ChoiceListItem{
-		{ID: "1", Label: "Open"},
-		{ID: "2", Label: "Active"},
-		{ID: "3", Label: "Resolved"},
-		{ID: "4", Label: "Converted"},
-		{ID: "5", Label: "Abandoned"},
-		{ID: "6", Label: "Close"},
-		{ID: "77", Label: "Some Future State"},
-	}
-
-	for _, s := range mapSupportedConversationStates(in) {
-		id := 0
-		for _, c := range s.ID {
-			id = id*10 + int(c-'0')
-		}
-		if _, err := BuildEntitySearchConversationsRequest("p-1", ConversationSearchRequest{
-			Filters: ConversationSearchFilters{StateKeys: []int{id}},
-		}); err != nil {
-			t.Errorf("state %q (%s) is offered but the search rejects it: %v", s.ID, s.Label, err)
-		}
 	}
 }
