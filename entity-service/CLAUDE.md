@@ -1288,6 +1288,126 @@ side. `domain.UpdatedCase.State`/`Severity` (the `PATCH /cases/{id}`
 response) became pointers too, matching the sibling `WorkState` field's
 existing pointer convention there.
 
+## Incident, Problem, IncidentTask, and Conversation (migrations 000057-000060, 000066)
+
+A large schema addition (10 migrations: `conversation`, `incident`, `problem`,
+`change_task`, `communication_plan`, `communication_task_definition`,
+`incident_alert`, `incident_alert_task`, `incident_task`, plus incident/
+problem subcategory lookup tables) landed on `dev-app-csm-portal` in one
+batch. None of these 11 tables exist on the staging database this was
+developed against yet (checked directly) -- same recurring gap as several
+other recently-merged migrations. `change_task`/`communication_plan`/
+`communication_task_definition`/`incident_alert`/`incident_alert_task` have
+**no existing endpoint on any data source** to wire up at all (no
+`sn_*_service.go` for any of them) and are left entirely unimplemented --
+nothing to back. `Incident`/`Problem`/`IncidentTask`/`Conversation` do have
+existing ServiceNow-only endpoints; new `incident_repo.go`/`problem_repo.go`/
+`incident_task_repo.go`/`conversation_repo.go` (+ matching `*_service.go`)
+wire up the read side of all four, following the standard "SN branch vs.
+Postgres branch, same service interface" pattern.
+
+**`IncidentView`/`SearchIncidentView`/`ProblemDetail`/`SearchProblemView`/
+`IncidentTaskDetail` render State/Priority/Category/Subcategory/ContactType/
+ResolutionCode as plain, unvalidated strings** (per those fields' own doc
+comments) -- so reads need no enum reconciliation against
+`domain.IncidentState`/`IncidentPriority`/etc at all; the real Postgres enum
+text is simply passed through as-is. Only the **search filter path** uses
+the strict domain enums (`SearchIncidentsFilters.Priorities`, the generic
+`Filters` array's `"state"` on both Incident and Problem), and reading the
+migration SQL side by side with `domain.go`'s Go constants (a static,
+line-by-line comparison, not something that needed live data) turned up
+three real, easy-to-miss mismatches:
+
+- `incident_state_enum`'s cancelled label is `'CANCELED'` (one L), not
+  `domain.IncidentStateCancelled`'s `"CANCELLED"` (two Ls).
+- `incident_priority_enum` has no `'PLANNING'` label at all (only
+  `CRITICAL`/`HIGH`/`MODERATE`/`LOW`) -- `domain.IncidentPriorityPlanning`
+  is rejected with a `ValidationError` on this data source rather than
+  silently dropped or bound into an invalid enum cast.
+- `conversation_state_enum`'s closed label is `'CLOSE'` (no D), not
+  `domain.ConversationStateClosed`'s `"CLOSED"`.
+
+`incidentStateToEnum`/`incidentPriorityToEnum` (`incident_service.go`) and
+`conversationStateToEnum`/`conversationStateFromEnum` (`conversation_repo.go`)
+hold these mappings, used consistently on every read/write/filter path so
+none of them can drift from the others -- each has a unit test locking in
+the exact mismatch. `domain.ProblemState`'s values match `problem_state_enum`
+by identity (a rarer case in this codebase where no mapping was needed at
+all).
+
+**`ParseIncidentFieldFilters`/`ParseProblemFieldFilters`/
+`ParseIncidentTaskFieldFilters` (the existing `incident_filters.go`/
+`problem_filters.go`/`incident_task_filters.go`) are NOT reused for the
+Postgres data source's "state" filter.** All three translate a caller's
+`domain.IncidentState`/`ProblemState` value into ServiceNow's own raw
+numeric state keys (`parsedIncidentFilters.StateKeys` and siblings) --
+correct for that data source, meaningless for Postgres's own clean enum
+columns. Each new `*_service.go` has its own
+`parse*FieldFiltersPostgres` that reuses those files' field/op allow-lists,
+`requireFilterValues`/`badFilterCombo` helpers, and (for Incident)
+`parseIncidentFilterDate`/`parseIncidentFilterBool` (both fully
+data-source-agnostic), but maps `"state"` through the Postgres-specific enum
+functions above instead. `incident_task`'s SN state choice list has no
+confirmed-complete, unambiguous enum at all (see
+`parsedIncidentTaskFilters.StateKeys`'s own doc comment) -- Postgres's own
+`incident_task_state_enum` has no such ambiguity, so that data source
+accepts the enum's own label strings (case-insensitive) directly in the
+`"state"` filter, a deliberate, documented divergence from SN's
+raw-integer convention for the same field.
+
+**Filters with no backing column are accepted, validated, and silently not
+applied** (never rejected outright) -- matching `changeRequestWhereClause`'s
+own established precedent for the identical class of gap (e.g.
+`change_request`'s own `assignmentGroupId`): `assignmentGroupId` on all
+three of Incident/Problem/IncidentTask, `configurationItemId`, and
+`productName` on Incident. `businessServiceId` on Incident IS applied,
+mapped to `incident.service_id` -- "business service" is ServiceNow's own
+name for what this schema calls `service`, the same identification
+`service_offering_repo.go` already makes. `assignedUserId` on
+Problem/Incident IS applied too, mapped to `work_item.assigned_to_id`, a
+real, direct column. `madeSla`/`slaViolated` on Incident map to
+`incident.is_sla_met` and an `EXISTS`/`NOT EXISTS` check against `sla.has_breached`
+(migration 000052) respectively.
+
+**`SearchIncidentActivities` reuses `scanCaseActivity`'s exact query shape**
+(`case_repo.go`) -- an activity feed entry (comment or field change) is not
+inherently case-specific, and `comment`/`work_item_activity` are both keyed
+by the generic `work_item_id`. Unlike `SearchCaseActivities`, there is no
+`case_attachments`-equivalent table for incidents, so this feed can never
+have an `"attachment"` kind entry.
+
+**`UpdateConversation` is implemented** (a plain `conversation.state` enum
+write, no `work_item.number` generation needed for an update) but
+**`CreateConversation`/`CreateProblem`/`CreateIncident` are not**: all three
+need `work_item.number`, which has no DB default or backing sequence
+anywhere in `migrations/` -- the same blocker `CaseRepository.CreateCase`
+already has. **`UpdateProblem`/`UpdateIncident`/`HandOffIncidentToSpecialist`
+are also not implemented**: `UpdateProblem.Transition` is validated
+server-side by ServiceNow's own workflow engine with no fixed, confirmed
+transition rule set to reimplement (see that field's own doc comment --
+deliberately not a closed enum for exactly this reason);
+`UpdateIncident` touches several fields with no backing column at all
+(`AssignmentGroupID`, `ConfigurationItemID`, `WatchList`) alongside ones
+that do, and would need `comment`-table side effects for
+`AdditionalComments`/`WorkNotes` mirroring `caseService.UpdateCase`'s own
+comment-on-update behavior -- deferred as a unit rather than
+half-implemented; `HandOffIncidentToSpecialist` is an inherently
+ServiceNow-workflow-specific feature (moves the incident to a specialist
+group, opens a runbook-gap task, files a GitHub issue) with no
+assignment-group or handoff-tracking concept anywhere in this schema to
+derive an equivalent from. `IncidentView.SpecialistHandoff` is always `nil`
+on this data source for the same reason -- the correct "never handed off"
+representation per that field's own doc comment, not a gap.
+
+`IncidentView.WatchList`/`LinkedServiceRequests` are always empty slices on
+this data source (never populated) -- `work_item_watcher` could back the
+former (same table `SetCaseWatchList`/`fetchCaseWatchers` already use for
+cases) and `work_item.parent_id` reverse lookups could back the latter,
+matching the pattern `ProblemRepository.GetProblem`'s `LinkedIncidents`
+already uses for `incident.problem_id`'s own reverse lookup -- left as a
+known, flagged gap rather than built out further given the size of this
+change, not because either is infeasible.
+
 ## change_request.change_model and work_item_activity (migrations 000055/000056)
 
 Two small, unrelated migrations, both unverified against real data (neither
