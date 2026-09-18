@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/eventbus"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/github"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/handler"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -97,9 +98,29 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// reasoning as sla_clocks/event_publish_failures above. Backs
 	// operations/csm-scheduled-tasks; see that component's own CLAUDE.md
 	// and this service's CLAUDE.md ("Scheduled task runs").
+	// The GitHub change-request sync needs a pool (the repository mapping and
+	// the delivery log are tables) and its own switch. Gated on both, so the
+	// webhook endpoint is not registered merely because a database exists --
+	// it authenticates by HMAC rather than by bearer token, and an endpoint
+	// that mutates change requests should appear only when asked for.
+	var githubWebhookHandler *handler.GithubWebhookHandler
+
 	var scheduledTaskRunHandler *handler.ScheduledTaskRunHandler
 	if db != nil {
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
+		if cfg.HasGithubIntegration() {
+			githubWebhookHandler = handler.NewGithubWebhookHandler(
+				service.NewGithubSyncService(
+					repository.NewGithubSyncRepository(db),
+					github.NewClient(github.Config{
+						BaseURL: cfg.GithubBaseURL,
+						Token:   cfg.GithubToken,
+					}),
+					cfg.GithubIntegrationLogin,
+				),
+				cfg.GithubWebhookSecret,
+			)
+		}
 	}
 
 	// alert_incident_mapping has no ServiceNow equivalent either — same
@@ -441,6 +462,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("GET /cases/{caseId}/sla-clocks/{clockType}", slaClockHandler.GetSLAClock)
 		mux.HandleFunc("PATCH /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}", slaClockHandler.SetSLAClockTierReached)
 	}
+	if githubWebhookHandler != nil {
+		mux.HandleFunc("POST /webhooks/github", githubWebhookHandler.Handle)
+	}
+
 	if scheduledTaskRunHandler != nil {
 		mux.HandleFunc("POST /scheduled-tasks/attempts", scheduledTaskRunHandler.AttemptScheduledTaskRun)
 		mux.HandleFunc("PATCH /scheduled-tasks/attempts/{id}", scheduledTaskRunHandler.UpdateScheduledTaskRunAttempt)

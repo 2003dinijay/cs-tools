@@ -81,6 +81,25 @@ type Config struct {
 	// constructs EventPublisherService when both this is true AND
 	// EventHubBroker is set.
 	EventPublishingEnabled bool
+	// GithubIntegrationEnabled gates the GitHub change-request sync: the
+	// webhook endpoint and the client that answers it.
+	//
+	// OFF BY DEFAULT. The endpoint is reachable without a bearer token -- the
+	// HMAC signature is its authentication -- so it must not appear merely
+	// because a database happens to be configured.
+	GithubIntegrationEnabled bool
+	// GithubBaseURL is the API root: api.github.com, or an Enterprise host.
+	GithubBaseURL string
+	// GithubToken authenticates our calls out to GitHub.
+	GithubToken string
+	// GithubWebhookSecret is the HMAC key GitHub signs deliveries with. This
+	// IS the authentication on the webhook endpoint, so an empty value makes
+	// VerifySignature refuse everything rather than accept everything.
+	GithubWebhookSecret string
+	// GithubIntegrationLogin is our own GitHub account. Events it sent are our
+	// own writes coming back, and are dropped by identity rather than by
+	// pattern-matching the comment body.
+	GithubIntegrationLogin string
 	// SupportEngineerRole is the ServiceNow role name (e.g. an org-specific
 	// "sn_*" role) whose presence on a case comment's resolved author marks
 	// that comment as a qualifying support-engineer response — see
@@ -131,6 +150,11 @@ func Load() *Config {
 		EventHubConnectionString:                 os.Getenv("EVENT_HUB_CONNECTION_STRING"),
 		EventHubTopic:                            os.Getenv("EVENT_HUB_TOPIC"),
 		EventPublishingEnabled:                   os.Getenv("EVENT_PUBLISHING_ENABLED") == "true",
+		GithubIntegrationEnabled:                 os.Getenv("GITHUB_INTEGRATION_ENABLED") == "true",
+		GithubBaseURL:                            getEnvOrDefault("GITHUB_API_BASE_URL", "https://api.github.com"),
+		GithubToken:                              os.Getenv("GITHUB_TOKEN"),
+		GithubWebhookSecret:                      os.Getenv("GITHUB_WEBHOOK_SECRET"),
+		GithubIntegrationLogin:                   os.Getenv("GITHUB_INTEGRATION_LOGIN"),
 		SupportEngineerRole:                      os.Getenv("SUPPORT_ENGINEER_ROLE"),
 		CustomerRoles:                            splitComma(os.Getenv("CUSTOMER_ROLES")),
 	}
@@ -292,4 +316,15 @@ func (c *Config) DSN() string {
 	q.Set("sslmode", c.DBSSLMode)
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// HasGithubIntegration reports whether the GitHub sync is both switched on and
+// configured well enough to run. The webhook secret is required rather than
+// optional: without it the endpoint could not authenticate a caller, and an
+// endpoint that mutates change requests must never be reachable unverified.
+func (c *Config) HasGithubIntegration() bool {
+	return c.GithubIntegrationEnabled &&
+		c.GithubWebhookSecret != "" &&
+		c.GithubToken != "" &&
+		c.GithubIntegrationLogin != ""
 }
