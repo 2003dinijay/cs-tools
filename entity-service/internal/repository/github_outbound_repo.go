@@ -131,10 +131,15 @@ func (r *githubOutboundRepository) Reschedule(ctx context.Context, id int64, att
 	// which is a dead letter someone can look at rather than a silent drop.
 	const query = `
 		UPDATE github_outbound_queue
-		SET attempts        = $2,
+		SET attempts        = $2::int,
 		    last_error      = $3,
-		    status          = CASE WHEN $2 >= $4 THEN 'FAILED' ELSE 'PENDING' END,
-		    next_attempt_on = NOW() + ($5 || ' seconds')::interval
+		    -- Every placeholder is cast. Without them Postgres deduces $2 as
+		    -- integer from "attempts = $2" and as text from "$2 >= $4" (where
+		    -- $4 is itself an untyped parameter and anchors nothing), and
+		    -- rejects the statement with 42P08 -- so a permanent failure could
+		    -- not even be recorded, and the row sat PENDING forever.
+		    status          = CASE WHEN $2::int >= $4::int THEN 'FAILED' ELSE 'PENDING' END,
+		    next_attempt_on = NOW() + make_interval(secs => $5::int)
 		WHERE id = $1`
 	_, err := r.db.Exec(ctx, query, id, attempts, reason, maxAttempts, int(backoff.Seconds()))
 	if err != nil {

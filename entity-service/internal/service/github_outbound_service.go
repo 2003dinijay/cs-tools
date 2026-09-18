@@ -94,10 +94,6 @@ func (s *githubOutboundService) Deliver(ctx context.Context, item repository.Out
 	if payload == nil {
 		payload = map[string]any{}
 	}
-	// action distinguishes the three CR cases; the other two carry it already.
-	if eventType == dispatchCRUpdate {
-		payload["action"] = crAction(item)
-	}
 
 	return s.gh.Dispatch(ctx, item.Owner, item.Repository, eventType, payload)
 }
@@ -112,31 +108,6 @@ func dispatchTypeFor(item repository.OutboundItem) (string, error) {
 		return dispatchCRUpdate, nil
 	}
 	return "", fmt.Errorf("%w: unknown event %q", ErrOutboundPermanent, item.Event)
-}
-
-// crAction is the workflow's three-way branch: created, state_changed or
-// dates_updated. A row that changed the state reports state_changed even if it
-// also moved the dates, matching the order the flow evaluated them in.
-func crAction(item repository.OutboundItem) string {
-	if item.Event == outboundCRCreated {
-		return "created"
-	}
-	changes, _ := item.Payload["changes"].(map[string]any)
-	if _, ok := changes["state"]; ok {
-		return "state_changed"
-	}
-	if _, ok := changes["assigned_to_id"]; ok {
-		return "state_changed"
-	}
-	_, start := changes["start_on"]
-	_, end := changes["end_on"]
-	if !start && !end {
-		// Neither the state nor a date moved. The workflow has no branch for
-		// that, so treating it as a date update is the least surprising of the
-		// three -- and the trigger does not enqueue an empty diff anyway.
-		return "dates_updated"
-	}
-	return "dates_updated"
 }
 
 // Queue mechanics below. ServiceNow had none of this -- a failed dispatch was

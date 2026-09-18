@@ -148,19 +148,25 @@ BEGIN
 
     INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
     VALUES (ev, NEW.id, gh.owner, gh.repository, gh.github_issue_number,
+            -- EXACTLY THE NINE PROPERTIES ServiceNow sent, no more: GitHub
+            -- rejects a client_payload with more than ten, and an eleventh
+            -- here cost every CR dispatch a 422. servicenow-cr-update carries
+            -- no sn_user -- only servicenow-case-update and -note do -- and
+            -- the action is decided here rather than shipped as a diff.
             jsonb_build_object(
                 'github_issue_number', gh.github_issue_number,
-                'cr_number',    cr_number,
-                'cr_sys_id',    NEW.id,
-                'cr_state',     NEW.state,
-                'assigned_to',  assignee,
-                'case_sys_id',  parent_id,
+                'cr_number',     cr_number,
+                'cr_sys_id',     NEW.id,
+                'cr_state',      NEW.state,
+                'assigned_to',   assignee,
+                'case_sys_id',   parent_id,
                 'planned_start', NEW.start_on,
                 'planned_end',   NEW.end_on,
-                'sn_user',      actor,
-                -- Kept alongside so the worker can tell state_changed from
-                -- dates_updated without re-reading the row.
-                'changes', diff));
+                'action',        CASE
+                                     WHEN TG_OP = 'INSERT'        THEN 'created'
+                                     WHEN diff ? 'state'          THEN 'state_changed'
+                                     ELSE 'dates_updated'
+                                 END));
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -246,13 +252,14 @@ BEGIN
         VALUES ('cr_updated', NEW.id, gh.owner, gh.repository, gh.github_issue_number,
                 jsonb_build_object(
                     'github_issue_number', gh.github_issue_number,
-                    'cr_number',   NEW.number,
-                    'cr_sys_id',   NEW.id,
-                    'cr_state',    (SELECT state FROM change_request WHERE id = NEW.id),
-                    'assigned_to', to_name,
-                    'case_sys_id', NEW.parent_id,
-                    'sn_user',     NEW.updated_by,
-                    'changes',     jsonb_build_object('assigned_to_id', jsonb_build_object('to', to_name))));
+                    'cr_number',     NEW.number,
+                    'cr_sys_id',     NEW.id,
+                    'cr_state',      (SELECT state FROM change_request WHERE id = NEW.id),
+                    'assigned_to',   to_name,
+                    'case_sys_id',   NEW.parent_id,
+                    'planned_start', (SELECT start_on FROM change_request WHERE id = NEW.id),
+                    'planned_end',   (SELECT end_on   FROM change_request WHERE id = NEW.id),
+                    'action',        'state_changed'));
     END IF;
     RETURN NULL;
 END;

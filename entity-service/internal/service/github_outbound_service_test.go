@@ -102,29 +102,36 @@ func TestOutbound_PayloadPassesThroughUntouched(t *testing.T) {
 	}
 }
 
-// The CR workflow branches three ways on `action`.
-func TestOutbound_CRActionMatchesTheWorkflowBranches(t *testing.T) {
-	cases := map[string]struct {
-		event   string
-		changes map[string]any
-		want    string
-	}{
-		"creation":     {outboundCRCreated, nil, "created"},
-		"state change": {outboundCRUpdated, map[string]any{"state": map[string]any{"to": "AUTHORIZE"}}, "state_changed"},
-		"assignment":   {outboundCRUpdated, map[string]any{"assigned_to_id": map[string]any{"to": "Nimal"}}, "state_changed"},
-		"dates only":   {outboundCRUpdated, map[string]any{"start_on": map[string]any{"to": "x"}}, "dates_updated"},
+// GitHub rejects a client_payload with more than ten properties. ServiceNow's
+// servicenow-cr-update carried nine; an eleventh cost every CR dispatch a 422.
+func TestOutbound_PayloadStaysUnderGithubsTenPropertyLimit(t *testing.T) {
+	// The widest payload any trigger builds.
+	crPayload := map[string]any{
+		"github_issue_number": 42, "cr_number": "CHG1", "cr_sys_id": "id",
+		"cr_state": "NEW", "assigned_to": "Nimal", "case_sys_id": "cid",
+		"planned_start": "t0", "planned_end": "t1", "action": "created",
 	}
-	for name, c := range cases {
-		t.Run(name, func(t *testing.T) {
-			d := &fakeDispatcher{}
-			item := obItem(c.event, map[string]any{"changes": c.changes})
-			if err := NewGithubOutboundService(d).Deliver(context.Background(), item); err != nil {
-				t.Fatalf("Deliver: %v", err)
-			}
-			if got := d.payload["action"]; got != c.want {
-				t.Errorf("action = %v, want %v", got, c.want)
-			}
-		})
+	d := &fakeDispatcher{}
+	if err := NewGithubOutboundService(d).Deliver(context.Background(),
+		obItem(outboundCRCreated, crPayload)); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if n := len(d.payload); n > 10 {
+		t.Fatalf("client_payload has %d properties; GitHub allows 10", n)
+	}
+}
+
+// The action is decided by the trigger and passed through untouched.
+func TestOutbound_ActionIsNotRewritten(t *testing.T) {
+	for _, want := range []string{"created", "state_changed", "dates_updated"} {
+		d := &fakeDispatcher{}
+		item := obItem(outboundCRUpdated, map[string]any{"action": want})
+		if err := NewGithubOutboundService(d).Deliver(context.Background(), item); err != nil {
+			t.Fatalf("Deliver: %v", err)
+		}
+		if got := d.payload["action"]; got != want {
+			t.Errorf("action = %v, want %v", got, want)
+		}
 	}
 }
 
