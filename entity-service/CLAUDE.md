@@ -1668,6 +1668,74 @@ is mapped to `PauseCondition`), but `TaskSlaDefinitionDetail` has no field
 for it at all -- a real, minor gap, left unselected rather than adding a
 new response field speculatively.
 
+## GET /metadata and GET /projects/{id}/metadata now have Postgres support
+
+Both were entirely ServiceNow-only (their handlers were only wired when
+`DATA_SOURCE=servicenow`), which broke `apps/customer-portal/backend-v2`'s
+`/filters` and `/features` endpoints in Postgres mode -- its own CLAUDE.md
+says both are built purely from `GetProjectMetadata`, with no fallback.
+
+**`GetProjectMetadata` lives on `ProjectStatsService`, a 7-method interface
+bundled with all the `/projects/{id}/stats/*` endpoints -- and only this one
+method got a Postgres implementation.** Rather than stub the other 6
+(`GetProjectStats`, `GetProjectCaseStats`, `GetProjectConversationStats`,
+`GetProjectDeploymentStats`, `GetProjectTimeCardStats`,
+`GetProjectChangeRequestStats`) with fake "not implemented" errors -- which
+would have turned their routes from a clean 404 in Postgres mode into a
+misleading 4xx, breaking the `TestPostgresOnlyRoutesAreAbsentWithoutAPool`-style
+convention this codebase already relies on for signaling "this route doesn't
+exist on this data source" -- `GetProjectMetadata` was split out into its own
+narrower interface, `service.ProjectMetadataService`, and its own handler,
+`ProjectMetadataHandler` (`internal/handler/project_metadata_handler.go`).
+`GET /projects/{id}/metadata` is now registered unconditionally in
+`routes.go`, backed by `projectMetadataService` (Postgres) or reusing the
+already-constructed `snProjectStatsSvc` value (ServiceNow) -- Go interfaces
+being structural, `snProjectStatsService` satisfies `ProjectMetadataService`
+without any change. `ProjectStatsHandler`/`ProjectStatsService` are
+unchanged and still ServiceNow-only for the remaining 6 stats methods. If a
+future entity-service method needs the same treatment (real Postgres support
+for one method of an otherwise-ServiceNow-only bundled interface), follow
+this same split-interface-and-handler pattern rather than stubbing the rest.
+
+**`ReferenceDataRepository`** (`internal/repository/reference_data_repo.go`)
+backs both endpoints:
+- `ListProjectTypes`/`GetProjectByID` read the `project_type` table
+  (migration 000026) and `project.project_type_id` (migration 000027) --
+  confirmed live: 1952 of 1956 `project` rows have a `project_type_id` set.
+- `EnumLabels` queries `pg_catalog.pg_enum`/`pg_type` directly (`WHERE
+  t.typname = ANY($1::text[])`) rather than hardcoding each enum's label
+  list, so `ProjectMetadataResponse`'s choice lists (case states/severities/
+  issue types, deployment types, engagement types/payment types,
+  change-request states/impacts, time-card states, conversation states)
+  always match whatever the migrations currently define. Each label becomes
+  a `ChoiceListItem{ID: label, Label: label}` -- Postgres enums have no
+  separate numeric-id/display-label pair the way ServiceNow's `sys_choice`
+  records do, so the raw enum label is used as both.
+- `ProjectMetadataResponse.CaseTypes` is NOT queried -- it's
+  `case_service.go`'s own `validCaseType` vocabulary (`case`, `engagement`,
+  `security_report_analysis`, `service_request`, `announcement`), listed
+  directly as `caseTypeRefItems` in `project_metadata_service.go` since it's
+  a fixed filter vocabulary, not a database table.
+
+**Left empty with a TODO comment, not fabricated** (per this codebase's
+existing convention of flagging genuine data-source gaps rather than
+inventing data): `SystemMetadataResponse.TimeZones`/`FeedbackEmojis` (static
+ServiceNow-side config, not project/case data); `ProjectMetadataResponse.
+CallRequestStates` (the whole call-request feature has no Postgres table at
+all); `SeverityBasedAllocationTime` (no SLA-allocation-time table exists);
+`ProjectFeatures.AcceptedSeverityValues` and every `Has*Access`/product-
+category field (no per-project feature-entitlement or severity-restriction
+columns exist anywhere in the Postgres schema -- checked directly against
+the `project` table's full column list, not just assumed).
+
+**`GlobalService.GlobalSearch` (`POST /search`) still has no Postgres
+implementation** -- cross-entity project+case search is a materially larger
+feature (its own query/ranking design across two tables) than the
+reference-data reads `GetSystemMetadata` serves, so it returns a
+`ValidationError` explaining the gap in Postgres mode rather than 404 (the
+route itself is now registered in both modes, since `GetSystemMetadata`
+needed to be) or a silently-empty result.
+
 ## Adding a new entity
 
 Follow these steps in order:

@@ -190,10 +190,32 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		projectUpdateHandler = handler.NewProjectUpdateHandler(service.NewServiceNowProjectUpdateService(serviceNowIntegrationServiceClient))
 	}
 
+	// referenceDataRepo backs GET /projects/{id}/metadata and GET /metadata's
+	// Postgres-mode choice lists (project_type rows, enum labels) -- see
+	// ReferenceDataRepository's own doc comment.
+	referenceDataRepo := repository.NewReferenceDataRepository(db)
+
 	var projectStatsHandler *handler.ProjectStatsHandler
+	var snProjectStatsSvc service.ProjectStatsService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		projectStatsHandler = handler.NewProjectStatsHandler(service.NewServiceNowProjectStatsService(serviceNowIntegrationServiceClient))
+		snProjectStatsSvc = service.NewServiceNowProjectStatsService(serviceNowIntegrationServiceClient)
+		projectStatsHandler = handler.NewProjectStatsHandler(snProjectStatsSvc)
 	}
+
+	// GET /projects/{id}/metadata is wired independently of projectStatsHandler
+	// above: it's the one ProjectStatsService method with a Postgres-backed
+	// implementation, so it's available regardless of cfg.DataSource, while
+	// the remaining project-stats routes stay ServiceNow-only. In ServiceNow
+	// mode, snProjectStatsSvc already satisfies ProjectMetadataService
+	// structurally, so the same client-backed value is reused rather than
+	// built twice.
+	var projectMetadataSvc service.ProjectMetadataService
+	if cfg.DataSource == config.DataSourceServiceNow {
+		projectMetadataSvc = snProjectStatsSvc
+	} else {
+		projectMetadataSvc = service.NewProjectMetadataService(referenceDataRepo)
+	}
+	projectMetadataHandler := handler.NewProjectMetadataHandler(projectMetadataSvc)
 
 	productRepo := repository.NewProductRepository(db)
 	productSvc := service.NewProductService(productRepo)
@@ -367,9 +389,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	if cfg.DataSource == config.DataSourceServiceNow {
 		outageHandler = handler.NewOutageHandler(service.NewServiceNowOutageService(serviceNowIntegrationServiceClient))
 	}
+	// globalHandler is wired for both data sources now: GetSystemMetadata has
+	// a Postgres-backed implementation (globalService, reusing
+	// referenceDataRepo above); GlobalSearch does not yet, and returns a
+	// clear error in Postgres mode rather than 404 -- see globalService's own
+	// doc comment.
 	var globalHandler *handler.GlobalHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		globalHandler = handler.NewGlobalHandler(service.NewServiceNowGlobalService(serviceNowIntegrationServiceClient))
+	} else {
+		globalHandler = handler.NewGlobalHandler(service.NewGlobalService(referenceDataRepo))
 	}
 
 	// instance/usage tracking tables (migration 000054) -- see
@@ -523,8 +552,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	if projectUpdateHandler != nil {
 		mux.HandleFunc("PATCH /projects/{id}", projectUpdateHandler.UpdateProject)
 	}
+	mux.HandleFunc("GET /projects/{id}/metadata", projectMetadataHandler.GetProjectMetadata)
 	if projectStatsHandler != nil {
-		mux.HandleFunc("GET /projects/{id}/metadata", projectStatsHandler.GetProjectMetadata)
 		mux.HandleFunc("GET /projects/{id}/stats", projectStatsHandler.GetProjectStats)
 		mux.HandleFunc("GET /projects/{id}/cases/stats", projectStatsHandler.GetProjectCaseStats)
 		mux.HandleFunc("GET /projects/{id}/conversations/stats", projectStatsHandler.GetProjectConversationStats)
@@ -683,10 +712,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("POST /conversations", conversationHandler.CreateConversation)
 	mux.HandleFunc("PATCH /conversations/{id}", conversationHandler.UpdateConversation)
 
-	if globalHandler != nil {
-		mux.HandleFunc("GET /metadata", globalHandler.GetSystemMetadata)
-		mux.HandleFunc("POST /search", globalHandler.GlobalSearch)
-	}
+	mux.HandleFunc("GET /metadata", globalHandler.GetSystemMetadata)
+	mux.HandleFunc("POST /search", globalHandler.GlobalSearch)
 
 	mux.HandleFunc("POST /escalations/search", escalationHandler.SearchEscalations)
 	mux.HandleFunc("POST /escalations", escalationHandler.CreateEscalation)

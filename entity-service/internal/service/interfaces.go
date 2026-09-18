@@ -222,9 +222,22 @@ type ProjectUpdateService interface {
 	UpdateProject(ctx context.Context, id string, req domain.ProjectUpdateRequest) (domain.ProjectUpdateResponse, error)
 }
 
+// ProjectMetadataService is the GetProjectMetadata slice of ProjectStatsService,
+// split out because it's the one method of that interface with a Postgres-backed
+// implementation (projectMetadataService) as well as the ServiceNow one --
+// snProjectStatsService satisfies this interface structurally, so the same
+// concrete value backs both ProjectStatsService and ProjectMetadataService in
+// ServiceNow mode. See ProjectMetadataHandler.
+type ProjectMetadataService interface {
+	// GetProjectMetadata returns the reference data (choice lists, feature
+	// flags) needed to build the project's UI.
+	GetProjectMetadata(ctx context.Context, projectID string) (domain.ProjectMetadataResponse, error)
+}
+
 // ProjectStatsService defines the project-scoped metadata and statistics
-// operations. All methods require the ServiceNow data source; there is no
-// Postgres fallback.
+// operations. GetProjectMetadata also has a Postgres-backed implementation --
+// see ProjectMetadataService. The remaining stats methods require the
+// ServiceNow data source; there is no Postgres fallback for them yet.
 type ProjectStatsService interface {
 	// GetProjectMetadata returns the reference data (choice lists, feature
 	// flags) needed to build the project's UI.
@@ -851,8 +864,10 @@ type ConversationService interface {
 }
 
 // GlobalService serves system-wide metadata and cross-entity search that
-// isn't scoped to any single project or case.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// isn't scoped to any single project or case. GetSystemMetadata has a
+// Postgres-backed implementation (globalService); GlobalSearch still
+// requires the ServiceNow data source -- there is no Postgres fallback for
+// it yet.
 type GlobalService interface {
 	// GetSystemMetadata returns system-wide reference data (time zones, project types,
 	// and feedback emoji choices) used across the frontend.
