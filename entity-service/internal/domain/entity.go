@@ -562,6 +562,21 @@ type SearchProjectsRequest struct {
 	// SubRegion filters to projects whose linked account is in this sub-region
 	// (ServiceNow data source only).
 	SubRegion string `json:"subRegion"`
+	// ExcludeClosureStates filters out projects whose closure state (see
+	// ProjectClosureFields.ClosureState — "Open"/"Suspended"/"Restricted") is
+	// any of the given values, e.g. ["Restricted", "Suspended"]. Unlike
+	// ClosureStatus above, there is no upstream ServiceNow filter parameter for
+	// excluding a set of states, so the ServiceNow data source applies this by
+	// paging through every match and filtering in Go, not by passing it through
+	// as a request filter (ServiceNow data source only; the Postgres data
+	// source rejects a non-empty value).
+	ExcludeClosureStates []string `json:"excludeClosureStates,omitempty"`
+	// ExcludeSubscriptionTypes filters out projects whose subscription type is
+	// any of the given values, e.g. ["cloud_support", "cloud_evaluation_support"].
+	// Same "no upstream filter, applied in Go" caveat as ExcludeClosureStates
+	// (ServiceNow data source only; the Postgres data source rejects a
+	// non-empty value).
+	ExcludeSubscriptionTypes []SubscriptionType `json:"excludeSubscriptionTypes,omitempty"`
 }
 
 // ProjectSearchAccountRef is the account reference embedded in a project
@@ -1229,6 +1244,34 @@ type SearchDeployedProductsResponse struct {
 	Limit            int                   `json:"limit"`
 	Offset           int                   `json:"offset"`
 	HasMore          bool                  `json:"hasMore"`
+}
+
+// SearchProjectsByProductVersionRequest resolves which projects are running a
+// given product version — the reverse of SearchDeployedProductsRequest's own
+// DeploymentIDs filter, which starts from already-known deployments rather
+// than a product/version. Needed for EOL/product-version-targeted
+// announcements: there is no existing query path from "product X, version Y"
+// back to the projects running it. ServiceNow data source only — the
+// Postgres data source rejects a call outright (see that data source's own
+// implementation).
+type SearchProjectsByProductVersionRequest struct {
+	Pagination       Pagination `json:"pagination"`
+	ProductID        string     `json:"productId"`
+	ProductVersionID string     `json:"productVersionId"`
+}
+
+// SearchProjectsByProductVersionResponse is the paginated result. Each
+// project is only {id, name} — the deployment-to-project join this resolves
+// from only ever carries that much. A caller needing key/account/tier for
+// display can resolve those separately per project id via
+// SearchProjectsRequest/GetProjectByID; enriching them here would require a
+// second, more expensive call per result.
+type SearchProjectsByProductVersionResponse struct {
+	Projects []EntityRef `json:"projects"`
+	Total    int         `json:"total"`
+	Limit    int         `json:"limit"`
+	Offset   int         `json:"offset"`
+	HasMore  bool        `json:"hasMore"`
 }
 
 // CreateDeployedProductRequest is the input for POST /deployed-products.

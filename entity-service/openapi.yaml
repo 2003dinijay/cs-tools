@@ -2834,6 +2834,44 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /deployed-products/projects/search:
+    post:
+      summary: >
+        Search for the projects running a given product version
+        (ServiceNow data source only).
+      operationId: searchProjectsByProductVersion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchProjectsByProductVersionRequest'
+      responses:
+        "200":
+          description: Projects running the given product version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchProjectsByProductVersionResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Downstream service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /call-requests:
     post:
       summary: Create a call request (ServiceNow data source only).
@@ -6686,6 +6724,31 @@ components:
         searchQuery:
           type: string
           description: Case-insensitive match against name, key, and subscription_type.
+        excludeClosureStates:
+          type: array
+          items:
+            type: string
+            enum: [Open, Suspended, Restricted]
+          description: >-
+            Excludes projects whose closure state is any of the given values.
+            ServiceNow data source only; rejected on the Postgres data source.
+        excludeSubscriptionTypes:
+          type: array
+          items:
+            type: string
+            enum:
+              - development_support
+              - managed_cloud_subscription
+              - evaluation_subscription
+              - subscription
+              - cloud_evaluation_support
+              - internal
+              - platformer_subscription
+              - cloud_support
+              - professional_services
+          description: >-
+            Excludes projects whose subscription type is any of the given values.
+            ServiceNow data source only; rejected on the Postgres data source.
 
     ProjectAccountRef:
       type: object
@@ -7505,6 +7568,43 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DeployedProductView'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    SearchProjectsByProductVersionRequest:
+      type: object
+      description: >
+        Resolves which projects are running a given product version — the
+        reverse of SearchDeployedProductsRequest's own deploymentIds filter,
+        which starts from already-known deployments rather than a
+        product/version. ServiceNow data source only.
+      required: [productId, productVersionId]
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        productId:
+          type: string
+          format: uuid
+        productVersionId:
+          type: string
+          format: uuid
+
+    SearchProjectsByProductVersionResponse:
+      type: object
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntityRef'
+          description: >
+            Each project is only {id, name} — the deployment-to-project join
+            this resolves from only ever carries that much.
         total:
           type: integer
         limit:
