@@ -25,6 +25,11 @@ import "strconv"
 // domain enum strings (see snConversationStateLabelMap), so no
 // label-word-parsing is needed, just a direct enum lookup both directions.
 var conversationStateIDs = map[string]string{
+	// OPEN is a chat created but never answered by the assistant; it becomes
+	// ACTIVE once the assistant replies. Present in ServiceNow all along but
+	// mapped nowhere, so those conversations arrived with an empty state and
+	// selecting "Open" in the filter matched nothing to send upstream.
+	"OPEN":      "1",
 	"ACTIVE":    "2",
 	"RESOLVED":  "3",
 	"CONVERTED": "4",
@@ -39,6 +44,7 @@ var conversationStateIDToEnum = reverseStringMap(conversationStateIDs)
 // not a ServiceNow display label, so this is this backend's own
 // presentation text.
 var conversationStateLabels = map[string]string{
+	"OPEN":      "Open",
 	"ACTIVE":    "Active",
 	"RESOLVED":  "Resolved",
 	"CONVERTED": "Converted",
