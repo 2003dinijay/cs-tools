@@ -14,4 +14,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TABLE IF EXISTS product_github_repo;
+DROP TABLE IF EXISTS account_github_repo;
+DROP INDEX IF EXISTS idx_case_github_issue_number;
+ALTER TABLE "case" DROP COLUMN IF EXISTS github_issue_number;

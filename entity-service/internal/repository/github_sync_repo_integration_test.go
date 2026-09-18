@@ -49,12 +49,13 @@ func seed(t *testing.T, pool *pgxpool.Pool) {
 	ctx := context.Background()
 	stmts := []string{
 		`DELETE FROM github_webhook_delivery`,
-		`DELETE FROM product_github_repo`,
-		`INSERT INTO product (id,created_on,updated_on,created_by,updated_by,manufacturer,category,name)
-		 VALUES ('11111111-0000-4000-8000-000000000001',now(),now(),'t','t','WSO2','SOFTWARE','Choreo')
-		 ON CONFLICT (name) DO NOTHING`,
-		`INSERT INTO product_github_repo (id,created_by,updated_by,product_id,owner,repository,is_default)
-		 SELECT gen_random_uuid(),'t','t',p.id,'WSO2','Choreo',true FROM product p WHERE p.name='Choreo'`,
+		`DELETE FROM account_github_repo`,
+		`INSERT INTO account (id,created_on,updated_on,created_by,updated_by,name,number,sf_id)
+		 VALUES ('11111111-0000-4000-8000-000000000001',now(),now(),'t','t','Choreo Customer','ACC-GH-1','SF-GH-1')
+		 ON CONFLICT (id) DO NOTHING`,
+		`INSERT INTO account_github_repo (id,created_by,updated_by,account_id,owner,repository)
+		 VALUES (gen_random_uuid(),'t','t','11111111-0000-4000-8000-000000000001','WSO2','Choreo')
+		 ON CONFLICT (account_id) DO NOTHING`,
 	}
 	for _, s := range stmts {
 		if _, err := pool.Exec(ctx, s); err != nil {
@@ -80,10 +81,10 @@ func TestIntegration_RepoMappingIsCaseInsensitive(t *testing.T) {
 			t.Fatalf("RepoMapping(%v): %v", tc, err)
 		}
 		if got == nil {
-			t.Fatalf("RepoMapping(%s/%s) = nil, want the Choreo mapping", tc[0], tc[1])
+			t.Fatalf("RepoMapping(%s/%s) = nil, want the account mapping", tc[0], tc[1])
 		}
-		if got.ProductName != "Choreo" {
-			t.Fatalf("product = %q", got.ProductName)
+		if got.AccountName != "Choreo Customer" {
+			t.Fatalf("account = %q", got.AccountName)
 		}
 	}
 }

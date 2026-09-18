@@ -23,9 +23,11 @@
 -- returns 502s and rate limits that succeed on the next attempt, so a row here
 -- is retried with backoff and only abandoned after a bounded number of tries.
 --
--- THE GATE IS git_reference. A change request with no linked issue has nowhere
--- to push, so nothing is enqueued for it -- the same condition ServiceNow
--- expressed as u_git_referenceISNOTEMPTY on every one of these flows.
+-- THE GATE IS THE PARENT CASE'S ISSUE NUMBER, matching ServiceNow's own flow:
+-- "Change Request Created where Parent is not empty", then look up the case by
+-- that parent and read the issue number off it. A change request has no issue
+-- of its own -- it reaches GitHub only through the case it belongs to, and one
+-- with no parent, or whose parent is not linked, is not our business.
 CREATE TABLE IF NOT EXISTS github_outbound_queue (
     id BIGSERIAL PRIMARY KEY,
     created_on TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -35,10 +37,12 @@ CREATE TABLE IF NOT EXISTS github_outbound_queue (
     -- The change request this is about. Everything we push is a comment, label
     -- or state change on its linked issue.
     change_request_id UUID NOT NULL REFERENCES change_request(id) ON DELETE CASCADE,
-    -- The issue URL captured AT ENQUEUE TIME rather than looked up on delivery.
-    -- If someone re-points git_reference afterwards, this row still belongs to
-    -- the issue the change was actually about.
-    git_reference TEXT NOT NULL,
+    -- Resolved AT ENQUEUE TIME rather than on delivery: if the case is
+    -- re-linked afterwards, this row still belongs to the issue the change was
+    -- actually about.
+    owner VARCHAR(100) NOT NULL,
+    repository VARCHAR(200) NOT NULL,
+    issue_number INTEGER NOT NULL,
     -- Event-specific detail: the comment body, the columns that changed.
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
 
@@ -68,14 +72,26 @@ CREATE INDEX IF NOT EXISTS idx_github_outbound_cr
 CREATE OR REPLACE FUNCTION trg_github_outbound_cr()
 RETURNS TRIGGER AS $$
 DECLARE
-    ref TEXT := NEW.git_reference;
+    gh RECORD;
     ev  TEXT;
     diff JSONB := '{}'::jsonb;
     col TEXT;
     oldv JSONB;
     newv JSONB := to_jsonb(NEW);
 BEGIN
-    IF ref IS NULL OR ref = '' THEN
+    -- Parent case -> its issue number -> the account's repository. All three
+    -- must be present; any one missing means there is nowhere to push.
+    SELECT agr.owner, agr.repository, c.github_issue_number
+      INTO gh
+      FROM work_item cr_wi
+      JOIN work_item case_wi ON case_wi.id = cr_wi.parent_id
+      JOIN "case" c          ON c.id = case_wi.id
+      JOIN account_github_repo agr ON agr.account_id = case_wi.account_id
+     WHERE cr_wi.id = NEW.id
+       AND c.github_issue_number IS NOT NULL
+       AND agr.is_active;
+
+    IF NOT FOUND THEN
         RETURN NULL;
     END IF;
 
@@ -84,8 +100,12 @@ BEGIN
     ELSE
         ev := 'cr_updated';
         oldv := to_jsonb(OLD);
-        FOR col IN SELECT jsonb_object_keys(newv) LOOP
-            IF col <> 'updated_on' AND oldv -> col IS DISTINCT FROM newv -> col THEN
+        -- Only the four columns ServiceNow's trigger watched: state, assigned
+        -- to, planned start, planned end. Diffing every column would enqueue
+        -- pushes for changes the integration being replaced never sent, onto
+        -- an issue a customer can read.
+        FOR col IN SELECT unnest(ARRAY['state','planned_start_date','planned_end_date']) LOOP
+            IF oldv -> col IS DISTINCT FROM newv -> col THEN
                 diff := diff || jsonb_build_object(col,
                     jsonb_build_object('from', oldv -> col, 'to', newv -> col));
             END IF;
@@ -97,8 +117,9 @@ BEGIN
         END IF;
     END IF;
 
-    INSERT INTO github_outbound_queue (event, change_request_id, git_reference, payload)
-    VALUES (ev, NEW.id, ref, jsonb_build_object('changes', diff));
+    INSERT INTO github_outbound_queue (event, change_request_id, owner, repository, issue_number, payload)
+    VALUES (ev, NEW.id, gh.owner, gh.repository, gh.github_issue_number,
+            jsonb_build_object('changes', diff));
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -114,19 +135,26 @@ CREATE TRIGGER change_request_github_outbound
 CREATE OR REPLACE FUNCTION trg_github_outbound_comment()
 RETURNS TRIGGER AS $$
 DECLARE
-    ref TEXT;
+    gh RECORD;
 BEGIN
-    SELECT cr.git_reference INTO ref
-    FROM change_request cr
-    WHERE cr.id = NEW.work_item_id
-      AND COALESCE(cr.git_reference, '') <> '';
+    -- Same walk as above: a comment on a change request reaches GitHub only
+    -- through the case that change request belongs to.
+    SELECT agr.owner, agr.repository, c.github_issue_number
+      INTO gh
+      FROM work_item cr_wi
+      JOIN work_item case_wi ON case_wi.id = cr_wi.parent_id
+      JOIN "case" c          ON c.id = case_wi.id
+      JOIN account_github_repo agr ON agr.account_id = case_wi.account_id
+     WHERE cr_wi.id = NEW.work_item_id
+       AND c.github_issue_number IS NOT NULL
+       AND agr.is_active;
 
-    IF ref IS NULL THEN
+    IF NOT FOUND THEN
         RETURN NULL;
     END IF;
 
-    INSERT INTO github_outbound_queue (event, change_request_id, git_reference, payload)
-    VALUES ('comment_added', NEW.work_item_id, ref,
+    INSERT INTO github_outbound_queue (event, change_request_id, owner, repository, issue_number, payload)
+    VALUES ('comment_added', NEW.work_item_id, gh.owner, gh.repository, gh.github_issue_number,
             jsonb_build_object('commentId', NEW.id,
                                'content', NEW.content,
                                'createdBy', NEW.created_by,
@@ -134,6 +162,44 @@ BEGIN
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Assignment is the fourth field ServiceNow watched, and it lives on
+-- work_item rather than change_request -- so it needs its own trigger on that
+-- table, restricted to rows that are change requests.
+CREATE OR REPLACE FUNCTION trg_github_outbound_assignment()
+RETURNS TRIGGER AS $$
+DECLARE
+    gh RECORD;
+BEGIN
+    IF NEW.type <> 'CHANGE_REQUEST' OR OLD.assigned_to_id IS NOT DISTINCT FROM NEW.assigned_to_id THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT agr.owner, agr.repository, c.github_issue_number
+      INTO gh
+      FROM work_item case_wi
+      JOIN "case" c ON c.id = case_wi.id
+      JOIN account_github_repo agr ON agr.account_id = case_wi.account_id
+     WHERE case_wi.id = NEW.parent_id
+       AND c.github_issue_number IS NOT NULL
+       AND agr.is_active;
+
+    IF NOT FOUND THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO github_outbound_queue (event, change_request_id, owner, repository, issue_number, payload)
+    VALUES ('cr_updated', NEW.id, gh.owner, gh.repository, gh.github_issue_number,
+            jsonb_build_object('changes', jsonb_build_object('assigned_to_id',
+                jsonb_build_object('from', OLD.assigned_to_id, 'to', NEW.assigned_to_id))));
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS work_item_assignment_github_outbound ON work_item;
+CREATE TRIGGER work_item_assignment_github_outbound
+    AFTER UPDATE OF assigned_to_id ON work_item
+    FOR EACH ROW EXECUTE FUNCTION trg_github_outbound_assignment();
 
 DROP TRIGGER IF EXISTS comment_github_outbound ON comment;
 CREATE TRIGGER comment_github_outbound

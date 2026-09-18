@@ -131,24 +131,46 @@ func (s *githubOutboundService) render(item repository.OutboundItem) (string, er
 		if len(lines) == 0 {
 			return "", nil
 		}
-		return fmt.Sprintf("%s was updated:\n\n%s",
-			s.changeRequestLink(item.ChangeRequestID), strings.Join(lines, "\n")), nil
+		verb := "was updated"
+		if outboundAction(changes) == "state_changed" {
+			verb = "changed state"
+		}
+		return fmt.Sprintf("%s %s:\n\n%s",
+			s.changeRequestLink(item.ChangeRequestID), verb, strings.Join(lines, "\n")), nil
 	}
 	return "", fmt.Errorf("%w: unknown event %q", ErrOutboundPermanent, item.Event)
 }
 
 // outboundReportable is the set of columns worth telling GitHub about.
 //
-// An allow-list rather than a deny-list: a column added later should be silent
-// by default, not leak onto a public issue because nobody remembered to
+// EXACTLY THE FOUR SERVICENOW WATCHED, taken from the trigger on
+// "[GitHub Integration] SN CR Updates -> GitHub":
+//
+//	State changes, or Assigned to changes, or Planned start date changes,
+//	or Planned end date changes; and Parent is not empty
+//
+// Impact, likelihood and risk are deliberately absent -- an earlier guess
+// included them, and they would put field changes on a customer-visible issue
+// that the integration being replaced never sent.
+//
+// An allow-list rather than a deny-list, so a column added to change_request
+// later is silent by default rather than leaking because nobody remembered to
 // exclude it.
 var outboundReportable = map[string]string{
 	"state":              "State",
-	"impact":             "Impact",
-	"likelihood":         "Likelihood",
-	"risk":               "Risk",
+	"assigned_to_id":     "Assigned to",
 	"planned_start_date": "Planned start",
 	"planned_end_date":   "Planned end",
+}
+
+// outboundAction classifies an update the way ServiceNow's "Read CR Update"
+// step did: a state move takes priority, and anything else reportable is a
+// date change.
+func outboundAction(changes map[string]any) string {
+	if _, ok := changes["state"]; ok {
+		return "state_changed"
+	}
+	return "dates_updated"
 }
 
 func describeChanges(changes map[string]any) []string {

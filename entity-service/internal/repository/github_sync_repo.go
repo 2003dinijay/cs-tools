@@ -26,14 +26,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// RepoMapping is a GitHub repository and what it routes to.
+// RepoMapping is a GitHub repository and the account it belongs to.
+//
+// KEYED BY ACCOUNT, NOT PRODUCT. ServiceNow's github.dispatch.config was a map
+// from account name to {owner, repo, credential}, so different customers use
+// different repositories and different tokens. An earlier guess keyed this on
+// product, which cannot express that.
 type RepoMapping struct {
-	ProductID   string
-	ProductName string
-	// TeamID is who a change request from this repository is assigned to.
-	// Empty when nobody has been nominated yet -- a routing gap, not a reason
-	// to reject the event.
-	TeamID string
+	AccountID   string
+	AccountName string
+	// CredentialRef names this account's token in the platform secret store.
+	// A reference, never the secret itself.
+	CredentialRef string
 }
 
 // GithubChangeRequest is the slice of a change request the sync reads.
@@ -78,17 +82,17 @@ func (r *githubSyncRepository) RepoMapping(ctx context.Context, owner, repositor
 	// "choreo" are the same repository. ServiceNow compared exactly and every
 	// mismatch fell through to a literal "NULL" assignment group.
 	const query = `
-		SELECT p.id::text,
-		       p.name,
-		       COALESCE(gr.team_id::text, '')
-		FROM product_github_repo gr
-		JOIN product p ON p.id = gr.product_id
+		SELECT a.id::text,
+		       a.name,
+		       COALESCE(gr.credential_ref, '')
+		FROM account_github_repo gr
+		JOIN account a ON a.id = gr.account_id
 		WHERE lower(gr.owner) = lower($1)
 		  AND lower(gr.repository) = lower($2)
 		  AND gr.is_active`
 
 	var m RepoMapping
-	err := r.db.QueryRow(ctx, query, owner, repository).Scan(&m.ProductID, &m.ProductName, &m.TeamID)
+	err := r.db.QueryRow(ctx, query, owner, repository).Scan(&m.AccountID, &m.AccountName, &m.CredentialRef)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

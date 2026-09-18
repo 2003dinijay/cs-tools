@@ -91,7 +91,7 @@ func newGhSvc(r *fakeGhRepo, c *fakeGhClient) GithubSyncService {
 }
 
 func mapped() *repository.RepoMapping {
-	return &repository.RepoMapping{ProductID: "p1", ProductName: "Choreo", TeamID: "t1"}
+	return &repository.RepoMapping{AccountID: "a1", AccountName: "Choreo Customer", CredentialRef: "gh-choreo"}
 }
 
 // Our own writes come back as webhooks; dropping them by sender identity is
