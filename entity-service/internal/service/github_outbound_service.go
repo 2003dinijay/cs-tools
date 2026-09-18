@@ -34,6 +34,11 @@ const (
 	outboundCRCreated    = "cr_created"
 	outboundCRUpdated    = "cr_updated"
 	outboundCommentAdded = "comment_added"
+	// The two halves of "[GitHub Integration] SN Case Updates -> GitHub".
+	// That flow is one trigger with a branch on the state's display value; the
+	// branch is in the database triggers here, so each arm gets its own event.
+	outboundCaseClosed   = "case_closed"
+	outboundCaseAssigned = "case_assigned"
 )
 
 const (
@@ -121,11 +126,11 @@ func (s *githubOutboundService) render(item repository.OutboundItem) (string, er
 			return "", nil
 		}
 		return fmt.Sprintf("**%s** commented on %s:\n\n%s",
-			displayAuthor(author), s.changeRequestLink(item.ChangeRequestID), content), nil
+			displayAuthor(author), s.changeRequestLink(item.WorkItemID), content), nil
 
 	case outboundCRCreated:
 		return fmt.Sprintf("A change request has been raised for this issue: %s",
-			s.changeRequestLink(item.ChangeRequestID)), nil
+			s.changeRequestLink(item.WorkItemID)), nil
 
 	case outboundCRUpdated:
 		changes, _ := item.Payload["changes"].(map[string]any)
@@ -138,7 +143,29 @@ func (s *githubOutboundService) render(item repository.OutboundItem) (string, er
 			verb = "changed state"
 		}
 		return fmt.Sprintf("%s %s:\n\n%s",
-			s.changeRequestLink(item.ChangeRequestID), verb, strings.Join(lines, "\n")), nil
+			s.changeRequestLink(item.WorkItemID), verb, strings.Join(lines, "\n")), nil
+
+	case outboundCaseClosed:
+		// ServiceNow posted the resolution notes verbatim and nothing when they
+		// were empty. An issue closed with no explanation still deserves the
+		// notice, so the closure line always goes; the notes are what is
+		// conditional.
+		notes, _ := item.Payload["resolutionNotes"].(string)
+		msg := fmt.Sprintf("%s has been closed.", s.caseLink(item.WorkItemID))
+		if strings.TrimSpace(notes) != "" {
+			msg += "\n\n" + notes
+		}
+		return msg, nil
+
+	case outboundCaseAssigned:
+		// The assignee is a name, never an address: this comment lands on an
+		// issue a customer can read.
+		assignee, _ := item.Payload["assignedTo"].(string)
+		if strings.TrimSpace(assignee) == "" {
+			return "", nil
+		}
+		return fmt.Sprintf("%s has been assigned to **%s**.",
+			s.caseLink(item.WorkItemID), assignee), nil
 	}
 	return "", fmt.Errorf("%w: unknown event %q", ErrOutboundPermanent, item.Event)
 }
@@ -220,10 +247,21 @@ func displayAuthor(author string) string {
 }
 
 func (s *githubOutboundService) changeRequestLink(id string) string {
+	return s.portalLink(id, "change request", "operations/change-requests")
+}
+
+func (s *githubOutboundService) caseLink(id string) string {
+	return s.portalLink(id, "case", "cases")
+}
+
+// portalLink renders a markdown link into the portal, or bare prose when no
+// base URL is configured -- a comment with the wrong host in it is worse than
+// one without a link, and this runs against a public issue.
+func (s *githubOutboundService) portalLink(id, noun, path string) string {
 	if s.portalBaseURL == "" {
-		return "the change request"
+		return "The " + noun
 	}
-	return fmt.Sprintf("[the change request](%s/operations/change-requests/%s)", s.portalBaseURL, id)
+	return fmt.Sprintf("[The %s](%s/%s/%s)", noun, s.portalBaseURL, path, id)
 }
 
 // OutboundBackoff is how long to wait before attempt n, doubling and capped.

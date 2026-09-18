@@ -30,7 +30,7 @@ const obRef = "https://github.com/wso2/choreo/issues/42"
 
 func obItem(event string, payload map[string]any) repository.OutboundItem {
 	return repository.OutboundItem{
-		ID: 1, Event: event, ChangeRequestID: "cr-1", GitReference: obRef, Payload: payload,
+		ID: 1, Event: event, WorkItemID: "cr-1", GitReference: obRef, Payload: payload,
 	}
 }
 
@@ -94,9 +94,9 @@ func TestOutbound_OnlyReportableChanges(t *testing.T) {
 	c := &fakeGhClient{}
 	err := obSvc(c).Deliver(context.Background(), obItem(outboundCRUpdated, map[string]any{
 		"changes": map[string]any{
-			"state":                 map[string]any{"from": "NEW", "to": "ASSESS"},
-			"justification":         map[string]any{"from": "a", "to": "b"},
-			"risk_impact_analysis":  map[string]any{"from": "x", "to": "y"},
+			"state":                map[string]any{"from": "NEW", "to": "ASSESS"},
+			"justification":        map[string]any{"from": "a", "to": "b"},
+			"risk_impact_analysis": map[string]any{"from": "x", "to": "y"},
 		},
 	}))
 	if err != nil {
@@ -196,12 +196,12 @@ func TestOutboundPermanent(t *testing.T) {
 		err  error
 		want bool
 	}{
-		"404 gone":          {&github.Error{StatusCode: 404}, true},
-		"410 gone":          {&github.Error{StatusCode: 410}, true},
-		"403 permissions":   {&github.Error{StatusCode: 403}, true},
-		"403 rate limited":  {&github.Error{StatusCode: 403, RetryAfter: time.Minute}, false},
-		"429 rate limited":  {&github.Error{StatusCode: 429, RetryAfter: time.Minute}, false},
-		"502 transient":     {&github.Error{StatusCode: 502}, false},
+		"404 gone":         {&github.Error{StatusCode: 404}, true},
+		"410 gone":         {&github.Error{StatusCode: 410}, true},
+		"403 permissions":  {&github.Error{StatusCode: 403}, true},
+		"403 rate limited": {&github.Error{StatusCode: 403, RetryAfter: time.Minute}, false},
+		"429 rate limited": {&github.Error{StatusCode: 429, RetryAfter: time.Minute}, false},
+		"502 transient":    {&github.Error{StatusCode: 502}, false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -220,5 +220,69 @@ func TestOutboundRetryAfter(t *testing.T) {
 	}
 	if _, ok := OutboundRetryAfter(&github.Error{StatusCode: 502}); ok {
 		t.Fatal("a plain 502 should not report a retry-after")
+	}
+}
+
+// The two halves of "SN Case Updates -> GitHub".
+
+func TestOutbound_CaseClosedCarriesResolutionNotes(t *testing.T) {
+	c := &fakeGhClient{}
+	err := obSvc(c).Deliver(context.Background(), obItem(outboundCaseClosed, map[string]any{
+		"resolutionNotes": "Root cause was a stale cache entry; fixed in 2.4.1.",
+	}))
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if len(c.comments) != 1 {
+		t.Fatalf("posted %d comments, want 1", len(c.comments))
+	}
+	if !strings.Contains(c.comments[0], "stale cache entry") {
+		t.Errorf("resolution notes missing: %q", c.comments[0])
+	}
+	if !strings.Contains(c.comments[0], "closed") {
+		t.Errorf("closure not stated: %q", c.comments[0])
+	}
+}
+
+// A case closed with nothing written in the notes field still gets the notice.
+// ServiceNow sent one, and "this issue's case is closed" is the part the
+// reader of the issue actually needs.
+func TestOutbound_CaseClosedWithoutNotesStillPosts(t *testing.T) {
+	c := &fakeGhClient{}
+	if err := obSvc(c).Deliver(context.Background(), obItem(outboundCaseClosed, map[string]any{})); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if len(c.comments) != 1 {
+		t.Fatalf("posted %d comments, want 1", len(c.comments))
+	}
+}
+
+func TestOutbound_CaseAssignedNamesThePerson(t *testing.T) {
+	c := &fakeGhClient{}
+	err := obSvc(c).Deliver(context.Background(), obItem(outboundCaseAssigned, map[string]any{
+		"assignedTo": "Nimal Perera",
+	}))
+	if err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if len(c.comments) != 1 {
+		t.Fatalf("posted %d comments, want 1", len(c.comments))
+	}
+	if !strings.Contains(c.comments[0], "Nimal Perera") {
+		t.Errorf("assignee missing: %q", c.comments[0])
+	}
+}
+
+// Unassignment resolves to no name, and "assigned to nobody" is not a comment
+// worth posting on a customer's issue.
+func TestOutbound_CaseUnassignedPostsNothing(t *testing.T) {
+	c := &fakeGhClient{}
+	if err := obSvc(c).Deliver(context.Background(), obItem(outboundCaseAssigned, map[string]any{
+		"assignedTo": "",
+	})); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if len(c.comments) != 0 {
+		t.Fatalf("posted %d comments, want 0: %q", len(c.comments), c.comments)
 	}
 }

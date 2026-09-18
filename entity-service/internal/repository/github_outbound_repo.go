@@ -27,12 +27,15 @@ import (
 
 // OutboundItem is one push waiting to go to GitHub.
 type OutboundItem struct {
-	ID              int64
-	Event           string
-	ChangeRequestID string
-	GitReference    string
-	Payload         map[string]any
-	Attempts        int
+	ID    int64
+	Event string
+	// WorkItemID is the change request for the CR events and the case itself
+	// for the case ones -- both are work items, which is why the column is not
+	// named for either.
+	WorkItemID   string
+	GitReference string
+	Payload      map[string]any
+	Attempts     int
 }
 
 // GithubOutboundRepository is the queue the outbound worker drains.
@@ -79,7 +82,7 @@ func (r *githubOutboundRepository) ClaimDue(ctx context.Context, limit int) ([]O
 		SET next_attempt_on = NOW() + INTERVAL '5 minutes'
 		FROM due
 		WHERE q.id = due.id
-		RETURNING q.id, q.event, q.change_request_id::text, q.git_reference, q.payload, q.attempts`
+		RETURNING q.id, q.event, q.work_item_id::text, q.git_reference, q.payload, q.attempts`
 
 	rows, err := r.db.Query(ctx, query, limit)
 	if err != nil {
@@ -91,7 +94,7 @@ func (r *githubOutboundRepository) ClaimDue(ctx context.Context, limit int) ([]O
 	for rows.Next() {
 		var it OutboundItem
 		var raw []byte
-		if err := rows.Scan(&it.ID, &it.Event, &it.ChangeRequestID, &it.GitReference, &raw, &it.Attempts); err != nil {
+		if err := rows.Scan(&it.ID, &it.Event, &it.WorkItemID, &it.GitReference, &raw, &it.Attempts); err != nil {
 			return nil, fmt.Errorf("github outbound: scan: %w", err)
 		}
 		if len(raw) > 0 {

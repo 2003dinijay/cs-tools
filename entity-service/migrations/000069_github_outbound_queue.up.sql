@@ -34,9 +34,15 @@ CREATE TABLE IF NOT EXISTS github_outbound_queue (
 
     -- What happened, which decides what gets pushed.
     event VARCHAR(40) NOT NULL,
-    -- The change request this is about. Everything we push is a comment, label
-    -- or state change on its linked issue.
-    change_request_id UUID NOT NULL REFERENCES change_request(id) ON DELETE CASCADE,
+    -- The record this is about: a change request for the CR flows, the case
+    -- itself for the case closure and assignment ones. Everything we push is a
+    -- comment on the linked issue.
+    --
+    -- work_item, not change_request: both kinds of row live there, and a case
+    -- id is not present in the change_request extension table -- pointing this
+    -- at change_request made every case event fail its foreign key at enqueue
+    -- time, inside the trigger, which takes the caller's UPDATE down with it.
+    work_item_id UUID NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
     -- Resolved AT ENQUEUE TIME rather than on delivery: if the case is
     -- re-linked afterwards, this row still belongs to the issue the change was
     -- actually about.
@@ -66,7 +72,7 @@ CREATE INDEX IF NOT EXISTS idx_github_outbound_due
     WHERE status = 'PENDING';
 
 CREATE INDEX IF NOT EXISTS idx_github_outbound_cr
-    ON github_outbound_queue (change_request_id);
+    ON github_outbound_queue (work_item_id);
 
 -- Enqueue a change-request event, but only when there is an issue to push to.
 CREATE OR REPLACE FUNCTION trg_github_outbound_cr()
@@ -117,7 +123,7 @@ BEGIN
         END IF;
     END IF;
 
-    INSERT INTO github_outbound_queue (event, change_request_id, owner, repository, issue_number, payload)
+    INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
     VALUES (ev, NEW.id, gh.owner, gh.repository, gh.github_issue_number,
             jsonb_build_object('changes', diff));
     RETURN NULL;
@@ -132,6 +138,112 @@ CREATE TRIGGER change_request_github_outbound
 -- Enqueue a comment, resolving the change request it belongs to. A comment on
 -- a work item that is not a change request, or on one with no linked issue,
 -- enqueues nothing.
+-- Assignment, for both records that can carry it.
+--
+-- For a change request this is the fourth field "SN CR Updates -> GitHub"
+-- watched. For a case it is the 'assigned' half of "SN Case Updates ->
+-- GitHub", which detects the change through the audit log; we have the OLD
+-- row, so a direct comparison does the same job without a second query.
+--
+-- It lives on work_item rather than on either extension table, so one trigger
+-- serves both.
+--
+-- THE NAMES ARE RESOLVED HERE, NOT AT DELIVERY. assigned_to_id is a UUID, and
+-- the comment this becomes is posted on an issue a customer reads: "Assigned
+-- to: 4f3a...  ->  9b2c..." is noise to them and a leaked internal identifier
+-- to us. ServiceNow sent the display name, so we resolve it the same way it
+-- resolves owner and repository -- at enqueue time, against the row as it
+-- stood. An email address is never the fallback for the same reason.
+CREATE OR REPLACE FUNCTION trg_github_outbound_assignment()
+RETURNS TRIGGER AS $$
+DECLARE
+    gh RECORD;
+    from_name TEXT;
+    to_name   TEXT;
+BEGIN
+    IF NEW.type NOT IN ('CHANGE_REQUEST', 'CASE')
+       OR OLD.assigned_to_id IS NOT DISTINCT FROM NEW.assigned_to_id THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT agr.owner, agr.repository, c.github_issue_number
+      INTO gh
+      FROM work_item case_wi
+      JOIN "case" c ON c.id = case_wi.id
+      JOIN account_github_repo agr ON agr.account_id = case_wi.account_id
+     -- A change request reaches its issue through the parent case; a case IS
+     -- the record that carries the issue number.
+     WHERE case_wi.id = CASE WHEN NEW.type = 'CASE' THEN NEW.id ELSE NEW.parent_id END
+       AND c.github_issue_number IS NOT NULL
+       AND agr.is_active;
+
+    IF NOT FOUND THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT COALESCE(NULLIF(TRIM(u.name), ''),
+                    NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''))
+      INTO from_name FROM "user" u WHERE u.id = OLD.assigned_to_id;
+    SELECT COALESCE(NULLIF(TRIM(u.name), ''),
+                    NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''))
+      INTO to_name FROM "user" u WHERE u.id = NEW.assigned_to_id;
+
+    INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
+    VALUES (CASE WHEN NEW.type = 'CASE' THEN 'case_assigned' ELSE 'cr_updated' END,
+            NEW.id, gh.owner, gh.repository, gh.github_issue_number,
+            jsonb_build_object(
+                'assignedTo', to_name,
+                'changes', jsonb_build_object('assigned_to_id',
+                    jsonb_build_object('from', from_name, 'to', to_name))));
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS work_item_assignment_github_outbound ON work_item;
+CREATE TRIGGER work_item_assignment_github_outbound
+    AFTER UPDATE OF assigned_to_id ON work_item
+    FOR EACH ROW EXECUTE FUNCTION trg_github_outbound_assignment();
+
+-- Case closure, the other half of "SN Case Updates -> GitHub".
+--
+-- That flow reads the state's DISPLAY value and asks whether it is "closed",
+-- deliberately avoiding hardcoded integer codes so one flow works across
+-- instances. Our state is already a named enum, so the comparison is direct.
+-- Closure carries the resolution notes, which the flow sends alongside
+-- action='closed'.
+CREATE OR REPLACE FUNCTION trg_github_outbound_case()
+RETURNS TRIGGER AS $$
+DECLARE
+    gh RECORD;
+BEGIN
+    IF NEW.state IS NOT DISTINCT FROM OLD.state OR NEW.state <> 'CLOSED' THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT agr.owner, agr.repository
+      INTO gh
+      FROM work_item case_wi
+      JOIN account_github_repo agr ON agr.account_id = case_wi.account_id
+     WHERE case_wi.id = NEW.id
+       AND agr.is_active;
+
+    IF NOT FOUND OR NEW.github_issue_number IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
+    VALUES ('case_closed', NEW.id, gh.owner, gh.repository, NEW.github_issue_number,
+            jsonb_build_object('resolutionNotes', NEW.close_notes,
+                               'resolutionCode', NEW.resolution_code));
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS case_github_outbound ON "case";
+CREATE TRIGGER case_github_outbound
+    AFTER UPDATE OF state ON "case"
+    FOR EACH ROW EXECUTE FUNCTION trg_github_outbound_case();
+
 -- Comments sync from the CASE, not the change request.
 --
 -- ServiceNow's "SN Comment to GitHub" triggers on
@@ -165,7 +277,7 @@ BEGIN
         RETURN NULL;
     END IF;
 
-    INSERT INTO github_outbound_queue (event, change_request_id, owner, repository, issue_number, payload)
+    INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
     VALUES ('comment_added', NEW.work_item_id, gh.owner, gh.repository, gh.github_issue_number,
             jsonb_build_object('commentId', NEW.id,
                                'content', NEW.content,

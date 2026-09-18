@@ -19,6 +19,74 @@ paths:
         "200":
           description: Ok
 
+  /webhooks/github:
+    post:
+      summary: >-
+        Receive a GitHub issue webhook. Called by GitHub, not by a portal
+        client, and authenticated by the X-Hub-Signature-256 HMAC rather than
+        by the OAuth2 scopes every other operation here uses -- GitHub cannot
+        obtain a token. Declared so the gateway routes it; the gateway must
+        leave the body byte-for-byte intact, since the signature covers the
+        raw bytes and any re-serialisation invalidates it.
+      operationId: handleGithubWebhook
+      security: []
+      parameters:
+        - name: X-Hub-Signature-256
+          in: header
+          required: true
+          description: HMAC-SHA256 of the raw body, keyed by the webhook secret.
+          schema:
+            type: string
+        - name: X-GitHub-Event
+          in: header
+          required: true
+          description: The event name, e.g. "issues" or "issue_comment".
+          schema:
+            type: string
+        - name: X-GitHub-Delivery
+          in: header
+          required: true
+          description: >-
+            GitHub's delivery id. Recorded, and a repeat of one already
+            applied is answered 200 without reapplying it.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GithubWebhookPayload'
+      responses:
+        "200":
+          description: >-
+            Accepted. Also returned for a delivery that was deliberately
+            skipped or already applied, so GitHub stops retrying it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GithubWebhookResult'
+        "400":
+          description: Unreadable body, malformed payload, or a missing delivery/event header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: >-
+            The signature did not verify. Deliberately identical for every
+            cause -- a caller must not learn which check failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Processing failed. GitHub retries; the delivery claim is released.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /event-publish-failures:
     post:
       summary: >-
@@ -6184,6 +6252,70 @@ paths:
 
 components:
   schemas:
+    GithubWebhookPayload:
+      type: object
+      description: >-
+        The subset of GitHub's issue and issue_comment payloads this service
+        reads. GitHub sends a great deal more; unlisted fields are ignored.
+      properties:
+        action:
+          type: string
+          description: e.g. "opened", "labeled", "closed", "created".
+        issue:
+          type: object
+          properties:
+            number:
+              type: integer
+            title:
+              type: string
+            body:
+              type: string
+            state:
+              type: string
+            labels:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+        comment:
+          type: object
+          properties:
+            body:
+              type: string
+        repository:
+          type: object
+          properties:
+            name:
+              type: string
+            owner:
+              type: object
+              properties:
+                login:
+                  type: string
+        sender:
+          type: object
+          properties:
+            login:
+              type: string
+        label:
+          type: object
+          properties:
+            name:
+              type: string
+
+    GithubWebhookResult:
+      type: object
+      description: What the service did with the delivery.
+      properties:
+        action:
+          type: string
+          description: The action taken, empty when the delivery was skipped.
+        skipped:
+          type: string
+          description: Why nothing was done, empty when the delivery was applied.
+
     Pagination:
       type: object
       properties:
