@@ -90,6 +90,37 @@ func (alwaysMoreDeploymentService) UpdateDeployment(context.Context, domain.Upda
 	panic("alwaysMoreDeploymentService: UpdateDeployment not implemented")
 }
 
+// fakeProjectService is a minimal, in-memory ProjectService stub used only
+// to drive SearchProjectsByProductVersion's fetchEligibleProjectIDs helper.
+// SearchProjects paginates over a fixed slice the same way fakeDeploymentService
+// does. GetProjectByID is never called by that code path.
+type fakeProjectService struct {
+	projects []domain.ProjectView
+}
+
+func (f *fakeProjectService) SearchProjects(_ context.Context, req domain.SearchProjectsRequest) (domain.SearchProjectsResponse, error) {
+	total := len(f.projects)
+	start := req.Pagination.Offset
+	if start > total {
+		start = total
+	}
+	end := start + req.Pagination.Limit
+	if end > total {
+		end = total
+	}
+	return domain.SearchProjectsResponse{
+		Projects: f.projects[start:end],
+		Total:    total,
+		Limit:    req.Pagination.Limit,
+		Offset:   req.Pagination.Offset,
+		HasMore:  end < total,
+	}, nil
+}
+
+func (f *fakeProjectService) GetProjectByID(context.Context, string) (domain.ProjectDetailsView, error) {
+	panic("fakeProjectService: GetProjectByID not implemented")
+}
+
 var (
 	testPBVProductSysid   = sysid32('3')
 	testPBVVersionSysid   = sysid32('4')
@@ -100,7 +131,7 @@ var (
 )
 
 func TestSNDeployedProductService_SearchProjectsByProductVersion_RejectsInvalidProductID(t *testing.T) {
-	svc := NewServiceNowDeployedProductService(newTestSNClient(t, http.NewServeMux()), &fakeDeploymentService{})
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, http.NewServeMux()), &fakeDeploymentService{}, nil)
 
 	_, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
 		ProductID:        "not-a-uuid",
@@ -112,7 +143,7 @@ func TestSNDeployedProductService_SearchProjectsByProductVersion_RejectsInvalidP
 }
 
 func TestSNDeployedProductService_SearchProjectsByProductVersion_RejectsInvalidProductVersionID(t *testing.T) {
-	svc := NewServiceNowDeployedProductService(newTestSNClient(t, http.NewServeMux()), &fakeDeploymentService{})
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, http.NewServeMux()), &fakeDeploymentService{}, nil)
 
 	_, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
 		ProductID:        testPBVProductUUID,
@@ -166,7 +197,7 @@ func TestSNDeployedProductService_SearchProjectsByProductVersion_MatchesAndDedup
 		})
 	})
 
-	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc)
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc, nil)
 
 	resp, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
 		ProductID:        testPBVProductUUID,
@@ -217,7 +248,7 @@ func TestSNDeployedProductService_SearchProjectsByProductVersion_StableOrderForE
 		})
 	})
 
-	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc)
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc, nil)
 
 	resp, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
 		ProductID:        testPBVProductUUID,
@@ -264,7 +295,7 @@ func TestSNDeployedProductService_SearchProjectsByProductVersion_PaginatesDedupe
 		})
 	})
 
-	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc)
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc, nil)
 
 	resp, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
 		Pagination:       domain.Pagination{Limit: 1, Offset: 1},
@@ -316,7 +347,7 @@ func TestSNDeployedProductService_SearchProjectsByProductVersion_PagesThroughMul
 		})
 	})
 
-	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc)
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc, nil)
 
 	resp, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
 		ProductID:        testPBVProductUUID,
@@ -339,7 +370,7 @@ func TestSNDeployedProductService_SearchProjectsByProductVersion_PagesThroughMul
 // ServiceUnavailableError rather than silently resolving against a partial,
 // incomplete deployment-to-project map.
 func TestSNDeployedProductService_SearchProjectsByProductVersion_DeploymentEnumerationErrorsRatherThanTruncate(t *testing.T) {
-	svc := NewServiceNowDeployedProductService(newTestSNClient(t, http.NewServeMux()), alwaysMoreDeploymentService{})
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, http.NewServeMux()), alwaysMoreDeploymentService{}, nil)
 
 	_, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
 		ProductID:        testPBVProductUUID,
@@ -355,6 +386,114 @@ func TestSNDeployedProductService_SearchProjectsByProductVersion_DeploymentEnume
 // upstream that always claims hasMore: true for a single deployment's
 // deployed-products page must fail loudly once the page bound is exceeded,
 // not return an incomplete/wrong match set.
+func TestSNDeployedProductService_SearchProjectsByProductVersion_RejectsInvalidExcludeClosureState(t *testing.T) {
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, http.NewServeMux()), &fakeDeploymentService{}, &fakeProjectService{})
+
+	_, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
+		ProductID:            testPBVProductUUID,
+		ProductVersionID:     testPBVVersionUUID,
+		ExcludeClosureStates: []string{"not-a-real-state"},
+	})
+	if _, ok := err.(*apierror.ValidationError); !ok {
+		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+	}
+}
+
+func TestSNDeployedProductService_SearchProjectsByProductVersion_RejectsInvalidExcludeSubscriptionType(t *testing.T) {
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, http.NewServeMux()), &fakeDeploymentService{}, &fakeProjectService{})
+
+	_, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
+		ProductID:                testPBVProductUUID,
+		ProductVersionID:         testPBVVersionUUID,
+		ExcludeSubscriptionTypes: []domain.SubscriptionType{"not_a_real_type"},
+	})
+	if _, ok := err.(*apierror.ValidationError); !ok {
+		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+	}
+}
+
+// TestSNDeployedProductService_SearchProjectsByProductVersion_IntersectsWithEligibleProjects
+// verifies the core requirement behind excludeClosureStates/excludeSubscriptionTypes on
+// this endpoint: the real EOL-announcement audience is the intersection of
+// "projects running this version" and "projects eligible for an announcement
+// at all" (per the source-of-truth doc: exclude Restricted/Suspended closure
+// states and Cloud Support/Cloud Evaluation Support subscriptions before
+// matching on product+version) — not the product-version match alone. Two
+// projects match the product+version; only one is returned by the fake
+// ProjectService's (already-filtered) eligible set, so only that one must
+// survive in the final result.
+func TestSNDeployedProductService_SearchProjectsByProductVersion_IntersectsWithEligibleProjects(t *testing.T) {
+	depEligible, depIneligible := sysid32('1'), sysid32('2')
+	projEligible := domain.EntityRef{ID: "proj-eligible-uuid", Name: "Eligible Project"}
+	projIneligible := domain.EntityRef{ID: "proj-ineligible-uuid", Name: "Ineligible Project"}
+
+	deploymentSvc := &fakeDeploymentService{deployments: []domain.DeploymentView{
+		{ID: sysidToUUID(depEligible), Project: projEligible},
+		{ID: sysidToUUID(depIneligible), Project: projIneligible},
+	}}
+	// Only the eligible project is returned here — simulates it being the
+	// sole survivor of Restricted/Suspended/Cloud-Support exclusion.
+	projectSvc := &fakeProjectService{projects: []domain.ProjectView{
+		{ID: projEligible.ID, Name: projEligible.Name},
+	}}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/deployed-products/search", func(w http.ResponseWriter, r *http.Request) {
+		items := []map[string]any{
+			deployedProductFixture(sysid32('a'), depEligible, testPBVProductSysid, testPBVVersionSysid),
+			deployedProductFixture(sysid32('b'), depIneligible, testPBVProductSysid, testPBVVersionSysid),
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"deployedProducts": items, "totalRecords": len(items), "offset": 0, "limit": 50,
+		})
+	})
+
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc, projectSvc)
+
+	resp, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
+		ProductID:                testPBVProductUUID,
+		ProductVersionID:         testPBVVersionUUID,
+		ExcludeClosureStates:     []string{"Restricted", "Suspended"},
+		ExcludeSubscriptionTypes: []domain.SubscriptionType{domain.SubscriptionTypeCloudSupport, domain.SubscriptionTypeCloudEvaluationSupport},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Total != 1 || len(resp.Projects) != 1 || resp.Projects[0].ID != projEligible.ID {
+		t.Fatalf("expected only the eligible project to survive, got %+v", resp.Projects)
+	}
+}
+
+// TestSNDeployedProductService_SearchProjectsByProductVersion_NoExcludeFiltersSkipsProjectService
+// guards the fast path: without any exclude filter set, the endpoint must
+// never call ProjectService at all — a nil projectSvc must not panic.
+func TestSNDeployedProductService_SearchProjectsByProductVersion_NoExcludeFiltersSkipsProjectService(t *testing.T) {
+	dep := sysid32('1')
+	proj := domain.EntityRef{ID: "proj-a", Name: "Project A"}
+	deploymentSvc := &fakeDeploymentService{deployments: []domain.DeploymentView{{ID: sysidToUUID(dep), Project: proj}}}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/deployed-products/search", func(w http.ResponseWriter, r *http.Request) {
+		items := []map[string]any{deployedProductFixture(sysid32('a'), dep, testPBVProductSysid, testPBVVersionSysid)}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"deployedProducts": items, "totalRecords": len(items), "offset": 0, "limit": 50,
+		})
+	})
+
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc, nil)
+
+	resp, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
+		ProductID:        testPBVProductUUID,
+		ProductVersionID: testPBVVersionUUID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error (a nil projectSvc must never be dereferenced when no exclude filters are set): %v", err)
+	}
+	if resp.Total != 1 || resp.Projects[0].ID != proj.ID {
+		t.Fatalf("expected the single matching project, got %+v", resp.Projects)
+	}
+}
+
 func TestSNDeployedProductService_SearchProjectsByProductVersion_DeployedProductEnumerationErrorsRatherThanTruncate(t *testing.T) {
 	dep := sysid32('1')
 	deploymentSvc := &fakeDeploymentService{deployments: []domain.DeploymentView{
@@ -369,7 +508,7 @@ func TestSNDeployedProductService_SearchProjectsByProductVersion_DeployedProduct
 		})
 	})
 
-	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc)
+	svc := NewServiceNowDeployedProductService(newTestSNClient(t, mux), deploymentSvc, nil)
 
 	_, err := svc.SearchProjectsByProductVersion(contextWithUserIDToken("token"), domain.SearchProjectsByProductVersionRequest{
 		ProductID:        testPBVProductUUID,

@@ -7594,6 +7594,35 @@ components:
         productVersionId:
           type: string
           format: uuid
+        excludeClosureStates:
+          type: array
+          items:
+            type: string
+            enum: [Open, Suspended, Restricted]
+          description: >-
+            Excludes projects whose closure state is any of the given values,
+            applied on top of the product/version match — see
+            SearchProjectsRequest's field of the same name. ServiceNow data
+            source only.
+        excludeSubscriptionTypes:
+          type: array
+          items:
+            type: string
+            enum:
+              - development_support
+              - managed_cloud_subscription
+              - evaluation_subscription
+              - subscription
+              - cloud_evaluation_support
+              - internal
+              - platformer_subscription
+              - cloud_support
+              - professional_services
+          description: >-
+            Excludes projects whose subscription type is any of the given
+            values, applied on top of the product/version match — see
+            SearchProjectsRequest's field of the same name. ServiceNow data
+            source only.
 
     SearchProjectsByProductVersionResponse:
       type: object
