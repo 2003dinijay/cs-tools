@@ -550,6 +550,10 @@ func (r *instanceRepo) SearchInstanceUsageStats(ctx context.Context, filters dom
 	}
 
 	query := fmt.Sprintf(
+		// daily_usage_summary.usage_type was renamed to count_type after
+		// this was first written (migration 000054 was edited in place
+		// post-merge) -- matching usage_count.count_type's own column name
+		// for the same open-ended count-type concept.
 		`SELECT dus.summary_date, dn.id, dus.count_type, SUM(dus.value)
 		 FROM deployment_node dn
 		 JOIN daily_usage_summary dus ON dus.deployment_node_id = dn.id
