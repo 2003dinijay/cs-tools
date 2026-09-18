@@ -8185,6 +8185,14 @@ components:
         reverse of SearchDeployedProductsRequest's own deploymentIds filter,
         which starts from already-known deployments rather than a
         product/version. ServiceNow data source only.
+
+
+        The result always excludes projects with a Restricted or Suspended
+        closure state, and projects on a Cloud Support or Cloud Evaluation
+        Support subscription — this is not a caller-supplied filter. It
+        mirrors the real ServiceNow flow this replaces ("DRY RUN - Create
+        [EOL] Product Announcements"), whose own first step applies this
+        exact exclusion unconditionally, with no way to opt out.
       required: [productId, productVersionId]
       properties:
         pagination:
