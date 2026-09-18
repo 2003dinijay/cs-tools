@@ -4996,18 +4996,15 @@ type IncidentTaskDetail struct {
 
 // ConversationState represents the state of a conversation. Only ACTIVE and
 // RESOLVED are accepted as SearchConversationsFilters.States values (the
-// search endpoint's own filter allow-list); all five values are accepted as
-// UpdateConversationRequest.State (the transition allow-list PATCH
-// /conversations/{id} enforces), matching the Ballerina reference's SN state
-// keys 2-6 respectively. OPEN (key 1) was added later: it was present in
-// ServiceNow all along but mapped nowhere, so those conversations reached
-// callers with an empty state and could not be filtered for.
+// search endpoint's own filter allow-list); all five transition states
+// (excluding OPEN, which a conversation only ever starts in and is never
+// PATCHed back to) are accepted as UpdateConversationRequest.State (the
+// transition allow-list PATCH /conversations/{id} enforces), matching the
+// Ballerina reference's SN state keys 2-6 respectively. OPEN (SN state key 1)
+// is a read-only state a conversation may already be in when fetched.
 type ConversationState string
 
 const (
-	// ConversationStateOpen is a chat that has been created but has never had a
-	// reply from the assistant. It becomes ACTIVE once the assistant answers.
-	// ServiceNow state key 1.
 	ConversationStateOpen      ConversationState = "OPEN"
 	ConversationStateActive    ConversationState = "ACTIVE"
 	ConversationStateResolved  ConversationState = "RESOLVED"
