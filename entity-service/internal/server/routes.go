@@ -109,6 +109,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	if db != nil {
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
 		if cfg.HasGithubIntegration() {
+			// The outbound worker is started by cmd/api, which owns process
+			// lifetime; routes.go only builds what the HTTP surface needs.
 			githubWebhookHandler = handler.NewGithubWebhookHandler(
 				service.NewGithubSyncService(
 					repository.NewGithubSyncRepository(db),

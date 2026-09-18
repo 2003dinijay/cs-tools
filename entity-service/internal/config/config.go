@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 // DataSource identifies which backend the service reads from.
@@ -100,6 +101,12 @@ type Config struct {
 	// own writes coming back, and are dropped by identity rather than by
 	// pattern-matching the comment body.
 	GithubIntegrationLogin string
+	// GithubOutboundInterval is how often to drain the outbound queue when the
+	// last pass came back short. A backlog drains at full speed regardless.
+	GithubOutboundInterval time.Duration
+	// CSMPortalBaseURL builds the link back to a change request in comments
+	// posted to GitHub. Empty omits the link rather than rendering a broken one.
+	CSMPortalBaseURL string
 	// SupportEngineerRole is the ServiceNow role name (e.g. an org-specific
 	// "sn_*" role) whose presence on a case comment's resolved author marks
 	// that comment as a qualifying support-engineer response — see
@@ -155,6 +162,8 @@ func Load() *Config {
 		GithubToken:                              os.Getenv("GITHUB_TOKEN"),
 		GithubWebhookSecret:                      os.Getenv("GITHUB_WEBHOOK_SECRET"),
 		GithubIntegrationLogin:                   os.Getenv("GITHUB_INTEGRATION_LOGIN"),
+		GithubOutboundInterval:                   envDuration("GITHUB_OUTBOUND_INTERVAL", 15*time.Second),
+		CSMPortalBaseURL:                         os.Getenv("CSM_PORTAL_BASE_URL"),
 		SupportEngineerRole:                      os.Getenv("SUPPORT_ENGINEER_ROLE"),
 		CustomerRoles:                            splitComma(os.Getenv("CUSTOMER_ROLES")),
 	}
@@ -327,4 +336,18 @@ func (c *Config) HasGithubIntegration() bool {
 		c.GithubWebhookSecret != "" &&
 		c.GithubToken != "" &&
 		c.GithubIntegrationLogin != ""
+}
+
+// envDuration reads a Go duration string, falling back to def when unset or
+// unparseable -- a typo should cost the override, not stop the service.
+func envDuration(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
 }
