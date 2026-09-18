@@ -301,15 +301,27 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	productVulnerabilityHandler := handler.NewProductVulnerabilityHandler(activeProductVulnerabilitySvc)
 
-	var incidentHandler *handler.IncidentHandler
+	// incident/problem/incident_task/conversation (migrations 000057-000060,
+	// 000066) -- see incident_repo.go/problem_repo.go's own doc comments for
+	// what's implemented (reads) vs. still ServiceUnavailableError (writes
+	// needing work_item.number generation or undiscoverable business rules).
+	incidentRepo := repository.NewIncidentRepository(db)
+	var activeIncidentSvc service.IncidentService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		incidentHandler = handler.NewIncidentHandler(service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, eventPublisher))
+		activeIncidentSvc = service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, eventPublisher)
+	} else {
+		activeIncidentSvc = service.NewIncidentService(incidentRepo)
 	}
+	incidentHandler := handler.NewIncidentHandler(activeIncidentSvc)
 
-	var problemHandler *handler.ProblemHandler
+	problemRepo := repository.NewProblemRepository(db)
+	var activeProblemSvc service.ProblemService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		problemHandler = handler.NewProblemHandler(service.NewServiceNowProblemService(serviceNowIntegrationServiceClient))
+		activeProblemSvc = service.NewServiceNowProblemService(serviceNowIntegrationServiceClient)
+	} else {
+		activeProblemSvc = service.NewProblemService(problemRepo)
 	}
+	problemHandler := handler.NewProblemHandler(activeProblemSvc)
 
 	var alertHandler *handler.AlertHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -321,15 +333,23 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		smartAlertHandler = handler.NewSmartAlertHandler(service.NewServiceNowSmartAlertService(serviceNowIntegrationServiceClient))
 	}
 
-	var incidentTaskHandler *handler.IncidentTaskHandler
+	incidentTaskRepo := repository.NewIncidentTaskRepository(db)
+	var activeIncidentTaskSvc service.IncidentTaskService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		incidentTaskHandler = handler.NewIncidentTaskHandler(service.NewServiceNowIncidentTaskService(serviceNowIntegrationServiceClient))
+		activeIncidentTaskSvc = service.NewServiceNowIncidentTaskService(serviceNowIntegrationServiceClient)
+	} else {
+		activeIncidentTaskSvc = service.NewIncidentTaskService(incidentTaskRepo)
 	}
+	incidentTaskHandler := handler.NewIncidentTaskHandler(activeIncidentTaskSvc)
 
-	var conversationHandler *handler.ConversationHandler
+	conversationRepo := repository.NewConversationRepository(db)
+	var activeConversationSvc service.ConversationService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		conversationHandler = handler.NewConversationHandler(service.NewServiceNowConversationService(serviceNowIntegrationServiceClient))
+		activeConversationSvc = service.NewServiceNowConversationService(serviceNowIntegrationServiceClient)
+	} else {
+		activeConversationSvc = service.NewConversationService(conversationRepo)
 	}
+	conversationHandler := handler.NewConversationHandler(activeConversationSvc)
 
 	var outageHandler *handler.OutageHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -606,15 +626,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("POST /cases/{id}/tasks", taskHandler.CreateCaseTask)
 	mux.HandleFunc("PATCH /tasks/{id}", taskHandler.UpdateTask)
 
-	if incidentHandler != nil {
-		mux.HandleFunc("GET /incidents/{id}", incidentHandler.GetIncident)
-		mux.HandleFunc("PATCH /incidents/{id}", incidentHandler.PatchIncident)
-		mux.HandleFunc("POST /incidents", incidentHandler.CreateIncident)
-		mux.HandleFunc("POST /incidents/search", incidentHandler.SearchIncidents)
-		mux.HandleFunc("POST /incidents/aggregate", incidentHandler.AggregateIncidents)
-		mux.HandleFunc("POST /incidents/{id}/activities/search", incidentHandler.SearchIncidentActivities)
-		mux.HandleFunc("POST /incidents/{id}/specialist-handoffs", incidentHandler.HandOffIncidentToSpecialist)
-	}
+	mux.HandleFunc("GET /incidents/{id}", incidentHandler.GetIncident)
+	mux.HandleFunc("PATCH /incidents/{id}", incidentHandler.PatchIncident)
+	mux.HandleFunc("POST /incidents", incidentHandler.CreateIncident)
+	mux.HandleFunc("POST /incidents/search", incidentHandler.SearchIncidents)
+	mux.HandleFunc("POST /incidents/aggregate", incidentHandler.AggregateIncidents)
+	mux.HandleFunc("POST /incidents/{id}/activities/search", incidentHandler.SearchIncidentActivities)
+	mux.HandleFunc("POST /incidents/{id}/specialist-handoffs", incidentHandler.HandOffIncidentToSpecialist)
 
 	if outageHandler != nil {
 		mux.HandleFunc("POST /outages", outageHandler.CreateOutage)
@@ -626,19 +644,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /outages/{id}/communications/search", outageHandler.SearchOutageCommunications)
 	}
 
-	if problemHandler != nil {
-		mux.HandleFunc("POST /problems", problemHandler.CreateProblem)
-		mux.HandleFunc("POST /problems/search", problemHandler.SearchProblems)
-		mux.HandleFunc("POST /problems/aggregate", problemHandler.AggregateProblems)
-		mux.HandleFunc("GET /problems/{id}", problemHandler.GetProblem)
-		mux.HandleFunc("PATCH /problems/{id}", problemHandler.PatchProblem)
-	}
+	mux.HandleFunc("POST /problems", problemHandler.CreateProblem)
+	mux.HandleFunc("POST /problems/search", problemHandler.SearchProblems)
+	mux.HandleFunc("POST /problems/aggregate", problemHandler.AggregateProblems)
+	mux.HandleFunc("GET /problems/{id}", problemHandler.GetProblem)
+	mux.HandleFunc("PATCH /problems/{id}", problemHandler.PatchProblem)
 
-	if incidentTaskHandler != nil {
-		mux.HandleFunc("POST /incident-tasks/search", incidentTaskHandler.SearchIncidentTasks)
-		mux.HandleFunc("POST /incident-tasks/aggregate", incidentTaskHandler.AggregateIncidentTasks)
-		mux.HandleFunc("GET /incident-tasks/{id}", incidentTaskHandler.GetIncidentTask)
-	}
+	mux.HandleFunc("POST /incident-tasks/search", incidentTaskHandler.SearchIncidentTasks)
+	mux.HandleFunc("POST /incident-tasks/aggregate", incidentTaskHandler.AggregateIncidentTasks)
+	mux.HandleFunc("GET /incident-tasks/{id}", incidentTaskHandler.GetIncidentTask)
 
 	if alertHandler != nil {
 		mux.HandleFunc("GET /alerts/{id}", alertHandler.GetAlert)
@@ -648,12 +662,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("GET /smart-alerts/{id}", smartAlertHandler.GetSmartAlert)
 	}
 
-	if conversationHandler != nil {
-		mux.HandleFunc("POST /conversations/search", conversationHandler.SearchConversations)
-		mux.HandleFunc("GET /conversations/{id}", conversationHandler.GetConversation)
-		mux.HandleFunc("POST /conversations", conversationHandler.CreateConversation)
-		mux.HandleFunc("PATCH /conversations/{id}", conversationHandler.UpdateConversation)
-	}
+	mux.HandleFunc("POST /conversations/search", conversationHandler.SearchConversations)
+	mux.HandleFunc("GET /conversations/{id}", conversationHandler.GetConversation)
+	mux.HandleFunc("POST /conversations", conversationHandler.CreateConversation)
+	mux.HandleFunc("PATCH /conversations/{id}", conversationHandler.UpdateConversation)
 
 	if globalHandler != nil {
 		mux.HandleFunc("GET /metadata", globalHandler.GetSystemMetadata)
