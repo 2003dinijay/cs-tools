@@ -109,10 +109,12 @@ func (s *githubOutboundService) render(item repository.OutboundItem) (string, er
 	case outboundCommentAdded:
 		content, _ := item.Payload["content"].(string)
 		author, _ := item.Payload["createdBy"].(string)
-		kind, _ := item.Payload["type"].(string)
-		// A work note is internal by definition. Relaying it to a public issue
-		// would disclose something written on the assumption it stayed inside.
-		if strings.EqualFold(kind, "WORK_NOTE") {
+		// Work notes never reach here: the database trigger only enqueues
+		// COMMENT-type rows, matching ServiceNow hardcoding note_type to
+		// 'additional_comments' -- the customer-visible journal. This second
+		// check is belt and braces, since the cost of being wrong is internal
+		// text on a public issue.
+		if kind, ok := item.Payload["type"].(string); ok && strings.EqualFold(kind, "WORK_NOTE") {
 			return "", nil
 		}
 		if strings.TrimSpace(content) == "" {

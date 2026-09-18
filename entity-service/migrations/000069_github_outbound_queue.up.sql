@@ -132,20 +132,32 @@ CREATE TRIGGER change_request_github_outbound
 -- Enqueue a comment, resolving the change request it belongs to. A comment on
 -- a work item that is not a change request, or on one with no linked issue,
 -- enqueues nothing.
+-- Comments sync from the CASE, not the change request.
+--
+-- ServiceNow's "SN Comment to GitHub" triggers on
+-- "Case Updated where (Additional comments changes)" -- the case's own
+-- customer-visible journal. A comment on a change request was never sent, and
+-- an earlier version of this trigger had it the wrong way round.
+--
+-- Only COMMENT type: ServiceNow hardcodes note_type to 'additional_comments',
+-- which is the customer-visible field. Work notes live in a separate journal
+-- and are never dispatched -- they are internal, and a GitHub issue is read
+-- outside WSO2.
 CREATE OR REPLACE FUNCTION trg_github_outbound_comment()
 RETURNS TRIGGER AS $$
 DECLARE
     gh RECORD;
 BEGIN
-    -- Same walk as above: a comment on a change request reaches GitHub only
-    -- through the case that change request belongs to.
+    IF NEW.type IS DISTINCT FROM 'COMMENT' THEN
+        RETURN NULL;
+    END IF;
+
     SELECT agr.owner, agr.repository, c.github_issue_number
       INTO gh
-      FROM work_item cr_wi
-      JOIN work_item case_wi ON case_wi.id = cr_wi.parent_id
-      JOIN "case" c          ON c.id = case_wi.id
+      FROM "case" c
+      JOIN work_item case_wi ON case_wi.id = c.id
       JOIN account_github_repo agr ON agr.account_id = case_wi.account_id
-     WHERE cr_wi.id = NEW.work_item_id
+     WHERE c.id = NEW.work_item_id
        AND c.github_issue_number IS NOT NULL
        AND agr.is_active;
 
@@ -157,49 +169,10 @@ BEGIN
     VALUES ('comment_added', NEW.work_item_id, gh.owner, gh.repository, gh.github_issue_number,
             jsonb_build_object('commentId', NEW.id,
                                'content', NEW.content,
-                               'createdBy', NEW.created_by,
-                               'type', NEW.type));
+                               'createdBy', NEW.created_by));
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
-
--- Assignment is the fourth field ServiceNow watched, and it lives on
--- work_item rather than change_request -- so it needs its own trigger on that
--- table, restricted to rows that are change requests.
-CREATE OR REPLACE FUNCTION trg_github_outbound_assignment()
-RETURNS TRIGGER AS $$
-DECLARE
-    gh RECORD;
-BEGIN
-    IF NEW.type <> 'CHANGE_REQUEST' OR OLD.assigned_to_id IS NOT DISTINCT FROM NEW.assigned_to_id THEN
-        RETURN NULL;
-    END IF;
-
-    SELECT agr.owner, agr.repository, c.github_issue_number
-      INTO gh
-      FROM work_item case_wi
-      JOIN "case" c ON c.id = case_wi.id
-      JOIN account_github_repo agr ON agr.account_id = case_wi.account_id
-     WHERE case_wi.id = NEW.parent_id
-       AND c.github_issue_number IS NOT NULL
-       AND agr.is_active;
-
-    IF NOT FOUND THEN
-        RETURN NULL;
-    END IF;
-
-    INSERT INTO github_outbound_queue (event, change_request_id, owner, repository, issue_number, payload)
-    VALUES ('cr_updated', NEW.id, gh.owner, gh.repository, gh.github_issue_number,
-            jsonb_build_object('changes', jsonb_build_object('assigned_to_id',
-                jsonb_build_object('from', OLD.assigned_to_id, 'to', NEW.assigned_to_id))));
-    RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS work_item_assignment_github_outbound ON work_item;
-CREATE TRIGGER work_item_assignment_github_outbound
-    AFTER UPDATE OF assigned_to_id ON work_item
-    FOR EACH ROW EXECUTE FUNCTION trg_github_outbound_assignment();
 
 DROP TRIGGER IF EXISTS comment_github_outbound ON comment;
 CREATE TRIGGER comment_github_outbound
