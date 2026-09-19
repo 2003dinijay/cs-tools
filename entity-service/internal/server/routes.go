@@ -54,8 +54,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// pgFallback but do not route GetProjectByID/GetCaseByID through it).
 	accessSvc := service.NewAccessService(repository.NewAccessRepository(db), cfg.AuthInternalClientIDs)
 
-	// event_publish_failures, sla_clocks, scheduled_task_run, and
-	// alert_incident_mapping have no ServiceNow equivalent. They are
+	// event_publish_failures has no ServiceNow equivalent. It is
 	// Postgres-backed and registered only when a pool is available
 	// (db.NewPoolIfNeeded returns nil for DATA_SOURCE=servicenow so local
 	// SN-mode startups are not blocked). Gate the whole chain on db != nil:
@@ -123,6 +122,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	if db != nil {
 		alertIncidentMappingRepo := repository.NewAlertIncidentMappingRepository(db)
 		alertIncidentMappingHandler = handler.NewAlertIncidentMappingHandler(service.NewAlertIncidentMappingService(alertIncidentMappingRepo))
+	}
+
+	// announcement_requests has no ServiceNow equivalent either — same
+	// reasoning as sla_clocks/scheduled_task_run/alert_incident_mapping
+	// above, gated the same way: nil db means nil handler means the routes
+	// below are never registered, rather than panicking on a nil pool.
+	var announcementRequestHandler *handler.AnnouncementRequestHandler
+	if db != nil {
+		announcementRequestHandler = handler.NewAnnouncementRequestHandler(service.NewAnnouncementRequestService(repository.NewAnnouncementRequestRepository(db)))
 	}
 
 	accountRepo := repository.NewAccountRepository(db)
@@ -545,6 +553,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	if alertIncidentMappingHandler != nil {
 		mux.HandleFunc("POST /alert-incident-mappings", alertIncidentMappingHandler.CreateAlertIncidentMapping)
 		mux.HandleFunc("POST /alert-incident-mappings/lookup", alertIncidentMappingHandler.LookupAlertIncidentMappings)
+	}
+	if announcementRequestHandler != nil {
+		mux.HandleFunc("POST /announcement-requests", announcementRequestHandler.CreateAnnouncementRequest)
+		mux.HandleFunc("GET /announcement-requests/{id}", announcementRequestHandler.GetAnnouncementRequest)
+		mux.HandleFunc("POST /announcement-requests/search", announcementRequestHandler.SearchAnnouncementRequests)
+		mux.HandleFunc("PATCH /announcement-requests/{id}", announcementRequestHandler.UpdateAnnouncementRequest)
+		mux.HandleFunc("POST /announcement-requests/{id}/dry-run", announcementRequestHandler.RecordAnnouncementRequestDryRun)
+		mux.HandleFunc("POST /announcement-requests/{id}/submit", announcementRequestHandler.SubmitAnnouncementRequest)
+		mux.HandleFunc("POST /announcement-requests/{id}/approve", announcementRequestHandler.ApproveAnnouncementRequest)
+		mux.HandleFunc("POST /announcement-requests/{id}/publish", announcementRequestHandler.PublishAnnouncementRequest)
 	}
 
 	if snUserHandler != nil {
