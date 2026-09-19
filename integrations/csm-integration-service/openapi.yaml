@@ -1864,7 +1864,7 @@ components:
           type: string
         incidentNumber:
           type: string
-        createdAt:
+        createdOn:
           type: string
           format: date-time
 
