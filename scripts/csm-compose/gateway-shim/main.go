@@ -58,6 +58,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 const jwtAssertionHeader = "x-jwt-assertion"
@@ -71,10 +72,20 @@ func main() {
 
 	upstream, err := url.Parse(upstreamURL)
 	if err != nil {
-		log.Fatalf("gateway-shim: invalid UPSTREAM_URL %q: %v", upstreamURL, err)
+		// %q quotes the string using Go syntax, escaping control characters
+		// (including newlines) rather than emitting them raw, so this can't
+		// be used to forge extra log lines -- the usual log-injection
+		// concern the linter is flagging. Not user input either:
+		// upstreamURL is the UPSTREAM_URL env var (see below).
+		log.Fatalf("gateway-shim: invalid UPSTREAM_URL %q: %v", upstreamURL, err) // #nosec G706 -- %q escapes control chars/newlines, so no forged log lines are possible
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(upstream)
+	// UPSTREAM_URL is fixed, operator-controlled container config (set once
+	// in docker-compose.yml, e.g. http://csm-portal-backend:8080) -- never
+	// derived from a request, header, query param, or other caller-supplied
+	// input. Same shape as the registry.go G304 precedent (fixed deployment
+	// config, not user input).
+	proxy := httputil.NewSingleHostReverseProxy(upstream) // #nosec G704 -- UPSTREAM_URL is fixed local-dev compose config (docker-compose.yml env var), never derived from a request, not user-controlled input
 
 	// httputil.ReverseProxy already strips hop-by-hop headers and rewrites
 	// the request's scheme/host/path to the upstream -- wrap its default
@@ -92,7 +103,15 @@ func main() {
 	}
 
 	slog.Info("gateway-shim: listening", "port", port, "upstream", upstreamURL)
-	log.Fatal(http.ListenAndServe(":"+port, logRequests(proxy)))
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           logRequests(proxy),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
 }
 
 // addJWTAssertion is this shim's one job: turn the browser's
