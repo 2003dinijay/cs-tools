@@ -135,7 +135,12 @@ var permissionMatrix = map[Module]map[Action][]CanonicalRole{
 	ModuleProjects: {
 		ActionCreate: {RoleSuperAdmin, RoleAdmin},
 		ActionRead:   {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser, RoleStakeholder},
-		ActionUpdate: {RoleSuperAdmin, RoleAdmin, RoleAgent},
+		// The customer-side admins are here because the only project field a
+		// customer can patch is the AI-assistant toggle on their own project —
+		// self-service, not a WSO2-side setting. The plain user roles are not:
+		// enabling the assistant is an administrative choice for the project,
+		// like managing its contacts.
+		ActionUpdate: {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RolePartnerAdmin},
 		ActionDelete: {RoleSuperAdmin, RoleAdmin},
 	},
 	ModuleChangeRequests: {

@@ -156,6 +156,45 @@ func TestServerRBACRouteGating(t *testing.T) {
 			roles:        []string{"sn_customerservice.admin"},
 			wantHTTPCode: http.StatusForbidden,
 		},
+		// Projects. The only field PATCH /projects/{id} exposes is the
+		// AI-assistant toggle, which is the project's own administrative
+		// setting — so the customer-side admins can set it on their own
+		// project, and the plain user roles cannot.
+		{
+			name:         "CustomerAdmin can update their project",
+			module:       middleware.ModuleProjects,
+			action:       middleware.ActionUpdate,
+			roles:        []string{"sn_customerservice.customer_admin"},
+			wantHTTPCode: http.StatusOK,
+		},
+		{
+			name:         "PartnerAdmin can update their project",
+			module:       middleware.ModuleProjects,
+			action:       middleware.ActionUpdate,
+			roles:        []string{"sn_customerservice.partner_admin"},
+			wantHTTPCode: http.StatusOK,
+		},
+		{
+			name:         "CustomerUser cannot update a project",
+			module:       middleware.ModuleProjects,
+			action:       middleware.ActionUpdate,
+			roles:        []string{"sn_customerservice.customer"},
+			wantHTTPCode: http.StatusForbidden,
+		},
+		{
+			name:         "Stakeholder cannot update a project",
+			module:       middleware.ModuleProjects,
+			action:       middleware.ActionUpdate,
+			roles:        []string{"sn_customerservice.stakeholder"},
+			wantHTTPCode: http.StatusForbidden,
+		},
+		{
+			name:         "Stakeholder can still read a project",
+			module:       middleware.ModuleProjects,
+			action:       middleware.ActionRead,
+			roles:        []string{"sn_customerservice.stakeholder"},
+			wantHTTPCode: http.StatusOK,
+		},
 		{
 			name:         "Agent cannot access Security Admin",
 			module:       middleware.ModuleSecurityAdmin,
