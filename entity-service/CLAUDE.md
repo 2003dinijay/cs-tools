@@ -1909,16 +1909,28 @@ a deployment decision this file doesn't prescribe.
   project outside their own scope gets zero rows, never someone else's data,
   and gets the same narrowing even with no project filter of their own.
 
-**Notably, these same two Postgres-backed methods (`GetProjectByID`/
-`GetCaseByID`) are also what the ServiceNow data source delegates to as
-`pgFallback`** (`snProjectService`/`snCaseService`'s own doc comments: "no SN
-single-project endpoint" / "all write/read-by-id operations to pgFallback")
--- so `AccessService` is constructed once, unconditionally, regardless of
-`cfg.DataSource`, and this scoping now applies in **both** data-source modes
-for these two operations. Before this, `pgFallback`'s `GetProjectByID`/
-`GetCaseByID` had **no access control at all** in either mode -- any caller
-could fetch any project or case by id. This closes that gap rather than
-introducing a new one.
+**This applies to the Postgres data source only.** In ServiceNow mode
+`GetProjectByID`/`GetCaseByID` (and the search endpoints) go to ServiceNow
+itself with the forwarded `x-user-id-token`, so what a caller may see there is
+ServiceNow's own decision, and `AccessService` is not consulted. Note that
+`snProjectService`/`snCaseService` *hold* a `pgFallback` (their constructor
+doc comments say by-id reads use it), but their `GetProjectByID`/`GetCaseByID`
+bodies don't call it -- do not assume this scoping reaches ServiceNow mode
+because of that field. Tokens are still validated on every request in both
+modes; only the per-caller project/case scoping is Postgres-only. Bringing
+ServiceNow mode under the same scoping would mean routing those two reads
+through the Postgres services, which changes where their data comes from --
+a separate decision, not made here.
+
+**Deploy prerequisite: machine-to-machine callers.** Any service that calls a
+scoped endpoint directly with only a client-credentials token (no
+`x-user-id-token`) gets a 401 unless its client id is in
+`AUTH_INTERNAL_CLIENT_IDS`. Before rolling this out, list every direct
+service-to-service caller of `GET /projects/{id}`, `GET /cases/{id}`,
+`POST /projects/search`, `POST /cases/search` and `POST /search` and add the
+ones that should have unconditional access. A caller that reaches entity-service
+*through* another service is identified by that other service's client id, not
+its own.
 
 **Not yet wired**: every other project/case-adjacent read (comments,
 escalations, time cards, attachments, conversations, change requests,

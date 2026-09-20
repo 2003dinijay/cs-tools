@@ -83,10 +83,7 @@ func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchPr
 
 // GetProjectByID implements ProjectService.
 func (s *projectService) GetProjectByID(ctx context.Context, id string) (domain.ProjectDetailsView, error) {
-	if err := validateUUIDs("id", []string{id}); err != nil {
-		return domain.ProjectDetailsView{}, err
-	}
-	scope, err := s.access.ResolveScope(ctx)
+	scope, err := resolveScopeForID(ctx, s.access, id)
 	if err != nil {
 		return domain.ProjectDetailsView{}, err
 	}

@@ -303,10 +303,7 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 
 // GetCaseByID implements CaseService.
 func (s *caseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
-	if err := validateUUIDs("id", []string{id}); err != nil {
-		return domain.CaseView{}, err
-	}
-	scope, err := s.access.ResolveScope(ctx)
+	scope, err := resolveScopeForID(ctx, s.access, id)
 	if err != nil {
 		return domain.CaseView{}, err
 	}

@@ -141,7 +141,8 @@ func (v *Validator) ValidateUserToken(raw string) (UserClaims, error) {
 // ValidateClientToken validates an application's client-credentials access
 // token: signature, issuer and expiry, then extracts the client id from the
 // client_id claim (falling back to azp). No audience is enforced -- the client
-// id is what gets authorized, via AUTH_CLIENT_ROLES.
+// id is what gets authorized, by AccessService checking it against
+// AUTH_INTERNAL_CLIENT_IDS.
 func (v *Validator) ValidateClientToken(raw string) (ClientClaims, error) {
 	c, err := v.parse(raw)
 	if err != nil {

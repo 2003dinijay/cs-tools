@@ -71,7 +71,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 	// See CaseRepository.SearchCases's identical scope clause for why this is
 	// independent of any project filter the request itself may carry.
 	if !scope.Unrestricted {
-		where += fmt.Sprintf(" AND id = ANY($%d::text[]::uuid[])", argIdx)
+		where += " AND " + scopePredicate("id", argIdx)
 		filterArgs = append(filterArgs, scope.ProjectIDs)
 		argIdx++
 	}
@@ -170,7 +170,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	// as CaseRepository.GetCaseByID.
 	scopeClause, scopeArgs := "", []any{id}
 	if !scope.Unrestricted {
-		scopeClause = " AND p.id = ANY($2::text[]::uuid[])"
+		scopeClause = " AND " + scopePredicate("p.id", 2)
 		scopeArgs = append(scopeArgs, scope.ProjectIDs)
 	}
 	err := r.db.QueryRow(ctx,

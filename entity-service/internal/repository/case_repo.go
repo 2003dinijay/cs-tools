@@ -327,7 +327,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 	// the case, matching GetProjectByID's own reasoning.
 	scopeClause, scopeArgs := "", []any{id}
 	if !scope.Unrestricted {
-		scopeClause = " AND wi.project_id = ANY($2::text[]::uuid[])"
+		scopeClause = " AND " + scopePredicate("wi.project_id", 2)
 		scopeArgs = append(scopeArgs, scope.ProjectIDs)
 	}
 	err := r.db.QueryRow(ctx,
@@ -1019,7 +1019,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	// empty scope.ProjectIDs (no access at all) correctly matches nothing via
 	// ANY('{}').
 	if !scope.Unrestricted {
-		where += fmt.Sprintf(" AND wi.project_id = ANY($%d::text[]::uuid[])", argIdx)
+		where += " AND " + scopePredicate("wi.project_id", argIdx)
 		filterArgs = append(filterArgs, scope.ProjectIDs)
 		argIdx++
 	}

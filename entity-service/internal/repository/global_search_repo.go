@@ -58,6 +58,17 @@ type SearchScope struct {
 	ProjectIDs   []string
 }
 
+// scopePredicate is the single place the "row belongs to one of the caller's
+// projects" SQL is spelled. Every scoped query (global search, project/case
+// search, project/case by id) builds its scope clause through it, so a future
+// change to how scope is matched -- e.g. how an empty ProjectIDs is handled --
+// lands once instead of in each hand-written copy. column is the project-id
+// column to match (a trusted, code-supplied identifier, never user input);
+// argIdx is the placeholder position the caller binds scope.ProjectIDs to.
+func scopePredicate(column string, argIdx int) string {
+	return fmt.Sprintf("%s = ANY($%d::text[]::uuid[])", column, argIdx)
+}
+
 // SearchSortField is a validated sort key for global search.
 type SearchSortField string
 
@@ -106,7 +117,8 @@ func (f *searchFilter) add(clause string, val any) {
 
 func (f *searchFilter) scope(column string, scope SearchScope) {
 	if !scope.Unrestricted {
-		f.add(column+` = ANY($%d::text[]::uuid[])`, scope.ProjectIDs)
+		f.args = append(f.args, scope.ProjectIDs)
+		f.where += " AND " + scopePredicate(column, len(f.args))
 	}
 }
 

@@ -47,11 +47,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// accessSvc resolves the caller's AccessScope from the validated identity
 	// auth.Middleware attaches to every request (see AccessService's own doc
 	// comment for the full decision table). Constructed once and shared by
-	// every service that scopes its reads by it, in both data-source modes:
-	// GetProjectByID/GetCaseByID delegate to the Postgres-backed
-	// projectService/caseService as pgFallback even in ServiceNow mode (see
-	// those constructors' own comments), so this needs to run there too, not
-	// just when DataSource is postgres.
+	// every Postgres-backed service that scopes its reads by it. It only takes
+	// effect on the Postgres data source: in ServiceNow mode the project/case
+	// reads go to ServiceNow itself with the forwarded x-user-id-token, so
+	// scoping there is ServiceNow's own (snProjectService/snCaseService hold a
+	// pgFallback but do not route GetProjectByID/GetCaseByID through it).
 	accessSvc := service.NewAccessService(repository.NewAccessRepository(db), cfg.AuthInternalClientIDs)
 
 	// event_publish_failures, sla_clocks, scheduled_task_run, and

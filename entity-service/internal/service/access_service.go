@@ -124,3 +124,14 @@ func (s *accessService) scopeForUser(ctx context.Context, email string) (AccessS
 		return AccessScope{}, &apierror.ForbiddenError{Msg: "no access for this user"}
 	}
 }
+
+// resolveScopeForID is the preamble every scoped by-id read shares: reject a
+// malformed id before touching the identity or the database, then resolve the
+// caller's scope. Kept in one place so GetProjectByID and GetCaseByID can't
+// drift on check ordering (e.g. if audit logging is added later).
+func resolveScopeForID(ctx context.Context, access AccessService, id string) (AccessScope, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return AccessScope{}, err
+	}
+	return access.ResolveScope(ctx)
+}
