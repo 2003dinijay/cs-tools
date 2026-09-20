@@ -40,6 +40,12 @@ type caseService struct {
 	// case.billable_status_changed detection.
 	publisher EventPublisherService
 	access    AccessService
+	// snWriteback/snWorkStateMirror back UpdateCase's best-effort ServiceNow
+	// mirror write under DATA_SOURCE=postgres-primary-sn-fallback — both nil
+	// in every other mode. Set only via NewCaseServiceWithSNWriteback (see
+	// that constructor's own doc comment for why not here).
+	snWriteback       *SNWritebackDispatcher
+	snWorkStateMirror CaseService
 }
 
 // NewCaseService constructs a CaseService backed by the given repositories.
@@ -47,6 +53,27 @@ type caseService struct {
 // scopes GetCaseByID/SearchCases's reads (see AccessService).
 func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService) CaseService {
 	return &caseService{repo: repo, userRepo: userRepo, publisher: publisher, access: access}
+}
+
+// NewCaseServiceWithSNWriteback is NewCaseService plus the wiring
+// DATA_SOURCE=postgres-primary-sn-fallback needs for UpdateCase's best-effort
+// ServiceNow mirror write (see config.DataSourcePostgresPrimarySNFallback,
+// SNWritebackDispatcher, and UpdateCase's own doc comment for exactly what
+// gets mirrored — WorkState only — and why). A separate constructor rather
+// than extending NewCaseService's own signature: every other call site
+// (every existing test, plus every other DataSource branch in routes.go)
+// keeps working completely unchanged.
+//
+// mirror is the ServiceNow-backed CaseService (from NewServiceNowCaseService)
+// whose UpdateCase performs the real ServiceNow PATCH. It is never made the
+// active CaseService here and nothing else calls it — reads always stay on
+// Postgres in this mode.
+func NewCaseServiceWithSNWriteback(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService, dispatcher *SNWritebackDispatcher, mirror CaseService) CaseService {
+	return &caseService{
+		repo: repo, userRepo: userRepo, publisher: publisher, access: access,
+		snWriteback:       dispatcher,
+		snWorkStateMirror: mirror,
+	}
 }
 
 var validCaseSortField = map[domain.CaseSortField]bool{
@@ -448,6 +475,37 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 
 	if req.Severity != nil {
 		s.detectBillableStatusChange(ctx, req.ID, oldSeverity, c.Severity)
+	}
+
+	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-primary-sn-fallback
+	// only (snWriteback/snWorkStateMirror are both nil otherwise — see
+	// NewCaseServiceWithSNWriteback's own doc comment). Postgres has already committed by this
+	// point; this fires after, asynchronously, and never affects this
+	// response.
+	//
+	// WorkState ONLY, deliberately: fieldCount above guarantees at most one of
+	// State/Severity/WorkState is set on req, so req.WorkState != nil here
+	// means req.State and req.Severity are both nil. That matters because
+	// snCaseService.UpdateCase — the ServiceNow-mode method this mirrors —
+	// performs a live GetCaseByID read against ServiceNow before its PATCH
+	// whenever State or Severity is set (to detect a no-op change before
+	// deciding whether to publish an event), and this mode's whole point is
+	// that ServiceNow is NEVER read from. WorkState's branch has no such read.
+	// Mirroring State/Severity too needs snCaseService.UpdateCase refactored
+	// into a read-free PATCH-only helper first — deliberately deferred as its
+	// own separate, reviewed change against that live, ServiceNow-mode-serving
+	// code, not folded into this pilot. Built the same narrow request rather
+	// than forwarding req itself, so this can never accidentally carry State/
+	// Severity into the mirror call even if that invariant above changes later.
+	if req.WorkState != nil && s.snWriteback != nil && s.snWorkStateMirror != nil {
+		mirrorReq := domain.UpdateCaseRequest{ID: req.ID, WorkState: req.WorkState}
+		s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
+			map[string]any{"id": req.ID, "workState": *req.WorkState},
+			func(writeCtx context.Context) error {
+				_, err := s.snWorkStateMirror.UpdateCase(writeCtx, mirrorReq)
+				return err
+			},
+		)
 	}
 
 	return domain.UpdateCaseResponse{

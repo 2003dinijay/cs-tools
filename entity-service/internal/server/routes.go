@@ -201,8 +201,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventService(accountRepo, salesEntityClient))
 	}
 
+	// Also constructed for DataSourcePostgresPrimarySNFallback: that mode's
+	// active services stay Postgres-backed (see the case wiring below), but
+	// its best-effort ServiceNow mirror writes still need this client.
+	// config.Validate requires the same four credentials for both modes.
 	var serviceNowIntegrationServiceClient *integrationservice.Client
-	if cfg.DataSource == config.DataSourceServiceNow {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresPrimarySNFallback {
 		serviceNowIntegrationServiceClient = integrationservice.New(cfg.ServiceNowIntegrationServiceBaseURL, integrationservice.ClientCredentialsConfig{
 			TokenURL:     cfg.ServiceNowIntegrationServiceTokenURL,
 			ClientID:     cfg.ServiceNowIntegrationServiceClientID,
@@ -332,18 +336,42 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// NewServiceNowCaseService can also take it — see that constructor's
 	// own doc comment for what it uses it for (a direct, in-process role
 	// lookup backing applyResponseSLAOnComment, not routed through HTTP).
+	// Also constructed for DataSourcePostgresPrimarySNFallback, for the same
+	// reason serviceNowIntegrationServiceClient above is: the case pilot's
+	// SN-mirror snCaseService instance below needs it too.
 	var snUserService service.SNUserService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresPrimarySNFallback {
 		snUserService = service.NewServiceNowUserService(serviceNowIntegrationServiceClient)
 	}
 
 	caseRepo := repository.NewCaseRepository(db)
-	pgCaseSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
 	var activeCaseSvc service.CaseService
-	if cfg.DataSource == config.DataSourceServiceNow {
-		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseSvc, eventPublisher, slaClockService, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
-	} else {
-		activeCaseSvc = pgCaseSvc
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
+		pgCaseFallbackSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
+		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseFallbackSvc, eventPublisher, slaClockService, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
+	case config.DataSourcePostgresPrimarySNFallback:
+		// Pilot: case UPDATE only, and only its WorkState field — see
+		// caseService.UpdateCase's own doc comment for exactly what this
+		// mirrors and why (State/Severity mirroring needs
+		// snCaseService.UpdateCase refactored into a read-free PATCH-only
+		// helper first; deferred as separate, reviewed work against that
+		// live ServiceNow-mode-serving code). CreateCase is NOT wired to
+		// this dispatcher either — its own Postgres path
+		// (CaseRepository.CreateCase) is still deliberately broken pending
+		// an unrelated, unresolved work_item.number/wso2_id generation
+		// decision (see that method's own doc comment), so there is no
+		// working Postgres create to mirror from yet.
+		//
+		// snCaseMirrorSvc is a full snCaseService, exactly as constructed
+		// for DataSourceServiceNow above, but it is never made the active
+		// CaseService and nothing calls it except caseWriteback's writeFn —
+		// reads always stay on Postgres in this mode.
+		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, nil, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
+		caseWriteback := service.NewSNWritebackDispatcher(repository.NewSNWritebackFailureRepository(db))
+		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, caseWriteback, snCaseMirrorSvc)
+	default:
+		activeCaseSvc = service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc)
 

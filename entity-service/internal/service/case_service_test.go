@@ -18,6 +18,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,6 +51,7 @@ type stubCaseRepo struct {
 	updateAttachmentName  func(ctx context.Context, id, name, updatedBy string) (time.Time, error)
 	confirmCaseAttachment func(ctx context.Context, id string) (domain.Attachment, error)
 	searchCaseComments    func(ctx context.Context, req domain.SearchCaseCommentsRequest) ([]domain.CaseComment, int, error)
+	updateCase            func(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error)
 }
 
 func (s *stubCaseRepo) CreateCase(context.Context, domain.CreateCaseRequest) (domain.Case, error) {
@@ -72,7 +75,10 @@ func (s *stubCaseRepo) SearchCaseComments(ctx context.Context, req domain.Search
 	}
 	panic("not implemented")
 }
-func (s *stubCaseRepo) UpdateCase(context.Context, domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+func (s *stubCaseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+	if s.updateCase != nil {
+		return s.updateCase(ctx, req)
+	}
 	panic("not implemented")
 }
 func (s *stubCaseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error) {
@@ -553,5 +559,151 @@ func TestCaseService_SearchCases_AnyOfReachesRepository(t *testing.T) {
 	var ve *apierror.ValidationError
 	if !asValidationError(err, &ve) {
 		t.Fatalf("a field not allowed inside a branch must be a validation error, got %v", err)
+	}
+}
+
+// stubMirrorCaseService is a minimal CaseService stub that only implements
+// UpdateCase — the only method a NewCaseServiceWithSNWriteback mirror is
+// ever called on (see that constructor's own doc comment).
+type stubMirrorCaseService struct {
+	CaseService
+	updateCase func(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error)
+}
+
+func (s *stubMirrorCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
+	return s.updateCase(ctx, req)
+}
+
+// TestCaseService_UpdateCase_MirrorsWorkStateToServiceNow is the pilot's core
+// regression guard: a WorkState-only update must reach the mirror
+// CaseService with State and Severity both nil (see UpdateCase's own doc
+// comment for why that matters — the ServiceNow-mode UpdateCase this mirrors
+// reads from ServiceNow first whenever either is set, which this mode must
+// never do).
+func TestCaseService_UpdateCase_MirrorsWorkStateToServiceNow(t *testing.T) {
+	var mu sync.Mutex
+	var gotReq domain.UpdateCaseRequest
+	called := make(chan struct{})
+	mirror := &stubMirrorCaseService{
+		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
+			mu.Lock()
+			gotReq = req
+			mu.Unlock()
+			close(called)
+			return domain.UpdateCaseResponse{}, nil
+		},
+	}
+	failures := &recordingSNWritebackFailures{}
+	dispatcher := NewSNWritebackDispatcher(failures)
+
+	workState := domain.CaseWorkStateOngoing
+	repo := &stubCaseRepo{
+		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+			return domain.Case{ID: req.ID, WorkState: req.WorkState}, nil, nil
+		},
+	}
+	svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
+
+	if _, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkState: &workState}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("mirror.UpdateCase was never called")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotReq.ID != testDeploymentUUID {
+		t.Errorf("mirror got ID %q, want %q", gotReq.ID, testDeploymentUUID)
+	}
+	if gotReq.WorkState == nil || *gotReq.WorkState != workState {
+		t.Errorf("mirror got WorkState %v, want %v", gotReq.WorkState, workState)
+	}
+	if gotReq.State != nil {
+		t.Errorf("mirror got non-nil State %v, want nil — this must never carry State into the SN mirror call", gotReq.State)
+	}
+	if gotReq.Severity != nil {
+		t.Errorf("mirror got non-nil Severity %v, want nil — this must never carry Severity into the SN mirror call", gotReq.Severity)
+	}
+	if got := failures.count(); got != 0 {
+		t.Errorf("expected 0 sn_writeback_failures records for a successful mirror, got %d", got)
+	}
+}
+
+// TestCaseService_UpdateCase_DoesNotMirrorStateOrSeverity guards the other
+// half of the same invariant: a State or Severity update must NOT dispatch
+// to the mirror at all (not "dispatch with a stripped request" — no
+// dispatch), since neither is in this pilot's scope.
+func TestCaseService_UpdateCase_DoesNotMirrorStateOrSeverity(t *testing.T) {
+	mirrorCalled := make(chan struct{}, 1)
+	mirror := &stubMirrorCaseService{
+		updateCase: func(context.Context, domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
+			mirrorCalled <- struct{}{}
+			return domain.UpdateCaseResponse{}, nil
+		},
+	}
+	failures := &recordingSNWritebackFailures{}
+	dispatcher := NewSNWritebackDispatcher(failures)
+
+	repo := &stubCaseRepo{
+		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+			return domain.Case{ID: req.ID, State: req.State, Severity: req.Severity}, req.Severity, nil
+		},
+	}
+	svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
+
+	state := domain.CaseStateOpen
+	if _, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, State: &state}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	severity := domain.CaseSeverityHigh
+	if _, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, Severity: &severity}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case <-mirrorCalled:
+		t.Fatal("mirror.UpdateCase was called for a State/Severity update — only WorkState is in scope")
+	case <-time.After(100 * time.Millisecond):
+		// expected: no dispatch
+	}
+}
+
+// TestCaseService_UpdateCase_RecordsSNWritebackFailureOnMirrorError covers
+// the failure path: Postgres already committed by the time Dispatch runs, so
+// a failed mirror write must not surface as an UpdateCase error — it's
+// recorded to sn_writeback_failures instead (see SNWritebackDispatcher).
+func TestCaseService_UpdateCase_RecordsSNWritebackFailureOnMirrorError(t *testing.T) {
+	mirror := &stubMirrorCaseService{
+		updateCase: func(context.Context, domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
+			return domain.UpdateCaseResponse{}, errors.New("sn downstream unreachable")
+		},
+	}
+	failures := &recordingSNWritebackFailures{}
+	dispatcher := NewSNWritebackDispatcher(failures)
+
+	workState := domain.CaseWorkStatePaused
+	repo := &stubCaseRepo{
+		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+			return domain.Case{ID: req.ID, WorkState: req.WorkState}, nil, nil
+		},
+	}
+	svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
+
+	resp, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkState: &workState})
+	if err != nil {
+		t.Fatalf("UpdateCase must still succeed on a failed best-effort mirror write, got: %v", err)
+	}
+	if resp.Case.WorkState == nil || *resp.Case.WorkState != workState {
+		t.Errorf("UpdateCase response WorkState = %v, want %v", resp.Case.WorkState, workState)
+	}
+
+	waitFor(t, func() bool { return failures.count() == 1 })
+	req := failures.calls[0]
+	if req.EntityType != "case" || req.EntityID != testDeploymentUUID || req.Operation != "update" {
+		t.Errorf("unexpected failure record: %+v", req)
 	}
 }
