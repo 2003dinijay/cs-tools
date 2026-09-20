@@ -534,29 +534,37 @@ func loadDirectory() *directory.Directory {
 //	AUTH_SUPPORT_ENGINEER_ROLES, AUTH_ADMIN_ROLES, AUTH_TIMECARD_APPROVER_ROLES,
 //	AUTH_DASHBOARD_DESIGNER_ROLES
 //	    Each is a comma-separated list of role names; a caller whose token's
-//	    "roles" claim holds any one of them has that role. Unset or empty
-//	    falls back to the role's default group name (see
-//	    handler.DefaultAccessConfig), so a zero-config deployment expects the
-//	    documented app-csm-*-role names.
+//	    "roles" claim holds any one of them has that role.
+//
+// There is deliberately no default: role names are organisation vocabulary
+// that must not be committed here, the same reasoning CSM_TEAM_REGISTRY's own
+// lack of a default follows. A role whose variable is unset or empty is held by
+// nobody, and startup warns naming each one, since with none configured at all
+// nobody can use the portal.
 func loadAccessConfig() handler.AccessConfig {
-	def := handler.DefaultAccessConfig()
-	roles := func(name string, fallback []string) []string {
-		if configured := splitComma(os.Getenv(name)); len(configured) > 0 {
-			return configured
+	var unset []string
+	roles := func(name string) []string {
+		configured := splitComma(os.Getenv(name))
+		if len(configured) == 0 {
+			unset = append(unset, name)
 		}
-		return fallback
+		return configured
 	}
-	return handler.AccessConfig{
-		Viewer:               roles("AUTH_VIEWER_ROLES", def.Viewer),
-		Commenter:            roles("AUTH_COMMENTER_ROLES", def.Commenter),
-		Escalator:            roles("AUTH_ESCALATOR_ROLES", def.Escalator),
-		AttachmentDownloader: roles("AUTH_ATTACHMENT_DOWNLOADER_ROLES", def.AttachmentDownloader),
-		UsageMetricsViewer:   roles("AUTH_USAGE_METRICS_VIEWER_ROLES", def.UsageMetricsViewer),
-		SupportEngineer:      roles("AUTH_SUPPORT_ENGINEER_ROLES", def.SupportEngineer),
-		Admin:                roles("AUTH_ADMIN_ROLES", def.Admin),
-		TimecardApprover:     roles("AUTH_TIMECARD_APPROVER_ROLES", def.TimecardApprover),
-		DashboardDesigner:    roles("AUTH_DASHBOARD_DESIGNER_ROLES", def.DashboardDesigner),
+	cfg := handler.AccessConfig{
+		Viewer:               roles("AUTH_VIEWER_ROLES"),
+		Commenter:            roles("AUTH_COMMENTER_ROLES"),
+		Escalator:            roles("AUTH_ESCALATOR_ROLES"),
+		AttachmentDownloader: roles("AUTH_ATTACHMENT_DOWNLOADER_ROLES"),
+		UsageMetricsViewer:   roles("AUTH_USAGE_METRICS_VIEWER_ROLES"),
+		SupportEngineer:      roles("AUTH_SUPPORT_ENGINEER_ROLES"),
+		Admin:                roles("AUTH_ADMIN_ROLES"),
+		TimecardApprover:     roles("AUTH_TIMECARD_APPROVER_ROLES"),
+		DashboardDesigner:    roles("AUTH_DASHBOARD_DESIGNER_ROLES"),
 	}
+	if len(unset) > 0 {
+		slog.Warn("access-control role variables are unset, so no token role grants them", "variables", unset)
+	}
+	return cfg
 }
 
 // loadSftpgoConfig resolves the SFTPGo-backed attachment-storage feature

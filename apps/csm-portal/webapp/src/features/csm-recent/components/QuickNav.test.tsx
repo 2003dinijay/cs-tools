@@ -36,6 +36,7 @@ vi.mock("@features/csm-recent/hooks/useRecentViews", () => ({
 }));
 
 vi.mock("@config/featureFlags", () => ({
+  featureStateForPath: () => "enabled",
   navigableNavNodes: () => [],
 }));
 

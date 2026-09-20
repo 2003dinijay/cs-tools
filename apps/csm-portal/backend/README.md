@@ -247,25 +247,26 @@ each role — no upstream call is made. Every route is registered in `cmd/server
 route cannot be added without choosing one.
 
 Each portal role's token role names are configuration. The variable holds a comma-separated list; holding **any
-one** of the listed roles grants the role. Unset (or empty) uses the default shown, so a
-zero-config deployment expects the documented `app-csm-*-role` names. Matching is exact and
-case-sensitive.
+one** of the listed roles grants the role. Matching is exact and case-sensitive. There is
+**no default**: the names are organisation vocabulary and are not committed here, so a role whose
+variable is unset or empty is held by nobody (startup logs a warning naming each one). With none
+configured at all, nobody can use the portal.
 
-| Variable | Default token role | Grants |
-|---|---|---|
-| `AUTH_VIEWER_ROLES` | `app-csm-viewer-role` | view |
-| `AUTH_COMMENTER_ROLES` | `app-csm-commenter-role` | view, comment |
-| `AUTH_ESCALATOR_ROLES` | `app-csm-escalator-role` | view, escalate |
-| `AUTH_ATTACHMENT_DOWNLOADER_ROLES` | `app-csm-attachment-downloader-role` | view, download_attachment |
-| `AUTH_SUPPORT_ENGINEER_ROLES` | `app-csm-support-engineer-role` | view, view_operations, comment, escalate, download_attachment, write |
-| `AUTH_ADMIN_ROLES` | `app-csm-admin-role` | everything |
-| `AUTH_USAGE_METRICS_VIEWER_ROLES` | `app-csm-usage-metrics-viewer-role` | view |
-| `AUTH_TIMECARD_APPROVER_ROLES` | `app-csm-timecard-approver-role` | view |
-| `AUTH_DASHBOARD_DESIGNER_ROLES` | `app-csm-dashboard-designer-role` | view |
+| Variable | Grants |
+|---|---|
+| `AUTH_VIEWER_ROLES` | view |
+| `AUTH_COMMENTER_ROLES` | view, comment |
+| `AUTH_ESCALATOR_ROLES` | view, escalate |
+| `AUTH_ATTACHMENT_DOWNLOADER_ROLES` | view, download_attachment |
+| `AUTH_SUPPORT_ENGINEER_ROLES` | view, view_operations, comment, escalate, download_attachment, write |
+| `AUTH_ADMIN_ROLES` | everything |
+| `AUTH_USAGE_METRICS_VIEWER_ROLES` | view |
+| `AUTH_TIMECARD_APPROVER_ROLES` | view |
+| `AUTH_DASHBOARD_DESIGNER_ROLES` | view |
 
 ```bash
 # Several token roles can grant one portal role; any one is enough.
-AUTH_COMMENTER_ROLES=corp-support-notes,corp-interns
+AUTH_COMMENTER_ROLES=example-notes-role,example-interns-role
 ```
 
 | Permission | Routes |
@@ -365,7 +366,7 @@ backend/
 
 ### Users
 
-- `GET /users/me` — Get current user profile (`id`, `email`, `firstName`, `lastName`, `timeZone`, `roles` from entity service; `phoneNumber` from SCIM)
+- `GET /users/me` — Get current user profile (`id`, `email`, `firstName`, `lastName`, `timeZone` from entity service; `roles` are the portal roles granted by the caller's token; `phoneNumber` from SCIM)
 - `PATCH /users/me` — Update current user profile (`phoneNumber` via SCIM, `timeZone` via entity service)
 - `POST /users/search` — Search users; optional `filters` (`searchQuery`, `roles`, `userNames`, `emails`, `active`) and `sortBy` (`field`, `order`); response shape depends on data source (`User` for postgres, `SNUser` for ServiceNow)
 - `GET /users/{id}` — Get one user's full profile (ServiceNow data source only); adds `teams` (derived from `groups`) and, for external contacts only, `externalAccount` (`exists`/`locked`, from SCIM's "external" org search). Both are best-effort — absent rather than failing the request if their lookup fails

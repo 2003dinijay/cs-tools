@@ -141,7 +141,7 @@ func TestAuth_UserInfoInjection(t *testing.T) {
 		r.Header.Set("x-jwt-assertion", makeTestJWT(map[string]any{
 			"email":  "agent@wso2.com",
 			"userid": "uid-456",
-			"roles":  []string{"app-csm-viewer-role", "app-csm-admin-role"},
+			"roles":  []string{"test-viewer", "test-admin"},
 		}))
 		w := httptest.NewRecorder()
 		middleware.Auth(testConfig())(capture).ServeHTTP(w, r)
@@ -169,9 +169,9 @@ func TestAuth_RolesClaimShapes(t *testing.T) {
 		wantRoles []string
 		wantOK    bool
 	}{
-		{name: "one role arrives as a bare string", roles: "app-csm-viewer-role", wantRoles: []string{"app-csm-viewer-role"}, wantOK: true},
-		{name: "several roles arrive as an array", roles: []string{"app-csm-viewer-role", "app-csm-commenter-role"}, wantRoles: []string{"app-csm-viewer-role", "app-csm-commenter-role"}, wantOK: true},
-		{name: "a one-element array", roles: []string{"app-csm-admin-role"}, wantRoles: []string{"app-csm-admin-role"}, wantOK: true},
+		{name: "one role arrives as a bare string", roles: "test-viewer", wantRoles: []string{"test-viewer"}, wantOK: true},
+		{name: "several roles arrive as an array", roles: []string{"test-viewer", "test-commenter"}, wantRoles: []string{"test-viewer", "test-commenter"}, wantOK: true},
+		{name: "a one-element array", roles: []string{"test-admin"}, wantRoles: []string{"test-admin"}, wantOK: true},
 		{name: "an empty string is no role", roles: "", wantRoles: nil, wantOK: true},
 		{name: "an empty array is no role", roles: []string{}, wantRoles: []string{}, wantOK: true},
 		{name: "null is no role", roles: nil, wantRoles: nil, wantOK: true},

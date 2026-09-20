@@ -25,6 +25,22 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
+// testAccessConfig names each portal role with a dummy token role, so the tests
+// never depend on real role names.
+func testAccessConfig() AccessConfig {
+	return AccessConfig{
+		Viewer:               []string{"test-viewer"},
+		Commenter:            []string{"test-commenter"},
+		Escalator:            []string{"test-escalator"},
+		AttachmentDownloader: []string{"test-attachment-downloader"},
+		UsageMetricsViewer:   []string{"test-usage-metrics-viewer"},
+		SupportEngineer:      []string{"test-support-engineer"},
+		Admin:                []string{"test-admin"},
+		TimecardApprover:     []string{"test-timecard-approver"},
+		DashboardDesigner:    []string{"test-dashboard-designer"},
+	}
+}
+
 // serveWithRoles runs one request through a guard-wrapped handler as a caller
 // whose token carries roles, and reports the status plus whether the wrapped
 // handler ran.
@@ -47,24 +63,24 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 		roles []string
 		allow []Permission
 	}{
-		{"viewer reads only", []string{"app-csm-viewer-role"}, []Permission{PermView}},
-		{"commenter can view and comment", []string{"app-csm-commenter-role"}, []Permission{PermView, PermComment}},
-		{"escalator can view and escalate", []string{"app-csm-escalator-role"}, []Permission{PermView, PermEscalate}},
-		{"downloader can view and download", []string{"app-csm-attachment-downloader-role"}, []Permission{PermView, PermDownloadAttachment}},
-		{"support engineer can do every route permission", []string{"app-csm-support-engineer-role"}, all},
-		{"admin can do every route permission", []string{"app-csm-admin-role"}, all},
-		{"usage metrics viewer can view only", []string{"app-csm-usage-metrics-viewer-role"}, []Permission{PermView}},
-		{"timecard approver can view only", []string{"app-csm-timecard-approver-role"}, []Permission{PermView}},
-		{"dashboard designer can view only", []string{"app-csm-dashboard-designer-role"}, []Permission{PermView}},
-		{"roles combine", []string{"app-csm-viewer-role", "app-csm-commenter-role", "app-csm-escalator-role"}, []Permission{PermView, PermComment, PermEscalate}},
+		{"viewer reads only", []string{"test-viewer"}, []Permission{PermView}},
+		{"commenter can view and comment", []string{"test-commenter"}, []Permission{PermView, PermComment}},
+		{"escalator can view and escalate", []string{"test-escalator"}, []Permission{PermView, PermEscalate}},
+		{"downloader can view and download", []string{"test-attachment-downloader"}, []Permission{PermView, PermDownloadAttachment}},
+		{"support engineer can do every route permission", []string{"test-support-engineer"}, all},
+		{"admin can do every route permission", []string{"test-admin"}, all},
+		{"usage metrics viewer can view only", []string{"test-usage-metrics-viewer"}, []Permission{PermView}},
+		{"timecard approver can view only", []string{"test-timecard-approver"}, []Permission{PermView}},
+		{"dashboard designer can view only", []string{"test-dashboard-designer"}, []Permission{PermView}},
+		{"roles combine", []string{"test-viewer", "test-commenter", "test-escalator"}, []Permission{PermView, PermComment, PermEscalate}},
 		{"unrelated roles grant nothing", []string{"wso2-everyone", "admin", "agent", "customer"}, nil},
 		{"no roles", nil, nil},
-		{"role names are case sensitive", []string{"APP-CSM-ADMIN-ROLE"}, nil},
+		{"role names are case sensitive", []string{"TEST-ADMIN"}, nil},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			g := NewAccessGuard(DefaultAccessConfig())
+			g := NewAccessGuard(testAccessConfig())
 			for _, perm := range all {
 				status, reached := serveWithRoles(g, perm, tc.roles)
 				want := slices.Contains(tc.allow, perm)
@@ -81,7 +97,7 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 }
 
 func TestAccessGuard_UsesConfiguredRoleNames(t *testing.T) {
-	cfg := DefaultAccessConfig()
+	cfg := testAccessConfig()
 	cfg.Commenter = []string{"corp-support-notes", "corp-interns"}
 	g := NewAccessGuard(cfg)
 
@@ -90,13 +106,13 @@ func TestAccessGuard_UsesConfiguredRoleNames(t *testing.T) {
 			t.Errorf("configured role %q: status = %d, want 204", role, status)
 		}
 	}
-	if status, _ := serveWithRoles(g, PermComment, []string{"app-csm-commenter-role"}); status != http.StatusForbidden {
-		t.Errorf("default name after override: status = %d, want 403 (the configured name replaces the default)", status)
+	if status, _ := serveWithRoles(g, PermComment, []string{"test-commenter"}); status != http.StatusForbidden {
+		t.Errorf("default name after override: status = %d, want 403 (the configured names replace the previous ones)", status)
 	}
 }
 
 func TestAccessGuard_AuthenticatedNeedsNoRole(t *testing.T) {
-	status, reached := serveWithRoles(NewAccessGuard(DefaultAccessConfig()), PermAuthenticated, nil)
+	status, reached := serveWithRoles(NewAccessGuard(testAccessConfig()), PermAuthenticated, nil)
 	if status != http.StatusNoContent || !reached {
 		t.Errorf("status = %d reached = %v, want 204 and reached", status, reached)
 	}
@@ -104,7 +120,7 @@ func TestAccessGuard_AuthenticatedNeedsNoRole(t *testing.T) {
 
 func TestAccessGuard_NoUserIs401(t *testing.T) {
 	reached := false
-	h := NewAccessGuard(DefaultAccessConfig()).Require(PermAuthenticated, func(http.ResponseWriter, *http.Request) { reached = true })
+	h := NewAccessGuard(testAccessConfig()).Require(PermAuthenticated, func(http.ResponseWriter, *http.Request) { reached = true })
 	w := httptest.NewRecorder()
 	h(w, httptest.NewRequest(http.MethodGet, "/x", nil))
 	assertStatus(t, w, http.StatusUnauthorized)
@@ -114,30 +130,30 @@ func TestAccessGuard_NoUserIs401(t *testing.T) {
 }
 
 func TestAccessGuard_UnknownPermissionIsDenied(t *testing.T) {
-	status, reached := serveWithRoles(NewAccessGuard(DefaultAccessConfig()), Permission(999), []string{"app-csm-admin-role"})
+	status, reached := serveWithRoles(NewAccessGuard(testAccessConfig()), Permission(999), []string{"test-admin"})
 	if status != http.StatusForbidden || reached {
 		t.Errorf("status = %d reached = %v, want 403 and not reached", status, reached)
 	}
 }
 
 func TestAccessGuard_RolesFor(t *testing.T) {
-	g := NewAccessGuard(DefaultAccessConfig())
+	g := NewAccessGuard(testAccessConfig())
 	tests := []struct {
 		name string
 		held []string
 		want []string
 	}{
 		{"none", nil, []string{}},
-		{"one role", []string{"app-csm-viewer-role"}, []string{"viewer"}},
-		{"several roles come back in a fixed order", []string{"app-csm-admin-role", "app-csm-commenter-role", "app-csm-viewer-role"}, []string{"viewer", "commenter", "admin"}},
-		{"support engineer", []string{"app-csm-support-engineer-role"}, []string{"support_engineer"}},
+		{"one role", []string{"test-viewer"}, []string{"viewer"}},
+		{"several roles come back in a fixed order", []string{"test-admin", "test-commenter", "test-viewer"}, []string{"viewer", "commenter", "admin"}},
+		{"support engineer", []string{"test-support-engineer"}, []string{"support_engineer"}},
 		{"every role", []string{
-			"app-csm-viewer-role", "app-csm-commenter-role", "app-csm-escalator-role", "app-csm-attachment-downloader-role",
-			"app-csm-support-engineer-role", "app-csm-usage-metrics-viewer-role", "app-csm-timecard-approver-role",
-			"app-csm-dashboard-designer-role", "app-csm-admin-role",
+			"test-viewer", "test-commenter", "test-escalator", "test-attachment-downloader",
+			"test-support-engineer", "test-usage-metrics-viewer", "test-timecard-approver",
+			"test-dashboard-designer", "test-admin",
 		}, []string{"viewer", "commenter", "escalator", "attachment_downloader", "support_engineer", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "admin"}},
 		{"unrelated roles are ignored", []string{"wso2-everyone", "agent"}, []string{}},
-		{"a duplicated held role is reported once", []string{"app-csm-viewer-role", "app-csm-viewer-role"}, []string{"viewer"}},
+		{"a duplicated held role is reported once", []string{"test-viewer", "test-viewer"}, []string{"viewer"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -150,23 +166,23 @@ func TestAccessGuard_RolesFor(t *testing.T) {
 }
 
 func TestAccessGuard_RolesForUsesConfiguredNames(t *testing.T) {
-	cfg := DefaultAccessConfig()
+	cfg := testAccessConfig()
 	cfg.SupportEngineer = []string{"corp-se-a", "corp-se-b"}
 	g := NewAccessGuard(cfg)
 	if got := g.RolesFor([]string{"corp-se-b"}); !slices.Equal(got, []string{"support_engineer"}) {
 		t.Errorf("RolesFor = %v, want [support_engineer]", got)
 	}
-	if got := g.RolesFor([]string{"app-csm-support-engineer-role"}); len(got) != 0 {
+	if got := g.RolesFor([]string{"test-support-engineer"}); len(got) != 0 {
 		t.Errorf("RolesFor = %v, want none: the configured names replace the default", got)
 	}
 }
 
 func TestAccessGuard_OperationsAreForSupportEngineersAndAdmins(t *testing.T) {
-	g := NewAccessGuard(DefaultAccessConfig())
+	g := NewAccessGuard(testAccessConfig())
 	for _, role := range []string{
-		"app-csm-viewer-role", "app-csm-commenter-role", "app-csm-escalator-role",
-		"app-csm-attachment-downloader-role", "app-csm-usage-metrics-viewer-role",
-		"app-csm-timecard-approver-role", "app-csm-dashboard-designer-role",
+		"test-viewer", "test-commenter", "test-escalator",
+		"test-attachment-downloader", "test-usage-metrics-viewer",
+		"test-timecard-approver", "test-dashboard-designer",
 	} {
 		if status, _ := serveWithRoles(g, PermViewOperations, []string{role}); status != http.StatusForbidden {
 			t.Errorf("%s reading operations: status = %d, want 403", role, status)
@@ -175,9 +191,21 @@ func TestAccessGuard_OperationsAreForSupportEngineersAndAdmins(t *testing.T) {
 			t.Errorf("%s reading cases and customers: status = %d, want 204", role, status)
 		}
 	}
-	for _, role := range []string{"app-csm-support-engineer-role", "app-csm-admin-role"} {
+	for _, role := range []string{"test-support-engineer", "test-admin"} {
 		if status, _ := serveWithRoles(g, PermViewOperations, []string{role}); status != http.StatusNoContent {
 			t.Errorf("%s reading operations: status = %d, want 204", role, status)
 		}
+	}
+}
+
+func TestAccessGuard_UnconfiguredRolesAreHeldByNobody(t *testing.T) {
+	g := NewAccessGuard(AccessConfig{})
+	for _, perm := range []Permission{PermView, PermViewOperations, PermComment, PermEscalate, PermDownloadAttachment, PermWrite} {
+		if status, _ := serveWithRoles(g, perm, []string{"test-admin", "test-viewer", ""}); status != http.StatusForbidden {
+			t.Errorf("permission %d with no roles configured: status = %d, want 403", perm, status)
+		}
+	}
+	if got := g.RolesFor([]string{"test-admin", ""}); len(got) != 0 {
+		t.Errorf("RolesFor = %v, want none when no roles are configured", got)
 	}
 }

@@ -30,7 +30,7 @@ import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { useSearchParams } from "react-router";
 import { useAsgardeo } from "@asgardeo/react";
 
-import { navigableNavNodes } from "@config/featureFlags";
+import { featureStateForPath, navigableNavNodes } from "@config/featureFlags";
 import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import {
@@ -530,8 +530,15 @@ export default function QuickNav(): JSX.Element | null {
     const toCaseHit = (e: RecentView): QuickCaseHit | undefined =>
       e.kind === "case" && e.caseHit ? { id: e.id, ...e.caseHit } : undefined;
 
+    // A pinned or recent entry can point at a page this user's roles no longer
+    // (or never) unlock, e.g. an incident opened before they lost Operations
+    // access; drop it rather than offer a link that redirects away.
+    const reachable = (e: RecentView): boolean =>
+      featureStateForPath(e.href.split(/[?#]/)[0], access) !== "hidden";
+
     const pinned: Result[] = recents
       .filter((e) => e.pinned)
+      .filter(reachable)
       .filter((e) => match(e.title, e.subtitle))
       .map((e) => ({
         key: `pin-${e.kind}-${e.id}`,
@@ -545,6 +552,7 @@ export default function QuickNav(): JSX.Element | null {
 
     const recent: Result[] = recents
       .filter((e) => !e.pinned)
+      .filter(reachable)
       .filter((e) => match(e.title, e.subtitle))
       .slice(0, RECENT_LIMIT)
       .map((e) => ({

@@ -8539,6 +8539,8 @@ components:
 
     UserResponse:
       type: object
+      required:
+        - roles
       properties:
         id:
           type: string

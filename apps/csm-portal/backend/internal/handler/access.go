@@ -51,7 +51,9 @@ const (
 
 // AccessConfig names, per portal role, the role names on the token that grant
 // it. Each field is a list because one portal role can be granted by several
-// token roles; holding any one of them is enough.
+// token roles; holding any one of them is enough. There are deliberately no
+// defaults: the names are organisation vocabulary supplied by configuration,
+// and a role with no names configured is held by nobody.
 type AccessConfig struct {
 	Viewer               []string
 	Commenter            []string
@@ -62,23 +64,6 @@ type AccessConfig struct {
 	Admin                []string
 	TimecardApprover     []string
 	DashboardDesigner    []string
-}
-
-// DefaultAccessConfig is the token role name each portal role uses when none is
-// configured. These are generic platform names, not organisation-specific
-// ones, so committing them leaks nothing.
-func DefaultAccessConfig() AccessConfig {
-	return AccessConfig{
-		Viewer:               []string{"app-csm-viewer-role"},
-		Commenter:            []string{"app-csm-commenter-role"},
-		Escalator:            []string{"app-csm-escalator-role"},
-		AttachmentDownloader: []string{"app-csm-attachment-downloader-role"},
-		UsageMetricsViewer:   []string{"app-csm-usage-metrics-viewer-role"},
-		SupportEngineer:      []string{"app-csm-support-engineer-role"},
-		Admin:                []string{"app-csm-admin-role"},
-		TimecardApprover:     []string{"app-csm-timecard-approver-role"},
-		DashboardDesigner:    []string{"app-csm-dashboard-designer-role"},
-	}
 }
 
 // AccessGuard authorises a request from the roles on the caller's validated

@@ -279,10 +279,10 @@ func TestGetMeRoles(t *testing.T) {
 	newHandler := func(t *testing.T, entity *mockEntityUserClient, cfg AccessConfig) *UsersHandler {
 		return NewUsersHandler(&mockSCIMClient{}, entity, testDirectory(t), false).WithAccessGuard(NewAccessGuard(cfg))
 	}
-	def := DefaultAccessConfig()
+	def := testAccessConfig()
 
 	t.Run("reports the portal role the token role grants", func(t *testing.T) {
-		resp := getMeAs(t, newHandler(t, &mockEntityUserClient{}, def), "agent@example.com", []string{"app-csm-commenter-role"})
+		resp := getMeAs(t, newHandler(t, &mockEntityUserClient{}, def), "agent@example.com", []string{"test-commenter"})
 		if joined(resp.Roles) != "commenter" {
 			t.Errorf("roles = %s, want commenter", joined(resp.Roles))
 		}
@@ -290,7 +290,7 @@ func TestGetMeRoles(t *testing.T) {
 
 	t.Run("a caller can hold several roles, and unrelated token roles are ignored", func(t *testing.T) {
 		resp := getMeAs(t, newHandler(t, &mockEntityUserClient{}, def), "agent@example.com",
-			[]string{"app-csm-support-engineer-role", "app-csm-usage-metrics-viewer-role", "wso2-everyone"})
+			[]string{"test-support-engineer", "test-usage-metrics-viewer", "wso2-everyone"})
 		if joined(resp.Roles) != "support_engineer,usage_metrics_viewer" {
 			t.Errorf("roles = %s, want support_engineer,usage_metrics_viewer", joined(resp.Roles))
 		}
@@ -302,14 +302,14 @@ func TestGetMeRoles(t *testing.T) {
 				return []byte(`{"id":"u-1","email":"agent@example.com","lastName":"Doe","roles":["internal","admin"]}`), nil
 			},
 		}
-		resp := getMeAs(t, newHandler(t, entity, def), "agent@example.com", []string{"app-csm-viewer-role"})
+		resp := getMeAs(t, newHandler(t, entity, def), "agent@example.com", []string{"test-viewer"})
 		if joined(resp.Roles) != "viewer" {
 			t.Errorf("roles = %s, want only viewer: the entity roles must not leak in", joined(resp.Roles))
 		}
 	})
 
 	t.Run("the dashboard designer role is reported", func(t *testing.T) {
-		resp := getMeAs(t, newHandler(t, &mockEntityUserClient{}, def), "agent@example.com", []string{"app-csm-dashboard-designer-role"})
+		resp := getMeAs(t, newHandler(t, &mockEntityUserClient{}, def), "agent@example.com", []string{"test-dashboard-designer"})
 		if joined(resp.Roles) != "dashboard_designer" {
 			t.Errorf("roles = %s, want dashboard_designer", joined(resp.Roles))
 		}
@@ -324,14 +324,14 @@ func TestGetMeRoles(t *testing.T) {
 
 	t.Run("no guard wired reports an empty array, not null", func(t *testing.T) {
 		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false)
-		resp := getMeAs(t, h, "agent@example.com", []string{"app-csm-admin-role"})
+		resp := getMeAs(t, h, "agent@example.com", []string{"test-admin"})
 		if resp.Roles == nil || len(*resp.Roles) != 0 {
 			t.Errorf("roles = %s, want an empty non-null array", joined(resp.Roles))
 		}
 	})
 
 	t.Run("honours configured role names", func(t *testing.T) {
-		cfg := DefaultAccessConfig()
+		cfg := testAccessConfig()
 		cfg.Admin = []string{"corp-csm-admins"}
 		resp := getMeAs(t, newHandler(t, &mockEntityUserClient{}, cfg), "agent@example.com", []string{"corp-csm-admins"})
 		if joined(resp.Roles) != "admin" {

@@ -2518,7 +2518,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
               <CsmCaseCommentInput
                 disabled={!caseId || isClosed}
                 publicCommentDisabledReason={publicReplyGateReason}
-                canResumeToUnlockPublicReply={canResumeToUnlockPublicReply}
+                canResumeToUnlockPublicReply={canWrite && canResumeToUnlockPublicReply}
+                attachmentsDisabled={!canWrite}
                 onResumeWork={() => onAction({ secondary: "toggle_work_state" })}
                 isResumingWork={patchCase.isPending}
                 autoFocus
@@ -2763,8 +2764,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
           />
           <TagsWidget
             tags={c.tags}
-            onAdd={isClosed ? undefined : () => setAddTagOpen(true)}
-            onRemove={isClosed ? undefined : (t) => onRemoveTag(t.id)}
+            onAdd={isClosed || !canWrite ? undefined : () => setAddTagOpen(true)}
+            onRemove={isClosed || !canWrite ? undefined : (t) => onRemoveTag(t.id)}
             removingId={removeTag.isPending ? removeTag.variables : null}
           />
           <EscalationWidget
@@ -2845,7 +2846,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               caseId={c.id}
               parentCase={c.parentCase}
               onLinkIncident={() => setLinkIncidentOpen(true)}
-              linkDisabled={isClosed}
+              linkDisabled={isClosed || !canWrite}
             />
             <LinkedIncidentsListWidget caseId={c.id} />
             {/* Change requests are only ever raised from a service request,
@@ -2928,10 +2929,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   "Could not upload the attachment.")
                 : null
             }
-            onUpload={isClosed ? undefined : onUploadAttachment}
+            onUpload={isClosed || !canWrite ? undefined : onUploadAttachment}
             onDownloadAll={canDownloadAttachment ? onDownloadAllAttachments : undefined}
             onDownload={canDownloadAttachment ? onDownloadAttachment : undefined}
-            onDelete={setPendingDelete}
+            onDelete={canWrite ? setPendingDelete : undefined}
             deletingId={deleteAttachment.isPending ? pendingDelete?.id : null}
             preview={{
               onGetPreviewContent: getAttachmentPreviewContent,
@@ -2946,8 +2947,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
         <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: "1fr" }}>
           <CaseTimeCardsPanel
             caseId={c.id}
-            onLogTime={() => setLogTimeOpen(true)}
-            onEditTimeCard={setEditTimeCard}
+            onLogTime={canWrite ? () => setLogTimeOpen(true) : undefined}
+            onEditTimeCard={canWrite ? setEditTimeCard : undefined}
           />
         </Box>
       )}

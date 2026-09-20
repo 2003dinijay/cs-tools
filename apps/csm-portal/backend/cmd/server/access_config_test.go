@@ -19,8 +19,6 @@ package main
 import (
 	"slices"
 	"testing"
-
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/handler"
 )
 
 func TestLoadAccessConfig(t *testing.T) {
@@ -36,33 +34,48 @@ func TestLoadAccessConfig(t *testing.T) {
 		}
 	}
 
-	t.Run("unset falls back to the default role names", func(t *testing.T) {
+	t.Run("unset roles have no names: nobody holds them", func(t *testing.T) {
 		resetEnv(t)
 		got := loadAccessConfig()
-		want := handler.DefaultAccessConfig()
-		if !slices.Equal(got.Viewer, want.Viewer) || !slices.Equal(got.Admin, want.Admin) ||
-			!slices.Equal(got.DashboardDesigner, want.DashboardDesigner) {
-			t.Errorf("loadAccessConfig() = %+v, want defaults %+v", got, want)
+		for name, roles := range map[string][]string{
+			"Viewer": got.Viewer, "Commenter": got.Commenter, "Escalator": got.Escalator,
+			"AttachmentDownloader": got.AttachmentDownloader, "UsageMetricsViewer": got.UsageMetricsViewer,
+			"SupportEngineer": got.SupportEngineer, "Admin": got.Admin,
+			"TimecardApprover": got.TimecardApprover, "DashboardDesigner": got.DashboardDesigner,
+		} {
+			if len(roles) != 0 {
+				t.Errorf("%s = %v, want no names when the variable is unset", name, roles)
+			}
 		}
 	})
 
-	t.Run("a configured value replaces the default and may list several roles", func(t *testing.T) {
+	t.Run("a configured value is trimmed and may list several roles", func(t *testing.T) {
 		resetEnv(t)
-		t.Setenv("AUTH_COMMENTER_ROLES", " corp-notes , corp-interns ,, ")
+		t.Setenv("AUTH_COMMENTER_ROLES", " test-notes , test-interns ,, ")
 		got := loadAccessConfig()
-		if want := []string{"corp-notes", "corp-interns"}; !slices.Equal(got.Commenter, want) {
+		if want := []string{"test-notes", "test-interns"}; !slices.Equal(got.Commenter, want) {
 			t.Errorf("Commenter = %v, want %v", got.Commenter, want)
 		}
-		if want := handler.DefaultAccessConfig().SupportEngineer; !slices.Equal(got.SupportEngineer, want) {
-			t.Errorf("SupportEngineer = %v, want the untouched default %v", got.SupportEngineer, want)
+		if len(got.SupportEngineer) != 0 {
+			t.Errorf("SupportEngineer = %v, want it untouched by another role's variable", got.SupportEngineer)
 		}
 	})
 
-	t.Run("a value of only commas or spaces falls back to the default", func(t *testing.T) {
+	t.Run("each role reads its own variable", func(t *testing.T) {
+		resetEnv(t)
+		t.Setenv("AUTH_SUPPORT_ENGINEER_ROLES", "test-se")
+		t.Setenv("AUTH_ADMIN_ROLES", "test-adm")
+		got := loadAccessConfig()
+		if !slices.Equal(got.SupportEngineer, []string{"test-se"}) || !slices.Equal(got.Admin, []string{"test-adm"}) {
+			t.Errorf("SupportEngineer = %v, Admin = %v", got.SupportEngineer, got.Admin)
+		}
+	})
+
+	t.Run("a value of only commas or spaces is empty", func(t *testing.T) {
 		resetEnv(t)
 		t.Setenv("AUTH_ADMIN_ROLES", " , ,")
-		if got, want := loadAccessConfig().Admin, handler.DefaultAccessConfig().Admin; !slices.Equal(got, want) {
-			t.Errorf("Admin = %v, want default %v", got, want)
+		if got := loadAccessConfig().Admin; len(got) != 0 {
+			t.Errorf("Admin = %v, want empty", got)
 		}
 	})
 }
