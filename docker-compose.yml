@@ -206,7 +206,7 @@ services:
       AUTH_ISSUER: http://localhost:9100
       AUTH_JWKS_URL: http://mock-oidc:9100/oauth2/jwks
       AUTH_USER_TOKEN_AUDIENCES: csm-portal-webapp,customer-portal-webapp
-      AUTH_CLIENT_ROLES: csm-portal-backend-dev-client=internal,csm-integration-service-dev-client=internal,customer-portal-backend-dev-client=delegate
+      AUTH_INTERNAL_CLIENT_IDS: csm-portal-backend-dev-client,csm-integration-service-dev-client
     volumes:
       - csm-dev-certs:/certs:ro
     ports:

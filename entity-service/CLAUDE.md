@@ -1794,7 +1794,7 @@ reference-data reads `GetSystemMetadata` serves, so it returns a
 route itself is now registered in both modes, since `GetSystemMetadata`
 needed to be) or a silently-empty result.
 
-## Token validation and caller-scoped access (`POST /search`)
+## Token validation and caller-scoped access
 
 entity-service used to read `x-user-id-token` without verifying it and had no
 notion of "what may this caller see" -- in Phase 1 ServiceNow applied that via
@@ -1803,23 +1803,23 @@ adds it back, in entity-service (next to the data), not in each caller.
 
 **Token validation (`internal/auth`)** mirrors `apps/csm-portal/backend`'s
 validator (`golang-jwt/jwt/v5` + `keyfunc/v3`, same versions), against
-**Asgardeo** (not Choreo). Two tokens can arrive:
+**Asgardeo** (not Choreo). Two tokens can arrive on the same request:
 - `x-user-id-token`: the end user's ID token. Checked for signature, issuer,
   expiry, an `aud` among `AUTH_USER_TOKEN_AUDIENCES`, and an `email` claim.
 - `Authorization: Bearer`: the calling application's client-credentials access
-  token (every backend, including csm-integration-service, sends one). Checked
-  for signature/issuer/expiry; its `client_id` (else `azp`) claim is the client
-  id. No audience check -- the client id is what gets authorized.
+  token (every backend, including csm-integration-service, sends one -- it's
+  the only token a pure machine-to-machine caller ever sends). Checked for
+  signature/issuer/expiry; its `client_id` (else `azp`) claim is the client id.
+  No audience check -- the client id is what gets authorized.
 
 **Always on -- there is no config flag to disable it.** `AUTH_ISSUER`/
 `AUTH_JWKS_URL`/`AUTH_USER_TOKEN_AUDIENCES` are required (`config.Validate`
 rejects startup without them). Only asymmetric algorithms are accepted (an
 HS256 token "signed" with the public key is rejected -- there is a test). A
-token that is
-**present but invalid is always a 401 on every route**, never downgraded to
-"no token": that would turn a forged user token into an anonymous request.
-A request with no tokens at all passes through the middleware; whether that is
-acceptable is decided per endpoint.
+token that is **present but invalid is always a 401 on every route**, never
+downgraded to "no token": that would turn a forged user token into an
+anonymous request. A request with no tokens at all passes through the
+middleware; whether that's acceptable is decided per endpoint (see below).
 
 Two things learned the hard way, both mirrored from/corrected against the CSM
 backend: Asgardeo publishes JWKS `x5c` certs Go 1.23+ refuses to parse, so the
@@ -1829,68 +1829,101 @@ the background, which would leave a misconfigured deployment up rejecting every
 token. `NewValidator` therefore fails unless at least one key actually loaded,
 and `NewRouter` panics on that error at startup.
 
-**Who may see what (`AccessService.ResolveScope`)**, used today by `POST /search`
-on the Postgres data source. The decision comes from the *validated* identity,
-never from a list the caller sends:
+**Who may see what (`AccessService.ResolveScope`)**. The decision comes from
+the *validated* identity, never from a list the caller sends, and applies the
+same way everywhere it's wired (see "Where this is actually enforced" below):
 
 | Request carries | Result |
 |---|---|
 | no verified identity (only possible if the auth middleware was left out of the chain -- a bug) | 503 -- never scope from an unverified token |
-| user token, `user_type` INTERNAL (all active rows for the email) | everything |
-| user token, EXTERNAL (customer) | only projects where their email is a `REGISTERED` `project_contact`, and the cases in them; none registered = an empty result, never "no filter" |
-| user token, inactive / SYSTEM / NOT_AVAILABLE / unknown email | 403 |
-| user token, email has **no row in `user` at all**, and the request's Bearer client id has role `internal` | everything -- see "the internal-client rescue" below |
-| no user token, Bearer client id has role `internal` (`AUTH_CLIENT_ROLES`) | everything (a trusted machine-to-machine caller) |
-| no user token, client role `delegate` | 401 -- it must forward a user token |
-| no user token, unlisted client id | 403 |
-| nothing | 401 |
+| Bearer client id is in `AUTH_INTERNAL_CLIENT_IDS` | **everything, unconditionally** -- regardless of any `x-user-id-token` the same request also carries |
+| not an internal client, user token, `user_type` INTERNAL (all active rows for the email) | everything |
+| not an internal client, user token, EXTERNAL (customer) | only projects where their email is a `REGISTERED` `project_contact`, and the cases in them; none registered = an empty result, never "no filter" |
+| not an internal client, user token, inactive / SYSTEM / NOT_AVAILABLE / unknown email | 403 |
+| not an internal client, no user token | 401 -- no legitimate caller to resolve |
 
-A user token always wins: an `internal` client that forwards bob's token sees
-bob's scope, not everything. **Absence of a user token never means unscoped by
-itself** -- only an explicitly `internal` client gets that, so a `delegate`
-client that forgets to forward the token gets a 401, not everyone's data.
-`user.email` is **not unique** (staging shares emails across rows), so rows are
-combined conservatively: internal access needs every active row to be
-INTERNAL; an email that is also an EXTERNAL customer is scoped as a customer.
-`user.is_active` NULL counts as active. `project_contact` states other than
-`REGISTERED` (INVITED, RE-INVITED, DEACTIVATED) grant nothing -- **staging data
-caveat**: at the time of writing only 97 REGISTERED contact rows covered 68 of
-~1956 projects (260 INVITED), so customer results are limited by how much has
-been synced; flip the state in `access_repo.go` if INVITED contacts should
-count.
+**An internal client id wins outright -- there is no comparison with the user
+token's own scope.** Every client id configured here is itself an
+already-trusted internal service (see `AUTH_INTERNAL_CLIENT_IDS` config
+below), so a user token it forwards (if any) is used only for attribution
+elsewhere (`created_by`/`updated_by`), never for scoping -- not even to widen
+or narrow anything. This is simpler than an earlier revision of this design
+(a "rescue" that only kicked in for an *unknown* forwarded email, deferring to
+the user's own scope otherwise): once real deployments settled on which
+callers are genuinely internal, there was no longer a case where an internal
+client legitimately forwards a real customer's token, so the extra nuance was
+removed. `AccessRepository` is never even queried on the internal-client path
+(there is a test asserting zero DB calls).
 
-**The internal-client rescue** (`errUnknownUser` in `access_service.go`)
-exists for a caller that forwards a real staff member's user token when that
-person has no `user` row yet (e.g. not synced, or created only by a role
-migration this data source doesn't know about). It fires **only** when
-`UsersByEmail` returns zero rows -- a *known* row that is EXTERNAL, inactive,
-SYSTEM, or otherwise not INTERNAL is a real, already-decided state, not
-"unknown", and is never rescued: a real customer's token still only ever gets
-that customer's scope, however trusted the calling client is. Which real
-client id is configured as `internal` is a deployment decision this file
-doesn't make.
+`user.email` is **not unique** (staging shares emails across rows), so on the
+non-internal-client path rows are combined conservatively: internal access
+needs every active row to be INTERNAL; an email that is also an EXTERNAL
+customer is scoped as a customer. `user.is_active` NULL counts as active.
+`project_contact` states other than `REGISTERED` (INVITED, RE-INVITED,
+DEACTIVATED) grant nothing -- **staging data caveat**: at the time of writing
+only 97 REGISTERED contact rows covered 68 of ~1956 projects (260 INVITED), so
+customer results are limited by how much has been synced; flip the state in
+`access_repo.go` if INVITED contacts should count.
 
 **A related, separate gap surfaced while building this, not yet fixed**:
 `recompute_user_type()`'s trigger (migration 000007) classifies only the
-`admin` and `internal` Asgardeo/SN roles as `user_type = INTERNAL` -- a
-person whose only role is `agent` ends up `NOT_AVAILABLE` and is denied here
-even though they *do* have a `user` row (so the rescue above does not apply to
-them either, by design). Whether `agent` should count as internal is a
-product decision, not something to guess at here.
+`admin` and `internal` Asgardeo/SN roles as `user_type = INTERNAL` -- a person
+whose only role is `agent` ends up `NOT_AVAILABLE` and is denied here even
+though they *do* have a `user` row. Whether `agent` should count as internal
+is a product decision, not something to guess at here.
 
-**Only `/search` is scoped so far.** The other routes still do no per-caller
-scoping (the middleware only rejects invalid tokens). Extending the same
-`AccessService` to e.g. project/case reads is the natural next step, and matters
-for anything a customer can reach directly.
+**`AUTH_INTERNAL_CLIENT_IDS`** (config.go's `ParseInternalClientIDs`) is a
+plain comma-separated set of client ids -- no `clientId=role` grammar, no
+"delegate" role: those existed in an earlier revision, when a caller that
+always forwards a user token needed a role distinct from one that sometimes
+doesn't. In practice every caller either (a) is itself trusted with
+unconditional access (an internal client id), or (b) is resolved purely from
+whatever user token it forwards -- there's no third case, so a plain
+allow-list is all `ResolveScope` needs. Which real client ids belong in it is
+a deployment decision this file doesn't prescribe.
 
-`/search` itself: projects match name/key, cases match number/subject/WSO2
-id/description (case-insensitive, LIKE metacharacters escaped so `%` and `_`
-are literal); results are limited to `project`/case-like work items; `sortBy`
-accepts `name`/`createdOn`/`updatedOn` only (mapped to fixed columns, never
-interpolated). Case `state`/`severity` use the raw enum labels as id and label
-(same vocabulary as project metadata). `activeChatsCount`/`actionRequiredCount`/
-`outstandingCount` are 0 -- their definition lives in ServiceNow-side logic with
-no Postgres equivalent yet (TODO).
+### Where this is actually enforced
+
+`AccessService` is wired into, and enforced by:
+- `POST /search` (global search) -- projects match name/key, cases match
+  number/subject/WSO2 id/description (case-insensitive, LIKE metacharacters
+  escaped so `%` and `_` are literal); results are limited to `project`/
+  case-like work items; `sortBy` accepts `name`/`createdOn`/`updatedOn` only
+  (mapped to fixed columns, never interpolated). Case `state`/`severity` use
+  the raw enum labels as id and label (same vocabulary as project metadata).
+  `activeChatsCount`/`actionRequiredCount`/`outstandingCount` are 0 -- their
+  definition lives in ServiceNow-side logic with no Postgres equivalent yet
+  (TODO).
+- `GET /projects/{id}` / `GET /cases/{id}` -- a project or case outside scope
+  is a 404, indistinguishable from one that doesn't exist at all (never a 403
+  that would reveal it exists). The scope filter is folded straight into the
+  `WHERE` clause (`ProjectRepository.GetProjectByID`/`CaseRepository.
+  GetCaseByID`'s new `scope SearchScope` parameter) rather than fetched-then-
+  checked, so this is one query either way.
+- `POST /projects/search` / `POST /cases/search` -- the scope's project list
+  is ANDed into the query **independently** of whatever project filter the
+  request itself carries (`SearchCasesRequest.Filters.Filters`'
+  `projectId`/`in`, if present): a scoped caller explicitly asking for a
+  project outside their own scope gets zero rows, never someone else's data,
+  and gets the same narrowing even with no project filter of their own.
+
+**Notably, these same two Postgres-backed methods (`GetProjectByID`/
+`GetCaseByID`) are also what the ServiceNow data source delegates to as
+`pgFallback`** (`snProjectService`/`snCaseService`'s own doc comments: "no SN
+single-project endpoint" / "all write/read-by-id operations to pgFallback")
+-- so `AccessService` is constructed once, unconditionally, regardless of
+`cfg.DataSource`, and this scoping now applies in **both** data-source modes
+for these two operations. Before this, `pgFallback`'s `GetProjectByID`/
+`GetCaseByID` had **no access control at all** in either mode -- any caller
+could fetch any project or case by id. This closes that gap rather than
+introducing a new one.
+
+**Not yet wired**: every other project/case-adjacent read (comments,
+escalations, time cards, attachments, conversations, change requests,
+call requests, catalogs, instances, etc.) still does no per-caller scoping --
+the auth middleware validates tokens on every route, but only the five
+operations above actually call `AccessService`. Extending it further is
+follow-up work, not done in this pass.
 
 ## Adding a new entity
 

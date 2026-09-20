@@ -25,12 +25,14 @@ import (
 )
 
 type projectService struct {
-	repo repository.ProjectRepository
+	repo   repository.ProjectRepository
+	access AccessService
 }
 
-// NewProjectService constructs a ProjectService backed by the given repository.
-func NewProjectService(repo repository.ProjectRepository) ProjectService {
-	return &projectService{repo: repo}
+// NewProjectService constructs a ProjectService backed by the given
+// repository, scoping every read through access (see AccessService).
+func NewProjectService(repo repository.ProjectRepository, access AccessService) ProjectService {
+	return &projectService{repo: repo, access: access}
 }
 
 // SearchProjects implements ProjectService.
@@ -42,7 +44,12 @@ func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchPr
 		return domain.SearchProjectsResponse{}, err
 	}
 
-	projects, total, err := s.repo.SearchProjects(ctx, req)
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.SearchProjectsResponse{}, err
+	}
+
+	projects, total, err := s.repo.SearchProjects(ctx, req, scope)
 	if err != nil {
 		return domain.SearchProjectsResponse{}, err
 	}
@@ -79,5 +86,9 @@ func (s *projectService) GetProjectByID(ctx context.Context, id string) (domain.
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.ProjectDetailsView{}, err
 	}
-	return s.repo.GetProjectByID(ctx, id)
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.ProjectDetailsView{}, err
+	}
+	return s.repo.GetProjectByID(ctx, id, scope)
 }

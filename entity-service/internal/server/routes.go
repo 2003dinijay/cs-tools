@@ -44,6 +44,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userSvc)
 
+	// accessSvc resolves the caller's AccessScope from the validated identity
+	// auth.Middleware attaches to every request (see AccessService's own doc
+	// comment for the full decision table). Constructed once and shared by
+	// every service that scopes its reads by it, in both data-source modes:
+	// GetProjectByID/GetCaseByID delegate to the Postgres-backed
+	// projectService/caseService as pgFallback even in ServiceNow mode (see
+	// those constructors' own comments), so this needs to run there too, not
+	// just when DataSource is postgres.
+	accessSvc := service.NewAccessService(repository.NewAccessRepository(db), cfg.AuthInternalClientIDs)
+
 	// event_publish_failures, sla_clocks, scheduled_task_run, and
 	// alert_incident_mapping have no ServiceNow equivalent. They are
 	// Postgres-backed and registered only when a pool is available
@@ -169,7 +179,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 
 	projectRepo := repository.NewProjectRepository(db)
-	pgProjectSvc := service.NewProjectService(projectRepo)
+	pgProjectSvc := service.NewProjectService(projectRepo, accessSvc)
 	var activeProjectSvc service.ProjectService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeProjectSvc = service.NewServiceNowProjectService(serviceNowIntegrationServiceClient, pgProjectSvc)
@@ -266,7 +276,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 
 	caseRepo := repository.NewCaseRepository(db)
-	pgCaseSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher)
+	pgCaseSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
 	var activeCaseSvc service.CaseService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseSvc, eventPublisher, slaClockService, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
@@ -403,7 +413,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		globalHandler = handler.NewGlobalHandler(service.NewGlobalService(
 			referenceDataRepo,
 			repository.NewGlobalSearchRepository(db),
-			service.NewAccessService(repository.NewAccessRepository(db), cfg.AuthClientRoles),
+			accessSvc,
 		))
 	}
 

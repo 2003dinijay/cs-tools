@@ -124,7 +124,6 @@ func (s *globalService) GlobalSearch(ctx context.Context, req domain.GlobalSearc
 		wantCases = wantCases || t == "cases"
 	}
 
-	repoScope := repository.SearchScope{Unrestricted: scope.Unrestricted, ProjectIDs: scope.ProjectIDs}
 	resp := domain.GlobalSearchResponse{
 		Query:    query,
 		Projects: []domain.GlobalSearchProject{},
@@ -135,7 +134,7 @@ func (s *globalService) GlobalSearch(ctx context.Context, req domain.GlobalSearc
 	if wantProjects {
 		eg.Go(func() error {
 			field, d := projectSort(req.SortBy, sortField, desc)
-			projects, total, err := s.search.SearchProjects(egCtx, repoScope, query, field, d, projectsPage)
+			projects, total, err := s.search.SearchProjects(egCtx, scope, query, field, d, projectsPage)
 			resp.Projects, resp.ProjectsTotal = projects, total
 			return err
 		})
@@ -143,7 +142,7 @@ func (s *globalService) GlobalSearch(ctx context.Context, req domain.GlobalSearc
 	if wantCases {
 		eg.Go(func() error {
 			field, d := caseSort(req.SortBy, sortField, desc)
-			cases, total, err := s.search.SearchCases(egCtx, repoScope, query, field, d, casesPage)
+			cases, total, err := s.search.SearchCases(egCtx, scope, query, field, d, casesPage)
 			resp.Cases, resp.CasesTotal = cases, total
 			return err
 		})

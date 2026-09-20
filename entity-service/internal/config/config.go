@@ -144,24 +144,25 @@ type Config struct {
 	AuthJWKSURL            string
 	AuthUserTokenAudiences []string
 	AuthClockSkew          time.Duration
-	// AuthClientRolesRaw is the AUTH_CLIENT_ROLES value, a comma-separated
-	// list of clientId=role pairs; AuthClientRoles is its parsed form. It is
-	// both the allow-list of application client ids and what each may do:
-	//   internal -- with no user token, treated like an internal user: sees
-	//               every project and case. Also rescues a forwarded user
-	//               token whose email has no row in "user" yet, treating it as
-	//               an internal user too (see AccessService) -- so this is the
-	//               role for a caller whose forwarded users may legitimately be
-	//               internal staff not yet present in that table, not only a
-	//               caller with no end user at all.
-	//   delegate -- a caller that acts for end users. It must forward a user
-	//               token; without one it gets no access, and an unknown
-	//               forwarded email is never rescued (only "internal" rescues).
-	// A client id that is absent (or has an unknown role) has no access to
-	// endpoints that scope by caller. Which real client ids get which role is
-	// a deployment decision, not something this file prescribes.
-	AuthClientRolesRaw string
-	AuthClientRoles    map[string]string
+	// AuthInternalClientIDsRaw is the AUTH_INTERNAL_CLIENT_IDS value, a
+	// comma-separated list of Asgardeo application client ids;
+	// AuthInternalClientIDs is its parsed set. A request whose
+	// Authorization: Bearer client-credentials token names one of these ids
+	// is unconditionally treated as an internal caller with unrestricted
+	// access to every project and case, regardless of any x-user-id-token it
+	// also carries -- a forwarded user token from an internal caller is used
+	// only for attribution (created_by/updated_by), never for scoping,
+	// because every caller this deployment configures here is itself an
+	// already-trusted internal service.
+	//
+	// A client id NOT in this set is resolved purely from its
+	// x-user-id-token: an INTERNAL user_type still sees everything, an
+	// EXTERNAL (customer) user sees only their REGISTERED project_contact
+	// projects, and no user token at all is refused. Which real client ids
+	// go in this list is a deployment decision, not something this file
+	// prescribes.
+	AuthInternalClientIDsRaw string
+	AuthInternalClientIDs    map[string]bool
 	// SalesEntity* is the Choreo connection to REST sales/sales-entity-service
 	// (POST /customer-search), not GraphQL sales/entity-graphql-service and not
 	// Salesforce. The four connection fields are all-or-nothing like Event Hub.
@@ -203,7 +204,7 @@ func Load() *Config {
 		AuthJWKSURL:                              os.Getenv("AUTH_JWKS_URL"),
 		AuthUserTokenAudiences:                   splitComma(os.Getenv("AUTH_USER_TOKEN_AUDIENCES")),
 		AuthClockSkew:                            envDuration("AUTH_CLOCK_SKEW", 30*time.Second),
-		AuthClientRolesRaw:                       os.Getenv("AUTH_CLIENT_ROLES"),
+		AuthInternalClientIDsRaw:                 os.Getenv("AUTH_INTERNAL_CLIENT_IDS"),
 		SupportEngineerRole:                      os.Getenv("SUPPORT_ENGINEER_ROLE"),
 		CustomerRoles:                            splitComma(os.Getenv("CUSTOMER_ROLES")),
 		SalesEntityBaseURL:                       os.Getenv("SALES_ENTITY_BASE_URL"),
@@ -212,43 +213,20 @@ func Load() *Config {
 		SalesEntityClientSecret:                  os.Getenv("SALES_ENTITY_CLIENT_SECRET"),
 		SalesEntityScopes:                        os.Getenv("SALES_ENTITY_SCOPES"),
 	}
-	// Malformed AUTH_CLIENT_ROLES entries are dropped here and reported by
-	// Validate, so a typo can never grant a role.
-	cfg.AuthClientRoles, _ = ParseClientRoles(cfg.AuthClientRolesRaw)
+	cfg.AuthInternalClientIDs = ParseInternalClientIDs(cfg.AuthInternalClientIDsRaw)
 	return cfg
 }
 
-// Client roles an application can hold via AUTH_CLIENT_ROLES.
-const (
-	// ClientRoleInternal marks a system caller (e.g. csm-integration-service):
-	// with no user token it is treated like an internal user and may see every
-	// project and case.
-	ClientRoleInternal = "internal"
-	// ClientRoleDelegate marks a caller that acts on behalf of end users (the
-	// portal backends): it must forward a user token, which then decides scope.
-	ClientRoleDelegate = "delegate"
-)
-
-// ParseClientRoles parses AUTH_CLIENT_ROLES ("clientId=role,clientId=role")
-// into a client-id -> role map. Every well-formed entry is returned even when
-// others are malformed, alongside an error naming the first malformed one, so
-// Validate can reject the whole value while Load stays lenient. Roles are
-// case-insensitive; client ids are matched exactly.
-func ParseClientRoles(raw string) (map[string]string, error) {
-	out := map[string]string{}
-	var firstErr error
-	for _, entry := range splitComma(raw) {
-		id, role, ok := strings.Cut(entry, "=")
-		id, role = strings.TrimSpace(id), strings.ToLower(strings.TrimSpace(role))
-		if !ok || id == "" || (role != ClientRoleInternal && role != ClientRoleDelegate) {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("AUTH_CLIENT_ROLES entry %q must be clientId=%s or clientId=%s", entry, ClientRoleInternal, ClientRoleDelegate)
-			}
-			continue
-		}
-		out[id] = role
+// ParseInternalClientIDs parses AUTH_INTERNAL_CLIENT_IDS ("clientId,clientId")
+// into a set for O(1) membership checks. Unlike most of this file's other
+// comma-separated values, this one has no per-entry validation to fail: any
+// non-empty, trimmed entry is a valid client id.
+func ParseInternalClientIDs(raw string) map[string]bool {
+	out := make(map[string]bool)
+	for _, id := range splitComma(raw) {
+		out[id] = true
 	}
-	return out, firstErr
+	return out
 }
 
 func getEnvOrDefault(key, defaultVal string) string {
@@ -392,9 +370,6 @@ func (c *Config) Validate() error {
 	eventHubComplete := c.EventHubBroker != "" && c.EventHubConnectionString != "" && c.EventHubTopic != ""
 	if eventHubSet && !eventHubComplete {
 		return fmt.Errorf("EVENT_HUB_BROKER, EVENT_HUB_CONNECTION_STRING, and EVENT_HUB_TOPIC must be set together or not at all")
-	}
-	if _, err := ParseClientRoles(c.AuthClientRolesRaw); err != nil {
-		return err
 	}
 	// Token validation is always on and unconditionally needs to know whose
 	// keys to trust and which audiences make an ID token a user token, or it

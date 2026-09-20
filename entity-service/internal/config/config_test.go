@@ -354,37 +354,25 @@ func TestConfig_Validate_PostgresStillRequiresDatabase(t *testing.T) {
 	}
 }
 
-func TestParseClientRoles(t *testing.T) {
-	got, err := ParseClientRoles(" integration = internal , portal=DELEGATE ,")
-	if err != nil || len(got) != 2 || got["integration"] != ClientRoleInternal || got["portal"] != ClientRoleDelegate {
-		t.Fatalf("got %v, %v", got, err)
+func TestParseInternalClientIDs(t *testing.T) {
+	got := ParseInternalClientIDs(" csm-portal , csm-integration ,")
+	if len(got) != 2 || !got["csm-portal"] || !got["csm-integration"] {
+		t.Fatalf("got %v", got)
 	}
-	if got, err := ParseClientRoles(""); err != nil || len(got) != 0 {
-		t.Fatalf("empty must be a valid empty map, got %v, %v", got, err)
+	if got := ParseInternalClientIDs(""); len(got) != 0 {
+		t.Fatalf("empty must be a valid empty set, got %v", got)
 	}
-
-	// A malformed entry is reported, and never becomes a role -- in particular
-	// a typo'd role must not silently grant anything.
-	for _, raw := range []string{"integration", "integration=admin", "=internal", "integration=", "a=internal,b=oops"} {
-		got, err := ParseClientRoles(raw)
-		if err == nil {
-			t.Errorf("%q: want an error", raw)
-		}
-		for id, role := range got {
-			if role != ClientRoleInternal && role != ClientRoleDelegate {
-				t.Errorf("%q: %s got unknown role %q", raw, id, role)
-			}
-		}
-	}
-	if got, _ := ParseClientRoles("a=internal,b=oops"); got["a"] != ClientRoleInternal || len(got) != 1 {
-		t.Errorf("well-formed entries survive alongside a malformed one, got %v", got)
+	// A client id absent from the set is simply not internal -- there is no
+	// error case here (unlike the old clientId=role grammar): any non-empty,
+	// trimmed entry is a valid client id.
+	if got := ParseInternalClientIDs("a,,b"); len(got) != 2 || !got["a"] || !got["b"] {
+		t.Errorf("blank entries between commas should just be skipped, got %v", got)
 	}
 }
 
 // TestConfig_Validate_Auth locks in that token validation has no off switch:
 // AuthIssuer/AuthJWKSURL/AuthUserTokenAudiences are as mandatory to a valid
-// Config as the DB settings baseValidConfig() already supplies, and
-// AUTH_CLIENT_ROLES is validated regardless.
+// Config as the DB settings baseValidConfig() already supplies.
 func TestConfig_Validate_Auth(t *testing.T) {
 	if c := baseValidConfig(); c.Validate() != nil {
 		t.Fatalf("complete auth config rejected: %v", c.Validate())
@@ -393,7 +381,6 @@ func TestConfig_Validate_Auth(t *testing.T) {
 		"missing issuer":    func(c *Config) { c.AuthIssuer = "" },
 		"missing JWKS URL":  func(c *Config) { c.AuthJWKSURL = "" },
 		"missing audiences": func(c *Config) { c.AuthUserTokenAudiences = nil },
-		"bad client roles":  func(c *Config) { c.AuthClientRolesRaw = "svc=root" },
 	} {
 		c := baseValidConfig()
 		mod(&c)

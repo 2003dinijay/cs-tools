@@ -29,11 +29,14 @@ import (
 type fakeAccessRepo struct {
 	users    []repository.AccessUser
 	projects []string
-	// projectCalls counts RegisteredProjectIDs lookups.
+	// userLookups/projectCalls count calls, so tests can prove the internal
+	// path never touches the database at all.
+	userLookups  int
 	projectCalls int
 }
 
 func (f *fakeAccessRepo) UsersByEmail(context.Context, string) ([]repository.AccessUser, error) {
+	f.userLookups++
 	return f.users, nil
 }
 func (f *fakeAccessRepo) RegisteredProjectIDs(context.Context, string) ([]string, error) {
@@ -47,7 +50,7 @@ func userOf(t string, active bool) repository.AccessUser {
 	return repository.AccessUser{UserType: t, Active: active}
 }
 
-var testClientRoles = map[string]string{"integration": "internal", "portal": "delegate"}
+var testInternalClientIDs = map[string]bool{"csm-backend": true, "integration": true}
 
 func TestAccessService_ResolveScope(t *testing.T) {
 	const email = "jane@example.com"
@@ -59,10 +62,23 @@ func TestAccessService_ResolveScope(t *testing.T) {
 		wantErr      any // nil, or a pointer to the expected apierror type
 		wantAll      bool
 		wantProjects []string
+		wantNoDBCall bool // internal-client path must never touch the repo
 	}{
 		{name: "identity not validated -> refuse (503), never trust the token",
-			id: auth.Identity{Validated: false, UserEmail: email}, wantErr: &apierror.ServiceUnavailableError{}},
+			id: auth.Identity{Validated: false, UserEmail: email}, wantErr: &apierror.ServiceUnavailableError{}, wantNoDBCall: true},
 
+		// --- Internal client: unconditional full access, user token or not ---
+		{name: "internal client, no user token at all -> everything",
+			id: auth.Identity{Validated: true, ClientID: "csm-backend"}, wantAll: true, wantNoDBCall: true},
+		{name: "internal client forwarding a user token whose email isn't in \"user\" at all -> still everything, DB never consulted",
+			id: auth.Identity{Validated: true, ClientID: "csm-backend", UserEmail: email}, users: nil, wantAll: true, wantNoDBCall: true},
+		{name: "internal client forwarding a KNOWN customer's token -> still everything: internal role wins outright, no rescue/exception logic",
+			id: auth.Identity{Validated: true, ClientID: "csm-backend", UserEmail: email}, users: []repository.AccessUser{userOf("EXTERNAL", true)},
+			projects: []string{"p1"}, wantAll: true, wantNoDBCall: true},
+		{name: "internal client forwarding an inactive user's token -> still everything",
+			id: auth.Identity{Validated: true, ClientID: "csm-backend", UserEmail: email}, users: []repository.AccessUser{userOf("INTERNAL", false)}, wantAll: true, wantNoDBCall: true},
+
+		// --- Not an internal client: resolved purely from the user token ---
 		{name: "internal user sees everything",
 			id: auth.Identity{Validated: true, UserEmail: email}, users: []repository.AccessUser{userOf("INTERNAL", true)}, wantAll: true},
 		{name: "customer sees only registered projects",
@@ -85,41 +101,23 @@ func TestAccessService_ResolveScope(t *testing.T) {
 			id: auth.Identity{Validated: true, UserEmail: email}, users: []repository.AccessUser{userOf("SYSTEM", true)}, wantErr: &apierror.ForbiddenError{}},
 		{name: "NULL user_type -> denied",
 			id: auth.Identity{Validated: true, UserEmail: email}, users: []repository.AccessUser{userOf("", true)}, wantErr: &apierror.ForbiddenError{}},
-		{name: "unknown email -> denied",
+		{name: "unknown email, non-internal caller -> denied outright (no rescue -- that's internal-client only)",
 			id: auth.Identity{Validated: true, UserEmail: email}, users: nil, wantErr: &apierror.ForbiddenError{}},
-		{name: "unknown email, but forwarded by an internal client -> rescued as internal (everything)",
-			id: auth.Identity{Validated: true, ClientID: "integration", UserEmail: email}, users: nil, wantAll: true},
-		{name: "unknown email forwarded by a non-internal (delegate) client -> still denied",
-			id: auth.Identity{Validated: true, ClientID: "portal", UserEmail: email}, users: nil, wantErr: &apierror.ForbiddenError{}},
 		{name: "unknown email forwarded by an unlisted client -> still denied",
 			id: auth.Identity{Validated: true, ClientID: "stranger", UserEmail: email}, users: nil, wantErr: &apierror.ForbiddenError{}},
-		{name: "the internal-client rescue does NOT apply to a KNOWN customer: still scoped, never widened",
-			id: auth.Identity{Validated: true, ClientID: "integration", UserEmail: email}, users: []repository.AccessUser{userOf("EXTERNAL", true)},
-			projects: []string{"p1"}, wantProjects: []string{"p1"}},
-		{name: "the internal-client rescue does NOT apply to a KNOWN-but-insufficient user (inactive) -- that's a real state, not \"unknown\"",
-			id: auth.Identity{Validated: true, ClientID: "integration", UserEmail: email}, users: []repository.AccessUser{userOf("INTERNAL", false)}, wantErr: &apierror.ForbiddenError{}},
-		{name: "the internal-client rescue does NOT apply to a KNOWN SYSTEM user",
-			id: auth.Identity{Validated: true, ClientID: "integration", UserEmail: email}, users: []repository.AccessUser{userOf("SYSTEM", true)}, wantErr: &apierror.ForbiddenError{}},
 
-		{name: "m2m: internal client with no user -> everything",
-			id: auth.Identity{Validated: true, ClientID: "integration"}, wantAll: true},
-		{name: "m2m: delegate client with no user must forward one (401)",
-			id: auth.Identity{Validated: true, ClientID: "portal"}, wantErr: &apierror.UnauthorizedError{}},
-		{name: "m2m: unlisted client -> 403",
-			id: auth.Identity{Validated: true, ClientID: "stranger"}, wantErr: &apierror.ForbiddenError{}},
-		{name: "no user and no client -> 401",
-			id: auth.Identity{Validated: true}, wantErr: &apierror.UnauthorizedError{}},
-
-		{name: "a user token wins over an internal client: the user's scope applies",
-			id: auth.Identity{Validated: true, ClientID: "integration", UserEmail: email}, users: []repository.AccessUser{userOf("EXTERNAL", true)},
-			projects: []string{"p1"}, wantProjects: []string{"p1"}},
-		{name: "portal client + customer user -> customer scope",
-			id: auth.Identity{Validated: true, ClientID: "portal", UserEmail: email}, users: []repository.AccessUser{userOf("EXTERNAL", true)},
-			projects: []string{"p3"}, wantProjects: []string{"p3"}},
+		{name: "no user token, unlisted client -> 401 (no legitimate caller to resolve)",
+			id: auth.Identity{Validated: true, ClientID: "stranger"}, wantErr: &apierror.UnauthorizedError{}, wantNoDBCall: true},
+		{name: "no user and no client at all -> 401",
+			id: auth.Identity{Validated: true}, wantErr: &apierror.UnauthorizedError{}, wantNoDBCall: true},
 	}
 	for _, tt := range tests {
 		repo := &fakeAccessRepo{users: tt.users, projects: tt.projects}
-		scope, err := NewAccessService(repo, testClientRoles).ResolveScope(idCtx(tt.id))
+		scope, err := NewAccessService(repo, testInternalClientIDs).ResolveScope(idCtx(tt.id))
+
+		if tt.wantNoDBCall && (repo.userLookups != 0 || repo.projectCalls != 0) {
+			t.Errorf("%s: repo was consulted (userLookups=%d projectCalls=%d), want zero DB calls", tt.name, repo.userLookups, repo.projectCalls)
+		}
 
 		if tt.wantErr != nil {
 			if err == nil {

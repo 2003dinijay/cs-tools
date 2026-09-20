@@ -18,65 +18,52 @@ package service
 
 import (
 	"context"
-	"errors"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
-// errUnknownUser marks "no user row at all for this email" specifically, so
-// ResolveScope can tell it apart from a known user who simply isn't INTERNAL
-// (inactive, SYSTEM, or otherwise) -- only the former gets the internal-client
-// fallback below.
-var errUnknownUser = errors.New("no user row for this email")
-
 // AccessScope is the set of projects (and, through them, cases) a caller may
 // see. Cases are scoped by their project, so there is no separate case list.
-type AccessScope struct {
-	// Unrestricted means every project and case.
-	Unrestricted bool
-	// ProjectIDs is the allowed set when Unrestricted is false. It may be empty,
-	// which means no access -- never "no filter".
-	ProjectIDs []string
-}
+// An alias of repository.SearchScope (identical shape) so a resolved scope
+// passes straight into any repository's scoped query with no field-by-field
+// reconstruction at the call site.
+type AccessScope = repository.SearchScope
 
-// AccessService turns the verified caller identity into an AccessScope.
+// AccessService turns the verified caller identity into an AccessScope. It is
+// meant to be called by every endpoint that returns project- or case-scoped
+// data, not only global search -- see each call site for how far that's
+// actually been wired up so far.
 type AccessService interface {
-	// ResolveScope decides what the caller of ctx may see:
-	//   - a validated user token: an internal user sees everything; an external
-	//     (customer) user sees only projects they are a REGISTERED contact of;
-	//     any other KNOWN user type or an inactive user is denied.
-	//   - a validated user token whose email has NO row in "user" at all: denied,
-	//     UNLESS the request also carries a validated client-credentials token
-	//     whose client id has the "internal" role in AUTH_CLIENT_ROLES -- then
-	//     it's treated as an internal user (everything). This covers a caller
-	//     forwarding a real WSO2 staff member's token for someone not yet
-	//     synced into this data source; it does NOT apply to a customer (a
-	//     known EXTERNAL row still only sees their own registered projects,
-	//     however trusted the client is), nor to a known-but-not-internal row
-	//     (inactive/SYSTEM/etc. is a real state, not "unknown").
-	//   - no user token, but a validated client-credentials token whose client id
-	//     has the "internal" role in AUTH_CLIENT_ROLES: a system caller, sees
-	//     everything.
-	// Everything else is refused, and so is any request carrying an
-	// unvalidated identity: an unverified identity is never used to scope.
-	// Token validation is always on, so that should only happen if the auth
-	// middleware was somehow left out of the chain -- a bug, not a deployment
-	// choice.
+	// ResolveScope decides what the caller of ctx may see, in this order:
+	//   1. Authorization: Bearer names a client id in AUTH_INTERNAL_CLIENT_IDS:
+	//      unrestricted, full stop -- an internal caller is trusted
+	//      unconditionally, regardless of any x-user-id-token it also
+	//      carries. Every caller configured here is itself an already-trusted
+	//      internal service, so a user token from one of them (if present at
+	//      all) is used only for attribution elsewhere, never for scoping.
+	//   2. Otherwise, resolved purely from x-user-id-token: INTERNAL user_type
+	//      sees everything, EXTERNAL (customer) sees only projects they are a
+	//      REGISTERED project_contact of, and any other user type, an
+	//      inactive user, or an unknown email is refused.
+	//   3. No user token and not an internal client: refused (401) -- there's
+	//      no legitimate caller to resolve.
+	// Refused too if the identity itself isn't validated (only possible if
+	// the auth middleware was left out of the chain -- a bug, not a
+	// deployment choice): an unverified identity is never used to scope.
 	ResolveScope(ctx context.Context) (AccessScope, error)
 }
 
 type accessService struct {
-	repo        repository.AccessRepository
-	clientRoles map[string]string
+	repo              repository.AccessRepository
+	internalClientIDs map[string]bool
 }
 
-// NewAccessService constructs an AccessService. clientRoles is
-// config.Config.AuthClientRoles (client id -> "internal" | "delegate").
-func NewAccessService(repo repository.AccessRepository, clientRoles map[string]string) AccessService {
-	return &accessService{repo: repo, clientRoles: clientRoles}
+// NewAccessService constructs an AccessService. internalClientIDs is
+// config.Config.AuthInternalClientIDs.
+func NewAccessService(repo repository.AccessRepository, internalClientIDs map[string]bool) AccessService {
+	return &accessService{repo: repo, internalClientIDs: internalClientIDs}
 }
 
 // ResolveScope implements AccessService.
@@ -86,45 +73,27 @@ func (s *accessService) ResolveScope(ctx context.Context) (AccessScope, error) {
 		return AccessScope{}, &apierror.ServiceUnavailableError{Msg: "results cannot be scoped to the caller: no verified identity on this request"}
 	}
 
-	// A user token always decides, even when a trusted client sent it: the
-	// system role only applies when the request carries no user at all --
-	// except to rescue an otherwise-unknown user, see errUnknownUser below.
-	if id.UserEmail != "" {
-		scope, err := s.scopeForUser(ctx, id.UserEmail)
-		if errors.Is(err, errUnknownUser) {
-			if s.clientRoles[id.ClientID] == config.ClientRoleInternal {
-				return AccessScope{Unrestricted: true}, nil
-			}
-			return AccessScope{}, &apierror.ForbiddenError{Msg: "no access for this user"}
-		}
-		return scope, err
+	if id.ClientID != "" && s.internalClientIDs[id.ClientID] {
+		return AccessScope{Unrestricted: true}, nil
 	}
 
-	if id.ClientID == "" {
-		return AccessScope{}, &apierror.UnauthorizedError{Msg: "a user token (x-user-id-token) or an authorized client credential is required"}
+	if id.UserEmail == "" {
+		return AccessScope{}, &apierror.UnauthorizedError{Msg: "a user token (x-user-id-token) or an authorized internal client credential is required"}
 	}
-	switch s.clientRoles[id.ClientID] {
-	case config.ClientRoleInternal:
-		return AccessScope{Unrestricted: true}, nil
-	case config.ClientRoleDelegate:
-		return AccessScope{}, &apierror.UnauthorizedError{Msg: "this client acts on behalf of users and must forward a user token (x-user-id-token)"}
-	default:
-		return AccessScope{}, &apierror.ForbiddenError{Msg: "client is not authorized"}
-	}
+	return s.scopeForUser(ctx, id.UserEmail)
 }
 
 // scopeForUser maps a user's type to a scope. user.email is not unique, so the
 // active rows for the email are combined conservatively: internal access needs
 // every active row to be INTERNAL. An email that is also (or only) an EXTERNAL
 // customer is scoped like a customer -- less access, never more, when the data
-// is ambiguous.
+// is ambiguous. An email with no row at all is refused: unlike an internal
+// caller (see ResolveScope), a non-internal caller gets no benefit of the
+// doubt for an unknown user.
 func (s *accessService) scopeForUser(ctx context.Context, email string) (AccessScope, error) {
 	users, err := s.repo.UsersByEmail(ctx, email)
 	if err != nil {
 		return AccessScope{}, err
-	}
-	if len(users) == 0 {
-		return AccessScope{}, errUnknownUser
 	}
 
 	var internal, external, other bool
