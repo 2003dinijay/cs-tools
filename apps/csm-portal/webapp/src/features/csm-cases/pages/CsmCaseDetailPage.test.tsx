@@ -1516,13 +1516,13 @@ describe("CsmCaseDetailPage — role-based controls", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("a commenter can reply but still cannot change the case", () => {
-    currentUserRoles.value = ["commenter"];
+  it("an escalator role alone does not unlock replying or changing the case", () => {
+    currentUserRoles.value = ["escalator"];
     renderPage();
-    expect(
-      screen.getByRole("button", { name: /compose a reply|add an internal work note/i }),
-    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /stub request info/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /compose a reply|add an internal work note/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("a user with no roles sees no controls", () => {

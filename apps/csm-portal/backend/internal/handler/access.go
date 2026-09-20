@@ -38,8 +38,6 @@ const (
 	// PermView on purpose: a view-only role sees cases and customers but not
 	// operations, which support-portal-lite never exposed to them.
 	PermViewOperations
-	// PermComment is posting a comment or work note.
-	PermComment
 	// PermEscalate is escalating or de-escalating a case.
 	PermEscalate
 	// PermDownloadAttachment is downloading attachment content, or minting a
@@ -56,7 +54,6 @@ const (
 // and a role with no names configured is held by nobody.
 type AccessConfig struct {
 	Viewer               []string
-	Commenter            []string
 	Escalator            []string
 	AttachmentDownloader []string
 	UsageMetricsViewer   []string
@@ -86,7 +83,7 @@ type portalRole struct {
 
 // NewAccessGuard builds a guard from cfg. Admin satisfies every permission.
 // Support engineer, the role for people who work cases, satisfies every one
-// too; the commenter, escalator and attachment-downloader roles exist
+// too; the escalator and attachment-downloader roles exist
 // separately so other staff can be granted just that one ability. The
 // usage-metrics, time-card-approver and dashboard-designer roles gate nothing
 // here (this backend has no route for those features) and grant only View.
@@ -105,7 +102,6 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	return &AccessGuard{
 		portalRoles: []portalRole{
 			{"viewer", build(cfg.Viewer)},
-			{"commenter", build(cfg.Commenter)},
 			{"escalator", build(cfg.Escalator)},
 			{"attachment_downloader", build(cfg.AttachmentDownloader)},
 			{"support_engineer", build(cfg.SupportEngineer)},
@@ -115,10 +111,9 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			{"admin", build(cfg.Admin)},
 		},
 		allowed: map[Permission]map[string]struct{}{
-			PermView: build(cfg.Viewer, cfg.Commenter, cfg.Escalator, cfg.AttachmentDownloader,
+			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
 				cfg.UsageMetricsViewer, cfg.SupportEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner),
 			PermViewOperations:     build(cfg.SupportEngineer, cfg.Admin),
-			PermComment:            build(cfg.Commenter, cfg.SupportEngineer, cfg.Admin),
 			PermEscalate:           build(cfg.Escalator, cfg.SupportEngineer, cfg.Admin),
 			PermDownloadAttachment: build(cfg.AttachmentDownloader, cfg.SupportEngineer, cfg.Admin),
 			PermWrite:              build(cfg.SupportEngineer, cfg.Admin),

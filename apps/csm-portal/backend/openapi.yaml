@@ -12,10 +12,9 @@ info:
     | (any authenticated caller) | `GET`/`PATCH /users/me` | none needed |
     | `view` | every other `GET`, `*/search` and `*/aggregate` | any role below |
     | `view_operations` | the same reads under `/incidents`, `/change-requests`, `/problems`, `/incident-tasks`, `/outages`, `/alerts`, `/smart-alerts` | support-engineer, admin |
-    | `comment` | `POST /cases/{id}/comments` | commenter, support-engineer, admin |
     | `escalate` | `POST /cases/{id}/escalations` | escalator, support-engineer, admin |
     | `download_attachment` | `GET /attachments/{id}/content`, `POST /attachments/{id}/share` | attachment-downloader, support-engineer, admin |
-    | `write` | every other `POST`/`PATCH`/`DELETE`, including incident and change-request comments | support-engineer, admin |
+    | `write` | every other `POST`/`PATCH`/`DELETE`, including case, incident and change-request comments | support-engineer, admin |
 security:
   - bearerAuth: []
 servers:
@@ -3147,7 +3146,13 @@ paths:
 
   /cases/{id}/github-issues:
     post:
-      summary: Create a GitHub issue from a case (ServiceNow data source only).
+      summary: Create a GitHub issue from a case.
+      description: |
+        By default the request is forwarded to the entity service (ServiceNow data source only).
+        When the backend is configured with an engineering entity service, the issue is filed
+        through it instead: `repoOverride` is then required and must be one of the configured
+        repository options (otherwise `400`), `reason` is ignored, and the case's work notes are
+        not updated.
       operationId: createCaseGithubIssue
       security:
         - bearerAuth: []
@@ -8559,7 +8564,7 @@ components:
           type: array
           items:
             type: string
-            enum: [viewer, commenter, escalator, attachment_downloader, support_engineer, usage_metrics_viewer, timecard_approver, dashboard_designer, admin]
+            enum: [viewer, escalator, attachment_downloader, support_engineer, usage_metrics_viewer, timecard_approver, dashboard_designer, admin]
           description: >
             The portal roles the caller holds, decided from the roles on their token. A caller can
             hold several. Always present; empty when they hold none. This is not the entity

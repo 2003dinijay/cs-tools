@@ -18,7 +18,6 @@ import { getPortalAccess } from "@context/current-user/portalAccess";
 
 const NONE = {
   hasAnyRole: false,
-  canComment: false,
   canEscalate: false,
   canDownloadAttachment: false,
   canUseOperations: false,
@@ -40,7 +39,6 @@ describe("getPortalAccess", () => {
   });
 
   it("each specialised role adds only its own ability", () => {
-    expect(getPortalAccess(["commenter"])).toEqual({ ...NONE, hasAnyRole: true, canComment: true });
     expect(getPortalAccess(["escalator"])).toEqual({ ...NONE, hasAnyRole: true, canEscalate: true });
     expect(getPortalAccess(["attachment_downloader"])).toEqual({
       ...NONE,
@@ -58,7 +56,6 @@ describe("getPortalAccess", () => {
   it("support engineer and admin can do everything", () => {
     const all = {
       hasAnyRole: true,
-      canComment: true,
       canEscalate: true,
       canDownloadAttachment: true,
       canUseOperations: true,
@@ -71,7 +68,6 @@ describe("getPortalAccess", () => {
   it("only full-access roles get the Operations section", () => {
     for (const role of [
       "viewer",
-      "commenter",
       "escalator",
       "attachment_downloader",
       "usage_metrics_viewer",
@@ -80,17 +76,17 @@ describe("getPortalAccess", () => {
     ]) {
       expect(getPortalAccess([role]).canUseOperations).toBe(false);
     }
-    expect(getPortalAccess(["viewer", "commenter", "escalator"]).canUseOperations).toBe(false);
+    expect(getPortalAccess(["viewer", "escalator", "attachment_downloader"]).canUseOperations).toBe(false);
     expect(getPortalAccess(["support_engineer"]).canUseOperations).toBe(true);
     expect(getPortalAccess(["admin"]).canUseOperations).toBe(true);
   });
 
   it("a user holding several roles gets the union", () => {
-    expect(getPortalAccess(["viewer", "commenter", "escalator"])).toEqual({
+    expect(getPortalAccess(["viewer", "escalator", "attachment_downloader"])).toEqual({
       ...NONE,
       hasAnyRole: true,
-      canComment: true,
       canEscalate: true,
+      canDownloadAttachment: true,
     });
   });
 

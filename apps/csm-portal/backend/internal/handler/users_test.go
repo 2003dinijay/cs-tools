@@ -282,9 +282,9 @@ func TestGetMeRoles(t *testing.T) {
 	def := testAccessConfig()
 
 	t.Run("reports the portal role the token role grants", func(t *testing.T) {
-		resp := getMeAs(t, newHandler(t, &mockEntityUserClient{}, def), "agent@example.com", []string{"test-commenter"})
-		if joined(resp.Roles) != "commenter" {
-			t.Errorf("roles = %s, want commenter", joined(resp.Roles))
+		resp := getMeAs(t, newHandler(t, &mockEntityUserClient{}, def), "agent@example.com", []string{"test-escalator"})
+		if joined(resp.Roles) != "escalator" {
+			t.Errorf("roles = %s, want escalator", joined(resp.Roles))
 		}
 	})
 

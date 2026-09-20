@@ -131,14 +131,16 @@ Backs `entity.CustomerEntityClient` (this repo's entity-service; cases, accounts
 | `CUSTOMER_ENTITY_BASE_URL` | Base URL of the customer entity service |
 | `CUSTOMER_ENTITY_SCOPES` | Comma-separated OAuth2 scopes (optional) |
 
-### Engineering entity service (not yet wired in)
+### Engineering entity service (optional)
 
-Backs `entity.EngineeringEntityClient.CreateGitIssue` (a separate internal engineering entity service) but is not constructed in `cmd/server/main.go` — no handler calls it yet. These variables are not read by any code today. It uses the same shared OAuth2 credentials above (same `OAUTH2_CLIENT_ID`/`_CLIENT_SECRET`/`_TOKEN_URL`) — only its base URL and scopes are its own.
+Backs `entity.EngineeringEntityClient.CreateGitIssue` (a separate internal engineering entity service). When `ENGINEERING_ENTITY_BASE_URL` is set, `POST /cases/{id}/github-issues` files the issue through it instead of forwarding to the entity service; unset, that endpoint behaves exactly as before. It uses the same shared OAuth2 credentials above (`OAUTH2_CLIENT_ID`/`_CLIENT_SECRET`/`_TOKEN_URL`) — only its base URL and scopes are its own.
 
 | Variable | Description |
 |---|---|
-| `ENGINEERING_ENTITY_BASE_URL` | Base URL of the engineering entity service (optional) |
+| `ENGINEERING_ENTITY_BASE_URL` | Base URL of the engineering entity service. Optional — setting it switches "Open Git issue" over to it |
 | `ENGINEERING_ENTITY_SCOPES` | Comma-separated OAuth2 scopes (optional) |
+
+On this path the target must be `repoOverride` and must match an entry of `GITHUB_ISSUE_REPO_OPTIONS` (owner/repo, case-insensitive), so the service account can only file in the curated repositories; the catalogue's `owner` is passed as both the GitHub organisation and owner (the engineering service selects its GitHub access token by that organisation name, so it must be one it is configured with). The service's response has no issue URL, so the URL returned to the web app is built as `https://github.com/<owner>/<repo>/issues/<number>`. The title (max 256 characters) and description are sent, with `updateLevel`, `publicIssueUrl` and `hotFixRequired` appended to the body, and the labels are the repo option's `githubLabel`, `issueTypeLabel`, `priorityLevel` (only for `Type/Incident`) and `regression`. `reason` is ignored, since it only steers the entity service's own routing. Unlike the entity service's implementation, this path does **not** write the issue URL back into the case's work notes or tag the case as a regression.
 
 ### Updates service
 
@@ -255,10 +257,9 @@ configured at all, nobody can use the portal.
 | Variable | Grants |
 |---|---|
 | `AUTH_VIEWER_ROLES` | view |
-| `AUTH_COMMENTER_ROLES` | view, comment |
 | `AUTH_ESCALATOR_ROLES` | view, escalate |
 | `AUTH_ATTACHMENT_DOWNLOADER_ROLES` | view, download_attachment |
-| `AUTH_SUPPORT_ENGINEER_ROLES` | view, view_operations, comment, escalate, download_attachment, write |
+| `AUTH_SUPPORT_ENGINEER_ROLES` | view, view_operations, escalate, download_attachment, write (which includes posting comments) |
 | `AUTH_ADMIN_ROLES` | everything |
 | `AUTH_USAGE_METRICS_VIEWER_ROLES` | view |
 | `AUTH_TIMECARD_APPROVER_ROLES` | view |
@@ -266,7 +267,7 @@ configured at all, nobody can use the portal.
 
 ```bash
 # Several token roles can grant one portal role; any one is enough.
-AUTH_COMMENTER_ROLES=example-notes-role,example-interns-role
+AUTH_ESCALATOR_ROLES=example-escalators-role,example-leads-role
 ```
 
 | Permission | Routes |
@@ -274,18 +275,17 @@ AUTH_COMMENTER_ROLES=example-notes-role,example-interns-role
 | authenticated | `GET`/`PATCH /users/me` — any valid token, no role needed, so a user holding no portal role can still load their profile and be shown a "no access" screen |
 | `view` | every other `GET`, `*/search` and `*/aggregate` |
 | `view_operations` | the same reads under `/incidents`, `/change-requests`, `/problems`, `/incident-tasks`, `/outages`, `/alerts` and `/smart-alerts` — support engineer and admin only, so a view-only role sees cases and customers but not Operations |
-| `comment` | `POST /cases/{id}/comments` |
 | `escalate` | `POST /cases/{id}/escalations` |
 | `download_attachment` | `GET /attachments/{id}/content`, `POST /attachments/{id}/share` |
-| `write` | every other `POST`/`PATCH`/`DELETE`, including incident and change-request comments |
+| `write` | every other `POST`/`PATCH`/`DELETE`, including case, incident and change-request comments |
 
-A caller whose token holds none of the required roles gets `403`. Comment, escalation and
+A caller whose token holds none of the required roles gets `403`. Escalation and
 attachment-download are separate from `support_engineer` so other staff can be granted just that one
 ability. Posting a public case comment still additionally requires being the case's assigned
 engineer (see `CreateCaseComment`); the role is necessary, not sufficient.
 
 `GET /users/me` returns `roles` — which portal roles the caller holds, as stable keys (`viewer`,
-`commenter`, `escalator`, `attachment_downloader`, `support_engineer`, `usage_metrics_viewer`,
+`escalator`, `attachment_downloader`, `support_engineer`, `usage_metrics_viewer`,
 `timecard_approver`, `dashboard_designer`, `admin`). A caller can hold several; it is `[]` for a caller
 holding no portal role. It comes from the same guard that authorises the routes, so what the frontend
 is told and what the backend enforces cannot disagree. This is the portal roles only: the entity
@@ -309,7 +309,7 @@ backend/
 │   │   ├── doc.go               # Package overview — one config/client pair per entity service
 │   │   ├── customer_client.go   # OAuth2 HTTP client for the customer entity service (this repo's entity-service)
 │   │   ├── customer.go          # CustomerEntityClient operations (cases, accounts, projects, ...)
-│   │   └── engineering.go       # EngineeringEntityClient — CreateGitIssue (not yet wired into main.go — no caller)
+│   │   └── engineering.go       # EngineeringEntityClient — CreateGitIssue (wired when ENGINEERING_ENTITY_BASE_URL is set)
 │   ├── githubissue/
 │   │   ├── options.go          # RepoOption + ParseRepoOptions (GITHUB_ISSUE_REPO_OPTIONS)
 │   │   └── registry.go         # Active/SetActive — the resolved catalogue GET /metadata's githubIssueRepoOptions field serves
@@ -358,7 +358,7 @@ backend/
 - `POST /cases/{id}/call-requests` — Create a call request for a case (ServiceNow only)
 - `POST /cases/{id}/call-requests/search` — Search call requests for a case (ServiceNow only)
 - `PATCH /cases/{id}/call-requests/{callRequestId}` — Update a call request (ServiceNow only)
-- `POST /cases/{id}/github-issues` — Create a GitHub issue from a case; `reason` selects target repo (`default`/`migration`/`rd_ticket`; ServiceNow only)
+- `POST /cases/{id}/github-issues` — Create a GitHub issue from a case. By default forwarded to the entity service (`reason` selects the target repo — `default`/`migration`/`rd_ticket`; ServiceNow only); with `ENGINEERING_ENTITY_BASE_URL` set it is filed through the engineering entity service instead (see above)
 
 ### Metadata
 

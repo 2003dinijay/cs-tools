@@ -64,7 +64,7 @@ describe("feature visibility by portal access", () => {
   });
 
   it("every role that is not full access is treated as a viewer for Operations", () => {
-    for (const role of ["commenter", "escalator", "attachment_downloader", "usage_metrics_viewer"]) {
+    for (const role of ["escalator", "attachment_downloader", "usage_metrics_viewer"]) {
       expect(featureState("operations", getPortalAccess([role]))).toBe("hidden");
     }
     expect(featureState("operations", getPortalAccess(["admin"]))).toBe("enabled");

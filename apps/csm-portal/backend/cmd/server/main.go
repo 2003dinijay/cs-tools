@@ -78,6 +78,21 @@ func main() {
 	customerEntityClient := entity.NewCustomerEntityClient(customerEntityCfg)
 
 	caseHandler := handler.NewCaseHandler(customerEntityClient)
+	// Optional: with the engineering entity service configured, "Open Git issue"
+	// (POST /cases/{id}/github-issues) files the issue through it rather than
+	// forwarding to the entity service. It authenticates as the same shared
+	// OAuth2 app as every other upstream; only its base URL and scopes are its
+	// own. Unset keeps the entity-service path exactly as it was.
+	if engineeringBaseURL := strings.TrimSpace(os.Getenv("ENGINEERING_ENTITY_BASE_URL")); engineeringBaseURL != "" {
+		caseHandler.WithEngineeringClient(entity.NewEngineeringEntityClient(entity.EngineeringEntityConfig{
+			BaseURL:      engineeringBaseURL,
+			TokenURL:     oauth2TokenURL,
+			ClientID:     oauth2ClientID,
+			ClientSecret: oauth2ClientSecret,
+			Scopes:       splitComma(os.Getenv("ENGINEERING_ENTITY_SCOPES")),
+		}))
+		slog.Info("GitHub issues are created through the engineering entity service")
+	}
 	dashboardHandler := handler.NewDashboardHandler()
 	metadataHandler := handler.NewMetadataHandler()
 	accountHandler := handler.NewAccountHandler(customerEntityClient)
@@ -173,7 +188,7 @@ func main() {
 	route("POST /cases", handler.PermWrite, caseHandler.CreateCase)
 	route("GET /cases/{id}", handler.PermView, caseHandler.GetCase)
 	route("PATCH /cases/{id}", handler.PermWrite, caseHandler.PatchCase)
-	route("POST /cases/{id}/comments", handler.PermComment, caseHandler.CreateCaseComment)
+	route("POST /cases/{id}/comments", handler.PermWrite, caseHandler.CreateCaseComment)
 	route("POST /cases/{id}/request-update", handler.PermWrite, caseHandler.RequestCaseUpdate)
 	route("GET /case-update-request-templates", handler.PermView, caseHandler.GetCaseUpdateRequestTemplates)
 	route("POST /cases/{id}/comments/search", handler.PermView, caseHandler.SearchCaseComments)
@@ -529,7 +544,7 @@ func loadDirectory() *directory.Directory {
 
 // loadAccessConfig resolves, per portal role, the token role names that grant it:
 //
-//	AUTH_VIEWER_ROLES, AUTH_COMMENTER_ROLES, AUTH_ESCALATOR_ROLES,
+//	AUTH_VIEWER_ROLES, AUTH_ESCALATOR_ROLES,
 //	AUTH_ATTACHMENT_DOWNLOADER_ROLES, AUTH_USAGE_METRICS_VIEWER_ROLES,
 //	AUTH_SUPPORT_ENGINEER_ROLES, AUTH_ADMIN_ROLES, AUTH_TIMECARD_APPROVER_ROLES,
 //	AUTH_DASHBOARD_DESIGNER_ROLES
@@ -552,7 +567,6 @@ func loadAccessConfig() handler.AccessConfig {
 	}
 	cfg := handler.AccessConfig{
 		Viewer:               roles("AUTH_VIEWER_ROLES"),
-		Commenter:            roles("AUTH_COMMENTER_ROLES"),
 		Escalator:            roles("AUTH_ESCALATOR_ROLES"),
 		AttachmentDownloader: roles("AUTH_ATTACHMENT_DOWNLOADER_ROLES"),
 		UsageMetricsViewer:   roles("AUTH_USAGE_METRICS_VIEWER_ROLES"),

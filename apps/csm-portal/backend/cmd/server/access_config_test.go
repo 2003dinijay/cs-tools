@@ -23,7 +23,7 @@ import (
 
 func TestLoadAccessConfig(t *testing.T) {
 	envs := []string{
-		"AUTH_VIEWER_ROLES", "AUTH_COMMENTER_ROLES", "AUTH_ESCALATOR_ROLES",
+		"AUTH_VIEWER_ROLES", "AUTH_ESCALATOR_ROLES",
 		"AUTH_ATTACHMENT_DOWNLOADER_ROLES", "AUTH_USAGE_METRICS_VIEWER_ROLES",
 		"AUTH_SUPPORT_ENGINEER_ROLES", "AUTH_ADMIN_ROLES", "AUTH_TIMECARD_APPROVER_ROLES",
 		"AUTH_DASHBOARD_DESIGNER_ROLES",
@@ -38,7 +38,7 @@ func TestLoadAccessConfig(t *testing.T) {
 		resetEnv(t)
 		got := loadAccessConfig()
 		for name, roles := range map[string][]string{
-			"Viewer": got.Viewer, "Commenter": got.Commenter, "Escalator": got.Escalator,
+			"Viewer": got.Viewer, "Escalator": got.Escalator,
 			"AttachmentDownloader": got.AttachmentDownloader, "UsageMetricsViewer": got.UsageMetricsViewer,
 			"SupportEngineer": got.SupportEngineer, "Admin": got.Admin,
 			"TimecardApprover": got.TimecardApprover, "DashboardDesigner": got.DashboardDesigner,
@@ -51,10 +51,10 @@ func TestLoadAccessConfig(t *testing.T) {
 
 	t.Run("a configured value is trimmed and may list several roles", func(t *testing.T) {
 		resetEnv(t)
-		t.Setenv("AUTH_COMMENTER_ROLES", " test-notes , test-interns ,, ")
+		t.Setenv("AUTH_ESCALATOR_ROLES", " test-notes , test-interns ,, ")
 		got := loadAccessConfig()
-		if want := []string{"test-notes", "test-interns"}; !slices.Equal(got.Commenter, want) {
-			t.Errorf("Commenter = %v, want %v", got.Commenter, want)
+		if want := []string{"test-notes", "test-interns"}; !slices.Equal(got.Escalator, want) {
+			t.Errorf("Escalator = %v, want %v", got.Escalator, want)
 		}
 		if len(got.SupportEngineer) != 0 {
 			t.Errorf("SupportEngineer = %v, want it untouched by another role's variable", got.SupportEngineer)

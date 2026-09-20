@@ -19,7 +19,6 @@
  */
 export const PORTAL_ROLE = {
   viewer: "viewer",
-  commenter: "commenter",
   escalator: "escalator",
   attachmentDownloader: "attachment_downloader",
   supportEngineer: "support_engineer",
@@ -34,7 +33,6 @@ const ALL_PORTAL_ROLES: readonly string[] = Object.values(PORTAL_ROLE);
 export interface PortalAccess {
   /** Holds at least one portal role — the minimum to use the portal at all. */
   hasAnyRole: boolean;
-  canComment: boolean;
   canEscalate: boolean;
   canDownloadAttachment: boolean;
   /**
@@ -50,8 +48,7 @@ export interface PortalAccess {
 /**
  * What a user's `GET /users/me` roles let them see and do. Matched
  * case-insensitively. `admin` and `support_engineer` can do everything;
- * `commenter`, `escalator` and `attachment_downloader` each add just that one
- * ability; every other role is view-only here.
+ * `escalator` and `attachment_downloader` each add just that one ability; every other role is view-only here.
  *
  * Mirrors the backend's `AccessGuard` policy so controls can be hidden up
  * front — but it is a UX affordance only. The backend's 403 is the real gate,
@@ -64,7 +61,6 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
   const full = has(PORTAL_ROLE.admin) || has(PORTAL_ROLE.supportEngineer);
   return {
     hasAnyRole: ALL_PORTAL_ROLES.some(has),
-    canComment: full || has(PORTAL_ROLE.commenter),
     canEscalate: full || has(PORTAL_ROLE.escalator),
     canDownloadAttachment: full || has(PORTAL_ROLE.attachmentDownloader),
     canUseOperations: full,
