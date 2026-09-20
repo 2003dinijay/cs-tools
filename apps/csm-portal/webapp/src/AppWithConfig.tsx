@@ -94,24 +94,6 @@ export default function AppWithConfig(): JSX.Element {
       clientId={authConfig.clientId}
       afterSignInUrl={authConfig.signInRedirectURL}
       afterSignOutUrl={authConfig.signOutRedirectURL}
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore -- `issuer` isn't in @asgardeo/react's typed `endpoints`
-      // config (only authorization/endSession/introspection/jwks/token/
-      // userInfo/wellKnown are), but the SDK's own fallback endpoint
-      // resolution (`resolveEndpointsByBaseURL` in @asgardeo/javascript)
-      // merges `endpoints` via `Object.keys(...)` with no allowlist, so this
-      // key IS honored at runtime. Without it, the SDK's only default for the
-      // ID token's expected issuer is `${baseUrl}/oauth2/token` (the classic
-      // Asgardeo/WSO2 Identity Server convention) -- it only trusts the real
-      // value from the OIDC discovery document when `platform` is explicitly
-      // "AsgardeoV2", which this app deliberately does not set (that also
-      // swaps `signOut()`/`signIn()`/`signUp()` to the embedded-flow "Thunder"
-      // behavior this app doesn't use). Any spec-compliant OIDC provider whose
-      // issuer is the bare `baseUrl` -- RFC 8414's own convention, and what
-      // this app's IdP actually issues -- mismatches that hardcoded default
-      // and fails ID-token validation with SPA-CRYPTO-UTILS-VJ-IV01 /
-      // ERR_JWT_CLAIM_VALIDATION_FAILED ("iss").
-      endpoints={{ issuer: authConfig.baseUrl }}
       // `roles` is what makes the IdP put the user's roles claim in the token; the
       // backend authorises every request from it (see the backend README's
       // "Access control"), so without this scope a user holds no portal role.
