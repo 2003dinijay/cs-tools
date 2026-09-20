@@ -80,9 +80,19 @@ vi.mock("@context/error-banner/ErrorBannerContext", () => ({
   useErrorBanner: () => ({ showError: showErrorMock }),
 }));
 const CURRENT_USER_ID = "00000000-0000-0000-0000-00000000000c";
+// The signed-in user's portal roles. Defaults to a support engineer, who can
+// do everything, so every test that isn't about role gating sees every control;
+// the role-gating describe below overrides it per test.
+const { currentUserRoles } = vi.hoisted(() => ({
+  currentUserRoles: { value: ["support_engineer"] as string[] },
+}));
 vi.mock("@context/current-user/CurrentUserContext", () => ({
   useCurrentUser: () => ({
-    user: { id: CURRENT_USER_ID, email: "jane.doe@example.com" },
+    user: {
+      id: CURRENT_USER_ID,
+      email: "jane.doe@example.com",
+      roles: currentUserRoles.value,
+    },
     isLoading: false,
     isError: false,
     error: null,
@@ -1481,6 +1491,47 @@ describe("CsmCaseDetailPage — announcement comment composer", () => {
       name: /this case is closed — comments and work notes are read-only/i,
     });
     expect(toggle).toBeDisabled();
+  });
+});
+
+describe("CsmCaseDetailPage — role-based controls", () => {
+  afterEach(() => {
+    currentUserRoles.value = ["support_engineer"];
+  });
+
+  it("a support engineer sees the action bar and the reply composer", () => {
+    renderPage();
+    expect(screen.getByRole("button", { name: /stub request info/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /compose a reply|add an internal work note/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("a viewer sees neither the action bar nor the reply composer", () => {
+    currentUserRoles.value = ["viewer"];
+    renderPage();
+    expect(screen.queryByRole("button", { name: /stub request info/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /compose a reply|add an internal work note/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("a commenter can reply but still cannot change the case", () => {
+    currentUserRoles.value = ["commenter"];
+    renderPage();
+    expect(
+      screen.getByRole("button", { name: /compose a reply|add an internal work note/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /stub request info/i })).not.toBeInTheDocument();
+  });
+
+  it("a user with no roles sees no controls", () => {
+    currentUserRoles.value = [];
+    renderPage();
+    expect(screen.queryByRole("button", { name: /stub request info/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /compose a reply|add an internal work note/i }),
+    ).not.toBeInTheDocument();
   });
 });
 

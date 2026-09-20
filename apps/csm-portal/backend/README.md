@@ -238,6 +238,60 @@ than organisation-specific. It drives both the `roleIds` filter validation and t
 | `AUTH_AUDIENCE` | Comma-separated accepted `aud` values; token passes if any listed value is present in its `aud` claim |
 | `AUTH_TOKEN_VALIDATOR_ENABLED` | Set to `false` for local development to skip signature verification (default `true`) |
 
+### Access control
+
+A valid token proves who the caller is; the **roles on the token** decide what they may do. The
+`roles` claim of the validated `x-jwt-assertion` is checked against the role names configured for
+each role — no upstream call is made. Every route is registered in `cmd/server/main.go` through
+`route(pattern, permission, handler)`, which takes the permission as a required argument, so a new
+route cannot be added without choosing one.
+
+Each portal role's token role names are configuration. The variable holds a comma-separated list; holding **any
+one** of the listed roles grants the role. Matching is exact and case-sensitive. There is
+**no default**: the names are organisation vocabulary and are not committed here, so a role whose
+variable is unset or empty is held by nobody (startup logs a warning naming each one). With none
+configured at all, nobody can use the portal.
+
+| Variable | Grants |
+|---|---|
+| `AUTH_VIEWER_ROLES` | view |
+| `AUTH_COMMENTER_ROLES` | view, comment |
+| `AUTH_ESCALATOR_ROLES` | view, escalate |
+| `AUTH_ATTACHMENT_DOWNLOADER_ROLES` | view, download_attachment |
+| `AUTH_SUPPORT_ENGINEER_ROLES` | view, view_operations, comment, escalate, download_attachment, write |
+| `AUTH_ADMIN_ROLES` | everything |
+| `AUTH_USAGE_METRICS_VIEWER_ROLES` | view |
+| `AUTH_TIMECARD_APPROVER_ROLES` | view |
+| `AUTH_DASHBOARD_DESIGNER_ROLES` | view |
+
+```bash
+# Several token roles can grant one portal role; any one is enough.
+AUTH_COMMENTER_ROLES=example-notes-role,example-interns-role
+```
+
+| Permission | Routes |
+|---|---|
+| authenticated | `GET`/`PATCH /users/me` — any valid token, no role needed, so a user holding no portal role can still load their profile and be shown a "no access" screen |
+| `view` | every other `GET`, `*/search` and `*/aggregate` |
+| `view_operations` | the same reads under `/incidents`, `/change-requests`, `/problems`, `/incident-tasks`, `/outages`, `/alerts` and `/smart-alerts` — support engineer and admin only, so a view-only role sees cases and customers but not Operations |
+| `comment` | `POST /cases/{id}/comments` |
+| `escalate` | `POST /cases/{id}/escalations` |
+| `download_attachment` | `GET /attachments/{id}/content`, `POST /attachments/{id}/share` |
+| `write` | every other `POST`/`PATCH`/`DELETE`, including incident and change-request comments |
+
+A caller whose token holds none of the required roles gets `403`. Comment, escalation and
+attachment-download are separate from `support_engineer` so other staff can be granted just that one
+ability. Posting a public case comment still additionally requires being the case's assigned
+engineer (see `CreateCaseComment`); the role is necessary, not sufficient.
+
+`GET /users/me` returns `roles` — which portal roles the caller holds, as stable keys (`viewer`,
+`commenter`, `escalator`, `attachment_downloader`, `support_engineer`, `usage_metrics_viewer`,
+`timecard_approver`, `dashboard_designer`, `admin`). A caller can hold several; it is `[]` for a caller
+holding no portal role. It comes from the same guard that authorises the routes, so what the frontend
+is told and what the backend enforces cannot disagree. This is the portal roles only: the entity
+service's own role data is no longer returned. The frontend decides what to show or hide from these
+roles; the backend's `403` is the real gate.
+
 ### Server
 
 | Variable | Description |
@@ -312,7 +366,7 @@ backend/
 
 ### Users
 
-- `GET /users/me` — Get current user profile (`id`, `email`, `firstName`, `lastName`, `timeZone`, `roles` from entity service; `phoneNumber` from SCIM)
+- `GET /users/me` — Get current user profile (`id`, `email`, `firstName`, `lastName`, `timeZone` from entity service; `roles` are the portal roles granted by the caller's token; `phoneNumber` from SCIM)
 - `PATCH /users/me` — Update current user profile (`phoneNumber` via SCIM, `timeZone` via entity service)
 - `POST /users/search` — Search users; optional `filters` (`searchQuery`, `roles`, `userNames`, `emails`, `active`) and `sortBy` (`field`, `order`); response shape depends on data source (`User` for postgres, `SNUser` for ServiceNow)
 - `GET /users/{id}` — Get one user's full profile (ServiceNow data source only); adds `teams` (derived from `groups`) and, for external contacts only, `externalAccount` (`exists`/`locked`, from SCIM's "external" org search). Both are best-effort — absent rather than failing the request if their lookup fails
