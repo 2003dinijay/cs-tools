@@ -38,6 +38,7 @@ const (
 	changeRequestImpactEnumType   = "change_request_impact_enum"   // migrations/000047_change_request_table.up.sql
 	timeCardStateEnumType         = "time_card_state_enum"         // migrations/000039_time_card_tables.up.sql
 	conversationStateEnumType     = "conversation_state_enum"      // migrations/000057_conversation_table.up.sql
+	callRequestStateEnumType      = "customer_call_state_enum"     // migrations/000072_customer_call_table.up.sql
 )
 
 // projectMetadataEnumTypes is every enum EnumLabels is asked for in one
@@ -46,7 +47,7 @@ var projectMetadataEnumTypes = []string{
 	caseStateEnumType, caseSeverityEnumType, caseIssueTypeEnumType,
 	deploymentTypeEnumType, engagementTypeEnumType, engagementPaymentTypeEnumType,
 	changeRequestStateEnumType, changeRequestImpactEnumType,
-	timeCardStateEnumType, conversationStateEnumType,
+	timeCardStateEnumType, conversationStateEnumType, callRequestStateEnumType,
 }
 
 // caseTypeRefItems is the fixed vocabulary case_service.go's own
@@ -113,22 +114,17 @@ func (s *projectMetadataService) GetProjectMetadata(ctx context.Context, project
 	}
 
 	return domain.ProjectMetadataResponse{
-		CaseStates: choiceListFromLabels(labels[caseStateEnumType]),
-		// CallRequestStates: no call_request table exists in Postgres yet --
-		// the whole call-request feature is ServiceNow-only. Empty (not nil)
-		// so this still JSON-encodes as [] rather than null -- portal callers
-		// treat this field as a non-optional array. TODO: populate once
-		// call_request gets a Postgres table.
-		CallRequestStates:    make([]domain.ChoiceListItem, 0),
+		CaseStates:           choiceListFromLabels(labels[caseStateEnumType]),
+		CallRequestStates:    choiceListFromLabels(labels[callRequestStateEnumType]),
 		ChangeRequestStates:  choiceListFromLabels(labels[changeRequestStateEnumType]),
 		ConversationStates:   choiceListFromLabels(labels[conversationStateEnumType]),
 		TimeCardStates:       choiceListFromLabels(labels[timeCardStateEnumType]),
 		ChangeRequestImpacts: choiceListFromLabels(labels[changeRequestImpactEnumType]),
 		Severities:           choiceListFromLabels(labels[caseSeverityEnumType]),
 		// SeverityBasedAllocationTime: no per-severity SLA-allocation-time
-		// table exists in Postgres yet. Empty (not nil) for the same
-		// JSON-shape reason as CallRequestStates above. TODO: populate once
-		// one does.
+		// table exists in Postgres yet. Empty (not nil) so it serializes as
+		// {} rather than null -- portal callers treat it as a non-optional
+		// object. TODO: populate once one does.
 		SeverityBasedAllocationTime: make(map[string]int),
 		IssueTypes:                  choiceListFromLabels(labels[caseIssueTypeEnumType]),
 		DeploymentTypes:             choiceListFromLabels(labels[deploymentTypeEnumType]),

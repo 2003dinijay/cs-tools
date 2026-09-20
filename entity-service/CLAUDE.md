@@ -1778,13 +1778,15 @@ backs both endpoints:
 **Left empty with a TODO comment, not fabricated** (per this codebase's
 existing convention of flagging genuine data-source gaps rather than
 inventing data): `SystemMetadataResponse.TimeZones`/`FeedbackEmojis` (static
-ServiceNow-side config, not project/case data); `ProjectMetadataResponse.
-CallRequestStates` (the whole call-request feature has no Postgres table at
-all); `SeverityBasedAllocationTime` (no SLA-allocation-time table exists);
+ServiceNow-side config, not project/case data); `SeverityBasedAllocationTime`
+(no SLA-allocation-time table exists);
 `ProjectFeatures.AcceptedSeverityValues` and every `Has*Access`/product-
 category field (no per-project feature-entitlement or severity-restriction
 columns exist anywhere in the Postgres schema -- checked directly against
-the `project` table's full column list, not just assumed).
+the `project` table's full column list, not just assumed). (`CallRequestStates`
+used to be on this list; `customer_call` -- migration 000072 -- has since
+landed, so it's now read live from `customer_call_state_enum` like every other
+choice list. See "Call requests and the service-request catalog" below.)
 
 **`GlobalService.GlobalSearch` (`POST /search`) still has no Postgres
 implementation** -- cross-entity project+case search is a materially larger
@@ -1793,6 +1795,76 @@ reference-data reads `GetSystemMetadata` serves, so it returns a
 `ValidationError` explaining the gap in Postgres mode rather than 404 (the
 route itself is now registered in both modes, since `GetSystemMetadata`
 needed to be) or a silently-empty result.
+
+## Call requests and the service-request catalog (migrations 000067-000072)
+
+Six tables landed together (`customer_call`, `sr_category`, `catalog_item`,
+`catalog_item_category`, `catalog_variable`, `sr_category_routing_rule`) and
+each backs a previously ServiceNow-only feature. Both feature groups' routes
+are now registered for **both** data sources (`callRequestRepo`/`catalogRepo`
+in `routes.go`, same wiring shape as every other dual-source entity).
+
+**Verification caveat, read before trusting the assumptions below**: the
+staging database was unreachable when this was written (connection timeout,
+so no row counts and no real data), so it was validated against a throwaway
+local Postgres built from all 72 migrations and a hand-seeded dataset -- the
+SQL, joins, enum casts and edge cases (NULL columns, empty results, wildcard
+rules, IDOR guard) are proven, but **the mappings marked ASSUMPTION below have
+not been checked against real synced rows**. Confirm them the next time
+staging is reachable.
+
+### Call requests (`customer_call`) -- `call_request_repo.go`/`call_request_service.go`
+
+All four `CallRequestService` methods are implemented. `state` maps to
+`customer_call_state_enum` by upper/lower-casing (all eight labels match
+`domain.CallRequestStateType` exactly -- `CANCELED` both sides, no spelling
+drift; `TestCallRequestStatesMatchMigration` diffs them against the real
+migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
+
+- `case` ref <- `work_item` (LEFT JOIN: `customer_call.work_item_id` is
+  nullable); `assignee` <- the `"user"` display name (falling back to email);
+  `notes` <- `all_notes`; `meetingLink` <- `call_link`;
+  `scheduleTime` <- `scheduled_on`; `durationMin` <- `duration` (INTERVAL).
+- **ASSUMPTION**: `preferredTimes` <- `final_times` (JSONB), read only if it is
+  a JSON array of strings, otherwise `[]` -- the column name doesn't say which
+  side's times it holds and its real contents weren't seen.
+- **ASSUMPTION**: `actualDurationMin` <- `actual_call_duration` (free VARCHAR),
+  parsed as a whole number of minutes (what this service writes); any other
+  format reads as `nil`.
+- **ASSUMPTION**: create -> state `pending_on_wso2` (the customer raised it,
+  WSO2 must schedule). `PATCH`'s `assignee` is interpreted as an **email**
+  (resolved via `GetUserByEmail`).
+- Search-all's `assignmentTeamIds` is rejected with a 400 rather than
+  ignored: nothing on this schema holds a case's assignment team
+  (`customer_call.assignment_group` was deliberately skipped in the
+  migration), and a silently-ignored filter would widen the result set.
+  `caseStates`/`excludeCaseStates` reuse `caseLikeStateColumn`/`caseLikeJoins`
+  so they work for every case-like type.
+- **Not done, deliberately (same "don't guess" rule as `CreateCase`)**:
+  `number` is left NULL on create (no default, no sequence, no confirmed
+  format -- returned as `""`); `cancellationReason` is accepted but not stored
+  (no column: `reason` is the request's own reason); `closed_on`/`closed_by_id`
+  are never set (which states count as "closed" is unspecified); state
+  transitions aren't validated against the current state.
+
+### Service-request catalog -- `catalog_repo.go`/`catalog_service.go`
+
+- **ASSUMPTION**: a "catalog" is an `sr_category` row (it's the only
+  catalog-level entity with a UUID and a name; ServiceNow's `sc_catalog` level
+  was collapsed into the plain `sr_category.catalog` enum), its items linked
+  through `catalog_item_category`.
+- Availability for a deployed product: a `sr_category_routing_rule` matches when
+  `rule.product_unit = product.unit` and `rule.classification =
+  deployed_product.product_category` (same label sets but distinct enum types,
+  hence `::TEXT` casts). **ASSUMPTION**: a NULL on the rule side is a wildcard
+  ("any"); a deployed product with no unit/category can then only match wildcard
+  rules. Only active categories with at least one available item are returned;
+  an unknown deployed product is a 404.
+- `GetCatalogItemVariables` 404s unless the item is linked to that catalog.
+  `catalog_variable` has no columns for `readOnly`/`hidden`/`maxLength`/
+  `referenceTable`/`validation`/`choices`, so those stay at their zero value
+  (TODO: choice-based variables render as free text until a choices table
+  exists). A NULL `is_active` counts as active.
 
 ## Adding a new entity
 
