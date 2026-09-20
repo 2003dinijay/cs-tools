@@ -31,6 +31,12 @@ func baseValidConfig() Config {
 		// Config would be.
 		ServerPort: "8080",
 		HealthPort: "8081",
+		// Token validation is always on (no config flag disables it), so
+		// these three are as mandatory to a valid Config as the DB settings
+		// above — see TestConfig_Validate_Auth for the dedicated tests.
+		AuthIssuer:             "https://api.asgardeo.io/t/x/oauth2/token",
+		AuthJWKSURL:            "https://api.asgardeo.io/t/x/oauth2/jwks",
+		AuthUserTokenAudiences: []string{"spa"},
 	}
 }
 
@@ -166,15 +172,7 @@ func TestConfig_Validate_RequiresDBFields(t *testing.T) {
 }
 
 func TestConfig_Validate_ServiceNowDoesNotRequireDBFields(t *testing.T) {
-	c := Config{
-		DataSource:                               DataSourceServiceNow,
-		ServiceNowIntegrationServiceBaseURL:      "https://example.com",
-		ServiceNowIntegrationServiceTokenURL:     "https://example.com/token",
-		ServiceNowIntegrationServiceClientID:     "client-id",
-		ServiceNowIntegrationServiceClientSecret: "client-secret",
-		ServerPort:                               "8080",
-		HealthPort:                               "8081",
-	}
+	c := baseValidServiceNowConfig()
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate() = %v, want nil when DATA_SOURCE=servicenow has no DB credentials", err)
 	}
@@ -257,6 +255,11 @@ func baseValidServiceNowConfig() Config {
 		// which a zero-value Config would be.
 		ServerPort: "8080",
 		HealthPort: "8081",
+		// Token validation is always on regardless of DataSource — see
+		// baseValidConfig's own comment.
+		AuthIssuer:             "https://api.asgardeo.io/t/x/oauth2/token",
+		AuthJWKSURL:            "https://api.asgardeo.io/t/x/oauth2/jwks",
+		AuthUserTokenAudiences: []string{"spa"},
 	}
 }
 
@@ -348,5 +351,41 @@ func TestConfig_Validate_PostgresStillRequiresDatabase(t *testing.T) {
 	c := Config{DataSource: DataSourcePostgres}
 	if err := c.Validate(); err == nil {
 		t.Error("Validate() = nil, want an error for postgres with no database configured")
+	}
+}
+
+func TestParseInternalClientIDs(t *testing.T) {
+	got := ParseInternalClientIDs(" csm-portal , csm-integration ,")
+	if len(got) != 2 || !got["csm-portal"] || !got["csm-integration"] {
+		t.Fatalf("got %v", got)
+	}
+	if got := ParseInternalClientIDs(""); len(got) != 0 {
+		t.Fatalf("empty must be a valid empty set, got %v", got)
+	}
+	// A client id absent from the set is simply not internal -- there is no
+	// error case here (unlike the old clientId=role grammar): any non-empty,
+	// trimmed entry is a valid client id.
+	if got := ParseInternalClientIDs("a,,b"); len(got) != 2 || !got["a"] || !got["b"] {
+		t.Errorf("blank entries between commas should just be skipped, got %v", got)
+	}
+}
+
+// TestConfig_Validate_Auth locks in that token validation has no off switch:
+// AuthIssuer/AuthJWKSURL/AuthUserTokenAudiences are as mandatory to a valid
+// Config as the DB settings baseValidConfig() already supplies.
+func TestConfig_Validate_Auth(t *testing.T) {
+	if c := baseValidConfig(); c.Validate() != nil {
+		t.Fatalf("complete auth config rejected: %v", c.Validate())
+	}
+	for name, mod := range map[string]func(*Config){
+		"missing issuer":    func(c *Config) { c.AuthIssuer = "" },
+		"missing JWKS URL":  func(c *Config) { c.AuthJWKSURL = "" },
+		"missing audiences": func(c *Config) { c.AuthUserTokenAudiences = nil },
+	} {
+		c := baseValidConfig()
+		mod(&c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: want a startup error", name)
+		}
 	}
 }

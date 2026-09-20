@@ -39,12 +39,14 @@ type caseService struct {
 	// events.TypeCaseBillableStatusChanged's own doc comment)
 	// case.billable_status_changed detection.
 	publisher EventPublisherService
+	access    AccessService
 }
 
 // NewCaseService constructs a CaseService backed by the given repositories.
-// publisher may be nil (see caseService.publisher's own doc comment).
-func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService) CaseService {
-	return &caseService{repo: repo, userRepo: userRepo, publisher: publisher}
+// publisher may be nil (see caseService.publisher's own doc comment). access
+// scopes GetCaseByID/SearchCases's reads (see AccessService).
+func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService) CaseService {
+	return &caseService{repo: repo, userRepo: userRepo, publisher: publisher, access: access}
 }
 
 var validCaseSortField = map[domain.CaseSortField]bool{
@@ -301,10 +303,11 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 
 // GetCaseByID implements CaseService.
 func (s *caseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
-	if err := validateUUIDs("id", []string{id}); err != nil {
+	scope, err := resolveScopeForID(ctx, s.access, id)
+	if err != nil {
 		return domain.CaseView{}, err
 	}
-	return s.repo.GetCaseByID(ctx, id)
+	return s.repo.GetCaseByID(ctx, id, scope)
 }
 
 var validCommentType = map[domain.CommentType]bool{
@@ -706,7 +709,12 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "sortBy.order must be one of: asc, desc"}
 	}
 
-	cases, total, err := s.repo.SearchCases(ctx, req)
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+
+	cases, total, err := s.repo.SearchCases(ctx, req, scope)
 	if err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
@@ -1019,7 +1027,10 @@ func (s *caseService) detectPatchTagBillableOverride(ctx context.Context, caseID
 		return
 	}
 
-	cv, err := s.repo.GetCaseByID(ctx, caseID)
+	// Unrestricted: this is an internal re-fetch of a case AddCaseTag just
+	// wrote to, not a caller-facing read -- there's no separate caller
+	// identity to scope here, and the tag write itself already happened.
+	cv, err := s.repo.GetCaseByID(ctx, caseID, repository.SearchScope{Unrestricted: true})
 	if err != nil {
 		slog.ErrorContext(ctx, "add case tag: patch billable override not evaluated, get case failed", "caseId", caseID)
 		return

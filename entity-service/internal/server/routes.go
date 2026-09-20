@@ -17,10 +17,12 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/handler"
@@ -41,6 +43,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	userRepo := repository.NewUserRepository(db)
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userSvc)
+
+	// accessSvc resolves the caller's AccessScope from the validated identity
+	// auth.Middleware attaches to every request (see AccessService's own doc
+	// comment for the full decision table). Constructed once and shared by
+	// every Postgres-backed service that scopes its reads by it. It only takes
+	// effect on the Postgres data source: in ServiceNow mode the project/case
+	// reads go to ServiceNow itself with the forwarded x-user-id-token, so
+	// scoping there is ServiceNow's own (snProjectService/snCaseService hold a
+	// pgFallback but do not route GetProjectByID/GetCaseByID through it).
+	accessSvc := service.NewAccessService(repository.NewAccessRepository(db), cfg.AuthInternalClientIDs)
 
 	// event_publish_failures, sla_clocks, scheduled_task_run, and
 	// alert_incident_mapping have no ServiceNow equivalent. They are
@@ -167,7 +179,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 
 	projectRepo := repository.NewProjectRepository(db)
-	pgProjectSvc := service.NewProjectService(projectRepo)
+	pgProjectSvc := service.NewProjectService(projectRepo, accessSvc)
 	var activeProjectSvc service.ProjectService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeProjectSvc = service.NewServiceNowProjectService(serviceNowIntegrationServiceClient, pgProjectSvc)
@@ -264,7 +276,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 
 	caseRepo := repository.NewCaseRepository(db)
-	pgCaseSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher)
+	pgCaseSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
 	var activeCaseSvc service.CaseService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseSvc, eventPublisher, slaClockService, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
@@ -412,7 +424,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	if cfg.DataSource == config.DataSourceServiceNow {
 		globalHandler = handler.NewGlobalHandler(service.NewServiceNowGlobalService(serviceNowIntegrationServiceClient))
 	} else {
-		globalHandler = handler.NewGlobalHandler(service.NewGlobalService(referenceDataRepo))
+		globalHandler = handler.NewGlobalHandler(service.NewGlobalService(
+			referenceDataRepo,
+			repository.NewGlobalSearchRepository(db),
+			accessSvc,
+		))
 	}
 
 	// instance/usage tracking tables (migration 000054) -- see
@@ -734,11 +750,27 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("POST /instances/metrics/stats/search", instanceHandler.SearchInstanceMetricsStats)
 	mux.HandleFunc("POST /instances/usages/stats/search", instanceHandler.SearchInstanceUsageStats)
 
+	// Token validation always runs -- there is no config flag to disable it.
+	// The JWKS must load right here at startup: a wrong URL panics now instead
+	// of silently rejecting every token later (same fail-fast posture as
+	// apps/csm-portal/backend).
+	tokenValidator, err := auth.NewValidator(context.Background(), auth.Config{
+		Issuer:             cfg.AuthIssuer,
+		JWKSURL:            cfg.AuthJWKSURL,
+		UserTokenAudiences: cfg.AuthUserTokenAudiences,
+		ClockSkew:          cfg.AuthClockSkew,
+	})
+	if err != nil {
+		panic("auth: could not initialise token validation: " + err.Error())
+	}
+
 	return middleware.CorrelationID(
 		middleware.Recovery(
 			middleware.Logger(
 				middleware.UserIDToken(
-					middleware.Timeout(30 * time.Second)(mux),
+					auth.Middleware(tokenValidator)(
+						middleware.Timeout(30 * time.Second)(mux),
+					),
 				),
 			),
 		),

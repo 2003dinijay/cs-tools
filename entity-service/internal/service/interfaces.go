@@ -208,7 +208,11 @@ type ProjectService interface {
 	// indicates an infrastructure failure.
 	SearchProjects(ctx context.Context, req domain.SearchProjectsRequest) (domain.SearchProjectsResponse, error)
 	// GetProjectByID returns the enriched project detail with the linked account.
-	// A ValidationError is returned for a malformed UUID; a NotFoundError if no project matches.
+	// A ValidationError is returned for a malformed UUID; a NotFoundError if no
+	// project matches OR (Postgres data source) it exists but is outside the
+	// caller's AccessScope -- see CLAUDE.md's "Token validation and
+	// caller-scoped access" for the full rule and why existence is hidden
+	// rather than returning a 403.
 	GetProjectByID(ctx context.Context, id string) (domain.ProjectDetailsView, error)
 }
 
@@ -391,7 +395,10 @@ type CaseService interface {
 	// State defaults to open. A ValidationError is returned for invalid input.
 	CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error)
 	// GetCaseByID returns the enriched case view for the given UUID. A
-	// ValidationError is returned for a malformed UUID; a NotFoundError if no case matches.
+	// ValidationError is returned for a malformed UUID; a NotFoundError if no
+	// case matches OR (Postgres data source) it exists but is outside the
+	// caller's AccessScope -- see ProjectService.GetProjectByID's identical
+	// note and CLAUDE.md for the full rule.
 	GetCaseByID(ctx context.Context, id string) (domain.CaseView, error)
 	// SearchCases returns a paginated list of cases filtered by optional project IDs,
 	// deployment IDs, deployed product IDs, state keys, severity keys, and search query.
@@ -869,10 +876,10 @@ type ConversationService interface {
 }
 
 // GlobalService serves system-wide metadata and cross-entity search that
-// isn't scoped to any single project or case. GetSystemMetadata has a
-// Postgres-backed implementation (globalService); GlobalSearch still
-// requires the ServiceNow data source -- there is no Postgres fallback for
-// it yet.
+// isn't scoped to any single project or case. Both methods have Postgres-backed
+// implementations (globalService); GlobalSearch on that data source returns
+// only what the caller may see (AccessService), so it also needs token
+// validation to be configured.
 type GlobalService interface {
 	// GetSystemMetadata returns system-wide reference data (time zones, project types,
 	// and feedback emoji choices) used across the frontend.

@@ -170,6 +170,11 @@ services:
       PORT: "9100"
     ports:
       - "9100:9100"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9100/oauth2/jwks"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
 
   # ── Core platform ─────────────────────────────────────────────────────────
 
@@ -181,6 +186,8 @@ services:
       migrate:
         condition: service_completed_successfully
       kafka:
+        condition: service_healthy
+      mock-oidc:
         condition: service_healthy
     environment:
       SERVER_PORT: "8080"
@@ -196,6 +203,15 @@ services:
       EVENT_HUB_TOPIC: case-events
       EVENT_PUBLISHING_ENABLED: "true"
       SSL_CERT_FILE: /certs/ca.crt
+      # Token validation is always on (see internal/config/config.go), so this
+      # stack needs a real issuer to start at all -- mock-oidc, the same one
+      # csm-portal-backend/customer-portal-backend already validate against,
+      # exercising the same code path this compose stack otherwise wouldn't
+      # cover.
+      AUTH_ISSUER: http://localhost:9100
+      AUTH_JWKS_URL: http://mock-oidc:9100/oauth2/jwks
+      AUTH_USER_TOKEN_AUDIENCES: csm-portal-webapp,customer-portal-webapp
+      AUTH_INTERNAL_CLIENT_IDS: csm-portal-backend-dev-client,csm-integration-service-dev-client
     volumes:
       - csm-dev-certs:/certs:ro
     ports:

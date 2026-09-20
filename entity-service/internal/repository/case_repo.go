@@ -116,12 +116,14 @@ type CaseRepository interface {
 	// CreateCase inserts a new case row (both work_item and "case").
 	CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
 	// GetCaseByID returns the enriched case view for the given UUID, or a
-	// NotFoundError if no matching row exists.
-	GetCaseByID(ctx context.Context, id string) (domain.CaseView, error)
+	// NotFoundError if no matching row exists OR it exists but scope excludes
+	// it (existence is never revealed to a caller who can't see it).
+	GetCaseByID(ctx context.Context, id string, scope SearchScope) (domain.CaseView, error)
 	// SearchCases returns a filtered, paginated slice of enriched case views
-	// together with the total count of matching rows before pagination.
+	// together with the total count of matching rows before pagination,
+	// narrowed to scope regardless of what project filter req itself carries.
 	// COUNT and SELECT are executed concurrently on separate pool connections.
-	SearchCases(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error)
+	SearchCases(ctx context.Context, req domain.SearchCasesRequest, scope SearchScope) ([]domain.SearchCaseView, int, error)
 	// CreateCaseComment inserts a new comment row for the given case.
 	CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error)
 	// SearchCaseComments returns a paginated slice of comments for the given case
@@ -289,7 +291,7 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 // other extension table has them); state/cause/close_notes/resolved_on/
 // closed_on are COALESCEd across whichever extension table actually matches
 // wi.type (caseLike*Column consts) since exactly one ever does.
-func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
+func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope) (domain.CaseView, error) {
 	var cv domain.CaseView
 	var (
 		// internalID is scanned as *string even though CaseView.InternalID
@@ -319,6 +321,15 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		creatorEmail                             string
 		creatorID, creatorName                   *string
 	)
+	// A scoped caller asking for a case outside their access still gets
+	// pgx.ErrNoRows -> NotFoundError below, the same as a genuinely
+	// nonexistent id: existence is never revealed to a caller who can't see
+	// the case, matching GetProjectByID's own reasoning.
+	scopeClause, scopeArgs := "", []any{id}
+	if !scope.Unrestricted {
+		scopeClause = " AND " + scopePredicate("wi.project_id", 2)
+		scopeArgs = append(scopeArgs, scope.ProjectIDs)
+	}
 	err := r.db.QueryRow(ctx,
 		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT,
 		        wi.description, c.severity::TEXT, c.issue_type::TEXT, c.work_state::TEXT,
@@ -349,7 +360,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		 LEFT JOIN work_item pw ON pw.id = wi.parent_id
 		 LEFT JOIN "case" rc ON rc.id = c.related_case_id
 		 LEFT JOIN work_item rc_wi ON rc_wi.id = rc.id
-		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)`, id,
+		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)`+scopeClause, scopeArgs...,
 	).Scan(
 		&cv.ID, &cv.Number, &internalID, &caseType,
 		&description, &severity, &issueType, &workState,
@@ -994,11 +1005,24 @@ var pgSortColMap = map[domain.CaseSortField]string{
 }
 
 // SearchCases implements CaseRepository.
-func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error) {
+func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest, scope SearchScope) ([]domain.SearchCaseView, int, error) {
 	filterArgs := []any{}
 	argIdx := 1
 
 	where := "WHERE 1=1"
+
+	// The caller's access scope is ANDed in independently of whatever project
+	// filter the request itself carries (req.Parsed.ProjectIDs below): a
+	// scoped caller asking for a project outside their own scope gets zero
+	// rows, never someone else's data, and a scoped caller with no project
+	// filter of their own is still narrowed to just what they can see. An
+	// empty scope.ProjectIDs (no access at all) correctly matches nothing via
+	// ANY('{}').
+	if !scope.Unrestricted {
+		where += " AND " + scopePredicate("wi.project_id", argIdx)
+		filterArgs = append(filterArgs, scope.ProjectIDs)
+		argIdx++
+	}
 
 	if len(req.Parsed.Types) > 0 {
 		// req.Parsed.Types holds validCaseType's lowercase values

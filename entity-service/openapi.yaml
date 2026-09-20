@@ -987,6 +987,12 @@ paths:
   /projects/{id}:
     get:
       summary: Get a project by ID.
+      description: >
+        On the Postgres data source, this is one of the endpoints scoped to the caller
+        (see POST /search's own description for the full rule). A project that exists but
+        is outside the caller's scope is indistinguishable from one that doesn't exist --
+        both are a 404, never a 403, so existence is never revealed to a caller who can't
+        see it.
       operationId: getProject
       parameters:
         - name: id
@@ -1007,8 +1013,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: On the Postgres data source, a token is invalid or expired, or neither a user token nor an authorized internal client credential was supplied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: On the Postgres data source, the caller's x-user-id-token resolves to a real but insufficient user (inactive, unknown to this data source, or not a customer/internal person).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
-          description: Project not found.
+          description: Project not found, or it exists but is outside the caller's access scope (Postgres data source).
           content:
             application/json:
               schema:
@@ -1077,6 +1095,9 @@ paths:
   /projects/search:
     post:
       summary: Search projects by name, key, or subscription type.
+      description: >
+        On the Postgres data source, results are scoped to the caller (see POST
+        /search's own description for the full rule).
       operationId: searchProjects
       requestBody:
         required: true
@@ -1093,6 +1114,18 @@ paths:
                 $ref: '#/components/schemas/SearchProjectsResponse'
         "400":
           description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: On the Postgres data source, a token is invalid or expired, or neither a user token nor an authorized internal client credential was supplied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: On the Postgres data source, the caller's x-user-id-token resolves to a real but insufficient user (inactive, unknown to this data source, or not a customer/internal person).
           content:
             application/json:
               schema:
@@ -1707,6 +1740,11 @@ paths:
   /cases/{id}:
     get:
       summary: Get a support case by ID.
+      description: >
+        On the Postgres data source, this is one of the endpoints scoped to the caller
+        (see POST /search's own description for the full rule). A case that exists but
+        is outside the caller's scope (its project isn't one they can see) is
+        indistinguishable from one that doesn't exist -- both are a 404, never a 403.
       operationId: getCase
       parameters:
         - name: id
@@ -1728,8 +1766,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: On the Postgres data source, a token is invalid or expired, or neither a user token nor an authorized internal client credential was supplied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: On the Postgres data source, the caller's x-user-id-token resolves to a real but insufficient user (inactive, unknown to this data source, or not a customer/internal person).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
-          description: Case not found.
+          description: Case not found, or it exists but is outside the caller's access scope (Postgres data source).
           content:
             application/json:
               schema:
@@ -1821,6 +1871,10 @@ paths:
   /cases/search:
     post:
       summary: Search support cases.
+      description: >
+        On the Postgres data source, results are scoped to the caller (see POST
+        /search's own description for the full rule) -- a scope applied independently
+        of, and never widened by, any projectId filter the request itself carries.
       operationId: searchCases
       requestBody:
         required: true
@@ -1837,6 +1891,18 @@ paths:
                 $ref: '#/components/schemas/SearchCasesResponse'
         "400":
           description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: On the Postgres data source, a token is invalid or expired, or neither a user token nor an authorized internal client credential was supplied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: On the Postgres data source, the caller's x-user-id-token resolves to a real but insufficient user (inactive, unknown to this data source, or not a customer/internal person).
           content:
             application/json:
               schema:
@@ -5448,10 +5514,26 @@ paths:
 
   /search:
     post:
-      summary: Global search across projects and cases (ServiceNow data source only; 400 on Postgres).
+      summary: Global search across the projects and cases the caller can access.
       description: >
         Runs a single free-text query against both the projects and cases tables and
         returns paginated results for each independently.
+
+
+        On the Postgres data source, every request's tokens are validated (Asgardeo), and
+        results are scoped to the caller (the same rule GET /projects/{id}, POST
+        /projects/search, GET /cases/{id}, and POST /cases/search also apply): if the
+        request's `Authorization: Bearer` client-credentials token names a client id in
+        AUTH_INTERNAL_CLIENT_IDS, the caller sees every project and case unconditionally --
+        regardless of any `x-user-id-token` the same request also carries (that token, if
+        present, is never used to scope an internal caller). Any other caller is resolved
+        purely from its `x-user-id-token`: an internal user still sees everything, a
+        customer sees only projects they are a REGISTERED contact of and the cases in
+        them, and any other user type, an inactive user, or an unknown email is refused
+        (403). No user token and not an internal client id is refused (401) -- there is no
+        legitimate caller to resolve. A token that is present but invalid is always
+        rejected with 401. The project counts (`activeChatsCount`, `actionRequiredCount`,
+        `outstandingCount`) are 0 on Postgres.
       operationId: globalSearch
       requestBody:
         required: false
@@ -5473,7 +5555,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
-          description: Unauthorized.
+          description: A token is invalid or expired, or neither a user token nor an authorized client credential was supplied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller's x-user-id-token resolves to a real but insufficient user (inactive, unknown to this data source, or not a customer/internal person).
           content:
             application/json:
               schema:
@@ -5485,7 +5573,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: Global search is only supported for the ServiceNow data source.
+          description: The ServiceNow metadata/search dependency is unavailable.
           content:
             application/json:
               schema:
@@ -14327,6 +14415,11 @@ components:
       properties:
         field:
           type: string
+          description: >
+            Postgres accepts `name` (a project's name / a case's subject), `createdOn` and
+            `updatedOn`, applied to both tables; anything else is a 400. Defaults: projects
+            by name ascending, cases by updatedOn descending. `order` defaults to ascending
+            for `name` and descending for the date fields.
         order:
           type: string
           enum: [asc, desc]
