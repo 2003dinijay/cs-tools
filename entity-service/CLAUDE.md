@@ -1804,14 +1804,25 @@ each backs a previously ServiceNow-only feature. Both feature groups' routes
 are now registered for **both** data sources (`callRequestRepo`/`catalogRepo`
 in `routes.go`, same wiring shape as every other dual-source entity).
 
-**Verification caveat, read before trusting the assumptions below**: the
-staging database was unreachable when this was written (connection timeout,
-so no row counts and no real data), so it was validated against a throwaway
-local Postgres built from all 72 migrations and a hand-seeded dataset -- the
-SQL, joins, enum casts and edge cases (NULL columns, empty results, wildcard
-rules, IDOR guard) are proven, but **the mappings marked ASSUMPTION below have
-not been checked against real synced rows**. Confirm them the next time
-staging is reachable.
+**Verification status**: the six tables exist in staging with exactly the
+migrations' columns/types/enum labels, but are all **empty (0 rows)** -- so
+the assumptions marked ASSUMPTION below could not be checked against real
+synced rows. What *was* verified against staging: every read path executes
+without error on real data (real cases, projects, deployed products), both
+write statements `PREPARE` cleanly against the real schema (no write was made),
+and the catalog matching logic was run with the real repository code on real
+deployed products using session-local `TEMP` tables shadowing the empty ones.
+The rest (create/update semantics, edge cases) was proven on a throwaway local
+Postgres built from all 72 migrations.
+
+**A data finding that changed the design**: `product.unit` is NULL for
+**every** product in staging (17/17) and 214 deployed products have no
+`product_id`, so a strict `rule.product_unit = product.unit` could never match
+any rule that names a unit -- the catalog would always be empty. Unit matching
+is therefore fail-open: it is only compared when both sides are known. Classification
+(`deployed_product.product_category`, populated for ~88% of rows) stays strict:
+a deployed product with no category only matches rules with no classification
+requirement. TODO: make unit strict again once `product.unit` is populated.
 
 ### Call requests (`customer_call`) -- `call_request_repo.go`/`call_request_service.go`
 
@@ -1857,8 +1868,9 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   `rule.product_unit = product.unit` and `rule.classification =
   deployed_product.product_category` (same label sets but distinct enum types,
   hence `::TEXT` casts). **ASSUMPTION**: a NULL on the rule side is a wildcard
-  ("any"); a deployed product with no unit/category can then only match wildcard
-  rules. Only active categories with at least one available item are returned;
+  ("any"). A NULL unit on the deployed-product side does not exclude a rule
+  (see the data finding above); a NULL classification only matches rules that
+  don't specify one. Only active categories with at least one available item are returned;
   an unknown deployed product is a 404.
 - `GetCatalogItemVariables` 404s unless the item is linked to that catalog.
   `catalog_variable` has no columns for `readOnly`/`hidden`/`maxLength`/

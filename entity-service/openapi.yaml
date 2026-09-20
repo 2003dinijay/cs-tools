@@ -3353,7 +3353,8 @@ paths:
       summary: Search service catalogs by deployed product.
       description: >
         Postgres: a catalog is an sr_category; its items are those made available for the
-        deployed product by sr_category_routing_rule (product unit + classification).
+        deployed product by sr_category_routing_rule (product unit + classification). A deployed
+        product whose unit is unknown (NULL) is not excluded by unit.
       operationId: searchCatalogs
       requestBody:
         required: true

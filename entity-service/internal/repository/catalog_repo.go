@@ -64,9 +64,20 @@ func NewCatalogRepository(db *pgxpool.Pool) CatalogRepository {
 // product's product.unit AND its classification equals
 // deployed_product.product_category -- both pairs share a label set
 // (product_unit_enum; PDP/MS/PS/CL/PC) but are distinct enum types, hence the
-// ::TEXT casts. A NULL product_unit/classification on the rule is treated as
-// "any" (a wildcard), and a deployed product with no unit/category can then
-// only match wildcard rules.
+// ::TEXT casts. A NULL product_unit/classification on the RULE is a wildcard
+// ("any").
+//
+// The two attributes are treated differently when the DEPLOYED PRODUCT's own
+// value is NULL, because the staging data differs: product.unit is NULL for
+// every product (17/17), and 214 deployed products have no product at all --
+// a systemic data gap, so a strict unit comparison could never match any rule
+// that names a unit and the catalog would always be empty. An unknown unit is
+// therefore not treated as a conflict (unit is only compared when both sides
+// are known). deployed_product.product_category, by contrast, is populated
+// for most rows, so a NULL there is a per-record gap: such a deployed product
+// only matches rules that don't require a specific classification, rather
+// than being shown every classification's items. TODO: once product.unit is
+// populated, make unit strict again.
 const availableCatalogItemsCTE = `
 	WITH dp AS (
 		SELECT p.unit::TEXT AS unit, d.product_category::TEXT AS classification
@@ -79,7 +90,7 @@ const availableCatalogItemsCTE = `
 		FROM sr_category_routing_rule r
 		CROSS JOIN dp
 		WHERE r.catalog_item_id IS NOT NULL
-		  AND (r.product_unit IS NULL OR r.product_unit::TEXT = dp.unit)
+		  AND (r.product_unit IS NULL OR dp.unit IS NULL OR r.product_unit::TEXT = dp.unit)
 		  AND (r.classification IS NULL OR r.classification::TEXT = dp.classification)
 	)`
 
