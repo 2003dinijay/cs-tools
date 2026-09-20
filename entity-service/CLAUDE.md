@@ -1837,23 +1837,44 @@ never from a list the caller sends:
 | user token, `user_type` INTERNAL (all active rows for the email) | everything |
 | user token, EXTERNAL (customer) | only projects where their email is a `REGISTERED` `project_contact`, and the cases in them; none registered = an empty result, never "no filter" |
 | user token, inactive / SYSTEM / NOT_AVAILABLE / unknown email | 403 |
-| no user token, Bearer client id has role `internal` (`AUTH_CLIENT_ROLES`) | everything (a system caller, e.g. csm-integration-service) |
-| no user token, client role `delegate` (portal backends) | 401 -- it must forward a user token |
+| user token, email has **no row in `user` at all**, and the request's Bearer client id has role `internal` | everything -- see "the internal-client rescue" below |
+| no user token, Bearer client id has role `internal` (`AUTH_CLIENT_ROLES`) | everything (a trusted machine-to-machine caller) |
+| no user token, client role `delegate` | 401 -- it must forward a user token |
 | no user token, unlisted client id | 403 |
 | nothing | 401 |
 
 A user token always wins: an `internal` client that forwards bob's token sees
-bob's scope. **Absence of a user token never means unscoped by itself** -- only
-an explicitly `internal` client gets that, so a portal backend that forgets to
-forward the token gets a 401, not everyone's data. `user.email` is **not
-unique** (staging shares emails across rows), so rows are combined
-conservatively: internal access needs every active row to be INTERNAL; an email
-that is also an EXTERNAL customer is scoped as a customer. `user.is_active` NULL
-counts as active. `project_contact` states other than `REGISTERED` (INVITED,
-RE-INVITED, DEACTIVATED) grant nothing -- **staging data caveat**: at the time
-of writing only 97 REGISTERED contact rows covered 68 of ~1956 projects (260
-INVITED), so customer results are limited by how much has been synced; flip the
-state in `access_repo.go` if INVITED contacts should count.
+bob's scope, not everything. **Absence of a user token never means unscoped by
+itself** -- only an explicitly `internal` client gets that, so a `delegate`
+client that forgets to forward the token gets a 401, not everyone's data.
+`user.email` is **not unique** (staging shares emails across rows), so rows are
+combined conservatively: internal access needs every active row to be
+INTERNAL; an email that is also an EXTERNAL customer is scoped as a customer.
+`user.is_active` NULL counts as active. `project_contact` states other than
+`REGISTERED` (INVITED, RE-INVITED, DEACTIVATED) grant nothing -- **staging data
+caveat**: at the time of writing only 97 REGISTERED contact rows covered 68 of
+~1956 projects (260 INVITED), so customer results are limited by how much has
+been synced; flip the state in `access_repo.go` if INVITED contacts should
+count.
+
+**The internal-client rescue** (`errUnknownUser` in `access_service.go`)
+exists for a caller that forwards a real staff member's user token when that
+person has no `user` row yet (e.g. not synced, or created only by a role
+migration this data source doesn't know about). It fires **only** when
+`UsersByEmail` returns zero rows -- a *known* row that is EXTERNAL, inactive,
+SYSTEM, or otherwise not INTERNAL is a real, already-decided state, not
+"unknown", and is never rescued: a real customer's token still only ever gets
+that customer's scope, however trusted the calling client is. Which real
+client id is configured as `internal` is a deployment decision this file
+doesn't make.
+
+**A related, separate gap surfaced while building this, not yet fixed**:
+`recompute_user_type()`'s trigger (migration 000007) classifies only the
+`admin` and `internal` Asgardeo/SN roles as `user_type = INTERNAL` -- a
+person whose only role is `agent` ends up `NOT_AVAILABLE` and is denied here
+even though they *do* have a `user` row (so the rescue above does not apply to
+them either, by design). Whether `agent` should count as internal is a
+product decision, not something to guess at here.
 
 **Only `/search` is scoped so far.** The other routes still do no per-caller
 scoping (the middleware only rejects invalid tokens). Extending the same

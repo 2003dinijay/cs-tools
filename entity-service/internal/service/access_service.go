@@ -18,12 +18,19 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
+
+// errUnknownUser marks "no user row at all for this email" specifically, so
+// ResolveScope can tell it apart from a known user who simply isn't INTERNAL
+// (inactive, SYSTEM, or otherwise) -- only the former gets the internal-client
+// fallback below.
+var errUnknownUser = errors.New("no user row for this email")
 
 // AccessScope is the set of projects (and, through them, cases) a caller may
 // see. Cases are scoped by their project, so there is no separate case list.
@@ -40,7 +47,16 @@ type AccessService interface {
 	// ResolveScope decides what the caller of ctx may see:
 	//   - a validated user token: an internal user sees everything; an external
 	//     (customer) user sees only projects they are a REGISTERED contact of;
-	//     any other user type, an inactive user, or an unknown email is denied.
+	//     any other KNOWN user type or an inactive user is denied.
+	//   - a validated user token whose email has NO row in "user" at all: denied,
+	//     UNLESS the request also carries a validated client-credentials token
+	//     whose client id has the "internal" role in AUTH_CLIENT_ROLES -- then
+	//     it's treated as an internal user (everything). This covers a caller
+	//     forwarding a real WSO2 staff member's token for someone not yet
+	//     synced into this data source; it does NOT apply to a customer (a
+	//     known EXTERNAL row still only sees their own registered projects,
+	//     however trusted the client is), nor to a known-but-not-internal row
+	//     (inactive/SYSTEM/etc. is a real state, not "unknown").
 	//   - no user token, but a validated client-credentials token whose client id
 	//     has the "internal" role in AUTH_CLIENT_ROLES: a system caller, sees
 	//     everything.
@@ -68,9 +84,17 @@ func (s *accessService) ResolveScope(ctx context.Context) (AccessScope, error) {
 	}
 
 	// A user token always decides, even when a trusted client sent it: the
-	// system role only applies when the request carries no user at all.
+	// system role only applies when the request carries no user at all --
+	// except to rescue an otherwise-unknown user, see errUnknownUser below.
 	if id.UserEmail != "" {
-		return s.scopeForUser(ctx, id.UserEmail)
+		scope, err := s.scopeForUser(ctx, id.UserEmail)
+		if errors.Is(err, errUnknownUser) {
+			if s.clientRoles[id.ClientID] == config.ClientRoleInternal {
+				return AccessScope{Unrestricted: true}, nil
+			}
+			return AccessScope{}, &apierror.ForbiddenError{Msg: "no access for this user"}
+		}
+		return scope, err
 	}
 
 	if id.ClientID == "" {
@@ -95,6 +119,9 @@ func (s *accessService) scopeForUser(ctx context.Context, email string) (AccessS
 	users, err := s.repo.UsersByEmail(ctx, email)
 	if err != nil {
 		return AccessScope{}, err
+	}
+	if len(users) == 0 {
+		return AccessScope{}, errUnknownUser
 	}
 
 	var internal, external, other bool

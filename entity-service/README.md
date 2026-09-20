@@ -193,7 +193,7 @@ rather than async.
 | `AUTH_ISSUER` / `AUTH_JWKS_URL` | Asgardeo issuer and JWKS URL; required when validation is enabled. The JWKS must load at startup |
 | `AUTH_USER_TOKEN_AUDIENCES` | Comma-separated client ids an ID token's `aud` must contain to count as a user token; required when validation is enabled |
 | `AUTH_CLOCK_SKEW` | Leeway for `exp` (default `30s`) |
-| `AUTH_CLIENT_ROLES` | `clientId=role` pairs. `internal` = system caller (e.g. csm-integration-service): sees everything with no user token. `delegate` = portal backend: must forward a user token. Unlisted clients get no access to caller-scoped endpoints (optional) |
+| `AUTH_CLIENT_ROLES` | `clientId=role` pairs; which real client id gets which role is a deployment decision. `internal` sees everything with no user token, and also covers a forwarded user token whose email has no row in `user` yet (never widens a *known* user's own scope). `delegate` must forward a user token (401 without one). Unlisted clients get no access to caller-scoped endpoints (optional) |
 | `SUPPORT_ENGINEER_ROLE` | ServiceNow role name whose presence on a case comment's author completes the case's "response" SLA clock — see "SLA clocks" below. No default; unset means that specific completion path never fires (optional) |
 | `CUSTOMER_ROLES` | Comma-separated ServiceNow role names whose presence on a case comment's author marks it a customer reply — see "Customer reply state transition" below. No default; unset means that path never fires (optional) |
 
