@@ -367,7 +367,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const { user: currentUser } = useCurrentUser();
   // What this user's roles let them do. UX only — the backend 403s the same
   // actions regardless, so hiding a control here is never the enforcement.
-  const { canComment, canEscalate, canDownloadAttachment, canWrite } = usePortalAccess();
+  const { canEscalate, canDownloadAttachment, canWrite } = usePortalAccess();
   const routedCaseId = useNormalizedIdParam("caseId");
   const routedNavigate = useNavTransition();
   const routedLocation = useLocation();
@@ -2490,7 +2490,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               comment types there), despite the hidden CaseActionBar above —
               that hides case-lifecycle patch actions, which don't apply to an
               announcement, not the ability to reply to one. */}
-          {!canComment ? null : composerOpen ? (
+          {!canWrite ? null : composerOpen ? (
             <Card
               className="csm-print-hide"
               sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}

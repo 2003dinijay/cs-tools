@@ -170,7 +170,7 @@ func TestAuth_RolesClaimShapes(t *testing.T) {
 		wantOK    bool
 	}{
 		{name: "one role arrives as a bare string", roles: "test-viewer", wantRoles: []string{"test-viewer"}, wantOK: true},
-		{name: "several roles arrive as an array", roles: []string{"test-viewer", "test-commenter"}, wantRoles: []string{"test-viewer", "test-commenter"}, wantOK: true},
+		{name: "several roles arrive as an array", roles: []string{"test-viewer", "test-escalator"}, wantRoles: []string{"test-viewer", "test-escalator"}, wantOK: true},
 		{name: "a one-element array", roles: []string{"test-admin"}, wantRoles: []string{"test-admin"}, wantOK: true},
 		{name: "an empty string is no role", roles: "", wantRoles: nil, wantOK: true},
 		{name: "an empty array is no role", roles: []string{}, wantRoles: []string{}, wantOK: true},

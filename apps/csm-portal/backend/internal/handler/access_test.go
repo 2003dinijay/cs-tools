@@ -30,7 +30,6 @@ import (
 func testAccessConfig() AccessConfig {
 	return AccessConfig{
 		Viewer:               []string{"test-viewer"},
-		Commenter:            []string{"test-commenter"},
 		Escalator:            []string{"test-escalator"},
 		AttachmentDownloader: []string{"test-attachment-downloader"},
 		UsageMetricsViewer:   []string{"test-usage-metrics-viewer"},
@@ -57,14 +56,13 @@ func serveWithRoles(g *AccessGuard, perm Permission, roles []string) (status int
 }
 
 func TestAccessGuard_PermissionMatrix(t *testing.T) {
-	all := []Permission{PermView, PermViewOperations, PermComment, PermEscalate, PermDownloadAttachment, PermWrite}
+	all := []Permission{PermView, PermViewOperations, PermEscalate, PermDownloadAttachment, PermWrite}
 	tests := []struct {
 		name  string
 		roles []string
 		allow []Permission
 	}{
 		{"viewer reads only", []string{"test-viewer"}, []Permission{PermView}},
-		{"commenter can view and comment", []string{"test-commenter"}, []Permission{PermView, PermComment}},
 		{"escalator can view and escalate", []string{"test-escalator"}, []Permission{PermView, PermEscalate}},
 		{"downloader can view and download", []string{"test-attachment-downloader"}, []Permission{PermView, PermDownloadAttachment}},
 		{"support engineer can do every route permission", []string{"test-support-engineer"}, all},
@@ -72,7 +70,7 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 		{"usage metrics viewer can view only", []string{"test-usage-metrics-viewer"}, []Permission{PermView}},
 		{"timecard approver can view only", []string{"test-timecard-approver"}, []Permission{PermView}},
 		{"dashboard designer can view only", []string{"test-dashboard-designer"}, []Permission{PermView}},
-		{"roles combine", []string{"test-viewer", "test-commenter", "test-escalator"}, []Permission{PermView, PermComment, PermEscalate}},
+		{"roles combine", []string{"test-viewer", "test-escalator", "test-attachment-downloader"}, []Permission{PermView, PermEscalate, PermDownloadAttachment}},
 		{"unrelated roles grant nothing", []string{"wso2-everyone", "admin", "agent", "customer"}, nil},
 		{"no roles", nil, nil},
 		{"role names are case sensitive", []string{"TEST-ADMIN"}, nil},
@@ -98,15 +96,15 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 
 func TestAccessGuard_UsesConfiguredRoleNames(t *testing.T) {
 	cfg := testAccessConfig()
-	cfg.Commenter = []string{"corp-support-notes", "corp-interns"}
+	cfg.Escalator = []string{"corp-support-notes", "corp-interns"}
 	g := NewAccessGuard(cfg)
 
 	for _, role := range []string{"corp-support-notes", "corp-interns"} {
-		if status, _ := serveWithRoles(g, PermComment, []string{role}); status != http.StatusNoContent {
+		if status, _ := serveWithRoles(g, PermEscalate, []string{role}); status != http.StatusNoContent {
 			t.Errorf("configured role %q: status = %d, want 204", role, status)
 		}
 	}
-	if status, _ := serveWithRoles(g, PermComment, []string{"test-commenter"}); status != http.StatusForbidden {
+	if status, _ := serveWithRoles(g, PermEscalate, []string{"test-escalator"}); status != http.StatusForbidden {
 		t.Errorf("default name after override: status = %d, want 403 (the configured names replace the previous ones)", status)
 	}
 }
@@ -145,13 +143,13 @@ func TestAccessGuard_RolesFor(t *testing.T) {
 	}{
 		{"none", nil, []string{}},
 		{"one role", []string{"test-viewer"}, []string{"viewer"}},
-		{"several roles come back in a fixed order", []string{"test-admin", "test-commenter", "test-viewer"}, []string{"viewer", "commenter", "admin"}},
+		{"several roles come back in a fixed order", []string{"test-admin", "test-escalator", "test-viewer"}, []string{"viewer", "escalator", "admin"}},
 		{"support engineer", []string{"test-support-engineer"}, []string{"support_engineer"}},
 		{"every role", []string{
-			"test-viewer", "test-commenter", "test-escalator", "test-attachment-downloader",
+			"test-viewer", "test-escalator", "test-attachment-downloader",
 			"test-support-engineer", "test-usage-metrics-viewer", "test-timecard-approver",
 			"test-dashboard-designer", "test-admin",
-		}, []string{"viewer", "commenter", "escalator", "attachment_downloader", "support_engineer", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "admin"}},
+		}, []string{"viewer", "escalator", "attachment_downloader", "support_engineer", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "admin"}},
 		{"unrelated roles are ignored", []string{"wso2-everyone", "agent"}, []string{}},
 		{"a duplicated held role is reported once", []string{"test-viewer", "test-viewer"}, []string{"viewer"}},
 	}
@@ -180,7 +178,7 @@ func TestAccessGuard_RolesForUsesConfiguredNames(t *testing.T) {
 func TestAccessGuard_OperationsAreForSupportEngineersAndAdmins(t *testing.T) {
 	g := NewAccessGuard(testAccessConfig())
 	for _, role := range []string{
-		"test-viewer", "test-commenter", "test-escalator",
+		"test-viewer", "test-escalator",
 		"test-attachment-downloader", "test-usage-metrics-viewer",
 		"test-timecard-approver", "test-dashboard-designer",
 	} {
@@ -200,7 +198,7 @@ func TestAccessGuard_OperationsAreForSupportEngineersAndAdmins(t *testing.T) {
 
 func TestAccessGuard_UnconfiguredRolesAreHeldByNobody(t *testing.T) {
 	g := NewAccessGuard(AccessConfig{})
-	for _, perm := range []Permission{PermView, PermViewOperations, PermComment, PermEscalate, PermDownloadAttachment, PermWrite} {
+	for _, perm := range []Permission{PermView, PermViewOperations, PermEscalate, PermDownloadAttachment, PermWrite} {
 		if status, _ := serveWithRoles(g, perm, []string{"test-admin", "test-viewer", ""}); status != http.StatusForbidden {
 			t.Errorf("permission %d with no roles configured: status = %d, want 403", perm, status)
 		}

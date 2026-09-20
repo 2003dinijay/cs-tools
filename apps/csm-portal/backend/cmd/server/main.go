@@ -78,6 +78,22 @@ func main() {
 	customerEntityClient := entity.NewCustomerEntityClient(customerEntityCfg)
 
 	caseHandler := handler.NewCaseHandler(customerEntityClient)
+	// Optional: with the engineering entity service configured, "Open Git issue"
+	// (POST /cases/{id}/github-issues) files the issue through it rather than
+	// forwarding to the entity service. It authenticates as the same shared
+	// OAuth2 app as every other upstream; only its base URL and scopes are its
+	// own. Unset keeps the entity-service path exactly as it was.
+	if engineeringBaseURL := strings.TrimSpace(os.Getenv("ENGINEERING_ENTITY_BASE_URL")); engineeringBaseURL != "" {
+		engineeringBaseURL = mustHTTPSBaseURL("ENGINEERING_ENTITY_BASE_URL", engineeringBaseURL)
+		caseHandler.WithEngineeringClient(entity.NewEngineeringEntityClient(entity.EngineeringEntityConfig{
+			BaseURL:      engineeringBaseURL,
+			TokenURL:     oauth2TokenURL,
+			ClientID:     oauth2ClientID,
+			ClientSecret: oauth2ClientSecret,
+			Scopes:       splitComma(os.Getenv("ENGINEERING_ENTITY_SCOPES")),
+		}))
+		slog.Info("GitHub issues are created through the engineering entity service")
+	}
 	dashboardHandler := handler.NewDashboardHandler()
 	metadataHandler := handler.NewMetadataHandler()
 	accountHandler := handler.NewAccountHandler(customerEntityClient)
@@ -173,7 +189,7 @@ func main() {
 	route("POST /cases", handler.PermWrite, caseHandler.CreateCase)
 	route("GET /cases/{id}", handler.PermView, caseHandler.GetCase)
 	route("PATCH /cases/{id}", handler.PermWrite, caseHandler.PatchCase)
-	route("POST /cases/{id}/comments", handler.PermComment, caseHandler.CreateCaseComment)
+	route("POST /cases/{id}/comments", handler.PermWrite, caseHandler.CreateCaseComment)
 	route("POST /cases/{id}/request-update", handler.PermWrite, caseHandler.RequestCaseUpdate)
 	route("GET /case-update-request-templates", handler.PermView, caseHandler.GetCaseUpdateRequestTemplates)
 	route("POST /cases/{id}/comments/search", handler.PermView, caseHandler.SearchCaseComments)
@@ -529,7 +545,7 @@ func loadDirectory() *directory.Directory {
 
 // loadAccessConfig resolves, per portal role, the token role names that grant it:
 //
-//	AUTH_VIEWER_ROLES, AUTH_COMMENTER_ROLES, AUTH_ESCALATOR_ROLES,
+//	AUTH_VIEWER_ROLES, AUTH_ESCALATOR_ROLES,
 //	AUTH_ATTACHMENT_DOWNLOADER_ROLES, AUTH_USAGE_METRICS_VIEWER_ROLES,
 //	AUTH_SUPPORT_ENGINEER_ROLES, AUTH_ADMIN_ROLES, AUTH_TIMECARD_APPROVER_ROLES,
 //	AUTH_DASHBOARD_DESIGNER_ROLES
@@ -552,7 +568,6 @@ func loadAccessConfig() handler.AccessConfig {
 	}
 	cfg := handler.AccessConfig{
 		Viewer:               roles("AUTH_VIEWER_ROLES"),
-		Commenter:            roles("AUTH_COMMENTER_ROLES"),
 		Escalator:            roles("AUTH_ESCALATOR_ROLES"),
 		AttachmentDownloader: roles("AUTH_ATTACHMENT_DOWNLOADER_ROLES"),
 		UsageMetricsViewer:   roles("AUTH_USAGE_METRICS_VIEWER_ROLES"),
@@ -622,6 +637,17 @@ func loadSftpgoConfig() (bool, sftpgo.Config) {
 // internal/sftpgo.Client.PublicShareURL), so a non-HTTPS or spoofed-looking
 // value here is a credential-leak/MITM risk, not just a misconfiguration —
 // refuse to start rather than proceed with it.
+// mustHTTPSBaseURL is mustHTTPSURL for a base URL that may carry a path; see
+// validateHTTPSBaseURL. Used for upstream services the backend authenticates to
+// with an OAuth2 client, whose token and requests must not travel in cleartext.
+func mustHTTPSBaseURL(key, value string) string {
+	if err := validateHTTPSBaseURL(value); err != nil {
+		slog.Error("invalid environment variable", "key", key, "err", err)
+		os.Exit(1)
+	}
+	return value
+}
+
 func mustHTTPSURL(key, value string) string {
 	if err := validateHTTPSURL(value); err != nil {
 		// Deliberately omit the raw value from this log line: it may carry
@@ -643,6 +669,18 @@ func mustHTTPSURL(key, value string) string {
 // (e.g. "https://host/api") would silently double up into
 // "https://host/api/api/v2/user/token" rather than erroring.
 func validateHTTPSURL(value string) error {
+	return validateSecureURL(value, false)
+}
+
+// validateHTTPSBaseURL is validateHTTPSURL for a base URL that API paths are
+// appended to and that may itself sit under a path (a gateway-hosted service
+// such as "https://host/org/service/v1.0"): the same https, host, userinfo,
+// query and fragment rules, but a path is allowed.
+func validateHTTPSBaseURL(value string) error {
+	return validateSecureURL(value, true)
+}
+
+func validateSecureURL(value string, allowPath bool) error {
 	parsed, err := url.Parse(value)
 	if err != nil {
 		return fmt.Errorf("not a valid URL: %w", err)
@@ -656,7 +694,7 @@ func validateHTTPSURL(value string) error {
 	if parsed.User != nil {
 		return errors.New("must not contain embedded userinfo (e.g. \"https://user:pass@host/...\")")
 	}
-	if path := parsed.EscapedPath(); path != "" && path != "/" {
+	if path := parsed.EscapedPath(); !allowPath && path != "" && path != "/" {
 		return fmt.Errorf("must not include a path (got %q); this value is concatenated with API paths, e.g. \"https://host\" not \"https://host/api\"", path)
 	}
 	if parsed.RawQuery != "" {
