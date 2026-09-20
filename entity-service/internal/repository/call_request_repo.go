@@ -54,10 +54,12 @@ func callRequestStateToEnum(s domain.CallRequestStateType) string {
 	return strings.ToUpper(string(s))
 }
 
-// callRequestStateFromEnum converts a customer_call_state_enum label to the
+// CallRequestStateFromEnum converts a customer_call_state_enum label to the
 // domain state (id + display label). A NULL/unrecognized label yields an
 // empty id, mirroring how the ServiceNow adapter treats an unknown state key.
-func callRequestStateFromEnum(enumLabel string) domain.CallRequestState {
+// Exported so project metadata can offer call-request states in the same
+// lowercase vocabulary the call-request endpoints accept.
+func CallRequestStateFromEnum(enumLabel string) domain.CallRequestState {
 	id := domain.CallRequestStateType(strings.ToLower(enumLabel))
 	label, ok := callRequestStateLabels[id]
 	if !ok {
@@ -107,7 +109,8 @@ func parseActualDurationMin(raw *string) *int {
 //   - number has no default/sequence and no confirmed format, so a created
 //     call request has a NULL number (returned as "").
 //   - CancellationReason has no column ("reason" is the request's own
-//     reason), so it is neither stored nor returned.
+//     reason), so it is never stored or returned -- the service rejects a
+//     request that supplies one rather than silently dropping it.
 //   - closed_on/closed_by_id are never set by UpdateCallRequest: which states
 //     count as "closed" isn't specified anywhere.
 //   - State transitions are not validated against the current state.
@@ -199,7 +202,7 @@ func scanCallRequest(row pgx.Row) (domain.CallRequestView, error) {
 	v.CreatedOn = createdOn.UTC().Format(time.RFC3339)
 	v.UpdatedOn = updatedOn.UTC().Format(time.RFC3339)
 	if state != nil {
-		v.State = callRequestStateFromEnum(*state)
+		v.State = CallRequestStateFromEnum(*state)
 	}
 	v.Assignee = assignee
 	v.Notes = notes
@@ -362,7 +365,7 @@ func (r *callRequestRepo) CreateCallRequest(ctx context.Context, req domain.Crea
 	resp.CallRequest.ID = id
 	resp.CallRequest.CreatedOn = createdOn.UTC().Format(time.RFC3339)
 	resp.CallRequest.CreatedBy = callerEmail
-	resp.CallRequest.State = callRequestStateFromEnum(callRequestStateToEnum(domain.CallRequestStatePendingOnWSO2))
+	resp.CallRequest.State = CallRequestStateFromEnum(callRequestStateToEnum(domain.CallRequestStatePendingOnWSO2))
 	return resp, nil
 }
 

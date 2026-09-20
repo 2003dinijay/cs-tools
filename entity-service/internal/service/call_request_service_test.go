@@ -148,3 +148,15 @@ func requireErrKind(t *testing.T, name string, err error, want any) {
 		t.Errorf("%s: got %T (%v), want %T", name, err, err, want)
 	}
 }
+
+func TestCallRequestService_UpdateRejectsCancellationReason(t *testing.T) {
+	svc := &callRequestService{}
+	// Rejected before any caller/repository work, and for every state: silently
+	// dropping a supplied reason would report success while losing it.
+	for _, st := range []domain.CallRequestStateType{domain.CallRequestStateCanceled, domain.CallRequestStateCustomerRejected, domain.CallRequestStateWSO2Rejected} {
+		_, err := svc.UpdateCallRequest(context.Background(), domain.UpdateCallRequestRequest{
+			ID: testUUID, State: st, CancellationReason: str("no longer needed"),
+		})
+		requireErrKind(t, "cancellationReason on "+string(st), err, &apierror.ValidationError{})
+	}
+}

@@ -176,8 +176,12 @@ func (s *callRequestService) SearchAllCallRequests(ctx context.Context, req doma
 // UpdateCallRequest implements CallRequestService. The input rules mirror the
 // ServiceNow implementation's (per-state required fields); req.Assignee is
 // interpreted as the assignee's email, resolved to a user id. CancellationReason
-// is accepted but not stored -- customer_call has no column for it.
+// is rejected: customer_call has no column to store it, and accepting it would
+// report success while silently discarding what the caller sent.
 func (s *callRequestService) UpdateCallRequest(ctx context.Context, req domain.UpdateCallRequestRequest) (domain.UpdateCallRequestResponse, error) {
+	if req.CancellationReason != nil {
+		return domain.UpdateCallRequestResponse{}, &apierror.ValidationError{Msg: "cancellationReason is not supported for the Postgres data source"}
+	}
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
 		return domain.UpdateCallRequestResponse{}, err
 	}

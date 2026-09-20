@@ -57,12 +57,12 @@ func TestCallRequestStatesMatchMigration(t *testing.T) {
 
 func TestCallRequestStateRoundTrip(t *testing.T) {
 	for state, label := range callRequestStateLabels {
-		got := callRequestStateFromEnum(callRequestStateToEnum(state))
+		got := CallRequestStateFromEnum(callRequestStateToEnum(state))
 		if got.ID != string(state) || got.Label != label {
 			t.Errorf("round trip %q = %+v, want id %q label %q", state, got, state, label)
 		}
 	}
-	if got := callRequestStateFromEnum("NOT_A_STATE"); got != (domain.CallRequestState{}) {
+	if got := CallRequestStateFromEnum("NOT_A_STATE"); got != (domain.CallRequestState{}) {
 		t.Errorf("unknown enum label = %+v, want zero value", got)
 	}
 }

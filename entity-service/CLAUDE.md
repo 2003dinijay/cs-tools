@@ -1826,6 +1826,13 @@ requirement. TODO: make unit strict again once `product.unit` is populated.
 
 ### Call requests (`customer_call`) -- `call_request_repo.go`/`call_request_service.go`
 
+**Authorization is not enforced here, by design.** Like every other
+entity-service route, these have no inbound auth or per-caller scoping: the
+csm-portal and customer-portal backends are the trust boundary and decide which
+projects/cases a user may touch before calling in. The `x-user-id-token` is read
+only to attribute writes (`created_by`/`updated_by`, `opened_by_id`), never to
+authorize them -- do not add row-level scoping here.
+
 All four `CallRequestService` methods are implemented. `state` maps to
 `customer_call_state_enum` by upper/lower-casing (all eight labels match
 `domain.CallRequestStateType` exactly -- `CANCELED` both sides, no spelling
@@ -1845,6 +1852,11 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
 - **ASSUMPTION**: create -> state `pending_on_wso2` (the customer raised it,
   WSO2 must schedule). `PATCH`'s `assignee` is interpreted as an **email**
   (resolved via `GetUserByEmail`).
+- `callRequestStates` in project metadata uses the lowercase domain ids
+  (`pending_on_wso2`) with display labels -- the vocabulary these endpoints
+  accept -- unlike the other metadata choice lists, which still use the raw
+  UPPER_SNAKE enum labels (see the metadata section above; not yet aligned
+  with each list's own API vocabulary).
 - Search-all's `assignmentTeamIds` is rejected with a 400 rather than
   ignored: nothing on this schema holds a case's assignment team
   (`customer_call.assignment_group` was deliberately skipped in the
@@ -1853,8 +1865,10 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   so they work for every case-like type.
 - **Not done, deliberately (same "don't guess" rule as `CreateCase`)**:
   `number` is left NULL on create (no default, no sequence, no confirmed
-  format -- returned as `""`); `cancellationReason` is accepted but not stored
-  (no column: `reason` is the request's own reason); `closed_on`/`closed_by_id`
+  format -- returned as `""`); `cancellationReason` is **rejected with a 400**
+  rather than accepted-and-dropped (no column: `reason` is the request's own
+  reason -- note the customer portal passes it through, so cancelling *with* a
+  reason fails on this data source until a column exists); `closed_on`/`closed_by_id`
   are never set (which states count as "closed" is unspecified); state
   transitions aren't validated against the current state.
 

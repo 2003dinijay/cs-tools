@@ -75,6 +75,25 @@ func choiceListFromLabels(labels []string) []domain.ChoiceListItem {
 	return out
 }
 
+// callRequestStateChoices converts customer_call_state_enum labels to choice
+// items in the vocabulary the call-request endpoints themselves accept (the
+// lowercase domain id, e.g. "pending_on_wso2", with a display label) -- unlike
+// choiceListFromLabels, whose raw UPPER_SNAKE labels those endpoints reject
+// with "invalid state". A label with no domain state is skipped: a caller
+// couldn't use it as a filter or update value anyway, and
+// TestCallRequestStatesMatchMigration fails when the enum and the domain drift.
+func callRequestStateChoices(labels []string) []domain.ChoiceListItem {
+	out := make([]domain.ChoiceListItem, 0, len(labels))
+	for _, l := range labels {
+		st := repository.CallRequestStateFromEnum(l)
+		if st.ID == "" {
+			continue
+		}
+		out = append(out, domain.ChoiceListItem{ID: st.ID, Label: st.Label})
+	}
+	return out
+}
+
 type projectMetadataService struct {
 	repo repository.ReferenceDataRepository
 }
@@ -115,7 +134,7 @@ func (s *projectMetadataService) GetProjectMetadata(ctx context.Context, project
 
 	return domain.ProjectMetadataResponse{
 		CaseStates:           choiceListFromLabels(labels[caseStateEnumType]),
-		CallRequestStates:    choiceListFromLabels(labels[callRequestStateEnumType]),
+		CallRequestStates:    callRequestStateChoices(labels[callRequestStateEnumType]),
 		ChangeRequestStates:  choiceListFromLabels(labels[changeRequestStateEnumType]),
 		ConversationStates:   choiceListFromLabels(labels[conversationStateEnumType]),
 		TimeCardStates:       choiceListFromLabels(labels[timeCardStateEnumType]),

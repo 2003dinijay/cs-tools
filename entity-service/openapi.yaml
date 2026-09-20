@@ -2985,6 +2985,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Case not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -3078,7 +3084,8 @@ paths:
         transitions, scheduling (with meetingDate, durationInMinutes,
         assignee), rejection or cancellation (with cancellationReason), or
         conclusion with post-call notes (notes, plan, attendees, actionItems,
-        actualDurationMin).
+        actualDurationMin). On the Postgres data source cancellationReason is
+        rejected with 400, because customer_call has no column to store it.
       operationId: updateCallRequest
       parameters:
         - name: id
@@ -3377,6 +3384,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
           description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Deployed product not found.
           content:
             application/json:
               schema:
@@ -5427,7 +5440,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: System metadata is only supported for the ServiceNow data source.
+          description: The ServiceNow metadata dependency is unavailable.
           content:
             application/json:
               schema:
