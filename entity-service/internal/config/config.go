@@ -128,6 +128,35 @@ type Config struct {
 	// nothing to do with case state) — the two are read by separate
 	// processes/environments and don't interact.
 	CustomerRoles []string
+	// Auth* configure token validation (internal/auth). Off by default so
+	// existing deployments and local runs are unchanged; when off, identity is
+	// never verified and any endpoint that scopes results by caller (currently
+	// POST /search on the Postgres data source) refuses to run, rather than
+	// trusting an unverified token.
+	//
+	// AuthTokenValidationEnabled turns on signature/issuer/expiry validation of
+	// the Asgardeo tokens: the end user's ID token in x-user-id-token, and the
+	// calling application's client-credentials access token in
+	// Authorization: Bearer. AuthIssuer and AuthJWKSURL locate the issuer's
+	// keys. AuthUserTokenAudiences are the client ids (Asgardeo SPA/application
+	// ids) an ID token's aud must contain to be accepted as a user token.
+	AuthTokenValidationEnabled bool
+	AuthIssuer                 string
+	AuthJWKSURL                string
+	AuthUserTokenAudiences     []string
+	AuthClockSkew              time.Duration
+	// AuthClientRolesRaw is the AUTH_CLIENT_ROLES value, a comma-separated
+	// list of clientId=role pairs; AuthClientRoles is its parsed form. It is
+	// both the allow-list of application client ids and what each may do:
+	//   internal -- a system caller (e.g. csm-integration-service). With no
+	//               user token it is treated like an internal user: it may see
+	//               every project and case.
+	//   delegate -- a caller that acts for end users (the portal backends). It
+	//               must forward a user token; without one it gets no access.
+	// A client id that is absent (or has an unknown role) has no access to
+	// endpoints that scope by caller.
+	AuthClientRolesRaw string
+	AuthClientRoles    map[string]string
 	// SalesEntity* is the Choreo connection to REST sales/sales-entity-service
 	// (POST /customer-search), not GraphQL sales/entity-graphql-service and not
 	// Salesforce. The four connection fields are all-or-nothing like Event Hub.
@@ -143,7 +172,7 @@ type Config struct {
 // Config. Missing variables fall back to sensible defaults; callers should
 // validate required fields (e.g. DBUser, DBPassword, DBName) before use.
 func Load() *Config {
-	return &Config{
+	cfg := &Config{
 		DBHost:                                   getEnvOrDefault("DB_HOST", "localhost"),
 		DBPort:                                   getEnvOrDefault("DB_PORT", "5432"),
 		DBUser:                                   os.Getenv("DB_USER"),
@@ -165,6 +194,12 @@ func Load() *Config {
 		CRNoticesEnabled:                         os.Getenv("CR_NOTICES_ENABLED") == "true",
 		CREventHubTopic:                          getEnvOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
 		CRNoticePollInterval:                     envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
+		AuthTokenValidationEnabled:               os.Getenv("AUTH_TOKEN_VALIDATION_ENABLED") == "true",
+		AuthIssuer:                               os.Getenv("AUTH_ISSUER"),
+		AuthJWKSURL:                              os.Getenv("AUTH_JWKS_URL"),
+		AuthUserTokenAudiences:                   splitComma(os.Getenv("AUTH_USER_TOKEN_AUDIENCES")),
+		AuthClockSkew:                            envDuration("AUTH_CLOCK_SKEW", 30*time.Second),
+		AuthClientRolesRaw:                       os.Getenv("AUTH_CLIENT_ROLES"),
 		SupportEngineerRole:                      os.Getenv("SUPPORT_ENGINEER_ROLE"),
 		CustomerRoles:                            splitComma(os.Getenv("CUSTOMER_ROLES")),
 		SalesEntityBaseURL:                       os.Getenv("SALES_ENTITY_BASE_URL"),
@@ -173,6 +208,43 @@ func Load() *Config {
 		SalesEntityClientSecret:                  os.Getenv("SALES_ENTITY_CLIENT_SECRET"),
 		SalesEntityScopes:                        os.Getenv("SALES_ENTITY_SCOPES"),
 	}
+	// Malformed AUTH_CLIENT_ROLES entries are dropped here and reported by
+	// Validate, so a typo can never grant a role.
+	cfg.AuthClientRoles, _ = ParseClientRoles(cfg.AuthClientRolesRaw)
+	return cfg
+}
+
+// Client roles an application can hold via AUTH_CLIENT_ROLES.
+const (
+	// ClientRoleInternal marks a system caller (e.g. csm-integration-service):
+	// with no user token it is treated like an internal user and may see every
+	// project and case.
+	ClientRoleInternal = "internal"
+	// ClientRoleDelegate marks a caller that acts on behalf of end users (the
+	// portal backends): it must forward a user token, which then decides scope.
+	ClientRoleDelegate = "delegate"
+)
+
+// ParseClientRoles parses AUTH_CLIENT_ROLES ("clientId=role,clientId=role")
+// into a client-id -> role map. Every well-formed entry is returned even when
+// others are malformed, alongside an error naming the first malformed one, so
+// Validate can reject the whole value while Load stays lenient. Roles are
+// case-insensitive; client ids are matched exactly.
+func ParseClientRoles(raw string) (map[string]string, error) {
+	out := map[string]string{}
+	var firstErr error
+	for _, entry := range splitComma(raw) {
+		id, role, ok := strings.Cut(entry, "=")
+		id, role = strings.TrimSpace(id), strings.ToLower(strings.TrimSpace(role))
+		if !ok || id == "" || (role != ClientRoleInternal && role != ClientRoleDelegate) {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("AUTH_CLIENT_ROLES entry %q must be clientId=%s or clientId=%s", entry, ClientRoleInternal, ClientRoleDelegate)
+			}
+			continue
+		}
+		out[id] = role
+	}
+	return out, firstErr
 }
 
 func getEnvOrDefault(key, defaultVal string) string {
@@ -316,6 +388,20 @@ func (c *Config) Validate() error {
 	eventHubComplete := c.EventHubBroker != "" && c.EventHubConnectionString != "" && c.EventHubTopic != ""
 	if eventHubSet && !eventHubComplete {
 		return fmt.Errorf("EVENT_HUB_BROKER, EVENT_HUB_CONNECTION_STRING, and EVENT_HUB_TOPIC must be set together or not at all")
+	}
+	if _, err := ParseClientRoles(c.AuthClientRolesRaw); err != nil {
+		return err
+	}
+	// Token validation is all-or-nothing: enabling it without knowing whose
+	// keys to trust, or which audiences make an ID token a user token, would
+	// either accept everything or reject everything. Reject that at startup.
+	if c.AuthTokenValidationEnabled {
+		if c.AuthIssuer == "" || c.AuthJWKSURL == "" {
+			return fmt.Errorf("AUTH_ISSUER and AUTH_JWKS_URL are required when AUTH_TOKEN_VALIDATION_ENABLED=true")
+		}
+		if len(c.AuthUserTokenAudiences) == 0 {
+			return fmt.Errorf("AUTH_USER_TOKEN_AUDIENCES is required when AUTH_TOKEN_VALIDATION_ENABLED=true")
+		}
 	}
 	salesEntitySet := c.SalesEntityBaseURL != "" || c.SalesEntityTokenURL != "" || c.SalesEntityClientID != "" || c.SalesEntityClientSecret != "" || c.SalesEntityScopes != ""
 	if salesEntitySet && !c.SalesEntityConfigured() {

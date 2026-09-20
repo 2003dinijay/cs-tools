@@ -350,3 +350,68 @@ func TestConfig_Validate_PostgresStillRequiresDatabase(t *testing.T) {
 		t.Error("Validate() = nil, want an error for postgres with no database configured")
 	}
 }
+
+func TestParseClientRoles(t *testing.T) {
+	got, err := ParseClientRoles(" integration = internal , portal=DELEGATE ,")
+	if err != nil || len(got) != 2 || got["integration"] != ClientRoleInternal || got["portal"] != ClientRoleDelegate {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if got, err := ParseClientRoles(""); err != nil || len(got) != 0 {
+		t.Fatalf("empty must be a valid empty map, got %v, %v", got, err)
+	}
+
+	// A malformed entry is reported, and never becomes a role -- in particular
+	// a typo'd role must not silently grant anything.
+	for _, raw := range []string{"integration", "integration=admin", "=internal", "integration=", "a=internal,b=oops"} {
+		got, err := ParseClientRoles(raw)
+		if err == nil {
+			t.Errorf("%q: want an error", raw)
+		}
+		for id, role := range got {
+			if role != ClientRoleInternal && role != ClientRoleDelegate {
+				t.Errorf("%q: %s got unknown role %q", raw, id, role)
+			}
+		}
+	}
+	if got, _ := ParseClientRoles("a=internal,b=oops"); got["a"] != ClientRoleInternal || len(got) != 1 {
+		t.Errorf("well-formed entries survive alongside a malformed one, got %v", got)
+	}
+}
+
+func TestConfig_Validate_Auth(t *testing.T) {
+	enabled := func(mod func(*Config)) Config {
+		c := baseValidConfig()
+		c.AuthTokenValidationEnabled = true
+		c.AuthIssuer = "https://api.asgardeo.io/t/x/oauth2/token"
+		c.AuthJWKSURL = "https://api.asgardeo.io/t/x/oauth2/jwks"
+		c.AuthUserTokenAudiences = []string{"spa"}
+		if mod != nil {
+			mod(&c)
+		}
+		return c
+	}
+	if c := enabled(nil); c.Validate() != nil {
+		t.Fatalf("complete auth config rejected: %v", c.Validate())
+	}
+	for name, c := range map[string]Config{
+		"missing issuer":    enabled(func(c *Config) { c.AuthIssuer = "" }),
+		"missing JWKS URL":  enabled(func(c *Config) { c.AuthJWKSURL = "" }),
+		"missing audiences": enabled(func(c *Config) { c.AuthUserTokenAudiences = nil }),
+		"bad client roles":  enabled(func(c *Config) { c.AuthClientRolesRaw = "svc=root" }),
+	} {
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: want a startup error", name)
+		}
+	}
+
+	// Disabled: none of the other AUTH_* values are required.
+	if c := baseValidConfig(); c.Validate() != nil {
+		t.Fatalf("auth off must need no auth settings: %v", c.Validate())
+	}
+	// ...but a malformed client-role list is rejected whether or not validation is on.
+	c := baseValidConfig()
+	c.AuthClientRolesRaw = "svc=root"
+	if err := c.Validate(); err == nil {
+		t.Error("malformed AUTH_CLIENT_ROLES accepted while validation is off")
+	}
+}

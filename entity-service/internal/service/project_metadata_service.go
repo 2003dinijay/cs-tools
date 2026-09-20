@@ -51,16 +51,9 @@ var projectMetadataEnumTypes = []string{
 
 // caseTypeRefItems is the fixed vocabulary case_service.go's own
 // validCaseType map accepts for a case's "type" -- not a database table, so
-// listed directly here rather than queried. Order matches
-// migrations/000016_work_item_table.up.sql's work_item_type_enum definition,
-// restricted to the case-like subset.
-var caseTypeRefItems = []domain.ReferenceTableItem{
-	{ID: "case", Name: "Case"},
-	{ID: "engagement", Name: "Engagement"},
-	{ID: "security_report_analysis", Name: "Security Report Analysis"},
-	{ID: "service_request", Name: "Service Request"},
-	{ID: "announcement", Name: "Announcement"},
-}
+// listed directly rather than queried. Shared with global search's case type,
+// so both offer identical id/name pairs.
+var caseTypeRefItems = repository.CaseTypeRefs
 
 // choiceListFromLabels wraps raw Postgres enum labels (e.g. "S1", "OPEN") as
 // ChoiceListItem, using the label itself as both id and label -- Postgres

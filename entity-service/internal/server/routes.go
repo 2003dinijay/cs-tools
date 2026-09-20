@@ -17,10 +17,12 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/handler"
@@ -398,7 +400,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	if cfg.DataSource == config.DataSourceServiceNow {
 		globalHandler = handler.NewGlobalHandler(service.NewServiceNowGlobalService(serviceNowIntegrationServiceClient))
 	} else {
-		globalHandler = handler.NewGlobalHandler(service.NewGlobalService(referenceDataRepo))
+		globalHandler = handler.NewGlobalHandler(service.NewGlobalService(
+			referenceDataRepo,
+			repository.NewGlobalSearchRepository(db),
+			service.NewAccessService(repository.NewAccessRepository(db), cfg.AuthClientRoles),
+		))
 	}
 
 	// instance/usage tracking tables (migration 000054) -- see
@@ -724,11 +730,32 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("POST /instances/metrics/stats/search", instanceHandler.SearchInstanceMetricsStats)
 	mux.HandleFunc("POST /instances/usages/stats/search", instanceHandler.SearchInstanceUsageStats)
 
+	// Token validation is opt-in (AUTH_TOKEN_VALIDATION_ENABLED). A nil
+	// validator leaves every request unvalidated, which AccessService treats as
+	// "cannot scope" rather than trusting the token. When enabled, the JWKS must
+	// load at startup: a wrong URL panics here instead of silently rejecting
+	// every token later (same fail-fast posture as apps/csm-portal/backend).
+	var tokenValidator *auth.Validator
+	if cfg.AuthTokenValidationEnabled {
+		v, err := auth.NewValidator(context.Background(), auth.Config{
+			Issuer:             cfg.AuthIssuer,
+			JWKSURL:            cfg.AuthJWKSURL,
+			UserTokenAudiences: cfg.AuthUserTokenAudiences,
+			ClockSkew:          cfg.AuthClockSkew,
+		})
+		if err != nil {
+			panic("auth: token validation is enabled but could not be initialised: " + err.Error())
+		}
+		tokenValidator = v
+	}
+
 	return middleware.CorrelationID(
 		middleware.Recovery(
 			middleware.Logger(
 				middleware.UserIDToken(
-					middleware.Timeout(30 * time.Second)(mux),
+					auth.Middleware(tokenValidator)(
+						middleware.Timeout(30 * time.Second)(mux),
+					),
 				),
 			),
 		),

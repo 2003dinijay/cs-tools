@@ -864,10 +864,10 @@ type ConversationService interface {
 }
 
 // GlobalService serves system-wide metadata and cross-entity search that
-// isn't scoped to any single project or case. GetSystemMetadata has a
-// Postgres-backed implementation (globalService); GlobalSearch still
-// requires the ServiceNow data source -- there is no Postgres fallback for
-// it yet.
+// isn't scoped to any single project or case. Both methods have Postgres-backed
+// implementations (globalService); GlobalSearch on that data source returns
+// only what the caller may see (AccessService), so it also needs token
+// validation to be configured.
 type GlobalService interface {
 	// GetSystemMetadata returns system-wide reference data (time zones, project types,
 	// and feedback emoji choices) used across the frontend.

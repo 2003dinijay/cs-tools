@@ -5420,10 +5420,24 @@ paths:
 
   /search:
     post:
-      summary: Global search across projects and cases (ServiceNow data source only).
+      summary: Global search across the projects and cases the caller can access.
       description: >
         Runs a single free-text query against both the projects and cases tables and
         returns paginated results for each independently.
+
+
+        On the Postgres data source results are scoped to the caller, decided from
+        validated tokens (requires AUTH_TOKEN_VALIDATION_ENABLED):
+        a valid `x-user-id-token` (Asgardeo ID token) decides scope -- an internal user
+        sees every project and case, a customer sees only projects they are a REGISTERED
+        contact of and the cases in them, and any other user type, an inactive user or an
+        unknown email gets 403. With no user token, an `Authorization: Bearer`
+        client-credentials token is required and its client id must have the `internal`
+        role in AUTH_CLIENT_ROLES (a system caller, sees everything); a `delegate` client
+        must forward a user token (401) and an unlisted client is refused (403).
+        A token that is present but invalid is always rejected with 401. The project
+        counts (`activeChatsCount`, `actionRequiredCount`, `outstandingCount`) are 0 on
+        Postgres.
       operationId: globalSearch
       requestBody:
         required: false
@@ -5445,7 +5459,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
-          description: Unauthorized.
+          description: A token is invalid or expired, or neither a user token nor an authorized client credential was supplied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller has no access (unlisted client id, or an inactive, unknown or non-person user).
           content:
             application/json:
               schema:
@@ -5457,7 +5477,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: Global search is only supported for the ServiceNow data source.
+          description: Results cannot be scoped to the caller because token validation is not configured (Postgres), or the ServiceNow dependency is unavailable.
           content:
             application/json:
               schema:
@@ -14299,6 +14319,11 @@ components:
       properties:
         field:
           type: string
+          description: >
+            Postgres accepts `name` (a project's name / a case's subject), `createdOn` and
+            `updatedOn`, applied to both tables; anything else is a 400. Defaults: projects
+            by name ascending, cases by updatedOn descending. `order` defaults to ascending
+            for `name` and descending for the date fields.
         order:
           type: string
           enum: [asc, desc]

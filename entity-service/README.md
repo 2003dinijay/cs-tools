@@ -189,6 +189,11 @@ rather than async.
 | `EVENT_HUB_CONNECTION_STRING` | The namespace's Shared Access Policy connection string — must be namespace-scoped (no `EntityPath`), not scoped to a single Event Hub (required once `EVENT_HUB_BROKER` is set) |
 | `EVENT_HUB_TOPIC` | Event Hub (Kafka topic) name, e.g. `case-events` — must match `csm-notification-service`'s own `EVENT_HUB_TOPIC` (required once `EVENT_HUB_BROKER` is set) |
 | `EVENT_PUBLISHING_ENABLED` | Set to `true` to actually publish. Defaults to `false` — safe by default even with Event Hub fully configured (optional) |
+| `AUTH_TOKEN_VALIDATION_ENABLED` | `true` turns on validation of the Asgardeo tokens (`x-user-id-token` user ID token, `Authorization: Bearer` client-credentials token). Default `false`: identity is never verified and caller-scoped endpoints (`POST /search` on Postgres) return 503. When enabled a present-but-invalid token is a 401 on every route (optional) |
+| `AUTH_ISSUER` / `AUTH_JWKS_URL` | Asgardeo issuer and JWKS URL; required when validation is enabled. The JWKS must load at startup |
+| `AUTH_USER_TOKEN_AUDIENCES` | Comma-separated client ids an ID token's `aud` must contain to count as a user token; required when validation is enabled |
+| `AUTH_CLOCK_SKEW` | Leeway for `exp` (default `30s`) |
+| `AUTH_CLIENT_ROLES` | `clientId=role` pairs. `internal` = system caller (e.g. csm-integration-service): sees everything with no user token. `delegate` = portal backend: must forward a user token. Unlisted clients get no access to caller-scoped endpoints (optional) |
 | `SUPPORT_ENGINEER_ROLE` | ServiceNow role name whose presence on a case comment's author completes the case's "response" SLA clock — see "SLA clocks" below. No default; unset means that specific completion path never fires (optional) |
 | `CUSTOMER_ROLES` | Comma-separated ServiceNow role names whose presence on a case comment's author marks it a customer reply — see "Customer reply state transition" below. No default; unset means that path never fires (optional) |
 

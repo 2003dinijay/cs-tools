@@ -1794,6 +1794,81 @@ reference-data reads `GetSystemMetadata` serves, so it returns a
 route itself is now registered in both modes, since `GetSystemMetadata`
 needed to be) or a silently-empty result.
 
+## Token validation and caller-scoped access (`POST /search`)
+
+entity-service used to read `x-user-id-token` without verifying it and had no
+notion of "what may this caller see" -- in Phase 1 ServiceNow applied that via
+the forwarded token, so moving to Postgres removed the only enforcement. This
+adds it back, in entity-service (next to the data), not in each caller.
+
+**Token validation (`internal/auth`)** mirrors `apps/csm-portal/backend`'s
+validator (`golang-jwt/jwt/v5` + `keyfunc/v3`, same versions), against
+**Asgardeo** (not Choreo). Two tokens can arrive:
+- `x-user-id-token`: the end user's ID token. Checked for signature, issuer,
+  expiry, an `aud` among `AUTH_USER_TOKEN_AUDIENCES`, and an `email` claim.
+- `Authorization: Bearer`: the calling application's client-credentials access
+  token (every backend, including csm-integration-service, sends one). Checked
+  for signature/issuer/expiry; its `client_id` (else `azp`) claim is the client
+  id. No audience check -- the client id is what gets authorized.
+
+Opt-in (`AUTH_TOKEN_VALIDATION_ENABLED`, default off) so nothing changes for
+existing deployments. Only asymmetric algorithms are accepted (an HS256 token
+"signed" with the public key is rejected -- there is a test). A token that is
+**present but invalid is always a 401 on every route**, never downgraded to
+"no token": that would turn a forged user token into an anonymous request.
+A request with no tokens at all passes through the middleware; whether that is
+acceptable is decided per endpoint.
+
+Two things learned the hard way, both mirrored from/corrected against the CSM
+backend: Asgardeo publishes JWKS `x5c` certs Go 1.23+ refuses to parse, so the
+JWKS transport strips `x5c` (`x5c_transport.go`); and `keyfunc` does **not**
+fail when the JWKS URL is unreachable at construction -- it logs and retries in
+the background, which would leave a misconfigured deployment up rejecting every
+token. `NewValidator` therefore fails unless at least one key actually loaded,
+and `NewRouter` panics on that error at startup.
+
+**Who may see what (`AccessService.ResolveScope`)**, used today by `POST /search`
+on the Postgres data source. The decision comes from the *validated* identity,
+never from a list the caller sends:
+
+| Request carries | Result |
+|---|---|
+| validation not configured | 503 -- never scope from an unverified token |
+| user token, `user_type` INTERNAL (all active rows for the email) | everything |
+| user token, EXTERNAL (customer) | only projects where their email is a `REGISTERED` `project_contact`, and the cases in them; none registered = an empty result, never "no filter" |
+| user token, inactive / SYSTEM / NOT_AVAILABLE / unknown email | 403 |
+| no user token, Bearer client id has role `internal` (`AUTH_CLIENT_ROLES`) | everything (a system caller, e.g. csm-integration-service) |
+| no user token, client role `delegate` (portal backends) | 401 -- it must forward a user token |
+| no user token, unlisted client id | 403 |
+| nothing | 401 |
+
+A user token always wins: an `internal` client that forwards bob's token sees
+bob's scope. **Absence of a user token never means unscoped by itself** -- only
+an explicitly `internal` client gets that, so a portal backend that forgets to
+forward the token gets a 401, not everyone's data. `user.email` is **not
+unique** (staging shares emails across rows), so rows are combined
+conservatively: internal access needs every active row to be INTERNAL; an email
+that is also an EXTERNAL customer is scoped as a customer. `user.is_active` NULL
+counts as active. `project_contact` states other than `REGISTERED` (INVITED,
+RE-INVITED, DEACTIVATED) grant nothing -- **staging data caveat**: at the time
+of writing only 97 REGISTERED contact rows covered 68 of ~1956 projects (260
+INVITED), so customer results are limited by how much has been synced; flip the
+state in `access_repo.go` if INVITED contacts should count.
+
+**Only `/search` is scoped so far.** The other routes still do no per-caller
+scoping (the middleware only rejects invalid tokens). Extending the same
+`AccessService` to e.g. project/case reads is the natural next step, and matters
+for anything a customer can reach directly.
+
+`/search` itself: projects match name/key, cases match number/subject/WSO2
+id/description (case-insensitive, LIKE metacharacters escaped so `%` and `_`
+are literal); results are limited to `project`/case-like work items; `sortBy`
+accepts `name`/`createdOn`/`updatedOn` only (mapped to fixed columns, never
+interpolated). Case `state`/`severity` use the raw enum labels as id and label
+(same vocabulary as project metadata). `activeChatsCount`/`actionRequiredCount`/
+`outstandingCount` are 0 -- their definition lives in ServiceNow-side logic with
+no Postgres equivalent yet (TODO).
+
 ## Adding a new entity
 
 Follow these steps in order:
