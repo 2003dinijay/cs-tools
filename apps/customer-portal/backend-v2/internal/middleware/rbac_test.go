@@ -231,24 +231,12 @@ func TestHasPermissionMatrix(t *testing.T) {
 				t.Errorf("%s must NOT have CUD on TimeCards", rName)
 			}
 
-			// Projects: Read for everyone; Update for the customer-side
-			// admins only. The sole patchable field is the project's
-			// AI-assistant toggle, which is its own administrative setting —
-			// so an admin may set it on their own project, and a plain user
-			// may not. Create and Delete stay WSO2-side for every role.
+			// Projects: Read Only
 			if !HasPermission(roleSet, ModuleProjects, ActionRead) {
 				t.Errorf("%s must have Read on Projects", rName)
 			}
-			isExternalAdmin := roleSet[0] == RoleCustomerAdmin || roleSet[0] == RolePartnerAdmin
-			if got := HasPermission(roleSet, ModuleProjects, ActionUpdate); got != isExternalAdmin {
-				if isExternalAdmin {
-					t.Errorf("%s must have Update on Projects (the AI-assistant toggle)", rName)
-				} else {
-					t.Errorf("%s must NOT have Update on Projects", rName)
-				}
-			}
-			if HasPermission(roleSet, ModuleProjects, ActionCreate) || HasPermission(roleSet, ModuleProjects, ActionDelete) {
-				t.Errorf("%s must NOT have Create or Delete on Projects", rName)
+			if HasPermission(roleSet, ModuleProjects, ActionCreate) || HasPermission(roleSet, ModuleProjects, ActionUpdate) || HasPermission(roleSet, ModuleProjects, ActionDelete) {
+				t.Errorf("%s must NOT have CUD on Projects", rName)
 			}
 
 			// Change Requests: Read Only

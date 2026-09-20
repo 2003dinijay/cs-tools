@@ -156,29 +156,21 @@ func TestServerRBACRouteGating(t *testing.T) {
 			roles:        []string{"sn_customerservice.admin"},
 			wantHTTPCode: http.StatusForbidden,
 		},
-		// Projects. The only field PATCH /projects/{id} exposes is the
-		// AI-assistant toggle, which is the project's own administrative
-		// setting — so the customer-side admins can set it on their own
-		// project, and the plain user roles cannot.
+		// Projects. PATCH /projects/{id} is gated on projects:update, which
+		// the specification restricts to the WSO2-side roles; every external
+		// role is read-only on Projects.
 		{
-			name:         "CustomerAdmin can update their project",
+			name:         "Agent can update a project",
+			module:       middleware.ModuleProjects,
+			action:       middleware.ActionUpdate,
+			roles:        []string{"wso2_agent"},
+			wantHTTPCode: http.StatusOK,
+		},
+		{
+			name:         "CustomerAdmin cannot update a project",
 			module:       middleware.ModuleProjects,
 			action:       middleware.ActionUpdate,
 			roles:        []string{"sn_customerservice.customer_admin"},
-			wantHTTPCode: http.StatusOK,
-		},
-		{
-			name:         "PartnerAdmin can update their project",
-			module:       middleware.ModuleProjects,
-			action:       middleware.ActionUpdate,
-			roles:        []string{"sn_customerservice.partner_admin"},
-			wantHTTPCode: http.StatusOK,
-		},
-		{
-			name:         "CustomerUser cannot update a project",
-			module:       middleware.ModuleProjects,
-			action:       middleware.ActionUpdate,
-			roles:        []string{"sn_customerservice.customer"},
 			wantHTTPCode: http.StatusForbidden,
 		},
 		{
