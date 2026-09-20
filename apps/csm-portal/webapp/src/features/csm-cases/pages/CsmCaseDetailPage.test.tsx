@@ -1525,6 +1525,21 @@ describe("CsmCaseDetailPage — role-based controls", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("the Time tracking tab needs support engineer, admin or the time-card approver role", () => {
+    for (const role of ["viewer", "escalator", "attachment_downloader"]) {
+      currentUserRoles.value = [role];
+      const { unmount } = renderPage();
+      expect(screen.queryByRole("tab", { name: /time tracking/i })).not.toBeInTheDocument();
+      unmount();
+    }
+    for (const role of ["support_engineer", "admin", "timecard_approver"]) {
+      currentUserRoles.value = [role];
+      const { unmount } = renderPage();
+      expect(screen.getByRole("tab", { name: /time tracking/i })).toBeInTheDocument();
+      unmount();
+    }
+  });
+
   it("a user with no roles sees no controls", () => {
     currentUserRoles.value = [];
     renderPage();

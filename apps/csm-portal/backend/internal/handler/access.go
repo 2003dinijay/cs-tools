@@ -38,6 +38,12 @@ const (
 	// PermView on purpose: a view-only role sees cases and customers but not
 	// operations, which support-portal-lite never exposed to them.
 	PermViewOperations
+	// PermTimeCardsAndUpdates is the Time Cards and Updates areas: every time-card
+	// route (search, create, update, delete) and the update-level lookups. Held by
+	// support engineer and admin, and by the time-card approver so approving does
+	// not require being a support engineer. Narrower than PermView on purpose: a
+	// view-only role sees neither area.
+	PermTimeCardsAndUpdates
 	// PermEscalate is escalating or de-escalating a case.
 	PermEscalate
 	// PermDownloadAttachment is downloading attachment content, or minting a
@@ -83,12 +89,13 @@ type portalRole struct {
 
 // NewAccessGuard builds a guard from cfg. Admin satisfies every permission.
 // Support engineer, the role for people who work cases, satisfies every one
-// too; the escalator and attachment-downloader roles exist
-// separately so other staff can be granted just that one ability. The
-// usage-metrics, time-card-approver and dashboard-designer roles gate nothing
-// here (this backend has no route for those features) and grant only View.
-// Every role implies View, so a user granted only one specialised role can
-// still open the pages it acts on.
+// too; the escalator and attachment-downloader roles exist separately so other
+// staff can be granted just that one ability. The time-card approver also holds
+// PermTimeCardsAndUpdates, so it can approve without being a support engineer.
+// The usage-metrics and dashboard-designer roles gate nothing here (this backend
+// has no route for those features) and grant only View. Every role implies
+// View, so a user granted only one specialised role can still open the pages it
+// acts on.
 func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	build := func(lists ...[]string) map[string]struct{} {
 		set := make(map[string]struct{})
@@ -113,10 +120,11 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 		allowed: map[Permission]map[string]struct{}{
 			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
 				cfg.UsageMetricsViewer, cfg.SupportEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner),
-			PermViewOperations:     build(cfg.SupportEngineer, cfg.Admin),
-			PermEscalate:           build(cfg.Escalator, cfg.SupportEngineer, cfg.Admin),
-			PermDownloadAttachment: build(cfg.AttachmentDownloader, cfg.SupportEngineer, cfg.Admin),
-			PermWrite:              build(cfg.SupportEngineer, cfg.Admin),
+			PermViewOperations:      build(cfg.SupportEngineer, cfg.Admin),
+			PermTimeCardsAndUpdates: build(cfg.SupportEngineer, cfg.Admin, cfg.TimecardApprover),
+			PermEscalate:            build(cfg.Escalator, cfg.SupportEngineer, cfg.Admin),
+			PermDownloadAttachment:  build(cfg.AttachmentDownloader, cfg.SupportEngineer, cfg.Admin),
+			PermWrite:               build(cfg.SupportEngineer, cfg.Admin),
 		},
 	}
 }

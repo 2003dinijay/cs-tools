@@ -12,6 +12,7 @@ info:
     | (any authenticated caller) | `GET`/`PATCH /users/me` | none needed |
     | `view` | every other `GET`, `*/search` and `*/aggregate` | any role below |
     | `view_operations` | the same reads under `/incidents`, `/change-requests`, `/problems`, `/incident-tasks`, `/outages`, `/alerts`, `/smart-alerts` | support-engineer, admin |
+    | `time_cards_and_updates` | every `/time-cards` route and `GET /updates/product-update-levels`, `POST /updates/levels/search` | support-engineer, time-card-approver, admin |
     | `escalate` | `POST /cases/{id}/escalations` | escalator, support-engineer, admin |
     | `download_attachment` | `GET /attachments/{id}/content`, `POST /attachments/{id}/share` | attachment-downloader, support-engineer, admin |
     | `write` | every other `POST`/`PATCH`/`DELETE`, including case, incident and change-request comments | support-engineer, admin |

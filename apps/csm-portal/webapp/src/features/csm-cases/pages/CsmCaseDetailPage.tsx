@@ -367,7 +367,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const { user: currentUser } = useCurrentUser();
   // What this user's roles let them do. UX only — the backend 403s the same
   // actions regardless, so hiding a control here is never the enforcement.
-  const { canEscalate, canDownloadAttachment, canWrite } = usePortalAccess();
+  const { canEscalate, canDownloadAttachment, canWrite, canUseTimeCardsAndUpdates } =
+    usePortalAccess();
   const routedCaseId = useNormalizedIdParam("caseId");
   const routedNavigate = useNavTransition();
   const routedLocation = useLocation();
@@ -567,8 +568,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const { data: caseTasks } = useSearchCaseTasks(
     isAnnouncement ? undefined : caseId,
   );
+  // The backend only serves time cards to roles that can use them, so the query
+  // is skipped (undefined id disables it) rather than left to 403.
   const { data: caseTimeCards } = useCaseTimeCards(
-    isAnnouncement ? undefined : caseId,
+    isAnnouncement || !canUseTimeCardsAndUpdates ? undefined : caseId,
   );
   const { data: linkedIncidents } = useSearchLinkedIncidents(
     isAnnouncement ? undefined : caseId,
@@ -2429,6 +2432,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           {TAB_DEFS.filter(
             (t) =>
               !t.hidden &&
+              (t.id !== "time" || canUseTimeCardsAndUpdates) &&
               (!isAnnouncement ||
                 (t.id !== "related" &&
                   t.id !== "watchers" &&
@@ -2943,12 +2947,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
         </Box>
       )}
 
-      {activeTab === "time" && (
+      {activeTab === "time" && canUseTimeCardsAndUpdates && (
         <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: "1fr" }}>
           <CaseTimeCardsPanel
             caseId={c.id}
-            onLogTime={canWrite ? () => setLogTimeOpen(true) : undefined}
-            onEditTimeCard={canWrite ? setEditTimeCard : undefined}
+            onLogTime={() => setLogTimeOpen(true)}
+            onEditTimeCard={setEditTimeCard}
           />
         </Box>
       )}

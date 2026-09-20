@@ -199,12 +199,14 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     id: "updates",
     label: "Updates",
     href: "/updates",
+    requires: "canUseTimeCardsAndUpdates",
     icon: RefreshCw,
   },
   {
     id: "time-cards",
     label: "Time cards",
     href: "/time-cards",
+    requires: "canUseTimeCardsAndUpdates",
     icon: Clock,
   },
   {
@@ -312,15 +314,30 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
       },
       { id: "help.dashboard", label: "Dashboard", href: "/help#dashboard" },
       { id: "help.support", label: "Support", href: "/help#support" },
-      { id: "help.operations", label: "Operations", href: "/help#operations" },
+      {
+        id: "help.operations",
+        label: "Operations",
+        href: "/help#operations",
+        requires: "canUseOperations",
+      },
       { id: "help.engagements", label: "Engagements", href: "/help#engagements" },
       {
         id: "help.security-center",
         label: "Security Center",
         href: "/help#security-center",
       },
-      { id: "help.updates", label: "Updates", href: "/help#updates" },
-      { id: "help.time-cards", label: "Time cards", href: "/help#time-cards" },
+      {
+        id: "help.updates",
+        label: "Updates",
+        href: "/help#updates",
+        requires: "canUseTimeCardsAndUpdates",
+      },
+      {
+        id: "help.time-cards",
+        label: "Time cards",
+        href: "/help#time-cards",
+        requires: "canUseTimeCardsAndUpdates",
+      },
       {
         id: "help.announcements",
         label: "Announcements",
