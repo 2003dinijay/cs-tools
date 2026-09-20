@@ -42,10 +42,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	userHandler := handler.NewUserHandler(userSvc)
 
 	// event_publish_failures, sla_clocks, scheduled_task_run, and
-	// alert_incident_mapping have no ServiceNow equivalent. They are
-	// Postgres-backed and registered only when a pool is available
-	// (db.NewPoolIfNeeded returns nil for DATA_SOURCE=servicenow so local
-	// SN-mode startups are not blocked).
+	// alert_incident_mapping have no ServiceNow equivalent and are always
+	// backed by Postgres regardless of DATA_SOURCE. They are registered
+	// only when a pool is available (db.NewPoolIfNeeded returns nil only
+	// when DB credentials aren't configured at all, so a local SN-mode
+	// setup with no Postgres provisioned still isn't blocked).
 	var eventPublishFailureHandler *handler.EventPublishFailureHandler
 	var eventPublishFailureSvc service.EventPublishFailureService
 	var slaClockHandler *handler.SLAClockHandler
