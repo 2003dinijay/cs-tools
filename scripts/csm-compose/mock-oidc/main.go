@@ -312,12 +312,21 @@ func (s *server) handleToken(w http.ResponseWriter, r *http.Request) {
 		clientID = req.clientID
 
 	case "client_credentials":
-		clientID = r.FormValue("client_id")
+		// RFC 6749 §2.3.1 clients (golang.org/x/oauth2/clientcredentials among
+		// them) send client_id/client_secret via HTTP Basic auth, not the form
+		// body -- prefer that over the form value, which a client only sends
+		// when it authenticates that way instead.
+		if basicID, _, ok := r.BasicAuth(); ok {
+			clientID = basicID
+		} else {
+			clientID = r.FormValue("client_id")
+		}
 		claims = map[string]any{
-			"sub":    clientID,
-			"userid": clientID,
-			"groups": []string{"m2m"},
-			"roles":  []string{"m2m"},
+			"sub":       clientID,
+			"userid":    clientID,
+			"client_id": clientID,
+			"groups":    []string{"m2m"},
+			"roles":     []string{"m2m"},
 		}
 
 	default:
