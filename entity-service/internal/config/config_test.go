@@ -31,6 +31,12 @@ func baseValidConfig() Config {
 		// Config would be.
 		ServerPort: "8080",
 		HealthPort: "8081",
+		// Token validation is always on (no config flag disables it), so
+		// these three are as mandatory to a valid Config as the DB settings
+		// above — see TestConfig_Validate_Auth for the dedicated tests.
+		AuthIssuer:             "https://api.asgardeo.io/t/x/oauth2/token",
+		AuthJWKSURL:            "https://api.asgardeo.io/t/x/oauth2/jwks",
+		AuthUserTokenAudiences: []string{"spa"},
 	}
 }
 
@@ -166,15 +172,7 @@ func TestConfig_Validate_RequiresDBFields(t *testing.T) {
 }
 
 func TestConfig_Validate_ServiceNowDoesNotRequireDBFields(t *testing.T) {
-	c := Config{
-		DataSource:                               DataSourceServiceNow,
-		ServiceNowIntegrationServiceBaseURL:      "https://example.com",
-		ServiceNowIntegrationServiceTokenURL:     "https://example.com/token",
-		ServiceNowIntegrationServiceClientID:     "client-id",
-		ServiceNowIntegrationServiceClientSecret: "client-secret",
-		ServerPort:                               "8080",
-		HealthPort:                               "8081",
-	}
+	c := baseValidServiceNowConfig()
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate() = %v, want nil when DATA_SOURCE=servicenow has no DB credentials", err)
 	}
@@ -257,6 +255,11 @@ func baseValidServiceNowConfig() Config {
 		// which a zero-value Config would be.
 		ServerPort: "8080",
 		HealthPort: "8081",
+		// Token validation is always on regardless of DataSource — see
+		// baseValidConfig's own comment.
+		AuthIssuer:             "https://api.asgardeo.io/t/x/oauth2/token",
+		AuthJWKSURL:            "https://api.asgardeo.io/t/x/oauth2/jwks",
+		AuthUserTokenAudiences: []string{"spa"},
 	}
 }
 
@@ -378,40 +381,24 @@ func TestParseClientRoles(t *testing.T) {
 	}
 }
 
+// TestConfig_Validate_Auth locks in that token validation has no off switch:
+// AuthIssuer/AuthJWKSURL/AuthUserTokenAudiences are as mandatory to a valid
+// Config as the DB settings baseValidConfig() already supplies, and
+// AUTH_CLIENT_ROLES is validated regardless.
 func TestConfig_Validate_Auth(t *testing.T) {
-	enabled := func(mod func(*Config)) Config {
-		c := baseValidConfig()
-		c.AuthTokenValidationEnabled = true
-		c.AuthIssuer = "https://api.asgardeo.io/t/x/oauth2/token"
-		c.AuthJWKSURL = "https://api.asgardeo.io/t/x/oauth2/jwks"
-		c.AuthUserTokenAudiences = []string{"spa"}
-		if mod != nil {
-			mod(&c)
-		}
-		return c
-	}
-	if c := enabled(nil); c.Validate() != nil {
+	if c := baseValidConfig(); c.Validate() != nil {
 		t.Fatalf("complete auth config rejected: %v", c.Validate())
 	}
-	for name, c := range map[string]Config{
-		"missing issuer":    enabled(func(c *Config) { c.AuthIssuer = "" }),
-		"missing JWKS URL":  enabled(func(c *Config) { c.AuthJWKSURL = "" }),
-		"missing audiences": enabled(func(c *Config) { c.AuthUserTokenAudiences = nil }),
-		"bad client roles":  enabled(func(c *Config) { c.AuthClientRolesRaw = "svc=root" }),
+	for name, mod := range map[string]func(*Config){
+		"missing issuer":    func(c *Config) { c.AuthIssuer = "" },
+		"missing JWKS URL":  func(c *Config) { c.AuthJWKSURL = "" },
+		"missing audiences": func(c *Config) { c.AuthUserTokenAudiences = nil },
+		"bad client roles":  func(c *Config) { c.AuthClientRolesRaw = "svc=root" },
 	} {
+		c := baseValidConfig()
+		mod(&c)
 		if err := c.Validate(); err == nil {
 			t.Errorf("%s: want a startup error", name)
 		}
-	}
-
-	// Disabled: none of the other AUTH_* values are required.
-	if c := baseValidConfig(); c.Validate() != nil {
-		t.Fatalf("auth off must need no auth settings: %v", c.Validate())
-	}
-	// ...but a malformed client-role list is rejected whether or not validation is on.
-	c := baseValidConfig()
-	c.AuthClientRolesRaw = "svc=root"
-	if err := c.Validate(); err == nil {
-		t.Error("malformed AUTH_CLIENT_ROLES accepted while validation is off")
 	}
 }

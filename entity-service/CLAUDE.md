@@ -1811,9 +1811,11 @@ validator (`golang-jwt/jwt/v5` + `keyfunc/v3`, same versions), against
   for signature/issuer/expiry; its `client_id` (else `azp`) claim is the client
   id. No audience check -- the client id is what gets authorized.
 
-Opt-in (`AUTH_TOKEN_VALIDATION_ENABLED`, default off) so nothing changes for
-existing deployments. Only asymmetric algorithms are accepted (an HS256 token
-"signed" with the public key is rejected -- there is a test). A token that is
+**Always on -- there is no config flag to disable it.** `AUTH_ISSUER`/
+`AUTH_JWKS_URL`/`AUTH_USER_TOKEN_AUDIENCES` are required (`config.Validate`
+rejects startup without them). Only asymmetric algorithms are accepted (an
+HS256 token "signed" with the public key is rejected -- there is a test). A
+token that is
 **present but invalid is always a 401 on every route**, never downgraded to
 "no token": that would turn a forged user token into an anonymous request.
 A request with no tokens at all passes through the middleware; whether that is
@@ -1833,7 +1835,7 @@ never from a list the caller sends:
 
 | Request carries | Result |
 |---|---|
-| validation not configured | 503 -- never scope from an unverified token |
+| no verified identity (only possible if the auth middleware was left out of the chain -- a bug) | 503 -- never scope from an unverified token |
 | user token, `user_type` INTERNAL (all active rows for the email) | everything |
 | user token, EXTERNAL (customer) | only projects where their email is a `REGISTERED` `project_contact`, and the cases in them; none registered = an empty result, never "no filter" |
 | user token, inactive / SYSTEM / NOT_AVAILABLE / unknown email | 403 |

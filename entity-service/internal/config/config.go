@@ -128,33 +128,38 @@ type Config struct {
 	// nothing to do with case state) — the two are read by separate
 	// processes/environments and don't interact.
 	CustomerRoles []string
-	// Auth* configure token validation (internal/auth). Off by default so
-	// existing deployments and local runs are unchanged; when off, identity is
-	// never verified and any endpoint that scopes results by caller (currently
-	// POST /search on the Postgres data source) refuses to run, rather than
-	// trusting an unverified token.
+	// Auth* configure token validation (internal/auth), always on -- there is
+	// no config flag to disable it. AuthIssuer/AuthJWKSURL/
+	// AuthUserTokenAudiences are required (Validate rejects startup without
+	// them, and NewRouter panics if the JWKS can't be loaded), so a caller's
+	// identity is always verified.
 	//
-	// AuthTokenValidationEnabled turns on signature/issuer/expiry validation of
-	// the Asgardeo tokens: the end user's ID token in x-user-id-token, and the
-	// calling application's client-credentials access token in
-	// Authorization: Bearer. AuthIssuer and AuthJWKSURL locate the issuer's
-	// keys. AuthUserTokenAudiences are the client ids (Asgardeo SPA/application
-	// ids) an ID token's aud must contain to be accepted as a user token.
-	AuthTokenValidationEnabled bool
-	AuthIssuer                 string
-	AuthJWKSURL                string
-	AuthUserTokenAudiences     []string
-	AuthClockSkew              time.Duration
+	// AuthIssuer/AuthJWKSURL locate the Asgardeo issuer's signing keys, used to
+	// validate both tokens a request can carry: the end user's ID token in
+	// x-user-id-token, and the calling application's client-credentials access
+	// token in Authorization: Bearer. AuthUserTokenAudiences are the client ids
+	// (Asgardeo SPA/application ids) an ID token's aud must contain to be
+	// accepted as a user token.
+	AuthIssuer             string
+	AuthJWKSURL            string
+	AuthUserTokenAudiences []string
+	AuthClockSkew          time.Duration
 	// AuthClientRolesRaw is the AUTH_CLIENT_ROLES value, a comma-separated
 	// list of clientId=role pairs; AuthClientRoles is its parsed form. It is
 	// both the allow-list of application client ids and what each may do:
-	//   internal -- a system caller (e.g. csm-integration-service). With no
-	//               user token it is treated like an internal user: it may see
-	//               every project and case.
-	//   delegate -- a caller that acts for end users (the portal backends). It
-	//               must forward a user token; without one it gets no access.
+	//   internal -- with no user token, treated like an internal user: sees
+	//               every project and case. Also rescues a forwarded user
+	//               token whose email has no row in "user" yet, treating it as
+	//               an internal user too (see AccessService) -- so this is the
+	//               role for a caller whose forwarded users may legitimately be
+	//               internal staff not yet present in that table, not only a
+	//               caller with no end user at all.
+	//   delegate -- a caller that acts for end users. It must forward a user
+	//               token; without one it gets no access, and an unknown
+	//               forwarded email is never rescued (only "internal" rescues).
 	// A client id that is absent (or has an unknown role) has no access to
-	// endpoints that scope by caller.
+	// endpoints that scope by caller. Which real client ids get which role is
+	// a deployment decision, not something this file prescribes.
 	AuthClientRolesRaw string
 	AuthClientRoles    map[string]string
 	// SalesEntity* is the Choreo connection to REST sales/sales-entity-service
@@ -194,7 +199,6 @@ func Load() *Config {
 		CRNoticesEnabled:                         os.Getenv("CR_NOTICES_ENABLED") == "true",
 		CREventHubTopic:                          getEnvOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
 		CRNoticePollInterval:                     envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
-		AuthTokenValidationEnabled:               os.Getenv("AUTH_TOKEN_VALIDATION_ENABLED") == "true",
 		AuthIssuer:                               os.Getenv("AUTH_ISSUER"),
 		AuthJWKSURL:                              os.Getenv("AUTH_JWKS_URL"),
 		AuthUserTokenAudiences:                   splitComma(os.Getenv("AUTH_USER_TOKEN_AUDIENCES")),
@@ -392,16 +396,15 @@ func (c *Config) Validate() error {
 	if _, err := ParseClientRoles(c.AuthClientRolesRaw); err != nil {
 		return err
 	}
-	// Token validation is all-or-nothing: enabling it without knowing whose
-	// keys to trust, or which audiences make an ID token a user token, would
-	// either accept everything or reject everything. Reject that at startup.
-	if c.AuthTokenValidationEnabled {
-		if c.AuthIssuer == "" || c.AuthJWKSURL == "" {
-			return fmt.Errorf("AUTH_ISSUER and AUTH_JWKS_URL are required when AUTH_TOKEN_VALIDATION_ENABLED=true")
-		}
-		if len(c.AuthUserTokenAudiences) == 0 {
-			return fmt.Errorf("AUTH_USER_TOKEN_AUDIENCES is required when AUTH_TOKEN_VALIDATION_ENABLED=true")
-		}
+	// Token validation is always on and unconditionally needs to know whose
+	// keys to trust and which audiences make an ID token a user token, or it
+	// would either accept everything or reject everything. Reject that at
+	// startup rather than at the first request.
+	if c.AuthIssuer == "" || c.AuthJWKSURL == "" {
+		return fmt.Errorf("AUTH_ISSUER and AUTH_JWKS_URL are required")
+	}
+	if len(c.AuthUserTokenAudiences) == 0 {
+		return fmt.Errorf("AUTH_USER_TOKEN_AUDIENCES is required")
 	}
 	salesEntitySet := c.SalesEntityBaseURL != "" || c.SalesEntityTokenURL != "" || c.SalesEntityClientID != "" || c.SalesEntityClientSecret != "" || c.SalesEntityScopes != ""
 	if salesEntitySet && !c.SalesEntityConfigured() {

@@ -161,10 +161,14 @@ func run(t *testing.T, v *Validator, headers map[string]string) (code int, id Id
 	return rec.Code, id, called
 }
 
-func TestMiddleware_ValidationDisabledNeverRejectsAndNeverTrusts(t *testing.T) {
+// TestMiddleware_NilValidatorIsADefensiveFallbackNotADeploymentMode: routes.go
+// always supplies a real Validator, so a nil one here is only reachable if
+// some caller wires this middleware incorrectly -- it must still fail safe
+// (pass through, never trust the token) rather than panic.
+func TestMiddleware_NilValidatorIsADefensiveFallbackNotADeploymentMode(t *testing.T) {
 	code, id, called := run(t, nil, map[string]string{"x-user-id-token": "garbage", "Authorization": "Bearer garbage"})
 	if code != http.StatusOK || !called {
-		t.Fatalf("disabled validation must pass through, got %d called=%v", code, called)
+		t.Fatalf("a nil validator must pass through, got %d called=%v", code, called)
 	}
 	if id != (Identity{}) {
 		t.Fatalf("unvalidated identity must be empty, got %+v", id)

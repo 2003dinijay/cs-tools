@@ -60,8 +60,11 @@ type AccessService interface {
 	//   - no user token, but a validated client-credentials token whose client id
 	//     has the "internal" role in AUTH_CLIENT_ROLES: a system caller, sees
 	//     everything.
-	// Everything else is refused, and so is any request when token validation
-	// is not configured: an unverified identity is never used to scope.
+	// Everything else is refused, and so is any request carrying an
+	// unvalidated identity: an unverified identity is never used to scope.
+	// Token validation is always on, so that should only happen if the auth
+	// middleware was somehow left out of the chain -- a bug, not a deployment
+	// choice.
 	ResolveScope(ctx context.Context) (AccessScope, error)
 }
 
@@ -80,7 +83,7 @@ func NewAccessService(repo repository.AccessRepository, clientRoles map[string]s
 func (s *accessService) ResolveScope(ctx context.Context) (AccessScope, error) {
 	id := auth.IdentityFromContext(ctx)
 	if !id.Validated {
-		return AccessScope{}, &apierror.ServiceUnavailableError{Msg: "results cannot be scoped to the caller: token validation is not configured (AUTH_TOKEN_VALIDATION_ENABLED)"}
+		return AccessScope{}, &apierror.ServiceUnavailableError{Msg: "results cannot be scoped to the caller: no verified identity on this request"}
 	}
 
 	// A user token always decides, even when a trusted client sent it: the

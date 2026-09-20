@@ -59,9 +59,10 @@ func IdentityFromContext(ctx context.Context) Identity {
 }
 
 // Middleware validates the tokens on every request and attaches the resulting
-// Identity to the context. With a nil Validator (token validation disabled) it
-// attaches an unvalidated Identity and never rejects, leaving behaviour
-// unchanged for deployments that haven't configured it.
+// Identity to the context. routes.go always supplies a real Validator -- there
+// is no config flag to disable this. A nil Validator is a purely defensive
+// fallback (attaches an unvalidated Identity and never rejects); it should
+// only ever happen if a caller wires this middleware without one, a bug.
 //
 // A token that is PRESENT but invalid is always rejected with 401 -- never
 // downgraded to "no token", which would turn a forged user token into an

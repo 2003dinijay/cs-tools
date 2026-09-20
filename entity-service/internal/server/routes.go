@@ -730,23 +730,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("POST /instances/metrics/stats/search", instanceHandler.SearchInstanceMetricsStats)
 	mux.HandleFunc("POST /instances/usages/stats/search", instanceHandler.SearchInstanceUsageStats)
 
-	// Token validation is opt-in (AUTH_TOKEN_VALIDATION_ENABLED). A nil
-	// validator leaves every request unvalidated, which AccessService treats as
-	// "cannot scope" rather than trusting the token. When enabled, the JWKS must
-	// load at startup: a wrong URL panics here instead of silently rejecting
-	// every token later (same fail-fast posture as apps/csm-portal/backend).
-	var tokenValidator *auth.Validator
-	if cfg.AuthTokenValidationEnabled {
-		v, err := auth.NewValidator(context.Background(), auth.Config{
-			Issuer:             cfg.AuthIssuer,
-			JWKSURL:            cfg.AuthJWKSURL,
-			UserTokenAudiences: cfg.AuthUserTokenAudiences,
-			ClockSkew:          cfg.AuthClockSkew,
-		})
-		if err != nil {
-			panic("auth: token validation is enabled but could not be initialised: " + err.Error())
-		}
-		tokenValidator = v
+	// Token validation always runs -- there is no config flag to disable it.
+	// The JWKS must load right here at startup: a wrong URL panics now instead
+	// of silently rejecting every token later (same fail-fast posture as
+	// apps/csm-portal/backend).
+	tokenValidator, err := auth.NewValidator(context.Background(), auth.Config{
+		Issuer:             cfg.AuthIssuer,
+		JWKSURL:            cfg.AuthJWKSURL,
+		UserTokenAudiences: cfg.AuthUserTokenAudiences,
+		ClockSkew:          cfg.AuthClockSkew,
+	})
+	if err != nil {
+		panic("auth: could not initialise token validation: " + err.Error())
 	}
 
 	return middleware.CorrelationID(

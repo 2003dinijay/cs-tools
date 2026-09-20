@@ -5426,18 +5426,21 @@ paths:
         returns paginated results for each independently.
 
 
-        On the Postgres data source results are scoped to the caller, decided from
-        validated tokens (requires AUTH_TOKEN_VALIDATION_ENABLED):
+        On the Postgres data source, every request's tokens are validated (Asgardeo), and
+        results are scoped to the caller:
         a valid `x-user-id-token` (Asgardeo ID token) decides scope -- an internal user
         sees every project and case, a customer sees only projects they are a REGISTERED
-        contact of and the cases in them, and any other user type, an inactive user or an
-        unknown email gets 403. With no user token, an `Authorization: Bearer`
-        client-credentials token is required and its client id must have the `internal`
-        role in AUTH_CLIENT_ROLES (a system caller, sees everything); a `delegate` client
-        must forward a user token (401) and an unlisted client is refused (403).
-        A token that is present but invalid is always rejected with 401. The project
-        counts (`activeChatsCount`, `actionRequiredCount`, `outstandingCount`) are 0 on
-        Postgres.
+        contact of and the cases in them, and any other user type or an inactive user gets
+        403. An unknown email is refused too, UNLESS the request's `Authorization: Bearer`
+        client-credentials token belongs to a client with the `internal` role in
+        AUTH_CLIENT_ROLES, in which case it's treated as an internal user (this covers a
+        forwarded user not yet present in this data source, without ever widening a
+        *known* user's own scope). With no user token at all, that same `Authorization:
+        Bearer` token is required, and its client id must have the `internal` role (a
+        system caller, sees everything); a `delegate` client must forward a user token
+        (401) and an unlisted client is refused (403). A token that is present but invalid
+        is always rejected with 401. The project counts (`activeChatsCount`,
+        `actionRequiredCount`, `outstandingCount`) are 0 on Postgres.
       operationId: globalSearch
       requestBody:
         required: false
@@ -5477,7 +5480,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: Results cannot be scoped to the caller because token validation is not configured (Postgres), or the ServiceNow dependency is unavailable.
+          description: The ServiceNow metadata/search dependency is unavailable.
           content:
             application/json:
               schema:
