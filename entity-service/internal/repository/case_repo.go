@@ -1004,6 +1004,38 @@ var pgSortColMap = map[domain.CaseSortField]string{
 	domain.CaseSortFieldState:     "c.state",
 }
 
+// onboardingStatusLabels maps a projectOnboardingStatus filter value (keyed by
+// its normalized form, see onboardingStatusEnumLabels) to
+// onboarding_status_enum. The filter's vocabulary is ServiceNow's choice labels
+// ("In-Progress", "Not-Applicable", "OnHold"), which are not the enum's spelling,
+// so values are compared with case, hyphens, underscores and spaces ignored.
+var onboardingStatusLabels = map[string]string{
+	"notstarted":    "NOT_STARTED",
+	"inprogress":    "IN_PROGRESS",
+	"completed":     "COMPLETED",
+	"onhold":        "ON_HOLD",
+	"notapplicable": "NOT_APPLICABLE",
+	"expired":       "EXPIRED",
+	"cancelled":     "CANCELLED",
+}
+
+var onboardingStatusKeyStripper = strings.NewReplacer("-", "", "_", "", " ", "")
+
+// onboardingStatusEnumLabels translates projectOnboardingStatus filter values
+// to onboarding_status_enum labels. An unknown value is a ValidationError
+// rather than a silent no-match: for notIn that would widen the result set.
+func onboardingStatusEnumLabels(values []string) ([]string, error) {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		label, ok := onboardingStatusLabels[onboardingStatusKeyStripper.Replace(strings.ToLower(strings.TrimSpace(v)))]
+		if !ok {
+			return nil, &apierror.ValidationError{Msg: "projectOnboardingStatus contains invalid value: " + v}
+		}
+		out = append(out, label)
+	}
+	return out, nil
+}
+
 // SearchCases implements CaseRepository.
 func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest, scope SearchScope) ([]domain.SearchCaseView, int, error) {
 	filterArgs := []any{}
@@ -1173,6 +1205,50 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		where += fmt.Sprintf(" AND wi.updated_on <= $%d", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.EndUpdatedDate)
 		argIdx++
+	}
+
+	// projectOnboardingStatus: the parent project's onboarding_status (p is
+	// the LEFT JOIN below). A case whose project has no status set (NULL)
+	// satisfies notIn -- "not in progress" is true of it -- but never in.
+	if len(req.Parsed.ProjectOnboardingStatuses) > 0 {
+		labels, err := onboardingStatusEnumLabels(req.Parsed.ProjectOnboardingStatuses)
+		if err != nil {
+			return nil, 0, err
+		}
+		where += fmt.Sprintf(" AND p.onboarding_status = ANY($%d::text[]::onboarding_status_enum[])", argIdx)
+		filterArgs = append(filterArgs, labels)
+		argIdx++
+	}
+	if len(req.Parsed.ExcludeProjectOnboardingStatuses) > 0 {
+		labels, err := onboardingStatusEnumLabels(req.Parsed.ExcludeProjectOnboardingStatuses)
+		if err != nil {
+			return nil, 0, err
+		}
+		where += fmt.Sprintf(" AND (p.onboarding_status IS NULL OR p.onboarding_status <> ALL($%d::text[]::onboarding_status_enum[]))", argIdx)
+		filterArgs = append(filterArgs, labels)
+		argIdx++
+	}
+
+	// taskSLABusinessElapsedPercent: matches a case with at least one SLA row
+	// whose business_elapsed_percentage is within the bound(s). Both bounds
+	// apply to the SAME row (a range like 75..100 means one SLA in that range,
+	// not one row >= 75 and another <= 100), which is why this is a single
+	// EXISTS. Any SLA row counts, whatever its stage -- the contract of
+	// domain.TaskSLAFilter. The percentage is uncapped (long-overdue SLAs
+	// climb far past 100), and 0 is a real bound, hence the nil checks.
+	if f := req.Parsed.TaskSLAFilter; f != nil && (f.MinBusinessElapsedPercent != nil || f.MaxBusinessElapsedPercent != nil) {
+		slaWhere := "tsla.work_item_id = wi.id"
+		if f.MinBusinessElapsedPercent != nil {
+			slaWhere += fmt.Sprintf(" AND tsla.business_elapsed_percentage >= $%d::numeric", argIdx)
+			filterArgs = append(filterArgs, *f.MinBusinessElapsedPercent)
+			argIdx++
+		}
+		if f.MaxBusinessElapsedPercent != nil {
+			slaWhere += fmt.Sprintf(" AND tsla.business_elapsed_percentage <= $%d::numeric", argIdx)
+			filterArgs = append(filterArgs, *f.MaxBusinessElapsedPercent)
+			argIdx++
+		}
+		where += " AND EXISTS (SELECT 1 FROM sla tsla WHERE " + slaWhere + ")"
 	}
 
 	if req.Filters.SearchQuery != "" {
