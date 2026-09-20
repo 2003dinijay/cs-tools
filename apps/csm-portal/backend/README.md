@@ -259,10 +259,10 @@ configured at all, nobody can use the portal.
 | `AUTH_VIEWER_ROLES` | view |
 | `AUTH_ESCALATOR_ROLES` | view, escalate |
 | `AUTH_ATTACHMENT_DOWNLOADER_ROLES` | view, download_attachment |
-| `AUTH_SUPPORT_ENGINEER_ROLES` | view, view_operations, escalate, download_attachment, write (which includes posting comments) |
+| `AUTH_SUPPORT_ENGINEER_ROLES` | view, view_operations, time_cards_and_updates, escalate, download_attachment, write (which includes posting comments) |
 | `AUTH_ADMIN_ROLES` | everything |
 | `AUTH_USAGE_METRICS_VIEWER_ROLES` | view |
-| `AUTH_TIMECARD_APPROVER_ROLES` | view |
+| `AUTH_TIMECARD_APPROVER_ROLES` | view, time_cards_and_updates |
 | `AUTH_DASHBOARD_DESIGNER_ROLES` | view |
 
 ```bash
@@ -275,6 +275,7 @@ AUTH_ESCALATOR_ROLES=example-escalators-role,example-leads-role
 | authenticated | `GET`/`PATCH /users/me` — any valid token, no role needed, so a user holding no portal role can still load their profile and be shown a "no access" screen |
 | `view` | every other `GET`, `*/search` and `*/aggregate` |
 | `view_operations` | the same reads under `/incidents`, `/change-requests`, `/problems`, `/incident-tasks`, `/outages`, `/alerts` and `/smart-alerts` — support engineer and admin only, so a view-only role sees cases and customers but not Operations |
+| `time_cards_and_updates` | every time-card route (`POST /time-cards/search`, `POST /time-cards`, `PATCH`/`DELETE /time-cards/{id}`) and the update-level lookups (`GET /updates/product-update-levels`, `POST /updates/levels/search`) — support engineer, admin and time-card approver only, so a view-only role sees neither area, and an approver can approve without being a support engineer |
 | `escalate` | `POST /cases/{id}/escalations` |
 | `download_attachment` | `GET /attachments/{id}/content`, `POST /attachments/{id}/share` |
 | `write` | every other `POST`/`PATCH`/`DELETE`, including case, incident and change-request comments |

@@ -56,7 +56,7 @@ func serveWithRoles(g *AccessGuard, perm Permission, roles []string) (status int
 }
 
 func TestAccessGuard_PermissionMatrix(t *testing.T) {
-	all := []Permission{PermView, PermViewOperations, PermEscalate, PermDownloadAttachment, PermWrite}
+	all := []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite}
 	tests := []struct {
 		name  string
 		roles []string
@@ -68,7 +68,7 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 		{"support engineer can do every route permission", []string{"test-support-engineer"}, all},
 		{"admin can do every route permission", []string{"test-admin"}, all},
 		{"usage metrics viewer can view only", []string{"test-usage-metrics-viewer"}, []Permission{PermView}},
-		{"timecard approver can view only", []string{"test-timecard-approver"}, []Permission{PermView}},
+		{"timecard approver can view and use time cards and updates", []string{"test-timecard-approver"}, []Permission{PermView, PermTimeCardsAndUpdates}},
 		{"dashboard designer can view only", []string{"test-dashboard-designer"}, []Permission{PermView}},
 		{"roles combine", []string{"test-viewer", "test-escalator", "test-attachment-downloader"}, []Permission{PermView, PermEscalate, PermDownloadAttachment}},
 		{"unrelated roles grant nothing", []string{"wso2-everyone", "admin", "agent", "customer"}, nil},
@@ -198,12 +198,35 @@ func TestAccessGuard_OperationsAreForSupportEngineersAndAdmins(t *testing.T) {
 
 func TestAccessGuard_UnconfiguredRolesAreHeldByNobody(t *testing.T) {
 	g := NewAccessGuard(AccessConfig{})
-	for _, perm := range []Permission{PermView, PermViewOperations, PermEscalate, PermDownloadAttachment, PermWrite} {
+	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite} {
 		if status, _ := serveWithRoles(g, perm, []string{"test-admin", "test-viewer", ""}); status != http.StatusForbidden {
 			t.Errorf("permission %d with no roles configured: status = %d, want 403", perm, status)
 		}
 	}
 	if got := g.RolesFor([]string{"test-admin", ""}); len(got) != 0 {
 		t.Errorf("RolesFor = %v, want none when no roles are configured", got)
+	}
+}
+
+func TestAccessGuard_TimeCardsAndUpdatesAreForSupportEngineersAdminsAndApprovers(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	for _, role := range []string{"test-support-engineer", "test-admin", "test-timecard-approver"} {
+		if status, _ := serveWithRoles(g, PermTimeCardsAndUpdates, []string{role}); status != http.StatusNoContent {
+			t.Errorf("%s: status = %d, want 204", role, status)
+		}
+	}
+	for _, role := range []string{
+		"test-viewer", "test-escalator", "test-attachment-downloader",
+		"test-usage-metrics-viewer", "test-dashboard-designer",
+	} {
+		if status, _ := serveWithRoles(g, PermTimeCardsAndUpdates, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s: status = %d, want 403", role, status)
+		}
+		if status, _ := serveWithRoles(g, PermView, []string{role}); status != http.StatusNoContent {
+			t.Errorf("%s reading cases and customers: status = %d, want 204", role, status)
+		}
+	}
+	if status, _ := serveWithRoles(g, PermTimeCardsAndUpdates, nil); status != http.StatusForbidden {
+		t.Errorf("no roles: status = %d, want 403", status)
 	}
 }

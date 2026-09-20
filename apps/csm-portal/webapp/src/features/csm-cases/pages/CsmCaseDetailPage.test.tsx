@@ -1525,6 +1525,37 @@ describe("CsmCaseDetailPage — role-based controls", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("the Time tracking tab needs support engineer, admin or the time-card approver role", () => {
+    for (const role of ["viewer", "escalator", "attachment_downloader"]) {
+      currentUserRoles.value = [role];
+      const { unmount } = renderPage();
+      expect(screen.queryByRole("tab", { name: /time tracking/i })).not.toBeInTheDocument();
+      unmount();
+    }
+    for (const role of ["support_engineer", "admin", "timecard_approver"]) {
+      currentUserRoles.value = [role];
+      const { unmount } = renderPage();
+      expect(screen.getByRole("tab", { name: /time tracking/i })).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("a ?tab=time deep link falls back to Activities for a user without time-card access", () => {
+    currentUserRoles.value = ["viewer"];
+    renderPageAt("/cases/case-1?tab=time");
+    expect(screen.queryByRole("tab", { name: /time tracking/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /activities/i })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("a ?tab=time deep link stays on Time tracking for a user with time-card access", () => {
+    for (const role of ["support_engineer", "timecard_approver"]) {
+      currentUserRoles.value = [role];
+      const { unmount } = renderPageAt("/cases/case-1?tab=time");
+      expect(screen.getByRole("tab", { name: /time tracking/i })).toHaveAttribute("aria-selected", "true");
+      unmount();
+    }
+  });
+
   it("a user with no roles sees no controls", () => {
     currentUserRoles.value = [];
     renderPage();

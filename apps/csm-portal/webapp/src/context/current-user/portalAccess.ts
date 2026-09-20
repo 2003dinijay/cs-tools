@@ -41,6 +41,12 @@ export interface PortalAccess {
    * view-oriented roles never saw one: only full-access roles do here.
    */
   canUseOperations: boolean;
+  /**
+   * The Time Cards and Updates sections, and every time-card and update-level
+   * call behind them. Full-access roles have it, and so does the time-card
+   * approver, so approving does not require being a support engineer.
+   */
+  canUseTimeCardsAndUpdates: boolean;
   /** Every other state-changing action (create/update cases, tasks, ...). */
   canWrite: boolean;
 }
@@ -64,6 +70,7 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     canEscalate: full || has(PORTAL_ROLE.escalator),
     canDownloadAttachment: full || has(PORTAL_ROLE.attachmentDownloader),
     canUseOperations: full,
+    canUseTimeCardsAndUpdates: full || has(PORTAL_ROLE.timecardApprover),
     canWrite: full,
   };
 }

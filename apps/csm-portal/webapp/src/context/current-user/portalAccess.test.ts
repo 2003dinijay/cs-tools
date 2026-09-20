@@ -21,6 +21,7 @@ const NONE = {
   canEscalate: false,
   canDownloadAttachment: false,
   canUseOperations: false,
+  canUseTimeCardsAndUpdates: false,
   canWrite: false,
 };
 
@@ -48,9 +49,17 @@ describe("getPortalAccess", () => {
   });
 
   it("the feature roles are view-only for these controls", () => {
-    for (const role of ["usage_metrics_viewer", "timecard_approver", "dashboard_designer"]) {
+    for (const role of ["usage_metrics_viewer", "dashboard_designer"]) {
       expect(getPortalAccess([role])).toEqual({ ...NONE, hasAnyRole: true });
     }
+  });
+
+  it("the time-card approver also gets Time cards and Updates, and nothing else", () => {
+    expect(getPortalAccess(["timecard_approver"])).toEqual({
+      ...NONE,
+      hasAnyRole: true,
+      canUseTimeCardsAndUpdates: true,
+    });
   });
 
   it("support engineer and admin can do everything", () => {
@@ -59,10 +68,27 @@ describe("getPortalAccess", () => {
       canEscalate: true,
       canDownloadAttachment: true,
       canUseOperations: true,
+      canUseTimeCardsAndUpdates: true,
       canWrite: true,
     };
     expect(getPortalAccess(["support_engineer"])).toEqual(all);
     expect(getPortalAccess(["admin"])).toEqual(all);
+  });
+
+  it("only support engineer, admin and the time-card approver get Time cards and Updates", () => {
+    for (const role of [
+      "viewer",
+      "escalator",
+      "attachment_downloader",
+      "usage_metrics_viewer",
+      "dashboard_designer",
+    ]) {
+      expect(getPortalAccess([role]).canUseTimeCardsAndUpdates).toBe(false);
+    }
+    expect(getPortalAccess(["viewer", "escalator"]).canUseTimeCardsAndUpdates).toBe(false);
+    expect(getPortalAccess(["viewer", "timecard_approver"]).canUseTimeCardsAndUpdates).toBe(true);
+    expect(getPortalAccess(["support_engineer"]).canUseTimeCardsAndUpdates).toBe(true);
+    expect(getPortalAccess(["admin"]).canUseTimeCardsAndUpdates).toBe(true);
   });
 
   it("only full-access roles get the Operations section", () => {

@@ -367,7 +367,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const { user: currentUser } = useCurrentUser();
   // What this user's roles let them do. UX only — the backend 403s the same
   // actions regardless, so hiding a control here is never the enforcement.
-  const { canEscalate, canDownloadAttachment, canWrite } = usePortalAccess();
+  const { canEscalate, canDownloadAttachment, canWrite, canUseTimeCardsAndUpdates } =
+    usePortalAccess();
   const routedCaseId = useNormalizedIdParam("caseId");
   const routedNavigate = useNavTransition();
   const routedLocation = useLocation();
@@ -567,8 +568,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const { data: caseTasks } = useSearchCaseTasks(
     isAnnouncement ? undefined : caseId,
   );
+  // The backend only serves time cards to roles that can use them, so the query
+  // is skipped (undefined id disables it) rather than left to 403.
   const { data: caseTimeCards } = useCaseTimeCards(
-    isAnnouncement ? undefined : caseId,
+    isAnnouncement || !canUseTimeCardsAndUpdates ? undefined : caseId,
   );
   const { data: linkedIncidents } = useSearchLinkedIncidents(
     isAnnouncement ? undefined : caseId,
@@ -825,19 +828,24 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // through the router (`useQueryParamTabs`), and a router write during
   // render risks updating the Router's state while this component is still
   // rendering — so it's an effect instead.
+  //
+  // The Time tracking tab gets the same treatment for a user without time-card
+  // access: its tab and panel are hidden, but a `?tab=time` deep link would
+  // otherwise leave nothing selected.
   useEffect(() => {
     if (
-      isAnnouncement &&
-      (activeTab === "related" ||
-        activeTab === "watchers" ||
-        activeTab === "sla" ||
-        activeTab === "time" ||
-        activeTab === "call-requests" ||
-        activeTab === "tasks")
+      (isAnnouncement &&
+        (activeTab === "related" ||
+          activeTab === "watchers" ||
+          activeTab === "sla" ||
+          activeTab === "time" ||
+          activeTab === "call-requests" ||
+          activeTab === "tasks")) ||
+      (activeTab === "time" && !canUseTimeCardsAndUpdates)
     ) {
       setActiveTab("activities");
     }
-  }, [isAnnouncement, activeTab, setActiveTab]);
+  }, [isAnnouncement, activeTab, setActiveTab, canUseTimeCardsAndUpdates]);
 
   // Twitter-style permalinks: when the URL has a fragment matching an entry id,
   // jump to the Activities tab and hand off to `scrollToFragmentWithRetry`,
@@ -2429,6 +2437,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           {TAB_DEFS.filter(
             (t) =>
               !t.hidden &&
+              (t.id !== "time" || canUseTimeCardsAndUpdates) &&
               (!isAnnouncement ||
                 (t.id !== "related" &&
                   t.id !== "watchers" &&
@@ -2943,12 +2952,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
         </Box>
       )}
 
-      {activeTab === "time" && (
+      {activeTab === "time" && canUseTimeCardsAndUpdates && (
         <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: "1fr" }}>
           <CaseTimeCardsPanel
             caseId={c.id}
-            onLogTime={canWrite ? () => setLogTimeOpen(true) : undefined}
-            onEditTimeCard={canWrite ? setEditTimeCard : undefined}
+            onLogTime={() => setLogTimeOpen(true)}
+            onEditTimeCard={setEditTimeCard}
           />
         </Box>
       )}

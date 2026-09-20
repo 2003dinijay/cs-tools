@@ -16,6 +16,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { navNodeById } from "@config/csmNavItems";
 import {
+  enabledNavChildren,
   featureState,
   featureStateForPath,
   firstEnabledDestination,
@@ -39,10 +40,12 @@ describe("feature visibility by portal access", () => {
     expect(visibleNavSections(supportEngineer).map((s) => s.id)).toContain("operations");
   });
 
-  it("hides Operations from a view-only role, and keeps the other sections", () => {
+  it("hides Operations, Updates and Time cards from a view-only role, and keeps the other sections", () => {
     const ids = visibleNavSections(viewer).map((s) => s.id);
     expect(ids).not.toContain("operations");
-    expect(ids.length).toBe(visibleNavSections().length - 1);
+    expect(ids).not.toContain("updates");
+    expect(ids).not.toContain("time-cards");
+    expect(ids.length).toBe(visibleNavSections().length - 3);
   });
 
   it("hides every Operations tab and route along with the section", () => {
@@ -68,5 +71,51 @@ describe("feature visibility by portal access", () => {
       expect(featureState("operations", getPortalAccess([role]))).toBe("hidden");
     }
     expect(featureState("operations", getPortalAccess(["admin"]))).toBe("enabled");
+  });
+
+  it("hides Updates and Time cards from roles without time-card access, and shows them otherwise", () => {
+    const ids = (a: ReturnType<typeof getPortalAccess>) => visibleNavSections(a).map((s) => s.id);
+    for (const role of ["viewer", "escalator", "attachment_downloader", "usage_metrics_viewer", "dashboard_designer"]) {
+      const access = getPortalAccess([role]);
+      expect(ids(access)).not.toContain("updates");
+      expect(ids(access)).not.toContain("time-cards");
+      expect(featureStateForPath("/time-cards", access)).toBe("hidden");
+      expect(featureStateForPath("/updates", access)).toBe("hidden");
+    }
+    for (const role of ["timecard_approver", "support_engineer", "admin"]) {
+      const access = getPortalAccess([role]);
+      expect(ids(access)).toContain("updates");
+      expect(ids(access)).toContain("time-cards");
+      expect(featureStateForPath("/time-cards", access)).toBe("enabled");
+    }
+  });
+
+  it("a time-card approver sees Time cards and Updates but not Operations", () => {
+    const access = getPortalAccess(["timecard_approver"]);
+    const ids = visibleNavSections(access).map((s) => s.id);
+    expect(ids).toContain("time-cards");
+    expect(ids).not.toContain("operations");
+  });
+
+  it("Help topics follow the page they document", () => {
+    const help = navNodeById("help");
+    expect(help).toBeDefined();
+    const topics = (a?: ReturnType<typeof getPortalAccess>) =>
+      enabledNavChildren(help!, a).map((t) => t.id);
+
+    expect(topics()).toEqual(expect.arrayContaining(["help.operations", "help.updates", "help.time-cards"]));
+    const viewerTopics = topics(getPortalAccess(["viewer"]));
+    for (const id of ["help.operations", "help.updates", "help.time-cards"]) {
+      expect(viewerTopics).not.toContain(id);
+    }
+    expect(viewerTopics).toContain("help.overview");
+    expect(viewerTopics).toContain("help.support");
+
+    const approverTopics = topics(getPortalAccess(["timecard_approver"]));
+    expect(approverTopics).toEqual(expect.arrayContaining(["help.updates", "help.time-cards"]));
+    expect(approverTopics).not.toContain("help.operations");
+    expect(topics(getPortalAccess(["support_engineer"]))).toEqual(
+      expect.arrayContaining(["help.operations", "help.updates", "help.time-cards"]),
+    );
   });
 });
