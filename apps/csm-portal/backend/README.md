@@ -238,6 +238,59 @@ than organisation-specific. It drives both the `roleIds` filter validation and t
 | `AUTH_AUDIENCE` | Comma-separated accepted `aud` values; token passes if any listed value is present in its `aud` claim |
 | `AUTH_TOKEN_VALIDATOR_ENABLED` | Set to `false` for local development to skip signature verification (default `true`) |
 
+### Access control
+
+A valid token proves who the caller is; the **roles on the token** decide what they may do. The
+`roles` claim of the validated `x-jwt-assertion` is checked against the role names configured for
+each role — no upstream call is made. Every route is registered in `cmd/server/main.go` through
+`route(pattern, permission, handler)`, which takes the permission as a required argument, so a new
+route cannot be added without choosing one.
+
+Each portal role's token role names are configuration. The variable holds a comma-separated list; holding **any
+one** of the listed roles grants the role. Unset (or empty) uses the default shown, so a
+zero-config deployment expects the documented `app-csm-*-role` names. Matching is exact and
+case-sensitive.
+
+| Variable | Default token role | Grants |
+|---|---|---|
+| `AUTH_VIEWER_ROLES` | `app-csm-viewer-role` | view |
+| `AUTH_COMMENTER_ROLES` | `app-csm-commenter-role` | view, comment |
+| `AUTH_ESCALATOR_ROLES` | `app-csm-escalator-role` | view, escalate |
+| `AUTH_ATTACHMENT_DOWNLOADER_ROLES` | `app-csm-attachment-downloader-role` | view, download_attachment |
+| `AUTH_SUPPORT_ENGINEER_ROLES` | `app-csm-support-engineer-role` | view, view_operations, comment, escalate, download_attachment, write |
+| `AUTH_ADMIN_ROLES` | `app-csm-admin-role` | everything |
+| `AUTH_USAGE_METRICS_VIEWER_ROLES` | `app-csm-usage-metrics-viewer-role` | view |
+| `AUTH_TIMECARD_APPROVER_ROLES` | `app-csm-timecard-approver-role` | view |
+| `AUTH_DASHBOARD_DESIGNER_ROLES` | `app-csm-dashboard-designer-role` | view |
+
+```bash
+# Several token roles can grant one portal role; any one is enough.
+AUTH_COMMENTER_ROLES=corp-support-notes,corp-interns
+```
+
+| Permission | Routes |
+|---|---|
+| authenticated | `GET`/`PATCH /users/me` — any valid token, no role needed, so a user holding no portal role can still load their profile and be shown a "no access" screen |
+| `view` | every other `GET`, `*/search` and `*/aggregate` |
+| `view_operations` | the same reads under `/incidents`, `/change-requests`, `/problems`, `/incident-tasks`, `/outages`, `/alerts` and `/smart-alerts` — support engineer and admin only, so a view-only role sees cases and customers but not Operations |
+| `comment` | `POST /cases/{id}/comments` |
+| `escalate` | `POST /cases/{id}/escalations` |
+| `download_attachment` | `GET /attachments/{id}/content`, `POST /attachments/{id}/share` |
+| `write` | every other `POST`/`PATCH`/`DELETE`, including incident and change-request comments |
+
+A caller whose token holds none of the required roles gets `403`. Comment, escalation and
+attachment-download are separate from `support_engineer` so other staff can be granted just that one
+ability. Posting a public case comment still additionally requires being the case's assigned
+engineer (see `CreateCaseComment`); the role is necessary, not sufficient.
+
+`GET /users/me` returns `roles` — which portal roles the caller holds, as stable keys (`viewer`,
+`commenter`, `escalator`, `attachment_downloader`, `support_engineer`, `usage_metrics_viewer`,
+`timecard_approver`, `dashboard_designer`, `admin`). A caller can hold several; it is `[]` for a caller
+holding no portal role. It comes from the same guard that authorises the routes, so what the frontend
+is told and what the backend enforces cannot disagree. This is the portal roles only: the entity
+service's own role data is no longer returned. The frontend decides what to show or hide from these
+roles; the backend's `403` is the real gate.
+
 ### Server
 
 | Variable | Description |

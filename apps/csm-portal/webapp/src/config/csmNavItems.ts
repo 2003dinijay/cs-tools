@@ -38,6 +38,7 @@ import {
   UsersRound,
 } from "@wso2/oxygen-ui-icons-react";
 import type { ComponentType } from "react";
+import type { PortalAccess } from "@context/current-user/portalAccess";
 
 /**
  * One entry in the navigation tree: either a top-level sidebar section or one
@@ -56,6 +57,12 @@ export interface CsmNavNode {
   label: string;
   /** Where selecting this node navigates. May carry a `?tab=` query. */
   href: string;
+  /**
+   * The {@link PortalAccess} capability a user needs to see this node; without
+   * it the node is hidden for that user (nav entry and route), and so is
+   * everything under it. Per user, unlike the per-deployment feature flags.
+   */
+  requires?: keyof PortalAccess;
   /**
    * For sections whose tab strip lives in a query parameter rather than in
    * child routes (Operations, Security Center): the `?tab=` value that selects
@@ -113,6 +120,7 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     id: "operations",
     label: "Operations",
     href: "/operations",
+    requires: "canUseOperations",
     icon: Cog,
     children: [
       {

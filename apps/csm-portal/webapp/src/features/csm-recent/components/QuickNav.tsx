@@ -31,6 +31,7 @@ import { useSearchParams } from "react-router";
 import { useAsgardeo } from "@asgardeo/react";
 
 import { navigableNavNodes } from "@config/featureFlags";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import { useDebouncedValue } from "@hooks/useDebouncedValue";
 import {
   useRecentViews,
@@ -134,6 +135,7 @@ const isMac =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 export default function QuickNav(): JSX.Element | null {
+  const access = usePortalAccess();
   const { isSignedIn } = useAsgardeo();
   const navigate = useNavTransition();
   const recents = useRecentViews();
@@ -265,16 +267,19 @@ export default function QuickNav(): JSX.Element | null {
   // conversations are comparatively rare hits, so — unlike Cases — these
   // don't get a dedicated skeleton: their sections simply appear once data
   // lands, same as Pinned/Recent/Pages.
+  // Incidents, change requests and problems are Operations data the backend
+  // only serves to support engineers and admins, so a view-only user's search
+  // skips them rather than surfacing 403s.
   const incidentSearch = useQuickIncidentSearch(
-    open && incidentSearchShouldRun ? debouncedQuery : "",
+    open && access.canUseOperations && incidentSearchShouldRun ? debouncedQuery : "",
     { forceFreeText },
   );
   const changeRequestSearch = useQuickChangeRequestSearch(
-    open && changeRequestSearchShouldRun ? debouncedQuery : "",
+    open && access.canUseOperations && changeRequestSearchShouldRun ? debouncedQuery : "",
     { forceFreeText },
   );
   const problemSearch = useQuickProblemSearch(
-    open && problemSearchShouldRun ? debouncedQuery : "",
+    open && access.canUseOperations && problemSearchShouldRun ? debouncedQuery : "",
     { forceFreeText },
   );
   // Global (unscoped) conversation search — no `projectIds` is passed (see
@@ -559,7 +564,7 @@ export default function QuickNav(): JSX.Element | null {
     // offered too (matching on either the tab or its section name), so
     // "incidents" jumps straight into the tab rather than to Operations.
     const pages: Result[] = q
-      ? navigableNavNodes()
+      ? navigableNavNodes(access)
           .filter((i) => match(i.label, i.sublabel))
           .map((i) => ({
             key: `page-${i.id}`,
@@ -590,6 +595,7 @@ export default function QuickNav(): JSX.Element | null {
     changeRequestSearch.data,
     problemSearch.data,
     conversationSearch.data,
+    access,
   ]);
 
   // Clamp at render so a stale index from shrinking results never points past

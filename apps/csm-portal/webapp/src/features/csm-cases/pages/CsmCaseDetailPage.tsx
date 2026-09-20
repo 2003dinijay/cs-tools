@@ -50,6 +50,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "rea
 import { useLocation } from "react-router";
 import { useGetCsmCaseDetail } from "@features/csm-cases/api/useGetCsmCaseDetail";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import {
   usePatchCsmCase,
   usePatchCsmCaseById,
@@ -364,6 +365,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // The signed-in engineer's platform UUID — the id the watch list's write
   // side is keyed by — so the Watchers tab can self-subscribe/unsubscribe.
   const { user: currentUser } = useCurrentUser();
+  // What this user's roles let them do. UX only — the backend 403s the same
+  // actions regardless, so hiding a control here is never the enforcement.
+  const { canComment, canEscalate, canDownloadAttachment, canWrite } = usePortalAccess();
   const routedCaseId = useNormalizedIdParam("caseId");
   const routedNavigate = useNavTransition();
   const routedLocation = useLocation();
@@ -2362,7 +2366,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           </Box>
           <Typography variant="h5">{c.subject}</Typography>
         </Box>
-        {!isAnnouncement && (
+        {!isAnnouncement && canWrite && (
           <Box
             className="csm-print-hide"
             sx={{ flexShrink: 0, alignSelf: { xs: "stretch", md: "flex-start" } }}
@@ -2486,7 +2490,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               comment types there), despite the hidden CaseActionBar above —
               that hides case-lifecycle patch actions, which don't apply to an
               announcement, not the ability to reply to one. */}
-          {composerOpen ? (
+          {!canComment ? null : composerOpen ? (
             <Card
               className="csm-print-hide"
               sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}
@@ -2667,7 +2671,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   attachments={attachmentList}
                   feedback={caseFeedback ?? []}
                   callRequests={callRequests ?? []}
-                  onDownloadAttachment={onDownloadAttachment}
+                  onDownloadAttachment={canDownloadAttachment ? onDownloadAttachment : undefined}
                   preview={{
                     onGetPreviewContent: getAttachmentPreviewContent,
                     previewTarget,
@@ -2772,11 +2776,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
               // Visibility is level-eligibility only -- isClosed disables
               // via actionDisabledReason below instead of hiding the button,
               // so its tooltip still has something to anchor to.
-              canEscalateFurther(c.escalationLevel)
+              canEscalate && canEscalateFurther(c.escalationLevel)
                 ? () => setEscalationDialogAction("ESCALATE")
                 : undefined
             }
             onDeescalate={
+              canEscalate &&
               canDeescalate(c.escalationLevel) &&
               callerIsNotifiedOnCurrentEscalation
                 ? () => setEscalationDialogAction("DEESCALATE")
@@ -2924,8 +2929,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 : null
             }
             onUpload={isClosed ? undefined : onUploadAttachment}
-            onDownloadAll={onDownloadAllAttachments}
-            onDownload={onDownloadAttachment}
+            onDownloadAll={canDownloadAttachment ? onDownloadAllAttachments : undefined}
+            onDownload={canDownloadAttachment ? onDownloadAttachment : undefined}
             onDelete={setPendingDelete}
             deletingId={deleteAttachment.isPending ? pendingDelete?.id : null}
             preview={{
