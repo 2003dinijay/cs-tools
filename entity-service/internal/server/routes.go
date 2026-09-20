@@ -285,10 +285,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc)
 
-	var callRequestHandler *handler.CallRequestHandler
+	// customer_call (migration 000072) backs call requests on the Postgres
+	// data source, so these routes are registered for both data sources.
+	callRequestRepo := repository.NewCallRequestRepository(db)
+	var activeCallRequestSvc service.CallRequestService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		callRequestHandler = handler.NewCallRequestHandler(service.NewServiceNowCallRequestService(serviceNowIntegrationServiceClient))
+		activeCallRequestSvc = service.NewServiceNowCallRequestService(serviceNowIntegrationServiceClient)
+	} else {
+		activeCallRequestSvc = service.NewCallRequestService(callRequestRepo, userRepo)
 	}
+	callRequestHandler := handler.NewCallRequestHandler(activeCallRequestSvc)
 
 	var caseGithubIssueHandler *handler.CaseGithubIssueHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -328,10 +334,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	timeCardHandler := handler.NewTimeCardHandler(activeTimeCardSvc)
 
-	var catalogHandler *handler.CatalogHandler
+	// sr_category/catalog_item/catalog_item_category/catalog_variable/
+	// sr_category_routing_rule (migrations 000067-000071) back the service
+	// request catalog on the Postgres data source, so these routes are
+	// registered for both data sources.
+	catalogRepo := repository.NewCatalogRepository(db)
+	var activeCatalogSvc service.CatalogService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		catalogHandler = handler.NewCatalogHandler(service.NewServiceNowCatalogService(serviceNowIntegrationServiceClient))
+		activeCatalogSvc = service.NewServiceNowCatalogService(serviceNowIntegrationServiceClient)
+	} else {
+		activeCatalogSvc = service.NewCatalogService(catalogRepo)
 	}
+	catalogHandler := handler.NewCatalogHandler(activeCatalogSvc)
 
 	var feedbackHandler *handler.FeedbackHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -625,12 +639,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	//nolint:staticcheck // SA1019: intentional one-release compatibility route; remove with the handler.
 	mux.HandleFunc("GET /tags/search", caseHandler.SearchTagsQuery)
 
-	if callRequestHandler != nil {
-		mux.HandleFunc("POST /call-requests", callRequestHandler.CreateCallRequest)
-		mux.HandleFunc("POST /call-requests/search", callRequestHandler.SearchCallRequests)
-		mux.HandleFunc("POST /call-requests/search-all", callRequestHandler.SearchAllCallRequests)
-		mux.HandleFunc("PATCH /call-requests/{id}", callRequestHandler.PatchCallRequest)
-	}
+	mux.HandleFunc("POST /call-requests", callRequestHandler.CreateCallRequest)
+	mux.HandleFunc("POST /call-requests/search", callRequestHandler.SearchCallRequests)
+	mux.HandleFunc("POST /call-requests/search-all", callRequestHandler.SearchAllCallRequests)
+	mux.HandleFunc("PATCH /call-requests/{id}", callRequestHandler.PatchCallRequest)
 
 	if caseGithubIssueHandler != nil {
 		mux.HandleFunc("POST /cases/{id}/github-issues", caseGithubIssueHandler.CreateCaseGithubIssue)
@@ -653,10 +665,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("POST /cases/time-cards/search", timeCardHandler.SearchCaseTimeCards)
 	mux.HandleFunc("DELETE /time-cards/{id}", timeCardHandler.DeleteTimeCard)
 
-	if catalogHandler != nil {
-		mux.HandleFunc("POST /catalogs/search", catalogHandler.SearchCatalogs)
-		mux.HandleFunc("GET /catalogs/{catalogId}/items/{catalogItemId}/variables", catalogHandler.GetCatalogItemVariables)
-	}
+	mux.HandleFunc("POST /catalogs/search", catalogHandler.SearchCatalogs)
+	mux.HandleFunc("GET /catalogs/{catalogId}/items/{catalogItemId}/variables", catalogHandler.GetCatalogItemVariables)
 
 	mux.HandleFunc("POST /products/vulnerabilities/search", productVulnerabilityHandler.SearchProductVulnerabilities)
 	mux.HandleFunc("GET /products/vulnerabilities/{id}", productVulnerabilityHandler.GetProductVulnerability)

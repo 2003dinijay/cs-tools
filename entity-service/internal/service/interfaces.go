@@ -516,8 +516,11 @@ type CaseEscalationService interface {
 	CreateCaseEscalation(ctx context.Context, caseID string, reason *string, action *domain.EscalationAction) (domain.CreatedEscalation, error)
 }
 
-// CatalogService defines the operations available on service catalogs.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// CatalogService defines the operations available on service catalogs. The
+// Postgres-backed implementation (catalogService) reads sr_category,
+// catalog_item, catalog_item_category, catalog_variable and
+// sr_category_routing_rule (migrations 000067-000071) -- see catalog_repo.go
+// for how a "catalog" and item availability are defined there.
 type CatalogService interface {
 	// SearchCatalogs returns catalogs available for the given deployed product.
 	// DeployedProductID is required. A ValidationError is returned for missing input.
@@ -541,8 +544,10 @@ type FeedbackService interface {
 	AggregateFeedback(ctx context.Context, req domain.AggregateFeedbackRequest) (domain.AggregateFeedbackResponse, error)
 }
 
-// CallRequestService defines the operations available on the call_requests entity.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// CallRequestService defines the operations available on call requests. The
+// Postgres-backed implementation (callRequestService) reads and writes
+// customer_call (migration 000072) -- see call_request_repo.go for the fields
+// with no backing column.
 type CallRequestService interface {
 	// CreateCallRequest creates a new call request for the given case.
 	// A ValidationError is returned for invalid input.

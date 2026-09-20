@@ -1778,13 +1778,15 @@ backs both endpoints:
 **Left empty with a TODO comment, not fabricated** (per this codebase's
 existing convention of flagging genuine data-source gaps rather than
 inventing data): `SystemMetadataResponse.TimeZones`/`FeedbackEmojis` (static
-ServiceNow-side config, not project/case data); `ProjectMetadataResponse.
-CallRequestStates` (the whole call-request feature has no Postgres table at
-all); `SeverityBasedAllocationTime` (no SLA-allocation-time table exists);
+ServiceNow-side config, not project/case data); `SeverityBasedAllocationTime`
+(no SLA-allocation-time table exists);
 `ProjectFeatures.AcceptedSeverityValues` and every `Has*Access`/product-
 category field (no per-project feature-entitlement or severity-restriction
 columns exist anywhere in the Postgres schema -- checked directly against
-the `project` table's full column list, not just assumed).
+the `project` table's full column list, not just assumed). (`CallRequestStates`
+used to be on this list; `customer_call` -- migration 000072 -- has since
+landed, so it's now read live from `customer_call_state_enum` like every other
+choice list. See "Call requests and the service-request catalog" below.)
 
 **`GlobalService.GlobalSearch` (`POST /search`) still has no Postgres
 implementation** -- cross-entity project+case search is a materially larger
@@ -1924,6 +1926,104 @@ call requests, catalogs, instances, etc.) still does no per-caller scoping --
 the auth middleware validates tokens on every route, but only the five
 operations above actually call `AccessService`. Extending it further is
 follow-up work, not done in this pass.
+
+## Call requests and the service-request catalog (migrations 000067-000072)
+
+Six tables landed together (`customer_call`, `sr_category`, `catalog_item`,
+`catalog_item_category`, `catalog_variable`, `sr_category_routing_rule`) and
+each backs a previously ServiceNow-only feature. Both feature groups' routes
+are now registered for **both** data sources (`callRequestRepo`/`catalogRepo`
+in `routes.go`, same wiring shape as every other dual-source entity).
+
+**Verification status**: the six tables exist in staging with exactly the
+migrations' columns/types/enum labels, but are all **empty (0 rows)** -- so
+the assumptions marked ASSUMPTION below could not be checked against real
+synced rows. What *was* verified against staging: every read path executes
+without error on real data (real cases, projects, deployed products), both
+write statements `PREPARE` cleanly against the real schema (no write was made),
+and the catalog matching logic was run with the real repository code on real
+deployed products using session-local `TEMP` tables shadowing the empty ones.
+The rest (create/update semantics, edge cases) was proven on a throwaway local
+Postgres built from all 72 migrations.
+
+**A data finding that changed the design**: `product.unit` is NULL for
+**every** product in staging (17/17) and 214 deployed products have no
+`product_id`, so a strict `rule.product_unit = product.unit` could never match
+any rule that names a unit -- the catalog would always be empty. Unit matching
+is therefore fail-open: it is only compared when both sides are known. Classification
+(`deployed_product.product_category`, populated for ~88% of rows) stays strict:
+a deployed product with no category only matches rules with no classification
+requirement. TODO: make unit strict again once `product.unit` is populated.
+
+### Call requests (`customer_call`) -- `call_request_repo.go`/`call_request_service.go`
+
+**Per-caller scoping is not enforced here yet.** Every route's tokens are now
+validated (see "Token validation and caller-scoped access" above), but call
+requests aren't one of the operations `AccessService` is wired into (see that
+section's "Not yet wired" list) -- a validated caller can read/write any
+call request regardless of project access. The `x-user-id-token` is read
+only to attribute writes (`created_by`/`updated_by`, `opened_by_id`), not to
+authorize them. Extending `AccessService` here is the same follow-up work
+called out there, not done in this pass.
+
+All four `CallRequestService` methods are implemented. `state` maps to
+`customer_call_state_enum` by upper/lower-casing (all eight labels match
+`domain.CallRequestStateType` exactly -- `CANCELED` both sides, no spelling
+drift; `TestCallRequestStatesMatchMigration` diffs them against the real
+migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
+
+- `case` ref <- `work_item` (LEFT JOIN: `customer_call.work_item_id` is
+  nullable); `assignee` <- the `"user"` display name (falling back to email);
+  `notes` <- `all_notes`; `meetingLink` <- `call_link`;
+  `scheduleTime` <- `scheduled_on`; `durationMin` <- `duration` (INTERVAL).
+- **ASSUMPTION**: `preferredTimes` <- `final_times` (JSONB), read only if it is
+  a JSON array of strings, otherwise `[]` -- the column name doesn't say which
+  side's times it holds and its real contents weren't seen.
+- **ASSUMPTION**: `actualDurationMin` <- `actual_call_duration` (free VARCHAR),
+  parsed as a whole number of minutes (what this service writes); any other
+  format reads as `nil`.
+- **ASSUMPTION**: create -> state `pending_on_wso2` (the customer raised it,
+  WSO2 must schedule). `PATCH`'s `assignee` is interpreted as an **email**
+  (resolved via `GetUserByEmail`).
+- `callRequestStates` in project metadata uses the lowercase domain ids
+  (`pending_on_wso2`) with display labels -- the vocabulary these endpoints
+  accept -- unlike the other metadata choice lists, which still use the raw
+  UPPER_SNAKE enum labels (see the metadata section above; not yet aligned
+  with each list's own API vocabulary).
+- Search-all's `assignmentTeamIds` is rejected with a 400 rather than
+  ignored: nothing on this schema holds a case's assignment team
+  (`customer_call.assignment_group` was deliberately skipped in the
+  migration), and a silently-ignored filter would widen the result set.
+  `caseStates`/`excludeCaseStates` reuse `caseLikeStateColumn`/`caseLikeJoins`
+  so they work for every case-like type.
+- **Not done, deliberately (same "don't guess" rule as `CreateCase`)**:
+  `number` is left NULL on create (no default, no sequence, no confirmed
+  format -- returned as `""`); `cancellationReason` is **rejected with a 400**
+  rather than accepted-and-dropped (no column: `reason` is the request's own
+  reason -- note the customer portal passes it through, so cancelling *with* a
+  reason fails on this data source until a column exists); `closed_on`/`closed_by_id`
+  are never set (which states count as "closed" is unspecified); state
+  transitions aren't validated against the current state.
+
+### Service-request catalog -- `catalog_repo.go`/`catalog_service.go`
+
+- **ASSUMPTION**: a "catalog" is an `sr_category` row (it's the only
+  catalog-level entity with a UUID and a name; ServiceNow's `sc_catalog` level
+  was collapsed into the plain `sr_category.catalog` enum), its items linked
+  through `catalog_item_category`.
+- Availability for a deployed product: a `sr_category_routing_rule` matches when
+  `rule.product_unit = product.unit` and `rule.classification =
+  deployed_product.product_category` (same label sets but distinct enum types,
+  hence `::TEXT` casts). **ASSUMPTION**: a NULL on the rule side is a wildcard
+  ("any"). A NULL unit on the deployed-product side does not exclude a rule
+  (see the data finding above); a NULL classification only matches rules that
+  don't specify one. Only active categories with at least one available item are returned;
+  an unknown deployed product is a 404.
+- `GetCatalogItemVariables` 404s unless the item is linked to that catalog.
+  `catalog_variable` has no columns for `readOnly`/`hidden`/`maxLength`/
+  `referenceTable`/`validation`/`choices`, so those stay at their zero value
+  (TODO: choice-based variables render as free text until a choices table
+  exists). A NULL `is_active` counts as active.
 
 ## Adding a new entity
 

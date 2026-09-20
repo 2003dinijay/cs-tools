@@ -1233,7 +1233,9 @@ paths:
   /projects/{id}/metadata:
     get:
       summary: Get a project's reference metadata (choice lists, feature flags).
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: >
+        Postgres: choice lists are read live from the database enums; severityBasedAllocationTime
+        and the feature access flags have no Postgres source yet and come back empty/false.
       operationId: getProjectMetadata
       parameters:
         - name: id
@@ -3019,7 +3021,10 @@ paths:
 
   /call-requests:
     post:
-      summary: Create a call request (ServiceNow data source only).
+      summary: Create a call request.
+      description: >
+        Postgres: inserts a customer_call row in state pending_on_wso2. The call request's
+        number is not generated on this data source yet (returned as an empty string on read).
       operationId: createCallRequest
       requestBody:
         required: true
@@ -3046,6 +3051,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Case not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -3055,7 +3066,7 @@ paths:
 
   /call-requests/search:
     post:
-      summary: Search call requests (ServiceNow data source only).
+      summary: Search call requests of a case.
       operationId: searchCallRequests
       requestBody:
         required: true
@@ -3093,7 +3104,8 @@ paths:
     post:
       summary: Search call requests across all cases, filtered by assignee/state.
       description: >
-        Returns a paginated list of call requests (ServiceNow data source only). Call
+        Returns a paginated list of call requests. filters.assignmentTeamIds is supported by
+        the ServiceNow data source only (400 on Postgres). Call
         requests are inherently case-related; this endpoint provides independent search
         and filtering capabilities across cases, distinct from /call-requests/search
         which is scoped to a single case.
@@ -3132,13 +3144,14 @@ paths:
 
   /call-requests/{id}:
     patch:
-      summary: Update a call request (supported by the backing data source only).
+      summary: Update a call request.
       description: >
         The target state selects the behaviour: customer/agent state
         transitions, scheduling (with meetingDate, durationInMinutes,
         assignee), rejection or cancellation (with cancellationReason), or
         conclusion with post-call notes (notes, plan, attendees, actionItems,
-        actualDurationMin).
+        actualDurationMin). On the Postgres data source cancellationReason is
+        rejected with 400, because customer_call has no column to store it.
       operationId: updateCallRequest
       parameters:
         - name: id
@@ -3410,7 +3423,11 @@ paths:
 
   /catalogs/search:
     post:
-      summary: Search service catalogs by deployed product (ServiceNow data source only).
+      summary: Search service catalogs by deployed product.
+      description: >
+        Postgres: a catalog is an sr_category; its items are those made available for the
+        deployed product by sr_category_routing_rule (product unit + classification). A deployed
+        product whose unit is unknown (NULL) is not excluded by unit.
       operationId: searchCatalogs
       requestBody:
         required: true
@@ -3437,6 +3454,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Deployed product not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -3446,7 +3469,10 @@ paths:
 
   /catalogs/{catalogId}/items/{catalogItemId}/variables:
     get:
-      summary: Get variables (form fields) for a catalog item (ServiceNow data source only).
+      summary: Get variables (form fields) for a catalog item.
+      description: >
+        Postgres: readOnly, hidden, maxLength, referenceTable, validation and choices have no
+        backing column yet and come back at their zero value.
       operationId: getCatalogItemVariables
       parameters:
         - name: catalogId
@@ -5456,7 +5482,9 @@ paths:
   /metadata:
     get:
       summary: Get system-wide reference metadata (time zones, project types, feedback emojis).
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: >
+        Postgres: projectTypes come from project_type; timeZones and feedbackEmojies have no
+        Postgres source yet and come back empty.
       operationId: getSystemMetadata
       responses:
         "200":
@@ -5478,7 +5506,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
-          description: System metadata is only supported for the ServiceNow data source.
+          description: The ServiceNow metadata dependency is unavailable.
           content:
             application/json:
               schema:
