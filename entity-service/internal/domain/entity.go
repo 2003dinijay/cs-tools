@@ -6340,6 +6340,41 @@ type SearchEventPublishFailuresResponse struct {
 	HasMore  bool                  `json:"hasMore"`
 }
 
+// SNWritebackFailure is the durable record of one failed best-effort
+// ServiceNow mirror write under DATA_SOURCE=postgres-primary-sn-fallback
+// (see config.DataSourcePostgresPrimarySNFallback and
+// service.SNWritebackDispatcher). Postgres has already committed by the
+// time this is written — this table exists purely so an operator can see,
+// and manually replay, exactly what ServiceNow is missing before treating
+// it as a live rollback target. No retry logic reads this table today; it
+// is triage bookkeeping, the same role EventPublishFailure plays for Event
+// Hub.
+//
+// Like EventPublishFailure, this has no ServiceNow equivalent and is always
+// backed by Postgres regardless of DATA_SOURCE (see internal/db/postgres.go).
+type SNWritebackFailure struct {
+	ID         string          `json:"id"`
+	EntityType string          `json:"entityType"`
+	EntityID   string          `json:"entityId"`
+	Operation  string          `json:"operation"`
+	Payload    json.RawMessage `json:"payload"`
+	// Error is the writeFn-returned reason the ServiceNow mirror write
+	// failed (e.g. a timeout or a downstream error message) — for a human
+	// triaging this table, not machine-parsed by anything.
+	Error     string    `json:"error"`
+	CreatedOn time.Time `json:"createdOn"`
+}
+
+// CreateSNWritebackFailureRequest is the input to
+// SNWritebackFailureRepository.Create.
+type CreateSNWritebackFailureRequest struct {
+	EntityType string          `json:"entityType"`
+	EntityID   string          `json:"entityId"`
+	Operation  string          `json:"operation"`
+	Payload    json.RawMessage `json:"payload"`
+	Error      string          `json:"error"`
+}
+
 // SLAClock is the durable record of one SLA timer running against a case —
 // e.g. a "response" or "resolution" clock started when the case was created
 // (or last had its severity change reset it), due at a fixed point, with up

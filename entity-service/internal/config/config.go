@@ -34,6 +34,16 @@ const (
 	DataSourcePostgres DataSource = "postgres"
 	// DataSourceServiceNow uses the Choreo ServiceNow API.
 	DataSourceServiceNow DataSource = "servicenow"
+	// DataSourcePostgresPrimarySNFallback serves every read and write from
+	// PostgreSQL (authoritative, same as DataSourcePostgres) and additionally
+	// best-effort mirrors writes to ServiceNow afterward, so that ServiceNow
+	// stays a genuine rollback target rather than going silently stale ahead
+	// of the Postgres cutover. One-way (Postgres -> ServiceNow) and
+	// asynchronous: ServiceNow is never read from in this mode, never
+	// authoritative, and a failed mirror write is recorded (see
+	// SNWritebackFailureRepository) rather than retried or surfaced to the
+	// caller. Piloted on the account entity only — see routes.go.
+	DataSourcePostgresPrimarySNFallback DataSource = "postgres-primary-sn-fallback"
 )
 
 // Config holds all environment-driven settings for the service.
@@ -355,19 +365,19 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.DataSource {
-	case DataSourcePostgres, DataSourceServiceNow:
+	case DataSourcePostgres, DataSourceServiceNow, DataSourcePostgresPrimarySNFallback:
 		// valid
 	default:
-		return fmt.Errorf("invalid DATA_SOURCE %q: must be %q or %q", c.DataSource, DataSourcePostgres, DataSourceServiceNow)
+		return fmt.Errorf("invalid DATA_SOURCE %q: must be %q, %q, or %q", c.DataSource, DataSourcePostgres, DataSourceServiceNow, DataSourcePostgresPrimarySNFallback)
 	}
-	// Postgres credentials are required only for DATA_SOURCE=postgres.
-	// servicenow mode skips the pool (db.NewPoolIfNeeded) so a local
-	// customer-portal can start without a reachable database. Side tables
-	// that have no ServiceNow equivalent are registered only when a pool
-	// is available — see routes.go.
-	//
-	// DB_USER/DB_PASSWORD/DB_NAME are required only when DATA_SOURCE=postgres,
-	// which serves every entity read and write from this pool.
+	// Postgres credentials are required for DATA_SOURCE=postgres and
+	// DATA_SOURCE=postgres-primary-sn-fallback — both serve every entity read
+	// and write from the pool (the fallback mode's ServiceNow leg is a
+	// best-effort mirror on top, never a read source). servicenow mode skips
+	// the pool (db.NewPoolIfNeeded) so a local customer-portal can start
+	// without a reachable database. Side tables that have no ServiceNow
+	// equivalent are registered only when a pool is available — see
+	// routes.go.
 	//
 	// When DATA_SOURCE=servicenow they are OPTIONAL. Entity traffic goes to
 	// the SN integration service instead, and the two Postgres-only features
@@ -378,15 +388,16 @@ func (c *Config) Validate() error {
 	// with "DB_USER is required", which is what this branch exists to prevent.
 	dbSet := c.DBUser != "" || c.DBPassword != "" || c.DBName != ""
 	dbComplete := c.DBUser != "" && c.DBPassword != "" && c.DBName != ""
+	dbRequired := c.DataSource == DataSourcePostgres || c.DataSource == DataSourcePostgresPrimarySNFallback
 
-	if c.DataSource == DataSourcePostgres && !dbComplete {
+	if dbRequired && !dbComplete {
 		if c.DBUser == "" {
-			return fmt.Errorf("DB_USER is required when DATA_SOURCE=%s", DataSourcePostgres)
+			return fmt.Errorf("DB_USER is required when DATA_SOURCE=%s", c.DataSource)
 		}
 		if c.DBPassword == "" {
-			return fmt.Errorf("DB_PASSWORD is required when DATA_SOURCE=%s", DataSourcePostgres)
+			return fmt.Errorf("DB_PASSWORD is required when DATA_SOURCE=%s", c.DataSource)
 		}
-		return fmt.Errorf("DB_NAME is required when DATA_SOURCE=%s", DataSourcePostgres)
+		return fmt.Errorf("DB_NAME is required when DATA_SOURCE=%s", c.DataSource)
 	}
 
 	// A partial set is always a misconfiguration, in either mode — the same
@@ -396,18 +407,23 @@ func (c *Config) Validate() error {
 	if dbSet && !dbComplete {
 		return fmt.Errorf("DB_USER, DB_PASSWORD, and DB_NAME must be set together or not at all")
 	}
-	if c.DataSource == DataSourceServiceNow {
+	// ServiceNow integration service credentials are required for
+	// DATA_SOURCE=servicenow (reads go there) and also for
+	// DATA_SOURCE=postgres-primary-sn-fallback (the best-effort mirror write
+	// goes there, via the same client — see SNWritebackDispatcher).
+	snRequired := c.DataSource == DataSourceServiceNow || c.DataSource == DataSourcePostgresPrimarySNFallback
+	if snRequired {
 		if c.ServiceNowIntegrationServiceBaseURL == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_BASE_URL is required when DATA_SOURCE=servicenow")
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_BASE_URL is required when DATA_SOURCE=%s", c.DataSource)
 		}
 		if c.ServiceNowIntegrationServiceTokenURL == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL is required when DATA_SOURCE=servicenow")
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL is required when DATA_SOURCE=%s", c.DataSource)
 		}
 		if c.ServiceNowIntegrationServiceClientID == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID is required when DATA_SOURCE=servicenow")
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID is required when DATA_SOURCE=%s", c.DataSource)
 		}
 		if c.ServiceNowIntegrationServiceClientSecret == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET is required when DATA_SOURCE=servicenow")
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET is required when DATA_SOURCE=%s", c.DataSource)
 		}
 	}
 	// EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/EVENT_HUB_TOPIC are
