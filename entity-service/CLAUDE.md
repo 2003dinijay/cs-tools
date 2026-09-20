@@ -2037,6 +2037,32 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   (TODO: choice-based variables render as free text until a choices table
   exists). A NULL `is_active` counts as active.
 
+## Case search filters on the Postgres data source
+
+`caseRepo.SearchCases` implements `projectOnboardingStatus` (in/notIn) and
+`taskSLABusinessElapsedPercent` (gte/lte). The rest of the ServiceNow-shaped
+filters are still rejected with a 400 by `caseService.SearchCases` (`tag`,
+`escalationLevel`, `anyOf`, `product`, `projectType`, `creTeam`/`sreTeam`, ...)
+because dropping one would silently widen the result set.
+
+- **onboarding status**: matched against `project.onboarding_status` through the
+  existing LEFT JOIN. The wire vocabulary is ServiceNow's ("Not-Applicable",
+  "OnHold"), the enum's is `NOT_APPLICABLE`/`ON_HOLD`, so `onboardingStatusEnumLabels`
+  normalizes (case, `-`, `_`, space ignored) and rejects unknown values -- an
+  unknown value in a `notIn` would otherwise widen the result. A NULL status
+  (or no project) never matches `in` but does match `notIn`.
+- **SLA percent**: one `EXISTS` over `sla.business_elapsed_percentage`, so both
+  bounds apply to the *same* SLA row. Any SLA row counts regardless of `stage`
+  (the `domain.TaskSLAFilter` contract). Checked against staging: restricting to
+  in-progress SLAs changed a 1,652-case result to 1,634, so the choice barely
+  matters on real data.
+- **Data caveats (staging, when checked)**: 6,833 of 8,055 `CASE` work items
+  have a NULL `project_id` (mostly 2023-2024 cases; `deployment` doesn't carry
+  the project either), so project-based filters only ever see the remaining
+  ~15% -- a sync gap, not a query bug. The `work_item_tag` table from migration
+  000021 did not exist in staging (the `tag` table did), which is why `tag`
+  filtering is not implemented here and why add/remove-case-tag would fail there.
+
 ## Adding a new entity
 
 Follow these steps in order:

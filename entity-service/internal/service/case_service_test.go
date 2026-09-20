@@ -155,10 +155,10 @@ func (stubUserRepo) GetUserGroups(context.Context, string) ([]domain.UserGroupRe
 }
 
 // TestCaseService_SearchCases_RejectsUnsupportedPostgresFields proves the
-// Postgres-backed SearchCases path rejects each of the 9 filter fields
+// Postgres-backed SearchCases path rejects each of these filter fields
 // ParseCaseFieldFilters accepts but the Postgres repository has no query
 // support for (they dot-walk into SN-specific concepts with no Postgres
-// schema equivalent), rather than silently accepting the request and
+// query support yet), rather than silently accepting the request and
 // returning a broader-than-requested result set.
 func TestCaseService_SearchCases_RejectsUnsupportedPostgresFields(t *testing.T) {
 	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil, alwaysUnrestrictedAccess{})
@@ -172,7 +172,6 @@ func TestCaseService_SearchCases_RejectsUnsupportedPostgresFields(t *testing.T) 
 		{name: "tag notIn", filter: domain.CaseFieldFilter{Field: "tag", Op: "notIn", Values: []string{"beta"}}},
 		{name: "parentId", filter: domain.CaseFieldFilter{Field: "parentId", Op: "eq", Values: []string{"00000000-0000-0000-0000-000000000000"}}},
 		{name: "product", filter: domain.CaseFieldFilter{Field: "product", Op: "in", Values: []string{"API Manager"}}},
-		{name: "projectOnboardingStatus", filter: domain.CaseFieldFilter{Field: "projectOnboardingStatus", Op: "in", Values: []string{"Completed"}}},
 		{name: "projectType", filter: domain.CaseFieldFilter{Field: "projectType", Op: "in", Values: []string{"Subscription"}}},
 		{name: "creTeam", filter: domain.CaseFieldFilter{Field: "creTeam", Op: "in", Values: []string{"00000000-0000-0000-0000-000000000000"}}},
 		{name: "sreTeam", filter: domain.CaseFieldFilter{Field: "sreTeam", Op: "in", Values: []string{"00000000-0000-0000-0000-000000000000"}}},
@@ -197,7 +196,7 @@ func TestCaseService_SearchCases_RejectsUnsupportedPostgresFields(t *testing.T) 
 }
 
 // TestCaseService_SearchCases_SupportedFieldsStillReachRepository proves the
-// 11 fields the Postgres repository does support are not caught by the new
+// fields the Postgres repository does support are not caught by the
 // unsupported-field rejection: each reaches repo.SearchCases unchanged.
 func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.T) {
 	uuid1 := "00000000-0000-0000-0000-000000000001"
@@ -217,6 +216,10 @@ func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.
 		{name: "workState", filter: domain.CaseFieldFilter{Field: "workState", Op: "in", Values: []string{"ongoing"}}},
 		{name: "assignedUserId in", filter: domain.CaseFieldFilter{Field: "assignedUserId", Op: "in", Values: []string{uuid1}}},
 		{name: "createdOn gte", filter: domain.CaseFieldFilter{Field: "createdOn", Op: "gte", Values: []string{"2026-01-01"}}},
+		{name: "projectOnboardingStatus in", filter: domain.CaseFieldFilter{Field: "projectOnboardingStatus", Op: "in", Values: []string{"Completed"}}},
+		{name: "projectOnboardingStatus notIn", filter: domain.CaseFieldFilter{Field: "projectOnboardingStatus", Op: "notIn", Values: []string{"In-Progress"}}},
+		{name: "taskSLABusinessElapsedPercent gte", filter: domain.CaseFieldFilter{Field: "taskSLABusinessElapsedPercent", Op: "gte", Values: []string{"80"}}},
+		{name: "taskSLABusinessElapsedPercent lte 0", filter: domain.CaseFieldFilter{Field: "taskSLABusinessElapsedPercent", Op: "lte", Values: []string{"0"}}},
 	}
 
 	for _, tc := range cases {
@@ -246,8 +249,7 @@ func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.
 
 // TestCaseService_SearchCases_RejectsServiceNowOnlyOptions proves the Postgres
 // path rejects the search options that only snCaseService implements: the
-// Task-SLA percent filter, the two escalation filters, OR groups, and grouped
-// counts. caseRepo.SearchCases models none of them, so accepting the request
+// two escalation filters, OR groups, and grouped counts. caseRepo.SearchCases models none of them, so accepting the request
 // would silently drop the predicate and return a wider result set with a 200.
 // The stub repository panics if reached, so a passing test proves the
 // short-circuit, not merely that the repository ignored the option.
@@ -260,20 +262,6 @@ func TestCaseService_SearchCases_RejectsServiceNowOnlyOptions(t *testing.T) {
 		req     domain.SearchCasesRequest
 		wantMsg string
 	}{
-		{
-			name: "taskSLABusinessElapsedPercent",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				Filters: []domain.CaseFieldFilter{{Field: "taskSLABusinessElapsedPercent", Op: "gte", Values: []string{"80"}}},
-			}},
-			wantMsg: `field "taskSLABusinessElapsedPercent" is not supported by this data source`,
-		},
-		{
-			name: "taskSLABusinessElapsedPercent lte 0",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				Filters: []domain.CaseFieldFilter{{Field: "taskSLABusinessElapsedPercent", Op: "lte", Values: []string{"0"}}},
-			}},
-			wantMsg: `field "taskSLABusinessElapsedPercent" is not supported by this data source`,
-		},
 		{
 			name: "escalationLevel",
 			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{

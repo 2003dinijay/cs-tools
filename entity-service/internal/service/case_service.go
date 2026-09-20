@@ -641,9 +641,6 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	if len(parsed.ProductNames) > 0 {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "product" is not supported by this data source`}
 	}
-	if len(parsed.ProjectOnboardingStatuses) > 0 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "projectOnboardingStatus" is not supported by this data source`}
-	}
 	if len(parsed.ProjectTypeNames) > 0 {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "projectType" is not supported by this data source`}
 	}
@@ -667,16 +664,15 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "resolutionNotes" is not supported by this data source`}
 	}
 
-	// Task-SLA and escalation predicates, OR groups, and grouped counts are
-	// implemented only in the ServiceNow case service (snCaseService.SearchCases);
-	// caseRepo.SearchCases models none of them. ParseCaseFieldFilters accepts them
+	// Escalation predicates, OR groups, and grouped counts are implemented
+	// only in the ServiceNow case service (snCaseService.SearchCases);
+	// caseRepo.SearchCases models none of them (taskSLABusinessElapsedPercent
+	// and projectOnboardingStatus, by contrast, are implemented there and so
+	// are deliberately absent from these guards). ParseCaseFieldFilters accepts them
 	// because it is shared by both data sources, so without these guards a
 	// Postgres deployment would drop the predicate and answer 200 with a wider
 	// result set than the caller asked for. These stay ServiceNow-only by design:
 	// reject loudly rather than implement them here.
-	if parsed.TaskSLAFilter != nil {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "taskSLABusinessElapsedPercent" is not supported by this data source`}
-	}
 	if len(parsed.EscalationLevels) > 0 {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "escalationLevel" is not supported by this data source`}
 	}
