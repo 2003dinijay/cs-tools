@@ -1540,6 +1540,22 @@ describe("CsmCaseDetailPage — role-based controls", () => {
     }
   });
 
+  it("a ?tab=time deep link falls back to Activities for a user without time-card access", () => {
+    currentUserRoles.value = ["viewer"];
+    renderPageAt("/cases/case-1?tab=time");
+    expect(screen.queryByRole("tab", { name: /time tracking/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /activities/i })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("a ?tab=time deep link stays on Time tracking for a user with time-card access", () => {
+    for (const role of ["support_engineer", "timecard_approver"]) {
+      currentUserRoles.value = [role];
+      const { unmount } = renderPageAt("/cases/case-1?tab=time");
+      expect(screen.getByRole("tab", { name: /time tracking/i })).toHaveAttribute("aria-selected", "true");
+      unmount();
+    }
+  });
+
   it("a user with no roles sees no controls", () => {
     currentUserRoles.value = [];
     renderPage();

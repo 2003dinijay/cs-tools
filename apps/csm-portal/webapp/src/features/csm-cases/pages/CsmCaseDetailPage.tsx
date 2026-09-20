@@ -828,19 +828,24 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // through the router (`useQueryParamTabs`), and a router write during
   // render risks updating the Router's state while this component is still
   // rendering — so it's an effect instead.
+  //
+  // The Time tracking tab gets the same treatment for a user without time-card
+  // access: its tab and panel are hidden, but a `?tab=time` deep link would
+  // otherwise leave nothing selected.
   useEffect(() => {
     if (
-      isAnnouncement &&
-      (activeTab === "related" ||
-        activeTab === "watchers" ||
-        activeTab === "sla" ||
-        activeTab === "time" ||
-        activeTab === "call-requests" ||
-        activeTab === "tasks")
+      (isAnnouncement &&
+        (activeTab === "related" ||
+          activeTab === "watchers" ||
+          activeTab === "sla" ||
+          activeTab === "time" ||
+          activeTab === "call-requests" ||
+          activeTab === "tasks")) ||
+      (activeTab === "time" && !canUseTimeCardsAndUpdates)
     ) {
       setActiveTab("activities");
     }
-  }, [isAnnouncement, activeTab, setActiveTab]);
+  }, [isAnnouncement, activeTab, setActiveTab, canUseTimeCardsAndUpdates]);
 
   // Twitter-style permalinks: when the URL has a fragment matching an entry id,
   // jump to the Activities tab and hand off to `scrollToFragmentWithRetry`,
