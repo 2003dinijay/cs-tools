@@ -144,7 +144,7 @@ func envOrDefault(key, def string) string {
 
 func (s *server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	doc := map[string]any{
-		"issuer":                                s.issuer,
+		"issuer":                                s.issuer + "/oauth2/token",
 		"authorization_endpoint":                s.issuer + "/oauth2/authorize",
 		"token_endpoint":                        s.issuer + "/oauth2/token",
 		"userinfo_endpoint":                     s.issuer + "/oauth2/userinfo",
@@ -374,7 +374,7 @@ func (s *server) signJWT(customClaims map[string]any, audience string, ttl time.
 	header := map[string]any{"alg": "RS256", "typ": "JWT", "kid": kid}
 	now := time.Now()
 	claims := map[string]any{
-		"iss": s.issuer,
+		"iss": s.issuer + "/oauth2/token",
 		"aud": audience,
 		"iat": now.Unix(),
 		"exp": now.Add(ttl).Unix(),
