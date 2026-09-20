@@ -11669,22 +11669,37 @@ components:
 
     CreateCaseGithubIssuePayload:
       type: object
-      required: [reason, title, description]
+      required: [title, description]
       additionalProperties: false
       properties:
         reason:
           type: string
           enum: [default, migration, rd_ticket]
-          description: Reason code that selects the GitHub repo target.
+          description: >
+            Reason code that selects the GitHub repo target. Required when the request is
+            forwarded to the entity service (the default). Ignored when the backend files the
+            issue through the engineering entity service.
         title:
           type: string
+          maxLength: 256
           description: Title of the GitHub issue.
         description:
           type: string
           description: Body/description of the GitHub issue.
         repoOverride:
-          type: string
-          description: Optional repository override (e.g. org/repo).
+          type: object
+          required: [owner, repo]
+          description: >
+            Explicit target repository. Optional when forwarded to the entity service, which then
+            routes by the case's product unit. Required when the backend files the issue through
+            the engineering entity service, where it must match a configured repository option.
+          properties:
+            owner:
+              type: string
+              description: GitHub organisation or owner of the repository.
+            repo:
+              type: string
+              description: Repository name.
         updateLevel:
           type: string
           description: Affected product update level.
@@ -11702,20 +11717,26 @@ components:
           description: GitHub label for the issue type.
         priorityLevel:
           type: string
-          description: Priority level for the issue.
+          description: Priority level for the issue. Only applied for the "Type/Incident" issue type.
 
     CreateCaseGithubIssueResponse:
       type: object
       properties:
-        issueUrl:
+        message:
           type: string
-          description: URL of the created GitHub issue.
-        issueNumber:
-          type: integer
-          description: Number of the created GitHub issue.
-        repository:
-          type: string
-          description: Repository where the issue was created (org/repo).
+          description: Human-readable result message.
+        issue:
+          type: object
+          properties:
+            url:
+              type: string
+              description: URL of the created GitHub issue.
+            number:
+              type: integer
+              description: Number of the created GitHub issue.
+            repo:
+              type: string
+              description: Repository where the issue was created. "owner/repo" when the backend files the issue through the engineering entity service.
 
     ConversationMessage:
       type: object

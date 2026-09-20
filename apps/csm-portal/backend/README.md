@@ -137,7 +137,7 @@ Backs `entity.EngineeringEntityClient.CreateGitIssue` (a separate internal engin
 
 | Variable | Description |
 |---|---|
-| `ENGINEERING_ENTITY_BASE_URL` | Base URL of the engineering entity service. Optional — setting it switches "Open Git issue" over to it |
+| `ENGINEERING_ENTITY_BASE_URL` | Base URL of the engineering entity service. Optional — setting it switches "Open Git issue" over to it. Must be `https` (a path is allowed, but no userinfo, query or fragment); anything else fails startup |
 | `ENGINEERING_ENTITY_SCOPES` | Comma-separated OAuth2 scopes (optional) |
 
 On this path the target must be `repoOverride` and must match an entry of `GITHUB_ISSUE_REPO_OPTIONS` (owner/repo, case-insensitive), so the service account can only file in the curated repositories; the catalogue's `owner` is passed as both the GitHub organisation and owner (the engineering service selects its GitHub access token by that organisation name, so it must be one it is configured with). The service's response has no issue URL, so the URL returned to the web app is built as `https://github.com/<owner>/<repo>/issues/<number>`. The title (max 256 characters) and description are sent, with `updateLevel`, `publicIssueUrl` and `hotFixRequired` appended to the body, and the labels are the repo option's `githubLabel`, `issueTypeLabel`, `priorityLevel` (only for `Type/Incident`) and `regression`. `reason` is ignored, since it only steers the entity service's own routing. Unlike the entity service's implementation, this path does **not** write the issue URL back into the case's work notes or tag the case as a regression.

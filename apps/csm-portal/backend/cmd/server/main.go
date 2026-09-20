@@ -84,6 +84,7 @@ func main() {
 	// OAuth2 app as every other upstream; only its base URL and scopes are its
 	// own. Unset keeps the entity-service path exactly as it was.
 	if engineeringBaseURL := strings.TrimSpace(os.Getenv("ENGINEERING_ENTITY_BASE_URL")); engineeringBaseURL != "" {
+		engineeringBaseURL = mustHTTPSBaseURL("ENGINEERING_ENTITY_BASE_URL", engineeringBaseURL)
 		caseHandler.WithEngineeringClient(entity.NewEngineeringEntityClient(entity.EngineeringEntityConfig{
 			BaseURL:      engineeringBaseURL,
 			TokenURL:     oauth2TokenURL,
@@ -636,6 +637,17 @@ func loadSftpgoConfig() (bool, sftpgo.Config) {
 // internal/sftpgo.Client.PublicShareURL), so a non-HTTPS or spoofed-looking
 // value here is a credential-leak/MITM risk, not just a misconfiguration —
 // refuse to start rather than proceed with it.
+// mustHTTPSBaseURL is mustHTTPSURL for a base URL that may carry a path; see
+// validateHTTPSBaseURL. Used for upstream services the backend authenticates to
+// with an OAuth2 client, whose token and requests must not travel in cleartext.
+func mustHTTPSBaseURL(key, value string) string {
+	if err := validateHTTPSBaseURL(value); err != nil {
+		slog.Error("invalid environment variable", "key", key, "err", err)
+		os.Exit(1)
+	}
+	return value
+}
+
 func mustHTTPSURL(key, value string) string {
 	if err := validateHTTPSURL(value); err != nil {
 		// Deliberately omit the raw value from this log line: it may carry
@@ -657,6 +669,18 @@ func mustHTTPSURL(key, value string) string {
 // (e.g. "https://host/api") would silently double up into
 // "https://host/api/api/v2/user/token" rather than erroring.
 func validateHTTPSURL(value string) error {
+	return validateSecureURL(value, false)
+}
+
+// validateHTTPSBaseURL is validateHTTPSURL for a base URL that API paths are
+// appended to and that may itself sit under a path (a gateway-hosted service
+// such as "https://host/org/service/v1.0"): the same https, host, userinfo,
+// query and fragment rules, but a path is allowed.
+func validateHTTPSBaseURL(value string) error {
+	return validateSecureURL(value, true)
+}
+
+func validateSecureURL(value string, allowPath bool) error {
 	parsed, err := url.Parse(value)
 	if err != nil {
 		return fmt.Errorf("not a valid URL: %w", err)
@@ -670,7 +694,7 @@ func validateHTTPSURL(value string) error {
 	if parsed.User != nil {
 		return errors.New("must not contain embedded userinfo (e.g. \"https://user:pass@host/...\")")
 	}
-	if path := parsed.EscapedPath(); path != "" && path != "/" {
+	if path := parsed.EscapedPath(); !allowPath && path != "" && path != "/" {
 		return fmt.Errorf("must not include a path (got %q); this value is concatenated with API paths, e.g. \"https://host\" not \"https://host/api\"", path)
 	}
 	if parsed.RawQuery != "" {
