@@ -69,3 +69,44 @@ func TestNormalizeSysIDsRoutesToDashedPathValue(t *testing.T) {
 		t.Errorf("caller's request was mutated: path is now %q", req.URL.Path)
 	}
 }
+
+func TestNormalizeQuerySysIDs(t *testing.T) {
+	const (
+		sysid  = "0123456789abcdef0123456789abcdef"
+		dashed = "01234567-89ab-cdef-0123-456789abcdef"
+	)
+	tests := []struct {
+		name        string
+		in          string
+		want        string
+		wantChanged bool
+	}{
+		{"empty", "", "", false},
+		{"bare sysid value", "caseTypes=" + sysid, "caseTypes=" + dashed, true},
+		{"repeated key", "caseTypes=" + sysid + "&caseTypes=" + dashed, "caseTypes=" + dashed + "&caseTypes=" + dashed, true},
+		{"untouched query keeps exact encoding", "limit=10&offset=0&class=a%20b", "limit=10&offset=0&class=a%20b", false},
+		{"non-id values untouched", "createdBy=a%40b.com&startDate=2026-01-01", "createdBy=a%40b.com&startDate=2026-01-01", false},
+		{"malformed query left alone", "%zz=" + sysid, "%zz=" + sysid, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := normalizeQuerySysIDs(tc.in)
+			if got != tc.want || changed != tc.wantChanged {
+				t.Errorf("normalizeQuerySysIDs(%q) = (%q, %v), want (%q, %v)", tc.in, got, changed, tc.want, tc.wantChanged)
+			}
+		})
+	}
+}
+
+func TestNormalizeSysIDsRewritesQueryForHandler(t *testing.T) {
+	var got []string
+	h := NormalizeSysIDs(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()["caseTypes"]
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/projects/x/stats?caseTypes=0123456789abcdef0123456789abcdef", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if len(got) != 1 || got[0] != "01234567-89ab-cdef-0123-456789abcdef" {
+		t.Errorf("handler saw caseTypes %v, want the dashed form", got)
+	}
+}

@@ -18,12 +18,13 @@ package middleware
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 )
 
-// NormalizeSysIDs rewrites every path segment that is a bare ServiceNow sysid
-// (32 hex characters, no hyphens) into the dashed 8-4-4-4-12 UUID form the
-// handlers and entity-service expect.
+// NormalizeSysIDs rewrites every path segment and query-string value that is a
+// bare ServiceNow sysid (32 hex characters, no hyphens) into the dashed
+// 8-4-4-4-12 UUID form the handlers and entity-service expect.
 //
 // Ids used to reach this API without hyphens, so a client holding one from
 // before the switch — a cached bundle, persisted query state, a bookmarked URL
@@ -31,12 +32,13 @@ import (
 // handlers. Rewriting the path before routing means the {id}-style path values
 // every handler reads are already canonical, with no per-handler conversion.
 //
-// Only path segments are touched. Ids in a body or query string are converted
-// by the handler that reads them.
+// Ids in a JSON body are converted separately, by the handler package's
+// readJSONBody, because that needs to know which keys hold ids.
 func NormalizeSysIDs(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := normalizePathSysIDs(r.URL.Path)
-		if path == r.URL.Path {
+		rawQuery, queryChanged := normalizeQuerySysIDs(r.URL.RawQuery)
+		if path == r.URL.Path && !queryChanged {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -45,13 +47,47 @@ func NormalizeSysIDs(next http.Handler) http.Handler {
 		r2 := new(http.Request)
 		*r2 = *r
 		u := *r.URL
-		u.Path = path
-		// RawPath is only set when the escaped form differs from the default
-		// encoding of Path; a stale one would win over the rewritten Path.
-		u.RawPath = ""
+		if path != r.URL.Path {
+			u.Path = path
+			// RawPath is only set when the escaped form differs from the
+			// default encoding of Path; a stale one would win over the
+			// rewritten Path.
+			u.RawPath = ""
+		}
+		if queryChanged {
+			u.RawQuery = rawQuery
+		}
 		r2.URL = &u
 		next.ServeHTTP(w, r2)
 	})
+}
+
+// normalizeQuerySysIDs dashes every bare-sysid value in a raw query string,
+// whatever its key — the API's query parameters are ids, enums, dates and
+// paging numbers, none of which is a 32-hex string that must stay bare.
+// Returns the original string and false when nothing changed, so an untouched
+// query keeps its exact encoding and parameter order.
+func normalizeQuerySysIDs(rawQuery string) (string, bool) {
+	if rawQuery == "" {
+		return rawQuery, false
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return rawQuery, false
+	}
+	changed := false
+	for _, vs := range values {
+		for i, v := range vs {
+			if dashed := dashSysID(v); dashed != v {
+				vs[i] = dashed
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return rawQuery, false
+	}
+	return values.Encode(), true
 }
 
 // normalizePathSysIDs dashes each bare-sysid segment of path, leaving every
