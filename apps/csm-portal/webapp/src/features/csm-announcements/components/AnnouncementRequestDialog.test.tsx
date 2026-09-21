@@ -358,6 +358,25 @@ describe("AnnouncementRequestDialog — approved", () => {
     expect(screen.getByText(/failed for: p-2/i)).toBeInTheDocument();
   });
 
+  it("locks content while a failed-project retry is pending, so the retry can't diverge from what already succeeded", () => {
+    mockGet({ state: "approved", resolvedProjectIds: ["p-1", "p-2"], resolvedProjectCount: 2 });
+    mockedPublish.mockReturnValue({
+      publishing: false,
+      progress: null,
+      succeededProjectIds: ["p-1"],
+      failedProjectIds: ["p-2"],
+      failedTagProjectIds: [],
+      published: null,
+      handlePublish: vi.fn(),
+    });
+
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    expect(screen.getByDisplayValue("Scheduled maintenance")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /save changes/i })).toBeDisabled();
+    expect(screen.getByText(/locked while retrying failed projects/i)).toBeInTheDocument();
+  });
+
   it("disables Publish and shows a hint after editing the subject without saving", () => {
     mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);

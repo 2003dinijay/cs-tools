@@ -178,6 +178,16 @@ export default function AnnouncementRequestDialog({
       description !== request.description ||
       isSecurityAnnouncement !== request.isSecurityAnnouncement);
 
+  // publish.failedProjectIds non-empty means some projects already got a
+  // real case from an earlier attempt and "Retry failed projects" will send
+  // to only the rest — using whatever's currently saved. Editing and saving
+  // content in between would send the retried projects different content
+  // than the ones that already succeeded, silently splitting one
+  // announcement into two different messages with no way to reconcile them
+  // afterward. Locking here mirrors the same fix already made for the
+  // create forms' own immediate-send retry (PR #1834).
+  const contentLockedForRetry = request?.state === "approved" && publish.failedProjectIds.length > 0;
+
   const handleSaveContent = (): void => {
     if (!request) return;
     update.mutate({
@@ -259,6 +269,7 @@ export default function AnnouncementRequestDialog({
                   onChange={(e) => setSubject(e.target.value)}
                   fullWidth
                   size="small"
+                  disabled={contentLockedForRetry}
                 />
                 <Box>
                   <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
@@ -271,6 +282,7 @@ export default function AnnouncementRequestDialog({
                     minHeight={140}
                     maxHeight={320}
                     toolbarVariant="full"
+                    disabled={contentLockedForRetry}
                   />
                 </Box>
                 {request.kind === "customer" && (
@@ -278,18 +290,25 @@ export default function AnnouncementRequestDialog({
                     control={
                       <Checkbox
                         checked={isSecurityAnnouncement}
+                        disabled={contentLockedForRetry}
                         onChange={(e) => setIsSecurityAnnouncement(e.target.checked)}
                       />
                     }
                     label="Security announcement"
                   />
                 )}
+                {contentLockedForRetry && (
+                  <Typography variant="caption" color="text.secondary">
+                    Subject, description, and the security label are locked while retrying failed
+                    projects — this resend must match what the succeeded projects already got.
+                  </Typography>
+                )}
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   <Button
                     variant="outlined"
                     size="small"
                     onClick={handleSaveContent}
-                    disabled={update.isPending || subject.trim().length === 0}
+                    disabled={update.isPending || subject.trim().length === 0 || contentLockedForRetry}
                   >
                     {update.isPending ? "Saving…" : "Save changes"}
                   </Button>
