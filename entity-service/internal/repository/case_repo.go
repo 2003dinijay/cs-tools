@@ -229,56 +229,111 @@ func NewCaseRepository(db *pgxpool.Pool) CaseRepository {
 // CreateCase implements CaseRepository.
 // CreateCase implements CaseRepository.
 //
-// STILL BROKEN, DELIBERATELY NOT FIXED HERE: unlike every other method in
-// this file, this one can't be repaired with a table/column rename alone.
-// work_item.number and work_item.wso2_id are both UNIQUE with no DB default
-// and no backing sequence anywhere in migrations/ (CLAUDE.md documents the
-// intended design -- "generated from dedicated sequences via column
-// defaults" -- but no CREATE SEQUENCE for either one was ever actually
-// added), so something has to generate them on every insert, and the exact
-// format is undefined (ServiceNow's own case numbers look like "CS0023001",
-// but that's not proven to be the intended Postgres-native format either).
-// Explicitly deferred per product decision rather than guessed at -- see
-// this repository's own package doc / CLAUDE.md for the options considered.
-// The query below still references the nonexistent "cases" table (the same
-// class of bug this file's other methods had) and will fail at runtime.
+// A case is a work_item row (type CASE) plus a "case" extension row sharing its
+// id (migrations 000016/000018), written in one transaction. The old version
+// inserted into a "cases" table that does not exist.
+//
+// The row's identifiers follow the synced data: work_item.created_by holds the
+// creator's EMAIL (6,995 of 8,066 staging cases), so it is taken from the user
+// row of req.CreatedBy (a user id), which is also stored as opened_by_user_id.
+// A missing user yields no row, reported as a validation error rather than a
+// bare foreign-key failure.
+//
+// NOT DONE, DELIBERATELY: work_item.number (NOT NULL, unique) and wso2_id have
+// no default and no sequence, and generating them is an undecided product
+// choice (see CLAUDE.md, "CreateCase and case numbers"). Until that is settled
+// the insert reaches the database with valid tables and columns but is refused
+// for want of a number, which is reported as ServiceUnavailableError instead of
+// an opaque 500.
 func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
-	const query = `
-		INSERT INTO cases (
-			created_by, project_id, deployment_id, deployed_product_id,
-			type, subject, description, severity, issue_type, state
-		)
-		VALUES (
-			$1, $2, $3, $4,
-			$5::case_type_enum, $6, $7,
-			$8::case_severity_enum, $9::case_issue_type_enum,
-			'open'::case_state_enum
-		)
-		RETURNING id, number, internal_id, created_by, project_id, deployment_id, deployed_product_id,
-		          subject, description, severity, issue_type, state, created_at, updated_at, closed_at`
-
-	var c domain.Case
-	err := r.db.QueryRow(ctx, query,
-		req.CreatedBy, req.ProjectID, req.DeploymentID, req.DeployedProductID,
-		req.Type, req.Subject, req.Description, string(req.Severity), string(req.IssueType),
-	).Scan(
-		&c.ID, &c.Number, &c.InternalID, &c.CreatedBy,
-		&c.ProjectID, &c.DeploymentID, &c.DeployedProductID,
-		&c.Subject, &c.Description, &c.Severity, &c.IssueType, &c.State,
-		&c.CreatedOn, &c.UpdatedOn, &c.ClosedOn,
-	)
+	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
-			switch pgErr.Code {
-			case "23503": // foreign_key_violation — one of the referenced IDs does not exist
-				return domain.Case{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
-			case "P0001": // raise_exception from integrity triggers (deployment/project, deployed_product/deployment, catastrophic priority)
-				return domain.Case{}, &apierror.ValidationError{Msg: pgErr.Message}
-			}
-		}
-		return domain.Case{}, fmt.Errorf("create case: %w", err)
+		return domain.Case{}, fmt.Errorf("create case: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const insertWorkItem = `
+		INSERT INTO work_item (
+			id, created_on, updated_on, created_by, updated_by,
+			type, project_id, deployment_id, deployed_product_id,
+			subject, description, opened_by_user_id
+		)
+		SELECT gen_random_uuid(), NOW(), NOW(), u.email, u.email,
+		       'CASE'::work_item_type_enum, $2::uuid, $3::uuid, $4::uuid,
+		       $5, $6, u.id
+		FROM "user" u
+		WHERE u.id = $1::uuid
+		RETURNING id::TEXT, number, wso2_id, created_by, project_id::TEXT, deployment_id::TEXT,
+		          deployed_product_id::TEXT, subject, description, created_on, updated_on`
+
+	var (
+		c          domain.Case
+		internalID *string
+		desc       *string
+	)
+	err = tx.QueryRow(ctx, insertWorkItem,
+		req.CreatedBy, req.ProjectID, req.DeploymentID, req.DeployedProductID,
+		req.Subject, req.Description,
+	).Scan(
+		&c.ID, &c.Number, &internalID, &c.CreatedBy, &c.ProjectID, &c.DeploymentID,
+		&c.DeployedProductID, &c.Subject, &desc, &c.CreatedOn, &c.UpdatedOn,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Case{}, &apierror.ValidationError{Msg: "creating user not found: " + req.CreatedBy}
+	}
+	if err != nil {
+		return domain.Case{}, mapCreateCaseError(err)
+	}
+	c.InternalID = stringOrEmpty(internalID)
+	c.Description = stringOrEmpty(desc)
+
+	// severity is case_severity_enum's S0..S4 (see caseSeverityToEnum); NULLIF
+	// keeps an unset value NULL instead of failing the cast.
+	const insertCase = `
+		INSERT INTO "case" (id, severity, issue_type, state)
+		VALUES ($1::uuid, NULLIF($2, '')::case_severity_enum, NULLIF($3, '')::case_issue_type_enum, 'OPEN'::case_state_enum)
+		RETURNING severity::TEXT, issue_type::TEXT, state::TEXT, closed_on`
+
+	var severity, issueType, state *string
+	if err := tx.QueryRow(ctx, insertCase,
+		c.ID, caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
+	).Scan(&severity, &issueType, &state, &c.ClosedOn); err != nil {
+		return domain.Case{}, mapCreateCaseError(err)
+	}
+	if severity != nil {
+		sev := caseSeverityFromEnum[*severity]
+		c.Severity = &sev
+	}
+	if issueType != nil {
+		it := domain.CaseIssueType(strings.ToLower(*issueType))
+		c.IssueType = &it
+	}
+	if state != nil {
+		st := domain.CaseState(strings.ToLower(*state))
+		c.State = &st
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Case{}, fmt.Errorf("create case: commit: %w", err)
 	}
 	return c, nil
+}
+
+// mapCreateCaseError turns the database errors CreateCase can hit into API errors.
+func mapCreateCaseError(err error) error {
+	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23502": // not_null_violation
+			if pgErr.ColumnName == "number" {
+				return &apierror.ServiceUnavailableError{Msg: "creating a case is not available on this data source yet: case numbers are not generated"}
+			}
+		case "23503": // foreign_key_violation -- one of the referenced IDs does not exist
+			return &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
+		case "P0001": // raise_exception from integrity triggers (deployment/project, deployed_product/deployment, catastrophic priority)
+			return &apierror.ValidationError{Msg: pgErr.Message}
+		}
+	}
+	return fmt.Errorf("create case: %w", err)
 }
 
 // GetCaseByID implements CaseRepository.
