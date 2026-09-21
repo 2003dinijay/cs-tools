@@ -6916,6 +6916,7 @@ components:
     User:
       type: object
       description: User as stored in the postgres data source.
+      required: [roles]
       properties:
         id:
           type: string
@@ -6938,6 +6939,7 @@ components:
           enum: [internal, customer, system]
         roles:
           type: array
+          uniqueItems: true
           items:
             type: string
           description: >-
