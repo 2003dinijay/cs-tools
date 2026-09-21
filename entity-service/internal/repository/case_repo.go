@@ -115,6 +115,21 @@ func caseEscalationLevelFromEnum(raw string) string {
 type CaseRepository interface {
 	// CreateCase inserts a new case row (both work_item and "case").
 	CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
+	// CreateCaseFromServiceNow inserts a new case row (both work_item and
+	// "case"), the same as CreateCase, but for DATA_SOURCE=postgres-primary-sn-fallback's
+	// SN-first case creation (see caseService.CreateCase's own doc comment):
+	// req.Type must already be "case" (validated by the caller). Unlike
+	// CreateCase, identity is NOT generated here -- id/number/wso2ID/createdBy
+	// are exactly what ServiceNow already returned for the case it just
+	// created, so both systems agree on identity from the moment the Postgres
+	// row exists. id must be a canonical UUID (sysidToUUID(sn sys_id) -- the
+	// same identity convention every DataSource=servicenow response already
+	// uses, see internal/service/sn_id.go). Returns a ValidationError if id is
+	// not a valid UUID or if a row already exists for it/number/wso2ID
+	// (unique violation) -- the latter should not happen in practice since
+	// ServiceNow only just generated these, but is reported precisely rather
+	// than as an opaque infrastructure error if it ever does.
+	CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy string) (domain.Case, error)
 	// GetCaseByID returns the enriched case view for the given UUID, or a
 	// NotFoundError if no matching row exists OR it exists but scope excludes
 	// it (existence is never revealed to a caller who can't see it).
@@ -334,6 +349,75 @@ func mapCreateCaseError(err error) error {
 		}
 	}
 	return fmt.Errorf("create case: %w", err)
+}
+
+// createCaseFromServiceNowQuery inserts both halves of a case row (work_item
+// + "case", the same shared-primary-key pattern updateCaseQuery documents)
+// in one round trip via a CTE, using caller-supplied identity throughout
+// rather than generating any of it -- see CreateCaseFromServiceNow's own
+// doc comment for why. type is hardcoded to 'CASE'::work_item_type_enum
+// (the caller guarantees req.Type == "case" -- caseService.CreateCase's SN-
+// first path is case-only, same restriction the existing CreateCase already
+// enforces for the plain Postgres path) and state to 'OPEN'::case_state_enum
+// (every case ServiceNow creates starts in its own equivalent initial state;
+// reliably parsing that back out of ServiceNow's raw create-response state
+// label would need the same label->enum lookup sn_case_service.go keeps
+// unexported for its own internal use, and would still land on the same
+// value every time).
+//
+// Column/output order matches scanUpdatedCase exactly, so that helper is
+// reused verbatim rather than duplicated.
+const createCaseFromServiceNowQuery = `
+	WITH inserted_work_item AS (
+		INSERT INTO work_item (
+			id, created_on, updated_on, created_by, updated_by,
+			number, wso2_id, subject, description, type,
+			project_id, deployment_id, deployed_product_id
+		)
+		VALUES (
+			$1, NOW(), NOW(), $2, $2,
+			$3, $4, $5, $6, 'CASE'::work_item_type_enum,
+			$7, $8, $9
+		)
+		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
+		          subject, description, created_on, updated_on
+	),
+	inserted_case AS (
+		INSERT INTO "case" (id, severity, issue_type, state)
+		VALUES ($1, $10::case_severity_enum, $11::case_issue_type_enum, 'OPEN'::case_state_enum)
+		RETURNING id, severity, issue_type, state, work_state, closed_on
+	)
+	SELECT iwi.id, iwi.number, iwi.wso2_id, iwi.created_by, iwi.project_id, iwi.deployment_id, iwi.deployed_product_id,
+	       iwi.subject, iwi.description,
+	       ic.severity::TEXT, ic.issue_type::TEXT, ic.state::TEXT, ic.work_state::TEXT,
+	       iwi.created_on, iwi.updated_on, ic.closed_on
+	FROM inserted_work_item iwi
+	JOIN inserted_case ic ON ic.id = iwi.id`
+
+// CreateCaseFromServiceNow implements CaseRepository.
+func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy string) (domain.Case, error) {
+	c, err := scanUpdatedCase(r.db.QueryRow(ctx, createCaseFromServiceNowQuery,
+		id, createdBy,
+		number, wso2ID, req.Subject, req.Description,
+		req.ProjectID, req.DeploymentID, req.DeployedProductID,
+		caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
+	))
+	if err != nil {
+		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "23505": // unique_violation on id/number/wso2_id — see this method's own doc comment for why this "shouldn't" happen
+				return domain.Case{}, &apierror.ConflictError{Msg: "a case already exists for this ServiceNow id/number/internalId: " + pgErr.Detail}
+			case "22P02": // invalid_text_representation — id was not a valid UUID
+				return domain.Case{}, &apierror.ValidationError{Msg: "id is not a valid UUID: " + id}
+			case "23503": // foreign_key_violation — one of the referenced IDs does not exist
+				return domain.Case{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
+			case "P0001": // raise_exception from integrity triggers (deployment/project, deployed_product/deployment, catastrophic priority)
+				return domain.Case{}, &apierror.ValidationError{Msg: pgErr.Message}
+			}
+		}
+		return domain.Case{}, fmt.Errorf("create case from servicenow: %w", err)
+	}
+	return c, nil
 }
 
 // GetCaseByID implements CaseRepository.
