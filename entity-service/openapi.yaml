@@ -999,7 +999,7 @@ paths:
           content:
             application/json:
               schema:
-                oneOf:
+                anyOf:
                   - $ref: '#/components/schemas/SNUserDetail'
                   - $ref: '#/components/schemas/UserDetail'
         '400':
