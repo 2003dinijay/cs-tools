@@ -54,7 +54,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// pgFallback but do not route GetProjectByID/GetCaseByID through it).
 	accessSvc := service.NewAccessService(repository.NewAccessRepository(db), cfg.AuthInternalClientIDs)
 
-	// event_publish_failures has no ServiceNow equivalent. It is
+	var savedFilterViewHandler *handler.SavedFilterViewHandler
+	if db != nil {
+		savedFilterViewHandler = handler.NewSavedFilterViewHandler(
+			service.NewSavedFilterViewService(repository.NewSavedFilterViewRepository(db)),
+		)
+	}
+
+	// event_publish_failures, sla_clocks, scheduled_task_run, and
+	// alert_incident_mapping have no ServiceNow equivalent. They are
 	// Postgres-backed and registered only when a pool is available
 	// (db.NewPoolIfNeeded returns nil for DATA_SOURCE=servicenow so local
 	// SN-mode startups are not blocked). Gate the whole chain on db != nil:
@@ -563,6 +571,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /announcement-requests/{id}/submit", announcementRequestHandler.SubmitAnnouncementRequest)
 		mux.HandleFunc("POST /announcement-requests/{id}/approve", announcementRequestHandler.ApproveAnnouncementRequest)
 		mux.HandleFunc("POST /announcement-requests/{id}/publish", announcementRequestHandler.PublishAnnouncementRequest)
+	}
+	if savedFilterViewHandler != nil {
+		mux.HandleFunc("GET /users/me/saved-filter-views", savedFilterViewHandler.List)
+		mux.HandleFunc("PUT /users/me/saved-filter-views", savedFilterViewHandler.Save)
+		mux.HandleFunc("DELETE /users/me/saved-filter-views", savedFilterViewHandler.Delete)
+		mux.HandleFunc("POST /users/me/saved-filter-views/reorder", savedFilterViewHandler.Reorder)
 	}
 
 	if snUserHandler != nil {

@@ -974,6 +974,186 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /users/me/saved-filter-views:
+    get:
+      summary: List the caller's saved filter views for one CSM list.
+      description: >
+        Postgres-only. Returns the authenticated user's named list-filter
+        bookmarks for listKey (cases, incidents, change_requests, or problems),
+        in display order. qs is the opaque query string the portal already
+        serializes; this service does not parse filters.
+      operationId: listSavedFilterViews
+      parameters:
+        - name: listKey
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [cases, incidents, change_requests, problems]
+      responses:
+        "200":
+          description: Ordered saved views.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedFilterViewList'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized — x-user-id-token header is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Caller has no matching user row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Save or overwrite a saved filter view.
+      description: >
+        Inserts a new named view at the front of the list, or overwrites an
+        existing name (case-insensitive) and moves it to the front. At most 50
+        views per listKey. Postgres-only.
+      operationId: saveSavedFilterView
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveSavedFilterViewRequest'
+      responses:
+        "200":
+          description: Updated ordered saved views.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedFilterViewList'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Caller has no matching user row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Delete a saved filter view by name.
+      operationId: deleteSavedFilterView
+      parameters:
+        - name: listKey
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [cases, incidents, change_requests, problems]
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Remaining ordered saved views.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedFilterViewList'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Caller has no matching user row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/me/saved-filter-views/reorder:
+    post:
+      summary: Move a saved filter view one slot up or down.
+      operationId: reorderSavedFilterView
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderSavedFilterViewRequest'
+      responses:
+        "200":
+          description: Updated ordered saved views.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedFilterViewList'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Caller has no matching user row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /users/{id}:
     get:
       summary: Get one user's full profile.
@@ -6785,6 +6965,50 @@ components:
             names to a team. Empty when the best-effort membership lookup failed --
             it never fails the identity response, so callers must treat an empty list as
             "unknown", not as an error.
+
+    SavedFilterView:
+      type: object
+      required: [name, qs]
+      properties:
+        name:
+          type: string
+        qs:
+          type: string
+          description: Opaque list query string owned by the frontend; not parsed here.
+
+    SavedFilterViewList:
+      type: object
+      required: [views]
+      properties:
+        views:
+          type: array
+          items:
+            $ref: '#/components/schemas/SavedFilterView'
+
+    SaveSavedFilterViewRequest:
+      type: object
+      required: [listKey, name, qs]
+      properties:
+        listKey:
+          type: string
+          enum: [cases, incidents, change_requests, problems]
+        name:
+          type: string
+        qs:
+          type: string
+
+    ReorderSavedFilterViewRequest:
+      type: object
+      required: [listKey, name, direction]
+      properties:
+        listKey:
+          type: string
+          enum: [cases, incidents, change_requests, problems]
+        name:
+          type: string
+        direction:
+          type: string
+          enum: [up, down]
 
     PatchUserMeRequest:
       type: object

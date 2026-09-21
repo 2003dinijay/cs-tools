@@ -43,6 +43,17 @@ type UserService interface {
 	GetMe(ctx context.Context) (domain.GetUserMeResponse, error)
 }
 
+// SavedFilterViewService is the caller's own named list-filter bookmarks
+// (CSM portal saved views). Postgres-only; the caller is always the
+// authenticated user resolved from x-user-id-token — never a client-supplied
+// user id.
+type SavedFilterViewService interface {
+	List(ctx context.Context, listKey domain.SavedFilterListKey) (domain.SavedFilterViewList, error)
+	Save(ctx context.Context, req domain.SaveSavedFilterViewRequest) (domain.SavedFilterViewList, error)
+	Delete(ctx context.Context, listKey domain.SavedFilterListKey, name string) (domain.SavedFilterViewList, error)
+	Reorder(ctx context.Context, req domain.ReorderSavedFilterViewRequest) (domain.SavedFilterViewList, error)
+}
+
 // SNUserService defines the user operations backed by the ServiceNow data source.
 type SNUserService interface {
 	// SearchUsers returns a paginated list of ServiceNow users that match the

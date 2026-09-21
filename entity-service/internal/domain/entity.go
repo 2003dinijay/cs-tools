@@ -137,6 +137,59 @@ type SearchUsersResponse struct {
 	HasMore bool   `json:"hasMore"`
 }
 
+// SavedFilterListKey identifies which CSM list a filter belongs to.
+// The frontend owns the query-string codec per list; this service only
+// isolates stores so filters never leak across lists.
+type SavedFilterListKey string
+
+const (
+	SavedFilterListKeyCases          SavedFilterListKey = "cases"
+	SavedFilterListKeyIncidents      SavedFilterListKey = "incidents"
+	SavedFilterListKeyChangeRequests SavedFilterListKey = "change_requests"
+	SavedFilterListKeyProblems       SavedFilterListKey = "problems"
+)
+
+// MaxSavedFilterViews is the cap per (user, list_key), matching the
+// previous localStorage client.
+const MaxSavedFilterViews = 50
+
+// SavedFilterMoveDirection is up/down in display order (filter_position 0 is first).
+type SavedFilterMoveDirection string
+
+const (
+	SavedFilterMoveUp   SavedFilterMoveDirection = "up"
+	SavedFilterMoveDown SavedFilterMoveDirection = "down"
+)
+
+// SavedFilterView is a named bookmark of a list URL query string. qs is
+// opaque — the frontend already serializes/parses it; this service must not
+// interpret filter fields.
+type SavedFilterView struct {
+	Name string `json:"name"`
+	Qs   string `json:"qs"`
+}
+
+// SavedFilterViewList is the ordered list of filters for one list_key
+// (array order is display order; filter_position 0 is first).
+type SavedFilterViewList struct {
+	Views []SavedFilterView `json:"views"`
+}
+
+// SaveSavedFilterViewRequest is PUT /users/me/saved-filter-views. Same-name
+// overwrite is case-insensitive; a new name is inserted at the front.
+type SaveSavedFilterViewRequest struct {
+	ListKey SavedFilterListKey `json:"listKey"`
+	Name    string             `json:"name"`
+	Qs      string             `json:"qs"`
+}
+
+// ReorderSavedFilterViewRequest is POST /users/me/saved-filter-views/reorder.
+type ReorderSavedFilterViewRequest struct {
+	ListKey   SavedFilterListKey       `json:"listKey"`
+	Name      string                   `json:"name"`
+	Direction SavedFilterMoveDirection `json:"direction"`
+}
+
 // SNUser is the user view returned by the ServiceNow data source.
 type SNUser struct {
 	ID       string  `json:"id"`
