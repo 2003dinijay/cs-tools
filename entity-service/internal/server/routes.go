@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/eventbus"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/github"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/handler"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -109,9 +111,61 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// reasoning as sla_clocks/event_publish_failures above. Backs
 	// operations/csm-scheduled-tasks; see that component's own CLAUDE.md
 	// and this service's CLAUDE.md ("Scheduled task runs").
+	// The GitHub change-request sync needs a pool (the repository mapping and
+	// the delivery log are tables) and its own switch. Gated on both, so the
+	// webhook endpoint is not registered merely because a database exists --
+	// it authenticates by HMAC rather than by bearer token, and an endpoint
+	// that mutates change requests should appear only when asked for.
+	var githubWebhookHandler *handler.GithubWebhookHandler
+
+	// Assigned inside the GitHub-integration block below and read further down,
+	// where activeCaseSvc finally exists, to build the native issue-filing
+	// service. Both halves of the sync then share one client and one mapping
+	// table.
+	var (
+		githubSyncRepo repository.GithubSyncRepository
+		githubClient   *github.Client
+		githubLabelSet service.GithubLabels
+	)
 	var scheduledTaskRunHandler *handler.ScheduledTaskRunHandler
 	if db != nil {
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
+		if cfg.HasGithubIntegration() {
+			githubLabels, labelErr := service.NewGithubLabels(service.GithubLabelOverrides{
+				ChangeRequest:    cfg.GithubLabelChangeRequest,
+				TypePrefix:       cfg.GithubLabelTypePrefix,
+				ScopePrefix:      cfg.GithubLabelScopePrefix,
+				ScopeToType:      cfg.GithubLabelsScope,
+				Impact:           cfg.GithubLabelsImpact,
+				Likelihood:       cfg.GithubLabelsLikelihood,
+				State:            cfg.GithubLabelsState,
+				StrippedOnCreate: cfg.GithubLabelsStrippedOnCreate,
+			})
+			if labelErr != nil {
+				// A label override that does not parse would leave the sync
+				// silently recognising nothing -- the exact failure that took
+				// ServiceNow's integration down. Refuse to start instead.
+				log.Fatalf("invalid GitHub label configuration: %v", labelErr)
+			}
+			// The outbound worker is started by cmd/api, which owns process
+			// lifetime; routes.go only builds what the HTTP surface needs.
+			githubSyncRepo = repository.NewGithubSyncRepository(db)
+			githubClient = github.NewClient(github.Config{
+				BaseURL: cfg.GithubBaseURL,
+				Token:   cfg.GithubToken,
+			})
+			githubLabelSet = githubLabels
+			githubWebhookHandler = handler.NewGithubWebhookHandler(
+				service.NewGithubSyncServiceWriting(
+					githubSyncRepo,
+					repository.NewGithubMutationRepository(db),
+					githubClient,
+					cfg.GithubIntegrationLogin,
+					githubLabels,
+				),
+				cfg.GithubWebhookSecret,
+			)
+		}
 	}
 
 	// alert_incident_mapping has no ServiceNow equivalent either — same
@@ -304,8 +358,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	callRequestHandler := handler.NewCallRequestHandler(activeCallRequestSvc)
 
+	// The native implementation when the GitHub integration is enabled,
+	// otherwise the ServiceNow proxy. Both are kept: cutover is per account,
+	// and an account still on ServiceNow must keep filing issues the old way.
 	var caseGithubIssueHandler *handler.CaseGithubIssueHandler
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch {
+	case githubClient != nil:
+		// Native: files the issue against GitHub and writes the issue number
+		// onto the case, which is what opens the outbound gate for it.
+		caseGithubIssueHandler = handler.NewCaseGithubIssueHandler(
+			service.NewCaseGithubIssueService(githubClient, githubSyncRepo, activeCaseSvc, githubLabelSet))
+	case cfg.DataSource == config.DataSourceServiceNow:
 		caseGithubIssueHandler = handler.NewCaseGithubIssueHandler(service.NewServiceNowCaseGithubIssueService(serviceNowIntegrationServiceClient, activeCaseSvc))
 	}
 
@@ -544,6 +607,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("GET /cases/{caseId}/sla-clocks/{clockType}", slaClockHandler.GetSLAClock)
 		mux.HandleFunc("PATCH /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}", slaClockHandler.SetSLAClockTierReached)
 	}
+	if githubWebhookHandler != nil {
+		mux.HandleFunc("POST /webhooks/github", githubWebhookHandler.Handle)
+	}
+
 	if scheduledTaskRunHandler != nil {
 		mux.HandleFunc("POST /scheduled-tasks/attempts", scheduledTaskRunHandler.AttemptScheduledTaskRun)
 		mux.HandleFunc("PATCH /scheduled-tasks/attempts/{id}", scheduledTaskRunHandler.UpdateScheduledTaskRunAttempt)

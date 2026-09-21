@@ -82,6 +82,42 @@ type Config struct {
 	// constructs EventPublisherService when both this is true AND
 	// EventHubBroker is set.
 	EventPublishingEnabled bool
+	// GithubIntegrationEnabled gates the GitHub change-request sync: the
+	// webhook endpoint and the client that answers it.
+	//
+	// OFF BY DEFAULT. The endpoint is reachable without a bearer token -- the
+	// HMAC signature is its authentication -- so it must not appear merely
+	// because a database happens to be configured.
+	GithubIntegrationEnabled bool
+	// GithubBaseURL is the API root: api.github.com, or an Enterprise host.
+	GithubBaseURL string
+	// GithubToken authenticates our calls out to GitHub.
+	GithubToken string
+	// GithubWebhookSecret is the HMAC key GitHub signs deliveries with. This
+	// IS the authentication on the webhook endpoint, so an empty value makes
+	// VerifySignature refuse everything rather than accept everything.
+	GithubWebhookSecret string
+	// GithubIntegrationLogin is our own GitHub account. Events it sent are our
+	// own writes coming back, and are dropped by identity rather than by
+	// pattern-matching the comment body.
+	GithubIntegrationLogin string
+	// GithubOutboundInterval is how often to drain the outbound queue when the
+	// last pass came back short. A backlog drains at full speed regardless.
+	GithubOutboundInterval time.Duration
+
+	// CSMPortalBaseURL builds the link back to a change request in comments
+	// posted to GitHub. Empty omits the link rather than rendering a broken one.
+	CSMPortalBaseURL string
+	// GitHub label vocabulary overrides. Empty keeps ServiceNow's value.
+	GithubLabelChangeRequest     string
+	GithubLabelTypePrefix        string
+	GithubLabelScopePrefix       string
+	GithubLabelsScope            string
+	GithubLabelsImpact           string
+	GithubLabelsLikelihood       string
+	GithubLabelsState            string
+	GithubLabelsStrippedOnCreate string
+
 	// CRNoticesEnabled turns on the change-request notice drainer: the poller
 	// that reads event_outbox and asks csm-notification-service to send the
 	// approval and plan-start-date mails.
@@ -197,6 +233,21 @@ func Load() *Config {
 		EventHubConnectionString:                 os.Getenv("EVENT_HUB_CONNECTION_STRING"),
 		EventHubTopic:                            os.Getenv("EVENT_HUB_TOPIC"),
 		EventPublishingEnabled:                   os.Getenv("EVENT_PUBLISHING_ENABLED") == "true",
+		GithubIntegrationEnabled:                 os.Getenv("GITHUB_INTEGRATION_ENABLED") == "true",
+		GithubBaseURL:                            getEnvOrDefault("GITHUB_API_BASE_URL", "https://api.github.com"),
+		GithubToken:                              os.Getenv("GITHUB_TOKEN"),
+		GithubWebhookSecret:                      os.Getenv("GITHUB_WEBHOOK_SECRET"),
+		GithubIntegrationLogin:                   os.Getenv("GITHUB_INTEGRATION_LOGIN"),
+		GithubOutboundInterval:                   envDuration("GITHUB_OUTBOUND_INTERVAL", 15*time.Second),
+		CSMPortalBaseURL:                         os.Getenv("CSM_PORTAL_BASE_URL"),
+		GithubLabelChangeRequest:                 os.Getenv("GITHUB_LABEL_CHANGE_REQUEST"),
+		GithubLabelTypePrefix:                    os.Getenv("GITHUB_LABEL_TYPE_PREFIX"),
+		GithubLabelScopePrefix:                   os.Getenv("GITHUB_LABEL_SCOPE_PREFIX"),
+		GithubLabelsScope:                        os.Getenv("GITHUB_LABELS_SCOPE"),
+		GithubLabelsImpact:                       os.Getenv("GITHUB_LABELS_IMPACT"),
+		GithubLabelsLikelihood:                   os.Getenv("GITHUB_LABELS_LIKELIHOOD"),
+		GithubLabelsState:                        os.Getenv("GITHUB_LABELS_STATE"),
+		GithubLabelsStrippedOnCreate:             os.Getenv("GITHUB_LABELS_STRIPPED_ON_CREATE"),
 		CRNoticesEnabled:                         os.Getenv("CR_NOTICES_ENABLED") == "true",
 		CREventHubTopic:                          getEnvOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
 		CRNoticePollInterval:                     envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
@@ -239,6 +290,7 @@ func getEnvOrDefault(key, defaultVal string) string {
 // splitComma parses a comma-separated env var into a trimmed, non-empty
 // slice ("" for an unset/empty var, matching integrations/csm-notification-service's
 // own copy of this exact helper).
+
 func splitComma(s string) []string {
 	if s == "" {
 		return nil
@@ -408,6 +460,17 @@ func (c *Config) DSN() string {
 	q.Set("sslmode", c.DBSSLMode)
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// HasGithubIntegration reports whether the GitHub sync is both switched on and
+// configured well enough to run. The webhook secret is required rather than
+// optional: without it the endpoint could not authenticate a caller, and an
+// endpoint that mutates change requests must never be reachable unverified.
+func (c *Config) HasGithubIntegration() bool {
+	return c.GithubIntegrationEnabled &&
+		c.GithubWebhookSecret != "" &&
+		c.GithubToken != "" &&
+		c.GithubIntegrationLogin != ""
 }
 
 // envDuration reads a Go duration string (e.g. "5s", "500ms"), falling back to
