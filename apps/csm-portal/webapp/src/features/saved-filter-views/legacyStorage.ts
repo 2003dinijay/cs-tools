@@ -45,6 +45,21 @@ export function readLegacySavedFilterViews(listKey: SavedFilterListKey): SavedFi
   }
 }
 
+export function writeLegacySavedFilterViews(
+  listKey: SavedFilterListKey,
+  views: SavedFilterView[],
+): void {
+  if (views.length === 0) {
+    clearLegacySavedFilterViews(listKey);
+    return;
+  }
+  try {
+    localStorage.setItem(LEGACY_SAVED_FILTER_STORAGE_KEYS[listKey], JSON.stringify(views));
+  } catch {
+    /* ignore */
+  }
+}
+
 export function clearLegacySavedFilterViews(listKey: SavedFilterListKey): void {
   try {
     localStorage.removeItem(LEGACY_SAVED_FILTER_STORAGE_KEYS[listKey]);

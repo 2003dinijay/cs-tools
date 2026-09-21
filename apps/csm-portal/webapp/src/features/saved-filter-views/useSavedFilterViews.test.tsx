@@ -114,7 +114,9 @@ describe("useSavedFilterViews", () => {
     inMemory([]);
     const { result } = renderHook(() => useSavedFilterViews("cases"), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    act(() => result.current.saveFilterView("  Spaced  ", "states=open"));
+    await act(async () => {
+      await result.current.saveFilterView("  Spaced  ", "states=open");
+    });
     await waitFor(() =>
       expect(result.current.views).toEqual([{ name: "Spaced", qs: "states=open" }]),
     );
@@ -129,7 +131,9 @@ describe("useSavedFilterViews", () => {
     inMemory([]);
     const { result } = renderHook(() => useSavedFilterViews("incidents"), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    act(() => result.current.saveFilterView("   ", "q=1"));
+    await act(async () => {
+      await result.current.saveFilterView("   ", "q=1");
+    });
     expect(putMock).not.toHaveBeenCalled();
   });
 
@@ -140,7 +144,9 @@ describe("useSavedFilterViews", () => {
     ]);
     const { result } = renderHook(() => useSavedFilterViews("problems"), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.views).toHaveLength(2));
-    act(() => result.current.deleteFilterView("DROP"));
+    await act(async () => {
+      await result.current.deleteFilterView("DROP");
+    });
     await waitFor(() => expect(result.current.views.map((v) => v.name)).toEqual(["Keep"]));
   });
 
@@ -154,7 +160,9 @@ describe("useSavedFilterViews", () => {
       wrapper: wrapper(),
     });
     await waitFor(() => expect(result.current.views.map((v) => v.name)).toEqual(["C", "B", "A"]));
-    act(() => result.current.moveFilterView("B", "up"));
+    await act(async () => {
+      await result.current.moveFilterView("B", "up");
+    });
     await waitFor(() => expect(result.current.views.map((v) => v.name)).toEqual(["B", "C", "A"]));
   });
 
@@ -175,15 +183,54 @@ describe("useSavedFilterViews", () => {
     expect(localStorage.getItem(LEGACY_SAVED_FILTER_STORAGE_KEYS.cases)).toBeNull();
   });
 
-  it("does not migrate when GET already has views", async () => {
+  it("uploads leftover localStorage even when GET already has views", async () => {
     localStorage.setItem(
       LEGACY_SAVED_FILTER_STORAGE_KEYS.cases,
       JSON.stringify([{ name: "Legacy", qs: "q=1" }]),
     );
     inMemory([{ name: "Server", qs: "q=s" }]);
     const { result } = renderHook(() => useSavedFilterViews("cases"), { wrapper: wrapper() });
-    await waitFor(() => expect(result.current.views).toEqual([{ name: "Server", qs: "q=s" }]));
-    expect(putMock).not.toHaveBeenCalled();
-    expect(localStorage.getItem(LEGACY_SAVED_FILTER_STORAGE_KEYS.cases)).not.toBeNull();
+    await waitFor(() =>
+      expect(result.current.views.map((v) => v.name)).toEqual(["Legacy", "Server"]),
+    );
+    expect(putMock).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem(LEGACY_SAVED_FILTER_STORAGE_KEYS.cases)).toBeNull();
+  });
+
+  it("keeps unuploaded localStorage entries when a migrate PUT fails", async () => {
+    localStorage.setItem(
+      LEGACY_SAVED_FILTER_STORAGE_KEYS.cases,
+      JSON.stringify([
+        { name: "First", qs: "q=1" },
+        { name: "Second", qs: "q=2" },
+      ]),
+    );
+    inMemory([]);
+    putMock.mockImplementation(async () => {
+      throw new Error("upload failed");
+    });
+    putMock.mockImplementationOnce(async (_path: string, body: BeSaveSavedFilterViewPayload) => {
+      return { views: [{ name: body.name, qs: body.qs }] };
+    });
+    const { result } = renderHook(() => useSavedFilterViews("cases"), { wrapper: wrapper() });
+    await waitFor(() => {
+      const leftover = JSON.parse(
+        localStorage.getItem(LEGACY_SAVED_FILTER_STORAGE_KEYS.cases) ?? "[]",
+      ) as View[];
+      expect(leftover.map((v) => v.name)).toEqual(["First"]);
+    });
+    expect(result.current.views.map((v) => v.name)).toEqual(["Second"]);
+  });
+
+  it("exposes saveError when PUT fails and does not drop the name", async () => {
+    inMemory([]);
+    putMock.mockRejectedValue(new Error("save failed"));
+    const { result } = renderHook(() => useSavedFilterViews("cases"), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await act(async () => {
+      await expect(result.current.saveFilterView("Keep me", "q=1")).rejects.toThrow("save failed");
+    });
+    await waitFor(() => expect(result.current.saveError).toBeTruthy());
+    expect(result.current.views).toEqual([]);
   });
 });

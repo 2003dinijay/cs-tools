@@ -15,6 +15,7 @@
 // under the License.
 
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -653,8 +654,14 @@ export default function CasesFilterBar({
   // A saved view is just a name pointing at a serialized filter query string;
   // applying one feeds the parsed filters back through onChange (which the page
   // writes to the URL), so the URL stays the source of truth.
-  const { views: savedViews, saveFilterView, deleteFilterView, moveFilterView } =
-    useSavedFilterViews("cases");
+  const {
+    views: savedViews,
+    saveFilterView,
+    deleteFilterView,
+    moveFilterView,
+    isSaving,
+    saveError,
+  } = useSavedFilterViews("cases");
   const currentQs = writeCasesFiltersToUrl(filters).toString();
   // Canonicalize a query string (normalize comma encoding, param order, and
   // drop unknown params) so the "active view" check matches regardless of how a
@@ -688,10 +695,16 @@ export default function CasesFilterBar({
 
   const handleSaveView = (): void => {
     if (!newViewName.trim()) return;
-    saveFilterView(newViewName, currentQs);
-    setNewViewName("");
-    setSaveDialogOpen(false);
-    setSavedAnchor(null);
+    void (async () => {
+      try {
+        await saveFilterView(newViewName, currentQs);
+        setNewViewName("");
+        setSaveDialogOpen(false);
+        setSavedAnchor(null);
+      } catch {
+        // Keep the dialog and name so the caller can retry after saveError.
+      }
+    })();
   };
 
   // Fixed enums — shared with `advancedFilters.ts`'s catalogue
@@ -892,6 +905,11 @@ export default function CasesFilterBar({
       >
         <DialogTitle>Save current view</DialogTitle>
         <DialogContent>
+          {saveError ? (
+            <Alert severity="error" sx={{ mb: 1 }}>
+              Couldn&apos;t save this view. Try again.
+            </Alert>
+          ) : null}
           <TextField
             autoFocus
             fullWidth
@@ -921,7 +939,7 @@ export default function CasesFilterBar({
           <Button
             variant="contained"
             onClick={handleSaveView}
-            disabled={!newViewName.trim()}
+            disabled={!newViewName.trim() || isSaving}
           >
             Save
           </Button>

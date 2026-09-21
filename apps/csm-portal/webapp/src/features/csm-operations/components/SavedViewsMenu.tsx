@@ -15,6 +15,7 @@
 // under the License.
 
 import {
+  Alert,
   Button,
   Dialog,
   DialogActions,
@@ -84,8 +85,14 @@ export default function SavedViewsMenu({
   onApply,
   listKey,
 }: SavedViewsMenuProps): JSX.Element {
-  const { views: savedViews, saveFilterView, deleteFilterView, moveFilterView } =
-    useSavedFilterViews(listKey);
+  const {
+    views: savedViews,
+    saveFilterView,
+    deleteFilterView,
+    moveFilterView,
+    isSaving,
+    saveError,
+  } = useSavedFilterViews(listKey);
   const currentCanonical = canonicalizeQs(currentQs);
   const isActiveView = (qs: string): boolean => canonicalizeQs(qs) === currentCanonical;
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
@@ -99,10 +106,16 @@ export default function SavedViewsMenu({
 
   const handleSaveView = (): void => {
     if (!newViewName.trim()) return;
-    saveFilterView(newViewName, currentQs);
-    setNewViewName("");
-    setSaveDialogOpen(false);
-    setAnchor(null);
+    void (async () => {
+      try {
+        await saveFilterView(newViewName, currentQs);
+        setNewViewName("");
+        setSaveDialogOpen(false);
+        setAnchor(null);
+      } catch {
+        // Keep the dialog and name so the caller can retry after saveError.
+      }
+    })();
   };
 
   return (
@@ -203,6 +216,11 @@ export default function SavedViewsMenu({
       >
         <DialogTitle>Save current view</DialogTitle>
         <DialogContent>
+          {saveError ? (
+            <Alert severity="error" sx={{ mb: 1 }}>
+              Couldn&apos;t save this view. Try again.
+            </Alert>
+          ) : null}
           <TextField
             autoFocus
             fullWidth
@@ -231,7 +249,7 @@ export default function SavedViewsMenu({
           <Button color="inherit" onClick={() => setSaveDialogOpen(false)}>
             Cancel
           </Button>
-          <Button variant="contained" onClick={handleSaveView} disabled={!newViewName.trim()}>
+          <Button variant="contained" onClick={handleSaveView} disabled={!newViewName.trim() || isSaving}>
             Save
           </Button>
         </DialogActions>

@@ -116,6 +116,21 @@ describe("SavedViewsMenu", () => {
     );
   });
 
+  it("keeps the save dialog open when PUT fails", async () => {
+    putMock.mockRejectedValueOnce(new Error("save failed"));
+    renderMenu();
+
+    fireEvent.click(screen.getByRole("button", { name: /saved views/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /save current view/i }));
+
+    const nameField = screen.getByLabelText(/view name/i);
+    fireEvent.change(nameField, { target: { value: "My open S1s" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(screen.getByText(/couldn't save this view/i)).toBeInTheDocument());
+    expect(screen.getByLabelText(/view name/i)).toHaveValue("My open S1s");
+  });
+
   it("applying a saved view calls onApply with its stored qs", async () => {
     views = [{ name: "Critical only", qs: "severities=S1" }];
     const onApply = vi.fn();

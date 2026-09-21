@@ -26,6 +26,7 @@ import { ApiQueryKeys } from "@constants/apiConstants";
 import {
   clearLegacySavedFilterViews,
   readLegacySavedFilterViews,
+  writeLegacySavedFilterViews,
   type SavedFilterListKey,
   type SavedFilterView,
 } from "@features/saved-filter-views/legacyStorage";
@@ -45,16 +46,22 @@ function listPath(listKey: SavedFilterListKey): string {
 /**
  * Named list-filter bookmarks for one CSM list, persisted in Postgres via
  * the BFF. `qs` stays the opaque query string the list already serializes.
- * If the server list is empty, existing localStorage views are uploaded
- * once (last-to-first so display order is preserved) and the legacy key
- * is cleared.
+ * Leftover localStorage views are uploaded last-to-first so display order
+ * is preserved. The legacy key is cleared only after every remaining PUT
+ * succeeds; a failed PUT keeps the unuploaded entries for a later retry.
  */
 export function useSavedFilterViews(listKey: SavedFilterListKey): {
   views: SavedFilterView[];
   isLoading: boolean;
-  saveFilterView: (name: string, qs: string) => void;
-  deleteFilterView: (name: string) => void;
-  moveFilterView: (name: string, direction: "up" | "down") => void;
+  isSaving: boolean;
+  saveError: Error | null;
+  isDeleting: boolean;
+  deleteError: Error | null;
+  isMoving: boolean;
+  moveError: Error | null;
+  saveFilterView: (name: string, qs: string) => Promise<void>;
+  deleteFilterView: (name: string) => Promise<void>;
+  moveFilterView: (name: string, direction: "up" | "down") => Promise<void>;
 } {
   const api = useBackendApi();
   const queryClient = useQueryClient();
@@ -72,20 +79,26 @@ export function useSavedFilterViews(listKey: SavedFilterListKey): {
 
   useEffect(() => {
     if (!query.isSuccess || query.data === undefined) return;
-    if (!query.data.fromServer || query.data.views.length > 0) return;
+    if (!query.data.fromServer) return;
     if (migrating.has(listKey)) return;
-    const local = readLegacySavedFilterViews(listKey).slice(0, 50);
-    if (local.length === 0) return;
+    const pending = readLegacySavedFilterViews(listKey).slice(0, 50);
+    if (pending.length === 0) return;
 
     migrating.add(listKey);
     void (async () => {
+      const remaining = [...pending];
       try {
         let last: BeSavedFilterViewList | undefined;
-        for (let i = local.length - 1; i >= 0; i -= 1) {
+        for (let i = remaining.length - 1; i >= 0; i -= 1) {
           last = await api.put<BeSaveSavedFilterViewPayload, BeSavedFilterViewList>(
             "/users/me/saved-filter-views",
-            { listKey, name: local[i].name, qs: local[i].qs },
+            { listKey, name: remaining[i].name, qs: remaining[i].qs },
           );
+          remaining.splice(i, 1);
+          writeLegacySavedFilterViews(listKey, remaining);
+          if (last) {
+            queryClient.setQueryData(queryKey(listKey), { views: last.views, fromServer: true });
+          }
         }
         clearLegacySavedFilterViews(listKey);
         if (last) {
@@ -94,6 +107,8 @@ export function useSavedFilterViews(listKey: SavedFilterListKey): {
           await queryClient.invalidateQueries({ queryKey: queryKey(listKey) });
         }
       } catch {
+        writeLegacySavedFilterViews(listKey, remaining);
+      } finally {
         migrating.delete(listKey);
       }
     })();
@@ -135,35 +150,41 @@ export function useSavedFilterViews(listKey: SavedFilterListKey): {
   });
 
   const saveFilterView = useCallback(
-    (name: string, qs: string): void => {
+    async (name: string, qs: string): Promise<void> => {
       const trimmed = name.trim();
       if (!trimmed) return;
-      saveMutation.mutate({ name: trimmed, qs });
+      await saveMutation.mutateAsync({ name: trimmed, qs });
     },
-    [saveMutation],
+    [saveMutation.mutateAsync],
   );
 
   const deleteFilterView = useCallback(
-    (name: string): void => {
+    async (name: string): Promise<void> => {
       const trimmed = name.trim();
       if (!trimmed) return;
-      deleteMutation.mutate(trimmed);
+      await deleteMutation.mutateAsync(trimmed);
     },
-    [deleteMutation],
+    [deleteMutation.mutateAsync],
   );
 
   const moveFilterView = useCallback(
-    (name: string, direction: "up" | "down"): void => {
+    async (name: string, direction: "up" | "down"): Promise<void> => {
       const trimmed = name.trim();
       if (!trimmed) return;
-      reorderMutation.mutate({ name: trimmed, direction });
+      await reorderMutation.mutateAsync({ name: trimmed, direction });
     },
-    [reorderMutation],
+    [reorderMutation.mutateAsync],
   );
 
   return {
     views: query.data?.views ?? [],
     isLoading: query.isLoading,
+    isSaving: saveMutation.isPending,
+    saveError: saveMutation.error,
+    isDeleting: deleteMutation.isPending,
+    deleteError: deleteMutation.error,
+    isMoving: reorderMutation.isPending,
+    moveError: reorderMutation.error,
     saveFilterView,
     deleteFilterView,
     moveFilterView,
