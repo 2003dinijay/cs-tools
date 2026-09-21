@@ -138,6 +138,68 @@ func TestProcessProject_RecordsIgnoredWhenNotifierDoesNotDeliver(t *testing.T) {
 	}
 }
 
+// TestProcessProject_SkipsNotifyWhenAlreadyClosedForAnyReason covers the
+// legacy checkForOpenProject rule, ported here for the first time: once a
+// project is closed for ANY reason (ClosureState — the rolled-up status
+// across all three closure dimensions — no longer "Open"), no further
+// notify/announce action fires for ANY cascade, not just the one that
+// actually closed it. Legacy applies this check inside
+// actionSendEmailNotification/actionServicePortalAnnouncement themselves,
+// uniformly regardless of process_type — not gated per-reason. Suspend
+// itself is deliberately NOT gated by this (legacy's actionSuspendProject
+// never calls checkForOpenProject either) — this component's existing
+// per-dimension idempotency guard on suspend() already handles that
+// safely.
+func TestProcessProject_SkipsNotifyWhenAlreadyClosedForAnyReason(t *testing.T) {
+	reader := &mockEntityReader{}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{}
+
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	endDate := now.AddDate(0, 0, 89) // fires the 90-day window
+	closureState := "Suspended"      // already closed, e.g. by the invoice cascade
+	proj := project{
+		ID:           "p1",
+		Account:      &projectAccountRef{ID: "a1"},
+		EndDate:      &endDate,
+		ClosureState: &closureState,
+	}
+
+	err := processProject(context.Background(), reader, updater, ntf, now, proj)
+	if err != nil {
+		t.Fatalf("processProject() error = %v, want nil", err)
+	}
+
+	if len(ntf.sent) != 0 {
+		t.Errorf("ntf.sent = %d, want 0 — already closed for another reason, must not actually notify", len(ntf.sent))
+	}
+
+	// The window still advances (recorded as IGNORED), matching legacy's
+	// own behavior: the event_type itself still updates to reflect the
+	// window was reached, only the action is marked ignored, not skipped
+	// entirely.
+	if len(updater.calls) != 1 {
+		t.Fatalf("updater.calls = %d, want 1", len(updater.calls))
+	}
+	var body struct {
+		SuspensionProcessState struct {
+			BasedOnSubscriptionEndDate struct {
+				EventType                   string `json:"event_type"`
+				ActionSendEmailNotification string `json:"actionSendEmailNotification"`
+			} `json:"based_on_subscription_end_date"`
+		} `json:"suspensionProcessState"`
+	}
+	if err := json.Unmarshal(updater.calls[0].body, &body); err != nil {
+		t.Fatalf("parse update body: %v", err)
+	}
+	if got := body.SuspensionProcessState.BasedOnSubscriptionEndDate.EventType; got != "90_days_notice" {
+		t.Errorf("event_type = %q, want %q", got, "90_days_notice")
+	}
+	if got := body.SuspensionProcessState.BasedOnSubscriptionEndDate.ActionSendEmailNotification; got != "IGNORED" {
+		t.Errorf("actionSendEmailNotification = %q, want %q", got, "IGNORED")
+	}
+}
+
 // TestProcessProject_CustomerAudienceWindowNotifiesBusinessContact covers a
 // 7-day window: both internal and customer per the confirmed audience
 // matrix. A project contact with the business-contact role should produce

@@ -54,9 +54,12 @@ func processProject(ctx context.Context, reader entityReader, updater projectUpd
 	}
 
 	if decision.ShouldNotify {
-		delivered, err := notifyForWindow(ctx, reader, ntf, proj, decision.Window)
-		if err != nil {
-			return fmt.Errorf("sweep: notify project %s: %w", proj.ID, err)
+		delivered := false
+		if !alreadyClosedForAnyReason(proj) {
+			delivered, err = notifyForWindow(ctx, reader, ntf, proj, decision.Window)
+			if err != nil {
+				return fmt.Errorf("sweep: notify project %s: %w", proj.ID, err)
+			}
 		}
 		if err := recordNoticeSent(ctx, updater, proj, decision.Window, delivered); err != nil {
 			return fmt.Errorf("sweep: record notice for project %s: %w", proj.ID, err)
@@ -70,6 +73,21 @@ func processProject(ctx context.Context, reader entityReader, updater projectUpd
 	}
 
 	return nil
+}
+
+// alreadyClosedForAnyReason reports whether proj is already closed for any
+// reason at all — ported from the legacy checkForOpenProject guard, which
+// gates every actionSendEmailNotification/actionServicePortalAnnouncement
+// call uniformly regardless of which cascade (subscription end date,
+// invoice due date, compliance) is currently firing. ClosureState is the
+// rolled-up status across all three closure dimensions (see project's own
+// doc comment), so this one check covers "closed via this reason" and
+// "closed via a different reason" identically — matching legacy's single
+// combined status field. Deliberately NOT applied to suspend() — legacy's
+// actionSuspendProject never calls checkForOpenProject either; suspend()'s
+// own per-dimension idempotency guard already handles that case safely.
+func alreadyClosedForAnyReason(proj project) bool {
+	return proj.ClosureState != nil && *proj.ClosureState != "Open"
 }
 
 // needsCustomerAudience reports whether window's confirmed audience matrix
