@@ -98,7 +98,9 @@ func main() {
 	metadataHandler := handler.NewMetadataHandler()
 	accountHandler := handler.NewAccountHandler(customerEntityClient)
 	projectHandler := handler.NewProjectHandler(customerEntityClient)
-	announcementHandler := handler.NewAnnouncementHandler(customerEntityClient, loadAnnouncementExcludedProjectKeys())
+	announcementExcludedProjectKeys := loadAnnouncementExcludedProjectKeys()
+	validateAnnouncementDataSourceCompatibility(loadCustomerEntityDataSource(), announcementExcludedProjectKeys)
+	announcementHandler := handler.NewAnnouncementHandler(customerEntityClient, announcementExcludedProjectKeys)
 	productHandler := handler.NewProductHandler(customerEntityClient)
 	deploymentHandler := handler.NewDeploymentHandler(customerEntityClient)
 	changeRequestHandler := handler.NewChangeRequestHandler(customerEntityClient)
@@ -613,6 +615,89 @@ func loadAnnouncementExcludedProjectKeys() []string {
 	keys := splitComma(os.Getenv("CSM_ANNOUNCEMENT_EXCLUDED_PROJECT_KEYS"))
 	slog.Info("resolved announcement excluded-project-key list", "count", len(keys))
 	return keys
+}
+
+// customerEntityDataSourcePostgres and customerEntityDataSourceServiceNow
+// mirror entity-service's own DATA_SOURCE values exactly (see
+// entity-service/internal/config/config.go's DataSource type) — this is not
+// an independent enum, it describes a property of the entity service this
+// backend is paired with.
+const (
+	customerEntityDataSourcePostgres   = "postgres"
+	customerEntityDataSourceServiceNow = "servicenow"
+)
+
+// validateCustomerEntityDataSource is the pure check behind
+// loadCustomerEntityDataSource: v (already lowercased/trimmed) must be
+// "postgres" or "servicenow".
+func validateCustomerEntityDataSource(v string) error {
+	if v != customerEntityDataSourcePostgres && v != customerEntityDataSourceServiceNow {
+		return fmt.Errorf("CUSTOMER_ENTITY_DATA_SOURCE must be %q or %q, got %q",
+			customerEntityDataSourcePostgres, customerEntityDataSourceServiceNow, v)
+	}
+	return nil
+}
+
+// loadCustomerEntityDataSource resolves which data source the paired
+// entity-service instance is configured with, from CUSTOMER_ENTITY_DATA_SOURCE
+// ("postgres" or "servicenow"). Defaults to "servicenow" when unset — the
+// data source every existing deployment has always effectively used, since
+// nothing here read this before now.
+//
+// This exists purely so checkAnnouncementDataSourceCompatibility (see below)
+// can catch a specific, otherwise-silent misconfiguration at startup:
+// entity-service's Postgres-backed project search rejects
+// excludeClosureStates/excludeSubscriptionTypes/excludeProjectKeys outright
+// (see entity-service/internal/service/project_service.go), so a deployment
+// with both DATA_SOURCE=postgres on entity-service and a non-empty
+// CSM_ANNOUNCEMENT_EXCLUDED_PROJECT_KEYS here would have every "All customer
+// projects" audience search fail with a 400 — every time, with no caller
+// action able to avoid it, since the mandatory denylist is injected
+// unconditionally. Exits the process on an unrecognized value, same as any
+// other malformed required config in this file.
+func loadCustomerEntityDataSource() string {
+	v := strings.ToLower(strings.TrimSpace(envOrDefault("CUSTOMER_ENTITY_DATA_SOURCE", customerEntityDataSourceServiceNow)))
+	if err := validateCustomerEntityDataSource(v); err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
+	slog.Info("resolved paired entity-service data source", "dataSource", v)
+	return v
+}
+
+// checkAnnouncementDataSourceCompatibility is the pure check behind
+// validateAnnouncementDataSourceCompatibility: non-nil exactly when the
+// announcement audience-search feature is configured in a way it can never
+// actually serve — a mandatory excluded-project-key denylist with no way to
+// enforce it. See loadCustomerEntityDataSource's doc comment for why this
+// specific combination is unserviceable rather than merely degraded.
+func checkAnnouncementDataSourceCompatibility(dataSource string, excludedProjectKeys []string) error {
+	if dataSource == customerEntityDataSourcePostgres && len(excludedProjectKeys) > 0 {
+		return fmt.Errorf(
+			"CSM_ANNOUNCEMENT_EXCLUDED_PROJECT_KEYS is set (%d keys) but the paired entity-service runs "+
+				"DATA_SOURCE=postgres, which does not support excludeProjectKeys — every announcement audience "+
+				"search would fail. Either unset CSM_ANNOUNCEMENT_EXCLUDED_PROJECT_KEYS, or point "+
+				"CUSTOMER_ENTITY_DATA_SOURCE at a servicenow-backed entity-service instance",
+			len(excludedProjectKeys),
+		)
+	}
+	return nil
+}
+
+// validateAnnouncementDataSourceCompatibility exits the process if
+// checkAnnouncementDataSourceCompatibility finds a problem.
+//
+// This is deliberately a hard startup failure, not a runtime fallback that
+// silently stops enforcing the denylist when it can't be sent — the whole
+// point of CSM_ANNOUNCEMENT_EXCLUDED_PROJECT_KEYS is that an "All customer
+// projects" send must never reach those projects; quietly omitting the
+// filter so the request merely succeeds would defeat that guarantee instead
+// of failing loudly the one time it's actually needed.
+func validateAnnouncementDataSourceCompatibility(dataSource string, excludedProjectKeys []string) {
+	if err := checkAnnouncementDataSourceCompatibility(dataSource, excludedProjectKeys); err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
 }
 
 // loadSftpgoConfig resolves the SFTPGo-backed attachment-storage feature
