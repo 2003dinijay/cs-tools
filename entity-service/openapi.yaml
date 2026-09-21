@@ -3386,8 +3386,10 @@ paths:
   /deployed-products/projects/search:
     post:
       summary: >
-        Search for the projects running a given product version
-        (ServiceNow data source only).
+        Search for the projects running a given product version. Supported
+        on both data sources; always excludes closed/suspended/restricted
+        and Cloud Support/Cloud Evaluation Support projects, with no way to
+        opt out.
       operationId: searchProjectsByProductVersion
       requestBody:
         required: true
@@ -7354,7 +7356,8 @@ components:
               - professional_services
           description: >-
             Excludes projects whose subscription type is any of the given values.
-            ServiceNow data source only; rejected on the Postgres data source.
+            Supported on both data sources. On Postgres, a project with no
+            recorded subscription type is never excluded.
         excludeProjectKeys:
           type: array
           items:

@@ -48,6 +48,22 @@ type DeployedProductRepository interface {
 	// SearchDeployedProductMetrics, but returns every usage_count.count_type
 	// found for the resolved instances, not just CORES.
 	SearchDeployedProductUsageCounts(ctx context.Context, id, deploymentID, startDate, endDate string) (domain.DeployedProductUsageCountsResponse, error)
+
+	// SearchProjectsByProductVersion returns the deduplicated, paginated set
+	// of projects with a deployed_product on the given product+version,
+	// joining deployed_product directly to project (migration 000014's
+	// project_id FK) rather than going through deployment the way
+	// SearchDeployedProducts does -- there's no deployment-name/id to
+	// display here, only the owning project. excludeClosureStates/
+	// excludeSubscriptionTypes are the caller's fixed, non-optional
+	// exclusion policy (mandatoryExcludeClosureStates/
+	// mandatoryExcludeSubscriptionTypes in sn_deployed_product_service.go,
+	// mirrored here for parity with that data source) -- not a
+	// caller-supplied filter, so they're separate parameters rather than
+	// part of domain.SearchProjectsByProductVersionRequest. COUNT and SELECT
+	// are executed concurrently on separate pool connections, same as
+	// SearchProjects/SearchDeployedProducts.
+	SearchProjectsByProductVersion(ctx context.Context, req domain.SearchProjectsByProductVersionRequest, excludeClosureStates []string, excludeSubscriptionTypes []domain.SubscriptionType) ([]domain.EntityRef, int, error)
 }
 
 // resolveDeployedProductNodes looks up the given deployed product, confirms
@@ -442,4 +458,103 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 	}
 
 	return deployedProducts, total, nil
+}
+
+// SearchProjectsByProductVersion implements DeployedProductRepository.
+// productID/productVersionID are validated as UUIDs by the caller
+// (deployedProductService.SearchProjectsByProductVersion) before reaching
+// here, and are always passed as query parameters ($1/$2 below), never
+// interpolated into the SQL string -- same discipline as every other filter
+// in this file.
+func (r *deployedProductRepo) SearchProjectsByProductVersion(ctx context.Context, req domain.SearchProjectsByProductVersionRequest, excludeClosureStates []string, excludeSubscriptionTypes []domain.SubscriptionType) ([]domain.EntityRef, int, error) {
+	filterArgs := []any{req.ProductID, req.ProductVersionID}
+	argIdx := 3
+
+	where := "WHERE dp.product_id = $1 AND dp.version_id = $2"
+
+	// Same NULL-permissive, upper-cased-vocabulary matching as
+	// ProjectRepository.SearchProjects' ExcludeClosureStates clause -- see
+	// that clause's own doc comment for why. This is the mandatory
+	// exclusion policy, not a caller-supplied filter, so excludeClosureStates
+	// is only ever the fixed mandatoryExcludeClosureStates slice.
+	if len(excludeClosureStates) > 0 {
+		upper := make([]string, len(excludeClosureStates))
+		for i, s := range excludeClosureStates {
+			upper[i] = strings.ToUpper(s)
+		}
+		where += fmt.Sprintf(" AND (proj.wso2_closure_state IS NULL OR proj.wso2_closure_state::text <> ALL($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, upper)
+		argIdx++
+	}
+
+	// Same NULL-permissive matching as ProjectRepository.SearchProjects'
+	// ExcludeSubscriptionTypes clause -- see that clause's own doc comment.
+	// Likewise always the fixed mandatoryExcludeSubscriptionTypes slice, not
+	// a caller-supplied filter.
+	if len(excludeSubscriptionTypes) > 0 {
+		types := make([]string, len(excludeSubscriptionTypes))
+		for i, t := range excludeSubscriptionTypes {
+			types[i] = string(t)
+		}
+		where += fmt.Sprintf(" AND (proj.subscription_type IS NULL OR proj.subscription_type <> ALL($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, types)
+		argIdx++
+	}
+
+	// DISTINCT: a project can have more than one deployed_product row
+	// matching this exact product+version (e.g. two deployments each
+	// running it), which would otherwise duplicate the project in both the
+	// count and the result.
+	countQuery := "SELECT COUNT(DISTINCT proj.id) FROM deployed_product dp JOIN project proj ON dp.project_id = proj.id " + where
+
+	dataQuery := fmt.Sprintf(
+		`SELECT DISTINCT proj.id, proj.name
+		 FROM deployed_product dp
+		 JOIN project proj ON dp.project_id = proj.id
+		 %s
+		 ORDER BY proj.name, proj.id
+		 LIMIT $%d OFFSET $%d`,
+		where, argIdx, argIdx+1,
+	)
+	dataArgs := append(append([]any{}, filterArgs...), req.Pagination.Limit, req.Pagination.Offset)
+
+	var total int
+	var projects []domain.EntityRef
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	eg.Go(func() error {
+		if err := r.db.QueryRow(egCtx, countQuery, filterArgs...).Scan(&total); err != nil {
+			return fmt.Errorf("count projects by product version: %w", err)
+		}
+		return nil
+	})
+
+	eg.Go(func() error {
+		rows, err := r.db.Query(egCtx, dataQuery, dataArgs...)
+		if err != nil {
+			return fmt.Errorf("query projects by product version: %w", err)
+		}
+		defer rows.Close()
+
+		result := make([]domain.EntityRef, 0, req.Pagination.Limit)
+		for rows.Next() {
+			var p domain.EntityRef
+			if err := rows.Scan(&p.ID, &p.Name); err != nil {
+				return fmt.Errorf("scan project by product version: %w", err)
+			}
+			result = append(result, p)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate projects by product version: %w", err)
+		}
+		projects = result
+		return nil
+	})
+
+	if err := eg.Wait(); err != nil {
+		return nil, 0, err
+	}
+
+	return projects, total, nil
 }

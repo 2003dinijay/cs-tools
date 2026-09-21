@@ -20,26 +20,20 @@ import (
 	"context"
 	"testing"
 
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 // recordingProjectRepo is a repository.ProjectRepository whose SearchProjects
-// records the request it was called with (or panics if it's never expected
-// to be called at all) — used to prove SearchProjects's exclude-filter guard
-// decides what reaches the repository, without needing a real Postgres
-// connection.
+// records the request it was called with — used to prove SearchProjects's
+// exclude filters reach the repository unchanged, without needing a real
+// Postgres connection.
 type recordingProjectRepo struct {
-	called  bool
-	gotReq  domain.SearchProjectsRequest
-	mustNot bool
+	called bool
+	gotReq domain.SearchProjectsRequest
 }
 
 func (r *recordingProjectRepo) SearchProjects(_ context.Context, req domain.SearchProjectsRequest, _ repository.SearchScope) ([]domain.Project, int, error) {
-	if r.mustNot {
-		panic("SearchProjects: repository must not be called for a rejected request")
-	}
 	r.called = true
 	r.gotReq = req
 	return nil, 0, nil
@@ -49,32 +43,11 @@ func (r *recordingProjectRepo) GetProjectByID(context.Context, string, repositor
 	panic("GetProjectByID: not exercised by these tests")
 }
 
-// TestSearchProjectsExcludeSubscriptionTypesRejected locks in that
-// ExcludeSubscriptionTypes alone is still rejected for the Postgres data
-// source: the project table has no subscription-type column at all (unlike
-// key/wso2_closure_state, which back ExcludeProjectKeys/ExcludeClosureStates
-// below), so there is nothing to filter on.
-func TestSearchProjectsExcludeSubscriptionTypesRejected(t *testing.T) {
-	repo := &recordingProjectRepo{mustNot: true}
-	svc := NewProjectService(repo, alwaysUnrestrictedAccess{})
-
-	_, err := svc.SearchProjects(t.Context(), domain.SearchProjectsRequest{
-		ExcludeSubscriptionTypes: []domain.SubscriptionType{domain.SubscriptionTypeCloudSupport},
-	})
-
-	var valErr *apierror.ValidationError
-	if err == nil {
-		t.Fatal("expected a ValidationError, got nil")
-	}
-	if !isValidationError(err, &valErr) {
-		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
-	}
-}
-
 // TestSearchProjectsExcludeClosureStatesAndProjectKeysPassThrough locks in
-// the opposite: ExcludeClosureStates and ExcludeProjectKeys (individually,
-// and together) are NOT rejected — they map onto real columns
-// (wso2_closure_state, key) and reach the repository unchanged, for
+// that ExcludeClosureStates, ExcludeProjectKeys, and ExcludeSubscriptionTypes
+// (individually, and together) are NOT rejected — they all map onto real
+// columns (wso2_closure_state, key, subscription_type — migration 000076 for
+// the last one) and reach the repository unchanged, for
 // ProjectRepository.SearchProjects to apply as SQL filters.
 func TestSearchProjectsExcludeClosureStatesAndProjectKeysPassThrough(t *testing.T) {
 	tests := []struct {
@@ -98,6 +71,18 @@ func TestSearchProjectsExcludeClosureStatesAndProjectKeysPassThrough(t *testing.
 			},
 		},
 		{
+			name: "excludeSubscriptionTypes alone",
+			req:  domain.SearchProjectsRequest{ExcludeSubscriptionTypes: []domain.SubscriptionType{domain.SubscriptionTypeCloudSupport}},
+		},
+		{
+			name: "all three together",
+			req: domain.SearchProjectsRequest{
+				ExcludeClosureStates:     []string{"Restricted"},
+				ExcludeProjectKeys:       []string{"APEXIA"},
+				ExcludeSubscriptionTypes: []domain.SubscriptionType{domain.SubscriptionTypeCloudSupport, domain.SubscriptionTypeCloudEvaluationSupport},
+			},
+		},
+		{
 			name: "neither set",
 			req:  domain.SearchProjectsRequest{},
 		},
@@ -116,7 +101,8 @@ func TestSearchProjectsExcludeClosureStatesAndProjectKeysPassThrough(t *testing.
 				t.Fatal("expected the repository to be called, it wasn't")
 			}
 			if len(repo.gotReq.ExcludeClosureStates) != len(tt.req.ExcludeClosureStates) ||
-				len(repo.gotReq.ExcludeProjectKeys) != len(tt.req.ExcludeProjectKeys) {
+				len(repo.gotReq.ExcludeProjectKeys) != len(tt.req.ExcludeProjectKeys) ||
+				len(repo.gotReq.ExcludeSubscriptionTypes) != len(tt.req.ExcludeSubscriptionTypes) {
 				t.Fatalf("repository received %+v, want the same exclude filters as %+v", repo.gotReq, tt.req)
 			}
 		})

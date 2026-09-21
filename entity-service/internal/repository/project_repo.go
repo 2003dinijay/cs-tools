@@ -30,16 +30,17 @@ import (
 )
 
 // ProjectRepository defines the persistence operations for the project
-// table (migration 000009). domain.Project.SubscriptionType/ClosureStatus
-// and domain.ProjectAccountRef.Tier have no corresponding column anywhere in
-// the migrations (SubscriptionType/ClosureStatus are ServiceNow vocabulary
-// with values -- e.g. "managed_cloud_subscription", "read_only" -- that
-// don't match any of project's several different closure-state columns;
-// account has no tier-like column at all), so they are left as their zero
-// value rather than guessed at. AgentEnabled/KbReferencesEnabled DO have a
-// clear real-column match (account.ai_gen_response_enabled/
-// smart_knowledge_base_suggestions_enabled) despite the name difference and
-// are populated from them.
+// table (migration 000009). domain.Project.SubscriptionType is populated
+// from subscription_type (migration 000076) -- see that migration's own doc
+// comment for why it's a plain TEXT column, not an enum. ClosureStatus and
+// domain.ProjectAccountRef.Tier still have no corresponding column anywhere
+// in the migrations (ClosureStatus is ServiceNow vocabulary -- e.g.
+// "read_only" -- that doesn't match any of project's several different
+// closure-state columns; account has no tier-like column at all), so they
+// are left as their zero value rather than guessed at.
+// AgentEnabled/KbReferencesEnabled DO have a clear real-column match
+// (account.ai_gen_response_enabled/smart_knowledge_base_suggestions_enabled)
+// despite the name difference and are populated from them.
 type ProjectRepository interface {
 	// SearchProjects returns a filtered, paginated slice of projects together
 	// with the total count of matching rows before pagination, narrowed to
@@ -110,10 +111,28 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		argIdx++
 	}
 
+	// subscription_type (migration 000076) is a plain nullable TEXT column --
+	// see that migration's own doc comment for why. A NULL subscription_type
+	// never matches any exclude value (a project with no recorded
+	// subscription type can't be excluded by one), same NULL-permissive
+	// semantics as ExcludeClosureStates above. No case transform is needed
+	// here (unlike ExcludeClosureStates): domain.SubscriptionType's own
+	// values are already the lowercase-underscore vocabulary this column
+	// stores.
+	if len(req.ExcludeSubscriptionTypes) > 0 {
+		types := make([]string, len(req.ExcludeSubscriptionTypes))
+		for i, t := range req.ExcludeSubscriptionTypes {
+			types[i] = string(t)
+		}
+		where += fmt.Sprintf(" AND (subscription_type IS NULL OR subscription_type <> ALL($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, types)
+		argIdx++
+	}
+
 	countQuery := "SELECT COUNT(*) FROM project " + where
 
 	dataQuery := fmt.Sprintf(
-		`SELECT id, account_id, sf_id, name, key,
+		`SELECT id, account_id, sf_id, name, key, subscription_type,
 		        start_date, end_date, created_on, updated_on
 		 FROM project %s
 		 ORDER BY created_on DESC, id
@@ -144,18 +163,27 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		result := make([]domain.Project, 0, req.Pagination.Limit)
 		for rows.Next() {
 			var p domain.Project
-			// account_id/start_date/end_date are nullable (migration 000009);
-			// domain.Project's fields are pointers to match -- see that
-			// struct's own doc comment. A non-pointer scan here used to
-			// error "cannot scan NULL into *time.Time" the moment any of the
-			// 13-14 (of 1956) rows with a NULL date reached this query.
+			// account_id/start_date/end_date/subscription_type are nullable
+			// (migrations 000009/000076); domain.Project.SubscriptionType is
+			// a non-pointer field though (its zero value, "", already means
+			// "unknown/unset" -- no separate pointer needed the way
+			// AccountID/StartDate/EndDate need one), so it's scanned into a
+			// *string temp var and converted below rather than scanned
+			// directly. A non-pointer scan here used to error "cannot scan
+			// NULL into *time.Time" the moment any of the 13-14 (of 1956)
+			// rows with a NULL date reached this query -- same class of bug
+			// this guards against for subscription_type too.
+			var subscriptionType *string
 			if err := rows.Scan(
-				&p.ID, &p.AccountID, &p.SfID, &p.Name, &p.Key,
+				&p.ID, &p.AccountID, &p.SfID, &p.Name, &p.Key, &subscriptionType,
 				&p.StartDate, &p.EndDate, &p.CreatedOn, &p.UpdatedOn,
 			); err != nil {
 				return fmt.Errorf("scan project: %w", err)
 			}
-			// SubscriptionType/ClosureStatus have no real column -- see this
+			if subscriptionType != nil {
+				p.SubscriptionType = domain.SubscriptionType(*subscriptionType)
+			}
+			// ClosureStatus still has no real column -- see this
 			// repository's own doc comment.
 			result = append(result, p)
 		}
