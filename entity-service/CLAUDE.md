@@ -1594,37 +1594,48 @@ unconditional `ServiceUnavailableError` stubs).
 
 **"Instance" is `deployment_node`.** `Instance.Key` is `node_id`;
 `Instance.Metadata` comes from that node's latest `deployment_information`
-row (by `reported_updated_on`). `CoreCount` is parsed from
-`number_of_cores`, a free-text `VARCHAR` upstream (e.g. `"8 (4 physical)"`)
--- `parseCoreCount` only accepts a clean integer and returns `nil` otherwise,
-rather than guessing at a partial number. `Updates` has no backing column on
-`deployment_information` at all (`deployed_product.update_level_info` is a
-different, per-deployed-product concept, not per-node) and is always `nil`.
+row (by `payload_updated_on`). `CoreCount` is `deployment_information.core_count`,
+a real integer column (an earlier revision parsed a free-text `number_of_cores`).
+`Updates` has no backing column on `deployment_information` at all
+(`deployed_product.update_level_info` is a different, per-deployed-product
+concept, not per-node) and is always `nil`.
 
-**Project/Deployment/DeployedProduct references are a best-effort join,
-UNVERIFIED against real data.** `deployment_node.product_version_id` is a
-real foreign key, so the `Product` reference is always reliable. But
-`deployment_node` has **no** foreign key to `deployment` or
-`deployed_product` at all -- only a free-text `deployment_ref VARCHAR(128)`,
-and the migration's own comment admits "node identity is not consistent
-upstream." `instanceRefJoins` (`instance_repo.go`) casts `deployment_ref` to
-`uuid` and matches it against `deployment.id`, guarded by a regex so a
-non-UUID value degrades to "no match" instead of a cast error; `DeployedProduct`
-additionally requires `deployed_product.version_id` to match the same
-product_version, since `deployment_id` alone doesn't uniquely identify one.
-**This assumption could not be checked against live data**: migration 000054
-has not actually been applied to the staging database this was developed
-against (same gap as `case_attachments`/`case_escalation` before it -- every
-one of these 7 tables returns "relation does not exist" there today). If
-`deployment_ref` turns out to hold something other than a deployment UUID
-(a ServiceNow sys_id, a deployment number, ...) once real rows exist, every
-project/deployment/deployed-product-filtered instance query will simply
-return empty results rather than wrong ones (the regex guard prevents a
-cast error), but the join itself needs re-deriving from real data before
-trusting it. The same resolution (product_version_id + deployment_ref) is
-reused by `deployed_product_repo.go`'s `resolveDeployedProductNodes` to
-answer "which instances belong to this deployed product" for the two
-`/deployed-products/{id}/metrics*` endpoints.
+**Column names follow staging, not `migrations/`.** Staging's schema is built by
+the sync service, and it renamed columns this code was written against:
+`deployment_node.subscription_key` -> `project_key`, `deployment_node.deployment_ref`
+-> `deployment_number`, `deployment_information.number_of_cores` -> `core_count`
+and `reported_created_on/reported_updated_on` -> `payload_created_on/
+payload_updated_on`, `daily_usage_summary.deployment_ref` -> `deployment_number`.
+Migration 000054 still uses the old names. With the old names `SearchInstances`,
+`SearchInstanceMetrics` and `SearchInstanceUsage` failed on staging with "column
+does not exist". Check the live schema before trusting the migrations.
+
+**Project/Deployment/DeployedProduct references, verified against staging.**
+`deployment_node.product_version_id` is a real foreign key, so `Product` is
+always reliable. `deployment_node` has no foreign key to project, deployment or
+deployed_product, only two free-text columns copied from the reported payload,
+and `instanceRefJoins` (`instance_repo.go`) uses them like this:
+- `project_key` -> `project.key` (unique, present on every node), so a node's
+  Project never depends on its deployment resolving.
+- `deployment_number` -> `deployment.number` (unique) **only if that deployment
+  belongs to the node's own project.** The reported value is not always a
+  deployment number: staging has a sys_id-like hex string and a bare `"320"` that
+  equals the number of a deployment in a *different* project, so matching the
+  number alone would attach those nodes to the wrong project. Requiring the
+  project to agree leaves them unresolved (Deployment/DeployedProduct nil, Project
+  still set). The old code cast `deployment_ref` to a UUID, but the value is a
+  deployment number, never a UUID, so that join could not match anything.
+- `DeployedProduct` additionally requires `deployed_product.version_id` to match
+  the node's product_version, since `deployment_id` alone doesn't uniquely
+  identify one.
+
+Checked against staging's 16 nodes: 14 resolve to a project, 11 to a deployment,
+none to a deployment of another project, and filtering by project or deployment
+matches independent SQL counts. The same resolution is reused by
+`deployed_product_repo.go`'s `resolveDeployedProductNodes` for the two
+`/deployed-products/{id}/metrics*` endpoints. **Data gap:** no
+`deployment_information.node_id` matches any `deployment_node.node_id` in staging
+(the former are sys_ids and `TEST2`/`TEST3`), so no instance has `Metadata` there.
 
 **Metrics vs. usage vs. usage-stats read three different tables, not one,
 because only one of them carries what each endpoint needs:**
