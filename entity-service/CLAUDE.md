@@ -2106,24 +2106,34 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
 
 ## Case search filters on the Postgres data source
 
-`caseRepo.SearchCases` implements `tag` (in/notIn), `projectOnboardingStatus`
-(in/notIn) and `taskSLABusinessElapsedPercent` (gte/lte). The rest of the
-ServiceNow-shaped filters are still rejected with a 400 by
-`caseService.SearchCases` (`escalationLevel`, `anyOf`, `product`, `projectType`,
-`creTeam`/`sreTeam`, ...) because dropping one would silently widen the result
-set. `creTeam`/`sreTeam` and call-request `assignmentTeamIds` are blocked on
-data, not schema: the group columns exist but staging's `group` table was empty
-(the sync has no job for the full group source) so every group FK is NULL.
+`caseRepo.SearchCases` implements `tag`, `projectOnboardingStatus` (in/notIn),
+`taskSLABusinessElapsedPercent` (gte/lte), `escalationLevel`, `escalation`
+(isEmpty/isNotEmpty) and `anyOf`. The rest of the ServiceNow-shaped filters are
+still rejected with a 400 by `caseService.SearchCases` (`product`, `projectType`,
+`creTeam`/`sreTeam`, `slaBreached`, `accountEscalationActive`, ...) because
+dropping one would silently widen the result set. `creTeam`/`sreTeam` and
+call-request `assignmentTeamIds` are blocked on data, not schema: the group
+columns exist but staging's `group` table was empty (the sync has no job for the
+full group source) so every group FK is NULL.
 
-- **state**: matched on `caseLikeStateColumn` (the COALESCE the read side already
-  selects), not on `c.state`. Filtering on `c.state` only ever matched the
-  `"case"` table, so service requests, engagements, security report analyses and
-  announcements (about 2,100 rows in staging) displayed a state but could never
-  match a `state in` filter -- a multi-type dashboard request such as `type in
-  [case, security_report_analysis]` + `state in [open]` silently dropped every
-  non-case row. The label spelling is identical across the five enums;
-  `announcement`'s `CLOSE` is normalized to `CLOSED`. `severity`, `issueType`
-  and `workState` are still case-only columns.
+- **One builder for top-level fields and `anyOf` branches.** `caseFieldPredicates`
+  (`case_field_predicates.go`) turns a `caseFieldSet` into SQL for type, project,
+  deployment, assignee, state, severity, issue type, engagement type, work state,
+  escalation level and tags. The top-level search and each `anyOf` branch both use
+  it, so a fix in one cannot miss the other (the state bug below is what happens
+  otherwise). Only the ServiceNow adapter used to parse `anyOf` into
+  `Parsed.OrGroups`; `caseService.SearchCases` now does too and runs the same value
+  validation (`validateCaseFieldValues`) on each branch. A branch is the AND of its
+  fields, branches are OR'd, and the whole is ANDed with the top-level filters.
+- **escalationLevel** matches `"case".current_escalation_level` ("0".."5" ->
+  `EL0`..`EL5`; anything else is a 400), the value the case detail already shows.
+  **escalation** matches `"case".is_escalated`. The `case_escalation` table is an
+  event *history* (several rows per case) and often disagrees with the case's
+  current level, so it is deliberately not used.
+- **projectId notIn** filtered on `c.project_id`, but `"case"` has no such column
+  (it is `work_item.project_id`), so every such search failed with "column
+  c.project_id does not exist". Fixed, and a case with no project now satisfies
+  notIn.
 - **tag**: `EXISTS`/`NOT EXISTS` over `work_item_tag` joined to `tag`, names
   compared case-insensitively (as `AddCaseTag` looks tags up). `in` = carries any
   of the names; `notIn` = carries none (an untagged case satisfies it).
@@ -2139,7 +2149,9 @@ data, not schema: the group columns exist but staging's `group` table was empty
   (the `domain.TaskSLAFilter` contract). Checked against staging: restricting to
   in-progress SLAs changed a 1,652-case result to 1,634, so the choice barely
   matters on real data.
-- **Data caveats (staging, when checked)**: 6,833 of 8,055 `CASE` work items
+- **Data caveats (staging, when checked)**: one case has `current_escalation_level`
+  EL4 but `is_escalated` false, so "escalated at level 4" returns 0 although a
+  level-4 case exists. Also 6,833 of 8,055 `CASE` work items
   have a NULL `project_id` (mostly 2023-2024 cases; `deployment` doesn't carry
   the project either), so project-based filters only ever see the remaining
   ~15% -- a sync gap, not a query bug. `work_item_tag` now exists in staging but

@@ -218,6 +218,9 @@ func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.
 		{name: "workState", filter: domain.CaseFieldFilter{Field: "workState", Op: "in", Values: []string{"ongoing"}}},
 		{name: "assignedUserId in", filter: domain.CaseFieldFilter{Field: "assignedUserId", Op: "in", Values: []string{uuid1}}},
 		{name: "createdOn gte", filter: domain.CaseFieldFilter{Field: "createdOn", Op: "gte", Values: []string{"2026-01-01"}}},
+		{name: "escalationLevel in", filter: domain.CaseFieldFilter{Field: "escalationLevel", Op: "in", Values: []string{"1", "2"}}},
+		{name: "escalation isNotEmpty", filter: domain.CaseFieldFilter{Field: "escalation", Op: "isNotEmpty"}},
+		{name: "escalation isEmpty", filter: domain.CaseFieldFilter{Field: "escalation", Op: "isEmpty"}},
 		{name: "tag in", filter: domain.CaseFieldFilter{Field: "tag", Op: "in", Values: []string{"patch"}}},
 		{name: "tag notIn", filter: domain.CaseFieldFilter{Field: "tag", Op: "notIn", Values: []string{"s_dip", "patch"}}},
 		{name: "projectOnboardingStatus in", filter: domain.CaseFieldFilter{Field: "projectOnboardingStatus", Op: "in", Values: []string{"Completed"}}},
@@ -253,7 +256,8 @@ func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.
 
 // TestCaseService_SearchCases_RejectsServiceNowOnlyOptions proves the Postgres
 // path rejects the search options that only snCaseService implements: the
-// two escalation filters, OR groups, and grouped counts. caseRepo.SearchCases models none of them, so accepting the request
+// slaBreached and account-escalation filters, and grouped counts.
+// caseRepo.SearchCases models none of them, so accepting the request
 // would silently drop the predicate and return a wider result set with a 200.
 // The stub repository panics if reached, so a passing test proves the
 // short-circuit, not merely that the repository ignored the option.
@@ -266,20 +270,6 @@ func TestCaseService_SearchCases_RejectsServiceNowOnlyOptions(t *testing.T) {
 		req     domain.SearchCasesRequest
 		wantMsg string
 	}{
-		{
-			name: "escalationLevel",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				Filters: []domain.CaseFieldFilter{{Field: "escalationLevel", Op: "in", Values: []string{"level_1"}}},
-			}},
-			wantMsg: `field "escalationLevel" is not supported by this data source`,
-		},
-		{
-			name: "escalation",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				Filters: []domain.CaseFieldFilter{{Field: "escalation", Op: "isNotEmpty"}},
-			}},
-			wantMsg: `field "escalation" is not supported by this data source`,
-		},
 		{
 			name: "slaBreached",
 			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
@@ -307,15 +297,6 @@ func TestCaseService_SearchCases_RejectsServiceNowOnlyOptions(t *testing.T) {
 				Filters: []domain.CaseFieldFilter{{Field: "resolvedOn", Op: "lte", Values: []string{"2026-01-31"}}},
 			}},
 			wantMsg: `field "resolvedOn" is not supported by this data source`,
-		},
-		{
-			name: "anyOf",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				AnyOf: []domain.CaseFilterBranch{
-					{Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open"}}}},
-				},
-			}},
-			wantMsg: "anyOf is not supported by this data source",
 		},
 		{
 			name:    "groupBy",
@@ -505,5 +486,49 @@ func TestCaseService_UpdateCase_RejectsTypeTransferFields(t *testing.T) {
 				t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
 			}
 		})
+	}
+}
+
+// TestCaseService_SearchCases_AnyOfReachesRepository proves an anyOf request is
+// parsed into OR groups and handed to the repository (the Postgres path used to
+// reject it outright), and that a field not allowed inside a branch is still a
+// validation error rather than silently dropped.
+func TestCaseService_SearchCases_AnyOfReachesRepository(t *testing.T) {
+	var got domain.SearchCasesRequest
+	repo := &stubCaseRepo{
+		searchCases: func(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error) {
+			got = req
+			return nil, 0, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	req := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+		Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open"}}},
+		AnyOf: []domain.CaseFilterBranch{
+			{Filters: []domain.CaseFieldFilter{{Field: "severity", Op: "in", Values: []string{"critical"}}}},
+			{Filters: []domain.CaseFieldFilter{{Field: "escalationLevel", Op: "in", Values: []string{"3", "4"}}}},
+		},
+	}}
+	if _, err := svc.SearchCases(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Parsed.OrGroups) != 2 {
+		t.Fatalf("OrGroups = %d, want 2", len(got.Parsed.OrGroups))
+	}
+	if g := got.Parsed.OrGroups[1]; len(g.EscalationLevels) != 2 || g.EscalationLevels[0] != "3" {
+		t.Errorf("second branch escalation levels = %v, want [3 4]", g.EscalationLevels)
+	}
+
+	bad := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+		AnyOf: []domain.CaseFilterBranch{
+			{Filters: []domain.CaseFieldFilter{{Field: "projectOnboardingStatus", Op: "in", Values: []string{"Completed"}}}},
+		},
+	}}
+	_, err := svc.SearchCases(ctx, bad)
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) {
+		t.Fatalf("a field not allowed inside a branch must be a validation error, got %v", err)
 	}
 }
