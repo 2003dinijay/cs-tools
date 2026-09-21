@@ -346,6 +346,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 
 	caseRepo := repository.NewCaseRepository(db)
 	var activeCaseSvc service.CaseService
+	// caseAttachmentOverrideSvc, when non-nil, is the CaseService case
+	// attachment routes (registered further below) use INSTEAD of
+	// activeCaseSvc -- see its assignment in the DataSourcePostgresPrimarySNFallback
+	// case for why. nil in every other mode: attachments follow activeCaseSvc
+	// exactly as before this override existed.
+	var caseAttachmentOverrideSvc service.CaseService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
 		pgCaseFallbackSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
@@ -379,16 +385,47 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		// snCaseMirrorSvc is a full snCaseService, exactly as constructed
 		// for DataSourceServiceNow above, but it is never made the active
 		// CaseService — reads always stay on Postgres in this mode. It
-		// serves two purposes: CreateCase calls its CreateCase directly and
+		// serves three purposes: CreateCase calls its CreateCase directly and
 		// synchronously; UpdateCase dispatches to its UpdateCase via
-		// caseWriteback, asynchronously.
+		// caseWriteback, asynchronously; and it is caseAttachmentOverrideSvc
+		// below, for case attachments specifically.
 		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, nil, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
 		caseWriteback := service.NewSNWritebackDispatcher(repository.NewSNWritebackFailureRepository(db))
 		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, caseWriteback, snCaseMirrorSvc)
+		// Case ATTACHMENTS are ServiceNow-only in this mode, permanently —
+		// unlike case metadata (CREATE/UPDATE above), not a pilot scope
+		// decision but a hard requirement: the sftpgo-backed Postgres
+		// attachment implementation (case_attachments table,
+		// CaseRepository.CreateCaseAttachment et al. — real, working SQL,
+		// unlike the old CreateCase bug) is not production-ready for the
+		// Oct 4 go-live, so attachment routes must never reach it while this
+		// mode is active, regardless of how case metadata itself is wired.
+		// snCaseMirrorSvc (above) is reused as-is: every one of its
+		// attachment methods (CreateCaseAttachment/SearchCaseAttachments/
+		// GetCaseAttachmentContent/DeleteCaseAttachment/GetAttachmentByID/
+		// UpdateAttachment) already converts the platform case UUID to a
+		// ServiceNow sys_id via uuidToSysid internally, and that round-trips
+		// correctly because CreateCaseFromServiceNow (createCaseSNFirst)
+		// stores id = sysidToUUID(the real sys_id) for every case created in
+		// this mode — the same identity convention DataSource=servicenow
+		// itself relies on. ConfirmCaseAttachment correctly 503s here too,
+		// same as it already does in plain DataSource=servicenow — a
+		// pre-existing, expected gap (Postgres-only concept: ServiceNow's
+		// /attachments API has no pending/in-progress upload state to
+		// confirm), not something this override introduces.
+		caseAttachmentOverrideSvc = snCaseMirrorSvc
 	default:
 		activeCaseSvc = service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc)
+	// activeAttachmentSvc backs the case-attachment routes registered below
+	// (POST/GET/PATCH/DELETE /attachments...) — see caseAttachmentOverrideSvc's
+	// own doc comment above for when and why it differs from activeCaseSvc.
+	activeAttachmentSvc := activeCaseSvc
+	if caseAttachmentOverrideSvc != nil {
+		activeAttachmentSvc = caseAttachmentOverrideSvc
+	}
+	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc)
 
 	// customer_call (migration 000072) backs call requests on the Postgres
 	// data source, so these routes are registered for both data sources.
@@ -751,13 +788,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("POST /cases/{id}/comments", caseHandler.CreateCaseComment)
 	mux.HandleFunc("POST /cases/{id}/comments/search", caseHandler.SearchCaseComments)
 	mux.HandleFunc("POST /cases/{id}/activities/search", caseHandler.SearchCaseActivities)
-	mux.HandleFunc("POST /attachments", caseHandler.CreateCaseAttachment)
-	mux.HandleFunc("POST /attachments/{id}/confirm", caseHandler.ConfirmCaseAttachment)
-	mux.HandleFunc("POST /attachments/search", caseHandler.SearchCaseAttachments)
-	mux.HandleFunc("GET /attachments/{id}/content", caseHandler.GetCaseAttachmentContent)
-	mux.HandleFunc("GET /attachments/{id}", caseHandler.GetAttachmentByID)
-	mux.HandleFunc("PATCH /attachments/{id}", caseHandler.UpdateAttachment)
-	mux.HandleFunc("DELETE /attachments/{id}", caseHandler.DeleteCaseAttachment)
+	mux.HandleFunc("POST /attachments", attachmentHandler.CreateCaseAttachment)
+	mux.HandleFunc("POST /attachments/{id}/confirm", attachmentHandler.ConfirmCaseAttachment)
+	mux.HandleFunc("POST /attachments/search", attachmentHandler.SearchCaseAttachments)
+	mux.HandleFunc("GET /attachments/{id}/content", attachmentHandler.GetCaseAttachmentContent)
+	mux.HandleFunc("GET /attachments/{id}", attachmentHandler.GetAttachmentByID)
+	mux.HandleFunc("PATCH /attachments/{id}", attachmentHandler.UpdateAttachment)
+	mux.HandleFunc("DELETE /attachments/{id}", attachmentHandler.DeleteCaseAttachment)
 	mux.HandleFunc("GET /cases/{id}/feedback", caseHandler.GetCaseFeedback)
 	mux.HandleFunc("POST /cases/{id}/feedback", caseHandler.SubmitCaseFeedback)
 	mux.HandleFunc("POST /cases/{id}/tags", caseHandler.AddCaseTag)
