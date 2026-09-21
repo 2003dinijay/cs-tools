@@ -74,10 +74,10 @@ const DRY_RUN_TAG_LABELS = [DRY_RUN_TAG_LABEL];
  *
  * "Dry run" reuses the exact same mechanism and Card as Option 1 (see
  * useAnnouncementDryRun/AnnouncementDryRunCard) — same fixed test project,
- * same "Dry Run" tag, same prominence ahead of Subject/Description not
- * being required for it to run: only the product/version choice, since the
- * dry-run case's content is independent of which real projects a send would
- * reach.
+ * same "Dry Run" tag, same requirement that Subject/Description be filled
+ * in before it can run. Unlike Submit, it does *not* require a product/
+ * version choice: the dry-run case's content is independent of which real
+ * projects a send would reach.
  */
 export default function CreateEolAnnouncementForm(): JSX.Element {
   const navigate = useNavTransition();
