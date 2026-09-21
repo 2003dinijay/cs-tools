@@ -6936,6 +6936,13 @@ components:
         userType:
           type: string
           enum: [internal, customer, system]
+        roles:
+          type: array
+          items:
+            type: string
+          description: >-
+            Names of the roles assigned to the user (`user_role`), sorted and
+            de-duplicated; an empty array when none. Returned by user search.
         createdOn:
           type: string
           format: date-time

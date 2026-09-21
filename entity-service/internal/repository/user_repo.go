@@ -246,13 +246,69 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 		return nil, 0, err
 	}
 
+	if err := r.attachRoles(ctx, users); err != nil {
+		return nil, 0, err
+	}
+
 	return users, total, nil
+}
+
+// attachRoles fills in each user's Roles from user_role in ONE query for the
+// whole page (not one per user), so the search stays a fixed number of round
+// trips whatever the page size. DISTINCT because user_role has no unique
+// constraint on (user_id, role_id) and the sync left duplicates (113 user/role
+// pairs in staging), which would otherwise list a role twice.
+func (r *userRepo) attachRoles(ctx context.Context, users []domain.User) error {
+	if len(users) == 0 {
+		return nil
+	}
+	ids := make([]string, len(users))
+	for i, u := range users {
+		ids[i] = u.ID
+	}
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT ur.user_id::text, r.name
+		FROM user_role ur
+		JOIN role r ON r.id = ur.role_id
+		WHERE ur.user_id = ANY($1::uuid[])
+		ORDER BY ur.user_id::text, r.name`, ids)
+	if err != nil {
+		return fmt.Errorf("query roles for users: %w", err)
+	}
+	defer rows.Close()
+
+	byUser := make(map[string][]string, len(users))
+	for rows.Next() {
+		var userID, role string
+		if err := rows.Scan(&userID, &role); err != nil {
+			return fmt.Errorf("scan user role: %w", err)
+		}
+		byUser[userID] = append(byUser[userID], role)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate roles for users: %w", err)
+	}
+	assignRoles(users, byUser)
+	return nil
+}
+
+// assignRoles sets Roles on every user; a user with none gets an empty, non-nil
+// slice so it serializes as [] rather than null.
+func assignRoles(users []domain.User, byUser map[string][]string) {
+	for i := range users {
+		if roles, ok := byUser[users[i].ID]; ok {
+			users[i].Roles = roles
+			continue
+		}
+		users[i].Roles = []string{}
+	}
 }
 
 // GetUserRoles implements UserRepository.
 func (r *userRepo) GetUserRoles(ctx context.Context, userID string) ([]string, error) {
+	// DISTINCT: user_role has no unique (user_id, role_id), and duplicates exist.
 	rows, err := r.db.Query(ctx, `
-		SELECT r.name FROM user_role ur
+		SELECT DISTINCT r.name FROM user_role ur
 		JOIN role r ON r.id = ur.role_id
 		WHERE ur.user_id = $1
 		ORDER BY r.name`, userID)

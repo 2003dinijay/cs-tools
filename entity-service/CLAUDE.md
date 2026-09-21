@@ -2237,6 +2237,25 @@ orders on `LOWER(COALESCE(NULLIF(name,''), first + last, user_name))` because
 `"user".name` is empty for a few synced rows (5 of 2,937 in staging); `u.id` is
 always the last tie-break so pages are stable. No `sortBy` keeps newest-first.
 
+## POST /users/search returns each user's roles (Postgres data source)
+
+The Postgres `User` had no roles, so the CSM users page showed none even though
+`user_role` holds them (2,803 of 2,937 staging users have at least one).
+`userRepo.SearchUsers` now calls `attachRoles`, which reads the roles for the
+whole page in **one** query (`user_role` joined to `role`), not one per user, and
+`domain.User.Roles` is always non-nil (`[]` when none) in a search result. Other
+lookups (`GetUserByEmail`) leave it nil. Two things worth knowing:
+- `user_role` has **no unique constraint** on `(user_id, role_id)` and staging holds
+  113 duplicated pairs (111 users), so the queries use `DISTINCT`; without it a
+  user would show `["admin", "admin"]`. `GetUserRoles` (used by `GET /users/me`)
+  got the same `DISTINCT`.
+- The CSM webapp used to decide "ServiceNow user or not" by whether `roles` was
+  present, so adding it here flips a postgres user into the ServiceNow branch and
+  blanks the name unless the webapp is updated. Ship the webapp change first or
+  together (`csmUsers.ts`'s `isSnUser` no longer looks at `roles`).
+- `GET /users/{id}` (the profile page) is registered only for the ServiceNow data
+  source; it is not available on Postgres at all.
+
 ## Adding a new entity
 
 Follow these steps in order:
