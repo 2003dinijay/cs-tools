@@ -416,11 +416,6 @@ func TestSNDeployedProductService_SearchProjectsByProductVersion_DeploymentEnume
 	}
 }
 
-// TestSNDeployedProductService_SearchProjectsByProductVersion_DeployedProductEnumerationErrorsRatherThanTruncate
-// mirrors the test above for the per-chunk deployed-products loop: an
-// upstream that always claims hasMore: true for a single deployment's
-// deployed-products page must fail loudly once the page bound is exceeded,
-// not return an incomplete/wrong match set.
 // TestSNDeployedProductService_SearchProjectsByProductVersion_IntersectsWithEligibleProjects
 // verifies the core requirement behind the mandatory exclusion this endpoint
 // always applies: the real EOL-announcement audience is the intersection of
@@ -473,6 +468,11 @@ func TestSNDeployedProductService_SearchProjectsByProductVersion_IntersectsWithE
 	}
 }
 
+// TestSNDeployedProductService_SearchProjectsByProductVersion_DeployedProductEnumerationErrorsRatherThanTruncate
+// mirrors the test above for the per-chunk deployed-products loop: an
+// upstream that always claims hasMore: true for a single deployment's
+// deployed-products page must fail loudly once the page bound is exceeded,
+// not return an incomplete/wrong match set.
 func TestSNDeployedProductService_SearchProjectsByProductVersion_DeployedProductEnumerationErrorsRatherThanTruncate(t *testing.T) {
 	dep := sysid32('1')
 	deploymentSvc := &fakeDeploymentService{deployments: []domain.DeploymentView{
