@@ -6916,6 +6916,7 @@ components:
     User:
       type: object
       description: User as stored in the postgres data source.
+      required: [roles]
       properties:
         id:
           type: string
@@ -6936,6 +6937,14 @@ components:
         userType:
           type: string
           enum: [internal, customer, system]
+        roles:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+          description: >-
+            Names of the roles assigned to the user (`user_role`), sorted and
+            de-duplicated; an empty array when none. Returned by user search.
         createdOn:
           type: string
           format: date-time

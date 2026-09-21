@@ -17,6 +17,7 @@
 package repository
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -99,7 +100,9 @@ func TestScanUser(t *testing.T) {
 			if err != nil {
 				t.Fatalf("scanUser() error = %v", err)
 			}
-			if got != tt.want {
+			// DeepEqual, not ==: domain.User now holds a slice (Roles), which
+			// scanUser must leave nil -- only user search fills it in.
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("scanUser() = %+v, want %+v", got, tt.want)
 			}
 		})
@@ -130,5 +133,20 @@ func TestUserOrderBy(t *testing.T) {
 	// An unknown field must never reach SQL: it falls back to the default.
 	if got := userOrderBy(domain.UserSortBy{Field: "email; DROP TABLE x"}); got != "u.created_on DESC, u.id" {
 		t.Errorf("unknown field produced %q", got)
+	}
+}
+
+func TestAssignRoles(t *testing.T) {
+	users := []domain.User{{ID: "u1"}, {ID: "u2"}, {ID: "u3"}}
+	assignRoles(users, map[string][]string{"u1": {"admin", "internal"}, "u3": {"agent"}})
+	if got := strings.Join(users[0].Roles, ","); got != "admin,internal" {
+		t.Errorf("u1 roles = %q", got)
+	}
+	if got := strings.Join(users[2].Roles, ","); got != "agent" {
+		t.Errorf("u3 roles = %q", got)
+	}
+	// A user with no roles must be [] (serializes as []), never nil (null).
+	if users[1].Roles == nil || len(users[1].Roles) != 0 {
+		t.Errorf("u2 roles = %#v, want empty non-nil", users[1].Roles)
 	}
 }

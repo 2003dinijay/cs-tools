@@ -43,14 +43,18 @@ const (
 // User represents a single user entity as stored in the database.
 // Phone and Timezone are optional and omitted from JSON when absent.
 type User struct {
-	ID        string    `json:"id"`
-	UserName  string    `json:"userName"`
-	FirstName string    `json:"firstName"`
-	LastName  string    `json:"lastName"`
-	Email     string    `json:"email"`
-	Phone     *string   `json:"phone"`
-	Timezone  *string   `json:"timezone"`
-	UserType  UserType  `json:"userType"`
+	ID        string   `json:"id"`
+	UserName  string   `json:"userName"`
+	FirstName string   `json:"firstName"`
+	LastName  string   `json:"lastName"`
+	Email     string   `json:"email"`
+	Phone     *string  `json:"phone"`
+	Timezone  *string  `json:"timezone"`
+	UserType  UserType `json:"userType"`
+	// Roles are the names of the roles assigned through user_role, sorted, and
+	// always non-nil ([] when none) in a user search result. Only user search
+	// fills it in; other lookups leave it nil.
+	Roles     []string  `json:"roles"`
 	CreatedOn time.Time `json:"createdOn"`
 	UpdatedOn time.Time `json:"updatedOn"`
 }
