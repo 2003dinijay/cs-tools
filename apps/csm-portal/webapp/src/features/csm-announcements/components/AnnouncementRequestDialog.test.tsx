@@ -342,6 +342,27 @@ describe("AnnouncementRequestDialog — approved", () => {
     expect(screen.getByRole("button", { name: /publishing/i })).toBeDisabled();
   });
 
+  it("does not say 'Announcement sent' while a security-tag retry or the bookkeeping publish call is still in flight — the button already says Publishing…", () => {
+    // Every case already succeeded (progress is null: neither the tag-retry
+    // pass nor the final /publish bookkeeping call touches it), but the
+    // whole operation isn't done yet — publishing is still true.
+    mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
+    mockedPublish.mockReturnValue({
+      publishing: true,
+      progress: null,
+      succeededProjectIds: ["p-1"],
+      failedProjectIds: [],
+      failedTagProjectIds: [],
+      published: null,
+      handlePublish: vi.fn(),
+    });
+
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+    expect(screen.getByText(/sending announcement/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^announcement sent$/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /publishing/i })).toBeDisabled();
+  });
+
   it("offers a retry with only the failed projects listed after a partial failure", () => {
     mockGet({ state: "approved", resolvedProjectIds: ["p-1", "p-2"], resolvedProjectCount: 2 });
     mockedPublish.mockReturnValue({

@@ -234,20 +234,30 @@ export default function AnnouncementRequestDialog({
   // the first send, just the outstanding ones on a retry), so it's summed
   // with succeededProjectIds carried over from any earlier round. While
   // still in flight, in-progress projects are optimistically counted as
-  // succeeded — corrected the moment the round settles and publish.progress
-  // goes back to null, at which point failed/failedProjectIds take over as
-  // the authoritative count instead. This still reaches `total` only once
-  // every resolved project has actually settled, since pendingProjectIds is
-  // exactly `total - succeededProjectIds.length` by construction (see
-  // usePublishAnnouncementRequest's own filter) — so the "Sending…" ->
-  // "Announcement sent[ with failures]" title switch never fires early.
+  // succeeded — corrected the moment publishing finishes, at which point
+  // failed/failedProjectIds take over as the authoritative count instead.
+  //
+  // Branches on publish.publishing, not publish.progress: a security-tag
+  // retry or the final bookkeeping /publish call both run with publishing
+  // still true but progress back to null (see usePublishAnnouncementRequest
+  // — neither the tag-retry pass nor the bookkeeping call touches progress
+  // at all). Branching on progress alone showed "Announcement sent" during
+  // those windows — completed already equalled total from the case-create
+  // side — while the button right next to it still said "Publishing…", a
+  // visible contradiction. Capping completed just below total whenever
+  // publishing is true (regardless of which sub-phase) keeps the title on
+  // "Sending announcement…" until the whole call actually finishes.
   const totalResolvedProjects = request?.resolvedProjectIds?.length ?? 0;
   const priorSucceededCount = publish.succeededProjectIds.length;
-  const sendProgress: AnnouncementSendProgressState = publish.progress
+  const sendProgress: AnnouncementSendProgressState = publish.publishing
     ? {
         total: totalResolvedProjects,
-        completed: priorSucceededCount + publish.progress.completed,
-        succeeded: priorSucceededCount + publish.progress.completed,
+        completed: publish.progress
+          ? priorSucceededCount + publish.progress.completed
+          : Math.min(priorSucceededCount, Math.max(totalResolvedProjects - 1, 0)),
+        succeeded: publish.progress
+          ? priorSucceededCount + publish.progress.completed
+          : priorSucceededCount,
         failed: 0,
         failedProjectIds: [],
       }
