@@ -84,6 +84,32 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		argIdx++
 	}
 
+	// key (migration 000009) matches domain.SearchProjectsRequest.ExcludeProjectKeys
+	// directly — same column SearchQuery's own ILIKE already matches against
+	// above. Exact, case-sensitive per that field's own doc comment.
+	if len(req.ExcludeProjectKeys) > 0 {
+		where += fmt.Sprintf(" AND key <> ALL($%d::text[])", argIdx)
+		filterArgs = append(filterArgs, req.ExcludeProjectKeys)
+		argIdx++
+	}
+
+	// wso2_closure_state_enum's values ('OPEN', 'READ_ONLY', 'CLOSED',
+	// 'RESTRICTED', 'SUSPENDED', migration 000009) are the same vocabulary as
+	// ExcludeClosureStates' ServiceNow-sourced values ("Open"/"Suspended"/
+	// "Restricted"), just differently cased, so this upper-cases the caller's
+	// values rather than requiring them to match casing they have no way to
+	// know. A NULL wso2_closure_state never matches any exclude value (a
+	// project with no recorded closure state can't be excluded by one).
+	if len(req.ExcludeClosureStates) > 0 {
+		upper := make([]string, len(req.ExcludeClosureStates))
+		for i, s := range req.ExcludeClosureStates {
+			upper[i] = strings.ToUpper(s)
+		}
+		where += fmt.Sprintf(" AND (wso2_closure_state IS NULL OR wso2_closure_state::text <> ALL($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, upper)
+		argIdx++
+	}
+
 	countQuery := "SELECT COUNT(*) FROM project " + where
 
 	dataQuery := fmt.Sprintf(
