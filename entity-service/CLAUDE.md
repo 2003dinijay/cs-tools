@@ -1165,19 +1165,66 @@ unchanged -- that one's already documented as "(ServiceNow data source
 only)", a deliberate scope boundary, not a bug. Verified by paging through
 all 1956 projects (every NULL row included) with no error afterward.
 
-## CreateCase is still completely broken for the Postgres data source (deliberately, pending a product decision)
+## CreateCase and case numbers (Postgres data source)
 
-Re-confirmed still true, verified live (`ERROR: relation "cases" does not
-exist (SQLSTATE 42P01)`) -- see `case_repo.go`'s own doc comment on
-`CreateCase` and "Fixing the plural/singular table-name mismatch" above for
-the full history. Restated here because it's easy to mistake for "just needs
-a table rename" (the same class of bug every other method in this file had):
-fixing the table/column names alone would only trade this error for a `NOT
-NULL`/unique-constraint failure, because `work_item.number`/`wso2_id` have no
-DB default, no backing sequence anywhere in `migrations/`, and no confirmed
-intended format. **Do not guess a fix here** -- the product decision (DB
-sequence + column default vs. Go-side generation with retry-on-conflict, and
-the actual number format) has been deferred twice now, not overlooked.
+**Table names are fixed.** `caseRepo.CreateCase` used to `INSERT INTO cases`, a
+table that does not exist (staging has no plural entity tables: it is `work_item`
+plus the `"case"` extension). It now writes a `work_item` row (type `CASE`) and a
+`"case"` row in one transaction; a failure on the second insert leaves no
+`work_item` row. Following the synced data, `work_item.created_by` holds the
+creator's **email** (6,995 of 8,066 staging cases), so it is taken from the
+`"user"` row of `req.CreatedBy` (a user id, also stored as `opened_by_user_id`);
+an unknown creator is a validation error. Verified against the real schema with
+`PREPARE` on staging and end to end on a local database built from all
+migrations.
+
+**Still not usable, deliberately:** nothing generates `work_item.number`
+(NOT NULL, unique) or `wso2_id`, so the insert is refused and the repository
+returns `ServiceUnavailableError` ("case numbers are not generated") rather than
+an opaque 500. Do not guess these -- the decision (a DB sequence + default vs
+Go-side generation) is still open. What the data says, for whoever decides:
+- `number` is `CS` + 7 digits in **one series shared by every work-item type**
+  (cases, service requests, engagements, security reports, announcements), max
+  `CS0442200` when checked. ServiceNow allocated them and the sync is still
+  running, so a locally generated number can collide with a synced one. The
+  leftover `cases_number_seq`/`cases_wso2_id_seq` sequences (both 63) are not
+  attached to any column.
+- `wso2_id` is `<project key>-<per-project counter>` (prefix equals
+  `project.key` for 1,101 of 1,233 linked cases; the rest are renamed or
+  malformed keys) and the counters have gaps.
+- The migrations define a `work_item_wso2_id_required_by_type` CHECK (a case-like
+  type needs a `wso2_id`) that **staging does not have** -- staging's schema is
+  built by the sync service's own migration list, which differs from this
+  directory (see "Staging schema drift" below).
+
+## Staging schema drift
+
+Staging's schema is not built from this directory. The sync service records its
+own list in `csm_sync_applied_migration` (`0001_control_plane.sql` ..
+`0076_add_sf_id_columns.sql`), numbered differently from `migrations/`. Diffed
+column by column (a local database built from every migration here vs staging,
+68 shared tables) when checked:
+
+- **Tables only in `migrations/`, absent from staging:** `alert_incident_mapping`
+  (000014), `case_attachments` (000043/000044), `announcement_requests` (000040),
+  `onboarding_step` (000075). Queries on them fail in staging with "relation does
+  not exist"; none of it is a naming problem, the tables were simply never created.
+- **Columns renamed in staging** (the code used the old names and failed with
+  "column does not exist"): `deployment_node.subscription_key` -> `project_key`,
+  `deployment_node.deployment_ref` -> `deployment_number`,
+  `deployment_information.number_of_cores` -> `core_count`,
+  `deployment_information.reported_created_on/reported_updated_on` ->
+  `payload_created_on/payload_updated_on`, `daily_usage_summary.deployment_ref` ->
+  `deployment_number`. The `deployment_*` rename is a change of meaning, not just
+  of spelling: the value is a deployment **number** (`DEP000002442`), never a UUID.
+- **Columns only in staging:** `sf_id` on `user`, `account_contact` and
+  `project_contact`; `case.github_issue_number`; `project.number`, `license_secrets`,
+  `primary_secret_key`, `secondary_secret_key`.
+- **Constraints:** the `work_item_wso2_id_required_by_type` CHECK exists in the
+  migrations but not in staging.
+
+Check the live schema, not just the migrations, before assuming a table, column or
+constraint exists.
 
 ## GetCaseByID's CloseNotes was silently swapped with ResolutionNotes
 
