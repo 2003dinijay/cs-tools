@@ -158,6 +158,30 @@ func NewUserService(repo repository.UserRepository) UserService {
 	return &userService{repo: repo}
 }
 
+// GetUser implements UserService.
+func (s *userService) GetUser(ctx context.Context, id string) (domain.UserDetail, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.UserDetail{}, err
+	}
+	u, err := s.repo.GetUserDetail(ctx, id)
+	if err != nil {
+		return domain.UserDetail{}, err
+	}
+	if u.Roles, err = s.repo.GetUserRoles(ctx, id); err != nil {
+		return domain.UserDetail{}, err
+	}
+	if u.Groups, err = s.repo.GetUserGroups(ctx, id); err != nil {
+		return domain.UserDetail{}, err
+	}
+	// Project access is a customer concept: staff have no project-contact rows.
+	if u.UserType == domain.UserTypeCustomer && u.Email != "" {
+		if u.ProjectAccess, err = s.repo.GetUserProjectAccess(ctx, u.Email); err != nil {
+			return domain.UserDetail{}, err
+		}
+	}
+	return u, nil
+}
+
 // SearchUsers implements UserService.
 func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersRequest) (domain.SearchUsersResponse, error) {
 	if err := normalizeUserPagination(&req.Pagination); err != nil {

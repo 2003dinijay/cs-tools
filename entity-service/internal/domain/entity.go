@@ -210,6 +210,57 @@ type UserProjectAccess struct {
 	GrantsCaseAccess     bool     `json:"grantsCaseAccess"`
 }
 
+// UserDetail is a single user's profile on the Postgres data source: the user row
+// plus role, group and (for customers) project-contact information.
+//
+// It is deliberately not SNUserDetail. That type always sends lockedOut, timeZone
+// and per-project notificationsEnabled, which this schema has no column for, and
+// the CSM page shows "Locked out: No" whenever lockedOut is present, so reusing it
+// would state something this data source cannot know. Those fields are omitted
+// here instead.
+type UserDetail struct {
+	ID       string   `json:"id"`
+	UserName string   `json:"userName"`
+	Name     string   `json:"name"`
+	Email    string   `json:"email"`
+	UserType UserType `json:"userType,omitempty"`
+	// Active is false only when user.is_active is explicitly FALSE (a NULL counts
+	// as active, matching how the rest of this schema treats an unset flag).
+	Active    bool      `json:"active"`
+	CreatedOn time.Time `json:"createdOn"`
+	UpdatedOn time.Time `json:"updatedOn"`
+	Roles     []string  `json:"roles"`
+	// Groups are the teams the user belongs to (team_member). Which of them are
+	// registry teams is the caller's determination.
+	Groups []UserGroupRef `json:"groups"`
+	// ProjectAccess is populated for customers (user_type EXTERNAL) only.
+	ProjectAccess []UserContactAccess `json:"projectAccess,omitempty"`
+}
+
+// UserContactAccess is one project_contact row for a customer, reported as stored
+// rather than as filtered, so a caller can see why a contact does or does not
+// reach a project's cases.
+type UserContactAccess struct {
+	ProjectID   string `json:"projectId"`
+	ProjectName string `json:"projectName"`
+	ProjectKey  string `json:"projectKey"`
+	// ContactEmail is the email the row was invited under.
+	ContactEmail string `json:"contactEmail"`
+	// ContactRecordPresent is false when the row has no account_contact linked.
+	ContactRecordPresent bool `json:"contactRecordPresent"`
+	// ContactRecordEmail is the linked account_contact's own user name (its
+	// login email), which can differ from ContactEmail (20 of 357 rows in staging).
+	ContactRecordEmail string `json:"contactRecordEmail,omitempty"`
+	// RegistrationState is project_contact.state (INVITED, REGISTERED, ...).
+	RegistrationState string `json:"registrationState"`
+	// Roles are the contact's project roles (PORTAL_USER, SECURITY_CONTACT, ...),
+	// through project_contact_group -> project_group_role -> project_role.
+	Roles []string `json:"roles"`
+	// GrantsCaseAccess is the rule this service actually enforces when it scopes a
+	// customer's projects and cases: the contact is REGISTERED.
+	GrantsCaseAccess bool `json:"grantsCaseAccess"`
+}
+
 // SearchSNUsersResponse is the paginated result of a ServiceNow user search.
 type SearchSNUsersResponse struct {
 	Users  []SNUser `json:"users"`

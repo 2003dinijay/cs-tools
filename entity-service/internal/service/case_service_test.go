@@ -131,8 +131,25 @@ func (s *stubCaseRepo) SearchCaseActivities(context.Context, domain.SearchCaseAc
 // exercise it beyond the createdBy-current-user path, which these tests don't
 // use.
 type stubUserRepo struct {
-	getUserByEmail func(ctx context.Context, email string) (domain.User, error)
-	searchUsers    func(ctx context.Context, req domain.SearchUsersRequest) ([]domain.User, int, error)
+	getUserByEmail       func(ctx context.Context, email string) (domain.User, error)
+	searchUsers          func(ctx context.Context, req domain.SearchUsersRequest) ([]domain.User, int, error)
+	getUserDetail        func(ctx context.Context, id string) (domain.UserDetail, error)
+	getUserRoles         func(ctx context.Context, id string) ([]string, error)
+	getUserGroups        func(ctx context.Context, id string) ([]domain.UserGroupRef, error)
+	getUserProjectAccess func(ctx context.Context, email string) ([]domain.UserContactAccess, error)
+}
+
+func (s stubUserRepo) GetUserDetail(ctx context.Context, id string) (domain.UserDetail, error) {
+	if s.getUserDetail != nil {
+		return s.getUserDetail(ctx, id)
+	}
+	panic("not implemented")
+}
+func (s stubUserRepo) GetUserProjectAccess(ctx context.Context, email string) ([]domain.UserContactAccess, error) {
+	if s.getUserProjectAccess != nil {
+		return s.getUserProjectAccess(ctx, email)
+	}
+	panic("not implemented")
 }
 
 func (s stubUserRepo) SearchUsers(ctx context.Context, req domain.SearchUsersRequest) ([]domain.User, int, error) {
@@ -151,10 +168,16 @@ func (s stubUserRepo) GetUserByEmail(ctx context.Context, email string) (domain.
 // GetUserRoles/GetUserGroups return empty rather than panicking: GetMe calls
 // both unconditionally after GetUserByEmail succeeds, and none of this
 // stub's existing test cases care about their contents.
-func (stubUserRepo) GetUserRoles(context.Context, string) ([]string, error) {
+func (s stubUserRepo) GetUserRoles(ctx context.Context, id string) ([]string, error) {
+	if s.getUserRoles != nil {
+		return s.getUserRoles(ctx, id)
+	}
 	return nil, nil
 }
-func (stubUserRepo) GetUserGroups(context.Context, string) ([]domain.UserGroupRef, error) {
+func (s stubUserRepo) GetUserGroups(ctx context.Context, id string) ([]domain.UserGroupRef, error) {
+	if s.getUserGroups != nil {
+		return s.getUserGroups(ctx, id)
+	}
 	return nil, nil
 }
 

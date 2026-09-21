@@ -979,9 +979,11 @@ paths:
       summary: Get one user's full profile.
       description: >
         Returns the user row plus group and team membership, and for external contacts
-        their per-project access with the reason access is or is not granted. ServiceNow
-        data source only. A deactivated user is still returned — that state is usually the
-        answer the caller is looking for.
+        their per-project access with the reason access is or is not granted. Served by
+        both data sources: `SNUserDetail` on ServiceNow, `UserDetail` on postgres (which
+        has no lock-out, time zone or per-project notification data, so those fields are
+        omitted rather than reported). A deactivated user is still returned — that state
+        is usually the answer the caller is looking for.
       operationId: getUser
       tags: [Users]
       parameters:
@@ -997,7 +999,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SNUserDetail'
+                oneOf:
+                  - $ref: '#/components/schemas/SNUserDetail'
+                  - $ref: '#/components/schemas/UserDetail'
         '400':
           description: Bad request.
           content:
@@ -7046,6 +7050,93 @@ components:
             type: string
         grantsCaseAccess:
           type: boolean
+
+    UserDetail:
+      type: object
+      description: >
+        One user's full profile on the postgres data source. Unlike `SNUserDetail` it
+        never sends `lockedOut`, `timeZone` or `notificationsEnabled`: this schema has
+        no column for them, and a value would be a guess.
+      required: [id, userName, name, email, active, createdOn, updatedOn, roles, groups]
+      properties:
+        id:
+          type: string
+          format: uuid
+        userName:
+          type: string
+        name:
+          type: string
+          description: Display name, else first + last name, else the user name.
+        email:
+          type: string
+        userType:
+          type: string
+          enum: [internal, customer, system]
+        active:
+          type: boolean
+          description: False only when the user is explicitly deactivated; an unset flag counts as active.
+        createdOn:
+          type: string
+          format: date-time
+        updatedOn:
+          type: string
+          format: date-time
+        roles:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+        groups:
+          type: array
+          description: Teams the user belongs to.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+        projectAccess:
+          type: array
+          description: >
+            One entry per project_contact row invited under the user's email. Present
+            for customers only.
+          items:
+            $ref: '#/components/schemas/UserContactAccess'
+
+    UserContactAccess:
+      type: object
+      required: [projectId, projectName, projectKey, contactEmail, contactRecordPresent, registrationState, roles, grantsCaseAccess]
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        projectName:
+          type: string
+        projectKey:
+          type: string
+        contactEmail:
+          type: string
+          description: The email the row was invited under.
+        contactRecordPresent:
+          type: boolean
+          description: False when the row has no account contact linked.
+        contactRecordEmail:
+          type: string
+          description: The linked account contact's own login email, which can differ from `contactEmail`.
+        registrationState:
+          type: string
+          description: The row's state (INVITED, REGISTERED, ...).
+        roles:
+          type: array
+          items:
+            type: string
+          description: The contact's project roles (e.g. PORTAL_USER, SECURITY_CONTACT).
+        grantsCaseAccess:
+          type: boolean
+          description: >
+            True when the contact is REGISTERED, which is the rule this service enforces
+            when it scopes a customer's projects and cases.
 
     SNUserDetail:
       type: object

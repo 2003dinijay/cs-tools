@@ -2256,6 +2256,33 @@ lookups (`GetUserByEmail`) leave it nil. Two things worth knowing:
 - `GET /users/{id}` (the profile page) is registered only for the ServiceNow data
   source; it is not available on Postgres at all.
 
+## GET /users/{id} on the Postgres data source
+
+The route was registered only for ServiceNow, so opening a user in the CSM portal
+on Postgres said "The requested resource was not found." It now returns
+`domain.UserDetail`: the user (display name, `active`, type), `roles` (DISTINCT, see
+above), `groups` (the teams from `team_member`, from which the BFF derives the
+profile's team block) and, for customers only (`user_type` EXTERNAL, emitted as
+`customer`), `projectAccess`.
+
+- **It is a dedicated type, not `SNUserDetail`.** That type always sends `lockedOut`,
+  `timeZone` and per-project `notificationsEnabled`, none of which this schema stores,
+  and the page shows a "Locked out: No" chip whenever `lockedOut` is present, so
+  reusing it would assert something unknowable. Those fields are omitted.
+- **`projectAccess`** is one row per `project_contact` invited under the user's email:
+  `contactEmail` is the row's email, `contactRecordPresent` is `account_contact_id IS NOT
+  NULL`, `contactRecordEmail` is the linked `account_contact.user_name` (it differs from
+  the invited email on 20 of 357 staging rows), `registrationState` is the row's state, and
+  `roles` come through `project_contact_group -> project_group_role -> project_role`
+  (PORTAL_USER, SECURITY_CONTACT, LEAD_USER, BUSINESS_CONTACT).
+- **`grantsCaseAccess` is exactly the rule `AccessService` enforces**: the contact is
+  `REGISTERED` (`registeredContactState` in `access_repo.go`, shared by both). The
+  ServiceNow version also required the linked contact's email to match; this data source
+  does not, so reporting that here would describe a rule that is not applied.
+- Enrichment failures are errors, not silently partial profiles (the ServiceNow adapter
+  degrades to empty blocks; a database error here is a real fault).
+- Like the other user routes this does no per-caller scoping; the BFF gates it.
+
 ## Adding a new entity
 
 Follow these steps in order:
