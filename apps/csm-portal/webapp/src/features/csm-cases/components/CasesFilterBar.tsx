@@ -661,6 +661,7 @@ export default function CasesFilterBar({
     moveFilterView,
     isSaving,
     saveError,
+    resetSaveError,
   } = useSavedFilterViews("cases");
   const currentQs = writeCasesFiltersToUrl(filters).toString();
   // Canonicalize a query string (normalize comma encoding, param order, and
@@ -797,6 +798,7 @@ export default function CasesFilterBar({
           <MenuItem
             onClick={() => {
               setSavedAnchor(null);
+              resetSaveError();
               setSaveDialogOpen(true);
             }}
           >
@@ -918,7 +920,10 @@ export default function CasesFilterBar({
             label="View name"
             placeholder="e.g. My open S1/S2"
             value={newViewName}
-            onChange={(e) => setNewViewName(e.target.value)}
+            onChange={(e) => {
+              resetSaveError();
+              setNewViewName(e.target.value);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();

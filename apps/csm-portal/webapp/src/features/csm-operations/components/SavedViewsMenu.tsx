@@ -92,6 +92,7 @@ export default function SavedViewsMenu({
     moveFilterView,
     isSaving,
     saveError,
+    resetSaveError,
   } = useSavedFilterViews(listKey);
   const currentCanonical = canonicalizeQs(currentQs);
   const isActiveView = (qs: string): boolean => canonicalizeQs(qs) === currentCanonical;
@@ -141,6 +142,7 @@ export default function SavedViewsMenu({
         <MenuItem
           onClick={() => {
             setAnchor(null);
+            resetSaveError();
             setSaveDialogOpen(true);
           }}
         >
@@ -229,7 +231,10 @@ export default function SavedViewsMenu({
             label="View name"
             placeholder="e.g. My open records"
             value={newViewName}
-            onChange={(e) => setNewViewName(e.target.value)}
+            onChange={(e) => {
+              resetSaveError();
+              setNewViewName(e.target.value);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();

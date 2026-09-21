@@ -62,6 +62,7 @@ export function useSavedFilterViews(listKey: SavedFilterListKey): {
   saveFilterView: (name: string, qs: string) => Promise<void>;
   deleteFilterView: (name: string) => Promise<void>;
   moveFilterView: (name: string, direction: "up" | "down") => Promise<void>;
+  resetSaveError: () => void;
 } {
   const api = useBackendApi();
   const queryClient = useQueryClient();
@@ -88,26 +89,20 @@ export function useSavedFilterViews(listKey: SavedFilterListKey): {
     void (async () => {
       const remaining = [...pending];
       try {
-        let last: BeSavedFilterViewList | undefined;
         for (let i = remaining.length - 1; i >= 0; i -= 1) {
-          last = await api.put<BeSaveSavedFilterViewPayload, BeSavedFilterViewList>(
+          await api.put<BeSaveSavedFilterViewPayload, BeSavedFilterViewList>(
             "/users/me/saved-filter-views",
             { listKey, name: remaining[i].name, qs: remaining[i].qs },
           );
           remaining.splice(i, 1);
           writeLegacySavedFilterViews(listKey, remaining);
-          if (last) {
-            queryClient.setQueryData(queryKey(listKey), { views: last.views, fromServer: true });
-          }
-        }
-        clearLegacySavedFilterViews(listKey);
-        if (last) {
-          queryClient.setQueryData(queryKey(listKey), { views: last.views, fromServer: true });
-        } else {
           await queryClient.invalidateQueries({ queryKey: queryKey(listKey) });
         }
+        clearLegacySavedFilterViews(listKey);
+        await queryClient.invalidateQueries({ queryKey: queryKey(listKey) });
       } catch {
         writeLegacySavedFilterViews(listKey, remaining);
+        await queryClient.invalidateQueries({ queryKey: queryKey(listKey) });
       } finally {
         migrating.delete(listKey);
       }
@@ -120,8 +115,8 @@ export function useSavedFilterViews(listKey: SavedFilterListKey): {
         "/users/me/saved-filter-views",
         { listKey, name: input.name, qs: input.qs },
       ),
-    onSuccess: (data) => {
-      queryClient.setQueryData(queryKey(listKey), { views: data.views, fromServer: true });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKey(listKey) });
     },
   });
 
@@ -130,11 +125,8 @@ export function useSavedFilterViews(listKey: SavedFilterListKey): {
       api.del<BeSavedFilterViewList>(
         `${listPath(listKey)}&name=${encodeURIComponent(name)}`,
       ),
-    onSuccess: (data) => {
-      queryClient.setQueryData(queryKey(listKey), {
-        views: data?.views ?? [],
-        fromServer: true,
-      });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKey(listKey) });
     },
   });
 
@@ -144,8 +136,8 @@ export function useSavedFilterViews(listKey: SavedFilterListKey): {
         "/users/me/saved-filter-views/reorder",
         { listKey, name: input.name, direction: input.direction },
       ),
-    onSuccess: (data) => {
-      queryClient.setQueryData(queryKey(listKey), { views: data.views, fromServer: true });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKey(listKey) });
     },
   });
 
@@ -176,6 +168,10 @@ export function useSavedFilterViews(listKey: SavedFilterListKey): {
     [reorderMutation.mutateAsync],
   );
 
+  const resetSaveError = useCallback(() => {
+    saveMutation.reset();
+  }, [saveMutation.reset]);
+
   return {
     views: query.data?.views ?? [],
     isLoading: query.isLoading,
@@ -188,5 +184,6 @@ export function useSavedFilterViews(listKey: SavedFilterListKey): {
     saveFilterView,
     deleteFilterView,
     moveFilterView,
+    resetSaveError,
   };
 }

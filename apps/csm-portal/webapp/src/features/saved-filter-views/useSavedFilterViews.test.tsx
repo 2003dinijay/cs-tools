@@ -205,12 +205,14 @@ describe("useSavedFilterViews", () => {
         { name: "Second", qs: "q=2" },
       ]),
     );
-    inMemory([]);
+    let server: View[] = [];
+    getMock.mockImplementation(async () => ({ views: [...server] }));
     putMock.mockImplementation(async () => {
       throw new Error("upload failed");
     });
     putMock.mockImplementationOnce(async (_path: string, body: BeSaveSavedFilterViewPayload) => {
-      return { views: [{ name: body.name, qs: body.qs }] };
+      server = [{ name: body.name, qs: body.qs }, ...server];
+      return { views: [...server] };
     });
     const { result } = renderHook(() => useSavedFilterViews("cases"), { wrapper: wrapper() });
     await waitFor(() => {
@@ -219,7 +221,20 @@ describe("useSavedFilterViews", () => {
       ) as View[];
       expect(leftover.map((v) => v.name)).toEqual(["First"]);
     });
-    expect(result.current.views.map((v) => v.name)).toEqual(["Second"]);
+    await waitFor(() => expect(result.current.views.map((v) => v.name)).toEqual(["Second"]));
+  });
+
+  it("clears saveError when resetSaveError is called", async () => {
+    inMemory([]);
+    putMock.mockRejectedValue(new Error("save failed"));
+    const { result } = renderHook(() => useSavedFilterViews("cases"), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await act(async () => {
+      await expect(result.current.saveFilterView("Keep me", "q=1")).rejects.toThrow("save failed");
+    });
+    await waitFor(() => expect(result.current.saveError).toBeTruthy());
+    act(() => result.current.resetSaveError());
+    await waitFor(() => expect(result.current.saveError).toBeNull());
   });
 
   it("exposes saveError when PUT fails and does not drop the name", async () => {
