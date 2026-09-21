@@ -488,15 +488,16 @@ func (r *deployedProductRepo) SearchProjectsByProductVersion(ctx context.Context
 	}
 
 	// Same NULL-permissive matching as ProjectRepository.SearchProjects'
-	// ExcludeSubscriptionTypes clause -- see that clause's own doc comment.
-	// Likewise always the fixed mandatoryExcludeSubscriptionTypes slice, not
-	// a caller-supplied filter.
+	// ExcludeSubscriptionTypes clause -- see that clause's own doc comment
+	// for why project_type.name is normalized in SQL rather than compared
+	// as-is. Likewise always the fixed mandatoryExcludeSubscriptionTypes
+	// slice, not a caller-supplied filter.
 	if len(excludeSubscriptionTypes) > 0 {
 		types := make([]string, len(excludeSubscriptionTypes))
 		for i, t := range excludeSubscriptionTypes {
 			types[i] = string(t)
 		}
-		where += fmt.Sprintf(" AND (proj.subscription_type IS NULL OR proj.subscription_type <> ALL($%d::text[]))", argIdx)
+		where += fmt.Sprintf(" AND (pt.name IS NULL OR lower(replace(pt.name, ' ', '_')) <> ALL($%d::text[]))", argIdx)
 		filterArgs = append(filterArgs, types)
 		argIdx++
 	}
@@ -505,12 +506,15 @@ func (r *deployedProductRepo) SearchProjectsByProductVersion(ctx context.Context
 	// matching this exact product+version (e.g. two deployments each
 	// running it), which would otherwise duplicate the project in both the
 	// count and the result.
-	countQuery := "SELECT COUNT(DISTINCT proj.id) FROM deployed_product dp JOIN project proj ON dp.project_id = proj.id " + where
+	countQuery := "SELECT COUNT(DISTINCT proj.id) FROM deployed_product dp" +
+		" JOIN project proj ON dp.project_id = proj.id" +
+		" LEFT JOIN project_type pt ON pt.id = proj.project_type_id " + where
 
 	dataQuery := fmt.Sprintf(
 		`SELECT DISTINCT proj.id, proj.name
 		 FROM deployed_product dp
 		 JOIN project proj ON dp.project_id = proj.id
+		 LEFT JOIN project_type pt ON pt.id = proj.project_type_id
 		 %s
 		 ORDER BY proj.name, proj.id
 		 LIMIT $%d OFFSET $%d`,

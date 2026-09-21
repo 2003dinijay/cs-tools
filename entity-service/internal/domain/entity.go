@@ -625,10 +625,13 @@ type SearchProjectsRequest struct {
 	// any of the given values, e.g. ["cloud_support", "cloud_evaluation_support"].
 	// Same "no upstream filter, applied in Go" caveat as ExcludeClosureStates
 	// for the ServiceNow data source. The Postgres data source applies it as a
-	// real SQL filter against project.subscription_type (migration 000076) —
-	// a project with no recorded subscription type is never excluded, same
-	// NULL-permissive semantics as ExcludeClosureStates (see
-	// project_repo.go's SearchProjects).
+	// real SQL filter against project_type.name (migrations 000026/000027,
+	// joined via project.project_type_id -- the same ServiceNow project
+	// "type" reference field, normalized the same way
+	// snTypeNameToSubscriptionType normalizes it) -- a project with no
+	// project_type_id set is never excluded, same NULL-permissive
+	// semantics as ExcludeClosureStates (see project_repo.go's
+	// SearchProjects).
 	ExcludeSubscriptionTypes []SubscriptionType `json:"excludeSubscriptionTypes,omitempty"`
 	// ExcludeProjectKeys filters out projects whose Key (see ProjectView.Key)
 	// is any of the given values, e.g. ["APEXIA", "VERIDIAN"] — a caller-

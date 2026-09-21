@@ -46,9 +46,9 @@ func (r *recordingProjectRepo) GetProjectByID(context.Context, string, repositor
 // TestSearchProjectsExcludeClosureStatesAndProjectKeysPassThrough locks in
 // that ExcludeClosureStates, ExcludeProjectKeys, and ExcludeSubscriptionTypes
 // (individually, and together) are NOT rejected — they all map onto real
-// columns (wso2_closure_state, key, subscription_type — migration 000076 for
-// the last one) and reach the repository unchanged, for
-// ProjectRepository.SearchProjects to apply as SQL filters.
+// columns/joins (wso2_closure_state, key, and project_type.name via
+// project.project_type_id for the last one) and reach the repository
+// unchanged, for ProjectRepository.SearchProjects to apply as SQL filters.
 func TestSearchProjectsExcludeClosureStatesAndProjectKeysPassThrough(t *testing.T) {
 	tests := []struct {
 		name    string
