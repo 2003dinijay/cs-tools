@@ -2842,7 +2842,10 @@ paths:
         id, display name, and whether it is the default dashboard. This is a
         registry loaded at startup from a directory of per-dashboard JSON
         files (one file per dashboard, its filename irrelevant), held in
-        memory; not user-configurable at runtime.
+        memory; not user-configurable at runtime. A dashboard marked
+        restricted in its definition is silently left out of this list for a
+        caller who is not a support engineer or admin — the request still
+        succeeds, just with a shorter list.
       operationId: getDashboards
       responses:
         "200":
@@ -3005,7 +3008,9 @@ paths:
         not read any resource data. This is a config-driven pilot: widget
         templates are a registry loaded at startup from a directory of
         per-dashboard JSON files, held in memory; not user-configurable at
-        runtime.
+        runtime. A dashboard marked restricted in its definition returns 403
+        for a caller who is not a support engineer or admin, even with a
+        correct id.
       operationId: getDashboardDetail
       parameters:
         - name: dashboardId
@@ -3021,6 +3026,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Dashboard'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "401":
           description: Unauthorized
           content:
