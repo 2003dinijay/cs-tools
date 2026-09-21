@@ -29,11 +29,14 @@ import (
 // bothCascadesReader builds a mockEntityReader wired so both the
 // subscription and invoice cascades have everything they need to fire for
 // project "p1": one linked, eligible opportunity/invoice (EULA 3.4, no
-// grace period), and a getProjectFn that always reports the project
-// already Suspended — simulating the live state a higher-priority
-// same-run cascade's suspend() call would have just produced by the time
-// a lower-priority cascade's turn comes.
-func bothCascadesReader(invoiceDueDate time.Time) *mockEntityReader {
+// grace period). getProjectFn fails the test if it's ever called —
+// processProject's cross-cascade "already closed" gate is tracked entirely
+// in memory (see cascadeDecision/processProject), deliberately never a live
+// GetProject re-fetch, since a real live test showed that re-fetch reading
+// stale (pre-suspend) data from this backend and letting both cascades
+// notify anyway.
+func bothCascadesReader(t *testing.T, invoiceDueDate time.Time) *mockEntityReader {
+	t.Helper()
 	return &mockEntityReader{
 		searchProjectOpportunityLinksFn: func(ctx context.Context, body []byte) ([]byte, error) {
 			return oppLinksResponse("p1", "opp1"), nil
@@ -51,7 +54,8 @@ func bothCascadesReader(invoiceDueDate time.Time) *mockEntityReader {
 			return []byte(`{"hasPrimaryPartner":false}`), nil
 		},
 		getProjectFn: func(ctx context.Context, id string) ([]byte, error) {
-			return []byte(`{"closureState":"Suspended"}`), nil
+			t.Error("GetProject should not be called — the same-run closure gate is tracked in memory, not via a live re-fetch")
+			return []byte(`{}`), nil
 		},
 	}
 }
@@ -71,7 +75,7 @@ func TestProcessProject_BothCascadesFireSameRun_MoreOverdueCascadeNotifiesOnly(t
 	endDate := now.AddDate(0, 0, -100)       // far overdue
 	invoiceDueDate := now.AddDate(0, 0, -10) // less overdue
 
-	reader := bothCascadesReader(invoiceDueDate)
+	reader := bothCascadesReader(t, invoiceDueDate)
 	updater := &mockProjectUpdater{}
 	ntf := &mockNotifier{sendFn: func(ctx context.Context, n notify.Notice) (bool, error) { return true, nil }}
 
@@ -103,8 +107,8 @@ func TestProcessProject_BothCascadesFireSameRun_MoreOverdueCascadeNotifiesOnly(t
 	// all (see noBusinessContactBody) — sent twice, the two copies would
 	// be byte-for-byte identical, not just same-subject like the
 	// suspension notice pair above. notifyForWindow is skipped entirely
-	// for the invoice cascade here (alreadyClosedForAnyReason short-
-	// circuits before it's ever called), so this must be 1, not 2.
+	// for the invoice cascade here (actInvoice's alreadyClosed check
+	// short-circuits before it's ever called), so this must be 1, not 2.
 	if nudgeCount != 1 {
 		t.Errorf("sent %d no-business-contact nudge emails, want exactly 1 (the invoice cascade's notifyForWindow call — internal notice AND nudge alike — must be skipped entirely once already closed); sent: %+v", nudgeCount, ntf.sent)
 	}
@@ -135,7 +139,7 @@ func TestProcessProject_BothCascadesFireSameRun_OrderingIsDynamicNotHardcoded(t 
 	endDate := now.AddDate(0, 0, -10)         // less overdue
 	invoiceDueDate := now.AddDate(0, 0, -100) // far overdue
 
-	reader := bothCascadesReader(invoiceDueDate)
+	reader := bothCascadesReader(t, invoiceDueDate)
 	updater := &mockProjectUpdater{}
 	ntf := &mockNotifier{sendFn: func(ctx context.Context, n notify.Notice) (bool, error) { return true, nil }}
 

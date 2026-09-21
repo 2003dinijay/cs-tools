@@ -77,9 +77,9 @@ func buildInvoiceCascade(ctx context.Context, reader entityReader, updater proje
 	}
 
 	return &cascadeDecision{
-		daysRemaining: decision.DaysRemaining,
-		act: func(ctx context.Context, closureState *string) error {
-			return actInvoice(ctx, reader, updater, ntf, proj, decision, resolvedForNotice, closureState)
+		decision: decision,
+		act: func(ctx context.Context, alreadyClosed bool) error {
+			return actInvoice(ctx, reader, updater, ntf, proj, decision, resolvedForNotice, alreadyClosed)
 		},
 	}, nil
 }
@@ -87,13 +87,14 @@ func buildInvoiceCascade(ctx context.Context, reader entityReader, updater proje
 // actInvoice carries out the invoice-based closure cascade's actions for a
 // project decision already confirmed to fire — mirrors actSubscription
 // exactly, writing based_on_due_invoices/invoiceDueDateClosureState instead
-// of the subscription equivalents. closureState reflects the live project
-// state by the time this cascade's turn comes up — see processProject.
-func actInvoice(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, proj project, decision closure.Decision, invoice dueInvoice, closureState *string) error {
+// of the subscription equivalents. alreadyClosed reflects every
+// higher-priority cascade's own decision.ShouldSuspend so far this run —
+// see processProject.
+func actInvoice(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, proj project, decision closure.Decision, invoice dueInvoice, alreadyClosed bool) error {
 	if decision.ShouldNotify {
 		delivered := false
 		var err error
-		if !alreadyClosedForAnyReason(closureState) {
+		if !alreadyClosed {
 			delivered, err = notifyForWindow(ctx, reader, ntf, proj, decision.Window,
 				func(w closure.NoticeWindow, p project, accountOwnerName string) string {
 					return internalInvoiceNoticeBody(w, p, accountOwnerName, invoice)

@@ -229,11 +229,6 @@ type entityReader interface {
 	SearchAccountContacts(ctx context.Context, accountID string, body []byte) ([]byte, error)
 	SearchProjectContacts(ctx context.Context, projectID string, body []byte) ([]byte, error)
 	GetAccount(ctx context.Context, id string) ([]byte, error)
-	// GetProject backs refetchClosureState — processProject re-reads a
-	// project's rolled-up closureState live, via this method, whenever more
-	// than one closure-reason cascade fires for it in the same run. See
-	// refetchClosureState's own doc comment for why.
-	GetProject(ctx context.Context, id string) ([]byte, error)
 	// SearchProjectOpportunityLinks/SearchInvoices/GetOpportunity back
 	// resolveDueInvoice (Phase 2's invoice-based closure).
 	SearchProjectOpportunityLinks(ctx context.Context, body []byte) ([]byte, error)
@@ -241,12 +236,15 @@ type entityReader interface {
 	GetOpportunity(ctx context.Context, id string) ([]byte, error)
 }
 
-// sweepReader is everything Run needs: entityReader plus SearchProjects, the
-// one extra read method the outer loop uses that processProject doesn't.
-// Satisfied directly by *entity.Client.
+// sweepReader is everything Run needs: entityReader plus SearchProjects and
+// GetProject, the two extra read methods the outer loop uses that
+// processProject doesn't. GetProject backs the TEST_PROJECT_ID scoped-run
+// path — fetching one project directly instead of paginating the broad
+// search. Satisfied directly by *entity.Client.
 type sweepReader interface {
 	entityReader
 	SearchProjects(ctx context.Context, body []byte) ([]byte, error)
+	GetProject(ctx context.Context, id string) ([]byte, error)
 }
 
 // pagination mirrors entity-service's Pagination shape.
