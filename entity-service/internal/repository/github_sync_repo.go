@@ -38,6 +38,11 @@ type RepoMapping struct {
 	// CredentialRef names this account's token in the platform secret store.
 	// A reference, never the secret itself.
 	CredentialRef string
+	// Owner and Repository are where this account's issues live. The inbound
+	// caller already knows them -- it is holding the webhook that named them --
+	// but RepoForAccount starts from a case and has to be told.
+	Owner      string
+	Repository string
 }
 
 // GithubChangeRequest is the slice of a change request the sync reads.
@@ -56,6 +61,19 @@ type GithubSyncRepository interface {
 	// a nil mapping and no error: a repository we do not map is one we do not
 	// handle, which is ordinary rather than exceptional.
 	RepoMapping(ctx context.Context, owner, repository string) (*RepoMapping, error)
+	// RepoForAccount is RepoMapping's other direction: which repository an
+	// account's issues are filed in. Needed when the caller has a case rather
+	// than a webhook -- filing an issue starts from the account, not the repo.
+	// Not found is (nil, nil); an inactive mapping counts as not found.
+	RepoForAccount(ctx context.Context, accountID string) (*RepoMapping, error)
+	// AccountForCase resolves the case's owning account.
+	AccountForCase(ctx context.Context, caseID string) (string, error)
+	// SetCaseGithubIssueNumber links a case to the issue filed for it.
+	//
+	// THIS IS WHAT OPENS GATE 2. Until a case carries an issue number the
+	// outbound triggers enqueue nothing for it, so this single write is what
+	// switches on sync for that case -- see migration 000069.
+	SetCaseGithubIssueNumber(ctx context.Context, caseID string, issueNumber int) (changed bool, err error)
 	// ChangeRequestByGitReference finds the change request linked to an issue.
 	ChangeRequestByGitReference(ctx context.Context, issueURL string) (*GithubChangeRequest, error)
 	// ClaimDelivery records a delivery, returning ErrDeliverySeen if another
@@ -84,7 +102,9 @@ func (r *githubSyncRepository) RepoMapping(ctx context.Context, owner, repositor
 	const query = `
 		SELECT a.id::text,
 		       a.name,
-		       COALESCE(gr.credential_ref, '')
+		       COALESCE(gr.credential_ref, ''),
+		       gr.owner,
+		       gr.repository
 		FROM account_github_repo gr
 		JOIN account a ON a.id = gr.account_id
 		WHERE lower(gr.owner) = lower($1)
@@ -92,7 +112,7 @@ func (r *githubSyncRepository) RepoMapping(ctx context.Context, owner, repositor
 		  AND gr.is_active`
 
 	var m RepoMapping
-	err := r.db.QueryRow(ctx, query, owner, repository).Scan(&m.AccountID, &m.AccountName, &m.CredentialRef)
+	err := r.db.QueryRow(ctx, query, owner, repository).Scan(&m.AccountID, &m.AccountName, &m.CredentialRef, &m.Owner, &m.Repository)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -159,4 +179,56 @@ func (r *githubSyncRepository) LinkDelivery(ctx context.Context, deliveryID, cha
 		return fmt.Errorf("github: link delivery %s: %w", deliveryID, err)
 	}
 	return nil
+}
+
+// RepoForAccount implements GithubSyncRepository.
+func (r *githubSyncRepository) RepoForAccount(ctx context.Context, accountID string) (*RepoMapping, error) {
+	const query = `
+		SELECT agr.account_id::text, a.name, COALESCE(agr.credential_ref, ''),
+		       agr.owner, agr.repository
+		FROM account_github_repo agr
+		JOIN account a ON a.id = agr.account_id
+		WHERE agr.account_id = $1::uuid AND agr.is_active`
+
+	var m RepoMapping
+	err := r.db.QueryRow(ctx, query, accountID).Scan(
+		&m.AccountID, &m.AccountName, &m.CredentialRef, &m.Owner, &m.Repository)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No mapping, or an inactive one. Both mean the same thing to a
+		// caller: this account does not file issues anywhere.
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("github: repo for account %s: %w", accountID, err)
+	}
+	return &m, nil
+}
+
+// AccountForCase implements GithubSyncRepository.
+func (r *githubSyncRepository) AccountForCase(ctx context.Context, caseID string) (string, error) {
+	const query = `SELECT COALESCE(account_id::text, '') FROM work_item WHERE id = $1::uuid`
+	var accountID string
+	err := r.db.QueryRow(ctx, query, caseID).Scan(&accountID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("github: account for case %s: %w", caseID, err)
+	}
+	return accountID, nil
+}
+
+// SetCaseGithubIssueNumber implements GithubSyncRepository.
+func (r *githubSyncRepository) SetCaseGithubIssueNumber(ctx context.Context, caseID string, issueNumber int) (bool, error) {
+	// IS DISTINCT FROM, matching SetState: re-linking a case to the issue it
+	// already points at should write nothing.
+	const query = `
+		UPDATE "case"
+		SET github_issue_number = $2
+		WHERE id = $1::uuid AND github_issue_number IS DISTINCT FROM $2`
+	tag, err := r.db.Exec(ctx, query, caseID, issueNumber)
+	if err != nil {
+		return false, fmt.Errorf("github: link case %s to issue %d: %w", caseID, issueNumber, err)
+	}
+	return tag.RowsAffected() > 0, nil
 }

@@ -106,6 +106,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// that mutates change requests should appear only when asked for.
 	var githubWebhookHandler *handler.GithubWebhookHandler
 
+	// Assigned inside the GitHub-integration block below and read further down,
+	// where activeCaseSvc finally exists, to build the native issue-filing
+	// service. Both halves of the sync then share one client and one mapping
+	// table.
+	var (
+		githubSyncRepo repository.GithubSyncRepository
+		githubClient   *github.Client
+		githubLabelSet service.GithubLabels
+	)
 	var scheduledTaskRunHandler *handler.ScheduledTaskRunHandler
 	if db != nil {
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
@@ -128,14 +137,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 			}
 			// The outbound worker is started by cmd/api, which owns process
 			// lifetime; routes.go only builds what the HTTP surface needs.
+			githubSyncRepo = repository.NewGithubSyncRepository(db)
+			githubClient = github.NewClient(github.Config{
+				BaseURL: cfg.GithubBaseURL,
+				Token:   cfg.GithubToken,
+			})
+			githubLabelSet = githubLabels
 			githubWebhookHandler = handler.NewGithubWebhookHandler(
 				service.NewGithubSyncServiceWriting(
-					repository.NewGithubSyncRepository(db),
+					githubSyncRepo,
 					repository.NewGithubMutationRepository(db),
-					github.NewClient(github.Config{
-						BaseURL: cfg.GithubBaseURL,
-						Token:   cfg.GithubToken,
-					}),
+					githubClient,
 					cfg.GithubIntegrationLogin,
 					githubLabels,
 				),
@@ -286,8 +298,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		callRequestHandler = handler.NewCallRequestHandler(service.NewServiceNowCallRequestService(serviceNowIntegrationServiceClient))
 	}
 
+	// The native implementation when the GitHub integration is enabled,
+	// otherwise the ServiceNow proxy. Both are kept: cutover is per account,
+	// and an account still on ServiceNow must keep filing issues the old way.
 	var caseGithubIssueHandler *handler.CaseGithubIssueHandler
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch {
+	case githubClient != nil:
+		// Native: files the issue against GitHub and writes the issue number
+		// onto the case, which is what opens the outbound gate for it.
+		caseGithubIssueHandler = handler.NewCaseGithubIssueHandler(
+			service.NewCaseGithubIssueService(githubClient, githubSyncRepo, activeCaseSvc, githubLabelSet))
+	case cfg.DataSource == config.DataSourceServiceNow:
 		caseGithubIssueHandler = handler.NewCaseGithubIssueHandler(service.NewServiceNowCaseGithubIssueService(serviceNowIntegrationServiceClient, activeCaseSvc))
 	}
 

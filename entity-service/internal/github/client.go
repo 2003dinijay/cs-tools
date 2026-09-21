@@ -135,6 +135,45 @@ const (
 	StateClosed State = "closed"
 )
 
+// CreatedIssue is what filing an issue returns: the number this service
+// stores on the case, and the URL it hands back to the caller.
+type CreatedIssue struct {
+	Number  int    `json:"number"`
+	HTMLURL string `json:"html_url"`
+}
+
+// CreateIssue opens a new issue.
+//
+// THE ONLY OPERATION HERE THAT ADDRESSES A REPOSITORY RATHER THAN AN ISSUE,
+// for the obvious reason that the issue does not exist yet. Everything else in
+// this client takes an Issue because it acts on one.
+//
+// Labels are sent as supplied. A label that does not exist in the repository is
+// created by GitHub rather than rejected, which is why an unknown label cannot
+// fail this call -- and why the caller, not this client, decides what is
+// allowed to be sent.
+func (c *Client) CreateIssue(ctx context.Context, owner, repository, title, body string, labels []string) (*CreatedIssue, error) {
+	if strings.TrimSpace(owner) == "" || strings.TrimSpace(repository) == "" {
+		return nil, fmt.Errorf("github: create issue needs an owner and a repository")
+	}
+	if strings.TrimSpace(title) == "" {
+		return nil, fmt.Errorf("github: create issue needs a title")
+	}
+
+	payload := map[string]any{"title": title, "body": body}
+	if len(labels) > 0 {
+		payload["labels"] = labels
+	}
+
+	var out CreatedIssue
+	if err := c.do(ctx, http.MethodPost,
+		"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repository)+"/issues",
+		payload, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // CreateComment posts a comment on an issue.
 func (c *Client) CreateComment(ctx context.Context, issue Issue, body string) (*Comment, error) {
 	if err := issue.valid(); err != nil {

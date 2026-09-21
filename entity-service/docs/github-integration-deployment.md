@@ -126,10 +126,14 @@ each have a working `.down.sql`.
 
 ## 9. Known gaps
 
-- **Real GitHub delivery is unproven.** The inbound half has been tested with
-  signed local POSTs, which covers HMAC, replay, guards and every database
-  write, but not GitHub's own network delivery. Verify the first real webhook
-  lands after configuring a repository.
+- **Real GitHub delivery of the inbound webhook is unproven.** Outbound dispatch has been driven end to end against a real repository; the inbound half is tested with signed local POSTs, not GitHub's own delivery.
+
+- **Filing an issue is now native, but only where the integration is enabled.**
+  `POST /cases/{id}/github-issues` files against GitHub and writes
+  `case.github_issue_number`, which is what opens gate 2 for that case. Where
+  `GITHUB_INTEGRATION_ENABLED` is unset the route still proxies to ServiceNow,
+  so cutover stays per account.
+
 - **ServiceNow's signature oracle is still live.** Its `Authenticator` returns
   the computed HMAC in the 401 body, so anyone who can reach that endpoint can
   sign arbitrary payloads. Two lines to delete; unrelated to this service, but

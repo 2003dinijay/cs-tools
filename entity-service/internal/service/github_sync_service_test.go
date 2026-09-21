@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -32,6 +33,8 @@ type fakeGhRepo struct {
 	claimed    map[string]bool
 	linked     map[string]string
 	mappingErr error
+	accountID  string
+	linkErr    error
 	mapping    *repository.RepoMapping
 	cr         *repository.GithubChangeRequest
 }
@@ -46,6 +49,23 @@ func (f *fakeGhRepo) ChangeRequestByGitReference(context.Context, string) (*repo
 // Behaves like the table it stands in for: a second claim on the same id is
 // refused. A fake that always returned nil is why the missing claim call went
 // unnoticed.
+func (f *fakeGhRepo) RepoForAccount(context.Context, string) (*repository.RepoMapping, error) {
+	return f.mapping, f.mappingErr
+}
+func (f *fakeGhRepo) AccountForCase(context.Context, string) (string, error) {
+	return f.accountID, nil
+}
+func (f *fakeGhRepo) SetCaseGithubIssueNumber(_ context.Context, caseID string, n int) (bool, error) {
+	if f.linkErr != nil {
+		return false, f.linkErr
+	}
+	if f.linked == nil {
+		f.linked = map[string]string{}
+	}
+	f.linked[caseID] = fmt.Sprint(n)
+	return true, nil
+}
+
 func (f *fakeGhRepo) ClaimDelivery(_ context.Context, id, _, _ string) error {
 	if f.claimed == nil {
 		f.claimed = map[string]bool{}
