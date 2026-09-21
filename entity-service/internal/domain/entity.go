@@ -613,22 +613,26 @@ type SearchProjectsRequest struct {
 	// ClosureStatus above, there is no upstream ServiceNow filter parameter for
 	// excluding a set of states, so the ServiceNow data source applies this by
 	// paging through every match and filtering in Go, not by passing it through
-	// as a request filter (ServiceNow data source only; the Postgres data
-	// source rejects a non-empty value).
+	// as a request filter. The Postgres data source applies it as a real SQL
+	// filter instead, against the project.wso2_closure_state column (case-
+	// insensitive — see project_repo.go's SearchProjects).
 	ExcludeClosureStates []string `json:"excludeClosureStates,omitempty"`
 	// ExcludeSubscriptionTypes filters out projects whose subscription type is
 	// any of the given values, e.g. ["cloud_support", "cloud_evaluation_support"].
 	// Same "no upstream filter, applied in Go" caveat as ExcludeClosureStates
-	// (ServiceNow data source only; the Postgres data source rejects a
-	// non-empty value).
+	// for the ServiceNow data source. The Postgres data source rejects a
+	// non-empty value: the project table has no subscription-type column at
+	// all (see ProjectRepository's own doc comment), unlike
+	// ExcludeClosureStates/ExcludeProjectKeys, which map onto real columns.
 	ExcludeSubscriptionTypes []SubscriptionType `json:"excludeSubscriptionTypes,omitempty"`
 	// ExcludeProjectKeys filters out projects whose Key (see ProjectView.Key)
 	// is any of the given values, e.g. ["APEXIA", "VERIDIAN"] — a caller-
 	// supplied denylist by project key, unrelated to closure state or
 	// subscription type. Same "no upstream filter, applied in Go" caveat as
-	// ExcludeClosureStates (ServiceNow data source only; the Postgres data
-	// source rejects a non-empty value). Matching is exact and case-sensitive
-	// (project keys are opaque identifiers, not display text).
+	// ExcludeClosureStates for the ServiceNow data source; the Postgres data
+	// source applies it as a real SQL filter against project.key instead.
+	// Matching is exact and case-sensitive (project keys are opaque
+	// identifiers, not display text).
 	ExcludeProjectKeys []string `json:"excludeProjectKeys,omitempty"`
 }
 
