@@ -165,3 +165,77 @@ func TestUserService_SearchUsers_SortBy(t *testing.T) {
 		})
 	}
 }
+
+const userDetailTestID = "11111111-1111-1111-1111-111111111111"
+
+func TestUserService_GetUser(t *testing.T) {
+	staff := domain.UserDetail{ID: userDetailTestID, Name: "Sam Staff", Email: "sam@example.com", UserType: domain.UserTypeInternal, Active: true}
+	customer := domain.UserDetail{ID: userDetailTestID, Name: "Cy Customer", Email: "cy@customer.example", UserType: domain.UserTypeCustomer, Active: true}
+	access := []domain.UserContactAccess{{ProjectID: "p1", ProjectKey: "ACME", RegistrationState: "REGISTERED", GrantsCaseAccess: true, Roles: []string{"PORTAL_USER"}}}
+
+	t.Run("staff gets roles and groups but no project access lookup", func(t *testing.T) {
+		repo := stubUserRepo{
+			getUserDetail: func(context.Context, string) (domain.UserDetail, error) { return staff, nil },
+			getUserRoles:  func(context.Context, string) ([]string, error) { return []string{"admin"}, nil },
+			getUserGroups: func(context.Context, string) ([]domain.UserGroupRef, error) {
+				return []domain.UserGroupRef{{ID: "t1", Name: "CAB Approval"}}, nil
+			},
+			// getUserProjectAccess left nil: calling it panics, proving it is skipped.
+		}
+		got, err := NewUserService(repo).GetUser(context.Background(), userDetailTestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Roles) != 1 || got.Roles[0] != "admin" || len(got.Groups) != 1 || got.ProjectAccess != nil {
+			t.Errorf("got %+v", got)
+		}
+	})
+
+	t.Run("customer also gets project access, looked up by their email", func(t *testing.T) {
+		var lookedUp string
+		repo := stubUserRepo{
+			getUserDetail: func(context.Context, string) (domain.UserDetail, error) { return customer, nil },
+			getUserProjectAccess: func(_ context.Context, email string) ([]domain.UserContactAccess, error) {
+				lookedUp = email
+				return access, nil
+			},
+		}
+		got, err := NewUserService(repo).GetUser(context.Background(), userDetailTestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if lookedUp != "cy@customer.example" || len(got.ProjectAccess) != 1 || !got.ProjectAccess[0].GrantsCaseAccess {
+			t.Errorf("lookedUp=%q got=%+v", lookedUp, got.ProjectAccess)
+		}
+	})
+
+	t.Run("malformed id is a validation error and never reaches the repository", func(t *testing.T) {
+		_, err := NewUserService(stubUserRepo{}).GetUser(context.Background(), "not-a-uuid")
+		var ve *apierror.ValidationError
+		if !errors.As(err, &ve) {
+			t.Fatalf("err = %v, want ValidationError", err)
+		}
+	})
+
+	t.Run("unknown user is not found", func(t *testing.T) {
+		repo := stubUserRepo{getUserDetail: func(context.Context, string) (domain.UserDetail, error) {
+			return domain.UserDetail{}, &apierror.NotFoundError{Msg: "no user"}
+		}}
+		_, err := NewUserService(repo).GetUser(context.Background(), userDetailTestID)
+		var nf *apierror.NotFoundError
+		if !errors.As(err, &nf) {
+			t.Fatalf("err = %v, want NotFoundError", err)
+		}
+	})
+
+	t.Run("a lookup failure is an error, not a silently partial profile", func(t *testing.T) {
+		boom := errors.New("db down")
+		repo := stubUserRepo{
+			getUserDetail: func(context.Context, string) (domain.UserDetail, error) { return staff, nil },
+			getUserRoles:  func(context.Context, string) ([]string, error) { return nil, boom },
+		}
+		if _, err := NewUserService(repo).GetUser(context.Background(), userDetailTestID); !errors.Is(err, boom) {
+			t.Fatalf("err = %v, want %v", err, boom)
+		}
+	})
+}
