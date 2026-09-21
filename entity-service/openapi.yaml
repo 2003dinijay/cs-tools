@@ -8825,7 +8825,9 @@ components:
           matches cases in any of the given states; notIn matches cases in
           none of them. The two are independent and may be combined. notIn is
           not supported inside an anyOf branch, and not supported by the
-          relational data source.
+          relational data source. On the relational data source the state is
+          matched for every case-like type (case, service_request, engagement,
+          security_report_analysis, announcement), not only for cases.
         - **severity** (in): one of catastrophic/critical/high/medium/low.
           Only applicable when a type filter includes case.
         - **engagementType** (in): one of migration/consultancy/

@@ -1103,11 +1103,19 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	// States/Severities/IssueTypes/WorkStates all live on "case" (migration
-	// 000018), joined LEFT below since not every matched work_item type has
-	// one -- applying any of these filters therefore implicitly narrows the
-	// result to case-type rows, since a non-case row's joined c.* columns
-	// are always NULL and can never equal a non-NULL filter value.
+	// States is the exception: state exists on every case-like extension table
+	// (case, engagement, service_request, security_report_analysis,
+	// announcement), so it is matched on caseLikeStateColumn -- the same
+	// expression the read side selects -- rather than on c.state, which would
+	// make a service request, engagement or security report analysis show a
+	// state yet never match a filter on it. The labels are spelled identically
+	// in all five enums (announcement's CLOSE is normalized to CLOSED there).
+	//
+	// Severities/IssueTypes/WorkStates live only on "case" (migration 000018),
+	// joined LEFT below since not every matched work_item type has one --
+	// applying any of these filters therefore implicitly narrows the result to
+	// case-type rows, since a non-case row's joined c.* columns are always NULL
+	// and can never equal a non-NULL filter value.
 	//
 	// domain.CaseState/CaseIssueType/CaseWorkState/EngagementType are all
 	// lowercase_snake_case (e.g. "work_in_progress"), while their real
@@ -1121,7 +1129,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		for i, s := range req.Parsed.States {
 			stateStrings[i] = strings.ToUpper(string(s))
 		}
-		where += fmt.Sprintf(" AND c.state = ANY($%d::case_state_enum[])", argIdx)
+		where += fmt.Sprintf(" AND %s = ANY($%d::text[])", caseLikeStateColumn, argIdx)
 		filterArgs = append(filterArgs, stateStrings)
 		argIdx++
 	}

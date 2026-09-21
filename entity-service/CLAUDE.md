@@ -2057,6 +2057,15 @@ set. `creTeam`/`sreTeam` and call-request `assignmentTeamIds` are blocked on
 data, not schema: the group columns exist but staging's `group` table was empty
 (the sync has no job for the full group source) so every group FK is NULL.
 
+- **state**: matched on `caseLikeStateColumn` (the COALESCE the read side already
+  selects), not on `c.state`. Filtering on `c.state` only ever matched the
+  `"case"` table, so service requests, engagements, security report analyses and
+  announcements (about 2,100 rows in staging) displayed a state but could never
+  match a `state in` filter -- a multi-type dashboard request such as `type in
+  [case, security_report_analysis]` + `state in [open]` silently dropped every
+  non-case row. The label spelling is identical across the five enums;
+  `announcement`'s `CLOSE` is normalized to `CLOSED`. `severity`, `issueType`
+  and `workState` are still case-only columns.
 - **tag**: `EXISTS`/`NOT EXISTS` over `work_item_tag` joined to `tag`, names
   compared case-insensitively (as `AddCaseTag` looks tags up). `in` = carries any
   of the names; `notIn` = carries none (an untagged case satisfies it).
@@ -2078,6 +2087,12 @@ data, not schema: the group columns exist but staging's `group` table was empty
   ~15% -- a sync gap, not a query bug. `work_item_tag` now exists in staging but
   held only 107 links (30 on cases) against 2,624 tags, so tag results are sparse
   until the label sync catches up.
+- **`work_item.type` disagrees with the extension row** for some staging rows:
+  41 `CASE` work items carry an `announcement` row (all `OPEN`) and 1 carries a
+  `service_request` row; 156 `CASE` and 39 `SERVICE_REQUEST` work items have no
+  extension row at all, so they have no state and never match a state filter.
+  Search selects by `work_item.type` and reads the state from whichever extension
+  row exists, so those 41 count as `case` + `open`.
 
 ## Announcement requests
 
