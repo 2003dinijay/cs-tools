@@ -265,10 +265,11 @@ func (h *WebSocketHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 	}
 
 	projectID := r.URL.Query().Get("sessionId")
-	if projectID == "" || !uuidRe.MatchString(projectID) {
+	if projectID == "" || !isUUIDOrSysID(projectID) {
 		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
 	}
+	projectID = toDashedID(projectID)
 
 	// Rebuild the context the Auth middleware would normally have populated,
 	// so downstream entity-service calls authenticate as this caller.

@@ -353,7 +353,7 @@ func main() {
 			middleware.SecurityHeaders(
 				middleware.CorrelationID(
 					middleware.AuthWithValidator(tokenValidator)(
-						middleware.Logger(mux),
+						middleware.Logger(middleware.NormalizeSysIDs(mux)),
 					),
 				),
 			),

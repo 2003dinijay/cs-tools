@@ -382,7 +382,19 @@ responses are fanned out into eight differently-shaped, purpose-built views rath
 
 ## Middleware chain
 
-`CORS → SecurityHeaders → CorrelationID → Auth → Logger → Mux`
+`CORS → SecurityHeaders → CorrelationID → Auth → Logger → NormalizeSysIDs → Mux`
+
+`NormalizeSysIDs` (`internal/middleware/normalize_ids.go`) rewrites any URL path segment that is a
+bare 32-hex ServiceNow sysid into a dashed UUID before routing. Ids used to reach this API without
+hyphens, so a client holding one from before the switch (cached bundle, persisted query state,
+bookmarked URL) would otherwise hit the strict `uuidRe` checks and get a 400. Because it runs before
+the mux, every `r.PathValue(...)` is already canonical — handlers need no per-route conversion.
+It only touches **path** segments; an id read from a **body or query string** must be checked with
+`isUUIDOrSysID` and normalised with `toDashedID` by the handler itself (see `CreateCase`'s
+`projectId`/`conversationId` and the WebSocket `sessionId`). Ids in search-filter arrays are
+forwarded untouched. Do not add a path route that carries an id issued by another service
+(e.g. product-consumption's `applicationId`) without excluding it here, since it must go back in
+whatever form it was issued.
 
 Apart from `CORS`, identical to `apps/csm-portal/backend`'s chain — see that backend's CLAUDE.md for
 the rationale of each layer. `middleware.ConfigureLogger()` must be called at startup.
@@ -704,7 +716,9 @@ struct actually carries it), and a stray extra check on `PATCH` would just be de
 - **Body size**: use the shared `readJSONBody(w, r)` helper (`internal/handler/response.go`) — caps
   at `maxRequestBodyBytes` (1 MiB) and validates the body is well-formed JSON.
 - **Path params**: guard against empty string after `r.PathValue("id")`; validate UUID-shaped IDs
-  with the package-level `uuidRe` and return 400 on mismatch before calling entity-service.
+  with the package-level `uuidRe` and return 400 on mismatch before calling entity-service. Bare
+  sysids in the path are already dashed by `NormalizeSysIDs`, so `uuidRe` is correct here.
+- **Body/query ids**: use `isUUIDOrSysID` then `toDashedID` — `NormalizeSysIDs` does not see these.
 - **Upstream errors**: always use `mapUpstreamError(w, err, "<fallback message>")` — never write
   custom status mappings inline. For a 400, this now returns entity-service's own message
   (`apiErr.Body`) verbatim to the caller instead of a generic string — entity-service's validation
