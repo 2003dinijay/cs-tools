@@ -945,7 +945,9 @@ export default function CsmIncidentDetailPage(): JSX.Element {
                 : null
             }
             onUpload={onUploadAttachment}
-            onDownload={onDownloadAttachment}
+            onDownload={
+              canDownloadAttachment ? onDownloadAttachment : undefined
+            }
             preview={{
               onGetPreviewContent: getAttachmentPreviewContent,
               previewTarget,
