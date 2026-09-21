@@ -241,13 +241,9 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ProjectID == "" || !isUUIDOrSysID(req.ProjectID) {
+	if req.ProjectID == "" || !uuidRe.MatchString(req.ProjectID) {
 		writeError(w, http.StatusBadRequest, "Project ID is required and must be a valid UUID.")
 		return
-	}
-	req.ProjectID = toDashedID(req.ProjectID)
-	if req.ConversationID != "" && isUUIDOrSysID(req.ConversationID) {
-		req.ConversationID = toDashedID(req.ConversationID)
 	}
 
 	project, err := h.entity.GetProject(r.Context(), req.ProjectID)
