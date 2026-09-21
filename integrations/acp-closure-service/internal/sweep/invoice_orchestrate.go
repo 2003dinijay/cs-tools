@@ -26,11 +26,11 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/suspensionstate"
 )
 
-// processProjectInvoice evaluates and, if anything is due, acts on the
-// invoice-based closure reason for a single project — the Phase 2 sibling
-// of processProject's own subscription end-date evaluation, entirely
-// independent (its own suspensionProcessState track, its own
-// InvoiceDueDateClosureState dimension).
+// buildInvoiceCascade evaluates the invoice-based closure reason — the
+// Phase 2 sibling of buildSubscriptionCascade, entirely independent (its
+// own suspensionProcessState track, its own InvoiceDueDateClosureState
+// dimension) — and, if it fires, returns a cascadeDecision ready to be
+// ordered against the subscription cascade (see processProject).
 //
 // Two preconditions gate this cascade before any invoice data is even
 // fetched, per DecideInvoice's own documented contract:
@@ -38,32 +38,35 @@ import (
 //     closure.DecideInvoice's doc comment) disables the cascade entirely.
 //   - No eligible due invoice (resolveDueInvoice returns nil) — a
 //     legitimate, common state, not an error.
-func processProjectInvoice(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, now time.Time, proj project) error {
+//
+// Returns (nil, nil) in either of those cases, or when the decision simply
+// doesn't fire yet — mirroring buildSubscriptionCascade's own no-op shape.
+func buildInvoiceCascade(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, proj project, now time.Time) (*cascadeDecision, error) {
 	if proj.Account != nil && proj.Account.IsPartner != nil && *proj.Account.IsPartner {
-		return nil
+		return nil, nil
 	}
 
 	invoice, err := resolveDueInvoice(ctx, reader, proj)
 	if err != nil {
-		return fmt.Errorf("resolve due invoice for project %s: %w", proj.ID, err)
+		return nil, fmt.Errorf("resolve due invoice for project %s: %w", proj.ID, err)
 	}
 	if invoice == nil {
-		return nil
+		return nil, nil
 	}
 
 	hasPrimaryPartner, err := resolveHasPrimaryPartner(ctx, reader, proj.accountID())
 	if err != nil {
-		return fmt.Errorf("resolve hasPrimaryPartner for project %s: %w", proj.ID, err)
+		return nil, fmt.Errorf("resolve hasPrimaryPartner for project %s: %w", proj.ID, err)
 	}
 
 	lastWindow, err := suspensionstate.LastNoticeWindowForInvoices(proj.SuspensionProcessState)
 	if err != nil {
-		return fmt.Errorf("parse suspensionProcessState for project %s: %w", proj.ID, err)
+		return nil, fmt.Errorf("parse suspensionProcessState for project %s: %w", proj.ID, err)
 	}
 
 	decision := closure.DecideInvoice(now, invoice.InvoiceDate, invoice.DueDate, invoice.EULAVersionDecimal, hasPrimaryPartner, lastWindow)
 	if !decision.Fires {
-		return nil
+		return nil, nil
 	}
 
 	resolvedForNotice := dueInvoice{
@@ -73,16 +76,31 @@ func processProjectInvoice(ctx context.Context, reader entityReader, updater pro
 		SuspendDate: closure.InvoiceSuspendDate(invoice.InvoiceDate, invoice.DueDate, invoice.EULAVersionDecimal, hasPrimaryPartner),
 	}
 
+	return &cascadeDecision{
+		daysRemaining: decision.DaysRemaining,
+		act: func(ctx context.Context, closureState *string) error {
+			return actInvoice(ctx, reader, updater, ntf, proj, decision, resolvedForNotice, closureState)
+		},
+	}, nil
+}
+
+// actInvoice carries out the invoice-based closure cascade's actions for a
+// project decision already confirmed to fire — mirrors actSubscription
+// exactly, writing based_on_due_invoices/invoiceDueDateClosureState instead
+// of the subscription equivalents. closureState reflects the live project
+// state by the time this cascade's turn comes up — see processProject.
+func actInvoice(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, proj project, decision closure.Decision, invoice dueInvoice, closureState *string) error {
 	if decision.ShouldNotify {
 		delivered := false
-		if !alreadyClosedForAnyReason(proj) {
+		var err error
+		if !alreadyClosedForAnyReason(closureState) {
 			delivered, err = notifyForWindow(ctx, reader, ntf, proj, decision.Window,
 				func(w closure.NoticeWindow, p project, accountOwnerName string) string {
-					return internalInvoiceNoticeBody(w, p, accountOwnerName, resolvedForNotice)
+					return internalInvoiceNoticeBody(w, p, accountOwnerName, invoice)
 				},
 				customerInvoiceNoticeSubject,
 				func(w closure.NoticeWindow, p project) string {
-					return customerInvoiceNoticeBody(w, p, resolvedForNotice)
+					return customerInvoiceNoticeBody(w, p, invoice)
 				},
 			)
 			if err != nil {

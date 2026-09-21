@@ -70,6 +70,56 @@ hands parsed data to `recipients.AccountManagerEmail`). Keep new decision
 logic in the pure packages and I/O in `sweep` — this split is what makes the
 decision logic cheaply testable without mocks.
 
+## Cross-cascade ordering and the live closure-state re-check
+
+`processProject` (`sweep.go`) evaluates both closure reasons —
+`buildSubscriptionCascade` and `buildInvoiceCascade` — *before* acting on
+either, collecting a `cascadeDecision{daysRemaining, act}` for each one that
+fires, then sorts them by `daysRemaining` ascending (most overdue first)
+and executes them one at a time. This mirrors legacy's own two-phase shape
+exactly: `ACPMainProcess.js`'s `calculateProjectSuspension` computes a
+`Decision` for every reason first, sorts `sorted_by_days_left` ascending,
+and only then does `actionHandler` act on them in that order.
+
+This isn't just about which email goes out first — it's what makes
+`alreadyClosedForAnyReason` correct at all. Legacy's `checkForOpenProject`
+does a **live** `GlideRecord.get()` read of the project's single shared
+`u_wso2_closure_state` field immediately before every
+`actionSendEmailNotification` call — not a snapshot taken once at the start
+of the run. So when the more-urgent reason suspends a project partway
+through a run, the next (less-urgent) reason's own `checkForOpenProject`
+call sees that suspend live and skips its notification (`IGNORED`) —
+legacy only ever sends one cascade's notice per run, even when multiple
+reasons fire at once.
+
+A prior version of this code ran the two cascades in a fixed
+subscription-then-invoice order, gated only by `proj.ClosureState` as
+fetched once at the top of the run — a stale snapshot that could never
+reflect a same-run suspend performed by the other cascade. This was caught
+via a real live test where a project qualified for both reasons at once:
+it sent two separate "Project Suspension Notice" emails (same subject,
+genuinely different bodies — subscription wording vs. the invoice's nested
+Invoice Id/Opportunity/Due Date box) plus two byte-for-byte-identical
+no-business-contact nudge emails, none of which legacy would ever produce.
+
+`refetchClosureState` (`sweep.go`) is what restores the live-read
+semantics: `processProject` uses the start-of-run `proj.ClosureState` for
+the first cascade it executes (nothing has written anything yet by then, so
+it's already live), and calls `refetchClosureState` — one extra
+`GetProject` — only before executing the second (and any later) cascade.
+This keeps the common single-cascade-per-run case free of any extra API
+call, while still matching legacy's live-read behavior in the rare case
+where a project fires more than one reason at once. `alreadyClosedForAnyReason`
+now takes that resolved `*string` directly rather than a `project`, so it
+can never silently be handed a stale value by accident.
+
+Suspend itself is **not** affected by any of this: `suspend`/`suspendInvoice`
+guard on their own per-dimension field (`EndDateClosureState`/
+`InvoiceDueDateClosureState`), fetched once from `proj` same as before —
+these are genuinely independent per-reason dimensions, so one cascade's
+suspend can never be mistaken for the other's. Only the shared, rolled-up
+`ClosureState` notify gate needed the live re-check.
+
 ## Dry-run is an injection choice, not a branch
 
 `DRY_RUN` never appears as an `if` inside `processProject` or `Run`. Both

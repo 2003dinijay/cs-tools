@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/closure"
@@ -33,45 +34,151 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/suspensionstate"
 )
 
-// processProject evaluates and, if anything is due, acts on a single
-// project, for every closure reason this team handles — subscription
-// end-date and invoice-based, each entirely independent (its own
-// suspensionProcessState track, its own closure-state dimension). A
-// failure in one cascade returns immediately without attempting the
-// other — matching how a failure partway through one cascade's own
-// notify/suspend sequence already behaves, rather than silently
-// swallowing it to try the second cascade anyway.
-func processProject(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, now time.Time, proj project) error {
-	if err := processProjectSubscription(ctx, reader, updater, ntf, now, proj); err != nil {
-		return err
-	}
-	return processProjectInvoice(ctx, reader, updater, ntf, now, proj)
+// cascadeDecision pairs a closure reason's confirmed-firing urgency
+// (closure.Decision.DaysRemaining — negative once overdue, mirroring
+// legacy's days_left) with the deferred action that carries it out.
+// processProject collects one of these per closure reason that fires this
+// run, then sorts and executes them — see processProject's own doc comment
+// for why this two-phase "decide everything, then act in urgency order"
+// shape matters, not just single-reason correctness.
+type cascadeDecision struct {
+	daysRemaining int
+	act           func(ctx context.Context, closureState *string) error
 }
 
-// processProjectSubscription evaluates and, if anything is due, acts on
-// the subscription end-date closure reason for a single project. Notify
-// happens before suspend is ever attempted, and an error from notify
-// returns immediately — this ordering, not a separate flag, is what
-// guarantees suspend never proceeds after a failed notify (the day-0
-// "email first, stop on failure" contract).
-func processProjectSubscription(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, now time.Time, proj project) error {
+// processProject evaluates every closure reason this team handles —
+// subscription end-date and invoice-based, each entirely independent (its
+// own suspensionProcessState track, its own closure-state dimension) — and
+// acts on whichever ones are due, in the same priority order legacy uses:
+// ACPMainProcess.js's calculateProjectSuspension computes a Decision for
+// every reason first, sorts them by days_left ascending (most overdue
+// first), and only then does actionHandler act on them in that order, one
+// at a time. This matters beyond ordering: legacy's checkForOpenProject
+// does a *live* DB read of the project's shared closure status before every
+// notify action — so once the first (most urgent) reason's suspend fires
+// within a run, every later reason sees the project already closed and
+// skips its own notification. A prior version of this function ran both
+// cascades in a fixed subscription-then-invoice order against a single
+// closure-state snapshot taken at the top of the run, which could never
+// observe a same-run suspend from the other cascade — producing two
+// separate, genuinely different notices (and one byte-for-byte-duplicate
+// no-business-contact nudge) for a project that fired both reasons at once
+// in a single live test. refetchClosureState below is what restores the
+// live-read behavior, without paying for it on the overwhelmingly common
+// single-cascade run.
+//
+// A failure building or acting on one cascade returns immediately without
+// attempting the other — matching how a failure partway through one
+// cascade's own notify/suspend sequence already behaves, rather than
+// silently swallowing it to try the remaining cascade anyway.
+func processProject(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, now time.Time, proj project) error {
+	var cascades []cascadeDecision
+
+	subCascade, err := buildSubscriptionCascade(reader, updater, ntf, proj, now)
+	if err != nil {
+		return err
+	}
+	if subCascade != nil {
+		cascades = append(cascades, *subCascade)
+	}
+
+	invoiceCascade, err := buildInvoiceCascade(ctx, reader, updater, ntf, proj, now)
+	if err != nil {
+		return err
+	}
+	if invoiceCascade != nil {
+		cascades = append(cascades, *invoiceCascade)
+	}
+
+	// Most-overdue-first, matching legacy's sorted_by_days_left ascending
+	// sort. Stable so an exact days_left tie keeps subscription ahead of
+	// invoice — the order they were appended above, mirroring legacy's own
+	// pre-sort array order ([based_on_subscription_end_date,
+	// based_on_due_invoices, based_on_compliance]).
+	sort.SliceStable(cascades, func(i, j int) bool {
+		return cascades[i].daysRemaining < cascades[j].daysRemaining
+	})
+
+	closureState := proj.ClosureState
+	for i, c := range cascades {
+		if i > 0 {
+			fresh, err := refetchClosureState(ctx, reader, proj.ID)
+			if err != nil {
+				return fmt.Errorf("sweep: refetch closure state for project %s: %w", proj.ID, err)
+			}
+			closureState = fresh
+		}
+		if err := c.act(ctx, closureState); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// refetchClosureState re-reads a project's rolled-up closureState live —
+// used only right before the second (and any later) cascade in a run acts,
+// so alreadyClosedForAnyReason sees a suspend a higher-priority cascade may
+// have just performed moments earlier in this same run. The first cascade
+// to act never needs this: nothing in this run has written anything yet by
+// then, so the start-of-run proj.ClosureState is already live. This is the
+// one place this package pays for an extra GetProject call, and only when a
+// project actually fires more than one closure reason at once — the rare
+// case, not the common one.
+func refetchClosureState(ctx context.Context, reader entityReader, projectID string) (*string, error) {
+	raw, err := reader.GetProject(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("get project: %w", err)
+	}
+	var p struct {
+		ClosureState *string `json:"closureState"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, fmt.Errorf("parse project: %w", err)
+	}
+	return p.ClosureState, nil
+}
+
+// buildSubscriptionCascade evaluates the subscription end-date closure
+// reason and, if it fires, returns a cascadeDecision ready to be ordered
+// against any other firing reason. Returns (nil, nil) when there's no end
+// date at all, or the decision simply doesn't fire yet.
+func buildSubscriptionCascade(reader entityReader, updater projectUpdater, ntf notifier, proj project, now time.Time) (*cascadeDecision, error) {
 	if proj.EndDate == nil {
-		return nil
+		return nil, nil
 	}
 
 	lastWindow, err := suspensionstate.LastNoticeWindow(proj.SuspensionProcessState)
 	if err != nil {
-		return fmt.Errorf("sweep: parse suspensionProcessState for project %s: %w", proj.ID, err)
+		return nil, fmt.Errorf("sweep: parse suspensionProcessState for project %s: %w", proj.ID, err)
 	}
 
 	decision := closure.Decide(now, *proj.EndDate, lastWindow)
 	if !decision.Fires {
-		return nil
+		return nil, nil
 	}
 
+	return &cascadeDecision{
+		daysRemaining: decision.DaysRemaining,
+		act: func(ctx context.Context, closureState *string) error {
+			return actSubscription(ctx, reader, updater, ntf, proj, decision, closureState)
+		},
+	}, nil
+}
+
+// actSubscription carries out the subscription end-date cascade's actions
+// for a project decision already confirmed to fire — notify (gated on
+// closureState, which reflects the live project state by the time this
+// cascade's turn comes up — see processProject) then suspend. Notify happens
+// before suspend is ever attempted, and an error from notify returns
+// immediately — this ordering, not a separate flag, is what guarantees
+// suspend never proceeds after a failed notify (the day-0 "email first,
+// stop on failure" contract).
+func actSubscription(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, proj project, decision closure.Decision, closureState *string) error {
 	if decision.ShouldNotify {
 		delivered := false
-		if !alreadyClosedForAnyReason(proj) {
+		var err error
+		if !alreadyClosedForAnyReason(closureState) {
 			delivered, err = notifyForWindow(ctx, reader, ntf, proj, decision.Window, internalNoticeBody, customerNoticeSubject, customerNoticeBody)
 			if err != nil {
 				return fmt.Errorf("sweep: notify project %s: %w", proj.ID, err)
@@ -91,19 +198,22 @@ func processProjectSubscription(ctx context.Context, reader entityReader, update
 	return nil
 }
 
-// alreadyClosedForAnyReason reports whether proj is already closed for any
-// reason at all — ported from the legacy checkForOpenProject guard, which
-// gates every actionSendEmailNotification/actionServicePortalAnnouncement
-// call uniformly regardless of which cascade (subscription end date,
-// invoice due date, compliance) is currently firing. ClosureState is the
+// alreadyClosedForAnyReason reports whether closureState — the project's
 // rolled-up status across all three closure dimensions (see project's own
-// doc comment), so this one check covers "closed via this reason" and
-// "closed via a different reason" identically — matching legacy's single
-// combined status field. Deliberately NOT applied to suspend() — legacy's
-// actionSuspendProject never calls checkForOpenProject either; suspend()'s
-// own per-dimension idempotency guard already handles that case safely.
-func alreadyClosedForAnyReason(proj project) bool {
-	return proj.ClosureState != nil && *proj.ClosureState != "Open"
+// doc comment) — is already closed for any reason at all. Ported from the
+// legacy checkForOpenProject guard, which gates every
+// actionSendEmailNotification/actionServicePortalAnnouncement call
+// uniformly regardless of which cascade (subscription end date, invoice due
+// date, compliance) is currently firing, via a *live* DB read taken right
+// before each such call — not a snapshot from earlier in the run. Callers
+// must pass a closureState value that honors that: processProject's
+// refetchClosureState is what supplies a live value once more than one
+// cascade fires in the same run (see its own doc comment). Deliberately NOT
+// applied to suspend() — legacy's actionSuspendProject never calls
+// checkForOpenProject either; suspend()'s own per-dimension idempotency
+// guard already handles that case safely.
+func alreadyClosedForAnyReason(closureState *string) bool {
+	return closureState != nil && *closureState != "Open"
 }
 
 // needsCustomerAudience reports whether window's confirmed audience matrix
