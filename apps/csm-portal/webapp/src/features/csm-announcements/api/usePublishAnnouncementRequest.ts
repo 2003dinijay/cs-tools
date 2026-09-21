@@ -42,6 +42,15 @@ export interface UsePublishAnnouncementRequestResult {
   succeededProjectIds: string[];
   /** Only the projects still outstanding after the most recent attempt — call `handlePublish` again to retry just these. */
   failedProjectIds: string[];
+  /**
+   * Projects whose case was created but the mandatory security-announcement
+   * tag failed to attach. Non-empty blocks `handlePublish` from reaching the
+   * final `/publish` call for a security announcement — a case that's
+   * missing its security tag once the request is `published` (terminal,
+   * no further edits or sends) has no in-app way to fix afterward. Calling
+   * `handlePublish` again retries just the tag attach for these, using the
+   * case already created — it never creates another one.
+   */
   failedTagProjectIds: string[];
   /** Set once every resolved project has a case and the backend has marked the request published. */
   published: AnnouncementRequest | null;
@@ -86,6 +95,11 @@ export function usePublishAnnouncementRequest(
   const [succeededProjectIds, setSucceededProjectIds] = useState<string[]>([]);
   const [failedProjectIds, setFailedProjectIds] = useState<string[]>([]);
   const [failedTagProjectIds, setFailedTagProjectIds] = useState<string[]>([]);
+  // The case id created for each project in failedTagProjectIds, so a retry
+  // can call addTag directly on the case that already exists instead of
+  // going through the case-create fan-out again (which would send a
+  // duplicate case to a project that already has one).
+  const [failedTagCaseIds, setFailedTagCaseIds] = useState<Record<string, string>>({});
   const [published, setPublished] = useState<AnnouncementRequest | null>(null);
 
   const handlePublish = async (): Promise<void> => {
@@ -100,6 +114,39 @@ export function usePublishAnnouncementRequest(
 
     setPublishing(true);
 
+    // Retry any security-tag attach that failed on an *earlier* call first —
+    // the case already exists (see failedTagCaseIds), so this calls addTag
+    // directly rather than going through the case-create fan-out again
+    // (which would send a duplicate case to a project that already has
+    // one). This is attempted once per handlePublish call, same as the
+    // case-create fan-out below never retries its own failures within the
+    // same call — a tag that fails again here just blocks, it isn't looped.
+    if (request.isSecurityAnnouncement && failedTagProjectIds.length > 0) {
+      const stillFailingTags: string[] = [];
+      for (const projectId of failedTagProjectIds) {
+        const caseId = failedTagCaseIds[projectId];
+        if (!caseId) continue;
+        try {
+          await addTag.mutateAsync({ caseId, label: SECURITY_ANNOUNCEMENT_TAG_LABEL });
+        } catch {
+          stillFailingTags.push(projectId);
+        }
+      }
+      setFailedTagProjectIds(stillFailingTags);
+
+      if (stillFailingTags.length > 0) {
+        setPublishing(false);
+        showError(
+          `The security label still couldn't be attached for project${
+            stillFailingTags.length === 1 ? "" : "s"
+          } ${stillFailingTags.join(", ")}. Retry to try again — this won't resend the case${
+            stillFailingTags.length === 1 ? "" : "s"
+          }.`,
+        );
+        return;
+      }
+    }
+
     // Skip the fan-out entirely when every project already has a case from an
     // earlier attempt — but still fall through to the publish-marking call
     // below, since a retry here is exactly for the case where the fan-out
@@ -110,6 +157,7 @@ export function usePublishAnnouncementRequest(
     if (pendingProjectIds.length > 0) {
       setProgress({ completed: 0, total: pendingProjectIds.length });
       const newlyFailedTagIds: string[] = [];
+      const newlyFailedTagCaseIds: Record<string, string> = {};
 
       const results = await settleWithConcurrencyLimit(
         pendingProjectIds,
@@ -126,6 +174,7 @@ export function usePublishAnnouncementRequest(
               await addTag.mutateAsync({ caseId: created.id, label: SECURITY_ANNOUNCEMENT_TAG_LABEL });
             } catch {
               newlyFailedTagIds.push(projectId);
+              newlyFailedTagCaseIds[projectId] = created.id;
             }
           }
           return created;
@@ -138,7 +187,11 @@ export function usePublishAnnouncementRequest(
 
       setSucceededProjectIds((prev) => [...prev, ...newlySucceeded]);
       setFailedProjectIds(stillFailing);
-      setFailedTagProjectIds((prev) => [...prev, ...newlyFailedTagIds]);
+      // failedTagProjectIds is empty at this point (either there was nothing
+      // to retry above, or the retry pass fully succeeded), so this is a
+      // plain assignment, not a merge with what was just retried away.
+      setFailedTagProjectIds(newlyFailedTagIds);
+      setFailedTagCaseIds((prev) => ({ ...prev, ...newlyFailedTagCaseIds }));
       setProgress(null);
 
       if (stillFailing.length > 0) {
@@ -149,6 +202,25 @@ export function usePublishAnnouncementRequest(
           } — failed for project${stillFailing.length === 1 ? "" : "s"} ${stillFailing.join(
             ", ",
           )}. Retry to resend just those.`,
+        );
+        return;
+      }
+
+      // A security announcement must not reach the terminal `published`
+      // state (no further edits or sends possible after) with any case
+      // still missing its security tag — block here and let the next call
+      // retry just the tag (handled by the retry pass at the top of this
+      // function), never re-creating the case.
+      if (newlyFailedTagIds.length > 0) {
+        setPublishing(false);
+        showError(
+          `Sent to ${newlySucceeded.length} of ${pendingProjectIds.length} remaining project${
+            pendingProjectIds.length === 1 ? "" : "s"
+          }, but the security label couldn't be attached for project${
+            newlyFailedTagIds.length === 1 ? "" : "s"
+          } ${newlyFailedTagIds.join(", ")}. Retry to try again — this won't resend the case${
+            newlyFailedTagIds.length === 1 ? "" : "s"
+          }.`,
         );
         return;
       }

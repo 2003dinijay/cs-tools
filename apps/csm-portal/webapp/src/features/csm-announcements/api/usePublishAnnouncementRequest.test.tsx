@@ -213,3 +213,66 @@ describe("usePublishAnnouncementRequest — partial failure and retry", () => {
     expect(result.current.published?.state).toBe("published");
   });
 });
+
+describe("usePublishAnnouncementRequest — security-tag failure blocks publish", () => {
+  it("does not mark the request published while a security tag is still missing", async () => {
+    postCaseMutateAsyncMock.mockResolvedValue({ id: "case-1", internalId: "X-1", number: "N-1" });
+    addTagMutateAsyncMock.mockRejectedValue(new Error("tag service down"));
+
+    const { result } = renderHook(
+      () =>
+        usePublishAnnouncementRequest({
+          ...APPROVED_REQUEST,
+          isSecurityAnnouncement: true,
+          resolvedProjectIds: ["p-1"],
+        }),
+      { wrapper },
+    );
+    await act(async () => {
+      await result.current.handlePublish();
+    });
+
+    expect(result.current.failedTagProjectIds).toEqual(["p-1"]);
+    expect(result.current.published).toBeNull();
+    // The case itself was created (and must never be recreated), but the
+    // request must not reach the terminal published state with its
+    // security tag missing and no way to fix it afterward.
+    expect(postCaseMutateAsyncMock).toHaveBeenCalledTimes(1);
+    expect(postEmptyMock).not.toHaveBeenCalled();
+  });
+
+  it("retrying a tag-only failure re-attaches the tag to the existing case, without creating another one", async () => {
+    postCaseMutateAsyncMock.mockResolvedValue({ id: "case-1", internalId: "X-1", number: "N-1" });
+    addTagMutateAsyncMock.mockRejectedValueOnce(new Error("tag service down"));
+
+    const { result } = renderHook(
+      () =>
+        usePublishAnnouncementRequest({
+          ...APPROVED_REQUEST,
+          isSecurityAnnouncement: true,
+          resolvedProjectIds: ["p-1"],
+        }),
+      { wrapper },
+    );
+    await act(async () => {
+      await result.current.handlePublish();
+    });
+    expect(result.current.failedTagProjectIds).toEqual(["p-1"]);
+    postCaseMutateAsyncMock.mockClear();
+    addTagMutateAsyncMock.mockClear();
+
+    addTagMutateAsyncMock.mockResolvedValue({});
+    postEmptyMock.mockResolvedValueOnce({ ...APPROVED_REQUEST, state: "published" });
+
+    await act(async () => {
+      await result.current.handlePublish();
+    });
+
+    // The retry re-attaches the tag on the case already created — it must
+    // never call postCase again, which would send a duplicate case.
+    expect(postCaseMutateAsyncMock).not.toHaveBeenCalled();
+    expect(addTagMutateAsyncMock).toHaveBeenCalledWith({ caseId: "case-1", label: "Security Announcement" });
+    expect(result.current.failedTagProjectIds).toEqual([]);
+    expect(result.current.published?.state).toBe("published");
+  });
+});

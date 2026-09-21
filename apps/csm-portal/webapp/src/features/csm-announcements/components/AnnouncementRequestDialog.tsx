@@ -163,6 +163,21 @@ export default function AnnouncementRequestDialog({
     request?.state === "approved" ||
     (request?.state === "pending_approval" && pendingApprovalEditUnlocked);
 
+  // Both primary actions below (Submit for approval, Publish) act on
+  // whatever's already persisted server-side, not on these local fields —
+  // `submit` takes no body at all, and `publish` reads `request.subject`/
+  // `request.description` (the last fetch), not `subject`/`description`.
+  // Without this guard, editing a field and immediately clicking Submit or
+  // Publish would silently send the *previous* saved content: the approver
+  // (or the real customer-facing case) would never see the edit the sender
+  // believes they just made.
+  const hasUnsavedChanges =
+    isEditable &&
+    !!request &&
+    (subject.trim() !== request.subject ||
+      description !== request.description ||
+      isSecurityAnnouncement !== request.isSecurityAnnouncement);
+
   const handleSaveContent = (): void => {
     if (!request) return;
     update.mutate({
@@ -181,7 +196,7 @@ export default function AnnouncementRequestDialog({
   // already renders inline below, so a failure partway through just leaves
   // the button re-clickable rather than needing its own error handling here.
   const handleSubmitForApproval = async (): Promise<void> => {
-    if (!request || submittingForApproval) return;
+    if (!request || submittingForApproval || hasUnsavedChanges) return;
     const result = await dryRun.handleRunDryRun();
     if (!result) return;
     try {
@@ -390,6 +405,7 @@ export default function AnnouncementRequestDialog({
                   onClick={() => void handleSubmitForApproval()}
                   disabled={
                     submittingForApproval ||
+                    hasUnsavedChanges ||
                     subject.trim().length === 0 ||
                     isEmptyHtml(description)
                   }
@@ -401,7 +417,9 @@ export default function AnnouncementRequestDialog({
                       : "Submit for approval"}
                 </Button>
                 <Typography variant="caption" color="text.secondary">
-                  Creates a real case in the DCPSUB test project to share with your approver.
+                  {hasUnsavedChanges
+                    ? "Save your changes first — Submit sends whatever's currently saved, not what's still unsaved here."
+                    : "Creates a real case in the DCPSUB test project to share with your approver."}
                 </Typography>
                 {(recordDryRun.isError || submit.isError) && (
                   <Typography variant="caption" color="error">
@@ -433,16 +451,24 @@ export default function AnnouncementRequestDialog({
                     variant="contained"
                     color="primary"
                     size="small"
-                    onClick={() => void publish.handlePublish()}
-                    disabled={publish.publishing}
+                    onClick={() => !hasUnsavedChanges && void publish.handlePublish()}
+                    disabled={publish.publishing || hasUnsavedChanges}
                   >
                     {publish.publishing
                       ? "Publishing…"
                       : publish.failedProjectIds.length > 0
                         ? "Retry failed projects"
-                        : "Publish"}
+                        : publish.failedTagProjectIds.length > 0
+                          ? "Retry security label"
+                          : "Publish"}
                   </Button>
                 </Box>
+                {hasUnsavedChanges && (
+                  <Typography variant="caption" color="text.secondary">
+                    Save your changes first — Publish sends whatever's currently saved, not what's still
+                    unsaved here.
+                  </Typography>
+                )}
                 {publish.failedProjectIds.length > 0 && !publish.publishing && (
                   <Typography variant="caption" color="error">
                     Failed for: {publish.failedProjectIds.join(", ")}
@@ -450,7 +476,8 @@ export default function AnnouncementRequestDialog({
                 )}
                 {publish.failedTagProjectIds.length > 0 && (
                   <Typography variant="caption" color="warning.main">
-                    Security label couldn't be attached for: {publish.failedTagProjectIds.join(", ")}
+                    Security label couldn't be attached for: {publish.failedTagProjectIds.join(", ")} —
+                    retry before this can be published.
                   </Typography>
                 )}
               </Box>

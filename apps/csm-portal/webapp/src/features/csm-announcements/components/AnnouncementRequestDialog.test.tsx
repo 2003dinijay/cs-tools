@@ -243,6 +243,21 @@ describe("AnnouncementRequestDialog — draft", () => {
       expect.objectContaining({ id: "req-1", subject: "Updated subject" }),
     );
   });
+
+  it("disables Submit for approval after an edit until it's saved — submit takes no body, so an unsaved edit would silently never reach the approver", () => {
+    mockGet({ state: "draft" });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    const submitBtn = screen.getByRole("button", { name: /submit for approval/i });
+    expect(submitBtn).not.toBeDisabled();
+
+    fireEvent.change(screen.getByDisplayValue("Scheduled maintenance"), {
+      target: { value: "Scheduled maintenance (updated)" },
+    });
+
+    expect(screen.getByRole("button", { name: /submit for approval/i })).toBeDisabled();
+    expect(screen.getByText(/save your changes first/i)).toBeInTheDocument();
+  });
 });
 
 describe("AnnouncementRequestDialog — pending_approval", () => {
@@ -341,6 +356,43 @@ describe("AnnouncementRequestDialog — approved", () => {
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
     expect(screen.getByRole("button", { name: /retry failed projects/i })).toBeInTheDocument();
     expect(screen.getByText(/failed for: p-2/i)).toBeInTheDocument();
+  });
+
+  it("disables Publish and shows a hint after editing the subject without saving", () => {
+    mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    const publishBtn = screen.getByRole("button", { name: /^publish$/i });
+    expect(publishBtn).not.toBeDisabled();
+
+    fireEvent.change(screen.getByDisplayValue("Scheduled maintenance"), {
+      target: { value: "Scheduled maintenance (updated)" },
+    });
+
+    expect(screen.getByRole("button", { name: /^publish$/i })).toBeDisabled();
+    expect(screen.getByText(/save your changes first/i)).toBeInTheDocument();
+  });
+
+  it("clicking Publish while there are unsaved changes does not call handlePublish", () => {
+    mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
+    const handlePublish = vi.fn();
+    mockedPublish.mockReturnValue({
+      publishing: false,
+      progress: null,
+      succeededProjectIds: [],
+      failedProjectIds: [],
+      failedTagProjectIds: [],
+      published: null,
+      handlePublish,
+    });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByDisplayValue("Scheduled maintenance"), {
+      target: { value: "Scheduled maintenance (updated)" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^publish$/i }));
+
+    expect(handlePublish).not.toHaveBeenCalled();
   });
 });
 
