@@ -590,4 +590,48 @@ func TestSubmitAnnouncementRequest(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("an upstream failure resolving the audience maps through the generic mapper, not a flat 400", func(t *testing.T) {
+		// A genuine SearchProjects failure (here, a transient 503) must not
+		// be reported as a flat 400 "bad request" — that would tell the
+		// caller to fix their input and retry, when the real problem is
+		// upstream and retrying as-is might well succeed.
+		client := &mockEntityAnnouncementRequestClient{
+			getFn: func(context.Context, string) ([]byte, error) {
+				return []byte(`{"kind":"customer","audienceDefinition":{"scope":"all"}}`), nil
+			},
+			searchProjectsFn: func(context.Context, []byte) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusServiceUnavailable}
+			},
+		}
+		h := NewAnnouncementRequestHandler(client, nil)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/announcement-requests/"+testAnnouncementRequestID+"/submit", nil))
+		r.SetPathValue("id", testAnnouncementRequestID)
+		w := httptest.NewRecorder()
+		h.SubmitAnnouncementRequest(w, r)
+
+		assertStatus(t, w, http.StatusServiceUnavailable)
+	})
+
+	t.Run("a locally-detected audience problem (not an upstream failure) still returns 400", func(t *testing.T) {
+		// An unrecognized scope is this handler's own validation, not
+		// something SearchProjects ever saw — must stay a real 400, since
+		// retrying without first fixing the stored data would fail the
+		// same way every time.
+		client := &mockEntityAnnouncementRequestClient{
+			getFn: func(context.Context, string) ([]byte, error) {
+				return []byte(`{"kind":"customer","audienceDefinition":{"scope":"bogus"}}`), nil
+			},
+		}
+		h := NewAnnouncementRequestHandler(client, nil)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/announcement-requests/"+testAnnouncementRequestID+"/submit", nil))
+		r.SetPathValue("id", testAnnouncementRequestID)
+		w := httptest.NewRecorder()
+		h.SubmitAnnouncementRequest(w, r)
+
+		assertStatus(t, w, http.StatusBadRequest)
+		if client.searchProjectsCalls != 0 {
+			t.Fatalf("expected no project search for an unrecognized scope, got %d calls", client.searchProjectsCalls)
+		}
+	})
 }

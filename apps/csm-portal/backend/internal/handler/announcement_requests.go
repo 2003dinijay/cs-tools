@@ -19,11 +19,13 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
@@ -132,7 +134,7 @@ func (h *AnnouncementRequestHandler) CreateAnnouncementRequest(w http.ResponseWr
 		Subject                string          `json:"subject"`
 		Description            string          `json:"description"`
 		IsSecurityAnnouncement bool            `json:"isSecurityAnnouncement"`
-		AudienceDefinition     json.RawMessage `json:"audienceDefinition"`
+		AudienceDefinition     json.RawMessage `json:"audienceDefinition,omitempty"`
 		CreatedBy              string          `json:"createdBy"`
 	}{
 		Kind:                   req.Kind,
@@ -383,6 +385,16 @@ type projectSearchPage struct {
 	HasMore bool `json:"hasMore"`
 }
 
+// projectSearchPagination is the outgoing request-body shape both
+// /projects/search and /deployed-products/projects/search expect for
+// pagination (see entity-service's own domain.Pagination) — shared here so
+// resolveCustomerAudience/resolveEOLAudience can't drift into their own,
+// differently-tagged copies.
+type projectSearchPagination struct {
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
 // resolveAllProjectIDs pages through fetchPage (offset, limit) -> raw JSON,
 // accumulating every project id across all pages. Bounded by
 // maxAnnouncementAudiencePages so a wrong/always-true hasMore can't loop
@@ -465,11 +477,11 @@ func (h *AnnouncementRequestHandler) resolveCustomerAudience(ctx context.Context
 
 	return resolveAllProjectIDs(func(offset, limit int) ([]byte, error) {
 		body, err := json.Marshal(struct {
-			Pagination               struct{ Limit, Offset int } `json:"pagination"`
-			ExcludeClosureStates     []string                    `json:"excludeClosureStates,omitempty"`
-			ExcludeSubscriptionTypes []string                    `json:"excludeSubscriptionTypes,omitempty"`
+			Pagination               projectSearchPagination `json:"pagination"`
+			ExcludeClosureStates     []string                `json:"excludeClosureStates,omitempty"`
+			ExcludeSubscriptionTypes []string                `json:"excludeSubscriptionTypes,omitempty"`
 		}{
-			Pagination:               struct{ Limit, Offset int }{Limit: limit, Offset: offset},
+			Pagination:               projectSearchPagination{Limit: limit, Offset: offset},
 			ExcludeClosureStates:     def.ExcludeClosureStates,
 			ExcludeSubscriptionTypes: def.ExcludeSubscriptionTypes,
 		})
@@ -501,13 +513,13 @@ func (h *AnnouncementRequestHandler) resolveEOLAudience(ctx context.Context, raw
 
 	return resolveAllProjectIDs(func(offset, limit int) ([]byte, error) {
 		body, err := json.Marshal(struct {
-			ProductID        string                      `json:"productId"`
-			ProductVersionID string                      `json:"productVersionId"`
-			Pagination       struct{ Limit, Offset int } `json:"pagination"`
+			ProductID        string                  `json:"productId"`
+			ProductVersionID string                  `json:"productVersionId"`
+			Pagination       projectSearchPagination `json:"pagination"`
 		}{
 			ProductID:        def.ProductID,
 			ProductVersionID: def.ProductVersionID,
-			Pagination:       struct{ Limit, Offset int }{Limit: limit, Offset: offset},
+			Pagination:       projectSearchPagination{Limit: limit, Offset: offset},
 		})
 		if err != nil {
 			return nil, err
@@ -567,6 +579,20 @@ func (h *AnnouncementRequestHandler) SubmitAnnouncementRequest(w http.ResponseWr
 	}
 	if err != nil {
 		slog.ErrorContext(r.Context(), "resolve announcement request audience failed", "userID", user.UserID, "id", id, "err", err)
+		// An *apierror.Error means SearchProjects/SearchProjectsByProductVersion
+		// itself failed (a real upstream problem — could be transient, e.g. a
+		// 503) — map it through the normal upstream-error path instead of
+		// flattening it to a 400, which would misreport a retriable failure
+		// as a permanent client-side one. Anything else here is this
+		// handler's own local validation (malformed stored audienceDefinition,
+		// an unrecognized scope, the page-count safety bound) — a real 400,
+		// since retrying without first fixing the stored data would fail the
+		// same way every time.
+		var apiErr *apierror.Error
+		if errors.As(err, &apiErr) {
+			mapUpstreamErrorGeneric(w, err, "Failed to resolve the announcement audience.")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "Failed to resolve the announcement audience.")
 		return
 	}
