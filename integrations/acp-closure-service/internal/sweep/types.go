@@ -63,8 +63,13 @@ type project struct {
 	// that this can progress past "Suspended" to "Closed" via a process
 	// outside this component — suspend()'s guard treats any non-"Open"
 	// value as already handled, not just an exact "Suspended" match.
-	EndDateClosureState    *string         `json:"endDateClosureState"`
-	SuspensionProcessState json.RawMessage `json:"suspensionProcessState"`
+	EndDateClosureState *string `json:"endDateClosureState"`
+	// InvoiceDueDateClosureState is the invoice cascade's own per-dimension
+	// state, mirroring EndDateClosureState exactly but for the invoice
+	// closure reason — suspendInvoice() writes/reads this, never
+	// EndDateClosureState.
+	InvoiceDueDateClosureState *string         `json:"invoiceDueDateClosureState"`
+	SuspensionProcessState     json.RawMessage `json:"suspensionProcessState"`
 }
 
 // projectAccountRef is the nested account reference on both GetProject's and

@@ -34,11 +34,27 @@ import (
 )
 
 // processProject evaluates and, if anything is due, acts on a single
-// project. Notify happens before suspend is ever attempted, and an error
-// from notify returns immediately — this ordering, not a separate flag, is
-// what guarantees suspend never proceeds after a failed notify (the day-0
-// "email first, stop on failure" contract).
+// project, for every closure reason this team handles — subscription
+// end-date and invoice-based, each entirely independent (its own
+// suspensionProcessState track, its own closure-state dimension). A
+// failure in one cascade returns immediately without attempting the
+// other — matching how a failure partway through one cascade's own
+// notify/suspend sequence already behaves, rather than silently
+// swallowing it to try the second cascade anyway.
 func processProject(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, now time.Time, proj project) error {
+	if err := processProjectSubscription(ctx, reader, updater, ntf, now, proj); err != nil {
+		return err
+	}
+	return processProjectInvoice(ctx, reader, updater, ntf, now, proj)
+}
+
+// processProjectSubscription evaluates and, if anything is due, acts on
+// the subscription end-date closure reason for a single project. Notify
+// happens before suspend is ever attempted, and an error from notify
+// returns immediately — this ordering, not a separate flag, is what
+// guarantees suspend never proceeds after a failed notify (the day-0
+// "email first, stop on failure" contract).
+func processProjectSubscription(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, now time.Time, proj project) error {
 	if proj.EndDate == nil {
 		return nil
 	}
@@ -56,7 +72,7 @@ func processProject(ctx context.Context, reader entityReader, updater projectUpd
 	if decision.ShouldNotify {
 		delivered := false
 		if !alreadyClosedForAnyReason(proj) {
-			delivered, err = notifyForWindow(ctx, reader, ntf, proj, decision.Window)
+			delivered, err = notifyForWindow(ctx, reader, ntf, proj, decision.Window, internalNoticeBody, customerNoticeSubject, customerNoticeBody)
 			if err != nil {
 				return fmt.Errorf("sweep: notify project %s: %w", proj.ID, err)
 			}
@@ -308,7 +324,24 @@ func accountName(proj project) string {
 // when part of it silently wasn't (e.g. a customer notice filtered out by
 // EmailNotifier's WSO2-only staging safeguard, even though the internal
 // notice sent fine).
-func notifyForWindow(ctx context.Context, reader entityReader, ntf notifier, proj project, window closure.NoticeWindow) (bool, error) {
+// internalBodyBuilder/customerSubjectBuilder/customerBodyBuilder let
+// notifyForWindow serve both the subscription end-date cascade and the
+// invoice cascade — the send/recipient-resolution logic below is identical
+// for both, only the notice content differs. internalNoticeBody/
+// customerNoticeSubject/customerNoticeBody (subscription) and
+// internalInvoiceNoticeBody/customerInvoiceNoticeSubject/
+// customerInvoiceNoticeBody (invoice, the last two adapted via a closure
+// to capture the resolved invoice) satisfy these.
+type internalBodyBuilder func(window closure.NoticeWindow, proj project, accountOwnerName string) string
+type customerSubjectBuilder func(window closure.NoticeWindow, projectName string) string
+type customerBodyBuilder func(window closure.NoticeWindow, proj project) string
+
+func notifyForWindow(
+	ctx context.Context, reader entityReader, ntf notifier, proj project, window closure.NoticeWindow,
+	buildInternalBody internalBodyBuilder,
+	buildCustomerSubject customerSubjectBuilder,
+	buildCustomerBody customerBodyBuilder,
+) (bool, error) {
 	contacts, err := resolveAccountContacts(ctx, reader, proj.accountID())
 	if err != nil {
 		return false, fmt.Errorf("resolve account contacts: %w", err)
@@ -322,7 +355,7 @@ func notifyForWindow(ctx context.Context, reader entityReader, ntf notifier, pro
 
 	internalNotice := baseNotice(proj, window)
 	internalNotice.Subject = internalNoticeSubject(window, proj.Name, accountName(proj))
-	internalNotice.Body = internalNoticeBody(window, proj, contacts.AccountOwner.Name)
+	internalNotice.Body = buildInternalBody(window, proj, contacts.AccountOwner.Name)
 	internalNotice.Recipients = internalRecipients
 
 	if !needsCustomerAudience(window) {
@@ -346,8 +379,8 @@ func notifyForWindow(ctx context.Context, reader entityReader, ntf notifier, pro
 
 	if !resolution.NeedsAMNudge {
 		customerNotice := baseNotice(proj, window)
-		customerNotice.Subject = customerNoticeSubject(window, proj.Name)
-		customerNotice.Body = customerNoticeBody(window, proj)
+		customerNotice.Subject = buildCustomerSubject(window, proj.Name)
+		customerNotice.Body = buildCustomerBody(window, proj)
 		customerNotice.Recipients = internalRecipients
 		customerNotice.Recipients.Customer = resolution.CustomerContact
 		customerNotice.ResolvedVia = resolution.ResolvedVia
