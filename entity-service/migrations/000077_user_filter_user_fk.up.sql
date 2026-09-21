@@ -18,16 +18,34 @@
 -- Asgardeo JWT userid with no FK; goose will not re-run that file, so
 -- this migration adds the constraint when it is still missing. Skip when
 -- 000076 already created the table with REFERENCES "user"(id).
+--
+-- Rows whose user_id already exists in "user" are already the platform
+-- id (JWT email → GetUserByEmail) and are kept. There is no SQL join
+-- from Asgardeo userid to "user".id: user_filter does not store email
+-- and "user" has no IdP subject column. Unmapped rows abort the
+-- migration instead of TRUNCATE, so mapped filters are not deleted.
 
 DO $$
+DECLARE
+    unmapped_count integer;
 BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM pg_constraint
         WHERE conname = 'user_filter_user_id_fkey'
     ) THEN
-        -- Rows stored as Asgardeo userid cannot satisfy the FK.
-        TRUNCATE TABLE user_filter;
+        SELECT COUNT(*) INTO unmapped_count
+        FROM user_filter uf
+        WHERE NOT EXISTS (
+            SELECT 1 FROM "user" u WHERE u.id = uf.user_id
+        );
+
+        IF unmapped_count > 0 THEN
+            RAISE EXCEPTION
+                'user_filter has % row(s) whose user_id is not "user".id; cannot add FK. Those values were stored as Asgardeo JWT userid and cannot be mapped (user_filter has no email). Delete them or set user_id to "user".id, then rerun.',
+                unmapped_count;
+        END IF;
+
         ALTER TABLE user_filter
             ADD CONSTRAINT user_filter_user_id_fkey
             FOREIGN KEY (user_id) REFERENCES "user"(id) ON DELETE CASCADE;
