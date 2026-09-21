@@ -9102,13 +9102,13 @@ components:
             Cross-field OR: each entry is a branch whose own filters array is
             ANDed together; the branches themselves are OR'd against each
             other, and the whole anyOf result is
-            ANDed with filters (if both are present). Only fields with a
-            direct, non-subquery ServiceNow mapping are supported inside a
-            branch: type, state, severity, engagementType, issueType,
-            workState, projectId, deploymentId, assignedUserId,
-            escalationLevel, tag. A branch containing any other field (e.g.
-            taskSLABusinessElapsedPercent, createdOn) is rejected with a
-            validation error. Supported by both data sources.
+            ANDed with filters (if both are present). Only the fields both data
+            sources support inside a branch are allowed there: type, state,
+            severity, engagementType, issueType, workState, projectId,
+            deploymentId, assignedUserId, escalationLevel, tag. A branch
+            containing any other field (e.g. taskSLABusinessElapsedPercent,
+            createdOn) is rejected with a validation error. Supported by both
+            data sources.
 
     SearchCasesRequest:
       type: object
