@@ -266,6 +266,7 @@ func main() {
 	route("POST /deployments/{id}/products", handler.PermWrite, deploymentHandler.PostDeployedProduct)
 	route("POST /deployments/{id}/products/search", handler.PermView, deploymentHandler.SearchDeployedProducts)
 	route("PATCH /deployments/{deploymentId}/products/{productId}", handler.PermWrite, deploymentHandler.PatchDeployedProduct)
+	route("POST /deployed-products/projects/search", handler.PermView, deploymentHandler.SearchProjectsByProductVersion)
 	route("POST /change-requests", handler.PermWrite, changeRequestHandler.CreateChangeRequest)
 	route("GET /change-requests/{id}", handler.PermViewOperations, changeRequestHandler.GetChangeRequest)
 	route("GET /change-requests/{id}/approvals", handler.PermViewOperations, changeRequestHandler.GetChangeRequestApprovals)
