@@ -1120,107 +1120,29 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	if len(req.Parsed.Types) > 0 {
-		// req.Parsed.Types holds validCaseType's lowercase values
-		// ("case", "service_request", ...); work_item_type_enum's labels are
-		// uppercase and match 1:1 once uppercased.
-		typeStrings := make([]string, len(req.Parsed.Types))
-		for i, t := range req.Parsed.Types {
-			typeStrings[i] = strings.ToUpper(t)
-		}
-		where += fmt.Sprintf(" AND wi.type = ANY($%d::work_item_type_enum[])", argIdx)
-		filterArgs = append(filterArgs, typeStrings)
-		argIdx++
-	} else {
-		// No explicit types filter: default to the five case-like types
-		// (validCaseType in case_service.go), not every work_item_type_enum
-		// value -- otherwise this would also return change requests,
-		// incidents, and every other work_item type mixed into "case"
-		// search results.
-		where += " AND wi.type = ANY(" + caseLikeWorkItemTypes + ")"
+	// Fields shared with anyOf branches are built by one function so the two
+	// cannot drift apart (see caseFieldPredicates for the column notes).
+	fieldPreds, fieldArgs, nextIdx, err := caseFieldPredicates(caseFieldSet{
+		Types: req.Parsed.Types, ProjectIDs: req.Parsed.ProjectIDs, DeploymentIDs: req.Parsed.DeploymentIDs,
+		AssignedUserIDs: req.Parsed.AssignedUserIDs, States: req.Parsed.States, Severities: req.Parsed.Severities,
+		IssueTypes: req.Parsed.IssueTypes, EngagementTypes: req.Parsed.EngagementTypes, WorkStates: req.Parsed.WorkStates,
+		EscalationLevels: req.Parsed.EscalationLevels, Tags: req.Parsed.Tags, ExcludeTags: req.Parsed.ExcludeTags,
+		DefaultTypes: true,
+	}, argIdx)
+	if err != nil {
+		return nil, 0, err
 	}
-
-	if len(req.Parsed.ProjectIDs) > 0 {
-		where += fmt.Sprintf(" AND wi.project_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Parsed.ProjectIDs)
-		argIdx++
+	for _, pred := range fieldPreds {
+		where += " AND " + pred
 	}
+	filterArgs = append(filterArgs, fieldArgs...)
+	argIdx = nextIdx
 
 	if len(req.Parsed.ExcludeProjectIDs) > 0 {
-		where += fmt.Sprintf(" AND c.project_id != ALL($%d::uuid[])", argIdx)
+		// project_id is on work_item ("case" has no such column), and a case with
+		// no project is not in any excluded project, so it satisfies notIn.
+		where += fmt.Sprintf(" AND (wi.project_id IS NULL OR wi.project_id <> ALL($%d::uuid[]))", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.ExcludeProjectIDs)
-		argIdx++
-	}
-
-	if len(req.Parsed.DeploymentIDs) > 0 {
-		where += fmt.Sprintf(" AND wi.deployment_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Parsed.DeploymentIDs)
-		argIdx++
-	}
-
-	// States is the exception: state exists on every case-like extension table
-	// (case, engagement, service_request, security_report_analysis,
-	// announcement), so it is matched on caseLikeStateColumn -- the same
-	// expression the read side selects -- rather than on c.state, which would
-	// make a service request, engagement or security report analysis show a
-	// state yet never match a filter on it. The labels are spelled identically
-	// in all five enums (announcement's CLOSE is normalized to CLOSED there).
-	//
-	// Severities/IssueTypes/WorkStates live only on "case" (migration 000018),
-	// joined LEFT below since not every matched work_item type has one --
-	// applying any of these filters therefore implicitly narrows the result to
-	// case-type rows, since a non-case row's joined c.* columns are always NULL
-	// and can never equal a non-NULL filter value.
-	//
-	// domain.CaseState/CaseIssueType/CaseWorkState/EngagementType are all
-	// lowercase_snake_case (e.g. "work_in_progress"), while their real
-	// case_state_enum/case_issue_type_enum/case_work_state_enum/
-	// engagement_type_enum labels are UPPER_SNAKE_CASE -- strings.ToUpper
-	// bridges that (values match 1:1 once cased); a bare string(...) cast
-	// fails with "invalid input value for enum ..." on every one of these.
-	// Severity is the one exception -- see caseSeverityToEnum's own comment.
-	if len(req.Parsed.States) > 0 {
-		stateStrings := make([]string, len(req.Parsed.States))
-		for i, s := range req.Parsed.States {
-			stateStrings[i] = strings.ToUpper(string(s))
-		}
-		where += fmt.Sprintf(" AND %s = ANY($%d::text[])", caseLikeStateColumn, argIdx)
-		filterArgs = append(filterArgs, stateStrings)
-		argIdx++
-	}
-
-	if len(req.Parsed.Severities) > 0 {
-		severityStrings := make([]string, len(req.Parsed.Severities))
-		for i, s := range req.Parsed.Severities {
-			severityStrings[i] = caseSeverityToEnum[s]
-		}
-		where += fmt.Sprintf(" AND c.severity = ANY($%d::case_severity_enum[])", argIdx)
-		filterArgs = append(filterArgs, severityStrings)
-		argIdx++
-	}
-
-	if len(req.Parsed.IssueTypes) > 0 {
-		issueTypeStrings := make([]string, len(req.Parsed.IssueTypes))
-		for i, it := range req.Parsed.IssueTypes {
-			issueTypeStrings[i] = strings.ToUpper(string(it))
-		}
-		where += fmt.Sprintf(" AND c.issue_type = ANY($%d::case_issue_type_enum[])", argIdx)
-		filterArgs = append(filterArgs, issueTypeStrings)
-		argIdx++
-	}
-
-	if len(req.Parsed.EngagementTypes) > 0 {
-		// engagement.type (migration 000019) -- a column on the separate
-		// engagement work_item-subtype table, joined LEFT below, not a
-		// "case" column at all. Applying this filter implicitly narrows the
-		// result to engagement-type rows, same reasoning as the case-only
-		// filters above.
-		engTypeStrings := make([]string, len(req.Parsed.EngagementTypes))
-		for i, et := range req.Parsed.EngagementTypes {
-			engTypeStrings[i] = strings.ToUpper(string(et))
-		}
-		where += fmt.Sprintf(" AND eng.type = ANY($%d::engagement_type_enum[])", argIdx)
-		filterArgs = append(filterArgs, engTypeStrings)
 		argIdx++
 	}
 
@@ -1229,22 +1151,6 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		// needing a join) -- see this file's other created_by fixes.
 		where += fmt.Sprintf(" AND wi.created_by = ANY($%d)", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.CreatedBy)
-		argIdx++
-	}
-
-	if len(req.Parsed.WorkStates) > 0 {
-		workStateStrings := make([]string, len(req.Parsed.WorkStates))
-		for i, ws := range req.Parsed.WorkStates {
-			workStateStrings[i] = strings.ToUpper(string(ws))
-		}
-		where += fmt.Sprintf(" AND c.work_state = ANY($%d::case_work_state_enum[])", argIdx)
-		filterArgs = append(filterArgs, workStateStrings)
-		argIdx++
-	}
-
-	if len(req.Parsed.AssignedUserIDs) > 0 {
-		where += fmt.Sprintf(" AND wi.assigned_to_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Parsed.AssignedUserIDs)
 		argIdx++
 	}
 
@@ -1276,21 +1182,6 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	if req.Parsed.EndUpdatedDate != nil {
 		where += fmt.Sprintf(" AND wi.updated_on <= $%d", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.EndUpdatedDate)
-		argIdx++
-	}
-
-	// tag: a case has a tag when a work_item_tag row links it to a tag of that
-	// name. Names are compared case-insensitively, as AddCaseTag does when it
-	// looks a tag up. in matches a case carrying ANY of the names; notIn matches
-	// a case carrying NONE of them (an untagged case satisfies it).
-	if len(req.Parsed.Tags) > 0 {
-		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM work_item_tag wit JOIN tag t ON t.id = wit.tag_id WHERE wit.work_item_id = wi.id AND LOWER(t.name) = ANY($%d::text[]))", argIdx)
-		filterArgs = append(filterArgs, lowerAll(req.Parsed.Tags))
-		argIdx++
-	}
-	if len(req.Parsed.ExcludeTags) > 0 {
-		where += fmt.Sprintf(" AND NOT EXISTS (SELECT 1 FROM work_item_tag wit JOIN tag t ON t.id = wit.tag_id WHERE wit.work_item_id = wi.id AND LOWER(t.name) = ANY($%d::text[]))", argIdx)
-		filterArgs = append(filterArgs, lowerAll(req.Parsed.ExcludeTags))
 		argIdx++
 	}
 
@@ -1336,6 +1227,39 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 			argIdx++
 		}
 		where += " AND EXISTS (SELECT 1 FROM sla tsla WHERE " + slaWhere + ")"
+	}
+
+	// escalation (isEmpty / isNotEmpty): whether the case itself carries an active
+	// escalation, matched on "case".is_escalated -- the flag the case detail
+	// exposes as isEscalated. A row with no "case" row (a non-case work item) has
+	// no escalation, so it satisfies isEmpty.
+	if req.Parsed.HasActiveEscalation != nil {
+		if *req.Parsed.HasActiveEscalation {
+			where += " AND c.is_escalated IS TRUE"
+		} else {
+			where += " AND c.is_escalated IS NOT TRUE"
+		}
+	}
+
+	// anyOf: each branch is the AND of its own fields, the branches are OR'd, and
+	// the whole is ANDed with everything above. A branch with no fields would
+	// match everything, so it is rendered TRUE rather than dropped.
+	if len(req.Parsed.OrGroups) > 0 {
+		branches := make([]string, 0, len(req.Parsed.OrGroups))
+		for _, g := range req.Parsed.OrGroups {
+			preds, branchArgs, next, err := caseFieldPredicates(caseFieldSetFromGroup(g), argIdx)
+			if err != nil {
+				return nil, 0, err
+			}
+			filterArgs = append(filterArgs, branchArgs...)
+			argIdx = next
+			if len(preds) == 0 {
+				branches = append(branches, "TRUE")
+				continue
+			}
+			branches = append(branches, "("+strings.Join(preds, " AND ")+")")
+		}
+		where += " AND (" + strings.Join(branches, " OR ") + ")"
 	}
 
 	if req.Filters.SearchQuery != "" {
