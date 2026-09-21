@@ -57,7 +57,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	var savedFilterViewHandler *handler.SavedFilterViewHandler
 	if db != nil {
 		savedFilterViewHandler = handler.NewSavedFilterViewHandler(
-			service.NewSavedFilterViewService(repository.NewSavedFilterViewRepository(db)),
+			service.NewSavedFilterViewService(repository.NewSavedFilterViewRepository(db), userRepo),
 		)
 	}
 

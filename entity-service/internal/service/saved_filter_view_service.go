@@ -18,9 +18,6 @@ package service
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -38,12 +35,13 @@ var validSavedFilterListKey = map[domain.SavedFilterListKey]bool{
 }
 
 type savedFilterViewService struct {
-	repo repository.SavedFilterViewRepository
+	repo     repository.SavedFilterViewRepository
+	userRepo repository.UserRepository
 }
 
 // NewSavedFilterViewService constructs a SavedFilterViewService.
-func NewSavedFilterViewService(repo repository.SavedFilterViewRepository) SavedFilterViewService {
-	return &savedFilterViewService{repo: repo}
+func NewSavedFilterViewService(repo repository.SavedFilterViewRepository, userRepo repository.UserRepository) SavedFilterViewService {
+	return &savedFilterViewService{repo: repo, userRepo: userRepo}
 }
 
 func (s *savedFilterViewService) List(ctx context.Context, listKey domain.SavedFilterListKey) (domain.SavedFilterViewList, error) {
@@ -148,34 +146,15 @@ func (s *savedFilterViewService) currentUserID(ctx context.Context) (string, err
 	if token == "" {
 		return "", &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
 	}
-	userID, err := savedFilterAsgardeoUserID(token)
+	email, err := emailFromJWT(token)
 	if err != nil {
 		return "", &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
 	}
-	return userID, nil
-}
-
-// savedFilterAsgardeoUserID reads the JWT userid claim for this feature only.
-// Other services still resolve identity via email → "user".id.
-func savedFilterAsgardeoUserID(token string) (string, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return "", fmt.Errorf("malformed JWT: expected 3 parts, got %d", len(parts))
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	user, err := s.userRepo.GetUserByEmail(ctx, email)
 	if err != nil {
-		return "", fmt.Errorf("malformed JWT payload: %w", err)
+		return "", err
 	}
-	var claims struct {
-		UserID string `json:"userid"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", fmt.Errorf("malformed JWT claims: %w", err)
-	}
-	if claims.UserID == "" {
-		return "", fmt.Errorf("userid claim not present in token")
-	}
-	return claims.UserID, nil
+	return user.ID, nil
 }
 
 func validateListKey(listKey domain.SavedFilterListKey) error {

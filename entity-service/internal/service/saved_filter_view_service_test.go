@@ -25,6 +25,7 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 type fakeSavedFilterViewRepo struct {
@@ -86,7 +87,7 @@ func (f *fakeSavedFilterViewRepo) Move(_ context.Context, _ string, _ domain.Sav
 	return f.list, nil
 }
 
-const testAsgardeoUserID = "ba817937-1111-1111-1111-111111111111"
+const testPlatformUserID = "user-1"
 
 func fakeJWTWithUserID(t *testing.T, userID string) string {
 	t.Helper()
@@ -99,9 +100,17 @@ func fakeJWTWithUserID(t *testing.T, userID string) string {
 	return header + "." + payload + ".sig"
 }
 
+func savedFilterViewUsers() repository.UserRepository {
+	return stubUserRepo{
+		getUserByEmail: func(_ context.Context, email string) (domain.User, error) {
+			return domain.User{ID: testPlatformUserID, Email: email}, nil
+		},
+	}
+}
+
 func savedFilterViewSvc(t *testing.T, repo *fakeSavedFilterViewRepo) (SavedFilterViewService, context.Context) {
 	t.Helper()
-	return NewSavedFilterViewService(repo), contextWithUserIDToken(fakeJWTWithUserID(t, testAsgardeoUserID))
+	return NewSavedFilterViewService(repo, savedFilterViewUsers()), contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 }
 
 func TestSavedFilterViewService_List_RejectsInvalidListKey(t *testing.T) {
@@ -114,20 +123,33 @@ func TestSavedFilterViewService_List_RejectsInvalidListKey(t *testing.T) {
 }
 
 func TestSavedFilterViewService_List_RequiresToken(t *testing.T) {
-	svc := NewSavedFilterViewService(&fakeSavedFilterViewRepo{})
+	svc := NewSavedFilterViewService(&fakeSavedFilterViewRepo{}, savedFilterViewUsers())
 	_, err := svc.List(context.Background(), domain.SavedFilterListKeyCases)
 	if _, ok := err.(*apierror.UnauthorizedError); !ok {
 		t.Fatalf("got %T %v, want UnauthorizedError", err, err)
 	}
 }
 
-func TestSavedFilterViewService_List_RequiresUserIDClaim(t *testing.T) {
-	svc := NewSavedFilterViewService(&fakeSavedFilterViewRepo{})
-	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+func TestSavedFilterViewService_List_RequiresEmailClaim(t *testing.T) {
+	svc := NewSavedFilterViewService(&fakeSavedFilterViewRepo{}, savedFilterViewUsers())
+	ctx := contextWithUserIDToken(fakeJWTWithUserID(t, "asgardeo-only"))
 	_, err := svc.List(ctx, domain.SavedFilterListKeyCases)
 	var ve *apierror.ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("got %T %v, want ValidationError", err, err)
+	}
+}
+
+func TestSavedFilterViewService_List_UnknownEmail(t *testing.T) {
+	svc := NewSavedFilterViewService(&fakeSavedFilterViewRepo{}, stubUserRepo{
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{}, &apierror.NotFoundError{Msg: "no user found"}
+		},
+	})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "nobody@example.com"))
+	_, err := svc.List(ctx, domain.SavedFilterListKeyCases)
+	if _, ok := err.(*apierror.NotFoundError); !ok {
+		t.Fatalf("got %T %v, want NotFoundError", err, err)
 	}
 }
 
@@ -141,8 +163,8 @@ func TestSavedFilterViewService_List_ReturnsViews(t *testing.T) {
 	if len(got.Views) != 1 || got.Views[0].Name != "A" {
 		t.Fatalf("unexpected: %+v", got)
 	}
-	if repo.lastUserID != testAsgardeoUserID {
-		t.Fatalf("user id = %q, want Asgardeo userid %q", repo.lastUserID, testAsgardeoUserID)
+	if repo.lastUserID != testPlatformUserID {
+		t.Fatalf("user id = %q, want platform user.id %q", repo.lastUserID, testPlatformUserID)
 	}
 }
 

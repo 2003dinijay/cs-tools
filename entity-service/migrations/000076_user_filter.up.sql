@@ -21,12 +21,12 @@
 -- filters never leak across lists. filter_position 0 is the first menu
 -- entry. No ServiceNow equivalent — Postgres-only, like sla_clocks.
 --
--- user_id stores the Asgardeo JWT userid claim for this feature only. It is
--- not "user".id, so this column is not a foreign key.
+-- user_id is "user".id (JWT email → GetUserByEmail). Rows are removed when
+-- the platform user is deleted.
 
 CREATE TABLE IF NOT EXISTS user_filter (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID NOT NULL,
+    user_id         UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
     list_key        VARCHAR(64) NOT NULL,
     name            VARCHAR(255) NOT NULL,
     qs              TEXT NOT NULL,
