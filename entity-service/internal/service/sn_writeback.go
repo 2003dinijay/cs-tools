@@ -131,16 +131,23 @@ func (d *SNWritebackDispatcher) run(job snWritebackJob) {
 }
 
 // Dispatch queues writeFn to run on the background worker pool and returns
-// immediately — it never blocks the caller on the ServiceNow write itself.
+// immediately — it never blocks the caller on the ServiceNow write itself
+// (see the queue-full case below for the one situation where it still adds
+// a small amount of local, non-ServiceNow latency).
 // ctx is only used to derive the detached background context (via
 // context.WithoutCancel); it is not otherwise consulted, so Dispatch always
 // enqueues regardless of ctx's own state.
 //
 // If the queue is full (snWritebackQueueSize jobs already pending — meaning
 // ServiceNow mirror writes are backing up faster than the pool can drain
-// them), Dispatch does not block the caller: it logs and records the drop
-// as a failure synchronously instead, the same outcome a queued attempt
-// would have on failure.
+// them), Dispatch still never touches ServiceNow itself: it logs and
+// records the drop as a failure via a synchronous local Postgres insert
+// instead (the same outcome a queued attempt would have on failure). That
+// insert briefly blocks the caller — deliberately: firing it into yet
+// another goroutine would just let failure records pile up unbounded
+// against a queue that's already full, the same problem this branch exists
+// to avoid. What Dispatch guarantees is no blocking on ServiceNow network
+// I/O, never zero added latency.
 func (d *SNWritebackDispatcher) Dispatch(ctx context.Context, entityType, entityID, operation string, payload any, writeFn func(context.Context) error) {
 	job := snWritebackJob{
 		ctx:        context.WithoutCancel(ctx),
