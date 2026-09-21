@@ -351,22 +351,37 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		pgCaseFallbackSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
 		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseFallbackSvc, eventPublisher, slaClockService, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
 	case config.DataSourcePostgresPrimarySNFallback:
-		// Pilot: case UPDATE only, and only its WorkState field — see
-		// caseService.UpdateCase's own doc comment for exactly what this
-		// mirrors and why (State/Severity mirroring needs
+		// Pilot: case CREATE, and UPDATE's WorkState field only.
+		//
+		// CREATE is ServiceNow-first and synchronous — see
+		// caseService.createCaseSNFirst's own doc comment for the full
+		// reasoning (a Postgres-first async create could leave a permanent
+		// orphan: a Postgres row with no ServiceNow counterpart). This is
+		// also what finally makes case creation work on Postgres in this
+		// mode at all: CaseRepository.CreateCase's own doc comment explains
+		// why Postgres can't generate work_item.number/wso2_id itself (no
+		// sequence was ever added); CreateCaseFromServiceNow sidesteps that
+		// by using the identity ServiceNow already generated, rather than
+		// answering the still-unresolved question of what a Postgres-native
+		// case number would even look like. The plain (non-fallback)
+		// CreateCase path above (DataSourceServiceNow's pgCaseFallbackSvc,
+		// and DataSourcePostgres/default below) is UNCHANGED and still
+		// deliberately non-functional — this only unblocks the fallback
+		// mode's own path.
+		//
+		// UPDATE mirrors WorkState only, asynchronously, after Postgres —
+		// see caseService.UpdateCase's own doc comment for exactly what
+		// this mirrors and why (State/Severity mirroring needs
 		// snCaseService.UpdateCase refactored into a read-free PATCH-only
 		// helper first; deferred as separate, reviewed work against that
-		// live ServiceNow-mode-serving code). CreateCase is NOT wired to
-		// this dispatcher either — its own Postgres path
-		// (CaseRepository.CreateCase) is still deliberately broken pending
-		// an unrelated, unresolved work_item.number/wso2_id generation
-		// decision (see that method's own doc comment), so there is no
-		// working Postgres create to mirror from yet.
+		// live ServiceNow-mode-serving code).
 		//
 		// snCaseMirrorSvc is a full snCaseService, exactly as constructed
 		// for DataSourceServiceNow above, but it is never made the active
-		// CaseService and nothing calls it except caseWriteback's writeFn —
-		// reads always stay on Postgres in this mode.
+		// CaseService — reads always stay on Postgres in this mode. It
+		// serves two purposes: CreateCase calls its CreateCase directly and
+		// synchronously; UpdateCase dispatches to its UpdateCase via
+		// caseWriteback, asynchronously.
 		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, nil, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
 		caseWriteback := service.NewSNWritebackDispatcher(repository.NewSNWritebackFailureRepository(db))
 		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, caseWriteback, snCaseMirrorSvc)
