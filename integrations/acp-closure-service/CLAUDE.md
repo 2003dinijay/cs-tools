@@ -285,6 +285,42 @@ isn't lost or re-litigated:
   ultimately integrates with. Don't re-add logging to this type without
   confirming that direction has changed.
 
+## Project Name links to Salesforce (internal notices only)
+
+Confirmed via a real reference email
+(`local-docs/actual_0_days_invoice_email.html`): every internal notice's
+"Project Name" field value is a hyperlink to
+`https://wso2.my.salesforce.com/{sfId}` — Salesforce's generic
+record-redirect URL, which resolves to the record regardless of object
+type. This was missing entirely from the initial port (the field just
+rendered as plain bold text) until caught against the real reference.
+
+- `project.SfID` (`types.go`, tagged `json:"sfId"`) carries the project's
+  Salesforce ID from the wire, confirmed present on `GetProject`.
+- `notify.Notice.ProjectSfID` carries it from `sweep.baseNotice` through to
+  `EmailNotifier.Send`.
+- `notify.projectNameFieldRowHTML` (`email_notifier.go`) is the one field
+  row that ever gets linked — every other field (Project Key, Invoice Id,
+  Opportunity, Due Date, ...) always stays `fieldRowHTML`'s plain bolded
+  text, matching the real reference (only Project Name links there).
+  Falls back to `fieldRowHTML`'s plain rendering when `ProjectSfID` is
+  empty — a project genuinely without a Salesforce ID on file.
+- **Customer-facing notices never get this link** — confirmed absent from
+  the real customer-facing reference email (customers have no Salesforce
+  access). Structurally guaranteed here too: customer notices render via
+  `renderEmailHTML`/`plainTextToHTML`, which never touches `fieldRowHTML`
+  or `projectNameFieldRowHTML` at all — there's no shared code path that
+  could accidentally leak the link onto a customer copy.
+
+**Not yet implemented**: the real reference email also has a second,
+separate "Open in Salesforce" button near the invoice-details box, linking
+to what appears to be the *invoice's own* Salesforce ID (a different ID
+prefix than the project's). Deliberately not added — `invoiceDTO`
+(`types.go`) has no sfId-equivalent field, and none is documented in
+`csm-integration-service`'s `openapi.yaml` either. Needs confirming via a
+real `SearchInvoices`/`GetInvoice` Postman response before implementing;
+don't guess a field name.
+
 ## suspensionProcessState's real shape
 
 Free-form JSON written by an existing, live ServiceNow suspension flow —

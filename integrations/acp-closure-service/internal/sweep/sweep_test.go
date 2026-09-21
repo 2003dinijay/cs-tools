@@ -809,6 +809,34 @@ func TestProcessProject_ReminderHasEmptyAccountOwnerEmailWhenNoAccountManager(t 
 	}
 }
 
+// TestBaseNotice_IncludesProjectSfID confirms baseNotice plumbs a project's
+// Salesforce ID through to the Notice, which is what lets EmailNotifier
+// render the "Project Name" field as a Salesforce link (see
+// notify.EmailNotifier.Send / projectNameFieldRowHTML).
+func TestBaseNotice_IncludesProjectSfID(t *testing.T) {
+	sfID := "a0d4U00000aUJURQA4"
+	proj := project{ID: "p1", Name: "Test Project", SfID: &sfID}
+
+	notice := baseNotice(proj, closure.NoticeWindow0)
+
+	if notice.ProjectSfID != sfID {
+		t.Errorf("ProjectSfID = %q, want %q", notice.ProjectSfID, sfID)
+	}
+}
+
+// TestBaseNotice_ProjectSfIDEmptyWhenAbsent confirms a project with no
+// Salesforce ID on file (SfID nil) produces an empty ProjectSfID rather
+// than panicking or leaving a dangling pointer dereference.
+func TestBaseNotice_ProjectSfIDEmptyWhenAbsent(t *testing.T) {
+	proj := project{ID: "p1", Name: "Test Project"}
+
+	notice := baseNotice(proj, closure.NoticeWindow0)
+
+	if notice.ProjectSfID != "" {
+		t.Errorf("ProjectSfID = %q, want empty", notice.ProjectSfID)
+	}
+}
+
 // TestInternalNoticeSubject covers the always-[ACP]-prefixed internal
 // subject template directly, confirmed against real examples from Chamara:
 // every window (90 through 0) gets the prefix — it marks "internal

@@ -361,6 +361,13 @@ func timeValue(t *time.Time) time.Time {
 	return *t
 }
 
+func stringValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 func accountName(proj project) string {
 	if proj.Account == nil {
 		return ""
@@ -484,6 +491,7 @@ func baseNotice(proj project, window closure.NoticeWindow) notify.Notice {
 		ProjectID:   proj.ID,
 		ProjectName: proj.Name,
 		ProjectKey:  proj.ProjectKey,
+		ProjectSfID: stringValue(proj.SfID),
 		StartDate:   timeValue(proj.StartDate),
 		EndDate:     timeValue(proj.EndDate),
 		Window:      window,

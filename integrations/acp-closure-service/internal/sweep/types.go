@@ -47,6 +47,17 @@ type project struct {
 	// was caught). Trust the wire over the spec if they disagree again.
 	ProjectKey string             `json:"key"`
 	Account    *projectAccountRef `json:"account"`
+	// SfID is the project's Salesforce record ID (e.g. "a0dE200000E7CxNIAV"),
+	// confirmed present on a real GetProject response. Used to render the
+	// internal notice's "Project Name" field as a hyperlink to
+	// https://wso2.my.salesforce.com/{SfID} — Salesforce's generic
+	// record-redirect URL, which resolves to the record regardless of
+	// object type — confirmed against a real reference email
+	// (local-docs/actual_0_days_invoice_email.html), where every internal
+	// notice's Project Name value links exactly that way. Nullable: a
+	// project genuinely without a synced Salesforce record has no value
+	// here, and the notice then falls back to plain (unlinked) text.
+	SfID *string `json:"sfId"`
 	// StartDate is nil only when genuinely absent on the wire — mirrors
 	// EndDate's existing nullable-pointer convention.
 	StartDate *time.Time `json:"startDate"`
