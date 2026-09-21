@@ -1988,9 +1988,18 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   nullable); `assignee` <- the `"user"` display name (falling back to email);
   `notes` <- `all_notes`; `meetingLink` <- `call_link`;
   `scheduleTime` <- `scheduled_on`; `durationMin` <- `duration` (INTERVAL).
-- **ASSUMPTION**: `preferredTimes` <- `final_times` (JSONB), read only if it is
-  a JSON array of strings, otherwise `[]` -- the column name doesn't say which
-  side's times it holds and its real contents weren't seen.
+- `preferredTimes` <- `final_times` (JSONB). Checked against 393 synced staging
+  rows: the shape is an array of **objects**, `{"time": "...", "index": 0}`
+  (sometimes with extra `state`/`datetime`/`user` keys), not strings, and the
+  times come in two spellings (`MM/DD/YYYY HH:MM:SS` 324, `YYYY-MM-DD
+  HH:MM:SS` 168), both UTC (`scheduled_on` equals the first time as a UTC
+  instant). `decodeFinalTimes` reads objects ordered by `index` and, for rows
+  this service wrote, plain strings; it returns RFC3339 UTC and **skips** any
+  element that is not a time -- six synced "times" are actually ServiceNow
+  script error text (`Error: Missing parameters (localTime or timezone).`).
+  Note this service *writes* a plain string array, so one column holds two
+  shapes; the reader handles both, but whether the sync reads written rows back
+  is unknown.
 - **ASSUMPTION**: `actualDurationMin` <- `actual_call_duration` (free VARCHAR),
   parsed as a whole number of minutes (what this service writes); any other
   format reads as `nil`.
@@ -2039,11 +2048,18 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
 
 ## Case search filters on the Postgres data source
 
-`caseRepo.SearchCases` implements `projectOnboardingStatus` (in/notIn) and
-`taskSLABusinessElapsedPercent` (gte/lte). The rest of the ServiceNow-shaped
-filters are still rejected with a 400 by `caseService.SearchCases` (`tag`,
-`escalationLevel`, `anyOf`, `product`, `projectType`, `creTeam`/`sreTeam`, ...)
-because dropping one would silently widen the result set.
+`caseRepo.SearchCases` implements `tag` (in/notIn), `projectOnboardingStatus`
+(in/notIn) and `taskSLABusinessElapsedPercent` (gte/lte). The rest of the
+ServiceNow-shaped filters are still rejected with a 400 by
+`caseService.SearchCases` (`escalationLevel`, `anyOf`, `product`, `projectType`,
+`creTeam`/`sreTeam`, ...) because dropping one would silently widen the result
+set. `creTeam`/`sreTeam` and call-request `assignmentTeamIds` are blocked on
+data, not schema: the group columns exist but staging's `group` table was empty
+(the sync has no job for the full group source) so every group FK is NULL.
+
+- **tag**: `EXISTS`/`NOT EXISTS` over `work_item_tag` joined to `tag`, names
+  compared case-insensitively (as `AddCaseTag` looks tags up). `in` = carries any
+  of the names; `notIn` = carries none (an untagged case satisfies it).
 
 - **onboarding status**: matched against `project.onboarding_status` through the
   existing LEFT JOIN. The wire vocabulary is ServiceNow's ("Not-Applicable",
@@ -2059,9 +2075,9 @@ because dropping one would silently widen the result set.
 - **Data caveats (staging, when checked)**: 6,833 of 8,055 `CASE` work items
   have a NULL `project_id` (mostly 2023-2024 cases; `deployment` doesn't carry
   the project either), so project-based filters only ever see the remaining
-  ~15% -- a sync gap, not a query bug. The `work_item_tag` table from migration
-  000021 did not exist in staging (the `tag` table did), which is why `tag`
-  filtering is not implemented here and why add/remove-case-tag would fail there.
+  ~15% -- a sync gap, not a query bug. `work_item_tag` now exists in staging but
+  held only 107 links (30 on cases) against 2,624 tags, so tag results are sparse
+  until the label sync catches up.
 
 ## Adding a new entity
 
