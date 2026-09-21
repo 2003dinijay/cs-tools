@@ -53,8 +53,8 @@ type DeployedProductRepository interface {
 // resolveDeployedProductNodes looks up the given deployed product, confirms
 // it belongs to deploymentID, and returns the deployment_node rows
 // (id, node_id) resolved to it -- see instanceRefJoins' own doc comment in
-// instance_repo.go for why this resolution (deployment_ref cast to uuid) is
-// a best-effort join, unverified against real data.
+// instance_repo.go for how a node is matched to a deployment (by project key and
+// deployment number, only within the same project).
 func (r *deployedProductRepo) resolveDeployedProductNodes(ctx context.Context, id, deploymentID string) (domain.ReferenceTableItem, []domain.ReferenceTableItem, error) {
 	var name, number *string
 	var dpDeploymentID, versionID *string
@@ -88,11 +88,10 @@ func (r *deployedProductRepo) resolveDeployedProductNodes(ctx context.Context, i
 	rows, err := r.db.Query(ctx, `
 		SELECT dn.id, dn.node_id
 		FROM deployment_node dn
+		JOIN project proj ON proj.key = dn.project_key
+		JOIN deployment dep ON dep.number = dn.deployment_number AND dep.project_id = proj.id
 		WHERE dn.product_version_id = $1
-		AND CASE
-			WHEN dn.deployment_ref ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-			THEN dn.deployment_ref::uuid
-		END = $2::uuid`,
+		AND dep.id = $2::uuid`,
 		*versionID, deploymentID,
 	)
 	if err != nil {

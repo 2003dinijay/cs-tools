@@ -74,6 +74,33 @@ const userColumns = `id, user_name, first_name, last_name, email, user_type::TEX
 // query uses (needed once EXISTS subqueries reference u.id for role
 // filtering); GetUserByEmail queries the unaliased table directly and uses
 // userColumns as-is.
+// userSortColumns maps a validated domain.UserSortField to the SQL expression
+// it orders by. name falls back from the display name to first + last name and
+// then the user name, because "user".name is NULL for some synced rows, and is
+// compared case-insensitively so "alice" does not sort after "Zed". The values
+// are fixed strings, never derived from the request.
+var userSortColumns = map[domain.UserSortField]string{
+	domain.UserSortFieldName: `LOWER(COALESCE(NULLIF(u.name, ''),
+		NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.user_name, ''))`,
+	domain.UserSortFieldCreatedOn: "u.created_on",
+	domain.UserSortFieldUpdatedOn: "u.updated_on",
+}
+
+// userOrderBy returns the ORDER BY body for a user search. With no sortBy the
+// list is newest-first. A requested sort defaults to ascending, and u.id is
+// always the final tie-break so pages are stable across offsets.
+func userOrderBy(s domain.UserSortBy) string {
+	col, ok := userSortColumns[s.Field]
+	if !ok {
+		return "u.created_on DESC, u.id"
+	}
+	dir := "ASC"
+	if s.Order == domain.UserSortOrderDesc {
+		dir = "DESC"
+	}
+	return col + " " + dir + ", u.id"
+}
+
 const prefixUserColumns = `u.id, u.user_name, u.first_name, u.last_name, u.email, u.user_type::TEXT, u.created_on, u.updated_on`
 
 // userTypeFromEnum maps "user".user_type's real user_type_enum labels
@@ -175,8 +202,8 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 	countQuery := "SELECT COUNT(*) " + fromClause + " " + where
 
 	dataQuery := fmt.Sprintf(
-		`SELECT %s %s %s ORDER BY u.created_on DESC, u.id LIMIT $%d OFFSET $%d`,
-		prefixUserColumns, fromClause, where, argIdx, argIdx+1,
+		`SELECT %s %s %s ORDER BY %s LIMIT $%d OFFSET $%d`,
+		prefixUserColumns, fromClause, where, userOrderBy(req.SortBy), argIdx, argIdx+1,
 	)
 	dataArgs := append(append([]any{}, filterArgs...), req.Pagination.Limit, req.Pagination.Offset)
 
@@ -219,13 +246,69 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 		return nil, 0, err
 	}
 
+	if err := r.attachRoles(ctx, users); err != nil {
+		return nil, 0, err
+	}
+
 	return users, total, nil
+}
+
+// attachRoles fills in each user's Roles from user_role in ONE query for the
+// whole page (not one per user), so the search stays a fixed number of round
+// trips whatever the page size. DISTINCT because user_role has no unique
+// constraint on (user_id, role_id) and the sync left duplicates (113 user/role
+// pairs in staging), which would otherwise list a role twice.
+func (r *userRepo) attachRoles(ctx context.Context, users []domain.User) error {
+	if len(users) == 0 {
+		return nil
+	}
+	ids := make([]string, len(users))
+	for i, u := range users {
+		ids[i] = u.ID
+	}
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT ur.user_id::text, r.name
+		FROM user_role ur
+		JOIN role r ON r.id = ur.role_id
+		WHERE ur.user_id = ANY($1::uuid[])
+		ORDER BY ur.user_id::text, r.name`, ids)
+	if err != nil {
+		return fmt.Errorf("query roles for users: %w", err)
+	}
+	defer rows.Close()
+
+	byUser := make(map[string][]string, len(users))
+	for rows.Next() {
+		var userID, role string
+		if err := rows.Scan(&userID, &role); err != nil {
+			return fmt.Errorf("scan user role: %w", err)
+		}
+		byUser[userID] = append(byUser[userID], role)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate roles for users: %w", err)
+	}
+	assignRoles(users, byUser)
+	return nil
+}
+
+// assignRoles sets Roles on every user; a user with none gets an empty, non-nil
+// slice so it serializes as [] rather than null.
+func assignRoles(users []domain.User, byUser map[string][]string) {
+	for i := range users {
+		if roles, ok := byUser[users[i].ID]; ok {
+			users[i].Roles = roles
+			continue
+		}
+		users[i].Roles = []string{}
+	}
 }
 
 // GetUserRoles implements UserRepository.
 func (r *userRepo) GetUserRoles(ctx context.Context, userID string) ([]string, error) {
+	// DISTINCT: user_role has no unique (user_id, role_id), and duplicates exist.
 	rows, err := r.db.Query(ctx, `
-		SELECT r.name FROM user_role ur
+		SELECT DISTINCT r.name FROM user_role ur
 		JOIN role r ON r.id = ur.role_id
 		WHERE ur.user_id = $1
 		ORDER BY r.name`, userID)

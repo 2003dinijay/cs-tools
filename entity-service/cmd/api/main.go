@@ -29,6 +29,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/db"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/github"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/server"
@@ -86,6 +87,47 @@ func main() {
 		}
 	}
 
+	// Change-request notices: a background poller over event_outbox, gated on
+	// CR_NOTICES_ENABLED. Off by default because ServiceNow still sends these
+	// mails — turning it on is a paired change with disabling them there, or
+	// every approver is notified twice.
+	//
+	// Its own producer on its own topic, NOT the case-events one above. Every
+	// consumer group reads its whole topic, so sharing would make the case
+	// consumer read and discard every change-request record and vice versa —
+	// a separate topic is what isolates the two volumes, where a separate
+	// consumer group would only isolate the processing.
+	crNoticeCtx, stopCRNotices := context.WithCancel(context.Background())
+	defer stopCRNotices()
+	var crPublisher service.EventPublisherService
+	if cfg.CRNoticesEnabled {
+		switch {
+		case pool == nil:
+			log.Printf("CR_NOTICES_ENABLED is set but there is no database pool (DATA_SOURCE=%s): change-request notices are disabled", cfg.DataSource)
+		case cfg.EventHubBroker == "" || !cfg.EventPublishingEnabled:
+			log.Printf("CR_NOTICES_ENABLED is set but event publishing is not configured (EVENT_HUB_BROKER/EVENT_PUBLISHING_ENABLED): change-request notices are disabled")
+		case cfg.CREventHubTopic == "":
+			log.Printf("CR_NOTICES_ENABLED is set but CR_EVENT_HUB_TOPIC is empty: change-request notices are disabled")
+		default:
+			crPublisher = service.NewEventPublisherService(
+				eventbus.NewProducer(eventbus.Config{
+					Broker:           cfg.EventHubBroker,
+					ConnectionString: cfg.EventHubConnectionString,
+					Topic:            cfg.CREventHubTopic,
+				}),
+				service.NewEventPublishFailureService(repository.NewEventPublishFailureRepository(pool)),
+			)
+			crRepo := repository.NewCRNoticeRepository(pool)
+			drainer := service.NewCRNoticeDrainer(
+				crRepo,
+				service.NewCRNoticeService(crRepo, crPublisher),
+				cfg.CRNoticePollInterval,
+			)
+			go drainer.Run(crNoticeCtx)
+			log.Printf("change-request notices enabled: publishing to topic %q every %s", cfg.CREventHubTopic, cfg.CRNoticePollInterval)
+		}
+	}
+
 	// The health probe listens separately, on its own port, so that only its
 	// own route is reachable at the public visibility it is published with —
 	// see server.NewHealthServer and .choreo/component.yaml.
@@ -127,6 +169,12 @@ func main() {
 	}
 	if eventPublisher != nil {
 		eventPublisher.Close()
+	}
+	// Stop the drainer before closing its producer, so a notice in flight is
+	// not handed a writer that has already gone away.
+	stopCRNotices()
+	if crPublisher != nil {
+		crPublisher.Close()
 	}
 	log.Println("server stopped")
 }

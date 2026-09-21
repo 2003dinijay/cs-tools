@@ -23,7 +23,18 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
+
+// alwaysUnrestrictedAccess is an AccessService stub for tests that exercise
+// CaseService/ProjectService logic unrelated to access scoping -- every
+// caller sees everything, so these tests aren't coupled to AccessService's
+// own rules (see access_service_test.go for those).
+type alwaysUnrestrictedAccess struct{}
+
+func (alwaysUnrestrictedAccess) ResolveScope(context.Context) (AccessScope, error) {
+	return AccessScope{Unrestricted: true}, nil
+}
 
 // stubCaseRepo is a minimal repository.CaseRepository whose SearchCases
 // panics if called: tests using it prove ParseCaseFieldFilters' rejection of
@@ -43,10 +54,10 @@ type stubCaseRepo struct {
 func (s *stubCaseRepo) CreateCase(context.Context, domain.CreateCaseRequest) (domain.Case, error) {
 	panic("not implemented")
 }
-func (s *stubCaseRepo) GetCaseByID(context.Context, string) (domain.CaseView, error) {
+func (s *stubCaseRepo) GetCaseByID(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
 	panic("not implemented")
 }
-func (s *stubCaseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error) {
+func (s *stubCaseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest, scope repository.SearchScope) ([]domain.SearchCaseView, int, error) {
 	if s.searchCases != nil {
 		return s.searchCases(ctx, req)
 	}
@@ -121,9 +132,13 @@ func (s *stubCaseRepo) SearchCaseActivities(context.Context, domain.SearchCaseAc
 // use.
 type stubUserRepo struct {
 	getUserByEmail func(ctx context.Context, email string) (domain.User, error)
+	searchUsers    func(ctx context.Context, req domain.SearchUsersRequest) ([]domain.User, int, error)
 }
 
-func (stubUserRepo) SearchUsers(context.Context, domain.SearchUsersRequest) ([]domain.User, int, error) {
+func (s stubUserRepo) SearchUsers(ctx context.Context, req domain.SearchUsersRequest) ([]domain.User, int, error) {
+	if s.searchUsers != nil {
+		return s.searchUsers(ctx, req)
+	}
 	panic("not implemented")
 }
 func (s stubUserRepo) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
@@ -144,24 +159,21 @@ func (stubUserRepo) GetUserGroups(context.Context, string) ([]domain.UserGroupRe
 }
 
 // TestCaseService_SearchCases_RejectsUnsupportedPostgresFields proves the
-// Postgres-backed SearchCases path rejects each of the 9 filter fields
+// Postgres-backed SearchCases path rejects each of these filter fields
 // ParseCaseFieldFilters accepts but the Postgres repository has no query
 // support for (they dot-walk into SN-specific concepts with no Postgres
-// schema equivalent), rather than silently accepting the request and
+// query support yet), rather than silently accepting the request and
 // returning a broader-than-requested result set.
 func TestCaseService_SearchCases_RejectsUnsupportedPostgresFields(t *testing.T) {
-	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil)
+	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil, alwaysUnrestrictedAccess{})
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	cases := []struct {
 		name   string
 		filter domain.CaseFieldFilter
 	}{
-		{name: "tag in", filter: domain.CaseFieldFilter{Field: "tag", Op: "in", Values: []string{"beta"}}},
-		{name: "tag notIn", filter: domain.CaseFieldFilter{Field: "tag", Op: "notIn", Values: []string{"beta"}}},
 		{name: "parentId", filter: domain.CaseFieldFilter{Field: "parentId", Op: "eq", Values: []string{"00000000-0000-0000-0000-000000000000"}}},
 		{name: "product", filter: domain.CaseFieldFilter{Field: "product", Op: "in", Values: []string{"API Manager"}}},
-		{name: "projectOnboardingStatus", filter: domain.CaseFieldFilter{Field: "projectOnboardingStatus", Op: "in", Values: []string{"Completed"}}},
 		{name: "projectType", filter: domain.CaseFieldFilter{Field: "projectType", Op: "in", Values: []string{"Subscription"}}},
 		{name: "creTeam", filter: domain.CaseFieldFilter{Field: "creTeam", Op: "in", Values: []string{"00000000-0000-0000-0000-000000000000"}}},
 		{name: "sreTeam", filter: domain.CaseFieldFilter{Field: "sreTeam", Op: "in", Values: []string{"00000000-0000-0000-0000-000000000000"}}},
@@ -186,7 +198,7 @@ func TestCaseService_SearchCases_RejectsUnsupportedPostgresFields(t *testing.T) 
 }
 
 // TestCaseService_SearchCases_SupportedFieldsStillReachRepository proves the
-// 11 fields the Postgres repository does support are not caught by the new
+// fields the Postgres repository does support are not caught by the
 // unsupported-field rejection: each reaches repo.SearchCases unchanged.
 func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.T) {
 	uuid1 := "00000000-0000-0000-0000-000000000001"
@@ -206,6 +218,15 @@ func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.
 		{name: "workState", filter: domain.CaseFieldFilter{Field: "workState", Op: "in", Values: []string{"ongoing"}}},
 		{name: "assignedUserId in", filter: domain.CaseFieldFilter{Field: "assignedUserId", Op: "in", Values: []string{uuid1}}},
 		{name: "createdOn gte", filter: domain.CaseFieldFilter{Field: "createdOn", Op: "gte", Values: []string{"2026-01-01"}}},
+		{name: "escalationLevel in", filter: domain.CaseFieldFilter{Field: "escalationLevel", Op: "in", Values: []string{"1", "2"}}},
+		{name: "escalation isNotEmpty", filter: domain.CaseFieldFilter{Field: "escalation", Op: "isNotEmpty"}},
+		{name: "escalation isEmpty", filter: domain.CaseFieldFilter{Field: "escalation", Op: "isEmpty"}},
+		{name: "tag in", filter: domain.CaseFieldFilter{Field: "tag", Op: "in", Values: []string{"patch"}}},
+		{name: "tag notIn", filter: domain.CaseFieldFilter{Field: "tag", Op: "notIn", Values: []string{"s_dip", "patch"}}},
+		{name: "projectOnboardingStatus in", filter: domain.CaseFieldFilter{Field: "projectOnboardingStatus", Op: "in", Values: []string{"Completed"}}},
+		{name: "projectOnboardingStatus notIn", filter: domain.CaseFieldFilter{Field: "projectOnboardingStatus", Op: "notIn", Values: []string{"In-Progress"}}},
+		{name: "taskSLABusinessElapsedPercent gte", filter: domain.CaseFieldFilter{Field: "taskSLABusinessElapsedPercent", Op: "gte", Values: []string{"80"}}},
+		{name: "taskSLABusinessElapsedPercent lte 0", filter: domain.CaseFieldFilter{Field: "taskSLABusinessElapsedPercent", Op: "lte", Values: []string{"0"}}},
 	}
 
 	for _, tc := range cases {
@@ -217,7 +238,7 @@ func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.
 					return nil, 0, nil
 				},
 			}
-			svc := NewCaseService(repo, stubUserRepo{}, nil)
+			svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{})
 			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 			req := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
@@ -235,13 +256,13 @@ func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.
 
 // TestCaseService_SearchCases_RejectsServiceNowOnlyOptions proves the Postgres
 // path rejects the search options that only snCaseService implements: the
-// Task-SLA percent filter, the two escalation filters, OR groups, and grouped
-// counts. caseRepo.SearchCases models none of them, so accepting the request
+// slaBreached and account-escalation filters, and grouped counts.
+// caseRepo.SearchCases models none of them, so accepting the request
 // would silently drop the predicate and return a wider result set with a 200.
 // The stub repository panics if reached, so a passing test proves the
 // short-circuit, not merely that the repository ignored the option.
 func TestCaseService_SearchCases_RejectsServiceNowOnlyOptions(t *testing.T) {
-	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil)
+	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil, alwaysUnrestrictedAccess{})
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	cases := []struct {
@@ -249,34 +270,6 @@ func TestCaseService_SearchCases_RejectsServiceNowOnlyOptions(t *testing.T) {
 		req     domain.SearchCasesRequest
 		wantMsg string
 	}{
-		{
-			name: "taskSLABusinessElapsedPercent",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				Filters: []domain.CaseFieldFilter{{Field: "taskSLABusinessElapsedPercent", Op: "gte", Values: []string{"80"}}},
-			}},
-			wantMsg: `field "taskSLABusinessElapsedPercent" is not supported by this data source`,
-		},
-		{
-			name: "taskSLABusinessElapsedPercent lte 0",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				Filters: []domain.CaseFieldFilter{{Field: "taskSLABusinessElapsedPercent", Op: "lte", Values: []string{"0"}}},
-			}},
-			wantMsg: `field "taskSLABusinessElapsedPercent" is not supported by this data source`,
-		},
-		{
-			name: "escalationLevel",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				Filters: []domain.CaseFieldFilter{{Field: "escalationLevel", Op: "in", Values: []string{"level_1"}}},
-			}},
-			wantMsg: `field "escalationLevel" is not supported by this data source`,
-		},
-		{
-			name: "escalation",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				Filters: []domain.CaseFieldFilter{{Field: "escalation", Op: "isNotEmpty"}},
-			}},
-			wantMsg: `field "escalation" is not supported by this data source`,
-		},
 		{
 			name: "slaBreached",
 			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
@@ -304,15 +297,6 @@ func TestCaseService_SearchCases_RejectsServiceNowOnlyOptions(t *testing.T) {
 				Filters: []domain.CaseFieldFilter{{Field: "resolvedOn", Op: "lte", Values: []string{"2026-01-31"}}},
 			}},
 			wantMsg: `field "resolvedOn" is not supported by this data source`,
-		},
-		{
-			name: "anyOf",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				AnyOf: []domain.CaseFilterBranch{
-					{Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open"}}}},
-				},
-			}},
-			wantMsg: "anyOf is not supported by this data source",
 		},
 		{
 			name:    "groupBy",
@@ -355,7 +339,7 @@ func TestCaseService_SearchCaseComments(t *testing.T) {
 				return nil, 0, nil
 			},
 		}
-		svc := NewCaseService(repo, stubUserRepo{}, nil)
+		svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{})
 
 		resp, err := svc.SearchCaseComments(context.Background(), domain.SearchCaseCommentsRequest{CaseID: caseID})
 		if err != nil {
@@ -383,7 +367,7 @@ func TestCaseService_SearchCaseComments(t *testing.T) {
 				return []domain.CaseComment{want}, 1, nil
 			},
 		}
-		svc := NewCaseService(repo, stubUserRepo{}, nil)
+		svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{})
 
 		resp, err := svc.SearchCaseComments(context.Background(), domain.SearchCaseCommentsRequest{CaseID: caseID})
 		if err != nil {
@@ -413,7 +397,7 @@ func TestCaseService_SearchCaseComments(t *testing.T) {
 				return []domain.CaseComment{newest, middle, oldest}, 5, nil
 			},
 		}
-		svc := NewCaseService(repo, stubUserRepo{}, nil)
+		svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{})
 
 		resp, err := svc.SearchCaseComments(context.Background(), domain.SearchCaseCommentsRequest{
 			CaseID:     caseID,
@@ -444,7 +428,7 @@ func TestCaseService_SearchCaseComments(t *testing.T) {
 				return nil, 0, nil
 			},
 		}
-		svc := NewCaseService(repo, stubUserRepo{}, nil)
+		svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{})
 
 		_, err := svc.SearchCaseComments(context.Background(), domain.SearchCaseCommentsRequest{CaseID: "not-a-uuid"})
 		var ve *apierror.ValidationError
@@ -463,7 +447,7 @@ func TestCaseService_SearchCaseComments(t *testing.T) {
 // CreateCase's own "only type \"case\" is supported" guard), so none of these
 // fields have anywhere to go on this data source.
 func TestCaseService_UpdateCase_RejectsTypeTransferFields(t *testing.T) {
-	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil)
+	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil, alwaysUnrestrictedAccess{})
 	ctx := context.Background()
 	strPtr := func(s string) *string { return &s }
 	engagement := domain.EngagementTypeMigration
@@ -502,5 +486,49 @@ func TestCaseService_UpdateCase_RejectsTypeTransferFields(t *testing.T) {
 				t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
 			}
 		})
+	}
+}
+
+// TestCaseService_SearchCases_AnyOfReachesRepository proves an anyOf request is
+// parsed into OR groups and handed to the repository (the Postgres path used to
+// reject it outright), and that a field not allowed inside a branch is still a
+// validation error rather than silently dropped.
+func TestCaseService_SearchCases_AnyOfReachesRepository(t *testing.T) {
+	var got domain.SearchCasesRequest
+	repo := &stubCaseRepo{
+		searchCases: func(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error) {
+			got = req
+			return nil, 0, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	req := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+		Filters: []domain.CaseFieldFilter{{Field: "state", Op: "in", Values: []string{"open"}}},
+		AnyOf: []domain.CaseFilterBranch{
+			{Filters: []domain.CaseFieldFilter{{Field: "severity", Op: "in", Values: []string{"critical"}}}},
+			{Filters: []domain.CaseFieldFilter{{Field: "escalationLevel", Op: "in", Values: []string{"3", "4"}}}},
+		},
+	}}
+	if _, err := svc.SearchCases(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Parsed.OrGroups) != 2 {
+		t.Fatalf("OrGroups = %d, want 2", len(got.Parsed.OrGroups))
+	}
+	if g := got.Parsed.OrGroups[1]; len(g.EscalationLevels) != 2 || g.EscalationLevels[0] != "3" {
+		t.Errorf("second branch escalation levels = %v, want [3 4]", g.EscalationLevels)
+	}
+
+	bad := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+		AnyOf: []domain.CaseFilterBranch{
+			{Filters: []domain.CaseFieldFilter{{Field: "projectOnboardingStatus", Op: "in", Values: []string{"Completed"}}}},
+		},
+	}}
+	_, err := svc.SearchCases(ctx, bad)
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) {
+		t.Fatalf("a field not allowed inside a branch must be a validation error, got %v", err)
 	}
 }

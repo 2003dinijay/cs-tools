@@ -116,12 +116,14 @@ type CaseRepository interface {
 	// CreateCase inserts a new case row (both work_item and "case").
 	CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
 	// GetCaseByID returns the enriched case view for the given UUID, or a
-	// NotFoundError if no matching row exists.
-	GetCaseByID(ctx context.Context, id string) (domain.CaseView, error)
+	// NotFoundError if no matching row exists OR it exists but scope excludes
+	// it (existence is never revealed to a caller who can't see it).
+	GetCaseByID(ctx context.Context, id string, scope SearchScope) (domain.CaseView, error)
 	// SearchCases returns a filtered, paginated slice of enriched case views
-	// together with the total count of matching rows before pagination.
+	// together with the total count of matching rows before pagination,
+	// narrowed to scope regardless of what project filter req itself carries.
 	// COUNT and SELECT are executed concurrently on separate pool connections.
-	SearchCases(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error)
+	SearchCases(ctx context.Context, req domain.SearchCasesRequest, scope SearchScope) ([]domain.SearchCaseView, int, error)
 	// CreateCaseComment inserts a new comment row for the given case.
 	CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error)
 	// SearchCaseComments returns a paginated slice of comments for the given case
@@ -227,56 +229,111 @@ func NewCaseRepository(db *pgxpool.Pool) CaseRepository {
 // CreateCase implements CaseRepository.
 // CreateCase implements CaseRepository.
 //
-// STILL BROKEN, DELIBERATELY NOT FIXED HERE: unlike every other method in
-// this file, this one can't be repaired with a table/column rename alone.
-// work_item.number and work_item.wso2_id are both UNIQUE with no DB default
-// and no backing sequence anywhere in migrations/ (CLAUDE.md documents the
-// intended design -- "generated from dedicated sequences via column
-// defaults" -- but no CREATE SEQUENCE for either one was ever actually
-// added), so something has to generate them on every insert, and the exact
-// format is undefined (ServiceNow's own case numbers look like "CS0023001",
-// but that's not proven to be the intended Postgres-native format either).
-// Explicitly deferred per product decision rather than guessed at -- see
-// this repository's own package doc / CLAUDE.md for the options considered.
-// The query below still references the nonexistent "cases" table (the same
-// class of bug this file's other methods had) and will fail at runtime.
+// A case is a work_item row (type CASE) plus a "case" extension row sharing its
+// id (migrations 000016/000018), written in one transaction. The old version
+// inserted into a "cases" table that does not exist.
+//
+// The row's identifiers follow the synced data: work_item.created_by holds the
+// creator's EMAIL (6,995 of 8,066 staging cases), so it is taken from the user
+// row of req.CreatedBy (a user id), which is also stored as opened_by_user_id.
+// A missing user yields no row, reported as a validation error rather than a
+// bare foreign-key failure.
+//
+// NOT DONE, DELIBERATELY: work_item.number (NOT NULL, unique) and wso2_id have
+// no default and no sequence, and generating them is an undecided product
+// choice (see CLAUDE.md, "CreateCase and case numbers"). Until that is settled
+// the insert reaches the database with valid tables and columns but is refused
+// for want of a number, which is reported as ServiceUnavailableError instead of
+// an opaque 500.
 func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
-	const query = `
-		INSERT INTO cases (
-			created_by, project_id, deployment_id, deployed_product_id,
-			type, subject, description, severity, issue_type, state
-		)
-		VALUES (
-			$1, $2, $3, $4,
-			$5::case_type_enum, $6, $7,
-			$8::case_severity_enum, $9::case_issue_type_enum,
-			'open'::case_state_enum
-		)
-		RETURNING id, number, internal_id, created_by, project_id, deployment_id, deployed_product_id,
-		          subject, description, severity, issue_type, state, created_at, updated_at, closed_at`
-
-	var c domain.Case
-	err := r.db.QueryRow(ctx, query,
-		req.CreatedBy, req.ProjectID, req.DeploymentID, req.DeployedProductID,
-		req.Type, req.Subject, req.Description, string(req.Severity), string(req.IssueType),
-	).Scan(
-		&c.ID, &c.Number, &c.InternalID, &c.CreatedBy,
-		&c.ProjectID, &c.DeploymentID, &c.DeployedProductID,
-		&c.Subject, &c.Description, &c.Severity, &c.IssueType, &c.State,
-		&c.CreatedOn, &c.UpdatedOn, &c.ClosedOn,
-	)
+	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
-			switch pgErr.Code {
-			case "23503": // foreign_key_violation — one of the referenced IDs does not exist
-				return domain.Case{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
-			case "P0001": // raise_exception from integrity triggers (deployment/project, deployed_product/deployment, catastrophic priority)
-				return domain.Case{}, &apierror.ValidationError{Msg: pgErr.Message}
-			}
-		}
-		return domain.Case{}, fmt.Errorf("create case: %w", err)
+		return domain.Case{}, fmt.Errorf("create case: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const insertWorkItem = `
+		INSERT INTO work_item (
+			id, created_on, updated_on, created_by, updated_by,
+			type, project_id, deployment_id, deployed_product_id,
+			subject, description, opened_by_user_id
+		)
+		SELECT gen_random_uuid(), NOW(), NOW(), u.email, u.email,
+		       'CASE'::work_item_type_enum, $2::uuid, $3::uuid, $4::uuid,
+		       $5, $6, u.id
+		FROM "user" u
+		WHERE u.id = $1::uuid
+		RETURNING id::TEXT, number, wso2_id, created_by, project_id::TEXT, deployment_id::TEXT,
+		          deployed_product_id::TEXT, subject, description, created_on, updated_on`
+
+	var (
+		c          domain.Case
+		internalID *string
+		desc       *string
+	)
+	err = tx.QueryRow(ctx, insertWorkItem,
+		req.CreatedBy, req.ProjectID, req.DeploymentID, req.DeployedProductID,
+		req.Subject, req.Description,
+	).Scan(
+		&c.ID, &c.Number, &internalID, &c.CreatedBy, &c.ProjectID, &c.DeploymentID,
+		&c.DeployedProductID, &c.Subject, &desc, &c.CreatedOn, &c.UpdatedOn,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Case{}, &apierror.ValidationError{Msg: "creating user not found: " + req.CreatedBy}
+	}
+	if err != nil {
+		return domain.Case{}, mapCreateCaseError(err)
+	}
+	c.InternalID = stringOrEmpty(internalID)
+	c.Description = stringOrEmpty(desc)
+
+	// severity is case_severity_enum's S0..S4 (see caseSeverityToEnum); NULLIF
+	// keeps an unset value NULL instead of failing the cast.
+	const insertCase = `
+		INSERT INTO "case" (id, severity, issue_type, state)
+		VALUES ($1::uuid, NULLIF($2, '')::case_severity_enum, NULLIF($3, '')::case_issue_type_enum, 'OPEN'::case_state_enum)
+		RETURNING severity::TEXT, issue_type::TEXT, state::TEXT, closed_on`
+
+	var severity, issueType, state *string
+	if err := tx.QueryRow(ctx, insertCase,
+		c.ID, caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
+	).Scan(&severity, &issueType, &state, &c.ClosedOn); err != nil {
+		return domain.Case{}, mapCreateCaseError(err)
+	}
+	if severity != nil {
+		sev := caseSeverityFromEnum[*severity]
+		c.Severity = &sev
+	}
+	if issueType != nil {
+		it := domain.CaseIssueType(strings.ToLower(*issueType))
+		c.IssueType = &it
+	}
+	if state != nil {
+		st := domain.CaseState(strings.ToLower(*state))
+		c.State = &st
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Case{}, fmt.Errorf("create case: commit: %w", err)
 	}
 	return c, nil
+}
+
+// mapCreateCaseError turns the database errors CreateCase can hit into API errors.
+func mapCreateCaseError(err error) error {
+	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23502": // not_null_violation
+			if pgErr.ColumnName == "number" {
+				return &apierror.ServiceUnavailableError{Msg: "creating a case is not available on this data source yet: case numbers are not generated"}
+			}
+		case "23503": // foreign_key_violation -- one of the referenced IDs does not exist
+			return &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
+		case "P0001": // raise_exception from integrity triggers (deployment/project, deployed_product/deployment, catastrophic priority)
+			return &apierror.ValidationError{Msg: pgErr.Message}
+		}
+	}
+	return fmt.Errorf("create case: %w", err)
 }
 
 // GetCaseByID implements CaseRepository.
@@ -289,7 +346,7 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 // other extension table has them); state/cause/close_notes/resolved_on/
 // closed_on are COALESCEd across whichever extension table actually matches
 // wi.type (caseLike*Column consts) since exactly one ever does.
-func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
+func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope) (domain.CaseView, error) {
 	var cv domain.CaseView
 	var (
 		// internalID is scanned as *string even though CaseView.InternalID
@@ -301,24 +358,33 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		// *string". stringOrEmpty below converts it back to "" for the
 		// response, matching CaseView.InternalID's own doc comment on why
 		// it can't become *string.
-		internalID                                    *string
-		aeID, aeName                                  *string
-		pcID, pcNum, pcType                           *string
-		rcID, rcNum                                   *string
-		accountID, accountName                        *string
-		severity, issueType, workState, caseType      *string
-		state, cause, resolutionNotes, resolutionCode *string
-		escalationLevel                               *string
-		isEscalated                                   *bool
-		resolvedOn                                    *time.Time
-		description                                   *string
-		projID, projName                              *string
-		depID, depName                                *string
-		dpID, dpDisplayName                           *string
-		prodID, prodName                              *string
-		creatorEmail                                  string
-		creatorID, creatorName                        *string
+		internalID                               *string
+		aeID, aeName                             *string
+		pcID, pcNum, pcType                      *string
+		rcID, rcNum                              *string
+		accountID, accountName                   *string
+		severity, issueType, workState, caseType *string
+		state, cause, closeNotes, resolutionCode *string
+		escalationLevel                          *string
+		isEscalated                              *bool
+		resolvedOn                               *time.Time
+		description                              *string
+		projID, projName                         *string
+		depID, depName                           *string
+		dpID, dpDisplayName                      *string
+		prodID, prodName                         *string
+		creatorEmail                             string
+		creatorID, creatorName                   *string
 	)
+	// A scoped caller asking for a case outside their access still gets
+	// pgx.ErrNoRows -> NotFoundError below, the same as a genuinely
+	// nonexistent id: existence is never revealed to a caller who can't see
+	// the case, matching GetProjectByID's own reasoning.
+	scopeClause, scopeArgs := "", []any{id}
+	if !scope.Unrestricted {
+		scopeClause = " AND " + scopePredicate("wi.project_id", 2)
+		scopeArgs = append(scopeArgs, scope.ProjectIDs)
+	}
 	err := r.db.QueryRow(ctx,
 		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT,
 		        wi.description, c.severity::TEXT, c.issue_type::TEXT, c.work_state::TEXT,
@@ -349,11 +415,11 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		 LEFT JOIN work_item pw ON pw.id = wi.parent_id
 		 LEFT JOIN "case" rc ON rc.id = c.related_case_id
 		 LEFT JOIN work_item rc_wi ON rc_wi.id = rc.id
-		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)`, id,
+		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)`+scopeClause, scopeArgs...,
 	).Scan(
 		&cv.ID, &cv.Number, &internalID, &caseType,
 		&description, &severity, &issueType, &workState,
-		&state, &cause, &resolutionNotes,
+		&state, &cause, &closeNotes,
 		&resolutionCode, &escalationLevel, &isEscalated,
 		&cv.CreatedOn, &cv.UpdatedOn, &cv.ClosedOn, &resolvedOn,
 		&cv.Subject,
@@ -400,8 +466,17 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string) (domain.CaseView,
 		c := domain.CaseCause(*cause)
 		cv.Cause = &c
 	}
-	if resolutionNotes != nil {
-		cv.ResolutionNotes = resolutionNotes
+	// caseLikeCloseNotesColumn genuinely is "close notes" (the only such
+	// column this schema has -- "case"/engagement/service_request/
+	// security_report_analysis/announcement all name it close_notes, not
+	// resolution_notes) and belongs on CaseView.CloseNotes, not
+	// CaseView.ResolutionNotes -- a distinct field on the ServiceNow data
+	// source (sn_case_service.go sets both from two separate upstream
+	// fields) that this schema has no separate column for at all, so it's
+	// correctly left nil here rather than double-filled from the same
+	// value.
+	if closeNotes != nil {
+		cv.CloseNotes = closeNotes
 	}
 	if resolutionCode != nil {
 		rc := domain.CaseResolutionCode(*resolutionCode)
@@ -984,106 +1059,90 @@ var pgSortColMap = map[domain.CaseSortField]string{
 	domain.CaseSortFieldState:     "c.state",
 }
 
+// onboardingStatusLabels maps a projectOnboardingStatus filter value (keyed by
+// its normalized form, see onboardingStatusEnumLabels) to
+// onboarding_status_enum. The filter's vocabulary is ServiceNow's choice labels
+// ("In-Progress", "Not-Applicable", "OnHold"), which are not the enum's spelling,
+// so values are compared with case, hyphens, underscores and spaces ignored.
+var onboardingStatusLabels = map[string]string{
+	"notstarted":    "NOT_STARTED",
+	"inprogress":    "IN_PROGRESS",
+	"completed":     "COMPLETED",
+	"onhold":        "ON_HOLD",
+	"notapplicable": "NOT_APPLICABLE",
+	"expired":       "EXPIRED",
+	"cancelled":     "CANCELLED",
+}
+
+// lowerAll returns a lower-cased copy of values.
+func lowerAll(values []string) []string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = strings.ToLower(v)
+	}
+	return out
+}
+
+var onboardingStatusKeyStripper = strings.NewReplacer("-", "", "_", "", " ", "")
+
+// onboardingStatusEnumLabels translates projectOnboardingStatus filter values
+// to onboarding_status_enum labels. An unknown value is a ValidationError
+// rather than a silent no-match: for notIn that would widen the result set.
+func onboardingStatusEnumLabels(values []string) ([]string, error) {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		label, ok := onboardingStatusLabels[onboardingStatusKeyStripper.Replace(strings.ToLower(strings.TrimSpace(v)))]
+		if !ok {
+			return nil, &apierror.ValidationError{Msg: "projectOnboardingStatus contains invalid value: " + v}
+		}
+		out = append(out, label)
+	}
+	return out, nil
+}
+
 // SearchCases implements CaseRepository.
-func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error) {
+func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest, scope SearchScope) ([]domain.SearchCaseView, int, error) {
 	filterArgs := []any{}
 	argIdx := 1
 
 	where := "WHERE 1=1"
 
-	if len(req.Parsed.Types) > 0 {
-		// req.Parsed.Types holds validCaseType's lowercase values
-		// ("case", "service_request", ...); work_item_type_enum's labels are
-		// uppercase and match 1:1 once uppercased.
-		typeStrings := make([]string, len(req.Parsed.Types))
-		for i, t := range req.Parsed.Types {
-			typeStrings[i] = strings.ToUpper(t)
-		}
-		where += fmt.Sprintf(" AND wi.type = ANY($%d::work_item_type_enum[])", argIdx)
-		filterArgs = append(filterArgs, typeStrings)
+	// The caller's access scope is ANDed in independently of whatever project
+	// filter the request itself carries (req.Parsed.ProjectIDs below): a
+	// scoped caller asking for a project outside their own scope gets zero
+	// rows, never someone else's data, and a scoped caller with no project
+	// filter of their own is still narrowed to just what they can see. An
+	// empty scope.ProjectIDs (no access at all) correctly matches nothing via
+	// ANY('{}').
+	if !scope.Unrestricted {
+		where += " AND " + scopePredicate("wi.project_id", argIdx)
+		filterArgs = append(filterArgs, scope.ProjectIDs)
 		argIdx++
-	} else {
-		// No explicit types filter: default to the five case-like types
-		// (validCaseType in case_service.go), not every work_item_type_enum
-		// value -- otherwise this would also return change requests,
-		// incidents, and every other work_item type mixed into "case"
-		// search results.
-		where += " AND wi.type = ANY(" + caseLikeWorkItemTypes + ")"
 	}
 
-	if len(req.Parsed.ProjectIDs) > 0 {
-		where += fmt.Sprintf(" AND wi.project_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Parsed.ProjectIDs)
-		argIdx++
+	// Fields shared with anyOf branches are built by one function so the two
+	// cannot drift apart (see caseFieldPredicates for the column notes).
+	fieldPreds, fieldArgs, nextIdx, err := caseFieldPredicates(caseFieldSet{
+		Types: req.Parsed.Types, ProjectIDs: req.Parsed.ProjectIDs, DeploymentIDs: req.Parsed.DeploymentIDs,
+		AssignedUserIDs: req.Parsed.AssignedUserIDs, States: req.Parsed.States, Severities: req.Parsed.Severities,
+		IssueTypes: req.Parsed.IssueTypes, EngagementTypes: req.Parsed.EngagementTypes, WorkStates: req.Parsed.WorkStates,
+		EscalationLevels: req.Parsed.EscalationLevels, Tags: req.Parsed.Tags, ExcludeTags: req.Parsed.ExcludeTags,
+		DefaultTypes: true,
+	}, argIdx)
+	if err != nil {
+		return nil, 0, err
 	}
+	for _, pred := range fieldPreds {
+		where += " AND " + pred
+	}
+	filterArgs = append(filterArgs, fieldArgs...)
+	argIdx = nextIdx
 
 	if len(req.Parsed.ExcludeProjectIDs) > 0 {
-		where += fmt.Sprintf(" AND c.project_id != ALL($%d::uuid[])", argIdx)
+		// project_id is on work_item ("case" has no such column), and a case with
+		// no project is not in any excluded project, so it satisfies notIn.
+		where += fmt.Sprintf(" AND (wi.project_id IS NULL OR wi.project_id <> ALL($%d::uuid[]))", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.ExcludeProjectIDs)
-		argIdx++
-	}
-
-	if len(req.Parsed.DeploymentIDs) > 0 {
-		where += fmt.Sprintf(" AND wi.deployment_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Parsed.DeploymentIDs)
-		argIdx++
-	}
-
-	// States/Severities/IssueTypes/WorkStates all live on "case" (migration
-	// 000018), joined LEFT below since not every matched work_item type has
-	// one -- applying any of these filters therefore implicitly narrows the
-	// result to case-type rows, since a non-case row's joined c.* columns
-	// are always NULL and can never equal a non-NULL filter value.
-	//
-	// domain.CaseState/CaseIssueType/CaseWorkState/EngagementType are all
-	// lowercase_snake_case (e.g. "work_in_progress"), while their real
-	// case_state_enum/case_issue_type_enum/case_work_state_enum/
-	// engagement_type_enum labels are UPPER_SNAKE_CASE -- strings.ToUpper
-	// bridges that (values match 1:1 once cased); a bare string(...) cast
-	// fails with "invalid input value for enum ..." on every one of these.
-	// Severity is the one exception -- see caseSeverityToEnum's own comment.
-	if len(req.Parsed.States) > 0 {
-		stateStrings := make([]string, len(req.Parsed.States))
-		for i, s := range req.Parsed.States {
-			stateStrings[i] = strings.ToUpper(string(s))
-		}
-		where += fmt.Sprintf(" AND c.state = ANY($%d::case_state_enum[])", argIdx)
-		filterArgs = append(filterArgs, stateStrings)
-		argIdx++
-	}
-
-	if len(req.Parsed.Severities) > 0 {
-		severityStrings := make([]string, len(req.Parsed.Severities))
-		for i, s := range req.Parsed.Severities {
-			severityStrings[i] = caseSeverityToEnum[s]
-		}
-		where += fmt.Sprintf(" AND c.severity = ANY($%d::case_severity_enum[])", argIdx)
-		filterArgs = append(filterArgs, severityStrings)
-		argIdx++
-	}
-
-	if len(req.Parsed.IssueTypes) > 0 {
-		issueTypeStrings := make([]string, len(req.Parsed.IssueTypes))
-		for i, it := range req.Parsed.IssueTypes {
-			issueTypeStrings[i] = strings.ToUpper(string(it))
-		}
-		where += fmt.Sprintf(" AND c.issue_type = ANY($%d::case_issue_type_enum[])", argIdx)
-		filterArgs = append(filterArgs, issueTypeStrings)
-		argIdx++
-	}
-
-	if len(req.Parsed.EngagementTypes) > 0 {
-		// engagement.type (migration 000019) -- a column on the separate
-		// engagement work_item-subtype table, joined LEFT below, not a
-		// "case" column at all. Applying this filter implicitly narrows the
-		// result to engagement-type rows, same reasoning as the case-only
-		// filters above.
-		engTypeStrings := make([]string, len(req.Parsed.EngagementTypes))
-		for i, et := range req.Parsed.EngagementTypes {
-			engTypeStrings[i] = strings.ToUpper(string(et))
-		}
-		where += fmt.Sprintf(" AND eng.type = ANY($%d::engagement_type_enum[])", argIdx)
-		filterArgs = append(filterArgs, engTypeStrings)
 		argIdx++
 	}
 
@@ -1092,22 +1151,6 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		// needing a join) -- see this file's other created_by fixes.
 		where += fmt.Sprintf(" AND wi.created_by = ANY($%d)", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.CreatedBy)
-		argIdx++
-	}
-
-	if len(req.Parsed.WorkStates) > 0 {
-		workStateStrings := make([]string, len(req.Parsed.WorkStates))
-		for i, ws := range req.Parsed.WorkStates {
-			workStateStrings[i] = strings.ToUpper(string(ws))
-		}
-		where += fmt.Sprintf(" AND c.work_state = ANY($%d::case_work_state_enum[])", argIdx)
-		filterArgs = append(filterArgs, workStateStrings)
-		argIdx++
-	}
-
-	if len(req.Parsed.AssignedUserIDs) > 0 {
-		where += fmt.Sprintf(" AND wi.assigned_to_id = ANY($%d::uuid[])", argIdx)
-		filterArgs = append(filterArgs, req.Parsed.AssignedUserIDs)
 		argIdx++
 	}
 
@@ -1140,6 +1183,83 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		where += fmt.Sprintf(" AND wi.updated_on <= $%d", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.EndUpdatedDate)
 		argIdx++
+	}
+
+	// projectOnboardingStatus: the parent project's onboarding_status (p is
+	// the LEFT JOIN below). A case whose project has no status set (NULL)
+	// satisfies notIn -- "not in progress" is true of it -- but never in.
+	if len(req.Parsed.ProjectOnboardingStatuses) > 0 {
+		labels, err := onboardingStatusEnumLabels(req.Parsed.ProjectOnboardingStatuses)
+		if err != nil {
+			return nil, 0, err
+		}
+		where += fmt.Sprintf(" AND p.onboarding_status = ANY($%d::text[]::onboarding_status_enum[])", argIdx)
+		filterArgs = append(filterArgs, labels)
+		argIdx++
+	}
+	if len(req.Parsed.ExcludeProjectOnboardingStatuses) > 0 {
+		labels, err := onboardingStatusEnumLabels(req.Parsed.ExcludeProjectOnboardingStatuses)
+		if err != nil {
+			return nil, 0, err
+		}
+		where += fmt.Sprintf(" AND (p.onboarding_status IS NULL OR p.onboarding_status <> ALL($%d::text[]::onboarding_status_enum[]))", argIdx)
+		filterArgs = append(filterArgs, labels)
+		argIdx++
+	}
+
+	// taskSLABusinessElapsedPercent: matches a case with at least one SLA row
+	// whose business_elapsed_percentage is within the bound(s). Both bounds
+	// apply to the SAME row (a range like 75..100 means one SLA in that range,
+	// not one row >= 75 and another <= 100), which is why this is a single
+	// EXISTS. Any SLA row counts, whatever its stage -- the contract of
+	// domain.TaskSLAFilter. The percentage is uncapped (long-overdue SLAs
+	// climb far past 100), and 0 is a real bound, hence the nil checks.
+	if f := req.Parsed.TaskSLAFilter; f != nil && (f.MinBusinessElapsedPercent != nil || f.MaxBusinessElapsedPercent != nil) {
+		slaWhere := "tsla.work_item_id = wi.id"
+		if f.MinBusinessElapsedPercent != nil {
+			slaWhere += fmt.Sprintf(" AND tsla.business_elapsed_percentage >= $%d::numeric", argIdx)
+			filterArgs = append(filterArgs, *f.MinBusinessElapsedPercent)
+			argIdx++
+		}
+		if f.MaxBusinessElapsedPercent != nil {
+			slaWhere += fmt.Sprintf(" AND tsla.business_elapsed_percentage <= $%d::numeric", argIdx)
+			filterArgs = append(filterArgs, *f.MaxBusinessElapsedPercent)
+			argIdx++
+		}
+		where += " AND EXISTS (SELECT 1 FROM sla tsla WHERE " + slaWhere + ")"
+	}
+
+	// escalation (isEmpty / isNotEmpty): whether the case itself carries an active
+	// escalation, matched on "case".is_escalated -- the flag the case detail
+	// exposes as isEscalated. A row with no "case" row (a non-case work item) has
+	// no escalation, so it satisfies isEmpty.
+	if req.Parsed.HasActiveEscalation != nil {
+		if *req.Parsed.HasActiveEscalation {
+			where += " AND c.is_escalated IS TRUE"
+		} else {
+			where += " AND c.is_escalated IS NOT TRUE"
+		}
+	}
+
+	// anyOf: each branch is the AND of its own fields, the branches are OR'd, and
+	// the whole is ANDed with everything above. A branch with no fields would
+	// match everything, so it is rendered TRUE rather than dropped.
+	if len(req.Parsed.OrGroups) > 0 {
+		branches := make([]string, 0, len(req.Parsed.OrGroups))
+		for _, g := range req.Parsed.OrGroups {
+			preds, branchArgs, next, err := caseFieldPredicates(caseFieldSetFromGroup(g), argIdx)
+			if err != nil {
+				return nil, 0, err
+			}
+			filterArgs = append(filterArgs, branchArgs...)
+			argIdx = next
+			if len(preds) == 0 {
+				branches = append(branches, "TRUE")
+				continue
+			}
+			branches = append(branches, "("+strings.Join(preds, " AND ")+")")
+		}
+		where += " AND (" + strings.Join(branches, " OR ") + ")"
 	}
 
 	if req.Filters.SearchQuery != "" {
@@ -1621,6 +1741,21 @@ func scanCaseActivity(row interface{ Scan(...any) error }) (domain.CaseActivity,
 // journal entry might), so each row becomes its own CaseActivity with a
 // single-element Changes slice, rather than guessing at a bundling rule.
 func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) ([]domain.CaseActivity, int, error) {
+	// Confirm req.CaseID is actually a case-like work item before reading
+	// its activity feed -- comment/case_attachments/work_item_activity are
+	// all keyed by the generic work_item_id with no type filter of their
+	// own, so without this check a caller could pass any other work_item's
+	// UUID (a change request, incident, ...) through this endpoint and read
+	// that record's comments/attachments/field changes instead. Same class
+	// of gap as IncidentRepository.SearchIncidentActivities' own fix.
+	var exists bool
+	if err := r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_item WHERE id = $1 AND type = ANY(`+caseLikeWorkItemTypes+`))`, req.CaseID).Scan(&exists); err != nil {
+		return nil, 0, fmt.Errorf("check case exists: %w", err)
+	}
+	if !exists {
+		return nil, 0, &apierror.NotFoundError{Msg: "case not found"}
+	}
+
 	includeFieldChanges := req.IncludeFieldChanges != nil && *req.IncludeFieldChanges
 
 	countQuery := `

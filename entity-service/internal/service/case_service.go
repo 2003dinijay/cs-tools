@@ -39,12 +39,14 @@ type caseService struct {
 	// events.TypeCaseBillableStatusChanged's own doc comment)
 	// case.billable_status_changed detection.
 	publisher EventPublisherService
+	access    AccessService
 }
 
 // NewCaseService constructs a CaseService backed by the given repositories.
-// publisher may be nil (see caseService.publisher's own doc comment).
-func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService) CaseService {
-	return &caseService{repo: repo, userRepo: userRepo, publisher: publisher}
+// publisher may be nil (see caseService.publisher's own doc comment). access
+// scopes GetCaseByID/SearchCases's reads (see AccessService).
+func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService) CaseService {
+	return &caseService{repo: repo, userRepo: userRepo, publisher: publisher, access: access}
 }
 
 var validCaseSortField = map[domain.CaseSortField]bool{
@@ -301,10 +303,11 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 
 // GetCaseByID implements CaseService.
 func (s *caseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
-	if err := validateUUIDs("id", []string{id}); err != nil {
+	scope, err := resolveScopeForID(ctx, s.access, id)
+	if err != nil {
 		return domain.CaseView{}, err
 	}
-	return s.repo.GetCaseByID(ctx, id)
+	return s.repo.GetCaseByID(ctx, id, scope)
 }
 
 var validCommentType = map[domain.CommentType]bool{
@@ -532,6 +535,49 @@ func (s *caseService) detectBillableStatusChange(ctx context.Context, caseID str
 	slog.InfoContext(ctx, "case update: severity crossed the billable boundary, event hub publish not yet enabled", "caseId", caseID, "isBillable", isBillable)
 }
 
+// validateCaseFieldValues rejects malformed ids and unknown enum spellings in the
+// fields a case search accepts both at the top level and inside an anyOf branch,
+// so they fail as a validation error instead of reaching SQL as a cast error.
+func validateCaseFieldValues(g domain.CaseFilterGroup) error {
+	if err := validateUUIDs("projectId", g.ProjectIDs); err != nil {
+		return err
+	}
+	if err := validateUUIDs("deploymentId", g.DeploymentIDs); err != nil {
+		return err
+	}
+	for _, t := range g.Types {
+		if !validCaseType[t] {
+			return &apierror.ValidationError{Msg: "type contains invalid value: " + t}
+		}
+	}
+	for _, st := range g.States {
+		if !validCaseState[st] {
+			return &apierror.ValidationError{Msg: "state contains invalid value: " + string(st)}
+		}
+	}
+	for _, sv := range g.Severities {
+		if !validCaseSeverity[sv] {
+			return &apierror.ValidationError{Msg: "severity contains invalid value: " + string(sv)}
+		}
+	}
+	for _, it := range g.IssueTypes {
+		if !validCaseIssueType[it] {
+			return &apierror.ValidationError{Msg: "issueType contains invalid value: " + string(it)}
+		}
+	}
+	for _, et := range g.EngagementTypes {
+		if !validEngagementType[et] {
+			return &apierror.ValidationError{Msg: "engagementType contains invalid value: " + string(et)}
+		}
+	}
+	for _, ws := range g.WorkStates {
+		if !validCaseWorkState[ws] {
+			return &apierror.ValidationError{Msg: "workState contains invalid value: " + string(ws)}
+		}
+	}
+	return validateUUIDs("assignedUserId", g.AssignedUserIDs)
+}
+
 // SearchCases implements CaseService.
 func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesRequest) (domain.SearchCasesResponse, error) {
 	if err := normalizePagination(&req.Pagination); err != nil {
@@ -548,49 +594,32 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, err
 	}
 
-	if err := validateUUIDs("projectId", parsed.ProjectIDs); err != nil {
-		return domain.SearchCasesResponse{}, err
-	}
 	if err := validateUUIDs("projectId", parsed.ExcludeProjectIDs); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
-	if err := validateUUIDs("deploymentId", parsed.DeploymentIDs); err != nil {
+	// The same checks apply to the top-level fields and to each anyOf branch, so
+	// they live in one function.
+	if err := validateCaseFieldValues(domain.CaseFilterGroup{
+		Types: parsed.Types, States: parsed.States, Severities: parsed.Severities,
+		EngagementTypes: parsed.EngagementTypes, IssueTypes: parsed.IssueTypes,
+		WorkStates: parsed.WorkStates, ProjectIDs: parsed.ProjectIDs,
+		DeploymentIDs: parsed.DeploymentIDs, AssignedUserIDs: parsed.AssignedUserIDs,
+	}); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
 
-	for _, t := range parsed.Types {
-		if !validCaseType[t] {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "type contains invalid value: " + t}
-		}
-	}
-	for _, st := range parsed.States {
-		if !validCaseState[st] {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "state contains invalid value: " + string(st)}
-		}
-	}
-	for _, sv := range parsed.Severities {
-		if !validCaseSeverity[sv] {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "severity contains invalid value: " + string(sv)}
-		}
-	}
-	for _, it := range parsed.IssueTypes {
-		if !validCaseIssueType[it] {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "issueType contains invalid value: " + string(it)}
-		}
-	}
-	for _, et := range parsed.EngagementTypes {
-		if !validEngagementType[et] {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "engagementType contains invalid value: " + string(et)}
-		}
-	}
-	for _, ws := range parsed.WorkStates {
-		if !validCaseWorkState[ws] {
-			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "workState contains invalid value: " + string(ws)}
-		}
-	}
-	if err := validateUUIDs("assignedUserId", parsed.AssignedUserIDs); err != nil {
+	// anyOf branches: parse into OR groups (only the ServiceNow adapter did this
+	// before) and validate each branch's values exactly like the top level.
+	orGroups, err := ParseCaseFieldFilterGroups(req.Filters.AnyOf)
+	if err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
+	for _, g := range orGroups {
+		if err := validateCaseFieldValues(g); err != nil {
+			return domain.SearchCasesResponse{}, err
+		}
+	}
+	parsed.OrGroups = orGroups
 
 	if parsed.CreatedByMe {
 		parsed.CreatedBy = append(parsed.CreatedBy, callerEmail)
@@ -617,16 +646,11 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "resolvedOn" is not supported by this data source`}
 	}
 
-	// These fields dot-walk into ServiceNow-specific concepts (tags,
-	// project-onboarding-status, integration-CS-team, etc.) that have no
-	// equivalent in the Postgres schema and no repository query support today.
-	// Reject rather than silently drop the predicate and widen the result set.
-	if len(parsed.Tags) > 0 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "tag" is not supported by this data source`}
-	}
-	if len(parsed.ExcludeTags) > 0 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "tag" (notIn) is not supported by this data source`}
-	}
+	// These fields dot-walk into ServiceNow-specific concepts (product family,
+	// project type, integration-CS/SRE team, etc.) that caseRepo.SearchCases has
+	// no query for today. Reject rather than silently drop the predicate and
+	// widen the result set. (tag, projectOnboardingStatus and
+	// taskSLABusinessElapsedPercent are implemented there, so are absent here.)
 	// state+in is supported here; state+notIn has no repository query support,
 	// and dropping an exclusion silently would widen the result set.
 	if len(parsed.ExcludeStates) > 0 {
@@ -637,9 +661,6 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	}
 	if len(parsed.ProductNames) > 0 {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "product" is not supported by this data source`}
-	}
-	if len(parsed.ProjectOnboardingStatuses) > 0 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "projectOnboardingStatus" is not supported by this data source`}
 	}
 	if len(parsed.ProjectTypeNames) > 0 {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "projectType" is not supported by this data source`}
@@ -664,30 +685,21 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "resolutionNotes" is not supported by this data source`}
 	}
 
-	// Task-SLA and escalation predicates, OR groups, and grouped counts are
+	// The slaBreached and account-escalation predicates and grouped counts are
 	// implemented only in the ServiceNow case service (snCaseService.SearchCases);
-	// caseRepo.SearchCases models none of them. ParseCaseFieldFilters accepts them
+	// caseRepo.SearchCases models none of them (tag, projectOnboardingStatus,
+	// taskSLABusinessElapsedPercent, escalationLevel, escalation and anyOf, by
+	// contrast, are implemented there and so are deliberately absent from these
+	// guards). ParseCaseFieldFilters accepts them
 	// because it is shared by both data sources, so without these guards a
 	// Postgres deployment would drop the predicate and answer 200 with a wider
 	// result set than the caller asked for. These stay ServiceNow-only by design:
 	// reject loudly rather than implement them here.
-	if parsed.TaskSLAFilter != nil {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "taskSLABusinessElapsedPercent" is not supported by this data source`}
-	}
-	if len(parsed.EscalationLevels) > 0 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "escalationLevel" is not supported by this data source`}
-	}
-	if parsed.HasActiveEscalation != nil {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "escalation" is not supported by this data source`}
-	}
 	if parsed.HasBreachedSLA != nil {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "slaBreached" is not supported by this data source`}
 	}
 	if parsed.HasActiveAccountEscalation != nil {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "accountEscalationActive" is not supported by this data source`}
-	}
-	if len(req.Filters.AnyOf) > 0 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "anyOf is not supported by this data source"}
 	}
 	if req.GroupBy != "" {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "groupBy is not supported by this data source"}
@@ -706,7 +718,12 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "sortBy.order must be one of: asc, desc"}
 	}
 
-	cases, total, err := s.repo.SearchCases(ctx, req)
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+
+	cases, total, err := s.repo.SearchCases(ctx, req, scope)
 	if err != nil {
 		return domain.SearchCasesResponse{}, err
 	}
@@ -1019,7 +1036,10 @@ func (s *caseService) detectPatchTagBillableOverride(ctx context.Context, caseID
 		return
 	}
 
-	cv, err := s.repo.GetCaseByID(ctx, caseID)
+	// Unrestricted: this is an internal re-fetch of a case AddCaseTag just
+	// wrote to, not a caller-facing read -- there's no separate caller
+	// identity to scope here, and the tag write itself already happened.
+	cv, err := s.repo.GetCaseByID(ctx, caseID, repository.SearchScope{Unrestricted: true})
 	if err != nil {
 		slog.ErrorContext(ctx, "add case tag: patch billable override not evaluated, get case failed", "caseId", caseID)
 		return
