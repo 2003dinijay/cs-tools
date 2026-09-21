@@ -16631,7 +16631,7 @@ components:
           type: boolean
         audienceDefinition:
           type: object
-          description: Rejected with 409 if the request is currently approved — the approved audience snapshot is frozen.
+          description: Rejected with 400 if the request is currently approved — the approved audience snapshot is frozen.
         actorId:
           type: string
 
