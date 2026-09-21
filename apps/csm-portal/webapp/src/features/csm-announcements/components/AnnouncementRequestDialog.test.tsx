@@ -337,7 +337,8 @@ describe("AnnouncementRequestDialog — approved", () => {
     });
 
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
-    expect(screen.getByText(/sending 1 \/ 2/i)).toBeInTheDocument();
+    expect(screen.getByText("1/2")).toBeInTheDocument();
+    expect(screen.getByText(/sending announcement/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /publishing/i })).toBeDisabled();
   });
 
@@ -355,7 +356,8 @@ describe("AnnouncementRequestDialog — approved", () => {
 
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
     expect(screen.getByRole("button", { name: /retry failed projects/i })).toBeInTheDocument();
-    expect(screen.getByText(/failed for: p-2/i)).toBeInTheDocument();
+    expect(screen.getByText(/announcement sent with failures/i)).toBeInTheDocument();
+    expect(screen.getByText("p-2")).toBeInTheDocument();
   });
 
   it("locks content while a failed-project retry is pending, so the retry can't diverge from what already succeeded", () => {

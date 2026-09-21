@@ -26,7 +26,6 @@ import {
   Divider,
   FormControlLabel,
   IconButton,
-  LinearProgress,
   Skeleton,
   TextField,
   Typography,
@@ -47,6 +46,9 @@ import { useSubmitAnnouncementRequest } from "@features/csm-announcements/api/us
 import { useApproveAnnouncementRequest } from "@features/csm-announcements/api/useApproveAnnouncementRequest";
 import { usePublishAnnouncementRequest } from "@features/csm-announcements/api/usePublishAnnouncementRequest";
 import { SECURITY_ANNOUNCEMENT_TAG_LABEL } from "@features/csm-announcements/components/CreateCustomerAnnouncementForm";
+import AnnouncementSendProgress, {
+  type AnnouncementSendProgressState,
+} from "@features/csm-announcements/components/AnnouncementSendProgress";
 
 interface AnnouncementRequestDialogProps {
   requestId: string;
@@ -224,6 +226,38 @@ export default function AnnouncementRequestDialog({
   ) : (
     "not yet run"
   );
+
+  // AnnouncementSendProgress expects one coherent tally against the whole
+  // frozen audience (request.resolvedProjectIds), not just the current
+  // round's own subset — publish.progress (from settleWithConcurrencyLimit's
+  // onSettle) only covers whatever's pending *this* round (every project on
+  // the first send, just the outstanding ones on a retry), so it's summed
+  // with succeededProjectIds carried over from any earlier round. While
+  // still in flight, in-progress projects are optimistically counted as
+  // succeeded — corrected the moment the round settles and publish.progress
+  // goes back to null, at which point failed/failedProjectIds take over as
+  // the authoritative count instead. This still reaches `total` only once
+  // every resolved project has actually settled, since pendingProjectIds is
+  // exactly `total - succeededProjectIds.length` by construction (see
+  // usePublishAnnouncementRequest's own filter) — so the "Sending…" ->
+  // "Announcement sent[ with failures]" title switch never fires early.
+  const totalResolvedProjects = request?.resolvedProjectIds?.length ?? 0;
+  const priorSucceededCount = publish.succeededProjectIds.length;
+  const sendProgress: AnnouncementSendProgressState = publish.progress
+    ? {
+        total: totalResolvedProjects,
+        completed: priorSucceededCount + publish.progress.completed,
+        succeeded: priorSucceededCount + publish.progress.completed,
+        failed: 0,
+        failedProjectIds: [],
+      }
+    : {
+        total: totalResolvedProjects,
+        completed: priorSucceededCount + publish.failedProjectIds.length,
+        succeeded: priorSucceededCount,
+        failed: publish.failedProjectIds.length,
+        failedProjectIds: publish.failedProjectIds,
+      };
 
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
@@ -454,17 +488,6 @@ export default function AnnouncementRequestDialog({
 
             {request.state === "approved" && (
               <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-                {publish.progress && (
-                  <Box>
-                    <LinearProgress
-                      variant="determinate"
-                      value={(publish.progress.completed / publish.progress.total) * 100}
-                    />
-                    <Typography variant="caption" color="text.secondary">
-                      Sending {publish.progress.completed} / {publish.progress.total}…
-                    </Typography>
-                  </Box>
-                )}
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   <Button
                     variant="contained"
@@ -488,10 +511,8 @@ export default function AnnouncementRequestDialog({
                     unsaved here.
                   </Typography>
                 )}
-                {publish.failedProjectIds.length > 0 && !publish.publishing && (
-                  <Typography variant="caption" color="error">
-                    Failed for: {publish.failedProjectIds.join(", ")}
-                  </Typography>
+                {(publish.publishing || priorSucceededCount > 0 || publish.failedProjectIds.length > 0) && (
+                  <AnnouncementSendProgress progress={sendProgress} />
                 )}
                 {publish.failedTagProjectIds.length > 0 && (
                   <Typography variant="caption" color="warning.main">
