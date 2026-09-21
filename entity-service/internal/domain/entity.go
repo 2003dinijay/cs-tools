@@ -624,10 +624,14 @@ type SearchProjectsRequest struct {
 	// ExcludeSubscriptionTypes filters out projects whose subscription type is
 	// any of the given values, e.g. ["cloud_support", "cloud_evaluation_support"].
 	// Same "no upstream filter, applied in Go" caveat as ExcludeClosureStates
-	// for the ServiceNow data source. The Postgres data source rejects a
-	// non-empty value: the project table has no subscription-type column at
-	// all (see ProjectRepository's own doc comment), unlike
-	// ExcludeClosureStates/ExcludeProjectKeys, which map onto real columns.
+	// for the ServiceNow data source. The Postgres data source applies it as a
+	// real SQL filter against project_type.name (migrations 000026/000027,
+	// joined via project.project_type_id -- the same ServiceNow project
+	// "type" reference field, normalized the same way
+	// snTypeNameToSubscriptionType normalizes it) -- a project with no
+	// project_type_id set is never excluded, same NULL-permissive
+	// semantics as ExcludeClosureStates (see project_repo.go's
+	// SearchProjects).
 	ExcludeSubscriptionTypes []SubscriptionType `json:"excludeSubscriptionTypes,omitempty"`
 	// ExcludeProjectKeys filters out projects whose Key (see ProjectView.Key)
 	// is any of the given values, e.g. ["APEXIA", "VERIDIAN"] — a caller-
@@ -1312,9 +1316,10 @@ type SearchDeployedProductsResponse struct {
 // DeploymentIDs filter, which starts from already-known deployments rather
 // than a product/version. Needed for EOL/product-version-targeted
 // announcements: there is no existing query path from "product X, version Y"
-// back to the projects running it. ServiceNow data source only — the
-// Postgres data source rejects a call outright (see that data source's own
-// implementation).
+// back to the projects running it. Supported on both data sources: Postgres
+// resolves it directly via deployed_product.project_id (migration 000014's
+// FK straight to project), ServiceNow via a platform-wide deployment scan
+// (see that data source's own implementation).
 //
 // The result is always restricted to projects eligible for an announcement
 // at all (excluding Restricted/Suspended closure states and Cloud Support/

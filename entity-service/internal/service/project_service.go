@@ -20,7 +20,6 @@ package service
 import (
 	"context"
 
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
@@ -44,20 +43,6 @@ func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchPr
 	if err := validateSearchQuery(req.SearchQuery); err != nil {
 		return domain.SearchProjectsResponse{}, err
 	}
-	// ExcludeSubscriptionTypes has no Postgres equivalent to reject or accept
-	// against: the project table has no subscription-type column at all (see
-	// ProjectRepository's own doc comment), and ServiceNow's subscription-type
-	// vocabulary isn't a concept this data source's projects carry any value
-	// for today — there is nothing to "add a column" for without first
-	// deciding what a Postgres-sourced project's subscription type even is.
-	// ExcludeClosureStates/ExcludeProjectKeys, by contrast, map onto real
-	// columns (wso2_closure_state, key) and are applied below.
-	if len(req.ExcludeSubscriptionTypes) > 0 {
-		return domain.SearchProjectsResponse{}, &apierror.ValidationError{
-			Msg: "excludeSubscriptionTypes is only supported for the ServiceNow data source",
-		}
-	}
-
 	scope, err := s.access.ResolveScope(ctx)
 	if err != nil {
 		return domain.SearchProjectsResponse{}, err
