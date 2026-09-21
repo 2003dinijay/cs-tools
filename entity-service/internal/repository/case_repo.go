@@ -1019,6 +1019,15 @@ var onboardingStatusLabels = map[string]string{
 	"cancelled":     "CANCELLED",
 }
 
+// lowerAll returns a lower-cased copy of values.
+func lowerAll(values []string) []string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = strings.ToLower(v)
+	}
+	return out
+}
+
 var onboardingStatusKeyStripper = strings.NewReplacer("-", "", "_", "", " ", "")
 
 // onboardingStatusEnumLabels translates projectOnboardingStatus filter values
@@ -1094,11 +1103,19 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
-	// States/Severities/IssueTypes/WorkStates all live on "case" (migration
-	// 000018), joined LEFT below since not every matched work_item type has
-	// one -- applying any of these filters therefore implicitly narrows the
-	// result to case-type rows, since a non-case row's joined c.* columns
-	// are always NULL and can never equal a non-NULL filter value.
+	// States is the exception: state exists on every case-like extension table
+	// (case, engagement, service_request, security_report_analysis,
+	// announcement), so it is matched on caseLikeStateColumn -- the same
+	// expression the read side selects -- rather than on c.state, which would
+	// make a service request, engagement or security report analysis show a
+	// state yet never match a filter on it. The labels are spelled identically
+	// in all five enums (announcement's CLOSE is normalized to CLOSED there).
+	//
+	// Severities/IssueTypes/WorkStates live only on "case" (migration 000018),
+	// joined LEFT below since not every matched work_item type has one --
+	// applying any of these filters therefore implicitly narrows the result to
+	// case-type rows, since a non-case row's joined c.* columns are always NULL
+	// and can never equal a non-NULL filter value.
 	//
 	// domain.CaseState/CaseIssueType/CaseWorkState/EngagementType are all
 	// lowercase_snake_case (e.g. "work_in_progress"), while their real
@@ -1112,7 +1129,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		for i, s := range req.Parsed.States {
 			stateStrings[i] = strings.ToUpper(string(s))
 		}
-		where += fmt.Sprintf(" AND c.state = ANY($%d::case_state_enum[])", argIdx)
+		where += fmt.Sprintf(" AND %s = ANY($%d::text[])", caseLikeStateColumn, argIdx)
 		filterArgs = append(filterArgs, stateStrings)
 		argIdx++
 	}
@@ -1204,6 +1221,21 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	if req.Parsed.EndUpdatedDate != nil {
 		where += fmt.Sprintf(" AND wi.updated_on <= $%d", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.EndUpdatedDate)
+		argIdx++
+	}
+
+	// tag: a case has a tag when a work_item_tag row links it to a tag of that
+	// name. Names are compared case-insensitively, as AddCaseTag does when it
+	// looks a tag up. in matches a case carrying ANY of the names; notIn matches
+	// a case carrying NONE of them (an untagged case satisfies it).
+	if len(req.Parsed.Tags) > 0 {
+		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM work_item_tag wit JOIN tag t ON t.id = wit.tag_id WHERE wit.work_item_id = wi.id AND LOWER(t.name) = ANY($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, lowerAll(req.Parsed.Tags))
+		argIdx++
+	}
+	if len(req.Parsed.ExcludeTags) > 0 {
+		where += fmt.Sprintf(" AND NOT EXISTS (SELECT 1 FROM work_item_tag wit JOIN tag t ON t.id = wit.tag_id WHERE wit.work_item_id = wi.id AND LOWER(t.name) = ANY($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, lowerAll(req.Parsed.ExcludeTags))
 		argIdx++
 	}
 

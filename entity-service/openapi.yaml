@@ -8858,7 +8858,9 @@ components:
           matches cases in any of the given states; notIn matches cases in
           none of them. The two are independent and may be combined. notIn is
           not supported inside an anyOf branch, and not supported by the
-          relational data source.
+          relational data source. On the relational data source the state is
+          matched for every case-like type (case, service_request, engagement,
+          security_report_analysis, announcement), not only for cases.
         - **severity** (in): one of catastrophic/critical/high/medium/low.
           Only applicable when a type filter includes case.
         - **engagementType** (in): one of migration/consultancy/
@@ -8870,9 +8872,9 @@ components:
         - **workState** (in): one of ongoing/paused. Only applicable when
           state is work_in_progress. For the ServiceNow data source, ongoing
           maps to key 1 and paused maps to key 2.
-        - **tag** (in / notIn): free-text case tag labels. in matches cases
-          carrying any of the given tags; notIn excludes cases carrying any of
-          them.
+        - **tag** (in / notIn): free-text case tag labels, compared
+          case-insensitively. in matches cases carrying any of the given tags;
+          notIn excludes cases carrying any of them (an untagged case matches).
         - **projectId** (in / notIn): project UUIDs. in matches cases whose
           project is any of the given UUIDs; notIn matches cases whose
           project is none of them. The two are independent and may be
@@ -11954,6 +11956,7 @@ components:
           type: array
           items:
             type: string
+          description: Preferred call times as RFC 3339 UTC timestamps, in the order requested.
         durationMin:
           type: integer
         scheduleTime:

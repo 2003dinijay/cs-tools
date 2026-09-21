@@ -620,16 +620,11 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "resolvedOn" is not supported by this data source`}
 	}
 
-	// These fields dot-walk into ServiceNow-specific concepts (tags,
-	// project-onboarding-status, integration-CS-team, etc.) that have no
-	// equivalent in the Postgres schema and no repository query support today.
-	// Reject rather than silently drop the predicate and widen the result set.
-	if len(parsed.Tags) > 0 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "tag" is not supported by this data source`}
-	}
-	if len(parsed.ExcludeTags) > 0 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "tag" (notIn) is not supported by this data source`}
-	}
+	// These fields dot-walk into ServiceNow-specific concepts (product family,
+	// project type, integration-CS/SRE team, etc.) that caseRepo.SearchCases has
+	// no query for today. Reject rather than silently drop the predicate and
+	// widen the result set. (tag, projectOnboardingStatus and
+	// taskSLABusinessElapsedPercent are implemented there, so are absent here.)
 	// state+in is supported here; state+notIn has no repository query support,
 	// and dropping an exclusion silently would widen the result set.
 	if len(parsed.ExcludeStates) > 0 {
