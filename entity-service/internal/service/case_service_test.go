@@ -132,9 +132,13 @@ func (s *stubCaseRepo) SearchCaseActivities(context.Context, domain.SearchCaseAc
 // use.
 type stubUserRepo struct {
 	getUserByEmail func(ctx context.Context, email string) (domain.User, error)
+	searchUsers    func(ctx context.Context, req domain.SearchUsersRequest) ([]domain.User, int, error)
 }
 
-func (stubUserRepo) SearchUsers(context.Context, domain.SearchUsersRequest) ([]domain.User, int, error) {
+func (s stubUserRepo) SearchUsers(ctx context.Context, req domain.SearchUsersRequest) ([]domain.User, int, error) {
+	if s.searchUsers != nil {
+		return s.searchUsers(ctx, req)
+	}
 	panic("not implemented")
 }
 func (s stubUserRepo) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {

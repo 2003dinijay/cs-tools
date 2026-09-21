@@ -1024,6 +1024,10 @@ paths:
         Returns a paginated list of users. When the data source is ServiceNow
         the response uses `SNUser` (name, timeZone, active, roles); when the
         data source is postgres it uses `User` (firstName, lastName, userType).
+        Both data sources accept `sortBy`; on postgres `name` sorts
+        case-insensitively on the display name, falling back to first + last name
+        and then the user name for the few rows with no display name, and the
+        default with no `sortBy` is newest first.
       operationId: searchUsers
       requestBody:
         required: true

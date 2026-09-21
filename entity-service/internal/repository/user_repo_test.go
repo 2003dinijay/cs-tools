@@ -17,6 +17,7 @@
 package repository
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -102,5 +103,32 @@ func TestScanUser(t *testing.T) {
 				t.Errorf("scanUser() = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestUserOrderBy(t *testing.T) {
+	tests := []struct {
+		name string
+		sort domain.UserSortBy
+		want string
+	}{
+		{"no sort keeps newest-first", domain.UserSortBy{}, "u.created_on DESC, u.id"},
+		{"createdOn asc", domain.UserSortBy{Field: domain.UserSortFieldCreatedOn, Order: domain.UserSortOrderAsc}, "u.created_on ASC, u.id"},
+		{"updatedOn desc", domain.UserSortBy{Field: domain.UserSortFieldUpdatedOn, Order: domain.UserSortOrderDesc}, "u.updated_on DESC, u.id"},
+		{"order omitted defaults to ascending", domain.UserSortBy{Field: domain.UserSortFieldUpdatedOn}, "u.updated_on ASC, u.id"},
+	}
+	for _, tt := range tests {
+		if got := userOrderBy(tt.sort); got != tt.want {
+			t.Errorf("%s: userOrderBy = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+	// name sorts on the fallback expression, in the requested direction, with u.id last.
+	got := userOrderBy(domain.UserSortBy{Field: domain.UserSortFieldName, Order: domain.UserSortOrderDesc})
+	if !strings.HasPrefix(got, "LOWER(COALESCE(") || !strings.HasSuffix(got, " DESC, u.id") {
+		t.Errorf("name sort = %q, want the COALESCE fallback ordered DESC then u.id", got)
+	}
+	// An unknown field must never reach SQL: it falls back to the default.
+	if got := userOrderBy(domain.UserSortBy{Field: "email; DROP TABLE x"}); got != "u.created_on DESC, u.id" {
+		t.Errorf("unknown field produced %q", got)
 	}
 }
