@@ -153,6 +153,7 @@ export const ApiQueryKeys = {
   CSM_ADMIN_TEAM_DETAIL: "csm-admin-team-detail",
   CSM_ADMIN_PERMISSIONS: "csm-admin-permissions",
   CSM_GITHUB_ISSUE_REPO_OPTIONS: "csm-github-issue-repo-options",
+  SAVED_FILTER_VIEWS: "saved-filter-views",
 } as const;
 
 // Constants for API-related mutation keys.

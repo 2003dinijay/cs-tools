@@ -59,12 +59,7 @@ import {
   writeCasesFiltersToUrl,
 } from "@features/csm-cases/utils/casesFiltersUrl";
 import { useTeams } from "@features/csm-dashboard/api/useTeams";
-import {
-  deleteFilterView,
-  moveFilterView,
-  saveFilterView,
-  useSavedFilterViews,
-} from "@features/csm-cases/utils/savedFilterViews";
+import { useSavedFilterViews } from "@features/saved-filter-views/useSavedFilterViews";
 import type {
   BeCaseType,
   BeCaseWorkState,
@@ -658,7 +653,8 @@ export default function CasesFilterBar({
   // A saved view is just a name pointing at a serialized filter query string;
   // applying one feeds the parsed filters back through onChange (which the page
   // writes to the URL), so the URL stays the source of truth.
-  const savedViews = useSavedFilterViews();
+  const { views: savedViews, saveFilterView, deleteFilterView, moveFilterView } =
+    useSavedFilterViews("cases");
   const currentQs = writeCasesFiltersToUrl(filters).toString();
   // Canonicalize a query string (normalize comma encoding, param order, and
   // drop unknown params) so the "active view" check matches regardless of how a
