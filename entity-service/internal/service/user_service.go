@@ -173,8 +173,14 @@ func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersReq
 	if req.Filters.Active != nil {
 		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "active filter is only supported for the ServiceNow data source"}
 	}
-	if req.SortBy.Field != "" {
-		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "sortBy is only supported for the ServiceNow data source"}
+	if req.SortBy.Field != "" && !validUserSortField[req.SortBy.Field] {
+		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "sortBy.field contains invalid value: " + string(req.SortBy.Field)}
+	}
+	if req.SortBy.Order != "" && req.SortBy.Field == "" {
+		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "sortBy.order requires sortBy.field to be set"}
+	}
+	if req.SortBy.Order != "" && !validUserSortOrder[req.SortBy.Order] {
+		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "sortBy.order contains invalid value: " + string(req.SortBy.Order)}
 	}
 	if len(req.Filters.UserNames) > 50 {
 		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "userNames cannot contain more than 50 values"}

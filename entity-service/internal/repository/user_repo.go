@@ -74,6 +74,33 @@ const userColumns = `id, user_name, first_name, last_name, email, user_type::TEX
 // query uses (needed once EXISTS subqueries reference u.id for role
 // filtering); GetUserByEmail queries the unaliased table directly and uses
 // userColumns as-is.
+// userSortColumns maps a validated domain.UserSortField to the SQL expression
+// it orders by. name falls back from the display name to first + last name and
+// then the user name, because "user".name is NULL for some synced rows, and is
+// compared case-insensitively so "alice" does not sort after "Zed". The values
+// are fixed strings, never derived from the request.
+var userSortColumns = map[domain.UserSortField]string{
+	domain.UserSortFieldName: `LOWER(COALESCE(NULLIF(u.name, ''),
+		NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.user_name, ''))`,
+	domain.UserSortFieldCreatedOn: "u.created_on",
+	domain.UserSortFieldUpdatedOn: "u.updated_on",
+}
+
+// userOrderBy returns the ORDER BY body for a user search. With no sortBy the
+// list is newest-first. A requested sort defaults to ascending, and u.id is
+// always the final tie-break so pages are stable across offsets.
+func userOrderBy(s domain.UserSortBy) string {
+	col, ok := userSortColumns[s.Field]
+	if !ok {
+		return "u.created_on DESC, u.id"
+	}
+	dir := "ASC"
+	if s.Order == domain.UserSortOrderDesc {
+		dir = "DESC"
+	}
+	return col + " " + dir + ", u.id"
+}
+
 const prefixUserColumns = `u.id, u.user_name, u.first_name, u.last_name, u.email, u.user_type::TEXT, u.created_on, u.updated_on`
 
 // userTypeFromEnum maps "user".user_type's real user_type_enum labels
@@ -175,8 +202,8 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 	countQuery := "SELECT COUNT(*) " + fromClause + " " + where
 
 	dataQuery := fmt.Sprintf(
-		`SELECT %s %s %s ORDER BY u.created_on DESC, u.id LIMIT $%d OFFSET $%d`,
-		prefixUserColumns, fromClause, where, argIdx, argIdx+1,
+		`SELECT %s %s %s ORDER BY %s LIMIT $%d OFFSET $%d`,
+		prefixUserColumns, fromClause, where, userOrderBy(req.SortBy), argIdx, argIdx+1,
 	)
 	dataArgs := append(append([]any{}, filterArgs...), req.Pagination.Limit, req.Pagination.Offset)
 

@@ -2225,6 +2225,18 @@ from before this entity existed; there is deliberately no persisted
 per-project delivery ledger here either — that belongs to a future batch
 entity, not this one.
 
+## POST /users/search sortBy on the Postgres data source
+
+`userService.SearchUsers` used to reject any `sortBy` on Postgres ("only supported
+for the ServiceNow data source") even though the OpenAPI contract advertises
+`name`/`createdOn`/`updatedOn` and the CSM users page always sends `name`/`asc`,
+so that page's search 400'd. It now validates the field/order the same way the
+ServiceNow adapter does (`validUserSortField`/`validUserSortOrder`) and
+`userOrderBy` maps them to fixed SQL expressions (never request text). `name`
+orders on `LOWER(COALESCE(NULLIF(name,''), first + last, user_name))` because
+`"user".name` is empty for a few synced rows (5 of 2,937 in staging); `u.id` is
+always the last tie-break so pages are stable. No `sortBy` keeps newest-first.
+
 ## Adding a new entity
 
 Follow these steps in order:

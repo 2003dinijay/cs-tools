@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -112,5 +113,55 @@ func TestUserService_GetMe_PropagatesRepoNotFound(t *testing.T) {
 	_, err := svc.GetMe(ctx)
 	if _, ok := err.(*apierror.NotFoundError); !ok {
 		t.Fatalf("GetMe error = %v (%T), want *apierror.NotFoundError", err, err)
+	}
+}
+
+// TestUserService_SearchUsers_SortBy proves the Postgres path accepts the same
+// sort fields the API advertises (it used to reject any sortBy, so the CSM users
+// page, which sends name/asc, got a 400) and passes a valid sort to the
+// repository, while a malformed one is still a validation error.
+func TestUserService_SearchUsers_SortBy(t *testing.T) {
+	tests := []struct {
+		name    string
+		sort    domain.UserSortBy
+		wantErr string
+	}{
+		{name: "none", sort: domain.UserSortBy{}},
+		{name: "name asc (what the CSM page sends)", sort: domain.UserSortBy{Field: "name", Order: "asc"}},
+		{name: "createdOn desc", sort: domain.UserSortBy{Field: "createdOn", Order: "desc"}},
+		{name: "updatedOn, order omitted", sort: domain.UserSortBy{Field: "updatedOn"}},
+		{name: "unknown field", sort: domain.UserSortBy{Field: "email"}, wantErr: "sortBy.field contains invalid value: email"},
+		{name: "order without field", sort: domain.UserSortBy{Order: "asc"}, wantErr: "sortBy.order requires sortBy.field to be set"},
+		{name: "unknown order", sort: domain.UserSortBy{Field: "name", Order: "up"}, wantErr: "sortBy.order contains invalid value: up"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got domain.UserSortBy
+			called := false
+			repo := stubUserRepo{
+				searchUsers: func(_ context.Context, req domain.SearchUsersRequest) ([]domain.User, int, error) {
+					called = true
+					got = req.SortBy
+					return nil, 0, nil
+				},
+			}
+			_, err := NewUserService(repo).SearchUsers(context.Background(), domain.SearchUsersRequest{SortBy: tt.sort})
+			if tt.wantErr != "" {
+				var ve *apierror.ValidationError
+				if !errors.As(err, &ve) || ve.Msg != tt.wantErr {
+					t.Fatalf("err = %v, want ValidationError %q", err, tt.wantErr)
+				}
+				if called {
+					t.Fatal("repository must not be reached for an invalid sort")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !called || got != tt.sort {
+				t.Fatalf("repo saw sort %+v (called=%v), want %+v", got, called, tt.sort)
+			}
+		})
 	}
 }
