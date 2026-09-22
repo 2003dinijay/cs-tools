@@ -99,20 +99,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		)
 	}
 
-	// sla_clocks has no ServiceNow equivalent either, and is gated on the pool
-	// for the same reason as event_publish_failures above. Named (not
-	// inlined) since NewServiceNowCaseService below also needs it, for its
-	// own direct, in-process pause/resume/completion calls (see that
-	// service's own applyCaseStateSLAEffects/applyResponseSLAOnComment) —
-	// both already treat a nil SLAClockService as "unconfigured, skip",
-	// the same posture every other optional-when-no-database dependency in
-	// this file has.
-	var slaClockService service.SLAClockService
-	var slaClockHandler *handler.SLAClockHandler
+	// sla-status reads the "sla" table directly (ServiceNow's own SLA data,
+	// synced in) — no ServiceNow equivalent of its own, gated on the pool for
+	// the same reason as event_publish_failures above. Replaces the old
+	// sla_clocks table entirely; see domain.SLAStatus's own doc comment.
+	var slaStatusHandler *handler.SLAStatusHandler
 	if db != nil {
-		slaClockRepo := repository.NewSLAClockRepository(db)
-		slaClockService = service.NewSLAClockService(slaClockRepo)
-		slaClockHandler = handler.NewSLAClockHandler(slaClockService)
+		slaStatusRepo := repository.NewSLAStatusRepository(db)
+		slaStatusHandler = handler.NewSLAStatusHandler(service.NewSLAStatusService(slaStatusRepo, accessSvc))
 	}
 
 	// scheduled_task_run has no ServiceNow equivalent either — same
@@ -384,7 +378,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
 		pgCaseFallbackSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
-		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseFallbackSvc, eventPublisher, slaClockService, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
+		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseFallbackSvc, eventPublisher, snUserService, cfg.CustomerRoles)
 	case config.DataSourcePostgresPrimarySNFallback:
 		// Pilot: case CREATE, and UPDATE's WorkState field only.
 		//
@@ -418,7 +412,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		// synchronously; UpdateCase dispatches to its UpdateCase via
 		// caseWriteback, asynchronously; and it is caseAttachmentOverrideSvc
 		// below, for case attachments specifically.
-		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, nil, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
+		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles)
 		caseWriteback := service.NewSNWritebackDispatcher(repository.NewSNWritebackFailureRepository(db))
 		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, caseWriteback, snCaseMirrorSvc)
 		// Case ATTACHMENTS are ServiceNow-only in this mode, permanently —
@@ -716,10 +710,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /event-publish-failures/search", eventPublishFailureHandler.SearchEventPublishFailures)
 		mux.HandleFunc("POST /event-publish-failures/{id}/resolve", eventPublishFailureHandler.ResolveEventPublishFailure)
 	}
-	if slaClockHandler != nil {
-		mux.HandleFunc("POST /cases/{caseId}/sla-clocks", slaClockHandler.RegisterSLAClock)
-		mux.HandleFunc("GET /cases/{caseId}/sla-clocks/{clockType}", slaClockHandler.GetSLAClock)
-		mux.HandleFunc("PATCH /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}", slaClockHandler.SetSLAClockTierReached)
+	if slaStatusHandler != nil {
+		mux.HandleFunc("GET /sla-status", slaStatusHandler.SearchActiveSLAStatuses)
 	}
 	if githubWebhookHandler != nil {
 		mux.HandleFunc("POST /webhooks/github", githubWebhookHandler.Handle)

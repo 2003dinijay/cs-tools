@@ -136,31 +136,13 @@ type EventPublisherService interface {
 	Close()
 }
 
-// SLAClockService defines the operations available on the sla_clocks
-// entity — see domain.SLAClock's doc comment for what it's for.
-type SLAClockService interface {
-	// RegisterSLAClock (re)creates the clock for req.CaseID/req.ClockType. A
-	// ValidationError is returned if caseId, clockType is missing, or dueAt
-	// is not after startedAt.
-	RegisterSLAClock(ctx context.Context, req domain.RegisterSLAClockRequest) (domain.SLAClock, error)
-	// GetSLAClock returns the clock for caseID/clockType. A NotFoundError is
-	// returned if no such clock has been registered.
-	GetSLAClock(ctx context.Context, caseID, clockType string) (domain.SLAClock, error)
-	// SetSLAClockTierReached marks tier ("50"/"75"/"100") reached for
-	// caseID/clockType if it isn't already (req.Status must be
-	// domain.SLATierStatusReached), and returns the (possibly pre-existing)
-	// reached timestamp. A ValidationError is returned for an unrecognized
-	// tier or status; a NotFoundError if no such clock has been registered.
-	SetSLAClockTierReached(ctx context.Context, caseID, clockType, tier string, req domain.SetSLAClockTierRequest) (domain.SetSLAClockTierReachedResponse, error)
-	// Pause/Resume set or clear the clock's paused_at — called directly,
-	// in-process, from snCaseService's case-state handling (see
-	// sn_case_service.go's applyCaseStateSLAEffects), not exposed over HTTP:
-	// no caller outside this service needs them. Both are idempotent
-	// (pausing an already-paused clock, or resuming an already-running
-	// one, is a no-op that still returns the current row) and return a
-	// NotFoundError if no such clock has been registered.
-	Pause(ctx context.Context, caseID, clockType string) (domain.SLAClock, error)
-	Resume(ctx context.Context, caseID, clockType string) (domain.SLAClock, error)
+// SLAStatusService defines the operations available on SLA status — see
+// domain.SLAStatus's doc comment for what it's for and what it replaced.
+type SLAStatusService interface {
+	// SearchActiveSLAStatuses returns every currently-active SLA clock across
+	// every case-like work item, paginated. A ValidationError is returned for
+	// an invalid pagination limit.
+	SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination) (domain.SearchSLAStatusResponse, error)
 }
 
 // OnboardingStepService records and reads the per-membership status ledger

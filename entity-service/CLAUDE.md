@@ -41,8 +41,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `EVENT_HUB_CONNECTION_STRING` | no* | — | Event Hub namespace Shared Access Policy connection string. *Required once `EVENT_HUB_BROKER` is set |
 | `EVENT_HUB_TOPIC` | no* | — | Event Hub (Kafka topic) name. *Required once `EVENT_HUB_BROKER` is set |
 | `EVENT_PUBLISHING_ENABLED` | no | `false` | Must be `"true"` for `EventPublisherService` to actually get constructed, even with `EVENT_HUB_BROKER` fully configured — a separate safe-by-default kill switch |
-| `SUPPORT_ENGINEER_ROLE` | no | — | ServiceNow role name whose presence on a case comment's resolved author completes the case's "response" SLA clock — see "SLA clocks" below |
-| `CUSTOMER_ROLES` | no | — | Comma-separated ServiceNow role names whose presence on a case comment's resolved author marks a customer reply — see `applyCustomerReplyStateTransition` in "SLA clocks" below |
+| `CUSTOMER_ROLES` | no | — | Comma-separated ServiceNow role names whose presence on a case comment's resolved author marks a customer reply — see "Customer-reply state transition" below |
 | `SALES_ENTITY_BASE_URL` | no* | — | REST `sales/sales-entity-service` base URL (not GraphQL `sales/entity-graphql-service`). *Required once any `SALES_ENTITY_*` var is set |
 | `SALES_ENTITY_TOKEN_URL` | no* | — | OAuth2 token endpoint (client_credentials grant) |
 | `SALES_ENTITY_CLIENT_ID` | no* | — | Choreo connection client id |
@@ -57,7 +56,7 @@ modes — `Config.Validate` rejects a partial set, so a typo can't silently
 disable the Postgres-only endpoints. With `DATA_SOURCE=servicenow` and no
 database, `Config.HasDatabase` is false, `cmd/api/main.go` opens no pool, and
 `NewRouter` skips registering the two Postgres-only feature sets
-(`/event-publish-failures*`, `/cases/{caseId}/sla-clocks*`), which then 404.
+(`/event-publish-failures*`, `/sla-status`), which then 404.
 A failed Event Hub publish is logged instead of recorded — see
 `EventPublisherService.Publish`'s nil-`failures` branch.
 
@@ -532,8 +531,8 @@ rather than reusing whatever product `publishCaseCreated` read at create
 time — so if a case's deployed product genuinely changes between creation
 and acknowledgement, the two Chat alerts can route to different spaces.
 This service has no persisted state for a case at all (ServiceNow is the
-sole source of truth, no local DB row per case — see this file's own
-"SLA clocks" section for the one deliberate exception), so "preserving the
+sole source of truth, no local DB row per case — the old `sla_clocks` table
+used to be the one exception, removed; see "SLA status" below), so "preserving the
 creation-time product" would mean adding new durable state purely to pin a
 routing decision, not a same-service code change. It's also arguably not
 even the more correct behavior: if a case's product association is
@@ -562,130 +561,101 @@ point, so a notification-side hiccup must not be reported to the caller as a
 failed
 create.
 
-## SLA clocks
+## SLA status
 
-`sla_clocks` (migration `000042`, `internal/domain/entity.go`'s `SLAClock`,
-`internal/repository/sla_clock_repo.go`, `internal/service/sla_clock_service.go`)
-is durable per-case SLA timer state — `caseId`/`clockType`, `startedAt`/`dueAt`,
-and up to three tier-crossing timestamps. Like `event_publish_failures`, it has
-no ServiceNow equivalent and is always backed by Postgres regardless of
-`DATA_SOURCE`, so `caseId` is a plain string, not a foreign key — a
-ServiceNow-backed case has no local `cases` row to reference.
+**Replaces the old `sla_clocks` table entirely** (removed in migration
+`000079`) — see that migration's own comment, and the history below, for
+why. `GET /sla-status` (`internal/domain/entity.go`'s `SLAStatus`,
+`internal/repository/sla_status_repo.go`, `internal/service/sla_status_service.go`)
+now reads SLA state **live from the `sla` table** (migration `000052`), which
+ServiceNow's own SLA engine populates via sync — real
+`businessElapsedPercent`/`hasBreached`/`stage` per `(work_item, sla_policy)`,
+not a value this service computes, schedules, or approximates itself. There
+is no registration step, no duration policy to guess, and no
+pause/resume/completion to track in-process any more: the synced row already
+reflects all of that, pauses included.
 
-`clockType` is deliberately **not** a fixed enum, but only three values are
-actually used: `response`, `workaround`, `resolution` — see
-`internal/service/sla_policy.go`'s `slaDurations`, which maps a case's raw
-severity to each applicable clock's duration per WSO2's own
-[support policy](https://wso2.com/licenses/support-policy/6.0) (Enterprise
-plan). `LOW` severity's entry has only `response` — the policy defines no
-fixed Workaround/Resolution SLA at that tier ("best efforts"), so those two
-clocks are never registered for a `LOW`-severity case at all. `slaDurations`
-also has a small note-worthy exception: `MEDIUM`'s `resolution` duration
-approximates the policy's "1 Business Week" as a flat 7 days, then
-`csm-notification-service`'s slaengine (which computes the actual due
-timestamp, not this service) rolls that forward off a weekend if it would
-otherwise land on one — see `slaAvoidWeekendClockTypes` and
-`events.SLAClockRegisterPayload.AvoidWeekendDueDate`. Registering a clock
-that already exists for a `(caseId, clockType)` pair resets it from scratch
-(`RegisterSLAClock`) rather than adjusting it in place — including its
-eight display-only fields (case number/WSO2 case id/title/type/product/
-team/priority/state, a point-in-time snapshot from registration, added in
-migration `000046`), populated so `csm-notification-service`'s slaengine
-can build a Google Chat breach card from one `GetClock` call with no second
-lookup — this service is the only thing with case data to give it.
+**History, for context on the removal.** `sla_clocks` was a stand-in built
+*before* the `sla` table existed in Postgres: it hand-registered a clock per
+case at creation time (`sn_case_service.go`'s old `publishSLAClockRegister`),
+using a hardcoded severity->duration guess
+(`internal/service/sla_policy.go`'s old `slaDurations`, approximating WSO2's
+own [support policy](https://wso2.com/licenses/support-policy/6.0)) rather
+than ServiceNow's real SLA computation, and needed a matching amount of
+in-process bookkeeping to stay roughly correct (`applyResponseSLAOnComment`
+completing the `response` clock early on a qualifying comment,
+`applyCaseStateSLAEffects` pausing/resuming/completing `workaround`/
+`resolution` on state changes) — all of that is now redundant: the `sla`
+table already reflects a support-engineer response, a case being on hold, or
+a case closing, because ServiceNow's own SLA engine reacted to those same
+events on its own side and the sync carried the result in. Removing this
+also fixed a real, if minor, side effect: the old `TestSNCaseService_CreateCase_PublishesCaseCreated`
+test only passed some of the time because `publishSLAClockRegister` was a
+second, unrelated `Publish` call folded into `CreateCase`'s response path.
 
-Exposed at `POST /cases/{caseId}/sla-clocks` (register/reset),
-`GET /cases/{caseId}/sla-clocks/{clockType}` (read one), and
-`PATCH /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}` with body
-`{"status": "reached"}` (`domain.SLATierStatus` — the only valid value today,
-modeled as an enum rather than a bare boolean so a future status doesn't
-need a breaking change) to mark a `50`/`75`/`100` tier reached, idempotently
-— a second call for an already-reached tier returns the original timestamp,
-not an error, plus `alreadyReached: true` so the caller can tell the two
-cases apart (the underlying `UPDATE ... WHERE ... IS NULL` already decides
-atomically which caller "really" set it; `alreadyReached` is just that
-outcome surfaced instead of discarded). `SLAClockService.Pause`/`.Resume`
-(set/clear `pausedAt`) have **no HTTP route at all** — `sn_case_service.go`
-is their only caller, in-process (see below), so an HTTP surface for them
-would be pure speculative API surface nothing outside this service needs.
+**`GET /sla-status` returns every currently-active clock across every
+case-like work item in one paginated list** (`sla.is_active = TRUE`,
+joined through `sla_policy.target` for `clockType` — `response`/
+`workaround`/`resolution`, lower-cased from `RESPONSE`/`WORKAROUND`/
+`RESOLUTION`), not one clock for one case — `integrations/csm-notification-service`
+polls this periodically and diffs `businessElapsedPercent` against what it
+already alerted on itself (see that repo's own `internal/slaengine`), rather
+than this service pushing individual tier-crossing notifications the way the
+old design's Redis wake index did. This is a genuinely different shape from
+every other paginated endpoint in this file: its one real caller is a
+periodic bulk poll (~5,500 rows checked live), not a UI list a human scrolls
+through, so it has its own pagination cap
+(`normalizeSLAStatusPagination` — default `500`, max `2000`) well above the
+generic `20`/`50` `normalizePagination` uses everywhere else; a low cap here
+would only turn one intended round trip into over a hundred for no one's
+benefit.
 
-**`alreadyReached` reflects the database claim only, not whether any
-caller's own reaction (e.g. publishing a notification) to winning that
-claim ever actually succeeded.** Gating a reaction on it being false is a
-real, valid choice when duplicate-free behavior matters more than
-guaranteed delivery — `csm-notification-service`'s
-`internal/slaengine.Engine` does exactly this (see that repo's `CLAUDE.md`
-for its full reasoning: it accepts the rare risk of a lost notification on
-an Event Hub publish failure in exchange for not duplicate-publishing every
-time a stale wake entry gets rediscovered, e.g. after a Redis outage) — but
-it is a trade-off, not a free win: a caller whose reaction failed after it
-won the claim will see `alreadyReached=true` on retry and skip the
-reaction forever, having never completed it once. Only gate a reaction on
-this field if that risk is acceptable for the use case, or if the
-reaction's own completion is tracked separately and durably instead. The
-sole caller today is
-`csm-notification-service`'s SLA timer engine
-(`internal/slaengine`), which owns the actual scheduling (a Redis wake index
-and ticker) — this service only stores the result of that scheduling, it does
-not compute or track wake times itself.
+**`GET /sla-status` is internal-caller-only** (`slaStatusService.
+requireInternalCaller`, mirroring `onboarding_step_service.go`'s own helper
+of the same name/reasoning) — `AccessService.ResolveScope`'s scope must be
+`Unrestricted` (an `AUTH_INTERNAL_CLIENT_IDS` client), refused with
+`ForbiddenError` otherwise. This is the one Postgres-backed read in this
+file that genuinely has no narrower scope to fall back to instead: it
+returns every active case's clock — case number, title, product, severity —
+in one bulk list with no per-project/per-case filtering of its own, unlike
+every other endpoint `AccessService` scopes by project membership. `auth.
+Middleware` itself lets an unauthenticated request through by design (see
+its own doc comment — enforcement is each endpoint's own job), so without
+this check this endpoint would have handed out every active case's SLA data
+to any caller able to reach the service at all, token or not — a real gap
+this closed, not a hypothetical one.
 
-`sn_case_service.go` is the only caller today (Postgres-backed cases have no
-SLA tracking — this is ServiceNow-only, same as most of this file):
+**`sla` can carry more than one row per `(work_item, target)`** (a policy
+reset re-applies the SLA — 662 of ~124,600 pairs, checked live), so the
+repository picks the most recently started one per pair (`DISTINCT ON`,
+falling back to most recently updated for the rare row with no `start_on`)
+rather than an arbitrary one. `businessElapsedPercent` and `hasBreached` are
+read straight off the row — `hasBreached` is not re-derived from the
+percentage even though the two agree in every row checked so far
+(`>= 100%` exactly where `hasBreached` is true): ServiceNow's own verdict is
+what should be trusted if that ever changes. The eight display fields
+(case number/WSO2 case id/title/type/product/team/priority/state) mirror
+`GetCaseByID`'s own product/severity joins exactly, and — unlike the old
+design's point-in-time registration snapshot — are read live alongside the
+SLA data on every call, so they can't go stale between registration and a
+breach firing days later. `team` is always empty on this data source: unlike
+ServiceNow, nothing in this schema resolves a case to a team today.
 
-- **`CreateCase`** publishes `sla.clock.register` (`publishSLAClockRegister`,
-  folded directly into the existing `publishCaseCreated` — sharing its
-  `GetCaseByID` fetch and its `s.publisher == nil` guard, since registration
-  is inherently Kafka-based too) for every clock `slaDurations` has an entry
-  for at the case's severity. Deliberately runs **before**
-  `publishCaseCreated`'s own watch-list check: that check only gates the
-  `case.created` *email*, and SLA tracking must happen regardless of
-  whether the case has watchers.
-- **`CreateCaseComment`** calls `applyResponseSLAOnComment` for every
-  customer-visible comment (`req.Type == domain.CommentTypeComment` — work
-  notes/activity entries don't count). This service has no auth/identity
-  layer of its own (the `x-user-id-token` it forwards is opaque), so
-  "is this comment's author a support engineer" is answered by resolving
-  the comment's author (`resolveCommentAuthor`, the same lookup
-  `publishCommentAdded` already needs for its own display name) and
-  checking their ServiceNow role via `SNUserService.SearchUsers` filtered
-  by email, against the **configurable** `SUPPORT_ENGINEER_ROLE` env var
-  (deliberately no committed default — organisation-specific vocabulary,
-  same reasoning `apps/csm-portal/backend`'s own `CSM_TEAM_REGISTRY` uses).
-  A match claims all three tiers (`50`/`75`/`100`) of the `response` clock
-  at once via `SetSLAClockTierReached` — claiming all three, not just
-  `100`, is what suppresses a later spurious breach alert: when
-  `csm-notification-service`'s slaengine eventually reaches the wake-index
-  entries this clock's registration created, its own `SetTierReachedIfUnset`
-  call sees each already claimed and quietly drops the wake entry instead
-  of publishing a breach.
-- **`UpdateCase`** calls `applyCaseStateSLAEffects` after every genuine
-  state-changing PATCH, using the new state alone (no "old state" needed —
-  see that function's own doc comment for why). `Awaiting Info`/
-  `Solution Proposed` pauses `workaround`+`resolution`; any other state
-  resumes both; `Closed` completes `resolution` the same
-  claim-all-three-tiers way as `response` above, and pauses (not
-  completes) `workaround` — **`workaround` has no completion trigger wired
-  up at all yet** (see the `// TODO` in `applyCaseStateSLAEffects`; it
-  needs a "workaround provided" signal this domain model doesn't have).
+## Customer-reply state transition
 
-All three are deliberately **independent of `s.publisher`** except
-registration itself (inherently Kafka-based) — pause/resume/completion are
-pure in-process DB writes via `SLAClockService`, so a deployment without
-Event Hub configured must not lose them as a side effect of that.
-
-**`CreateCaseComment`** also calls `applyCustomerReplyStateTransition` —
-not itself an SLA-clock write, but it triggers one indirectly. When a
+Unrelated to SLA tracking above, but lives in the same file and used to be
+documented alongside it: `sn_case_service.go`'s `CreateCaseComment` calls
+`applyCustomerReplyStateTransition` for every comment. When a
 customer-visible comment arrives while the case is `Awaiting Info`/
 `Solution Proposed`, from an author holding one of the configurable
-`CUSTOMER_ROLES` (same role-lookup mechanism as `applyResponseSLAOnComment`,
-just checked against a list instead of a single role — an organisation can
-have more than one customer-facing role), this calls `s.UpdateCase` with
-`State: WaitingOnWSO2` **in-process**, not a second, separate ServiceNow
-PATCH — reusing `UpdateCase`'s own `publishStatusChanged` and
-`applyCaseStateSLAEffects` calls entirely rather than duplicating either.
-`applyCaseStateSLAEffects`'s `default` case (any state other than
-`AwaitingInfo`/`SolutionProposed`/`Closed`) is exactly the resume behavior
-this needs, so no new SLA-specific code was needed for that part at all.
+`CUSTOMER_ROLES` env var (comma-separated ServiceNow role names,
+deliberately no committed default — organisation-specific vocabulary, same
+reasoning `apps/csm-portal/backend`'s own `CSM_TEAM_REGISTRY` uses; resolved
+the same way as every other author-role check in this file, since this
+service has no auth/identity layer of its own and the `x-user-id-token` it
+forwards is opaque), this calls `s.UpdateCase` with `State: WaitingOnWSO2`
+**in-process**, not a second, separate ServiceNow PATCH — reusing
+`UpdateCase`'s own `publishStatusChanged` call rather than duplicating it.
 Requires its own `GetCaseByID` call to read the case's current state —
 nothing else in `CreateCaseComment`'s flow surfaces it (`publishCommentAdded`
 fetches one for its own purpose but never shares it, and is itself skipped
@@ -709,24 +679,23 @@ here.
 `internal/service/scheduled_task_run_service.go`) is durable claim/retry
 state for `operations/csm-scheduled-tasks` — a single Choreo Scheduled Task
 that internally fans out to any number of independently-scheduled sub-crons
-on one shared driver cadence. Like `sla_clocks`/`event_publish_failures`, it
-has no ServiceNow equivalent and is always backed by Postgres regardless of
+on one shared driver cadence. Like `event_publish_failures`, it has no
+ServiceNow equivalent and is always backed by Postgres regardless of
 `DATA_SOURCE`.
 
-`taskName` is a caller-defined registry key, not a fixed enum — same
-reasoning as `sla_clocks.clockType`: which sub-crons exist, and on what
-schedule, is a policy decision made entirely by `operations/csm-scheduled-tasks`'
-own registry, not something this service tracks.
+`taskName` is a caller-defined registry key, not a fixed enum: which
+sub-crons exist, and on what schedule, is a policy decision made entirely by
+`operations/csm-scheduled-tasks`' own registry, not something this service
+tracks.
 
-There is no stored status column, the same choice `sla_clocks` makes for the
-same reason: status is always derivable from which timestamp is set, and
-each is independently useful on its own — `succeededOn` (done, forever, for
-this period), `supersededOn` (abandoned: the next period came due before
-this one ever succeeded), or `nextRetryOn` (eligible for another attempt
-once it's in the past). See `operations/csm-scheduled-tasks`'s own
-`CLAUDE.md` for the full design behind "period keys" and "supersede" — this
-service only stores the result of that design, it does not compute period
-keys or decide backoff itself, the same division of labor as `sla_clocks`.
+There is no stored status column: status is always derivable from which
+timestamp is set, and each is independently useful on its own —
+`succeededOn` (done, forever, for this period), `supersededOn` (abandoned:
+the next period came due before this one ever succeeded), or `nextRetryOn`
+(eligible for another attempt once it's in the past). See
+`operations/csm-scheduled-tasks`'s own `CLAUDE.md` for the full design
+behind "period keys" and "supersede" — this service only stores the result
+of that design, it does not compute period keys or decide backoff itself.
 
 Exposed at:
 
@@ -2318,7 +2287,7 @@ full group source) so every group FK is NULL.
 `AnnouncementRequest`, `internal/repository/announcement_request_repo.go`,
 `internal/service/announcement_request_service.go`) is durable state for an
 announcement that hasn't been published yet — `draft -> pending_approval ->
-approved -> published`. Like `sla_clocks`/`scheduled_task_run`, it has no
+approved -> published`. Like `event_publish_failures`/`scheduled_task_run`, it has no
 ServiceNow equivalent and is always backed by Postgres regardless of
 `DATA_SOURCE`. It exists purely to let the CSM portal remember an
 announcement is mid-flight while the real approval decision happens over
@@ -2539,7 +2508,7 @@ Key conventions enforced at the DB level:
 - Enum types (e.g. `case_state_enum`, `case_priority_enum`) enforce valid values at the DB level; Go enum validation in the service layer is an additional guard
 - Triggers enforce relational constraints that foreign keys alone cannot express (e.g. deployment must belong to the same project as the case)
 - **Table names are always singular** (`case`, `user`, `comment`, `product_vulnerability`, `case_attachment`, ...), never plural (`cases`, `users`, `case_attachments`). A plural name (`case_attachments`) has been introduced by mistake before and had to be renamed later — check this before adding a new `CREATE TABLE`.
-- **Timestamp columns always use the `_on` suffix** (`created_on`, `updated_on`, `resolved_on`, `started_on`, `due_on`, ...), never `_at` (`created_at`, `updated_at`). This mirrors the JSON `On`-suffix convention under "Domain types" below — the DB column and the wire field should read the same way. Several migrations (`alert_incident_mapping`, `event_publish_failures`, `sla_clocks`, `case_attachment`, `scheduled_task_run`, `sn_writeback_failures`, `announcement_requests`) used `_at` before being fixed — check this before adding a new `TIMESTAMPTZ` column.
+- **Timestamp columns always use the `_on` suffix** (`created_on`, `updated_on`, `resolved_on`, `started_on`, `due_on`, ...), never `_at` (`created_at`, `updated_at`). This mirrors the JSON `On`-suffix convention under "Domain types" below — the DB column and the wire field should read the same way. Several migrations (`alert_incident_mapping`, `event_publish_failures`, the now-removed `sla_clocks`, `case_attachment`, `scheduled_task_run`, `sn_writeback_failures`, `announcement_requests`) used `_at` before being fixed — check this before adding a new `TIMESTAMPTZ` column.
 
 ## OpenAPI spec
 

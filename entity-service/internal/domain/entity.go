@@ -6587,43 +6587,38 @@ type CreateSNWritebackFailureRequest struct {
 	Error      string          `json:"error"`
 }
 
-// SLAClock is the durable record of one SLA timer running against a case —
-// e.g. a "response" or "resolution" clock started when the case was created
-// (or last had its severity change reset it), due at a fixed point, with up
-// to three tier-crossing timestamps recorded as an SLA timer engine (see
-// integrations/csm-notification-service's internal/slaengine) observes 50%,
-// 75%, and 100% of the duration elapse. ClockType is a caller-defined string,
-// not a fixed enum here — which clock types exist, and what duration each
-// gets, is a policy decision made entirely by whatever publishes the
-// triggering sla.clock.register event; this service only stores the result.
+// SLAStatus is one case-like work item's current standing against one SLA
+// policy target (response/workaround/resolution), read live from the "sla"
+// table ServiceNow's own SLA engine populates via sync — not a value this
+// service computes or schedules itself. Replaces the old, hand-registered
+// "sla_clocks" table (a stand-in built before real SLA data existed in
+// Postgres, using a hardcoded severity->duration guess): see CLAUDE.md's
+// "SLA status now reads the real sla table" section for the full history.
 //
-// Like EventPublishFailure, this has no ServiceNow equivalent and is always
-// backed by Postgres regardless of DATA_SOURCE (see internal/db/postgres.go)
-// — CaseID is a plain string, not a foreign key to a local cases row, since a
-// ServiceNow-backed case has none.
-type SLAClock struct {
-	CaseID    string    `json:"caseId"`
-	ClockType string    `json:"clockType"`
-	StartedOn time.Time `json:"startedOn"`
-	DueOn     time.Time `json:"dueOn"`
-	// PausedOn is currently never set by any endpoint below — the column and
-	// this field exist so a future pause/resume feature has somewhere to
-	// land, and so SLATimerEngine's tier-scan can already skip a paused
-	// clock once one exists, without a schema change at that point. No
-	// omitempty: absent must serialize as JSON null, not be omitted.
-	PausedOn     *time.Time `json:"pausedOn"`
-	Reached50On  *time.Time `json:"reached50On"`
-	Reached75On  *time.Time `json:"reached75On"`
-	Reached100On *time.Time `json:"reached100On"`
-	// The eight fields below are display-only, populated once at
-	// registration time from the case's own state then — not re-derived
-	// later, so State/Priority in particular can go stale relative to the
-	// case's actual current values by the time a breach fires. Nothing here
-	// participates in scheduling or breach logic; they exist purely so
-	// GET .../sla-clocks/{clockType} can supply everything
-	// csm-notification-service's slaengine needs to build a Google Chat
-	// breach card without a second lookup at tick time, since that service
-	// has no other way to reach case data.
+// ClockType is "response"/"workaround"/"resolution" — sla_policy.target
+// lower-cased, kept as a plain string (not a fixed Go enum) so it stays the
+// same wire vocabulary integrations/csm-notification-service's own
+// clockType handling already expects.
+type SLAStatus struct {
+	CaseID                 string  `json:"caseId"`
+	ClockType              string  `json:"clockType"`
+	BusinessElapsedPercent float64 `json:"businessElapsedPercent"`
+	// HasBreached mirrors sla.has_breached, ServiceNow's own verdict — not
+	// re-derived from BusinessElapsedPercent here, even though the two agree
+	// in every row checked so far (>=100% exactly where has_breached is
+	// true): this field is what should be trusted if that ever changes.
+	HasBreached bool `json:"hasBreached"`
+	// IsPaused is sla.stage = 'PAUSED' (is_active stays true while paused —
+	// see the "sla" table's own migration comment on the stage enum).
+	IsPaused bool `json:"isPaused"`
+	// StartedOn is sla.start_on — nullable because ServiceNow leaves it unset
+	// on some real rows. No omitempty: absent must serialize as JSON null.
+	StartedOn *time.Time `json:"startedOn"`
+	// The eight fields below are the same display-only shape SLAClock's
+	// retired display fields carried, still populated live off the case's
+	// current data (not a point-in-time snapshot, unlike the old design) —
+	// see SearchSLAStatusResponse's own doc comment for why csm-notification-service
+	// still needs them supplied here rather than looking them up itself.
 	CaseNumber string `json:"caseNumber,omitempty"`
 	WSO2CaseID string `json:"wso2CaseId,omitempty"`
 	CaseTitle  string `json:"caseTitle,omitempty"`
@@ -6634,70 +6629,20 @@ type SLAClock struct {
 	State      string `json:"state,omitempty"`
 }
 
-// RegisterSLAClockRequest is the request body for
-// POST /cases/{caseId}/sla-clocks. CaseID is injected from the path, not
-// supplied in the body. Registering a clock that already exists for this
-// (caseId, clockType) pair resets it from scratch — started_at/due_at are
-// overwritten and paused_at/reached_*_at are all cleared — mirroring the
-// rule that a severity change (or any other reason to re-baseline a clock)
-// wipes and rebuilds it rather than adjusting it in place.
-type RegisterSLAClockRequest struct {
-	CaseID    string    `json:"-"`
-	ClockType string    `json:"clockType"`
-	StartedAt time.Time `json:"startedAt"`
-	DueAt     time.Time `json:"dueAt"`
-	// The eight fields below are optional display data — see SLAClock's own
-	// doc comment for what they're for and why they're a point-in-time
-	// snapshot, not kept live.
-	CaseNumber string `json:"caseNumber,omitempty"`
-	WSO2CaseID string `json:"wso2CaseId,omitempty"`
-	CaseTitle  string `json:"caseTitle,omitempty"`
-	CaseType   string `json:"caseType,omitempty"`
-	Product    string `json:"product,omitempty"`
-	Team       string `json:"team,omitempty"`
-	Priority   string `json:"priority,omitempty"`
-	State      string `json:"state,omitempty"`
-}
-
-// SLATierStatus is the value of SetSLAClockTierRequest.Status.
-// SLATierStatusReached is the only valid value today — modeled as an enum
-// rather than a bare boolean or an action verb in the URL so a future
-// status (e.g. a manual override) can be added without a breaking change
-// to this request's shape.
-type SLATierStatus string
-
-const SLATierStatusReached SLATierStatus = "reached"
-
-// SetSLAClockTierRequest is the request body for
-// PATCH /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}.
-type SetSLAClockTierRequest struct {
-	Status SLATierStatus `json:"status"`
-}
-
-// SetSLAClockTierReachedResponse is the response body for
-// PATCH /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}.
-// ReachedOn is the timestamp now stored for that tier — either just written
-// by this call, or the pre-existing value if the tier was already reached
-// (the operation is idempotent; see the repository's SetTierReachedIfUnset).
-// AlreadyReached distinguishes those two cases: false means this call is
-// the one that just wrote ReachedOn; true means it was already set by an
-// earlier call.
-//
-// AlreadyReached reflects only the database claim, not whether any
-// caller's downstream reaction to winning that claim (e.g. publishing a
-// notification) ever actually succeeded. Gating a reaction on
-// AlreadyReached being false is a real, valid choice when duplicate-free
-// behavior matters more than guaranteed delivery — integrations/csm-notification-service's
-// internal/slaengine.Engine does exactly this (see that repo's CLAUDE.md
-// for its full reasoning) — but it's a trade-off: a caller whose own
-// reaction failed after it won the claim will, on retry, see
-// AlreadyReached=true and skip the reaction forever, having never
-// completed it once. Only rely on this field to gate a reaction if that
-// residual risk is acceptable, or if the reaction's own completion is
-// tracked durably and separately instead.
-type SetSLAClockTierReachedResponse struct {
-	ReachedOn      time.Time `json:"reachedOn"`
-	AlreadyReached bool      `json:"alreadyReached"`
+// SearchSLAStatusResponse is the response for GET /sla-status — every
+// currently-active (sla.is_active = true) clock across every case-like work
+// item, paginated. integrations/csm-notification-service polls this
+// periodically and diffs BusinessElapsedPercent against what it already
+// alerted on (see that repo's internal/slaengine) rather than this service
+// pushing individual tier-crossing notifications — this service has no
+// scheduling of its own now that there's nothing to schedule: the "sla" row
+// this reads already reflects ServiceNow's own SLA computation, pauses
+// included, with no separate due-date arithmetic to get out of sync.
+type SearchSLAStatusResponse struct {
+	Statuses []SLAStatus `json:"statuses"`
+	Total    int         `json:"total"`
+	Limit    int         `json:"limit"`
+	Offset   int         `json:"offset"`
 }
 
 // AnnouncementRequestState is the lifecycle state of an announcement_requests

@@ -350,7 +350,7 @@ func TestConfig_Validate_ServiceNowDatabaseIsOptional(t *testing.T) {
 
 // TestConfig_Validate_ServiceNowAcceptsAFullDatabase covers the other valid
 // servicenow shape — a database IS configured, so event_publish_failures and
-// sla_clocks stay available.
+// sla-status stay available.
 func TestConfig_Validate_ServiceNowAcceptsAFullDatabase(t *testing.T) {
 	c := baseValidServiceNowConfig()
 	c.DBUser, c.DBPassword, c.DBName = "user", "password", "db"

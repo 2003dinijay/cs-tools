@@ -155,20 +155,10 @@ type Config struct {
 	// pass came back short. A backlog drains at full speed regardless, so this
 	// governs only the idle case: notice latency against query volume.
 	CRNoticePollInterval time.Duration
-	// SupportEngineerRole is the ServiceNow role name (e.g. an org-specific
-	// "sn_*" role) whose presence on a case comment's resolved author marks
-	// that comment as a qualifying support-engineer response — see
-	// sn_case_service.go's applyResponseSLAOnComment. Deliberately no
-	// committed default: this is organisation-specific vocabulary, the same
-	// reasoning apps/csm-portal/backend's own CSM_TEAM_REGISTRY uses for not
-	// shipping one. Left unset, that function simply can't confirm
-	// engineer-authorship and skips (logged) — not fatal, not required by
-	// Validate.
-	SupportEngineerRole string
-	// CustomerRoles is a comma-separated list of ServiceNow role names (see
-	// SUPPORT_ENGINEER_ROLE's own doc comment for the same
-	// organisation-specific-vocabulary reasoning — deliberately no
-	// committed default here either) whose presence on a case comment's
+	// CustomerRoles is a comma-separated list of ServiceNow role names
+	// (organisation-specific vocabulary, the same reasoning
+	// apps/csm-portal/backend's own CSM_TEAM_REGISTRY uses for not shipping
+	// a committed default) whose presence on a case comment's
 	// resolved author marks that comment as a customer reply — see
 	// sn_case_service.go's applyCustomerReplyStateTransition, which moves
 	// the case back to Work In Progress when a customer replies while it's
@@ -273,7 +263,6 @@ func Load() *Config {
 		AuthUserTokenAudiences:                   splitComma(os.Getenv("AUTH_USER_TOKEN_AUDIENCES")),
 		AuthClockSkew:                            envDuration("AUTH_CLOCK_SKEW", 30*time.Second),
 		AuthInternalClientIDsRaw:                 os.Getenv("AUTH_INTERNAL_CLIENT_IDS"),
-		SupportEngineerRole:                      os.Getenv("SUPPORT_ENGINEER_ROLE"),
 		CustomerRoles:                            splitComma(os.Getenv("CUSTOMER_ROLES")),
 		SalesEntityBaseURL:                       os.Getenv("SALES_ENTITY_BASE_URL"),
 		SalesEntityTokenURL:                      os.Getenv("SALES_ENTITY_TOKEN_URL"),
