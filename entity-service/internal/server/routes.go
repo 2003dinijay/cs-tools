@@ -395,7 +395,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		// Case ATTACHMENTS are ServiceNow-only in this mode, permanently —
 		// unlike case metadata (CREATE/UPDATE above), not a pilot scope
 		// decision but a hard requirement: the sftpgo-backed Postgres
-		// attachment implementation (case_attachments table,
+		// attachment implementation (case_attachment table,
 		// CaseRepository.CreateCaseAttachment et al. — real, working SQL,
 		// unlike the old CreateCase bug) is not production-ready for the
 		// Oct 4 go-live, so attachment routes must never reach it while this

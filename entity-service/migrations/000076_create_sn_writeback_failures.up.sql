@@ -21,11 +21,11 @@ CREATE TABLE IF NOT EXISTS sn_writeback_failures (
   operation     TEXT NOT NULL,
   payload       JSONB NOT NULL,
   error         TEXT NOT NULL,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_on    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Index to optimize the common "show me the backlog for this entity" query --
 -- newest first, same ordering as event_publish_failures' equivalent index.
 
 CREATE INDEX IF NOT EXISTS idx_sn_writeback_failures_entity
-  ON sn_writeback_failures(entity_type, entity_id, created_at DESC);
+  ON sn_writeback_failures(entity_type, entity_id, created_on DESC);

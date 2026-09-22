@@ -32,6 +32,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { RefreshCw, X } from "@wso2/oxygen-ui-icons-react";
 import { Link } from "react-router";
+import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import EditorWithSourceToggle from "@components/rich-text-editor/EditorWithSourceToggle";
 import { formatAbsoluteForUser } from "@utils/dateTime";
 import { sanitizeRichTextHtml } from "@utils/sanitizeHtml";
@@ -49,6 +50,7 @@ import { SECURITY_ANNOUNCEMENT_TAG_LABEL } from "@features/csm-announcements/com
 import AnnouncementSendProgress, {
   type AnnouncementSendProgressState,
 } from "@features/csm-announcements/components/AnnouncementSendProgress";
+import PublishConfirmationDialog from "@features/csm-announcements/components/PublishConfirmationDialog";
 
 interface AnnouncementRequestDialogProps {
   requestId: string;
@@ -118,6 +120,23 @@ export default function AnnouncementRequestDialog({
   const submit = useSubmitAnnouncementRequest();
   const approve = useApproveAnnouncementRequest();
   const publish = usePublishAnnouncementRequest(request);
+  // Publish is restricted to the request's own creator server-side (an
+  // approver's job is only to approve, not to also trigger the real send) —
+  // this mirrors that here so the button reflects reality instead of
+  // failing with a 403 only after being clicked. claims.userid is the same
+  // stable per-account identifier the backend's JWT "userid" claim (and so
+  // request.createdBy) is sourced from — see IdTokenClaims's own doc
+  // comment for why not `sub`, which is per-session.
+  const claims = useIdTokenClaims();
+  // useIdTokenClaims briefly returns undefined while it decodes the token
+  // asynchronously after mount, even for an already-signed-in user (this
+  // dialog is only ever reached signed-in, behind AuthGuard) — without
+  // distinguishing that from "loaded, and it's someone else," the Publish
+  // button would flash disabled with an incorrect "only X can publish" for
+  // the real creator on every open, until the token finishes decoding.
+  const claimsReady = claims !== undefined;
+  const isRequestCreator = !!request && !!claims?.userid && claims.userid === request.createdBy;
+  const [confirmPublishOpen, setConfirmPublishOpen] = useState(false);
 
   const [subject, setSubject] = useState("");
   const [description, setDescription] = useState("");
@@ -503,19 +522,28 @@ export default function AnnouncementRequestDialog({
                     variant="contained"
                     color="primary"
                     size="small"
-                    onClick={() => !hasUnsavedChanges && void publish.handlePublish()}
-                    disabled={publish.publishing || hasUnsavedChanges}
+                    onClick={() =>
+                      !hasUnsavedChanges && claimsReady && isRequestCreator && setConfirmPublishOpen(true)
+                    }
+                    disabled={publish.publishing || hasUnsavedChanges || !claimsReady || !isRequestCreator}
                   >
-                    {publish.publishing
-                      ? "Publishing…"
-                      : publish.failedProjectIds.length > 0
-                        ? "Retry failed projects"
-                        : publish.failedTagProjectIds.length > 0
-                          ? "Retry security label"
-                          : "Publish"}
+                    {!claimsReady
+                      ? "Publish"
+                      : publish.publishing
+                        ? "Publishing…"
+                        : publish.failedProjectIds.length > 0
+                          ? "Retry failed projects"
+                          : publish.failedTagProjectIds.length > 0
+                            ? "Retry security label"
+                            : "Publish"}
                   </Button>
                 </Box>
-                {hasUnsavedChanges && (
+                {claimsReady && !isRequestCreator && (
+                  <Typography variant="caption" color="text.secondary">
+                    Only {request.createdBy} can publish this request — approving it doesn't grant that.
+                  </Typography>
+                )}
+                {claimsReady && isRequestCreator && hasUnsavedChanges && (
                   <Typography variant="caption" color="text.secondary">
                     Save your changes first — Publish sends whatever's currently saved, not what's still
                     unsaved here.
@@ -563,6 +591,20 @@ export default function AnnouncementRequestDialog({
             </Button>
           </DialogActions>
         </Dialog>
+      )}
+
+      {request && (
+        <PublishConfirmationDialog
+          open={confirmPublishOpen}
+          request={request}
+          isRetry={publish.failedProjectIds.length > 0 || publish.failedTagProjectIds.length > 0}
+          confirming={publish.publishing}
+          onCancel={() => setConfirmPublishOpen(false)}
+          onConfirm={() => {
+            setConfirmPublishOpen(false);
+            void publish.handlePublish();
+          }}
+        />
       )}
     </Dialog>
   );

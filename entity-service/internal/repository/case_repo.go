@@ -222,7 +222,7 @@ type CaseRepository interface {
 	SetCaseWatchList(ctx context.Context, caseID string, userIDs []string, callerEmail string) ([]domain.WatchListUser, time.Time, error)
 	// SearchCaseActivities returns a paginated, newest-first feed combining
 	// the case's comments (comment, migration 000037) and complete
-	// attachments (case_attachments, migration 000043) into one merged
+	// attachments (case_attachment, migration 000043) into one merged
 	// timeline, together with the total matching count. There is no
 	// field-change audit table in this schema, so entries of that kind are
 	// never produced regardless of req.IncludeFieldChanges -- an absent
@@ -931,9 +931,9 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 // CreateCaseAttachment implements CaseRepository.
 func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error) {
 	const query = `
-		INSERT INTO case_attachments (case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, status)
+		INSERT INTO case_attachment (case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, status)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_at, status`
+		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_on, status`
 
 	var (
 		a            domain.Attachment
@@ -969,10 +969,10 @@ func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAt
 // ConfirmCaseAttachment implements CaseRepository.
 func (r *caseRepo) ConfirmCaseAttachment(ctx context.Context, id string) (domain.Attachment, error) {
 	const query = `
-		UPDATE case_attachments
-		SET status = 'complete', updated_at = NOW()
+		UPDATE case_attachment
+		SET status = 'complete', updated_on = NOW()
 		WHERE id = $1 AND status = 'pending'
-		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_at, status`
+		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_on, status`
 
 	var (
 		a            domain.Attachment
@@ -1002,15 +1002,15 @@ func (r *caseRepo) ConfirmCaseAttachment(ctx context.Context, id string) (domain
 // are excluded from the default list/search response rather than shown with
 // a visible status.
 func (r *caseRepo) SearchCaseAttachments(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error) {
-	const countQuery = `SELECT COUNT(*) FROM case_attachments WHERE case_id = $1 AND status = 'complete'`
+	const countQuery = `SELECT COUNT(*) FROM case_attachment WHERE case_id = $1 AND status = 'complete'`
 	const dataQuery = `
 		SELECT ca.id, ca.case_id, ca.filename, ca.mime_type, ca.size_bytes, ca.description,
 		       u.id, u.email, TRIM(u.first_name || ' ' || u.last_name) AS full_name,
-		       ca.created_at, ca.storage_key, ca.status
-		FROM case_attachments ca
+		       ca.created_on, ca.storage_key, ca.status
+		FROM case_attachment ca
 		JOIN "user" u ON u.id = ca.uploaded_by
 		WHERE ca.case_id = $1 AND ca.status = 'complete'
-		ORDER BY ca.created_at DESC, ca.id
+		ORDER BY ca.created_on DESC, ca.id
 		LIMIT $2 OFFSET $3`
 
 	var total int
@@ -1075,8 +1075,8 @@ func (r *caseRepo) GetCaseAttachmentByID(ctx context.Context, id string) (domain
 	const query = `
 		SELECT ca.id, ca.case_id, ca.filename, ca.mime_type, ca.size_bytes, ca.description,
 		       u.id, u.email, TRIM(u.first_name || ' ' || u.last_name) AS full_name,
-		       ca.created_at, ca.storage_key, ca.status
-		FROM case_attachments ca
+		       ca.created_on, ca.storage_key, ca.status
+		FROM case_attachment ca
 		JOIN "user" u ON u.id = ca.uploaded_by
 		WHERE ca.id = $1`
 
@@ -1103,7 +1103,7 @@ func (r *caseRepo) GetCaseAttachmentByID(ctx context.Context, id string) (domain
 
 // DeleteCaseAttachment implements CaseRepository.
 func (r *caseRepo) DeleteCaseAttachment(ctx context.Context, id string) error {
-	tag, err := r.db.Exec(ctx, `DELETE FROM case_attachments WHERE id = $1`, id)
+	tag, err := r.db.Exec(ctx, `DELETE FROM case_attachment WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("delete case attachment: %w", err)
 	}
@@ -1116,10 +1116,10 @@ func (r *caseRepo) DeleteCaseAttachment(ctx context.Context, id string) error {
 // UpdateCaseAttachmentName implements CaseRepository.
 func (r *caseRepo) UpdateCaseAttachmentName(ctx context.Context, id, name, updatedBy string) (time.Time, error) {
 	const query = `
-		UPDATE case_attachments
-		SET filename = $2, updated_at = NOW(), updated_by = $3
+		UPDATE case_attachment
+		SET filename = $2, updated_on = NOW(), updated_by = $3
 		WHERE id = $1
-		RETURNING updated_at`
+		RETURNING updated_on`
 
 	var updatedOn time.Time
 	err := r.db.QueryRow(ctx, query, id, name, updatedBy).Scan(&updatedOn)
@@ -1826,7 +1826,7 @@ func scanCaseActivity(row interface{ Scan(...any) error }) (domain.CaseActivity,
 // single-element Changes slice, rather than guessing at a bundling rule.
 func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) ([]domain.CaseActivity, int, error) {
 	// Confirm req.CaseID is actually a case-like work item before reading
-	// its activity feed -- comment/case_attachments/work_item_activity are
+	// its activity feed -- comment/case_attachment/work_item_activity are
 	// all keyed by the generic work_item_id with no type filter of their
 	// own, so without this check a caller could pass any other work_item's
 	// UUID (a change request, incident, ...) through this endpoint and read
@@ -1845,14 +1845,14 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 	countQuery := `
 		SELECT
 			(SELECT COUNT(*) FROM comment WHERE work_item_id = $1) +
-			(SELECT COUNT(*) FROM case_attachments WHERE case_id = $1 AND status = 'complete')`
+			(SELECT COUNT(*) FROM case_attachment WHERE case_id = $1 AND status = 'complete')`
 	if includeFieldChanges {
 		countQuery += ` + (SELECT COUNT(*) FROM work_item_activity WHERE work_item_id = $1)`
 	}
 
 	// UNION ALL merges the tables into one timeline. Comment/field-change
 	// rows resolve their (free-text VARCHAR) author by email match against
-	// "user"; attachment rows join it directly, since case_attachments.
+	// "user"; attachment rows join it directly, since case_attachment.
 	// uploaded_by is a real UUID FK (migration 000043) -- see this file's
 	// other created_by fixes for why they differ.
 	//
@@ -1884,13 +1884,13 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 			UNION ALL
 
 			SELECT
-				a.id, 'attachment' AS kind, COALESCE(a.description, '') AS content, a.created_at AS created_on,
+				a.id, 'attachment' AS kind, COALESCE(a.description, '') AS content, a.created_on AS created_on,
 				u2.email, u2.first_name, u2.last_name,
 				COALESCE(u2.name, NULLIF(TRIM(CONCAT_WS(' ', u2.first_name, u2.last_name)), '')) AS name,
 				NULL::text AS comment_type,
 				a.filename, a.mime_type, a.size_bytes,
 				NULL::text AS field_name, NULL::text AS old_value, NULL::text AS new_value
-			FROM case_attachments a
+			FROM case_attachment a
 			JOIN "user" u2 ON u2.id = a.uploaded_by
 			WHERE a.case_id = $1 AND a.status = 'complete'`
 	if includeFieldChanges {

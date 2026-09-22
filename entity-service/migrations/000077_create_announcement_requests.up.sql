@@ -10,17 +10,17 @@ CREATE TABLE IF NOT EXISTS announcement_requests (
   resolved_project_ids      JSONB,
   resolved_project_count    INT,
   dry_run_case_id           TEXT,
-  dry_run_at                TIMESTAMPTZ,
+  dry_run_on                TIMESTAMPTZ,
   dry_run_by                TEXT,
   created_by                TEXT NOT NULL,
-  created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_on                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_on                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   submitted_by              TEXT,
-  submitted_at              TIMESTAMPTZ,
+  submitted_on              TIMESTAMPTZ,
   approved_by               TEXT,
-  approved_at               TIMESTAMPTZ,
+  approved_on               TIMESTAMPTZ,
   published_by              TEXT,
-  published_at              TIMESTAMPTZ
+  published_on              TIMESTAMPTZ
 );
 
 -- No FK to cases(id): a published announcement fans out into ServiceNow-backed

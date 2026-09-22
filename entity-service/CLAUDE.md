@@ -830,7 +830,7 @@ changed.
   empty — nothing has asked for it on that path, this only wires up the
   search filter.
 - **Case activities** (`CaseRepository.SearchCaseActivities`): merges
-  `comment` and complete `case_attachments` rows into one newest-first feed
+  `comment` and complete `case_attachment` rows into one newest-first feed
   via a `UNION ALL` CTE — was previously an unconditional
   `ServiceUnavailableError` stub. There is no field-change audit table in
   this schema, so `req.IncludeFieldChanges` has no effect on this data
@@ -1206,7 +1206,7 @@ column by column (a local database built from every migration here vs staging,
 68 shared tables) when checked:
 
 - **Tables only in `migrations/`, absent from staging:** `alert_incident_mapping`
-  (000014), `case_attachments` (000043/000044), `announcement_requests` (000077),
+  (000014), `case_attachment` (000043/000044), `announcement_requests` (000077),
   `onboarding_step` (000075). Queries on them fail in staging with "relation does
   not exist"; none of it is a naming problem, the tables were simply never created.
 - **Columns renamed in staging** (the code used the old names and failed with
@@ -1413,7 +1413,7 @@ whichever `EscalationService` it's given -- no changes needed there at all.
 **Not yet verifiable against real data**: `case_escalation`/
 `case_escalation_notification_list`'s migration hasn't actually been
 applied to the staging database this was checked against (same gap as
-`case_attachments`/`alert_incident_mapping`/`work_item_tag` -- see the
+`case_attachment`/`alert_incident_mapping`/`work_item_tag` -- see the
 "Fixing wso2_id" section's own note on checking directly against the
 database rather than trusting a migration file's presence in this repo).
 The code matches the migration's schema definition exactly; it just
@@ -1568,7 +1568,7 @@ real, direct column. `madeSla`/`slaViolated` on Incident map to
 (`case_repo.go`) -- an activity feed entry (comment or field change) is not
 inherently case-specific, and `comment`/`work_item_activity` are both keyed
 by the generic `work_item_id`. Unlike `SearchCaseActivities`, there is no
-`case_attachments`-equivalent table for incidents, so this feed can never
+`case_attachment`-equivalent table for incidents, so this feed can never
 have an `"attachment"` kind entry.
 
 **`UpdateConversation` is implemented** (a plain `conversation.state` enum
@@ -1607,7 +1607,7 @@ change, not because either is infeasible.
 actually an incident/case-like work item before reading its activity
 feed** (`EXISTS (SELECT 1 FROM incident WHERE id = $1)` and the
 `caseLikeWorkItemTypes`-filtered equivalent respectively) -- found as a
-real IDOR during review: `comment`/`case_attachments`/`work_item_activity`
+real IDOR during review: `comment`/`case_attachment`/`work_item_activity`
 are all keyed by the generic `work_item_id` with no type filter of their
 own, so without this check a caller could pass any other work item's UUID
 (a change request, a different case, ...) through either endpoint and read
@@ -2424,6 +2424,8 @@ Key conventions enforced at the DB level:
 - Human-readable IDs (e.g. `CASE-001`, `WSO2-001`) are generated from dedicated sequences via column defaults
 - Enum types (e.g. `case_state_enum`, `case_priority_enum`) enforce valid values at the DB level; Go enum validation in the service layer is an additional guard
 - Triggers enforce relational constraints that foreign keys alone cannot express (e.g. deployment must belong to the same project as the case)
+- **Table names are always singular** (`case`, `user`, `comment`, `product_vulnerability`, `case_attachment`, ...), never plural (`cases`, `users`, `case_attachments`). A plural name (`case_attachments`) has been introduced by mistake before and had to be renamed later — check this before adding a new `CREATE TABLE`.
+- **Timestamp columns always use the `_on` suffix** (`created_on`, `updated_on`, `resolved_on`, `started_on`, `due_on`, ...), never `_at` (`created_at`, `updated_at`). This mirrors the JSON `On`-suffix convention under "Domain types" below — the DB column and the wire field should read the same way. Several migrations (`alert_incident_mapping`, `event_publish_failures`, `sla_clocks`, `case_attachment`, `scheduled_task_run`, `sn_writeback_failures`, `announcement_requests`) used `_at` before being fixed — check this before adding a new `TIMESTAMPTZ` column.
 
 ## OpenAPI spec
 

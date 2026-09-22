@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
@@ -265,9 +266,10 @@ func TestAnnouncementRequestService_Approve(t *testing.T) {
 }
 
 func TestAnnouncementRequestService_MarkPublished(t *testing.T) {
-	t.Run("accepts from approved", func(t *testing.T) {
+	t.Run("accepts from approved when the actor is the creator", func(t *testing.T) {
 		repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
-			State: domain.AnnouncementRequestStateApproved,
+			State:     domain.AnnouncementRequestStateApproved,
+			CreatedBy: "user-3",
 		}}
 		svc := NewAnnouncementRequestService(repo)
 		_, err := svc.MarkPublished(context.Background(), "req-1", "user-3")
@@ -279,6 +281,24 @@ func TestAnnouncementRequestService_MarkPublished(t *testing.T) {
 		}
 	})
 
+	// TestAnnouncementRequestService_MarkPublished/rejects_a_non-creator_actor
+	// locks in that publish -- unlike approve, which anyone can still do for
+	// now (see Approve's own tests) -- is restricted to the request's own
+	// creator: an approver's job is only to approve, per Danidu's explicit
+	// instruction that the person accepting an announcement must not also be
+	// the one who can send it.
+	t.Run("rejects a non-creator actor", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
+			State:     domain.AnnouncementRequestStateApproved,
+			CreatedBy: "user-1",
+		}}
+		svc := NewAnnouncementRequestService(repo)
+		_, err := svc.MarkPublished(context.Background(), "req-1", "user-3")
+		if _, ok := err.(*apierror.ForbiddenError); !ok {
+			t.Fatalf("expected *apierror.ForbiddenError, got %T: %v", err, err)
+		}
+	})
+
 	t.Run("rejects from any state other than approved", func(t *testing.T) {
 		for _, state := range []domain.AnnouncementRequestState{
 			domain.AnnouncementRequestStateDraft,
@@ -286,7 +306,7 @@ func TestAnnouncementRequestService_MarkPublished(t *testing.T) {
 			domain.AnnouncementRequestStatePublished,
 		} {
 			t.Run(string(state), func(t *testing.T) {
-				repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{State: state}}
+				repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{State: state, CreatedBy: "user-3"}}
 				svc := NewAnnouncementRequestService(repo)
 				if _, err := svc.MarkPublished(context.Background(), "req-1", "user-3"); err == nil {
 					t.Fatalf("expected a conflict error publishing from state %q, got nil", state)
