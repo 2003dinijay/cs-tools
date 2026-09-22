@@ -23,10 +23,23 @@ paths:
     post:
       summary: >-
         Ingest a Salesforce change event from sales-apex-trigger-subscriber.
-        Fetches the Account via REST sales/sales-entity-service POST /customer-search
-        (isRealTime true), not GraphQL sales/entity-graphql-service, and upserts
-        the csm-platform account table. Registered only when DATA_SOURCE=postgres
-        and REST sales-entity-service config is present.
+        Entity Account: fetches the Account via REST sales/sales-entity-service
+        POST /customer-search (isRealTime true), not GraphQL
+        sales/entity-graphql-service, and upserts the csm-platform account table.
+        Entity Project_Contact__c (also accepted as Project_Contact), only when
+        SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true: CREATED/UPDATED/RESTORED fetch
+        the membership and its Contact (POST /project-contacts/search,
+        POST /contacts/search) and upsert user, user_role, account_contact,
+        project_contact and project_contact_group in one transaction, record the
+        DATABASE onboarding step, and publish project_contact.invited when the
+        resulting state is INVITED or RE-INVITED; DELETED marks the
+        project_contact DEACTIVATED (never deletes). Entity Contact, UPDATED only:
+        re-runs the membership upsert for each of the contact's memberships.
+        Every other entity is acknowledged with 204 and ignored. A replay whose
+        Salesforce lastModifiedDate is not newer than the recorded DATABASE step
+        is a 204 no-op, so the customer portal and the reconcile job can replay
+        envelopes freely. Registered only when DATA_SOURCE=postgres and REST
+        sales-entity-service config is present.
       operationId: handleSalesforceEvent
       requestBody:
         required: true
@@ -36,7 +49,59 @@ paths:
               $ref: '#/components/schemas/SalesforceEventRequest'
       responses:
         "204":
-          description: Event accepted (including ignored non-Account entities and idempotent deletes).
+          description: Event accepted (including ignored entities, duplicate replays and idempotent deletes).
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found (membership ingest only — the project or account the membership refers to is not in this database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Conflict (membership ingest only — more than one user row matches the contact's email).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Salesforce is temporarily unavailable (including a 404 from sales-entity-service so the event can be retried), or a role / project_group row the membership mapping needs is not seeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /onboarding-steps/search:
+    post:
+      summary: >-
+        Search the onboarding status ledger (onboarding_step): one row per
+        membership per step (IDENTITY, DATABASE, EMAIL, REGISTRATION), newest
+        first. Backs the onboarding dashboard. Has no ServiceNow equivalent —
+        always backed by Postgres; 404 without a pool.
+      operationId: searchOnboardingSteps
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchOnboardingStepsRequest'
+      responses:
+        "200":
+          description: Matching steps, paginated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchOnboardingStepsResponse'
         "400":
           description: Bad request.
           content:
@@ -55,8 +120,96 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Salesforce is temporarily unavailable (including Account 404 so the event can be retried).
+
+  /onboarding-steps/{membershipSfId}:
+    get:
+      summary: >-
+        Every onboarding step recorded for one Salesforce Project_Contact__c
+        (membership), in step order. An unknown membership yields an empty
+        list, not a 404.
+      operationId: getOnboardingSteps
+      parameters:
+        - name: membershipSfId
+          in: path
+          required: true
+          description: Salesforce Project_Contact__c Id (15 or 18 characters).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The recorded steps.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOnboardingStepsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /onboarding-steps/{membershipSfId}/{step}:
+    put:
+      summary: >-
+        Record the latest outcome of one onboarding step for one membership.
+        Idempotent on (membershipSfId, step): a repeat replaces status,
+        lastError, eventType and eventModifiedOn and increments attemptCount.
+        csm-notification-service writes IDENTITY and EMAIL, the customer portal
+        backend writes REGISTRATION; DATABASE is written in-process by the
+        Salesforce membership ingest and normally not through this endpoint.
+      operationId: upsertOnboardingStep
+      parameters:
+        - name: membershipSfId
+          in: path
+          required: true
+          description: Salesforce Project_Contact__c Id.
+          schema:
+            type: string
+        - name: step
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/OnboardingStepName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertOnboardingStepRequest'
+      responses:
+        "200":
+          description: The resulting row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnboardingStep'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
           content:
             application/json:
               schema:
@@ -12860,7 +13013,12 @@ components:
         entity:
           type: string
           pattern: '.*\S.*'
-          description: Salesforce sObject name. Non-Account values are ignored with 204.
+          description: >-
+            Salesforce sObject name. Account is always processed.
+            Project_Contact__c (also accepted as Project_Contact) and Contact
+            are processed only when SALESFORCE_MEMBERSHIP_INGEST_ENABLED is
+            true; otherwise, like every other value, they are acknowledged
+            with 204 and ignored.
         referenceId:
           type: string
           pattern: '.*\S.*'
@@ -17221,6 +17379,150 @@ components:
           type: integer
         hasMore:
           type: boolean
+
+    OnboardingStepName:
+      type: string
+      description: >-
+        One step of the customer onboarding flow. DATABASE is the csm-platform
+        write done by the Salesforce membership ingest; IDENTITY is the Asgardeo
+        user provisioned by csm-notification-service via the SCIM service; EMAIL
+        the invitation email; REGISTRATION the member's first sign-in, recorded
+        by the customer portal backend.
+      enum: [IDENTITY, DATABASE, EMAIL, REGISTRATION]
+
+    OnboardingStepStatus:
+      type: string
+      description: SKIPPED is used for steps that do not apply (e.g. IDENTITY and EMAIL for an integration user).
+      enum: [SUCCEEDED, FAILED, SKIPPED]
+
+    OnboardingStep:
+      type: object
+      required: [id, membershipSfId, email, step, status, attemptCount, eventType, eventModifiedOn, createdOn, updatedOn]
+      properties:
+        id:
+          type: string
+          format: uuid
+        membershipSfId:
+          type: string
+          description: Salesforce Project_Contact__c Id the step belongs to.
+        contactSfId:
+          type: string
+          nullable: true
+          description: Salesforce Contact Id of the member.
+        email:
+          type: string
+          description: The invited email, lower-cased.
+        projectId:
+          type: string
+          format: uuid
+          nullable: true
+          description: csm-platform project the membership resolved to (set once DATABASE succeeded).
+        projectContactId:
+          type: string
+          format: uuid
+          nullable: true
+          description: csm-platform project_contact row (set once DATABASE succeeded).
+        step:
+          $ref: '#/components/schemas/OnboardingStepName'
+        status:
+          $ref: '#/components/schemas/OnboardingStepStatus'
+        attemptCount:
+          type: integer
+          description: How many times this step has been recorded for the membership; 1 on first write.
+        lastError:
+          type: string
+          nullable: true
+          description: The error of the most recent FAILED write; null once the step succeeds.
+        eventType:
+          type: string
+          description: The Salesforce event type (CREATED, UPDATED, RESTORED, ...) or caller-defined trigger that produced this write.
+        eventModifiedOn:
+          type: string
+          format: date-time
+          description: The Salesforce record's lastModifiedDate the write was based on; the ingest skips replays that are not newer.
+        createdOn:
+          type: string
+          format: date-time
+        updatedOn:
+          type: string
+          format: date-time
+
+    UpsertOnboardingStepRequest:
+      type: object
+      required: [status, eventType, eventModifiedOn, email]
+      properties:
+        status:
+          $ref: '#/components/schemas/OnboardingStepStatus'
+        lastError:
+          type: string
+          nullable: true
+          description: Only stored when status is FAILED; truncated to 1000 characters.
+        eventType:
+          type: string
+        eventModifiedOn:
+          type: string
+          format: date-time
+        email:
+          type: string
+        contactSfId:
+          type: string
+          nullable: true
+        projectId:
+          type: string
+          format: uuid
+          nullable: true
+        projectContactId:
+          type: string
+          format: uuid
+          nullable: true
+
+    OnboardingStepFilters:
+      type: object
+      properties:
+        projectId:
+          type: string
+          format: uuid
+          nullable: true
+        membershipSfIds:
+          type: array
+          items:
+            type: string
+        statuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/OnboardingStepStatus'
+
+    SearchOnboardingStepsRequest:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/OnboardingStepFilters'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    SearchOnboardingStepsResponse:
+      type: object
+      required: [steps, total, limit, offset]
+      properties:
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/OnboardingStep'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    GetOnboardingStepsResponse:
+      type: object
+      required: [steps]
+      properties:
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/OnboardingStep'
 
     ScheduledTaskRun:
       description: >

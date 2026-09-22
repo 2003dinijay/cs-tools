@@ -48,6 +48,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `SALES_ENTITY_CLIENT_ID` | no* | — | Choreo connection client id |
 | `SALES_ENTITY_CLIENT_SECRET` | no* | — | Choreo connection client secret |
 | `SALES_ENTITY_SCOPES` | no | — | Optional space-separated OAuth2 scopes for REST `sales/sales-entity-service` |
+| `SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes (see "Salesforce membership ingest" below). The Account branch is unaffected |
 
 \* `DB_USER`/`DB_PASSWORD`/`DB_NAME` are required when `DATA_SOURCE=postgres`
 and **optional** when `DATA_SOURCE=servicenow`, where entity reads and writes
@@ -185,6 +186,119 @@ Id and those other columns stay null.
 Non-Account entities return 204 and are ignored (do not 400 — ASB would
 retry forever). DELETED soft-deletes by setting `deactivation_date`; never
 `DELETE FROM account` (project → account is `ON DELETE CASCADE`).
+
+## Salesforce membership ingest and onboarding steps
+
+The same `POST /salesforce/events` endpoint also ingests customer **memberships**
+— Salesforce `Project_Contact__c` (a Contact's membership of a project) and
+`Contact` — when `SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true`. Off by default:
+`routes.go` then constructs the service with `NewSalesforceEventService`, which
+acknowledges those entities with 204 and ignores them (the behaviour before this
+branch existed). On, it uses `NewSalesforceEventServiceWithMembershipIngest`
+with a `service.MembershipIngest` (membership repo, onboarding-step repo, the
+same `salesentity.Client`, and the optional `eventPublisher`). This is the
+**only** writer of customer memberships into Postgres: the customer portal and
+the hourly reconcile job never write these tables themselves, they replay the
+envelope (`{eventType, entity: "Project_Contact__c", referenceId}`) to this
+endpoint and let the ingest re-read Salesforce.
+
+**Entity dispatch** (`salesforce_event_service.go` → `salesforce_membership_ingest.go`;
+entity names are matched case-insensitively, `Project_Contact` is accepted as
+an alias of `Project_Contact__c`, and the raw value is logged):
+
+| Entity | Event | Action |
+|---|---|---|
+| `Project_Contact__c` | CREATED / UPDATED / RESTORED | `GetProjectContact` (REST `POST /project-contacts/search`) then `GetContact` (`POST /contacts/search`) → `ProjectMembershipRepository.Upsert` in one transaction → DATABASE step → publish `project_contact.invited` if the state is INVITED / RE-INVITED |
+| `Project_Contact__c` | DELETED | `project_contact.state = DEACTIVATED` for that `sf_id`; unknown id is a no-op (still 204). Never `DELETE FROM` |
+| `Contact` | UPDATED | `GetContact`, then the CREATED/UPDATED path above for each of its `memberships` (name / email / `isCsAdmin` / `isCsIntegrationUser` changes propagate); every membership is attempted, the first error is returned |
+| `Contact` | CREATED / DELETED | no-op |
+| anything else | any | 204, ignored |
+
+An empty sales-entity-service result is a 503 (the ASB event can arrive before
+Salesforce commits), the same posture as the Account branch.
+
+**Duplicate-event guard.** Salesforce emits several UPDATED events per save and
+the portal replays the envelope after its own write, so the same version
+arrives more than once. `ingestMembership` parses the record's
+`lastModifiedDate` (`2026-09-18T06:37:07.000+0000`, `parseSalesforceLastModified`)
+and skips the upsert (204) when the membership's DATABASE step is `SUCCEEDED`
+with an `eventModifiedOn` that is not older. A `FAILED` step never blocks a
+retry. An unparseable date logs a warning and just runs the (idempotent)
+upsert with `now()`.
+
+**The upsert** (`repository/project_membership_repo.go`, actor
+`domain.SalesforceSyncActor` = `salesforce-sync`) resolves every row by natural
+key first and stamps `sf_id` on the way, so the same envelope can be replayed
+any number of times and old rows that pre-date the flow get their `sf_id`
+back-filled instead of duplicated:
+
+1. `project` by `key` (the Salesforce subscription key), then by `sf_id` → 404.
+2. `account` by `sf_id = contact.customerId`; a non-PARTNER membership falls
+   back to the project's own account → 404.
+3. `"user"` by `sf_id`, else by `LOWER(email)` — exactly one (`"user".email` is
+   not unique; two matches are a 409 rather than a guess) — else inserted with
+   `user_name = lower(email)`, `is_active = true`, `is_system_user =
+   isCsIntegrationUser`. An existing row gets name / email / `is_system_user`
+   refreshed, **never `user_name`** (it is the join key to `account_contact`).
+4. Global roles (`user_role`, `mapGlobalRoles`): always `external`; `partner`
+   for a PARTNER CONTACT else `customer`; `customer_admin` / `partner_admin`
+   when the contact's `isCsAdmin` is true **or** the membership roles contain
+   `Admin`, revoked otherwise. Only those two admin roles are ever revoked
+   (`managedAdminRoles`); any other role the user holds is left alone. An
+   integration user gets no global roles at all. A role name missing from the
+   `role` table is a 503 naming it — the ServiceNow sync seeds those rows.
+5. `account_contact` by (`sf_id`, account), else (account, `LOWER(user_name)`),
+   else inserted (`is_active = true`, `is_primary_contact = false`).
+6. `project_contact` by `sf_id`, else (project, account_contact), else
+   inserted; `email` and `state` (`INVITED` / `REGISTERED` / `RE-INVITED` /
+   `DEACTIVATED`, `normalizeMembershipState`; anything else is a 400) updated.
+7. Project groups (`project_contact_group`, `mapProjectGroups`, §6.4 of the
+   onboarding design): `Portal user` + `Security Contact` → `Full Access`;
+   `Portal user` → `General Access`; `Security Contact` → `Security Only`;
+   `Lead` additionally → `Lead User Group`; `Admin` is global-only; unknown
+   roles are logged as `ignoredRoles` and never fail the ingest. The row set
+   is replaced. A missing `project_group` row is a 503.
+
+The DATABASE `onboarding_step` is written **inside the same transaction**
+(`upsertOnboardingStep` takes a `querier`, satisfied by both the pool and a
+`pgx.Tx`), so it can never disagree with the rows. On failure the ingest writes
+`DATABASE = FAILED` with `lastError` best-effort and returns the original error.
+`project_contact.invited` (`events.ProjectContactInvitedPayload`: membership /
+contact Salesforce ids, email, given / family name, project name and key, the
+raw Salesforce roles, `isIntegrationUser`, `type`) is published only after the
+transaction committed and only for INVITED / RE-INVITED; a nil publisher skips
+it, a publish failure is logged (and recorded by `EventPublisherService`), never
+returned. csm-notification-service consumes it, provisions the Asgardeo user via
+the SCIM service and sends the invitation, then records IDENTITY and EMAIL
+through the endpoints below (SKIPPED for an integration user).
+
+**Schema prerequisite**: the `sf_id` columns on `"user"`, `account_contact`
+and `project_contact` come from the csm-sync migration 0076, which is not in
+this repo's `migrations/`; the ingest fails at the first `SELECT ... sf_id`
+without it. `role` must contain `external`, `customer`, `partner`,
+`customer_admin`, `partner_admin`; `project_group` must contain the four
+groups above.
+
+**Onboarding steps API** (`onboarding_step`, migration 000075; Postgres-only,
+404 without a pool, like `scheduled_task_run`): one row per
+(`membershipSfId`, `step`), `step` ∈ IDENTITY / DATABASE / EMAIL /
+REGISTRATION, `status` ∈ SUCCEEDED / FAILED / SKIPPED, `attemptCount`
+incremented on every rewrite, `eventModifiedOn` = the Salesforce version the
+write was based on.
+
+- `PUT /onboarding-steps/{membershipSfId}/{step}` — body `{status, lastError?,
+  eventType, eventModifiedOn, email, contactSfId?, projectId?,
+  projectContactId?}` → 200 with the row. `lastError` is dropped unless
+  `status` is FAILED (a stale error must not outlive a success) and truncated
+  to 1000 characters (runes). Every method requires an internal caller
+  (`AccessScope.Unrestricted`, i.e. `AUTH_INTERNAL_CLIENT_IDS`); anyone else
+  gets 403. `created_by`/`updated_by` is `onboarding-step-api` —
+  callers are internal services, no identity is derived from the request.
+- `GET /onboarding-steps/{membershipSfId}` → `{steps: [...]}` in step order; an
+  unknown membership is an empty list, not a 404.
+- `POST /onboarding-steps/search` — `{filters: {projectId?, membershipSfIds?,
+  statuses?}, pagination}` → `{steps, total, limit, offset}`, newest first,
+  `normalizePagination` (limit 20, max 50).
 
 Seven call sites publish today, all ServiceNow-data-source-only (`DATA_SOURCE=servicenow`;
 there is no Postgres-backed equivalent for any of them). There is also one
