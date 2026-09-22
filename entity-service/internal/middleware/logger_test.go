@@ -98,7 +98,7 @@ func TestLogger_CallerID(t *testing.T) {
 	}
 
 	t.Run("a human caller logs the stable userid claim, not sub", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/search", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/search", nil)
 		out := chain(httptest.NewRecorder(), req, map[string]string{
 			"Authorization": "Bearer " + bearerToken, "x-user-id-token": userToken,
 		})
@@ -111,7 +111,7 @@ func TestLogger_CallerID(t *testing.T) {
 	})
 
 	t.Run("a pure M2M caller logs the client id", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/search", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/search", nil)
 		out := chain(httptest.NewRecorder(), req, map[string]string{"Authorization": "Bearer " + bearerToken})
 		if !strings.Contains(out, "callerId=integration-client-id") {
 			t.Fatalf("access log missing the M2M caller's client id, got: %s", out)
@@ -119,7 +119,7 @@ func TestLogger_CallerID(t *testing.T) {
 	})
 
 	t.Run("a request with no tokens logs the placeholder, not an empty field", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/search", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/search", nil)
 		out := chain(httptest.NewRecorder(), req, nil)
 		if !strings.Contains(out, "callerId=- ") {
 			t.Fatalf("expected the '-' placeholder, got: %s", out)
@@ -127,7 +127,7 @@ func TestLogger_CallerID(t *testing.T) {
 	})
 
 	t.Run("a rejected (invalid token) request still appears in the access log, with no caller id attributed", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/search", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/search", nil)
 		out := chain(httptest.NewRecorder(), req, map[string]string{"x-user-id-token": "garbage"})
 		if !strings.Contains(out, "callerId=- ") {
 			t.Fatalf("a rejected request must still be logged, with no unproven caller id, got: %s", out)
