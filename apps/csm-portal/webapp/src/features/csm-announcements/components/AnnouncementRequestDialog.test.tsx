@@ -27,6 +27,7 @@ import { useSubmitAnnouncementRequest } from "@features/csm-announcements/api/us
 import { useApproveAnnouncementRequest } from "@features/csm-announcements/api/useApproveAnnouncementRequest";
 import { usePublishAnnouncementRequest } from "@features/csm-announcements/api/usePublishAnnouncementRequest";
 import { useAnnouncementDryRun } from "@features/csm-announcements/api/useAnnouncementDryRun";
+import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import type { AnnouncementRequest } from "@features/csm-announcements/types/announcementRequests";
 
 vi.mock("@api/backend/client", () => ({
@@ -56,6 +57,25 @@ vi.mock("@features/csm-announcements/api/useAnnouncementDryRun", () => ({
   DRY_RUN_TAG_LABEL: "Dry Run",
   useAnnouncementDryRun: vi.fn(),
 }));
+vi.mock("@hooks/useIdTokenClaims", () => ({
+  useIdTokenClaims: vi.fn(),
+}));
+// PublishConfirmationDialog's useResolvedAudiencePreview needs both of
+// these — see DirectoryMembersList.test.tsx for the same pattern.
+vi.mock("@config/apiConfig", () => ({
+  apiConfig: { backendUrl: "https://example.test" },
+}));
+vi.mock("@hooks/useAuthApiClient", () => ({
+  useAuthApiClient: () =>
+    vi.fn((url: string) => {
+      const id = decodeURIComponent(String(url).split("/").pop() ?? "");
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ id, name: `Project ${id}`, key: id.toUpperCase(), account: { name: "Acme" } }),
+      });
+    }),
+}));
 vi.mock("@features/csm-announcements/components/CreateCustomerAnnouncementForm", () => ({
   SECURITY_ANNOUNCEMENT_TAG_LABEL: "Security Announcement",
 }));
@@ -74,6 +94,7 @@ const mockedSubmit = vi.mocked(useSubmitAnnouncementRequest);
 const mockedApprove = vi.mocked(useApproveAnnouncementRequest);
 const mockedPublish = vi.mocked(usePublishAnnouncementRequest);
 const mockedDryRun = vi.mocked(useAnnouncementDryRun);
+const mockedIdTokenClaims = vi.mocked(useIdTokenClaims);
 
 const BASE_REQUEST: AnnouncementRequest = {
   id: "req-1",
@@ -114,7 +135,13 @@ beforeEach(() => {
   mockedApprove.mockReset();
   mockedPublish.mockReset();
   mockedDryRun.mockReset();
+  mockedIdTokenClaims.mockReset();
 
+  // Matches BASE_REQUEST.createdBy by default, so every existing test below
+  // (written before Publish was restricted to the creator) keeps exercising
+  // the "current user is the creator" path without each needing its own
+  // override -- only the dedicated non-creator test overrides this.
+  mockedIdTokenClaims.mockReturnValue({ userid: "jane@example.com" });
   mockedUpdate.mockReturnValue(noopMutation() as ReturnType<typeof useUpdateAnnouncementRequest>);
   mockedRecordDryRun.mockReturnValue(noopMutation() as ReturnType<typeof useRecordAnnouncementRequestDryRun>);
   mockedSubmit.mockReturnValue(noopMutation() as ReturnType<typeof useSubmitAnnouncementRequest>);
@@ -306,7 +333,7 @@ describe("AnnouncementRequestDialog — approved", () => {
     expect(screen.getByRole("button", { name: /^publish$/i })).toBeInTheDocument();
   });
 
-  it("calls handlePublish when Publish is clicked", () => {
+  it("opens a confirmation popup before calling handlePublish, showing what's about to be sent", async () => {
     mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
     const handlePublish = vi.fn();
     mockedPublish.mockReturnValue({
@@ -321,6 +348,14 @@ describe("AnnouncementRequestDialog — approved", () => {
 
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /^publish$/i }));
+
+    // The popup shows the same subject before anything is actually sent —
+    // handlePublish must not fire just from opening it.
+    expect(await screen.findByText("Confirm before sending")).toBeInTheDocument();
+    expect(screen.getAllByText("Scheduled maintenance").length).toBeGreaterThan(0);
+    expect(handlePublish).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /^send to 1 project$/i }));
     expect(handlePublish).toHaveBeenCalled();
   });
 
@@ -434,6 +469,60 @@ describe("AnnouncementRequestDialog — approved", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /^publish$/i }));
 
+    expect(handlePublish).not.toHaveBeenCalled();
+  });
+
+  it("disables Publish and explains why when the current user isn't the request's creator", () => {
+    mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
+    // BASE_REQUEST.createdBy is jane@example.com — a different signed-in
+    // user must not be able to trigger the real send just because they can
+    // see the approved request (e.g. after approving it themselves).
+    mockedIdTokenClaims.mockReturnValue({ userid: "someone-else@example.com" });
+    const handlePublish = vi.fn();
+    mockedPublish.mockReturnValue({
+      publishing: false,
+      progress: null,
+      succeededProjectIds: [],
+      failedProjectIds: [],
+      failedTagProjectIds: [],
+      published: null,
+      handlePublish,
+    });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    const publishBtn = screen.getByRole("button", { name: /^publish$/i });
+    expect(publishBtn).toBeDisabled();
+    expect(screen.getByText(/only jane@example.com can publish this request/i)).toBeInTheDocument();
+
+    fireEvent.click(publishBtn);
+    expect(handlePublish).not.toHaveBeenCalled();
+  });
+
+  // useIdTokenClaims genuinely returns undefined for a moment after mount
+  // while it decodes the ID token asynchronously — even for the real
+  // creator, who is signed in the whole time. Without distinguishing that
+  // from "loaded, and it's someone else," this would flash the wrong
+  // "only X can publish" denial at the very user it's meant to allow.
+  it("disables Publish without the non-creator message while claims are still loading", () => {
+    mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
+    mockedIdTokenClaims.mockReturnValue(undefined);
+    const handlePublish = vi.fn();
+    mockedPublish.mockReturnValue({
+      publishing: false,
+      progress: null,
+      succeededProjectIds: [],
+      failedProjectIds: [],
+      failedTagProjectIds: [],
+      published: null,
+      handlePublish,
+    });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    const publishBtn = screen.getByRole("button", { name: /^publish$/i });
+    expect(publishBtn).toBeDisabled();
+    expect(screen.queryByText(/can publish this request/i)).not.toBeInTheDocument();
+
+    fireEvent.click(publishBtn);
     expect(handlePublish).not.toHaveBeenCalled();
   });
 });

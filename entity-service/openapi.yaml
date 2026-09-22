@@ -685,7 +685,8 @@ paths:
         Move an approved request to published. Does not itself create any
         cases — the caller's own fan-out (POST /cases per project) is
         unchanged and happens separately; this call only records that
-        publishing happened, by whom, and when.
+        publishing happened, by whom, and when. Restricted to the request's
+        own creator — unlike approve, an approver cannot also publish.
       operationId: publishAnnouncementRequest
       parameters:
         - name: id
@@ -709,6 +710,12 @@ paths:
                 $ref: '#/components/schemas/AnnouncementRequest'
         "400":
           description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller did not create this request.
           content:
             application/json:
               schema:

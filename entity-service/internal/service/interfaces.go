@@ -234,7 +234,10 @@ type AnnouncementRequestService interface {
 	Approve(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error)
 	// MarkPublished moves approved -> published. Does not itself create any
 	// cases. A ConflictError is returned unless the current state is
-	// approved.
+	// approved. Unlike Approve, this IS restricted: a ForbiddenError is
+	// returned unless actorID matches the request's own CreatedBy -- an
+	// approver's job is only to approve, not to also trigger the real send
+	// to customers.
 	MarkPublished(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error)
 }
 
