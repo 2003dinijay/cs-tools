@@ -66,6 +66,10 @@ func (r *savedFilterViewRepo) Save(ctx context.Context, userID string, listKey d
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := lockSavedFilterList(ctx, tx, userID, listKey); err != nil {
+		return nil, err
+	}
+
 	var existingID string
 	err = tx.QueryRow(ctx,
 		`SELECT id FROM user_saved_filter
@@ -123,6 +127,10 @@ func (r *savedFilterViewRepo) Delete(ctx context.Context, userID string, listKey
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := lockSavedFilterList(ctx, tx, userID, listKey); err != nil {
+		return nil, err
+	}
+
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM user_saved_filter
 		 WHERE user_id = $1 AND list_key = $2 AND LOWER(name) = LOWER($3)`,
@@ -149,6 +157,10 @@ func (r *savedFilterViewRepo) Move(ctx context.Context, userID string, listKey d
 		return nil, fmt.Errorf("move saved filter view: begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := lockSavedFilterList(ctx, tx, userID, listKey); err != nil {
+		return nil, err
+	}
 
 	var id string
 	var pos int
@@ -216,6 +228,16 @@ func (r *savedFilterViewRepo) Move(ctx context.Context, userID string, listKey d
 		return nil, fmt.Errorf("move saved filter view: commit: %w", err)
 	}
 	return views, nil
+}
+
+// lockSavedFilterList serializes Save/Delete/Move for one (user_id, list_key)
+// for the rest of the transaction. Row FOR UPDATE cannot cover an empty list,
+// so two concurrent first inserts would both claim filter_position 0.
+func lockSavedFilterList(ctx context.Context, tx pgx.Tx, userID string, listKey domain.SavedFilterListKey) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, userID, string(listKey)); err != nil {
+		return fmt.Errorf("lock saved filter views: %w", err)
+	}
+	return nil
 }
 
 type queryer interface {
