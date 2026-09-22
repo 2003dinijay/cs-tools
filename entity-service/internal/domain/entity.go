@@ -6837,7 +6837,7 @@ type LookupAlertIncidentMappingsRequest struct {
 
 // LookupAlertIncidentMappingsResponse is the response body for
 // POST /alert-incident-mappings/lookup. Mappings is most-recent-first
-// (ORDER BY created_at DESC) and empty (never null) when nothing matches —
+// (ORDER BY created_on DESC) and empty (never null) when nothing matches —
 // absence is a valid result for a lookup, not a 404.
 type LookupAlertIncidentMappingsResponse struct {
 	Mappings []AlertIncidentMappingView `json:"mappings"`

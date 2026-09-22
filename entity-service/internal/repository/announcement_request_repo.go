@@ -44,23 +44,23 @@ type AnnouncementRequestRepository interface {
 	// The service layer is responsible for deciding whether a
 	// revert-to-draft side effect applies instead before calling this.
 	Update(ctx context.Context, id string, expectedState domain.AnnouncementRequestState, req domain.UpdateAnnouncementRequestRequest) (domain.AnnouncementRequest, error)
-	// RecordDryRun sets dry_run_case_id/dry_run_at/dry_run_by.
+	// RecordDryRun sets dry_run_case_id/dry_run_on/dry_run_by.
 	RecordDryRun(ctx context.Context, id string, req domain.RecordAnnouncementDryRunRequest) (domain.AnnouncementRequest, error)
 	// Submit moves state to pending_approval, freezes resolved_project_ids/
-	// resolved_project_count, and sets submitted_by/submitted_at. The
+	// resolved_project_count, and sets submitted_by/submitted_on. The
 	// caller (service layer) has already validated the current state and
 	// the dry-run precondition before this is called.
 	Submit(ctx context.Context, id string, req domain.SubmitAnnouncementRequestRequest) (domain.AnnouncementRequest, error)
-	// Approve moves state to approved and sets approved_by/approved_at.
+	// Approve moves state to approved and sets approved_by/approved_on.
 	Approve(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error)
 	// RevertToDraft moves state back to draft, clearing
 	// resolved_project_ids/resolved_project_count/dry_run_case_id/
-	// dry_run_at/dry_run_by/submitted_by/submitted_at, and — in the same
+	// dry_run_on/dry_run_by/submitted_by/submitted_on, and — in the same
 	// statement — applies whatever content fields the caller also supplied
 	// (the "edit while pending_approval" path is one atomic operation, not
 	// a revert followed by a separate update).
 	RevertToDraft(ctx context.Context, id string, req domain.UpdateAnnouncementRequestRequest) (domain.AnnouncementRequest, error)
-	// MarkPublished moves state to published and sets published_by/published_at.
+	// MarkPublished moves state to published and sets published_by/published_on.
 	MarkPublished(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error)
 }
 
@@ -80,9 +80,9 @@ func NewAnnouncementRequestRepository(db *pgxpool.Pool) AnnouncementRequestRepos
 const announcementRequestColumns = `
 	id, kind, state, subject, description, is_security_announcement,
 	audience_definition, resolved_project_ids, resolved_project_count,
-	dry_run_case_id, dry_run_at, dry_run_by,
-	created_by, created_at, updated_at,
-	submitted_by, submitted_at, approved_by, approved_at, published_by, published_at`
+	dry_run_case_id, dry_run_on, dry_run_by,
+	created_by, created_on, updated_on,
+	submitted_by, submitted_on, approved_by, approved_on, published_by, published_on`
 
 func scanAnnouncementRequest(row pgx.Row) (domain.AnnouncementRequest, error) {
 	var r domain.AnnouncementRequest
@@ -150,7 +150,7 @@ func (r *announcementRequestRepo) Search(ctx context.Context, req domain.SearchA
 	const where = `WHERE ($1::text IS NULL OR state = $1) AND ($2::text IS NULL OR created_by = $2)`
 	countQuery := `SELECT COUNT(*) FROM announcement_requests ` + where
 	dataQuery := `SELECT ` + announcementRequestColumns + ` FROM announcement_requests ` + where + `
-		ORDER BY created_at DESC, id
+		ORDER BY created_on DESC, id
 		LIMIT $3 OFFSET $4`
 
 	var state *string
@@ -206,7 +206,7 @@ func (r *announcementRequestRepo) Update(ctx context.Context, id string, expecte
 			description = COALESCE($3, description),
 			is_security_announcement = COALESCE($4, is_security_announcement),
 			audience_definition = CASE WHEN $5::boolean THEN $6 ELSE audience_definition END,
-			updated_at = NOW()
+			updated_on = NOW()
 		WHERE id = $1 AND state = $7
 		RETURNING ` + announcementRequestColumns
 
@@ -252,7 +252,7 @@ func (r *announcementRequestRepo) onConflictOrNotFound(ctx context.Context, id, 
 func (r *announcementRequestRepo) RecordDryRun(ctx context.Context, id string, req domain.RecordAnnouncementDryRunRequest) (domain.AnnouncementRequest, error) {
 	query := `
 		UPDATE announcement_requests SET
-			dry_run_case_id = $2, dry_run_at = NOW(), dry_run_by = $3, updated_at = NOW()
+			dry_run_case_id = $2, dry_run_on = NOW(), dry_run_by = $3, updated_on = NOW()
 		WHERE id = $1 AND state = 'draft'
 		RETURNING ` + announcementRequestColumns
 
@@ -280,8 +280,8 @@ func (r *announcementRequestRepo) Submit(ctx context.Context, id string, req dom
 			state = 'pending_approval',
 			resolved_project_ids = $2,
 			resolved_project_count = $3,
-			submitted_by = $4, submitted_at = NOW(),
-			updated_at = NOW()
+			submitted_by = $4, submitted_on = NOW(),
+			updated_on = NOW()
 		WHERE id = $1 AND state = 'draft' AND dry_run_case_id IS NOT NULL
 		RETURNING ` + announcementRequestColumns
 
@@ -299,7 +299,7 @@ func (r *announcementRequestRepo) Submit(ctx context.Context, id string, req dom
 func (r *announcementRequestRepo) Approve(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error) {
 	query := `
 		UPDATE announcement_requests SET
-			state = 'approved', approved_by = $2, approved_at = NOW(), updated_at = NOW()
+			state = 'approved', approved_by = $2, approved_on = NOW(), updated_on = NOW()
 		WHERE id = $1 AND state = 'pending_approval'
 		RETURNING ` + announcementRequestColumns
 
@@ -325,9 +325,9 @@ func (r *announcementRequestRepo) RevertToDraft(ctx context.Context, id string, 
 			is_security_announcement = COALESCE($4, is_security_announcement),
 			audience_definition = CASE WHEN $5::boolean THEN $6 ELSE audience_definition END,
 			resolved_project_ids = NULL, resolved_project_count = NULL,
-			dry_run_case_id = NULL, dry_run_at = NULL, dry_run_by = NULL,
-			submitted_by = NULL, submitted_at = NULL,
-			updated_at = NOW()
+			dry_run_case_id = NULL, dry_run_on = NULL, dry_run_by = NULL,
+			submitted_by = NULL, submitted_on = NULL,
+			updated_on = NOW()
 		WHERE id = $1 AND state = 'pending_approval'
 		RETURNING ` + announcementRequestColumns
 
@@ -355,7 +355,7 @@ func (r *announcementRequestRepo) RevertToDraft(ctx context.Context, id string, 
 func (r *announcementRequestRepo) MarkPublished(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error) {
 	query := `
 		UPDATE announcement_requests SET
-			state = 'published', published_by = $2, published_at = NOW(), updated_at = NOW()
+			state = 'published', published_by = $2, published_on = NOW(), updated_on = NOW()
 		WHERE id = $1 AND state = 'approved'
 		RETURNING ` + announcementRequestColumns
 
