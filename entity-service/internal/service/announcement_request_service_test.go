@@ -56,6 +56,15 @@ type fakeAnnouncementRequestRepo struct {
 
 	gotPublishID      string
 	gotPublishActorID string
+	gotPublishCaseIDs []string
+
+	gotCreateUpdateReqID     string
+	gotCreateUpdateContent   string
+	gotCreateUpdateCreatedBy string
+	createUpdateResult       domain.AnnouncementRequestUpdate
+
+	gotListUpdatesID  string
+	listUpdatesResult []domain.AnnouncementRequestUpdate
 }
 
 func (f *fakeAnnouncementRequestRepo) Create(_ context.Context, req domain.CreateAnnouncementRequestRequest) (domain.AnnouncementRequest, error) {
@@ -104,10 +113,26 @@ func (f *fakeAnnouncementRequestRepo) RevertToDraft(_ context.Context, id string
 	return domain.AnnouncementRequest{ID: id, State: domain.AnnouncementRequestStateDraft}, nil
 }
 
-func (f *fakeAnnouncementRequestRepo) MarkPublished(_ context.Context, id, actorID string) (domain.AnnouncementRequest, error) {
+func (f *fakeAnnouncementRequestRepo) MarkPublished(_ context.Context, id, actorID string, caseIDs []string) (domain.AnnouncementRequest, error) {
 	f.gotPublishID = id
 	f.gotPublishActorID = actorID
-	return domain.AnnouncementRequest{ID: id, State: domain.AnnouncementRequestStatePublished}, nil
+	f.gotPublishCaseIDs = caseIDs
+	return domain.AnnouncementRequest{ID: id, State: domain.AnnouncementRequestStatePublished, PublishedCaseIDs: caseIDs}, nil
+}
+
+func (f *fakeAnnouncementRequestRepo) CreateUpdate(_ context.Context, announcementRequestID, content, createdBy string) (domain.AnnouncementRequestUpdate, error) {
+	f.gotCreateUpdateReqID = announcementRequestID
+	f.gotCreateUpdateContent = content
+	f.gotCreateUpdateCreatedBy = createdBy
+	if f.createUpdateResult.ID != "" {
+		return f.createUpdateResult, nil
+	}
+	return domain.AnnouncementRequestUpdate{ID: "update-1", AnnouncementRequestID: announcementRequestID, Content: content, CreatedBy: createdBy}, nil
+}
+
+func (f *fakeAnnouncementRequestRepo) ListUpdates(_ context.Context, announcementRequestID string) ([]domain.AnnouncementRequestUpdate, error) {
+	f.gotListUpdatesID = announcementRequestID
+	return f.listUpdatesResult, nil
 }
 
 func TestAnnouncementRequestService_CreateDraft(t *testing.T) {
@@ -266,18 +291,37 @@ func TestAnnouncementRequestService_Approve(t *testing.T) {
 }
 
 func TestAnnouncementRequestService_MarkPublished(t *testing.T) {
-	t.Run("accepts from approved when the actor is the creator", func(t *testing.T) {
+	t.Run("accepts from approved when the actor is the creator, forwarding caseIds", func(t *testing.T) {
 		repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
 			State:     domain.AnnouncementRequestStateApproved,
 			CreatedBy: "user-3",
 		}}
 		svc := NewAnnouncementRequestService(repo)
-		_, err := svc.MarkPublished(context.Background(), "req-1", "user-3")
+		got, err := svc.MarkPublished(context.Background(), "req-1", "user-3", []string{"case-1", "case-2"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if repo.gotPublishActorID != "user-3" {
 			t.Fatalf("expected actorId forwarded, got %q", repo.gotPublishActorID)
+		}
+		if len(repo.gotPublishCaseIDs) != 2 {
+			t.Fatalf("expected caseIds forwarded, got %v", repo.gotPublishCaseIDs)
+		}
+		if len(got.PublishedCaseIDs) != 2 {
+			t.Fatalf("expected PublishedCaseIDs on the result, got %+v", got)
+		}
+	})
+
+	t.Run("rejects an empty caseIds", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
+			State:     domain.AnnouncementRequestStateApproved,
+			CreatedBy: "user-3",
+		}}
+		svc := NewAnnouncementRequestService(repo)
+		_, err := svc.MarkPublished(context.Background(), "req-1", "user-3", nil)
+		var ve *apierror.ValidationError
+		if !isValidationError(err, &ve) {
+			t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
 		}
 	})
 
@@ -293,7 +337,7 @@ func TestAnnouncementRequestService_MarkPublished(t *testing.T) {
 			CreatedBy: "user-1",
 		}}
 		svc := NewAnnouncementRequestService(repo)
-		_, err := svc.MarkPublished(context.Background(), "req-1", "user-3")
+		_, err := svc.MarkPublished(context.Background(), "req-1", "user-3", []string{"case-1"})
 		if _, ok := err.(*apierror.ForbiddenError); !ok {
 			t.Fatalf("expected *apierror.ForbiddenError, got %T: %v", err, err)
 		}
@@ -308,10 +352,108 @@ func TestAnnouncementRequestService_MarkPublished(t *testing.T) {
 			t.Run(string(state), func(t *testing.T) {
 				repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{State: state, CreatedBy: "user-3"}}
 				svc := NewAnnouncementRequestService(repo)
-				if _, err := svc.MarkPublished(context.Background(), "req-1", "user-3"); err == nil {
+				if _, err := svc.MarkPublished(context.Background(), "req-1", "user-3", []string{"case-1"}); err == nil {
 					t.Fatalf("expected a conflict error publishing from state %q, got nil", state)
 				}
 			})
+		}
+	})
+}
+
+func TestAnnouncementRequestService_AddUpdate(t *testing.T) {
+	t.Run("accepts from published when the actor is the creator", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
+			State:     domain.AnnouncementRequestStatePublished,
+			CreatedBy: "user-3",
+		}}
+		svc := NewAnnouncementRequestService(repo)
+		got, err := svc.AddUpdate(context.Background(), "req-1", "user-3", "A correction to the above.")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if repo.gotCreateUpdateReqID != "req-1" || repo.gotCreateUpdateContent != "A correction to the above." || repo.gotCreateUpdateCreatedBy != "user-3" {
+			t.Fatalf("expected the update forwarded to the repo, got id=%q content=%q createdBy=%q",
+				repo.gotCreateUpdateReqID, repo.gotCreateUpdateContent, repo.gotCreateUpdateCreatedBy)
+		}
+		if got.Content != "A correction to the above." {
+			t.Fatalf("expected content on the result, got %+v", got)
+		}
+	})
+
+	t.Run("rejects empty content", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
+			State: domain.AnnouncementRequestStatePublished, CreatedBy: "user-3",
+		}}
+		svc := NewAnnouncementRequestService(repo)
+		_, err := svc.AddUpdate(context.Background(), "req-1", "user-3", "   ")
+		var ve *apierror.ValidationError
+		if !isValidationError(err, &ve) {
+			t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+		}
+	})
+
+	// Same creator-only restriction as MarkPublished, and for the same
+	// reason: an approver's job is only to approve, not to also decide what
+	// gets appended to real customer-facing cases after the fact.
+	t.Run("rejects a non-creator actor", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
+			State: domain.AnnouncementRequestStatePublished, CreatedBy: "user-1",
+		}}
+		svc := NewAnnouncementRequestService(repo)
+		_, err := svc.AddUpdate(context.Background(), "req-1", "user-3", "content")
+		if _, ok := err.(*apierror.ForbiddenError); !ok {
+			t.Fatalf("expected *apierror.ForbiddenError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("rejects from any state other than published", func(t *testing.T) {
+		for _, state := range []domain.AnnouncementRequestState{
+			domain.AnnouncementRequestStateDraft,
+			domain.AnnouncementRequestStatePendingApproval,
+			domain.AnnouncementRequestStateApproved,
+		} {
+			t.Run(string(state), func(t *testing.T) {
+				repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{State: state, CreatedBy: "user-3"}}
+				svc := NewAnnouncementRequestService(repo)
+				if _, err := svc.AddUpdate(context.Background(), "req-1", "user-3", "content"); err == nil {
+					t.Fatalf("expected a conflict error adding an update from state %q, got nil", state)
+				}
+			})
+		}
+	})
+}
+
+func TestAnnouncementRequestService_ListUpdates(t *testing.T) {
+	t.Run("returns the repo's updates for an existing request", func(t *testing.T) {
+		want := []domain.AnnouncementRequestUpdate{
+			{ID: "u-2", Content: "second"}, {ID: "u-1", Content: "first"},
+		}
+		repo := &fakeAnnouncementRequestRepo{
+			getResult:         domain.AnnouncementRequest{ID: "req-1", State: domain.AnnouncementRequestStatePublished},
+			listUpdatesResult: want,
+		}
+		svc := NewAnnouncementRequestService(repo)
+		got, err := svc.ListUpdates(context.Background(), "req-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if repo.gotListUpdatesID != "req-1" {
+			t.Fatalf("expected the id forwarded to the repo, got %q", repo.gotListUpdatesID)
+		}
+		if len(got.Updates) != 2 {
+			t.Fatalf("expected both updates, got %+v", got.Updates)
+		}
+	})
+
+	t.Run("propagates a NotFoundError for a nonexistent request without calling ListUpdates", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{getErr: &apierror.NotFoundError{Msg: "announcement request not found"}}
+		svc := NewAnnouncementRequestService(repo)
+		_, err := svc.ListUpdates(context.Background(), "missing")
+		if _, ok := err.(*apierror.NotFoundError); !ok {
+			t.Fatalf("expected *apierror.NotFoundError, got %T: %v", err, err)
+		}
+		if repo.gotListUpdatesID != "" {
+			t.Fatalf("expected ListUpdates not to be called, got id %q", repo.gotListUpdatesID)
 		}
 	})
 }
