@@ -115,21 +115,27 @@ func caseEscalationLevelFromEnum(raw string) string {
 type CaseRepository interface {
 	// CreateCase inserts a new case row (both work_item and "case").
 	CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
-	// CreateCaseFromServiceNow inserts a new case row (both work_item and
-	// "case"), the same as CreateCase, but for DATA_SOURCE=postgres-primary-sn-fallback's
-	// SN-first case creation (see caseService.CreateCase's own doc comment):
-	// req.Type must already be "case" (validated by the caller). Unlike
+	// CreateCaseFromServiceNow inserts a new case-like row (work_item plus
+	// either "case" or "announcement", branching on req.Type -- see
+	// createAnnouncementFromServiceNowQuery's own doc comment for why
+	// announcement needs a genuinely different insert, not just a different
+	// type literal), for DATA_SOURCE=postgres-primary-sn-fallback's SN-first
+	// creation (see caseService.CreateCase's own doc comment): req.Type must
+	// already be "case" or "announcement" (validated by the caller). Unlike
 	// CreateCase, identity is NOT generated here -- id/number/wso2ID/createdBy
 	// are exactly what ServiceNow already returned for the case it just
 	// created, so both systems agree on identity from the moment the Postgres
 	// row exists. id must be a canonical UUID (sysidToUUID(sn sys_id) -- the
 	// same identity convention every DataSource=servicenow response already
-	// uses, see internal/service/sn_id.go). Returns a ValidationError if id is
-	// not a valid UUID or if a row already exists for it/number/wso2ID
-	// (unique violation) -- the latter should not happen in practice since
-	// ServiceNow only just generated these, but is reported precisely rather
-	// than as an opaque infrastructure error if it ever does.
-	CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy string) (domain.Case, error)
+	// uses, see internal/service/sn_id.go). announcementState is
+	// announcement_state_enum's literal value, already resolved by the caller
+	// from ServiceNow's state label (ignored for req.Type == "case").
+	// Returns a ValidationError if id is not a valid UUID or if a row already
+	// exists for it/number/wso2ID (unique violation) -- the latter should not
+	// happen in practice since ServiceNow only just generated these, but is
+	// reported precisely rather than as an opaque infrastructure error if it
+	// ever does.
+	CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, announcementState string) (domain.Case, error)
 	// GetCaseByID returns the enriched case view for the given UUID, or a
 	// NotFoundError if no matching row exists OR it exists but scope excludes
 	// it (existence is never revealed to a caller who can't see it).
@@ -355,10 +361,12 @@ func mapCreateCaseError(err error) error {
 // + "case", the same shared-primary-key pattern updateCaseQuery documents)
 // in one round trip via a CTE, using caller-supplied identity throughout
 // rather than generating any of it -- see CreateCaseFromServiceNow's own
-// doc comment for why. type is hardcoded to 'CASE'::work_item_type_enum
-// (the caller guarantees req.Type == "case" -- caseService.CreateCase's SN-
-// first path is case-only, same restriction the existing CreateCase already
-// enforces for the plain Postgres path) and state to 'OPEN'::case_state_enum
+// doc comment for why. Used only for req.Type == "case" -- req.Type ==
+// "announcement" goes through createAnnouncementFromServiceNowQuery instead
+// (see its own doc comment for why announcement needs a structurally
+// different insert, not just a different type literal). type is hardcoded
+// to 'CASE'::work_item_type_enum (the caller guarantees req.Type == "case"
+// on this branch) and state to 'OPEN'::case_state_enum
 // (every case ServiceNow creates starts in its own equivalent initial state;
 // reliably parsing that back out of ServiceNow's raw create-response state
 // label would need the same label->enum lookup sn_case_service.go keeps
@@ -394,14 +402,76 @@ const createCaseFromServiceNowQuery = `
 	FROM inserted_work_item iwi
 	JOIN inserted_case ic ON ic.id = iwi.id`
 
+// createAnnouncementFromServiceNowQuery is createCaseFromServiceNowQuery's
+// counterpart for req.Type == "announcement": announcements are NOT a "case"
+// row at all -- they extend work_item through the separate "announcement"
+// table (migration 000019), which has no severity/issue_type/work_state
+// columns and uses announcement_state_enum (only OPEN/CLOSE) rather than
+// case_state_enum. deployment_id/deployed_product_id are hardcoded NULL
+// (never parameterized as req.DeploymentID/req.DeployedProductID, which are
+// "" for an announcement -- binding "" to a UUID column would fail with
+// 22P02, not silently store nothing) since announcements have no
+// deployment/deployed-product concept (validateCreateCaseRequest's own
+// comment). $8 is the announcement's initial state, already resolved to
+// announcement_state_enum's literal ('OPEN' in practice -- see
+// snAnnouncementStateToEnum) by the caller, not derived here: this layer
+// stays free of ServiceNow label vocabulary. cause/closed_by_user_id/
+// closed_on/resolved_on are left NULL -- all four are closure-time-only
+// fields, meaningless on a fresh row.
+//
+// Column/output order matches scanUpdatedCase exactly, same as
+// createCaseFromServiceNowQuery, with severity/issue_type/work_state as
+// literal NULLs (columns that don't exist on "announcement").
+const createAnnouncementFromServiceNowQuery = `
+	WITH inserted_work_item AS (
+		INSERT INTO work_item (
+			id, created_on, updated_on, created_by, updated_by,
+			number, wso2_id, subject, description, type,
+			project_id, deployment_id, deployed_product_id
+		)
+		VALUES (
+			$1, NOW(), NOW(), $2, $2,
+			$3, $4, $5, $6, 'ANNOUNCEMENT'::work_item_type_enum,
+			$7, NULL, NULL
+		)
+		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
+		          subject, description, created_on, updated_on
+	),
+	inserted_announcement AS (
+		INSERT INTO announcement (id, state)
+		VALUES ($1, $8::announcement_state_enum)
+		RETURNING id, state, closed_on
+	)
+	SELECT iwi.id, iwi.number, iwi.wso2_id, iwi.created_by,
+	       iwi.project_id, COALESCE(iwi.deployment_id::TEXT, ''), COALESCE(iwi.deployed_product_id::TEXT, ''),
+	       iwi.subject, iwi.description,
+	       NULL::TEXT, NULL::TEXT, ia.state::TEXT, NULL::TEXT,
+	       iwi.created_on, iwi.updated_on, ia.closed_on
+	FROM inserted_work_item iwi
+	JOIN inserted_announcement ia ON ia.id = iwi.id`
+
 // CreateCaseFromServiceNow implements CaseRepository.
-func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy string) (domain.Case, error) {
-	c, err := scanUpdatedCase(r.db.QueryRow(ctx, createCaseFromServiceNowQuery,
-		id, createdBy,
-		number, wso2ID, req.Subject, req.Description,
-		req.ProjectID, req.DeploymentID, req.DeployedProductID,
-		caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
-	))
+//
+// announcementState is announcement_state_enum's literal value (e.g.
+// "OPEN") for req.Type == "announcement", already resolved by the caller
+// from ServiceNow's own state label -- ignored for req.Type == "case".
+func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, announcementState string) (domain.Case, error) {
+	var row pgx.Row
+	if req.Type == "announcement" {
+		row = r.db.QueryRow(ctx, createAnnouncementFromServiceNowQuery,
+			id, createdBy,
+			number, wso2ID, req.Subject, req.Description,
+			req.ProjectID, announcementState,
+		)
+	} else {
+		row = r.db.QueryRow(ctx, createCaseFromServiceNowQuery,
+			id, createdBy,
+			number, wso2ID, req.Subject, req.Description,
+			req.ProjectID, req.DeploymentID, req.DeployedProductID,
+			caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
+		)
+	}
+	c, err := scanUpdatedCase(row)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 			switch pgErr.Code {
