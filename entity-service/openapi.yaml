@@ -23,10 +23,23 @@ paths:
     post:
       summary: >-
         Ingest a Salesforce change event from sales-apex-trigger-subscriber.
-        Fetches the Account via REST sales/sales-entity-service POST /customer-search
-        (isRealTime true), not GraphQL sales/entity-graphql-service, and upserts
-        the csm-platform account table. Registered only when DATA_SOURCE=postgres
-        and REST sales-entity-service config is present.
+        Entity Account: fetches the Account via REST sales/sales-entity-service
+        POST /customer-search (isRealTime true), not GraphQL
+        sales/entity-graphql-service, and upserts the csm-platform account table.
+        Entity Project_Contact__c (also accepted as Project_Contact), only when
+        SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true: CREATED/UPDATED/RESTORED fetch
+        the membership and its Contact (POST /project-contacts/search,
+        POST /contacts/search) and upsert user, user_role, account_contact,
+        project_contact and project_contact_group in one transaction, record the
+        DATABASE onboarding step, and publish project_contact.invited when the
+        resulting state is INVITED or RE-INVITED; DELETED marks the
+        project_contact DEACTIVATED (never deletes). Entity Contact, UPDATED only:
+        re-runs the membership upsert for each of the contact's memberships.
+        Every other entity is acknowledged with 204 and ignored. A replay whose
+        Salesforce lastModifiedDate is not newer than the recorded DATABASE step
+        is a 204 no-op, so the customer portal and the reconcile job can replay
+        envelopes freely. Registered only when DATA_SOURCE=postgres and REST
+        sales-entity-service config is present.
       operationId: handleSalesforceEvent
       requestBody:
         required: true
@@ -36,7 +49,59 @@ paths:
               $ref: '#/components/schemas/SalesforceEventRequest'
       responses:
         "204":
-          description: Event accepted (including ignored non-Account entities and idempotent deletes).
+          description: Event accepted (including ignored entities, duplicate replays and idempotent deletes).
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found (membership ingest only — the project or account the membership refers to is not in this database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Conflict (membership ingest only — more than one user row matches the contact's email).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Salesforce is temporarily unavailable (including a 404 from sales-entity-service so the event can be retried), or a role / project_group row the membership mapping needs is not seeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /onboarding-steps/search:
+    post:
+      summary: >-
+        Search the onboarding status ledger (onboarding_step): one row per
+        membership per step (IDENTITY, DATABASE, EMAIL, REGISTRATION), newest
+        first. Backs the onboarding dashboard. Has no ServiceNow equivalent —
+        always backed by Postgres; 404 without a pool.
+      operationId: searchOnboardingSteps
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchOnboardingStepsRequest'
+      responses:
+        "200":
+          description: Matching steps, paginated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchOnboardingStepsResponse'
         "400":
           description: Bad request.
           content:
@@ -55,8 +120,96 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Salesforce is temporarily unavailable (including Account 404 so the event can be retried).
+
+  /onboarding-steps/{membershipSfId}:
+    get:
+      summary: >-
+        Every onboarding step recorded for one Salesforce Project_Contact__c
+        (membership), in step order. An unknown membership yields an empty
+        list, not a 404.
+      operationId: getOnboardingSteps
+      parameters:
+        - name: membershipSfId
+          in: path
+          required: true
+          description: Salesforce Project_Contact__c Id (15 or 18 characters).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The recorded steps.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOnboardingStepsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /onboarding-steps/{membershipSfId}/{step}:
+    put:
+      summary: >-
+        Record the latest outcome of one onboarding step for one membership.
+        Idempotent on (membershipSfId, step): a repeat replaces status,
+        lastError, eventType and eventModifiedOn and increments attemptCount.
+        csm-notification-service writes IDENTITY and EMAIL, the customer portal
+        backend writes REGISTRATION; DATABASE is written in-process by the
+        Salesforce membership ingest and normally not through this endpoint.
+      operationId: upsertOnboardingStep
+      parameters:
+        - name: membershipSfId
+          in: path
+          required: true
+          description: Salesforce Project_Contact__c Id.
+          schema:
+            type: string
+        - name: step
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/OnboardingStepName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertOnboardingStepRequest'
+      responses:
+        "200":
+          description: The resulting row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnboardingStep'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
           content:
             application/json:
               schema:
@@ -283,132 +436,34 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /cases/{caseId}/sla-clocks:
-    post:
-      summary: >-
-        Register (or reset) an SLA clock for a case. Registering a clock that
-        already exists for this case/clockType resets it from scratch —
-        startedAt/dueAt are overwritten and any paused/reached-tier state is
-        cleared. Has no ServiceNow equivalent — always backed by Postgres.
-      operationId: registerSLAClock
-      parameters:
-        - name: caseId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterSLAClockRequest'
-      responses:
-        "201":
-          description: Clock registered successfully.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SLAClock'
-        "400":
-          description: Bad request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "500":
-          description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /cases/{caseId}/sla-clocks/{clockType}:
+  /sla-status:
     get:
-      summary: Get one SLA clock for a case.
-      operationId: getSLAClock
-      parameters:
-        - name: caseId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: clockType
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: The requested clock.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SLAClock'
-        "400":
-          description: Bad request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "404":
-          description: No such clock has been registered.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "500":
-          description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}:
-    patch:
       summary: >-
-        Mark a tier (50, 75, or 100) reached for a clock, if it isn't
-        already. Idempotent — returns the pre-existing reached timestamp if
-        the tier was already marked.
-      operationId: setSLAClockTierReached
+        List every currently-active SLA clock (one entry per case-like work
+        item and SLA policy target: response/workaround/resolution), read
+        live from the "sla" table ServiceNow's own SLA engine populates via
+        sync. Replaces the old sla-clocks endpoints — see
+        SLAStatus's own doc comment for what changed and why. Has no
+        ServiceNow equivalent of its own — always backed by Postgres.
+      operationId: searchActiveSLAStatuses
       parameters:
-        - name: caseId
-          in: path
-          required: true
+        - name: limit
+          in: query
           schema:
-            type: string
-        - name: clockType
-          in: path
-          required: true
+            type: integer
+        - name: offset
+          in: query
           schema:
-            type: string
-        - name: tier
-          in: path
-          required: true
-          schema:
-            type: string
-            enum: ["50", "75", "100"]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SetSLAClockTierRequest'
+            type: integer
       responses:
         "200":
-          description: Tier marked reached (or already was).
+          description: Every currently-active SLA clock, paginated.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SetSLAClockTierReachedResponse'
+                $ref: '#/components/schemas/SearchSLAStatusResponse'
         "400":
           description: Bad request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "404":
-          description: No such clock has been registered.
           content:
             application/json:
               schema:
@@ -733,7 +788,10 @@ paths:
         Move an approved request to published. Does not itself create any
         cases — the caller's own fan-out (POST /cases per project) is
         unchanged and happens separately; this call only records that
-        publishing happened, by whom, and when.
+        publishing happened, by whom, when, and which case ids resulted
+        (caseIds — see PublishAnnouncementRequestRequest). Restricted to the
+        request's own creator — unlike approve, an approver cannot also
+        publish.
       operationId: publishAnnouncementRequest
       parameters:
         - name: id
@@ -747,7 +805,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AnnouncementRequestActorRequest'
+              $ref: '#/components/schemas/PublishAnnouncementRequestRequest'
       responses:
         "200":
           description: Request published.
@@ -756,7 +814,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/AnnouncementRequest'
         "400":
-          description: Bad request.
+          description: Bad request (e.g. missing actorId or an empty caseIds).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller did not create this request.
           content:
             application/json:
               schema:
@@ -769,6 +833,97 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "409":
           description: The request is not approved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /announcement-requests/{id}/updates:
+    post:
+      summary: >-
+        Post a new dated follow-up comment for a published request (e.g. a
+        correction the CS/Security team asks to have appended). Only records
+        the update, by whom, when and what it said — does not itself apply
+        content as a comment anywhere; the caller's own fan-out
+        (POST /cases/{id}/comments per id in publishedCaseIds) does that,
+        separately, after this call succeeds. Restricted to the request's
+        own creator, same as publish.
+      operationId: createAnnouncementRequestUpdate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAnnouncementRequestUpdateRequest'
+      responses:
+        "201":
+          description: Update recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementRequestUpdate'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller did not create this request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The request is not published.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: List every update posted for this request, newest first. No pagination.
+      operationId: listAnnouncementRequestUpdates
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Updates for the request (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchAnnouncementRequestUpdatesResponse'
+        "404":
+          description: No such request.
           content:
             application/json:
               schema:
@@ -1090,14 +1245,196 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /users/me/saved-filter-views:
+    get:
+      summary: List the caller's saved filter views for one CSM list.
+      description: >
+        Postgres-only. Returns the authenticated user's named list-filter
+        bookmarks for listKey (cases, incidents, change_requests, or problems),
+        in display order. qs is the opaque query string the portal already
+        serializes; this service does not parse filters.
+      operationId: listSavedFilterViews
+      parameters:
+        - name: listKey
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [cases, incidents, change_requests, problems]
+      responses:
+        "200":
+          description: Ordered saved views.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedFilterViewList'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized — x-user-id-token header is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — no platform user matches the token email.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Save or overwrite a saved filter view.
+      description: >
+        Inserts a new named view at the front of the list, or overwrites an
+        existing name (case-insensitive) and moves it to the front. At most 50
+        views per listKey. Postgres-only.
+      operationId: saveSavedFilterView
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveSavedFilterViewRequest'
+      responses:
+        "200":
+          description: Updated ordered saved views.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedFilterViewList'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — no platform user matches the token email.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Delete a saved filter view by name.
+      operationId: deleteSavedFilterView
+      parameters:
+        - name: listKey
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [cases, incidents, change_requests, problems]
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Remaining ordered saved views.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedFilterViewList'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — no platform user matches the token email.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/me/saved-filter-views/reorder:
+    post:
+      summary: Move a saved filter view one slot up or down.
+      operationId: reorderSavedFilterView
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderSavedFilterViewRequest'
+      responses:
+        "200":
+          description: Updated ordered saved views.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedFilterViewList'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — no platform user matches the token email.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /users/{id}:
     get:
       summary: Get one user's full profile.
       description: >
         Returns the user row plus group and team membership, and for external contacts
-        their per-project access with the reason access is or is not granted. ServiceNow
-        data source only. A deactivated user is still returned — that state is usually the
-        answer the caller is looking for.
+        their per-project access with the reason access is or is not granted. Served by
+        both data sources: `SNUserDetail` on ServiceNow, `UserDetail` on postgres (which
+        has no lock-out, time zone or per-project notification data, so those fields are
+        omitted rather than reported). A deactivated user is still returned — that state
+        is usually the answer the caller is looking for.
       operationId: getUser
       tags: [Users]
       parameters:
@@ -1113,7 +1450,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SNUserDetail'
+                anyOf:
+                  - $ref: '#/components/schemas/SNUserDetail'
+                  - $ref: '#/components/schemas/UserDetail'
         '400':
           description: Bad request.
           content:
@@ -3502,8 +3841,10 @@ paths:
   /deployed-products/projects/search:
     post:
       summary: >
-        Search for the projects running a given product version
-        (ServiceNow data source only).
+        Search for the projects running a given product version. Supported
+        on both data sources; always excludes closed/suspended/restricted
+        and Cloud Support/Cloud Evaluation Support projects, with no way to
+        opt out.
       operationId: searchProjectsByProductVersion
       requestBody:
         required: true
@@ -7014,6 +7355,50 @@ components:
             it never fails the identity response, so callers must treat an empty list as
             "unknown", not as an error.
 
+    SavedFilterView:
+      type: object
+      required: [name, qs]
+      properties:
+        name:
+          type: string
+        qs:
+          type: string
+          description: Opaque list query string owned by the frontend; not parsed here.
+
+    SavedFilterViewList:
+      type: object
+      required: [views]
+      properties:
+        views:
+          type: array
+          items:
+            $ref: '#/components/schemas/SavedFilterView'
+
+    SaveSavedFilterViewRequest:
+      type: object
+      required: [listKey, name, qs]
+      properties:
+        listKey:
+          type: string
+          enum: [cases, incidents, change_requests, problems]
+        name:
+          type: string
+        qs:
+          type: string
+
+    ReorderSavedFilterViewRequest:
+      type: object
+      required: [listKey, name, direction]
+      properties:
+        listKey:
+          type: string
+          enum: [cases, incidents, change_requests, problems]
+        name:
+          type: string
+        direction:
+          type: string
+          enum: [up, down]
+
     PatchUserMeRequest:
       type: object
       required: [timeZone]
@@ -7274,6 +7659,93 @@ components:
             type: string
         grantsCaseAccess:
           type: boolean
+
+    UserDetail:
+      type: object
+      description: >
+        One user's full profile on the postgres data source. Unlike `SNUserDetail` it
+        never sends `lockedOut`, `timeZone` or `notificationsEnabled`: this schema has
+        no column for them, and a value would be a guess.
+      required: [id, userName, name, email, active, createdOn, updatedOn, roles, groups]
+      properties:
+        id:
+          type: string
+          format: uuid
+        userName:
+          type: string
+        name:
+          type: string
+          description: Display name, else first + last name, else the user name.
+        email:
+          type: string
+        userType:
+          type: string
+          enum: [internal, customer, system]
+        active:
+          type: boolean
+          description: False only when the user is explicitly deactivated; an unset flag counts as active.
+        createdOn:
+          type: string
+          format: date-time
+        updatedOn:
+          type: string
+          format: date-time
+        roles:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+        groups:
+          type: array
+          description: Teams the user belongs to.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+        projectAccess:
+          type: array
+          description: >
+            One entry per project_contact row invited under the user's email. Present
+            for customers only.
+          items:
+            $ref: '#/components/schemas/UserContactAccess'
+
+    UserContactAccess:
+      type: object
+      required: [projectId, projectName, projectKey, contactEmail, contactRecordPresent, registrationState, roles, grantsCaseAccess]
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        projectName:
+          type: string
+        projectKey:
+          type: string
+        contactEmail:
+          type: string
+          description: The email the row was invited under.
+        contactRecordPresent:
+          type: boolean
+          description: False when the row has no account contact linked.
+        contactRecordEmail:
+          type: string
+          description: The linked account contact's own login email, which can differ from `contactEmail`.
+        registrationState:
+          type: string
+          description: The row's state (INVITED, REGISTERED, ...).
+        roles:
+          type: array
+          items:
+            type: string
+          description: The contact's project roles (e.g. PORTAL_USER, SECURITY_CONTACT).
+        grantsCaseAccess:
+          type: boolean
+          description: >
+            True when the contact is REGISTERED, which is the rule this service enforces
+            when it scopes a customer's projects and cases.
 
     SNUserDetail:
       type: object
@@ -7582,7 +8054,8 @@ components:
               - professional_services
           description: >-
             Excludes projects whose subscription type is any of the given values.
-            ServiceNow data source only; rejected on the Postgres data source.
+            Supported on both data sources. On Postgres, a project with no
+            recorded subscription type is never excluded.
         excludeProjectKeys:
           type: array
           items:
@@ -8425,7 +8898,9 @@ components:
         Resolves which projects are running a given product version — the
         reverse of SearchDeployedProductsRequest's own deploymentIds filter,
         which starts from already-known deployments rather than a
-        product/version. ServiceNow data source only.
+        product/version. Supported on both data sources: Postgres resolves
+        it directly via deployed_product.project_id, ServiceNow via a
+        platform-wide deployment scan.
 
 
         The result always excludes projects with a Restricted or Suspended
@@ -12760,7 +13235,12 @@ components:
         entity:
           type: string
           pattern: '.*\S.*'
-          description: Salesforce sObject name. Non-Account values are ignored with 204.
+          description: >-
+            Salesforce sObject name. Account is always processed.
+            Project_Contact__c (also accepted as Project_Contact) and Contact
+            are processed only when SALESFORCE_MEMBERSHIP_INGEST_ENABLED is
+            true; otherwise, like every other value, they are acknowledged
+            with 204 and ignored.
         referenceId:
           type: string
           pattern: '.*\S.*'
@@ -16769,42 +17249,38 @@ components:
         filters:
           $ref: '#/components/schemas/SearchEventPublishFailuresFilters'
 
-    SLAClock:
+    SLAStatus:
       description: >
-        A durable SLA timer running against a case. clockType is
-        caller-defined, not a fixed enum, though only "response"/
-        "workaround"/"resolution" are actually used — see
-        internal/service/sla_policy.go for the duration policy. Has no
-        ServiceNow equivalent — always backed by Postgres. The eight
-        display fields (caseNumber through state) are populated once at
-        registration and are a point-in-time snapshot, not kept live.
+        One case-like work item's current standing against one SLA policy
+        target (response/workaround/resolution), read live from the "sla"
+        table ServiceNow's own SLA engine populates via sync — not computed
+        or scheduled by this service. Replaces the old SLAClock (a
+        hand-registered clock using a hardcoded severity->duration guess,
+        built before real SLA data existed in Postgres). The eight display
+        fields (caseNumber through state) are read live alongside the SLA
+        data itself, not a point-in-time snapshot the way the old design's
+        were.
       type: object
       properties:
         caseId:
           type: string
         clockType:
           type: string
+          description: One of response, workaround, resolution.
+        businessElapsedPercent:
+          type: number
+          description: >-
+            Percentage of the SLA's business duration elapsed, as ServiceNow
+            computed it. Not capped at 100 — a long-overdue SLA keeps
+            climbing well past it.
+        hasBreached:
+          type: boolean
+          description: ServiceNow's own breach verdict for this clock.
+        isPaused:
+          type: boolean
         startedOn:
           type: string
           format: date-time
-        dueOn:
-          type: string
-          format: date-time
-        pausedOn:
-          type: string
-          format: date-time
-          nullable: true
-        reached50On:
-          type: string
-          format: date-time
-          nullable: true
-        reached75On:
-          type: string
-          format: date-time
-          nullable: true
-        reached100On:
-          type: string
-          format: date-time
           nullable: true
         caseNumber:
           type: string
@@ -16823,67 +17299,19 @@ components:
         state:
           type: string
 
-    RegisterSLAClockRequest:
-      type: object
-      required: [clockType, startedAt, dueAt]
-      additionalProperties: false
-      properties:
-        clockType:
-          type: string
-        startedAt:
-          type: string
-          format: date-time
-        dueAt:
-          type: string
-          format: date-time
-        caseNumber:
-          type: string
-        wso2CaseId:
-          type: string
-        caseTitle:
-          type: string
-        caseType:
-          type: string
-        product:
-          type: string
-        team:
-          type: string
-        priority:
-          type: string
-        state:
-          type: string
-
-    SetSLAClockTierRequest:
-      type: object
-      required: [status]
-      additionalProperties: false
-      properties:
-        status:
-          type: string
-          enum: ["reached"]
-          description: The only valid value today — a placeholder for a future status without a breaking change to this request's shape.
-
-    SetSLAClockTierReachedResponse:
+    SearchSLAStatusResponse:
       type: object
       properties:
-        reachedOn:
-          type: string
-          format: date-time
-        alreadyReached:
-          type: boolean
-          description: >-
-            False if this call is the one that just recorded the tier as
-            reached; true if it was already recorded by an earlier call.
-            Reflects only the database claim, not whether any caller's
-            reaction to winning that claim (e.g. publishing a notification)
-            ever actually succeeded. Gating such a reaction on this being
-            false is a valid choice when duplicate-free behavior matters
-            more than guaranteed delivery, but it is a trade-off: a caller
-            whose reaction failed after winning the claim will see this as
-            true on retry and skip the reaction forever, having never
-            completed it once. Only rely on this field to gate a reaction
-            if that risk is acceptable, or if the reaction's own completion
-            is tracked separately and durably instead.
+        statuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/SLAStatus'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
 
     AnnouncementRequest:
       description: >
@@ -16962,6 +17390,15 @@ components:
           type: string
           format: date-time
           nullable: true
+        publishedCaseIds:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: >-
+            The real case id created for each project in resolvedProjectIds,
+            self-reported by the same creator-only caller MarkPublished
+            restricts this transition to. Null until then.
 
     CreateAnnouncementRequestRequest:
       type: object
@@ -17031,6 +17468,59 @@ components:
         actorId:
           type: string
 
+    PublishAnnouncementRequestRequest:
+      type: object
+      required: [actorId, caseIds]
+      additionalProperties: false
+      properties:
+        actorId:
+          type: string
+        caseIds:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: The real case id created for each project in the request's own resolvedProjectIds, from the caller's own fan-out.
+
+    CreateAnnouncementRequestUpdateRequest:
+      type: object
+      required: [content, actorId]
+      additionalProperties: false
+      properties:
+        content:
+          type: string
+        actorId:
+          type: string
+
+    AnnouncementRequestUpdate:
+      description: >
+        One dated follow-up comment applied, after the fact, to every case a
+        published announcement request created. Has no ServiceNow
+        equivalent — always backed by Postgres.
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        announcementRequestId:
+          type: string
+          format: uuid
+        content:
+          type: string
+        createdBy:
+          type: string
+        createdOn:
+          type: string
+          format: date-time
+
+    SearchAnnouncementRequestUpdatesResponse:
+      type: object
+      properties:
+        updates:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnnouncementRequestUpdate'
+
     SearchAnnouncementRequestsRequest:
       type: object
       required: [pagination]
@@ -17059,6 +17549,150 @@ components:
           type: integer
         hasMore:
           type: boolean
+
+    OnboardingStepName:
+      type: string
+      description: >-
+        One step of the customer onboarding flow. DATABASE is the csm-platform
+        write done by the Salesforce membership ingest; IDENTITY is the Asgardeo
+        user provisioned by csm-notification-service via the SCIM service; EMAIL
+        the invitation email; REGISTRATION the member's first sign-in, recorded
+        by the customer portal backend.
+      enum: [IDENTITY, DATABASE, EMAIL, REGISTRATION]
+
+    OnboardingStepStatus:
+      type: string
+      description: SKIPPED is used for steps that do not apply (e.g. IDENTITY and EMAIL for an integration user).
+      enum: [SUCCEEDED, FAILED, SKIPPED]
+
+    OnboardingStep:
+      type: object
+      required: [id, membershipSfId, email, step, status, attemptCount, eventType, eventModifiedOn, createdOn, updatedOn]
+      properties:
+        id:
+          type: string
+          format: uuid
+        membershipSfId:
+          type: string
+          description: Salesforce Project_Contact__c Id the step belongs to.
+        contactSfId:
+          type: string
+          nullable: true
+          description: Salesforce Contact Id of the member.
+        email:
+          type: string
+          description: The invited email, lower-cased.
+        projectId:
+          type: string
+          format: uuid
+          nullable: true
+          description: csm-platform project the membership resolved to (set once DATABASE succeeded).
+        projectContactId:
+          type: string
+          format: uuid
+          nullable: true
+          description: csm-platform project_contact row (set once DATABASE succeeded).
+        step:
+          $ref: '#/components/schemas/OnboardingStepName'
+        status:
+          $ref: '#/components/schemas/OnboardingStepStatus'
+        attemptCount:
+          type: integer
+          description: How many times this step has been recorded for the membership; 1 on first write.
+        lastError:
+          type: string
+          nullable: true
+          description: The error of the most recent FAILED write; null once the step succeeds.
+        eventType:
+          type: string
+          description: The Salesforce event type (CREATED, UPDATED, RESTORED, ...) or caller-defined trigger that produced this write.
+        eventModifiedOn:
+          type: string
+          format: date-time
+          description: The Salesforce record's lastModifiedDate the write was based on; the ingest skips replays that are not newer.
+        createdOn:
+          type: string
+          format: date-time
+        updatedOn:
+          type: string
+          format: date-time
+
+    UpsertOnboardingStepRequest:
+      type: object
+      required: [status, eventType, eventModifiedOn, email]
+      properties:
+        status:
+          $ref: '#/components/schemas/OnboardingStepStatus'
+        lastError:
+          type: string
+          nullable: true
+          description: Only stored when status is FAILED; truncated to 1000 characters.
+        eventType:
+          type: string
+        eventModifiedOn:
+          type: string
+          format: date-time
+        email:
+          type: string
+        contactSfId:
+          type: string
+          nullable: true
+        projectId:
+          type: string
+          format: uuid
+          nullable: true
+        projectContactId:
+          type: string
+          format: uuid
+          nullable: true
+
+    OnboardingStepFilters:
+      type: object
+      properties:
+        projectId:
+          type: string
+          format: uuid
+          nullable: true
+        membershipSfIds:
+          type: array
+          items:
+            type: string
+        statuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/OnboardingStepStatus'
+
+    SearchOnboardingStepsRequest:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/OnboardingStepFilters'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    SearchOnboardingStepsResponse:
+      type: object
+      required: [steps, total, limit, offset]
+      properties:
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/OnboardingStep'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    GetOnboardingStepsResponse:
+      type: object
+      required: [steps]
+      properties:
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/OnboardingStep'
 
     ScheduledTaskRun:
       description: >

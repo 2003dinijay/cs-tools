@@ -44,24 +44,29 @@ type AnnouncementRequestRepository interface {
 	// The service layer is responsible for deciding whether a
 	// revert-to-draft side effect applies instead before calling this.
 	Update(ctx context.Context, id string, expectedState domain.AnnouncementRequestState, req domain.UpdateAnnouncementRequestRequest) (domain.AnnouncementRequest, error)
-	// RecordDryRun sets dry_run_case_id/dry_run_at/dry_run_by.
+	// RecordDryRun sets dry_run_case_id/dry_run_on/dry_run_by.
 	RecordDryRun(ctx context.Context, id string, req domain.RecordAnnouncementDryRunRequest) (domain.AnnouncementRequest, error)
 	// Submit moves state to pending_approval, freezes resolved_project_ids/
-	// resolved_project_count, and sets submitted_by/submitted_at. The
+	// resolved_project_count, and sets submitted_by/submitted_on. The
 	// caller (service layer) has already validated the current state and
 	// the dry-run precondition before this is called.
 	Submit(ctx context.Context, id string, req domain.SubmitAnnouncementRequestRequest) (domain.AnnouncementRequest, error)
-	// Approve moves state to approved and sets approved_by/approved_at.
+	// Approve moves state to approved and sets approved_by/approved_on.
 	Approve(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error)
 	// RevertToDraft moves state back to draft, clearing
 	// resolved_project_ids/resolved_project_count/dry_run_case_id/
-	// dry_run_at/dry_run_by/submitted_by/submitted_at, and — in the same
+	// dry_run_on/dry_run_by/submitted_by/submitted_on, and — in the same
 	// statement — applies whatever content fields the caller also supplied
 	// (the "edit while pending_approval" path is one atomic operation, not
 	// a revert followed by a separate update).
 	RevertToDraft(ctx context.Context, id string, req domain.UpdateAnnouncementRequestRequest) (domain.AnnouncementRequest, error)
-	// MarkPublished moves state to published and sets published_by/published_at.
-	MarkPublished(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error)
+	// MarkPublished moves state to published, sets published_by/published_on,
+	// and stores caseIDs as published_case_ids.
+	MarkPublished(ctx context.Context, id, actorID string, caseIDs []string) (domain.AnnouncementRequest, error)
+	// CreateUpdate inserts a new announcement_request_updates row.
+	CreateUpdate(ctx context.Context, announcementRequestID, content, createdBy string) (domain.AnnouncementRequestUpdate, error)
+	// ListUpdates returns every update for announcementRequestID, newest first.
+	ListUpdates(ctx context.Context, announcementRequestID string) ([]domain.AnnouncementRequestUpdate, error)
 }
 
 type announcementRequestRepo struct {
@@ -80,29 +85,36 @@ func NewAnnouncementRequestRepository(db *pgxpool.Pool) AnnouncementRequestRepos
 const announcementRequestColumns = `
 	id, kind, state, subject, description, is_security_announcement,
 	audience_definition, resolved_project_ids, resolved_project_count,
-	dry_run_case_id, dry_run_at, dry_run_by,
-	created_by, created_at, updated_at,
-	submitted_by, submitted_at, approved_by, approved_at, published_by, published_at`
+	dry_run_case_id, dry_run_on, dry_run_by,
+	created_by, created_on, updated_on,
+	submitted_by, submitted_on, approved_by, approved_on, published_by, published_on,
+	published_case_ids`
 
 func scanAnnouncementRequest(row pgx.Row) (domain.AnnouncementRequest, error) {
 	var r domain.AnnouncementRequest
-	var resolvedProjectIDsRaw []byte
+	var resolvedProjectIDsRaw, publishedCaseIDsRaw []byte
 	if err := row.Scan(
 		&r.ID, &r.Kind, &r.State, &r.Subject, &r.Description, &r.IsSecurityAnnouncement,
 		&r.AudienceDefinition, &resolvedProjectIDsRaw, &r.ResolvedProjectCount,
 		&r.DryRunCaseID, &r.DryRunAt, &r.DryRunBy,
 		&r.CreatedBy, &r.CreatedAt, &r.UpdatedAt,
 		&r.SubmittedBy, &r.SubmittedAt, &r.ApprovedBy, &r.ApprovedAt, &r.PublishedBy, &r.PublishedAt,
+		&publishedCaseIDsRaw,
 	); err != nil {
 		return domain.AnnouncementRequest{}, err
 	}
-	// resolved_project_ids is JSONB and nil until Submit — decoded
-	// explicitly (not left to pgx's default codec) so a NULL column reads
-	// back as a nil slice rather than requiring a *[]string juggling act at
-	// every call site.
+	// resolved_project_ids/published_case_ids are JSONB and nil until
+	// Submit/MarkPublished respectively — decoded explicitly (not left to
+	// pgx's default codec) so a NULL column reads back as a nil slice
+	// rather than requiring a *[]string juggling act at every call site.
 	if len(resolvedProjectIDsRaw) > 0 {
 		if err := json.Unmarshal(resolvedProjectIDsRaw, &r.ResolvedProjectIDs); err != nil {
 			return domain.AnnouncementRequest{}, fmt.Errorf("decode resolved_project_ids: %w", err)
+		}
+	}
+	if len(publishedCaseIDsRaw) > 0 {
+		if err := json.Unmarshal(publishedCaseIDsRaw, &r.PublishedCaseIDs); err != nil {
+			return domain.AnnouncementRequest{}, fmt.Errorf("decode published_case_ids: %w", err)
 		}
 	}
 	return r, nil
@@ -150,7 +162,7 @@ func (r *announcementRequestRepo) Search(ctx context.Context, req domain.SearchA
 	const where = `WHERE ($1::text IS NULL OR state = $1) AND ($2::text IS NULL OR created_by = $2)`
 	countQuery := `SELECT COUNT(*) FROM announcement_requests ` + where
 	dataQuery := `SELECT ` + announcementRequestColumns + ` FROM announcement_requests ` + where + `
-		ORDER BY created_at DESC, id
+		ORDER BY created_on DESC, id
 		LIMIT $3 OFFSET $4`
 
 	var state *string
@@ -206,7 +218,7 @@ func (r *announcementRequestRepo) Update(ctx context.Context, id string, expecte
 			description = COALESCE($3, description),
 			is_security_announcement = COALESCE($4, is_security_announcement),
 			audience_definition = CASE WHEN $5::boolean THEN $6 ELSE audience_definition END,
-			updated_at = NOW()
+			updated_on = NOW()
 		WHERE id = $1 AND state = $7
 		RETURNING ` + announcementRequestColumns
 
@@ -252,7 +264,7 @@ func (r *announcementRequestRepo) onConflictOrNotFound(ctx context.Context, id, 
 func (r *announcementRequestRepo) RecordDryRun(ctx context.Context, id string, req domain.RecordAnnouncementDryRunRequest) (domain.AnnouncementRequest, error) {
 	query := `
 		UPDATE announcement_requests SET
-			dry_run_case_id = $2, dry_run_at = NOW(), dry_run_by = $3, updated_at = NOW()
+			dry_run_case_id = $2, dry_run_on = NOW(), dry_run_by = $3, updated_on = NOW()
 		WHERE id = $1 AND state = 'draft'
 		RETURNING ` + announcementRequestColumns
 
@@ -280,8 +292,8 @@ func (r *announcementRequestRepo) Submit(ctx context.Context, id string, req dom
 			state = 'pending_approval',
 			resolved_project_ids = $2,
 			resolved_project_count = $3,
-			submitted_by = $4, submitted_at = NOW(),
-			updated_at = NOW()
+			submitted_by = $4, submitted_on = NOW(),
+			updated_on = NOW()
 		WHERE id = $1 AND state = 'draft' AND dry_run_case_id IS NOT NULL
 		RETURNING ` + announcementRequestColumns
 
@@ -299,7 +311,7 @@ func (r *announcementRequestRepo) Submit(ctx context.Context, id string, req dom
 func (r *announcementRequestRepo) Approve(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error) {
 	query := `
 		UPDATE announcement_requests SET
-			state = 'approved', approved_by = $2, approved_at = NOW(), updated_at = NOW()
+			state = 'approved', approved_by = $2, approved_on = NOW(), updated_on = NOW()
 		WHERE id = $1 AND state = 'pending_approval'
 		RETURNING ` + announcementRequestColumns
 
@@ -325,9 +337,9 @@ func (r *announcementRequestRepo) RevertToDraft(ctx context.Context, id string, 
 			is_security_announcement = COALESCE($4, is_security_announcement),
 			audience_definition = CASE WHEN $5::boolean THEN $6 ELSE audience_definition END,
 			resolved_project_ids = NULL, resolved_project_count = NULL,
-			dry_run_case_id = NULL, dry_run_at = NULL, dry_run_by = NULL,
-			submitted_by = NULL, submitted_at = NULL,
-			updated_at = NOW()
+			dry_run_case_id = NULL, dry_run_on = NULL, dry_run_by = NULL,
+			submitted_by = NULL, submitted_on = NULL,
+			updated_on = NOW()
 		WHERE id = $1 AND state = 'pending_approval'
 		RETURNING ` + announcementRequestColumns
 
@@ -352,14 +364,19 @@ func (r *announcementRequestRepo) RevertToDraft(ctx context.Context, id string, 
 }
 
 // MarkPublished implements AnnouncementRequestRepository.
-func (r *announcementRequestRepo) MarkPublished(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error) {
+func (r *announcementRequestRepo) MarkPublished(ctx context.Context, id, actorID string, caseIDs []string) (domain.AnnouncementRequest, error) {
+	caseIDsJSON, err := json.Marshal(caseIDs)
+	if err != nil {
+		return domain.AnnouncementRequest{}, fmt.Errorf("marshal published case ids: %w", err)
+	}
 	query := `
 		UPDATE announcement_requests SET
-			state = 'published', published_by = $2, published_at = NOW(), updated_at = NOW()
+			state = 'published', published_by = $2, published_on = NOW(),
+			published_case_ids = $3, updated_on = NOW()
 		WHERE id = $1 AND state = 'approved'
 		RETURNING ` + announcementRequestColumns
 
-	ar, err := scanAnnouncementRequest(r.db.QueryRow(ctx, query, id, actorID))
+	ar, err := scanAnnouncementRequest(r.db.QueryRow(ctx, query, id, actorID, caseIDsJSON))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.AnnouncementRequest{}, r.onConflictOrNotFound(ctx, id, "publish")
@@ -367,4 +384,47 @@ func (r *announcementRequestRepo) MarkPublished(ctx context.Context, id, actorID
 		return domain.AnnouncementRequest{}, fmt.Errorf("mark announcement_request published: %w", err)
 	}
 	return ar, nil
+}
+
+// CreateUpdate implements AnnouncementRequestRepository.
+func (r *announcementRequestRepo) CreateUpdate(ctx context.Context, announcementRequestID, content, createdBy string) (domain.AnnouncementRequestUpdate, error) {
+	query := `
+		INSERT INTO announcement_request_updates (announcement_request_id, content, created_by)
+		VALUES ($1, $2, $3)
+		RETURNING id, announcement_request_id, content, created_by, created_on`
+
+	var u domain.AnnouncementRequestUpdate
+	err := r.db.QueryRow(ctx, query, announcementRequestID, content, createdBy).Scan(
+		&u.ID, &u.AnnouncementRequestID, &u.Content, &u.CreatedBy, &u.CreatedOn,
+	)
+	if err != nil {
+		return domain.AnnouncementRequestUpdate{}, fmt.Errorf("create announcement_request_update: %w", err)
+	}
+	return u, nil
+}
+
+// ListUpdates implements AnnouncementRequestRepository.
+func (r *announcementRequestRepo) ListUpdates(ctx context.Context, announcementRequestID string) ([]domain.AnnouncementRequestUpdate, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT id, announcement_request_id, content, created_by, created_on
+		 FROM announcement_request_updates
+		 WHERE announcement_request_id = $1
+		 ORDER BY created_on DESC`, announcementRequestID)
+	if err != nil {
+		return nil, fmt.Errorf("list announcement_request_updates: %w", err)
+	}
+	defer rows.Close()
+
+	updates := []domain.AnnouncementRequestUpdate{}
+	for rows.Next() {
+		var u domain.AnnouncementRequestUpdate
+		if err := rows.Scan(&u.ID, &u.AnnouncementRequestID, &u.Content, &u.CreatedBy, &u.CreatedOn); err != nil {
+			return nil, fmt.Errorf("scan announcement_request_update: %w", err)
+		}
+		updates = append(updates, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate announcement_request_updates: %w", err)
+	}
+	return updates, nil
 }

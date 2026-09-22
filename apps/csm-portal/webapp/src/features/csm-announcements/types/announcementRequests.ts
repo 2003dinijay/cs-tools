@@ -78,6 +78,8 @@ export interface AnnouncementRequest {
   approvedAt?: string | null;
   publishedBy?: string | null;
   publishedAt?: string | null;
+  /** The real case id created for each project in resolvedProjectIds. Null until published. */
+  publishedCaseIds?: string[] | null;
 }
 
 export interface CreateAnnouncementRequestPayload {
@@ -112,4 +114,21 @@ export interface SearchAnnouncementRequestsResponse {
   limit: number;
   offset: number;
   hasMore: boolean;
+}
+
+/** One dated follow-up comment applied, after the fact, to every case a published announcement request created. */
+export interface AnnouncementRequestUpdate {
+  id: string;
+  announcementRequestId: string;
+  content: string;
+  createdBy: string;
+  createdOn: string;
+}
+
+export interface CreateAnnouncementRequestUpdatePayload {
+  content: string;
+}
+
+export interface SearchAnnouncementRequestUpdatesResponse {
+  updates: AnnouncementRequestUpdate[];
 }

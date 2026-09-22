@@ -34,6 +34,16 @@ const (
 	DataSourcePostgres DataSource = "postgres"
 	// DataSourceServiceNow uses the Choreo ServiceNow API.
 	DataSourceServiceNow DataSource = "servicenow"
+	// DataSourcePostgresPrimarySNFallback serves every read and write from
+	// PostgreSQL (authoritative, same as DataSourcePostgres) and additionally
+	// best-effort mirrors writes to ServiceNow afterward, so that ServiceNow
+	// stays a genuine rollback target rather than going silently stale ahead
+	// of the Postgres cutover. One-way (Postgres -> ServiceNow) and
+	// asynchronous: ServiceNow is never read from in this mode, never
+	// authoritative, and a failed mirror write is recorded (see
+	// SNWritebackFailureRepository) rather than retried or surfaced to the
+	// caller. Piloted on the account entity only — see routes.go.
+	DataSourcePostgresPrimarySNFallback DataSource = "postgres-primary-sn-fallback"
 )
 
 // Config holds all environment-driven settings for the service.
@@ -82,6 +92,12 @@ type Config struct {
 	// constructs EventPublisherService when both this is true AND
 	// EventHubBroker is set.
 	EventPublishingEnabled bool
+	// SalesforceMembershipIngestEnabled turns on the Project_Contact__c /
+	// Contact branch of POST /salesforce/events (the customer onboarding
+	// database write). Defaults to false: those envelopes are then
+	// acknowledged and ignored, as before the branch existed. The Account
+	// branch is unaffected by this flag.
+	SalesforceMembershipIngestEnabled bool
 	// GithubIntegrationEnabled gates the GitHub change-request sync: the
 	// webhook endpoint and the client that answers it.
 	//
@@ -135,20 +151,10 @@ type Config struct {
 	// pass came back short. A backlog drains at full speed regardless, so this
 	// governs only the idle case: notice latency against query volume.
 	CRNoticePollInterval time.Duration
-	// SupportEngineerRole is the ServiceNow role name (e.g. an org-specific
-	// "sn_*" role) whose presence on a case comment's resolved author marks
-	// that comment as a qualifying support-engineer response — see
-	// sn_case_service.go's applyResponseSLAOnComment. Deliberately no
-	// committed default: this is organisation-specific vocabulary, the same
-	// reasoning apps/csm-portal/backend's own CSM_TEAM_REGISTRY uses for not
-	// shipping one. Left unset, that function simply can't confirm
-	// engineer-authorship and skips (logged) — not fatal, not required by
-	// Validate.
-	SupportEngineerRole string
-	// CustomerRoles is a comma-separated list of ServiceNow role names (see
-	// SUPPORT_ENGINEER_ROLE's own doc comment for the same
-	// organisation-specific-vocabulary reasoning — deliberately no
-	// committed default here either) whose presence on a case comment's
+	// CustomerRoles is a comma-separated list of ServiceNow role names
+	// (organisation-specific vocabulary, the same reasoning
+	// apps/csm-portal/backend's own CSM_TEAM_REGISTRY uses for not shipping
+	// a committed default) whose presence on a case comment's
 	// resolved author marks that comment as a customer reply — see
 	// sn_case_service.go's applyCustomerReplyStateTransition, which moves
 	// the case back to Work In Progress when a customer replies while it's
@@ -241,6 +247,7 @@ func Load() *Config {
 		GithubLabelsClass:                        os.Getenv("GITHUB_LABELS_CLASS"),
 		GithubLabelStatusAssigned:                os.Getenv("GITHUB_LABEL_STATUS_ASSIGNED"),
 		CRNoticesEnabled:                         os.Getenv("CR_NOTICES_ENABLED") == "true",
+		SalesforceMembershipIngestEnabled:        os.Getenv("SALESFORCE_MEMBERSHIP_INGEST_ENABLED") == "true",
 		CREventHubTopic:                          getEnvOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
 		CRNoticePollInterval:                     envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
 		AuthIssuer:                               os.Getenv("AUTH_ISSUER"),
@@ -248,7 +255,6 @@ func Load() *Config {
 		AuthUserTokenAudiences:                   splitComma(os.Getenv("AUTH_USER_TOKEN_AUDIENCES")),
 		AuthClockSkew:                            envDuration("AUTH_CLOCK_SKEW", 30*time.Second),
 		AuthInternalClientIDsRaw:                 os.Getenv("AUTH_INTERNAL_CLIENT_IDS"),
-		SupportEngineerRole:                      os.Getenv("SUPPORT_ENGINEER_ROLE"),
 		CustomerRoles:                            splitComma(os.Getenv("CUSTOMER_ROLES")),
 		SalesEntityBaseURL:                       os.Getenv("SALES_ENTITY_BASE_URL"),
 		SalesEntityTokenURL:                      os.Getenv("SALES_ENTITY_TOKEN_URL"),
@@ -347,19 +353,19 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.DataSource {
-	case DataSourcePostgres, DataSourceServiceNow:
+	case DataSourcePostgres, DataSourceServiceNow, DataSourcePostgresPrimarySNFallback:
 		// valid
 	default:
-		return fmt.Errorf("invalid DATA_SOURCE %q: must be %q or %q", c.DataSource, DataSourcePostgres, DataSourceServiceNow)
+		return fmt.Errorf("invalid DATA_SOURCE %q: must be %q, %q, or %q", c.DataSource, DataSourcePostgres, DataSourceServiceNow, DataSourcePostgresPrimarySNFallback)
 	}
-	// Postgres credentials are required only for DATA_SOURCE=postgres.
-	// servicenow mode skips the pool (db.NewPoolIfNeeded) so a local
-	// customer-portal can start without a reachable database. Side tables
-	// that have no ServiceNow equivalent are registered only when a pool
-	// is available — see routes.go.
-	//
-	// DB_USER/DB_PASSWORD/DB_NAME are required only when DATA_SOURCE=postgres,
-	// which serves every entity read and write from this pool.
+	// Postgres credentials are required for DATA_SOURCE=postgres and
+	// DATA_SOURCE=postgres-primary-sn-fallback — both serve every entity read
+	// and write from the pool (the fallback mode's ServiceNow leg is a
+	// best-effort mirror on top, never a read source). servicenow mode skips
+	// the pool (db.NewPoolIfNeeded) so a local customer-portal can start
+	// without a reachable database. Side tables that have no ServiceNow
+	// equivalent are registered only when a pool is available — see
+	// routes.go.
 	//
 	// When DATA_SOURCE=servicenow they are OPTIONAL. Entity traffic goes to
 	// the SN integration service instead, and the two Postgres-only features
@@ -370,15 +376,16 @@ func (c *Config) Validate() error {
 	// with "DB_USER is required", which is what this branch exists to prevent.
 	dbSet := c.DBUser != "" || c.DBPassword != "" || c.DBName != ""
 	dbComplete := c.DBUser != "" && c.DBPassword != "" && c.DBName != ""
+	dbRequired := c.DataSource == DataSourcePostgres || c.DataSource == DataSourcePostgresPrimarySNFallback
 
-	if c.DataSource == DataSourcePostgres && !dbComplete {
+	if dbRequired && !dbComplete {
 		if c.DBUser == "" {
-			return fmt.Errorf("DB_USER is required when DATA_SOURCE=%s", DataSourcePostgres)
+			return fmt.Errorf("DB_USER is required when DATA_SOURCE=%s", c.DataSource)
 		}
 		if c.DBPassword == "" {
-			return fmt.Errorf("DB_PASSWORD is required when DATA_SOURCE=%s", DataSourcePostgres)
+			return fmt.Errorf("DB_PASSWORD is required when DATA_SOURCE=%s", c.DataSource)
 		}
-		return fmt.Errorf("DB_NAME is required when DATA_SOURCE=%s", DataSourcePostgres)
+		return fmt.Errorf("DB_NAME is required when DATA_SOURCE=%s", c.DataSource)
 	}
 
 	// A partial set is always a misconfiguration, in either mode — the same
@@ -388,18 +395,23 @@ func (c *Config) Validate() error {
 	if dbSet && !dbComplete {
 		return fmt.Errorf("DB_USER, DB_PASSWORD, and DB_NAME must be set together or not at all")
 	}
-	if c.DataSource == DataSourceServiceNow {
+	// ServiceNow integration service credentials are required for
+	// DATA_SOURCE=servicenow (reads go there) and also for
+	// DATA_SOURCE=postgres-primary-sn-fallback (the best-effort mirror write
+	// goes there, via the same client — see SNWritebackDispatcher).
+	snRequired := c.DataSource == DataSourceServiceNow || c.DataSource == DataSourcePostgresPrimarySNFallback
+	if snRequired {
 		if c.ServiceNowIntegrationServiceBaseURL == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_BASE_URL is required when DATA_SOURCE=servicenow")
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_BASE_URL is required when DATA_SOURCE=%s", c.DataSource)
 		}
 		if c.ServiceNowIntegrationServiceTokenURL == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL is required when DATA_SOURCE=servicenow")
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL is required when DATA_SOURCE=%s", c.DataSource)
 		}
 		if c.ServiceNowIntegrationServiceClientID == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID is required when DATA_SOURCE=servicenow")
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID is required when DATA_SOURCE=%s", c.DataSource)
 		}
 		if c.ServiceNowIntegrationServiceClientSecret == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET is required when DATA_SOURCE=servicenow")
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET is required when DATA_SOURCE=%s", c.DataSource)
 		}
 	}
 	// EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/EVENT_HUB_TOPIC are

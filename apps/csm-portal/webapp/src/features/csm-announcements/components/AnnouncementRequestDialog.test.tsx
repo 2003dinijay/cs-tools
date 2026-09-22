@@ -15,7 +15,7 @@
 // under the License.
 
 import type { ReactElement } from "react";
-import { fireEvent, render as rtlRender, screen } from "@testing-library/react";
+import { act, fireEvent, render as rtlRender, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import "@testing-library/jest-dom/vitest";
@@ -26,7 +26,11 @@ import { useRecordAnnouncementRequestDryRun } from "@features/csm-announcements/
 import { useSubmitAnnouncementRequest } from "@features/csm-announcements/api/useSubmitAnnouncementRequest";
 import { useApproveAnnouncementRequest } from "@features/csm-announcements/api/useApproveAnnouncementRequest";
 import { usePublishAnnouncementRequest } from "@features/csm-announcements/api/usePublishAnnouncementRequest";
+import { useCreateAnnouncementRequestUpdate } from "@features/csm-announcements/api/useCreateAnnouncementRequestUpdate";
+import { useListAnnouncementRequestUpdates } from "@features/csm-announcements/api/useListAnnouncementRequestUpdates";
+import { usePostAnnouncementUpdateComments } from "@features/csm-announcements/api/usePostAnnouncementUpdateComments";
 import { useAnnouncementDryRun } from "@features/csm-announcements/api/useAnnouncementDryRun";
+import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import type { AnnouncementRequest } from "@features/csm-announcements/types/announcementRequests";
 
 vi.mock("@api/backend/client", () => ({
@@ -52,9 +56,37 @@ vi.mock("@features/csm-announcements/api/useApproveAnnouncementRequest", () => (
 vi.mock("@features/csm-announcements/api/usePublishAnnouncementRequest", () => ({
   usePublishAnnouncementRequest: vi.fn(),
 }));
+vi.mock("@features/csm-announcements/api/useCreateAnnouncementRequestUpdate", () => ({
+  useCreateAnnouncementRequestUpdate: vi.fn(),
+}));
+vi.mock("@features/csm-announcements/api/useListAnnouncementRequestUpdates", () => ({
+  useListAnnouncementRequestUpdates: vi.fn(),
+}));
+vi.mock("@features/csm-announcements/api/usePostAnnouncementUpdateComments", () => ({
+  usePostAnnouncementUpdateComments: vi.fn(),
+}));
 vi.mock("@features/csm-announcements/api/useAnnouncementDryRun", () => ({
   DRY_RUN_TAG_LABEL: "Dry Run",
   useAnnouncementDryRun: vi.fn(),
+}));
+vi.mock("@hooks/useIdTokenClaims", () => ({
+  useIdTokenClaims: vi.fn(),
+}));
+// PublishConfirmationDialog's useResolvedAudiencePreview needs both of
+// these — see DirectoryMembersList.test.tsx for the same pattern.
+vi.mock("@config/apiConfig", () => ({
+  apiConfig: { backendUrl: "https://example.test" },
+}));
+vi.mock("@hooks/useAuthApiClient", () => ({
+  useAuthApiClient: () =>
+    vi.fn((url: string) => {
+      const id = decodeURIComponent(String(url).split("/").pop() ?? "");
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ id, name: `Project ${id}`, key: id.toUpperCase(), account: { name: "Acme" } }),
+      });
+    }),
 }));
 vi.mock("@features/csm-announcements/components/CreateCustomerAnnouncementForm", () => ({
   SECURITY_ANNOUNCEMENT_TAG_LABEL: "Security Announcement",
@@ -73,7 +105,11 @@ const mockedRecordDryRun = vi.mocked(useRecordAnnouncementRequestDryRun);
 const mockedSubmit = vi.mocked(useSubmitAnnouncementRequest);
 const mockedApprove = vi.mocked(useApproveAnnouncementRequest);
 const mockedPublish = vi.mocked(usePublishAnnouncementRequest);
+const mockedCreateUpdate = vi.mocked(useCreateAnnouncementRequestUpdate);
+const mockedListUpdates = vi.mocked(useListAnnouncementRequestUpdates);
+const mockedPostUpdateComments = vi.mocked(usePostAnnouncementUpdateComments);
 const mockedDryRun = vi.mocked(useAnnouncementDryRun);
+const mockedIdTokenClaims = vi.mocked(useIdTokenClaims);
 
 const BASE_REQUEST: AnnouncementRequest = {
   id: "req-1",
@@ -113,8 +149,17 @@ beforeEach(() => {
   mockedSubmit.mockReset();
   mockedApprove.mockReset();
   mockedPublish.mockReset();
+  mockedCreateUpdate.mockReset();
+  mockedListUpdates.mockReset();
+  mockedPostUpdateComments.mockReset();
   mockedDryRun.mockReset();
+  mockedIdTokenClaims.mockReset();
 
+  // Matches BASE_REQUEST.createdBy by default, so every existing test below
+  // (written before Publish was restricted to the creator) keeps exercising
+  // the "current user is the creator" path without each needing its own
+  // override -- only the dedicated non-creator test overrides this.
+  mockedIdTokenClaims.mockReturnValue({ userid: "jane@example.com" });
   mockedUpdate.mockReturnValue(noopMutation() as ReturnType<typeof useUpdateAnnouncementRequest>);
   mockedRecordDryRun.mockReturnValue(noopMutation() as ReturnType<typeof useRecordAnnouncementRequestDryRun>);
   mockedSubmit.mockReturnValue(noopMutation() as ReturnType<typeof useSubmitAnnouncementRequest>);
@@ -133,6 +178,21 @@ beforeEach(() => {
     failedTagProjectIds: [],
     published: null,
     handlePublish: vi.fn(),
+  });
+  mockedCreateUpdate.mockReturnValue(noopMutation() as ReturnType<typeof useCreateAnnouncementRequestUpdate>);
+  mockedListUpdates.mockReturnValue({
+    data: { updates: [] },
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useListAnnouncementRequestUpdates>);
+  mockedPostUpdateComments.mockReturnValue({
+    posting: false,
+    progress: null,
+    succeededCaseIds: [],
+    failedCaseIds: [],
+    done: false,
+    handlePost: vi.fn(),
+    reset: vi.fn(),
   });
 });
 
@@ -306,7 +366,7 @@ describe("AnnouncementRequestDialog — approved", () => {
     expect(screen.getByRole("button", { name: /^publish$/i })).toBeInTheDocument();
   });
 
-  it("calls handlePublish when Publish is clicked", () => {
+  it("opens a confirmation popup before calling handlePublish, showing what's about to be sent", async () => {
     mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
     const handlePublish = vi.fn();
     mockedPublish.mockReturnValue({
@@ -321,6 +381,14 @@ describe("AnnouncementRequestDialog — approved", () => {
 
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /^publish$/i }));
+
+    // The popup shows the same subject before anything is actually sent —
+    // handlePublish must not fire just from opening it.
+    expect(await screen.findByText("Confirm before sending")).toBeInTheDocument();
+    expect(screen.getAllByText("Scheduled maintenance").length).toBeGreaterThan(0);
+    expect(handlePublish).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /^send to 1 project$/i }));
     expect(handlePublish).toHaveBeenCalled();
   });
 
@@ -436,6 +504,60 @@ describe("AnnouncementRequestDialog — approved", () => {
 
     expect(handlePublish).not.toHaveBeenCalled();
   });
+
+  it("disables Publish and explains why when the current user isn't the request's creator", () => {
+    mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
+    // BASE_REQUEST.createdBy is jane@example.com — a different signed-in
+    // user must not be able to trigger the real send just because they can
+    // see the approved request (e.g. after approving it themselves).
+    mockedIdTokenClaims.mockReturnValue({ userid: "someone-else@example.com" });
+    const handlePublish = vi.fn();
+    mockedPublish.mockReturnValue({
+      publishing: false,
+      progress: null,
+      succeededProjectIds: [],
+      failedProjectIds: [],
+      failedTagProjectIds: [],
+      published: null,
+      handlePublish,
+    });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    const publishBtn = screen.getByRole("button", { name: /^publish$/i });
+    expect(publishBtn).toBeDisabled();
+    expect(screen.getByText(/only jane@example.com can publish this request/i)).toBeInTheDocument();
+
+    fireEvent.click(publishBtn);
+    expect(handlePublish).not.toHaveBeenCalled();
+  });
+
+  // useIdTokenClaims genuinely returns undefined for a moment after mount
+  // while it decodes the ID token asynchronously — even for the real
+  // creator, who is signed in the whole time. Without distinguishing that
+  // from "loaded, and it's someone else," this would flash the wrong
+  // "only X can publish" denial at the very user it's meant to allow.
+  it("disables Publish without the non-creator message while claims are still loading", () => {
+    mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
+    mockedIdTokenClaims.mockReturnValue(undefined);
+    const handlePublish = vi.fn();
+    mockedPublish.mockReturnValue({
+      publishing: false,
+      progress: null,
+      succeededProjectIds: [],
+      failedProjectIds: [],
+      failedTagProjectIds: [],
+      published: null,
+      handlePublish,
+    });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    const publishBtn = screen.getByRole("button", { name: /^publish$/i });
+    expect(publishBtn).toBeDisabled();
+    expect(screen.queryByText(/can publish this request/i)).not.toBeInTheDocument();
+
+    fireEvent.click(publishBtn);
+    expect(handlePublish).not.toHaveBeenCalled();
+  });
 });
 
 describe("AnnouncementRequestDialog — published", () => {
@@ -453,5 +575,68 @@ describe("AnnouncementRequestDialog — published", () => {
     expect(screen.queryByRole("button", { name: /submit for approval/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /mark as approved/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^publish$/i })).not.toBeInTheDocument();
+  });
+
+  it("posting an update records it, then fans out a comment to every published case, via a confirmation popup", async () => {
+    mockGet({
+      state: "published",
+      resolvedProjectIds: ["p-1", "p-2"],
+      resolvedProjectCount: 2,
+      publishedBy: "jane@example.com",
+      publishedAt: "2026-07-03T10:00:00Z",
+      publishedCaseIds: ["case-1", "case-2"],
+    });
+    const createUpdateMutateAsync = vi.fn().mockResolvedValue({ id: "u-1", content: "A correction." });
+    mockedCreateUpdate.mockReturnValue({
+      mutate: vi.fn(),
+      mutateAsync: createUpdateMutateAsync,
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useCreateAnnouncementRequestUpdate>);
+    const handlePost = vi.fn().mockResolvedValue(undefined);
+    mockedPostUpdateComments.mockReturnValue({
+      posting: false,
+      progress: null,
+      succeededCaseIds: [],
+      failedCaseIds: [],
+      done: false,
+      handlePost,
+      reset: vi.fn(),
+    });
+
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "A correction." } });
+    fireEvent.click(screen.getByRole("button", { name: /^post update$/i }));
+
+    expect(await screen.findByText("Confirm update")).toBeInTheDocument();
+    expect(createUpdateMutateAsync).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^post to 2 cases$/i }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(createUpdateMutateAsync).toHaveBeenCalledWith({
+      id: "req-1",
+      payload: { content: "A correction." },
+    });
+    expect(handlePost).toHaveBeenCalledWith(["case-1", "case-2"], "A correction.", "jane@example.com");
+  });
+
+  it("disables Post update and explains why for a request published before case tracking existed", () => {
+    mockGet({
+      state: "published",
+      resolvedProjectIds: ["p-1"],
+      resolvedProjectCount: 1,
+      publishedBy: "jane@example.com",
+      publishedAt: "2026-07-03T10:00:00Z",
+    });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: /^post update$/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/published before case tracking existed/i)).toBeInTheDocument();
   });
 });

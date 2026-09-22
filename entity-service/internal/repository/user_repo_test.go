@@ -150,3 +150,22 @@ func TestAssignRoles(t *testing.T) {
 		t.Errorf("u2 roles = %#v, want empty non-nil", users[1].Roles)
 	}
 }
+
+func TestDisplayName(t *testing.T) {
+	s := func(v string) *string { return &v }
+	tests := []struct {
+		name           string
+		n, first, lst  *string
+		userName, want string
+	}{
+		{"display name wins", s("Jane Q. Doe"), s("Jane"), s("Doe"), "jd", "Jane Q. Doe"},
+		{"blank display name falls back to first + last", s("  "), s("Jane"), s("Doe"), "jd", "Jane Doe"},
+		{"only a first name", nil, s("Jane"), nil, "jd", "Jane"},
+		{"nothing set falls back to the user name", nil, nil, nil, "jane@example.com", "jane@example.com"},
+	}
+	for _, tt := range tests {
+		if got := displayName(tt.n, tt.first, tt.lst, tt.userName); got != tt.want {
+			t.Errorf("%s: displayName = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}

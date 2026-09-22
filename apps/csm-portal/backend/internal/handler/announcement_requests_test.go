@@ -41,10 +41,13 @@ type mockEntityAnnouncementRequestClient struct {
 	submitFn                  func(ctx context.Context, id string, body []byte) ([]byte, error)
 	approveFn                 func(ctx context.Context, id string, body []byte) ([]byte, error)
 	publishFn                 func(ctx context.Context, id string, body []byte) ([]byte, error)
+	createUpdateFn            func(ctx context.Context, id string, body []byte) ([]byte, error)
+	listUpdatesFn             func(ctx context.Context, id string) ([]byte, error)
 
 	gotApproveBody               []byte
 	gotPublishBody               []byte
 	gotSubmitBody                []byte
+	gotCreateUpdateBody          []byte
 	searchProjectsCalls          int
 	searchProjectsByVersionCalls int
 }
@@ -124,6 +127,21 @@ func (m *mockEntityAnnouncementRequestClient) PublishAnnouncementRequest(ctx con
 	return body, nil
 }
 
+func (m *mockEntityAnnouncementRequestClient) CreateAnnouncementRequestUpdate(ctx context.Context, id string, body []byte) ([]byte, error) {
+	m.gotCreateUpdateBody = body
+	if m.createUpdateFn != nil {
+		return m.createUpdateFn(ctx, id, body)
+	}
+	return body, nil
+}
+
+func (m *mockEntityAnnouncementRequestClient) ListAnnouncementRequestUpdates(ctx context.Context, id string) ([]byte, error) {
+	if m.listUpdatesFn != nil {
+		return m.listUpdatesFn(ctx, id)
+	}
+	return []byte(`{"updates":[]}`), nil
+}
+
 const testAnnouncementRequestID = "11111111-1111-1111-1111-111111111111"
 
 // ----- auth required -----
@@ -146,6 +164,8 @@ func TestAnnouncementRequestHandler_RequiresAuth(t *testing.T) {
 		{"submit", http.MethodPost, "/announcement-requests/" + testAnnouncementRequestID + "/submit", "", h.SubmitAnnouncementRequest},
 		{"approve", http.MethodPost, "/announcement-requests/" + testAnnouncementRequestID + "/approve", "", h.ApproveAnnouncementRequest},
 		{"publish", http.MethodPost, "/announcement-requests/" + testAnnouncementRequestID + "/publish", "", h.PublishAnnouncementRequest},
+		{"create-update", http.MethodPost, "/announcement-requests/" + testAnnouncementRequestID + "/updates", `{"content":"x"}`, h.CreateAnnouncementRequestUpdate},
+		{"list-updates", http.MethodGet, "/announcement-requests/" + testAnnouncementRequestID + "/updates", "", h.ListAnnouncementRequestUpdates},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -336,50 +356,139 @@ func TestRecordAnnouncementRequestDryRun(t *testing.T) {
 	})
 }
 
-// ----- ApproveAnnouncementRequest / PublishAnnouncementRequest -----
+// ----- ApproveAnnouncementRequest -----
 
-func TestApproveAndPublishAnnouncementRequest_IgnoreRequestBodyEntirely(t *testing.T) {
-	t.Run("approve", func(t *testing.T) {
-		client := &mockEntityAnnouncementRequestClient{}
-		h := NewAnnouncementRequestHandler(client, nil)
-		// A body is deliberately never sent nor read — these two transitions
-		// need nothing but the authenticated caller.
-		r := withUser(httptest.NewRequest(http.MethodPost, "/announcement-requests/"+testAnnouncementRequestID+"/approve", nil))
-		r.SetPathValue("id", testAnnouncementRequestID)
-		w := httptest.NewRecorder()
-		h.ApproveAnnouncementRequest(w, r)
-		assertStatus(t, w, http.StatusOK)
+func TestApproveAnnouncementRequest_IgnoresRequestBodyEntirely(t *testing.T) {
+	client := &mockEntityAnnouncementRequestClient{}
+	h := NewAnnouncementRequestHandler(client, nil)
+	// A body is deliberately never sent nor read — this transition needs
+	// nothing but the authenticated caller.
+	r := withUser(httptest.NewRequest(http.MethodPost, "/announcement-requests/"+testAnnouncementRequestID+"/approve", nil))
+	r.SetPathValue("id", testAnnouncementRequestID)
+	w := httptest.NewRecorder()
+	h.ApproveAnnouncementRequest(w, r)
+	assertStatus(t, w, http.StatusOK)
 
-		var got struct {
-			ActorID string `json:"actorId"`
-		}
-		if err := json.Unmarshal(client.gotApproveBody, &got); err != nil {
-			t.Fatalf("decode forwarded body: %v", err)
-		}
-		if got.ActorID != testUser.UserID {
-			t.Fatalf("actorId = %q, want %q", got.ActorID, testUser.UserID)
-		}
-	})
+	var got struct {
+		ActorID string `json:"actorId"`
+	}
+	if err := json.Unmarshal(client.gotApproveBody, &got); err != nil {
+		t.Fatalf("decode forwarded body: %v", err)
+	}
+	if got.ActorID != testUser.UserID {
+		t.Fatalf("actorId = %q, want %q", got.ActorID, testUser.UserID)
+	}
+}
 
-	t.Run("publish", func(t *testing.T) {
-		client := &mockEntityAnnouncementRequestClient{}
-		h := NewAnnouncementRequestHandler(client, nil)
-		r := withUser(httptest.NewRequest(http.MethodPost, "/announcement-requests/"+testAnnouncementRequestID+"/publish", nil))
-		r.SetPathValue("id", testAnnouncementRequestID)
-		w := httptest.NewRecorder()
-		h.PublishAnnouncementRequest(w, r)
-		assertStatus(t, w, http.StatusOK)
+// ----- PublishAnnouncementRequest -----
 
-		var got struct {
-			ActorID string `json:"actorId"`
-		}
-		if err := json.Unmarshal(client.gotPublishBody, &got); err != nil {
-			t.Fatalf("decode forwarded body: %v", err)
-		}
-		if got.ActorID != testUser.UserID {
-			t.Fatalf("actorId = %q, want %q", got.ActorID, testUser.UserID)
-		}
-	})
+// TestPublishAnnouncementRequest_ForwardsCaseIDsAndForcesActorID locks in
+// that, unlike Approve, Publish does read its request body — caseIds, the
+// webapp's own fan-out result — while actorId is still always the
+// authenticated caller, never client-supplied.
+func TestPublishAnnouncementRequest_ForwardsCaseIDsAndForcesActorID(t *testing.T) {
+	client := &mockEntityAnnouncementRequestClient{}
+	h := NewAnnouncementRequestHandler(client, nil)
+	r := withUser(httptest.NewRequest(http.MethodPost, "/announcement-requests/"+testAnnouncementRequestID+"/publish",
+		strings.NewReader(`{"caseIds":["case-1","case-2"],"actorId":"someone-else"}`)))
+	r.SetPathValue("id", testAnnouncementRequestID)
+	w := httptest.NewRecorder()
+	h.PublishAnnouncementRequest(w, r)
+	assertStatus(t, w, http.StatusOK)
+
+	var got struct {
+		ActorID string   `json:"actorId"`
+		CaseIDs []string `json:"caseIds"`
+	}
+	if err := json.Unmarshal(client.gotPublishBody, &got); err != nil {
+		t.Fatalf("decode forwarded body: %v", err)
+	}
+	if got.ActorID != testUser.UserID {
+		t.Fatalf("actorId = %q, want the authenticated caller %q, not the client-supplied value", got.ActorID, testUser.UserID)
+	}
+	if len(got.CaseIDs) != 2 || got.CaseIDs[0] != "case-1" || got.CaseIDs[1] != "case-2" {
+		t.Fatalf("expected caseIds forwarded, got %v", got.CaseIDs)
+	}
+}
+
+func TestPublishAnnouncementRequest_RejectsEmptyCaseIDs(t *testing.T) {
+	for name, body := range map[string]string{
+		"missing caseIds": `{}`,
+		"empty caseIds":   `{"caseIds":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := &mockEntityAnnouncementRequestClient{}
+			h := NewAnnouncementRequestHandler(client, nil)
+			r := withUser(httptest.NewRequest(http.MethodPost, "/announcement-requests/"+testAnnouncementRequestID+"/publish", strings.NewReader(body)))
+			r.SetPathValue("id", testAnnouncementRequestID)
+			w := httptest.NewRecorder()
+			h.PublishAnnouncementRequest(w, r)
+			assertStatus(t, w, http.StatusBadRequest)
+			if client.gotPublishBody != nil {
+				t.Fatal("expected the entity client never to be called for an empty caseIds")
+			}
+		})
+	}
+}
+
+// ----- CreateAnnouncementRequestUpdate / ListAnnouncementRequestUpdates -----
+
+func TestCreateAnnouncementRequestUpdate_ForwardsContentAndForcesActorID(t *testing.T) {
+	client := &mockEntityAnnouncementRequestClient{}
+	h := NewAnnouncementRequestHandler(client, nil)
+	r := withUser(httptest.NewRequest(http.MethodPost, "/announcement-requests/"+testAnnouncementRequestID+"/updates",
+		strings.NewReader(`{"content":"A correction.","actorId":"someone-else"}`)))
+	r.SetPathValue("id", testAnnouncementRequestID)
+	w := httptest.NewRecorder()
+	h.CreateAnnouncementRequestUpdate(w, r)
+	assertStatus(t, w, http.StatusCreated)
+
+	var got struct {
+		Content string `json:"content"`
+		ActorID string `json:"actorId"`
+	}
+	if err := json.Unmarshal(client.gotCreateUpdateBody, &got); err != nil {
+		t.Fatalf("decode forwarded body: %v", err)
+	}
+	if got.Content != "A correction." {
+		t.Fatalf("content = %q, want forwarded", got.Content)
+	}
+	if got.ActorID != testUser.UserID {
+		t.Fatalf("actorId = %q, want the authenticated caller %q, not the client-supplied value", got.ActorID, testUser.UserID)
+	}
+}
+
+func TestCreateAnnouncementRequestUpdate_RejectsEmptyContent(t *testing.T) {
+	client := &mockEntityAnnouncementRequestClient{}
+	h := NewAnnouncementRequestHandler(client, nil)
+	r := withUser(httptest.NewRequest(http.MethodPost, "/announcement-requests/"+testAnnouncementRequestID+"/updates", strings.NewReader(`{}`)))
+	r.SetPathValue("id", testAnnouncementRequestID)
+	w := httptest.NewRecorder()
+	h.CreateAnnouncementRequestUpdate(w, r)
+	assertStatus(t, w, http.StatusBadRequest)
+	if client.gotCreateUpdateBody != nil {
+		t.Fatal("expected the entity client never to be called for empty content")
+	}
+}
+
+func TestListAnnouncementRequestUpdates_Passthrough(t *testing.T) {
+	client := &mockEntityAnnouncementRequestClient{
+		listUpdatesFn: func(ctx context.Context, id string) ([]byte, error) {
+			if id != testAnnouncementRequestID {
+				t.Fatalf("id = %q, want %q", id, testAnnouncementRequestID)
+			}
+			return []byte(`{"updates":[{"id":"u-1","content":"first"}]}`), nil
+		},
+	}
+	h := NewAnnouncementRequestHandler(client, nil)
+	r := withUser(httptest.NewRequest(http.MethodGet, "/announcement-requests/"+testAnnouncementRequestID+"/updates", nil))
+	r.SetPathValue("id", testAnnouncementRequestID)
+	w := httptest.NewRecorder()
+	h.ListAnnouncementRequestUpdates(w, r)
+	assertStatus(t, w, http.StatusOK)
+	if !strings.Contains(w.Body.String(), `"first"`) {
+		t.Fatalf("expected the upstream response forwarded, got %s", w.Body.String())
+	}
 }
 
 // ----- SubmitAnnouncementRequest -----

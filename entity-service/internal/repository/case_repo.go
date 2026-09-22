@@ -115,6 +115,21 @@ func caseEscalationLevelFromEnum(raw string) string {
 type CaseRepository interface {
 	// CreateCase inserts a new case row (both work_item and "case").
 	CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
+	// CreateCaseFromServiceNow inserts a new case row (both work_item and
+	// "case"), the same as CreateCase, but for DATA_SOURCE=postgres-primary-sn-fallback's
+	// SN-first case creation (see caseService.CreateCase's own doc comment):
+	// req.Type must already be "case" (validated by the caller). Unlike
+	// CreateCase, identity is NOT generated here -- id/number/wso2ID/createdBy
+	// are exactly what ServiceNow already returned for the case it just
+	// created, so both systems agree on identity from the moment the Postgres
+	// row exists. id must be a canonical UUID (sysidToUUID(sn sys_id) -- the
+	// same identity convention every DataSource=servicenow response already
+	// uses, see internal/service/sn_id.go). Returns a ValidationError if id is
+	// not a valid UUID or if a row already exists for it/number/wso2ID
+	// (unique violation) -- the latter should not happen in practice since
+	// ServiceNow only just generated these, but is reported precisely rather
+	// than as an opaque infrastructure error if it ever does.
+	CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy string) (domain.Case, error)
 	// GetCaseByID returns the enriched case view for the given UUID, or a
 	// NotFoundError if no matching row exists OR it exists but scope excludes
 	// it (existence is never revealed to a caller who can't see it).
@@ -207,7 +222,7 @@ type CaseRepository interface {
 	SetCaseWatchList(ctx context.Context, caseID string, userIDs []string, callerEmail string) ([]domain.WatchListUser, time.Time, error)
 	// SearchCaseActivities returns a paginated, newest-first feed combining
 	// the case's comments (comment, migration 000037) and complete
-	// attachments (case_attachments, migration 000043) into one merged
+	// attachments (case_attachment, migration 000043) into one merged
 	// timeline, together with the total matching count. There is no
 	// field-change audit table in this schema, so entries of that kind are
 	// never produced regardless of req.IncludeFieldChanges -- an absent
@@ -334,6 +349,75 @@ func mapCreateCaseError(err error) error {
 		}
 	}
 	return fmt.Errorf("create case: %w", err)
+}
+
+// createCaseFromServiceNowQuery inserts both halves of a case row (work_item
+// + "case", the same shared-primary-key pattern updateCaseQuery documents)
+// in one round trip via a CTE, using caller-supplied identity throughout
+// rather than generating any of it -- see CreateCaseFromServiceNow's own
+// doc comment for why. type is hardcoded to 'CASE'::work_item_type_enum
+// (the caller guarantees req.Type == "case" -- caseService.CreateCase's SN-
+// first path is case-only, same restriction the existing CreateCase already
+// enforces for the plain Postgres path) and state to 'OPEN'::case_state_enum
+// (every case ServiceNow creates starts in its own equivalent initial state;
+// reliably parsing that back out of ServiceNow's raw create-response state
+// label would need the same label->enum lookup sn_case_service.go keeps
+// unexported for its own internal use, and would still land on the same
+// value every time).
+//
+// Column/output order matches scanUpdatedCase exactly, so that helper is
+// reused verbatim rather than duplicated.
+const createCaseFromServiceNowQuery = `
+	WITH inserted_work_item AS (
+		INSERT INTO work_item (
+			id, created_on, updated_on, created_by, updated_by,
+			number, wso2_id, subject, description, type,
+			project_id, deployment_id, deployed_product_id
+		)
+		VALUES (
+			$1, NOW(), NOW(), $2, $2,
+			$3, $4, $5, $6, 'CASE'::work_item_type_enum,
+			$7, $8, $9
+		)
+		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
+		          subject, description, created_on, updated_on
+	),
+	inserted_case AS (
+		INSERT INTO "case" (id, severity, issue_type, state)
+		VALUES ($1, $10::case_severity_enum, $11::case_issue_type_enum, 'OPEN'::case_state_enum)
+		RETURNING id, severity, issue_type, state, work_state, closed_on
+	)
+	SELECT iwi.id, iwi.number, iwi.wso2_id, iwi.created_by, iwi.project_id, iwi.deployment_id, iwi.deployed_product_id,
+	       iwi.subject, iwi.description,
+	       ic.severity::TEXT, ic.issue_type::TEXT, ic.state::TEXT, ic.work_state::TEXT,
+	       iwi.created_on, iwi.updated_on, ic.closed_on
+	FROM inserted_work_item iwi
+	JOIN inserted_case ic ON ic.id = iwi.id`
+
+// CreateCaseFromServiceNow implements CaseRepository.
+func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy string) (domain.Case, error) {
+	c, err := scanUpdatedCase(r.db.QueryRow(ctx, createCaseFromServiceNowQuery,
+		id, createdBy,
+		number, wso2ID, req.Subject, req.Description,
+		req.ProjectID, req.DeploymentID, req.DeployedProductID,
+		caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
+	))
+	if err != nil {
+		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "23505": // unique_violation on id/number/wso2_id — see this method's own doc comment for why this "shouldn't" happen
+				return domain.Case{}, &apierror.ConflictError{Msg: "a case already exists for this ServiceNow id/number/internalId: " + pgErr.Detail}
+			case "22P02": // invalid_text_representation — id was not a valid UUID
+				return domain.Case{}, &apierror.ValidationError{Msg: "id is not a valid UUID: " + id}
+			case "23503": // foreign_key_violation — one of the referenced IDs does not exist
+				return domain.Case{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
+			case "P0001": // raise_exception from integrity triggers (deployment/project, deployed_product/deployment, catastrophic priority)
+				return domain.Case{}, &apierror.ValidationError{Msg: pgErr.Message}
+			}
+		}
+		return domain.Case{}, fmt.Errorf("create case from servicenow: %w", err)
+	}
+	return c, nil
 }
 
 // GetCaseByID implements CaseRepository.
@@ -602,15 +686,23 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 		return domain.CaseComment{}, &apierror.ValidationError{Msg: "type contains invalid value: " + string(req.Type)}
 	}
 
-	// comment.work_item_id references work_item(id), which is also
-	// "case".id -- INSERT ... SELECT confirms the case exists in the same
-	// round trip, RETURNING zero rows (rather than a hard-to-attribute FK
-	// error) when it doesn't.
+	// comment.work_item_id references work_item(id) -- INSERT ... SELECT
+	// confirms the work item exists in the same round trip, RETURNING zero
+	// rows (rather than a hard-to-attribute FK error) when it doesn't. This
+	// checks work_item, not the narrower "case" subtype table: this method
+	// backs every case-family comment (case, announcement, engagement,
+	// service_request, security_report_analysis all share this same
+	// endpoint), and only "case" rows have a matching "case" subtype row --
+	// an announcement's own type-specific row lives in the "announcement"
+	// table instead. Scoping this existence check to "case" specifically
+	// made commenting on any non-"case" work item impossible regardless of
+	// whether it genuinely existed (reported live: posting an update to a
+	// real, existing ANNOUNCEMENT case always failed with "case not found").
 	const query = `
 		INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
-		SELECT gen_random_uuid(), NOW(), $1, $2::comment_type_enum, c.id, $4
-		FROM "case" c
-		WHERE c.id = $3
+		SELECT gen_random_uuid(), NOW(), $1, $2::comment_type_enum, w.id, $4
+		FROM work_item w
+		WHERE w.id = $3
 		RETURNING id, work_item_id, type, content, created_by, created_on`
 
 	var c domain.CaseComment
@@ -847,9 +939,9 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 // CreateCaseAttachment implements CaseRepository.
 func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error) {
 	const query = `
-		INSERT INTO case_attachments (case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, status)
+		INSERT INTO case_attachment (case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, status)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_at, status`
+		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_on, status`
 
 	var (
 		a            domain.Attachment
@@ -885,10 +977,10 @@ func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAt
 // ConfirmCaseAttachment implements CaseRepository.
 func (r *caseRepo) ConfirmCaseAttachment(ctx context.Context, id string) (domain.Attachment, error) {
 	const query = `
-		UPDATE case_attachments
-		SET status = 'complete', updated_at = NOW()
+		UPDATE case_attachment
+		SET status = 'complete', updated_on = NOW()
 		WHERE id = $1 AND status = 'pending'
-		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_at, status`
+		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_on, status`
 
 	var (
 		a            domain.Attachment
@@ -918,15 +1010,15 @@ func (r *caseRepo) ConfirmCaseAttachment(ctx context.Context, id string) (domain
 // are excluded from the default list/search response rather than shown with
 // a visible status.
 func (r *caseRepo) SearchCaseAttachments(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error) {
-	const countQuery = `SELECT COUNT(*) FROM case_attachments WHERE case_id = $1 AND status = 'complete'`
+	const countQuery = `SELECT COUNT(*) FROM case_attachment WHERE case_id = $1 AND status = 'complete'`
 	const dataQuery = `
 		SELECT ca.id, ca.case_id, ca.filename, ca.mime_type, ca.size_bytes, ca.description,
 		       u.id, u.email, TRIM(u.first_name || ' ' || u.last_name) AS full_name,
-		       ca.created_at, ca.storage_key, ca.status
-		FROM case_attachments ca
+		       ca.created_on, ca.storage_key, ca.status
+		FROM case_attachment ca
 		JOIN "user" u ON u.id = ca.uploaded_by
 		WHERE ca.case_id = $1 AND ca.status = 'complete'
-		ORDER BY ca.created_at DESC, ca.id
+		ORDER BY ca.created_on DESC, ca.id
 		LIMIT $2 OFFSET $3`
 
 	var total int
@@ -991,8 +1083,8 @@ func (r *caseRepo) GetCaseAttachmentByID(ctx context.Context, id string) (domain
 	const query = `
 		SELECT ca.id, ca.case_id, ca.filename, ca.mime_type, ca.size_bytes, ca.description,
 		       u.id, u.email, TRIM(u.first_name || ' ' || u.last_name) AS full_name,
-		       ca.created_at, ca.storage_key, ca.status
-		FROM case_attachments ca
+		       ca.created_on, ca.storage_key, ca.status
+		FROM case_attachment ca
 		JOIN "user" u ON u.id = ca.uploaded_by
 		WHERE ca.id = $1`
 
@@ -1019,7 +1111,7 @@ func (r *caseRepo) GetCaseAttachmentByID(ctx context.Context, id string) (domain
 
 // DeleteCaseAttachment implements CaseRepository.
 func (r *caseRepo) DeleteCaseAttachment(ctx context.Context, id string) error {
-	tag, err := r.db.Exec(ctx, `DELETE FROM case_attachments WHERE id = $1`, id)
+	tag, err := r.db.Exec(ctx, `DELETE FROM case_attachment WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("delete case attachment: %w", err)
 	}
@@ -1032,10 +1124,10 @@ func (r *caseRepo) DeleteCaseAttachment(ctx context.Context, id string) error {
 // UpdateCaseAttachmentName implements CaseRepository.
 func (r *caseRepo) UpdateCaseAttachmentName(ctx context.Context, id, name, updatedBy string) (time.Time, error) {
 	const query = `
-		UPDATE case_attachments
-		SET filename = $2, updated_at = NOW(), updated_by = $3
+		UPDATE case_attachment
+		SET filename = $2, updated_on = NOW(), updated_by = $3
 		WHERE id = $1
-		RETURNING updated_at`
+		RETURNING updated_on`
 
 	var updatedOn time.Time
 	err := r.db.QueryRow(ctx, query, id, name, updatedBy).Scan(&updatedOn)
@@ -1742,7 +1834,7 @@ func scanCaseActivity(row interface{ Scan(...any) error }) (domain.CaseActivity,
 // single-element Changes slice, rather than guessing at a bundling rule.
 func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) ([]domain.CaseActivity, int, error) {
 	// Confirm req.CaseID is actually a case-like work item before reading
-	// its activity feed -- comment/case_attachments/work_item_activity are
+	// its activity feed -- comment/case_attachment/work_item_activity are
 	// all keyed by the generic work_item_id with no type filter of their
 	// own, so without this check a caller could pass any other work_item's
 	// UUID (a change request, incident, ...) through this endpoint and read
@@ -1761,14 +1853,14 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 	countQuery := `
 		SELECT
 			(SELECT COUNT(*) FROM comment WHERE work_item_id = $1) +
-			(SELECT COUNT(*) FROM case_attachments WHERE case_id = $1 AND status = 'complete')`
+			(SELECT COUNT(*) FROM case_attachment WHERE case_id = $1 AND status = 'complete')`
 	if includeFieldChanges {
 		countQuery += ` + (SELECT COUNT(*) FROM work_item_activity WHERE work_item_id = $1)`
 	}
 
 	// UNION ALL merges the tables into one timeline. Comment/field-change
 	// rows resolve their (free-text VARCHAR) author by email match against
-	// "user"; attachment rows join it directly, since case_attachments.
+	// "user"; attachment rows join it directly, since case_attachment.
 	// uploaded_by is a real UUID FK (migration 000043) -- see this file's
 	// other created_by fixes for why they differ.
 	//
@@ -1800,13 +1892,13 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 			UNION ALL
 
 			SELECT
-				a.id, 'attachment' AS kind, COALESCE(a.description, '') AS content, a.created_at AS created_on,
+				a.id, 'attachment' AS kind, COALESCE(a.description, '') AS content, a.created_on AS created_on,
 				u2.email, u2.first_name, u2.last_name,
 				COALESCE(u2.name, NULLIF(TRIM(CONCAT_WS(' ', u2.first_name, u2.last_name)), '')) AS name,
 				NULL::text AS comment_type,
 				a.filename, a.mime_type, a.size_bytes,
 				NULL::text AS field_name, NULL::text AS old_value, NULL::text AS new_value
-			FROM case_attachments a
+			FROM case_attachment a
 			JOIN "user" u2 ON u2.id = a.uploaded_by
 			WHERE a.case_id = $1 AND a.status = 'complete'`
 	if includeFieldChanges {
