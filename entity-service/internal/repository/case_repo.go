@@ -686,15 +686,23 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 		return domain.CaseComment{}, &apierror.ValidationError{Msg: "type contains invalid value: " + string(req.Type)}
 	}
 
-	// comment.work_item_id references work_item(id), which is also
-	// "case".id -- INSERT ... SELECT confirms the case exists in the same
-	// round trip, RETURNING zero rows (rather than a hard-to-attribute FK
-	// error) when it doesn't.
+	// comment.work_item_id references work_item(id) -- INSERT ... SELECT
+	// confirms the work item exists in the same round trip, RETURNING zero
+	// rows (rather than a hard-to-attribute FK error) when it doesn't. This
+	// checks work_item, not the narrower "case" subtype table: this method
+	// backs every case-family comment (case, announcement, engagement,
+	// service_request, security_report_analysis all share this same
+	// endpoint), and only "case" rows have a matching "case" subtype row --
+	// an announcement's own type-specific row lives in the "announcement"
+	// table instead. Scoping this existence check to "case" specifically
+	// made commenting on any non-"case" work item impossible regardless of
+	// whether it genuinely existed (reported live: posting an update to a
+	// real, existing ANNOUNCEMENT case always failed with "case not found").
 	const query = `
 		INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
-		SELECT gen_random_uuid(), NOW(), $1, $2::comment_type_enum, c.id, $4
-		FROM "case" c
-		WHERE c.id = $3
+		SELECT gen_random_uuid(), NOW(), $1, $2::comment_type_enum, w.id, $4
+		FROM work_item w
+		WHERE w.id = $3
 		RETURNING id, work_item_id, type, content, created_by, created_on`
 
 	var c domain.CaseComment
