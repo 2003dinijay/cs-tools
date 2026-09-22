@@ -8423,7 +8423,9 @@ components:
         Resolves which projects are running a given product version — the
         reverse of SearchDeployedProductsRequest's own deploymentIds filter,
         which starts from already-known deployments rather than a
-        product/version. ServiceNow data source only.
+        product/version. Supported on both data sources: Postgres resolves
+        it directly via deployed_product.project_id, ServiceNow via a
+        platform-wide deployment scan.
 
 
         The result always excludes projects with a Restricted or Suspended
