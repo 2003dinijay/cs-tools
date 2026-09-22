@@ -92,14 +92,16 @@ DECLARE
 BEGIN
     -- Parent case -> its issue number -> the account's repository. All three
     -- must be present; any one missing means there is nowhere to push.
-    SELECT agr.owner, agr.repository, c.github_issue_number
+    SELECT agr.owner, agr.repository, parent_wi.github_issue_number
       INTO gh
       FROM work_item cr_wi
-      JOIN work_item case_wi ON case_wi.id = cr_wi.parent_id
-      JOIN "case" c          ON c.id = case_wi.id
-      JOIN account_github_repo agr ON agr.account_id = case_wi.account_id
+      -- The parent carries the issue. It is a service request far more often
+      -- than a case (759 change requests hang off one, against 301 off a
+      -- case), so this joins work_item rather than "case".
+      JOIN work_item parent_wi ON parent_wi.id = cr_wi.parent_id
+      JOIN account_github_repo agr ON agr.account_id = parent_wi.account_id
      WHERE cr_wi.id = NEW.id
-       AND c.github_issue_number IS NOT NULL
+       AND parent_wi.github_issue_number IS NOT NULL
        AND agr.is_active;
 
     IF NOT FOUND THEN
@@ -201,20 +203,19 @@ DECLARE
     gh RECORD;
     to_name TEXT;
 BEGIN
-    IF NEW.type NOT IN ('CHANGE_REQUEST', 'CASE')
+    IF NEW.type NOT IN ('CHANGE_REQUEST', 'CASE', 'SERVICE_REQUEST', 'INCIDENT')
        OR OLD.assigned_to_id IS NOT DISTINCT FROM NEW.assigned_to_id THEN
         RETURN NULL;
     END IF;
 
-    SELECT agr.owner, agr.repository, c.github_issue_number
+    SELECT agr.owner, agr.repository, linked_wi.github_issue_number
       INTO gh
-      FROM work_item case_wi
-      JOIN "case" c ON c.id = case_wi.id
-      JOIN account_github_repo agr ON agr.account_id = case_wi.account_id
-     -- A change request reaches its issue through the parent case; a case IS
-     -- the record that carries the issue number.
-     WHERE case_wi.id = CASE WHEN NEW.type = 'CASE' THEN NEW.id ELSE NEW.parent_id END
-       AND c.github_issue_number IS NOT NULL
+      FROM work_item linked_wi
+      JOIN account_github_repo agr ON agr.account_id = linked_wi.account_id
+     -- A change request reaches its issue through its parent; anything else
+     -- carries the issue number itself.
+     WHERE linked_wi.id = CASE WHEN NEW.type = 'CHANGE_REQUEST' THEN NEW.parent_id ELSE NEW.id END
+       AND linked_wi.github_issue_number IS NOT NULL
        AND agr.is_active;
 
     IF NOT FOUND THEN
@@ -225,7 +226,7 @@ BEGIN
                     NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''))
       INTO to_name FROM "user" u WHERE u.id = NEW.assigned_to_id;
 
-    IF NEW.type = 'CASE' THEN
+    IF NEW.type <> 'CHANGE_REQUEST' THEN
         -- UNASSIGNMENT IS NOT AN EVENT. ServiceNow's flow computed
         --     action = isClosed ? 'closed' : (isAssigned ? 'assigned' : '')
         -- so clearing the assignee produced no action and dispatched nothing.
@@ -289,14 +290,17 @@ BEGIN
         RETURN NULL;
     END IF;
 
-    SELECT agr.owner, agr.repository
+    -- The issue number is on work_item now, not on this table, so the same
+    -- function serves "case", service_request and anything else that closes.
+    SELECT agr.owner, agr.repository, linked_wi.github_issue_number
       INTO gh
-      FROM work_item case_wi
-      JOIN account_github_repo agr ON agr.account_id = case_wi.account_id
-     WHERE case_wi.id = NEW.id
+      FROM work_item linked_wi
+      JOIN account_github_repo agr ON agr.account_id = linked_wi.account_id
+     WHERE linked_wi.id = NEW.id
+       AND linked_wi.github_issue_number IS NOT NULL
        AND agr.is_active;
 
-    IF NOT FOUND OR NEW.github_issue_number IS NULL THEN
+    IF NOT FOUND THEN
         RETURN NULL;
     END IF;
 
@@ -309,10 +313,10 @@ BEGIN
 
     -- client_payload of "servicenow-case-update", action=closed.
     INSERT INTO github_outbound_queue (event, work_item_id, owner, repository, issue_number, payload)
-    VALUES ('case_closed', NEW.id, gh.owner, gh.repository, NEW.github_issue_number,
+    VALUES ('case_closed', NEW.id, gh.owner, gh.repository, gh.github_issue_number,
             jsonb_build_object(
                 'action',              'closed',
-                'github_issue_number', NEW.github_issue_number,
+                'github_issue_number', gh.github_issue_number,
                 'case_number',         case_number,
                 'case_sys_id',         NEW.id,
                 'resolution_notes',    NEW.close_notes,
@@ -325,6 +329,15 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS case_github_outbound ON "case";
 CREATE TRIGGER case_github_outbound
     AFTER UPDATE OF state ON "case"
+    FOR EACH ROW EXECUTE FUNCTION trg_github_outbound_case();
+
+-- A service request closes the same way, and is the record a GitHub issue
+-- actually becomes: issue_servicenow.yml maps a [CR]: title and a
+-- Type/ServiceRequest label alike onto case_type "Service Request". Without
+-- this, closing the very record the integration creates dispatched nothing.
+DROP TRIGGER IF EXISTS service_request_github_outbound ON service_request;
+CREATE TRIGGER service_request_github_outbound
+    AFTER UPDATE OF state ON service_request
     FOR EACH ROW EXECUTE FUNCTION trg_github_outbound_case();
 
 -- Comments sync from the CASE, not the change request.
@@ -347,13 +360,12 @@ BEGIN
         RETURN NULL;
     END IF;
 
-    SELECT agr.owner, agr.repository, c.github_issue_number
+    SELECT agr.owner, agr.repository, linked_wi.github_issue_number
       INTO gh
-      FROM "case" c
-      JOIN work_item case_wi ON case_wi.id = c.id
-      JOIN account_github_repo agr ON agr.account_id = case_wi.account_id
-     WHERE c.id = NEW.work_item_id
-       AND c.github_issue_number IS NOT NULL
+      FROM work_item linked_wi
+      JOIN account_github_repo agr ON agr.account_id = linked_wi.account_id
+     WHERE linked_wi.id = NEW.work_item_id
+       AND linked_wi.github_issue_number IS NOT NULL
        AND agr.is_active;
 
     IF NOT FOUND THEN

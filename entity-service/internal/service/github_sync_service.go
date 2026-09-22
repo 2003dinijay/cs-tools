@@ -175,7 +175,7 @@ type githubSyncService struct {
 	// integrationLogin is our own GitHub account. Events it sent are our own
 	// writes coming back and are dropped -- identity, not string-matching the
 	// comment body the way the case webhook does.
-	integrationLogin string
+	integrationLogins []string
 }
 
 // githubIssueClient is the slice of *github.Client this service needs.
@@ -195,7 +195,7 @@ func NewGithubSyncService(repo repository.GithubSyncRepository, gh githubIssueCl
 // NewGithubSyncServiceWithLabels is NewGithubSyncService with an explicit
 // label vocabulary.
 func NewGithubSyncServiceWithLabels(repo repository.GithubSyncRepository, gh githubIssueClient, integrationLogin string, labels GithubLabels) GithubSyncService {
-	return &githubSyncService{repo: repo, gh: gh, integrationLogin: integrationLogin, labels: labels}
+	return &githubSyncService{repo: repo, gh: gh, integrationLogins: integrationLoginSet(integrationLogin), labels: labels}
 }
 
 // WithMutations returns the service able to write change requests. Without it
@@ -208,7 +208,7 @@ func (s *githubSyncService) WithMutations(m repository.GithubMutationRepository)
 // NewGithubSyncServiceWriting is the full service: recognises, writes, and
 // pushes the resulting label changes back to the issue.
 func NewGithubSyncServiceWriting(repo repository.GithubSyncRepository, mutate repository.GithubMutationRepository, gh githubIssueClient, integrationLogin string, labels GithubLabels) GithubSyncService {
-	return &githubSyncService{repo: repo, gh: gh, integrationLogin: integrationLogin, labels: labels, mutate: mutate}
+	return &githubSyncService{repo: repo, gh: gh, integrationLogins: integrationLoginSet(integrationLogin), labels: labels, mutate: mutate}
 }
 
 func skip(reason string) (Outcome, error) { return Outcome{Skipped: reason}, nil }
@@ -223,9 +223,21 @@ func (s *githubSyncService) HandleWebhook(ctx context.Context, d Delivery) (Outc
 	// The cheap guards first, outside the claim: they touch nothing, so
 	// recording a delivery we are going to ignore protects nothing.
 	//
-	// Our own writes come back as webhooks. Dropping them by sender identity
-	// is what stops a comment we posted being synced back as a new one.
-	if s.integrationLogin != "" && strings.EqualFold(p.Sender.Login, s.integrationLogin) {
+	// Our own writes come back as webhooks. Dropping them by sender identity is
+	// what stops a comment we posted being synced back as a new one.
+	//
+	// THE IDENTITY IS THE WORKFLOW'S, NOT OURS. We dispatch; a GitHub Actions
+	// workflow does the posting, so the sender on the way back is
+	// github-actions[bot] and never the integration account. Before the
+	// dispatch rewrite this service posted directly and the two were the same,
+	// which is why the default outlived its meaning: a CSM comment went out,
+	// came back as a bot comment, and was written onto the case as a new one.
+	//
+	// The text marker below is the second line of defence, matching
+	// sn_comment_to_github.yml's own guard. Identity alone should be enough;
+	// the marker catches a repository whose workflow posts under some other
+	// account.
+	if s.isOwnEvent(p) {
 		return skip("event was sent by the integration account")
 	}
 	if d.Event != "issues" && d.Event != "issue_comment" {
@@ -277,7 +289,7 @@ func (s *githubSyncService) handleClaimed(ctx context.Context, d Delivery) (Outc
 	}
 
 	if d.Event == "issue_comment" {
-		return s.handleComment(ctx, p, cr)
+		return s.handleComment(ctx, p, mapping, cr)
 	}
 	return s.handleIssue(ctx, p, cr)
 }
@@ -337,7 +349,7 @@ func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, cr 
 }
 
 // handleComment mirrors a GitHub comment onto the change request.
-func (s *githubSyncService) handleComment(ctx context.Context, p IssuePayload, cr *repository.GithubChangeRequest) (Outcome, error) {
+func (s *githubSyncService) handleComment(ctx context.Context, p IssuePayload, mapping *repository.RepoMapping, cr *repository.GithubChangeRequest) (Outcome, error) {
 	if p.Action != "created" && p.Action != "edited" {
 		return skip("comment action " + p.Action + " is not handled")
 	}
@@ -347,8 +359,19 @@ func (s *githubSyncService) handleComment(ctx context.Context, p IssuePayload, c
 	if p.Comment == nil {
 		return skip("issue_comment delivery carried no comment")
 	}
-	if cr == nil {
-		return skip("no change request is linked to this issue")
+	// THE COMMENT GOES ON THE CASE, NOT THE CHANGE REQUEST.
+	//
+	// github_comment_to_sn.yml PATCHes sn_customerservice_case, and the
+	// outbound trigger only watches case comments. Attaching a relayed comment
+	// to the change request instead produced a conversation that could not be
+	// answered: a reply on the change request synced nowhere, and a reply on
+	// the case reached GitHub detached from the thread that started it.
+	caseID, err := s.repo.CaseByIssueNumber(ctx, mapping.AccountID, p.Issue.Number)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if caseID == "" {
+		return skip("no case is linked to this issue")
 	}
 	body := strings.TrimSpace(p.Comment.Body)
 	if body == "" {
@@ -359,7 +382,7 @@ func (s *githubSyncService) handleComment(ctx context.Context, p IssuePayload, c
 		return skip("comment is a slash command")
 	}
 	if s.mutate == nil {
-		return Outcome{Action: "comment_pending_write", ChangeRequestID: cr.ID}, nil
+		return Outcome{Action: "comment_pending_write"}, nil
 	}
 
 	// The "(GitHub Comment)" marker is what github_comment_to_sn.yml stamps on
@@ -371,8 +394,41 @@ func (s *githubSyncService) handleComment(ctx context.Context, p IssuePayload, c
 	}
 	text := fmt.Sprintf("@%s (GitHub Comment) %s\n\n%s", author, p.Issue.HTMLURL, body)
 
-	if err := s.mutate.AddComment(ctx, cr.ID, text, author); err != nil {
+	if err := s.mutate.AddComment(ctx, caseID, text, author); err != nil {
 		return Outcome{}, err
 	}
-	return Outcome{Action: "comment_relayed", ChangeRequestID: cr.ID}, nil
+	// The change request id, when there is one, is only for the delivery log.
+	var crID string
+	if cr != nil {
+		crID = cr.ID
+	}
+	return Outcome{Action: "comment_relayed", ChangeRequestID: crID}, nil
+}
+
+// isOwnEvent reports whether this delivery is an echo of something we caused.
+func (s *githubSyncService) isOwnEvent(p IssuePayload) bool {
+	for _, login := range s.integrationLogins {
+		if login != "" && strings.EqualFold(p.Sender.Login, login) {
+			return true
+		}
+	}
+	// A comment we relayed carries this marker, and so does one the workflow
+	// posted on our behalf. Either way it originated here.
+	if p.Comment != nil && strings.Contains(p.Comment.Body, "(GitHub Comment)") {
+		return true
+	}
+	return false
+}
+
+// integrationLoginSet is every account whose events are our own coming back.
+//
+// github-actions[bot] is always included: with the dispatch architecture it is
+// the account that actually posts, whatever the configured integration login
+// is. Leaving it to configuration would make a loop the default.
+func integrationLoginSet(configured string) []string {
+	out := []string{"github-actions[bot]"}
+	if c := strings.TrimSpace(configured); c != "" {
+		out = append(out, c)
+	}
+	return out
 }

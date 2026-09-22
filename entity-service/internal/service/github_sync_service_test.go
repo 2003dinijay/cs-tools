@@ -34,6 +34,7 @@ type fakeGhRepo struct {
 	linked     map[string]string
 	mappingErr error
 	accountID  string
+	caseID     string
 	linkErr    error
 	mapping    *repository.RepoMapping
 	cr         *repository.GithubChangeRequest
@@ -51,6 +52,9 @@ func (f *fakeGhRepo) ChangeRequestByGitReference(context.Context, string) (*repo
 // unnoticed.
 func (f *fakeGhRepo) RepoForAccount(context.Context, string) (*repository.RepoMapping, error) {
 	return f.mapping, f.mappingErr
+}
+func (f *fakeGhRepo) CaseByIssueNumber(context.Context, string, int) (string, error) {
+	return f.caseID, nil
 }
 func (f *fakeGhRepo) AccountForCase(context.Context, string) (string, error) {
 	return f.accountID, nil
@@ -121,10 +125,11 @@ func (f *fakeGhClient) SetState(_ context.Context, _ github.Issue, s github.Stat
 
 // fakeGhMutations records what the sync would have written.
 type fakeGhMutations struct {
-	created     int
-	lastCreate  repository.NewChangeRequestFromIssue
-	lastUpdate  repository.NewChangeRequestFromIssue
-	lastComment string
+	created       int
+	lastCreate    repository.NewChangeRequestFromIssue
+	lastUpdate    repository.NewChangeRequestFromIssue
+	lastComment   string
+	lastCommentOn string
 }
 
 func (f *fakeGhMutations) CreateFromIssue(_ context.Context, in repository.NewChangeRequestFromIssue) (string, string, error) {
@@ -137,7 +142,8 @@ func (f *fakeGhMutations) UpdateFromIssue(_ context.Context, _ string, in reposi
 	return nil
 }
 func (f *fakeGhMutations) SetState(context.Context, string, string) (bool, error) { return true, nil }
-func (f *fakeGhMutations) AddComment(_ context.Context, _, content, _ string) error {
+func (f *fakeGhMutations) AddComment(_ context.Context, target, content, _ string) error {
+	f.lastCommentOn = target
 	f.lastComment = content
 	return nil
 }
@@ -314,7 +320,7 @@ func TestHandleWebhook_FailedDeliveryReleasesItsClaim(t *testing.T) {
 // github_comment_to_sn.yml uses, which is what sn_comment_to_github.yml checks
 // before posting back. Same marker, same loop closed.
 func TestHandleWebhook_CommentIsRelayedWithTheLoopMarker(t *testing.T) {
-	r := &fakeGhRepo{mapping: mapped(), cr: &repository.GithubChangeRequest{ID: "cr-1"}}
+	r := &fakeGhRepo{mapping: mapped(), caseID: "case-1", cr: &repository.GithubChangeRequest{ID: "cr-1"}}
 	m := &fakeGhMutations{}
 	d := commentDelivery("Scheduled for Friday.", "nimal")
 
@@ -331,7 +337,7 @@ func TestHandleWebhook_CommentIsRelayedWithTheLoopMarker(t *testing.T) {
 
 // Slash commands belong to the repository's own workflows.
 func TestHandleWebhook_SlashCommandsAreNotRelayed(t *testing.T) {
-	r := &fakeGhRepo{mapping: mapped(), cr: &repository.GithubChangeRequest{ID: "cr-1"}}
+	r := &fakeGhRepo{mapping: mapped(), caseID: "case-1", cr: &repository.GithubChangeRequest{ID: "cr-1"}}
 	m := &fakeGhMutations{}
 	d := commentDelivery("/close", "nimal")
 	if _, err := writingSvc(r, m, &fakeGhClient{}).HandleWebhook(context.Background(), d); err != nil {
@@ -339,5 +345,93 @@ func TestHandleWebhook_SlashCommandsAreNotRelayed(t *testing.T) {
 	}
 	if m.lastComment != "" {
 		t.Errorf("relayed a slash command: %q", m.lastComment)
+	}
+}
+
+// THE ROUND TRIP. A comment from GitHub must land on the CASE, because that is
+// the only record the outbound trigger watches. Attaching it to the change
+// request left a conversation that could not be answered: a reply on the
+// change request synced nowhere.
+func TestHandleWebhook_RelayedCommentLandsOnTheCase(t *testing.T) {
+	r := &fakeGhRepo{mapping: mapped(), caseID: "case-1",
+		cr: &repository.GithubChangeRequest{ID: "cr-1"}}
+	m := &fakeGhMutations{}
+	if _, err := writingSvc(r, m, &fakeGhClient{}).
+		HandleWebhook(context.Background(), commentDelivery("from github", "nimal")); err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if m.lastCommentOn != "case-1" {
+		t.Errorf("comment landed on %q, want the case -- outbound will never see it otherwise", m.lastCommentOn)
+	}
+}
+
+// An issue nobody linked to a case has nowhere to put the comment.
+func TestHandleWebhook_CommentWithoutALinkedCaseIsSkipped(t *testing.T) {
+	r := &fakeGhRepo{mapping: mapped(), caseID: ""}
+	m := &fakeGhMutations{}
+	out, err := writingSvc(r, m, &fakeGhClient{}).
+		HandleWebhook(context.Background(), commentDelivery("from github", "nimal"))
+	if err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if out.Skipped == "" || m.lastComment != "" {
+		t.Errorf("wrote a comment with no linked case: %+v", out)
+	}
+}
+
+// THE LOOP THIS CLOSES. A CSM comment is dispatched, a workflow posts it on
+// the issue as github-actions[bot], and GitHub sends that back as an
+// issue_comment. Relaying it onto the case would make it a new case comment,
+// which the outbound trigger dispatches again.
+//
+// Before the dispatch rewrite this service posted comments itself, so the
+// sender coming back was the configured integration account and the existing
+// guard caught it. Now the workflow posts, and the sender is never that
+// account -- observed live: three comment_added rows in thirteen seconds.
+func TestHandleWebhook_WorkflowsOwnCommentsAreDropped(t *testing.T) {
+	for _, sender := range []string{"github-actions[bot]", "GitHub-Actions[bot]", "wso2-integration-bot"} {
+		t.Run(sender, func(t *testing.T) {
+			r := &fakeGhRepo{mapping: mapped(), caseID: "case-1"}
+			m := &fakeGhMutations{}
+			d := commentDelivery("[#CS-1](https://csm/cases/1)\n\nsomething", "x")
+			d.Payload.Sender.Login = sender
+
+			out, err := writingSvc(r, m, &fakeGhClient{}).HandleWebhook(context.Background(), d)
+			if err != nil {
+				t.Fatalf("HandleWebhook: %v", err)
+			}
+			if out.Skipped == "" || m.lastComment != "" {
+				t.Errorf("relayed our own echo back onto the case: %+v", out)
+			}
+		})
+	}
+}
+
+// The text marker is the second line of defence, for a repository whose
+// workflow posts under some other account.
+func TestHandleWebhook_RelayedMarkerIsDroppedWhoeverSentIt(t *testing.T) {
+	r := &fakeGhRepo{mapping: mapped(), caseID: "case-1"}
+	m := &fakeGhMutations{}
+	d := commentDelivery("@someone (GitHub Comment) https://github.com/x/y/issues/1\n\nechoed", "a-human")
+
+	out, err := writingSvc(r, m, &fakeGhClient{}).HandleWebhook(context.Background(), d)
+	if err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if out.Skipped == "" || m.lastComment != "" {
+		t.Errorf("a comment already carrying the relay marker was relayed again: %+v", out)
+	}
+}
+
+// A person's comment still gets through.
+func TestHandleWebhook_HumanCommentStillRelays(t *testing.T) {
+	r := &fakeGhRepo{mapping: mapped(), caseID: "case-1"}
+	m := &fakeGhMutations{}
+	if _, err := writingSvc(r, m, &fakeGhClient{}).
+		HandleWebhook(context.Background(), commentDelivery("a real question", "nimal")); err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	if m.lastCommentOn != "case-1" {
+		t.Errorf("a human comment was dropped")
 	}
 }

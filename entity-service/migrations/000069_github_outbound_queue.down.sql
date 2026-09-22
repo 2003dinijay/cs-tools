@@ -14,6 +14,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+DROP TRIGGER IF EXISTS service_request_github_outbound ON service_request;
 DROP TRIGGER IF EXISTS case_github_outbound ON "case";
 DROP FUNCTION IF EXISTS trg_github_outbound_case();
 DROP TRIGGER IF EXISTS work_item_assignment_github_outbound ON work_item;

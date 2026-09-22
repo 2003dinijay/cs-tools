@@ -42,9 +42,13 @@ type GithubLabels struct {
 	TypeIncident       string
 	TypeServiceRequest string
 
-	// ClassByLabel maps a change-request class label onto the change request
-	// type. A change request carries NO type label -- it is recognised by its
-	// title prefix -- so this names the class only.
+	// ClassByLabel maps a CR class label onto the service request's sr_type.
+	//
+	// NOT onto a change request. A [CR]: issue creates a SERVICE REQUEST --
+	// issue_servicenow.yml sets case_type "Service Request", catalog
+	// "Generic Requests", and carries the class as sr_type. The change request
+	// proper is raised later, by a person, through the portal, with the
+	// approval path and planned window an issue cannot supply.
 	ClassByLabel map[string]string
 
 	// StatusAssigned is written by the outbound sync when the case gains an
@@ -150,7 +154,7 @@ func IsChangeRequestTitle(title string) bool {
 		strings.HasPrefix(t, TitlePrefixEmergencyChangeRequest)
 }
 
-// ClassOf returns the change-request class for an issue's labels, and whether
+// ClassOf returns the sr_type for an issue's labels, and whether
 // exactly one was found. Zero or several is not a class we can act on: the
 // record has one type, and guessing which would be worse than declining.
 func (l GithubLabels) ClassOf(labels []string) (string, bool) {
