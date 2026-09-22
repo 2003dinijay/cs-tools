@@ -33,6 +33,7 @@ import {
 import { RefreshCw, X } from "@wso2/oxygen-ui-icons-react";
 import { Link } from "react-router";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import EditorWithSourceToggle from "@components/rich-text-editor/EditorWithSourceToggle";
 import { formatAbsoluteForUser } from "@utils/dateTime";
 import { sanitizeRichTextHtml } from "@utils/sanitizeHtml";
@@ -118,6 +119,7 @@ export default function AnnouncementRequestDialog({
   requestId,
   onClose,
 }: AnnouncementRequestDialogProps): JSX.Element {
+  const { canWrite } = usePortalAccess();
   const { data: request, isLoading, isError, refetch } = useGetAnnouncementRequest(requestId);
   const update = useUpdateAnnouncementRequest();
   const recordDryRun = useRecordAnnouncementRequestDryRun();
@@ -427,7 +429,12 @@ export default function AnnouncementRequestDialog({
                     variant="outlined"
                     size="small"
                     onClick={handleSaveContent}
-                    disabled={update.isPending || subject.trim().length === 0 || contentLockedForRetry}
+                    disabled={
+                      update.isPending ||
+                      subject.trim().length === 0 ||
+                      contentLockedForRetry ||
+                      !canWrite
+                    }
                   >
                     {update.isPending ? "Saving…" : "Save changes"}
                   </Button>
@@ -519,11 +526,16 @@ export default function AnnouncementRequestDialog({
                   variant="contained"
                   size="small"
                   onClick={() => approve.mutate({ id: request.id })}
-                  disabled={approve.isPending}
+                  disabled={approve.isPending || !canWrite}
                 >
                   {approve.isPending ? "Approving…" : "Mark as approved"}
                 </Button>
-                <Button variant="text" size="small" onClick={() => setConfirmEditOpen(true)}>
+                <Button
+                  variant="text"
+                  size="small"
+                  onClick={() => setConfirmEditOpen(true)}
+                  disabled={!canWrite}
+                >
                   Edit
                 </Button>
                 {approve.isError && (
@@ -545,7 +557,8 @@ export default function AnnouncementRequestDialog({
                     submittingForApproval ||
                     hasUnsavedChanges ||
                     subject.trim().length === 0 ||
-                    isEmptyHtml(description)
+                    isEmptyHtml(description) ||
+                    !canWrite
                   }
                 >
                   {dryRun.runningDryRun
@@ -581,7 +594,13 @@ export default function AnnouncementRequestDialog({
                     onClick={() =>
                       !hasUnsavedChanges && claimsReady && isRequestCreator && setConfirmPublishOpen(true)
                     }
-                    disabled={publish.publishing || hasUnsavedChanges || !claimsReady || !isRequestCreator}
+                    disabled={
+                      publish.publishing ||
+                      hasUnsavedChanges ||
+                      !claimsReady ||
+                      !isRequestCreator ||
+                      !canWrite
+                    }
                   >
                     {!claimsReady
                       ? "Publish"
@@ -651,7 +670,8 @@ export default function AnnouncementRequestDialog({
                           updateContent.trim().length === 0 ||
                           createUpdate.isPending ||
                           postUpdateComments.posting ||
-                          (request.publishedCaseIds ?? []).length === 0
+                          (request.publishedCaseIds ?? []).length === 0 ||
+                          !canWrite
                         }
                         onClick={() => setConfirmUpdateOpen(true)}
                       >

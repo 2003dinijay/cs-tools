@@ -72,6 +72,20 @@ vi.mock("@features/csm-announcements/api/useAnnouncementDryRun", () => ({
 vi.mock("@hooks/useIdTokenClaims", () => ({
   useIdTokenClaims: vi.fn(),
 }));
+// Every existing test below was written to exercise the dialog's actual
+// mutation-triggering behavior (approve/edit/submit/publish/post-update),
+// which requires canWrite — the real usePortalAccess would derive false
+// here since there's no CurrentUserProvider in this test's render tree.
+vi.mock("@context/current-user/usePortalAccess", () => ({
+  usePortalAccess: () => ({
+    hasAnyRole: true,
+    canEscalate: true,
+    canDownloadAttachment: true,
+    canUseOperations: true,
+    canUseTimeCardsAndUpdates: true,
+    canWrite: true,
+  }),
+}));
 // PublishConfirmationDialog's useResolvedAudiencePreview needs both of
 // these — see DirectoryMembersList.test.tsx for the same pattern.
 vi.mock("@config/apiConfig", () => ({

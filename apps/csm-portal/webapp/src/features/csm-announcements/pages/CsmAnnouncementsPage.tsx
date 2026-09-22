@@ -37,6 +37,7 @@ import { Plus, Search, X } from "@wso2/oxygen-ui-icons-react";
 import { useMemo, useState, type ChangeEvent, type JSX, type KeyboardEvent, type ReactNode } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router";
 import { useNavTransition } from "@hooks/useNavTransition";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import ColumnCustomizerButton from "@components/column-customizer/ColumnCustomizerButton";
 import MultiSelectField from "@components/MultiSelectField";
 import QueryErrorState from "@components/QueryErrorState";
@@ -203,6 +204,7 @@ function renderAnnouncementCell(id: AnnouncementColumnId, a: CsmAnnouncementRow)
  */
 export default function CsmAnnouncementsPage(): JSX.Element {
   const navigate = useNavTransition();
+  const { canWrite } = usePortalAccess();
   const [searchParams] = useSearchParams();
   // Seeded once from `?tab=pending` (e.g. the create form's post-save
   // redirect landing straight on the request just saved), not kept in sync
@@ -267,15 +269,17 @@ export default function CsmAnnouncementsPage(): JSX.Element {
           </Typography>
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <Button
-            variant="contained"
-            color="primary"
-            size="small"
-            startIcon={<Plus size={16} />}
-            onClick={() => navigate("/announcements/new")}
-          >
-            New announcement
-          </Button>
+          {canWrite && (
+            <Button
+              variant="contained"
+              color="primary"
+              size="small"
+              startIcon={<Plus size={16} />}
+              onClick={() => navigate("/announcements/new")}
+            >
+              New announcement
+            </Button>
+          )}
           <RefreshButton
             onRefresh={() => void refetch()}
             isFetching={isFetching}
