@@ -24,7 +24,7 @@
 -- user_id is "user".id (JWT email → GetUserByEmail). Rows are removed when
 -- the platform user is deleted.
 
-CREATE TABLE IF NOT EXISTS user_filter (
+CREATE TABLE IF NOT EXISTS user_saved_filter (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
     list_key        VARCHAR(64) NOT NULL,
@@ -35,8 +35,8 @@ CREATE TABLE IF NOT EXISTS user_filter (
     updated_on      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS user_filter_user_list_name
-    ON user_filter (user_id, list_key, LOWER(name));
+CREATE UNIQUE INDEX IF NOT EXISTS user_saved_filter_user_list_name
+    ON user_saved_filter (user_id, list_key, LOWER(name));
 
-CREATE INDEX IF NOT EXISTS user_filter_user_list_filter_position
-    ON user_filter (user_id, list_key, filter_position);
+CREATE INDEX IF NOT EXISTS user_saved_filter_user_list_filter_position
+    ON user_saved_filter (user_id, list_key, filter_position);

@@ -50,7 +50,7 @@ func (r *savedFilterViewRepo) List(ctx context.Context, userID string, listKey d
 func (r *savedFilterViewRepo) Count(ctx context.Context, userID string, listKey domain.SavedFilterListKey) (int, error) {
 	var n int
 	err := r.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM user_filter WHERE user_id = $1 AND list_key = $2`,
+		`SELECT COUNT(*) FROM user_saved_filter WHERE user_id = $1 AND list_key = $2`,
 		userID, string(listKey),
 	).Scan(&n)
 	if err != nil {
@@ -68,7 +68,7 @@ func (r *savedFilterViewRepo) Save(ctx context.Context, userID string, listKey d
 
 	var existingID string
 	err = tx.QueryRow(ctx,
-		`SELECT id FROM user_filter
+		`SELECT id FROM user_saved_filter
 		 WHERE user_id = $1 AND list_key = $2 AND LOWER(name) = LOWER($3)`,
 		userID, string(listKey), name,
 	).Scan(&existingID)
@@ -78,7 +78,7 @@ func (r *savedFilterViewRepo) Save(ctx context.Context, userID string, listKey d
 
 	if existingID != "" {
 		if _, err := tx.Exec(ctx,
-			`UPDATE user_filter
+			`UPDATE user_saved_filter
 			 SET name = $1, qs = $2, updated_on = NOW()
 			 WHERE id = $3`,
 			name, qs, existingID,
@@ -90,7 +90,7 @@ func (r *savedFilterViewRepo) Save(ctx context.Context, userID string, listKey d
 		}
 	} else {
 		if _, err := tx.Exec(ctx,
-			`UPDATE user_filter
+			`UPDATE user_saved_filter
 			 SET filter_position = filter_position + 1, updated_on = NOW()
 			 WHERE user_id = $1 AND list_key = $2`,
 			userID, string(listKey),
@@ -98,7 +98,7 @@ func (r *savedFilterViewRepo) Save(ctx context.Context, userID string, listKey d
 			return nil, fmt.Errorf("save saved filter view: shift positions: %w", err)
 		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO user_filter (user_id, list_key, name, qs, filter_position)
+			`INSERT INTO user_saved_filter (user_id, list_key, name, qs, filter_position)
 			 VALUES ($1, $2, $3, $4, 0)`,
 			userID, string(listKey), name, qs,
 		); err != nil {
@@ -124,7 +124,7 @@ func (r *savedFilterViewRepo) Delete(ctx context.Context, userID string, listKey
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx,
-		`DELETE FROM user_filter
+		`DELETE FROM user_saved_filter
 		 WHERE user_id = $1 AND list_key = $2 AND LOWER(name) = LOWER($3)`,
 		userID, string(listKey), name,
 	); err != nil {
@@ -153,7 +153,7 @@ func (r *savedFilterViewRepo) Move(ctx context.Context, userID string, listKey d
 	var id string
 	var pos int
 	err = tx.QueryRow(ctx,
-		`SELECT id, filter_position FROM user_filter
+		`SELECT id, filter_position FROM user_saved_filter
 		 WHERE user_id = $1 AND list_key = $2 AND LOWER(name) = LOWER($3)`,
 		userID, string(listKey), name,
 	).Scan(&id, &pos)
@@ -177,7 +177,7 @@ func (r *savedFilterViewRepo) Move(ctx context.Context, userID string, listKey d
 	}
 	var neighborID string
 	err = tx.QueryRow(ctx,
-		`SELECT id FROM user_filter
+		`SELECT id FROM user_saved_filter
 		 WHERE user_id = $1 AND list_key = $2 AND filter_position = $3`,
 		userID, string(listKey), target,
 	).Scan(&neighborID)
@@ -196,13 +196,13 @@ func (r *savedFilterViewRepo) Move(ctx context.Context, userID string, listKey d
 	}
 
 	if _, err := tx.Exec(ctx,
-		`UPDATE user_filter SET filter_position = $1, updated_on = NOW() WHERE id = $2`,
+		`UPDATE user_saved_filter SET filter_position = $1, updated_on = NOW() WHERE id = $2`,
 		target, id,
 	); err != nil {
 		return nil, fmt.Errorf("move filter: set filter_position: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
-		`UPDATE user_filter SET filter_position = $1, updated_on = NOW() WHERE id = $2`,
+		`UPDATE user_saved_filter SET filter_position = $1, updated_on = NOW() WHERE id = $2`,
 		pos, neighborID,
 	); err != nil {
 		return nil, fmt.Errorf("move saved filter view: swap neighbor: %w", err)
@@ -224,7 +224,7 @@ type queryer interface {
 
 func (r *savedFilterViewRepo) list(ctx context.Context, q queryer, userID string, listKey domain.SavedFilterListKey) ([]domain.SavedFilterView, error) {
 	rows, err := q.Query(ctx,
-		`SELECT name, qs FROM user_filter
+		`SELECT name, qs FROM user_saved_filter
 		 WHERE user_id = $1 AND list_key = $2
 		 ORDER BY filter_position ASC`,
 		userID, string(listKey),
@@ -250,7 +250,7 @@ func (r *savedFilterViewRepo) list(ctx context.Context, q queryer, userID string
 
 func (r *savedFilterViewRepo) moveIDToFront(ctx context.Context, tx pgx.Tx, userID string, listKey domain.SavedFilterListKey, id string) error {
 	if _, err := tx.Exec(ctx,
-		`UPDATE user_filter
+		`UPDATE user_saved_filter
 		 SET filter_position = filter_position + 1, updated_on = NOW()
 		 WHERE user_id = $1 AND list_key = $2 AND id <> $3`,
 		userID, string(listKey), id,
@@ -258,7 +258,7 @@ func (r *savedFilterViewRepo) moveIDToFront(ctx context.Context, tx pgx.Tx, user
 		return fmt.Errorf("save saved filter view: bump others: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
-		`UPDATE user_filter SET filter_position = 0, updated_on = NOW() WHERE id = $1`,
+		`UPDATE user_saved_filter SET filter_position = 0, updated_on = NOW() WHERE id = $1`,
 		id,
 	); err != nil {
 		return fmt.Errorf("save saved filter view: move to front: %w", err)
@@ -268,7 +268,7 @@ func (r *savedFilterViewRepo) moveIDToFront(ctx context.Context, tx pgx.Tx, user
 
 func (r *savedFilterViewRepo) compactPositions(ctx context.Context, tx pgx.Tx, userID string, listKey domain.SavedFilterListKey) error {
 	rows, err := tx.Query(ctx,
-		`SELECT id FROM user_filter
+		`SELECT id FROM user_saved_filter
 		 WHERE user_id = $1 AND list_key = $2
 		 ORDER BY filter_position ASC, updated_on DESC`,
 		userID, string(listKey),
@@ -290,7 +290,7 @@ func (r *savedFilterViewRepo) compactPositions(ctx context.Context, tx pgx.Tx, u
 	}
 	for i, id := range ids {
 		if _, err := tx.Exec(ctx,
-			`UPDATE user_filter SET filter_position = $1 WHERE id = $2`,
+			`UPDATE user_saved_filter SET filter_position = $1 WHERE id = $2`,
 			i, id,
 		); err != nil {
 			return fmt.Errorf("compact saved filter view positions: update: %w", err)

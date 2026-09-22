@@ -14,4 +14,4 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-ALTER TABLE user_filter DROP CONSTRAINT IF EXISTS user_filter_user_id_fkey;
+-- No-op: rolling back 000077/000076 drops the table under either name.

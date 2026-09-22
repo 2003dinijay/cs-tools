@@ -14,4 +14,5 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+DROP TABLE IF EXISTS user_saved_filter;
 DROP TABLE IF EXISTS user_filter;
