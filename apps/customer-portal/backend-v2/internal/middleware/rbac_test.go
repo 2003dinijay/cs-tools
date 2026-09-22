@@ -114,7 +114,6 @@ func TestHasPermissionMatrix(t *testing.T) {
 		ModuleDeployments,
 		ModuleDeploymentProducts,
 		ModuleDeploymentResources,
-		ModuleSecurityAdmin,
 	}
 	allActions := []Action{ActionCreate, ActionRead, ActionUpdate, ActionDelete}
 
@@ -149,37 +148,12 @@ func TestHasPermissionMatrix(t *testing.T) {
 		}
 	})
 
-	// super_admin and stakeholder were removed: nothing in entity-service,
-	// ServiceNow or the Postgres role table ever emits either name, so neither
-	// could be produced by NormalizeRole and their grants were unreachable.
-	t.Run("no role grants Security Admin", func(t *testing.T) {
-		everyRole := []CanonicalRole{
-			RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser,
-			RolePartnerAdmin, RolePartnerUser, RoleInternal,
-		}
-		for _, role := range everyRole {
-			for _, act := range allActions {
-				if HasPermission([]CanonicalRole{role}, ModuleSecurityAdmin, act) {
-					t.Errorf("%s must NOT have %s on %s", role, act, ModuleSecurityAdmin)
-				}
-			}
-		}
-	})
-
-	t.Run("Admin has full CRUD on 7 modules and zero access to SecurityAdmin", func(t *testing.T) {
+	t.Run("Admin has full CRUD on every module", func(t *testing.T) {
 		admin := []CanonicalRole{RoleAdmin}
 		for _, mod := range allModules {
-			if mod == ModuleSecurityAdmin {
-				for _, act := range allActions {
-					if HasPermission(admin, mod, act) {
-						t.Errorf("Admin must NOT have %s on %s", act, mod)
-					}
-				}
-			} else {
-				for _, act := range allActions {
-					if !HasPermission(admin, mod, act) {
-						t.Errorf("Admin must have %s on %s", act, mod)
-					}
+			for _, act := range allActions {
+				if !HasPermission(admin, mod, act) {
+					t.Errorf("Admin must have %s on %s", act, mod)
 				}
 			}
 		}
@@ -229,12 +203,6 @@ func TestHasPermissionMatrix(t *testing.T) {
 			}
 		}
 
-		// Security Admin: Zero access
-		for _, act := range allActions {
-			if HasPermission(agent, ModuleSecurityAdmin, act) {
-				t.Errorf("Agent must NOT have %s on SecurityAdmin", act)
-			}
-		}
 	})
 
 	t.Run("External Roles permissions", func(t *testing.T) {
@@ -289,12 +257,6 @@ func TestHasPermissionMatrix(t *testing.T) {
 				}
 			}
 
-			// Security Admin: Zero access
-			for _, act := range allActions {
-				if HasPermission(roleSet, ModuleSecurityAdmin, act) {
-					t.Errorf("%s must NOT have %s on SecurityAdmin", rName, act)
-				}
-			}
 		}
 	})
 

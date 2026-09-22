@@ -36,7 +36,6 @@ const ALL_MODULES: CustomerModule[] = [
   "deployments",
   "deployment_products",
   "deployment_resources",
-  "security_admin",
 ];
 
 const ALL_ACTIONS: CustomerAction[] = ["create", "read", "update", "delete"];
@@ -98,41 +97,16 @@ describe("useCustomerPermissions & Permission Matrix", () => {
       }
     });
 
-    // super_admin and stakeholder were removed: no real role emits either
-    // name, so their grants were unreachable.
-    it("no role grants security_admin", () => {
-      const everyRole: CanonicalRole[] = [
-        "admin",
-        "agent",
-        "customer_admin",
-        "customer_user",
-        "partner_admin",
-        "partner_user",
-        "internal",
-      ];
-      for (const role of everyRole) {
-        for (const act of ALL_ACTIONS) {
-          expect(hasCustomerPermission([role], "security_admin", act)).toBe(false);
-        }
-      }
-    });
-
-    it("Admin has full CRUD on 7 modules and zero access to Security Admin", () => {
+    it("Admin has full CRUD on every module", () => {
       const roles: CanonicalRole[] = ["admin"];
       for (const mod of ALL_MODULES) {
-        if (mod === "security_admin") {
-          for (const act of ALL_ACTIONS) {
-            expect(hasCustomerPermission(roles, mod, act)).toBe(false);
-          }
-        } else {
-          for (const act of ALL_ACTIONS) {
-            expect(hasCustomerPermission(roles, mod, act)).toBe(true);
-          }
+        for (const act of ALL_ACTIONS) {
+          expect(hasCustomerPermission(roles, mod, act)).toBe(true);
         }
       }
     });
 
-    it("Agent has CRU on Cases/Timecards/CRs, RU on Projects, CRUD on Deployments, zero on Security Admin", () => {
+    it("Agent has CRU on Cases/Timecards/CRs, RU on Projects, CRUD on Deployments", () => {
       const roles: CanonicalRole[] = ["agent"];
 
       // Cases: CRU, no D
@@ -176,13 +150,9 @@ describe("useCustomerPermissions & Permission Matrix", () => {
         }
       }
 
-      // Security Admin: Zero access
-      for (const act of ALL_ACTIONS) {
-        expect(hasCustomerPermission(roles, "security_admin", act)).toBe(false);
-      }
     });
 
-    it("External roles have CRU on Cases, Read on Timecards/Projects/CRs, CRUD on Deployments, zero on Security Admin", () => {
+    it("External roles have CRU on Cases, Read on Timecards/Projects/CRs, CRUD on Deployments", () => {
       const externalRoles: CanonicalRole[][] = [
         ["customer_user"],
         ["customer_admin"],
@@ -234,12 +204,6 @@ describe("useCustomerPermissions & Permission Matrix", () => {
           }
         }
 
-        // Security Admin: Zero access
-        for (const act of ALL_ACTIONS) {
-          expect(hasCustomerPermission(roles, "security_admin", act)).toBe(
-            false,
-          );
-        }
       }
     });
 
@@ -265,7 +229,6 @@ describe("useCustomerPermissions & Permission Matrix", () => {
       const { result } = renderHook(() => useCustomerPermissions());
 
       expect(result.current.isAdmin).toBe(false);
-      expect(result.current.canAccessSecurityAdmin).toBe(false);
       expect(result.current.canCreateCase).toBe(false);
       expect(result.current.canManageContacts).toBe(false);
     });

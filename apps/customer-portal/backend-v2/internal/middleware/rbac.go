@@ -107,7 +107,6 @@ const (
 	ModuleDeployments         Module = "deployments"
 	ModuleDeploymentProducts  Module = "deployment_products"
 	ModuleDeploymentResources Module = "deployment_resources"
-	ModuleSecurityAdmin       Module = "security_admin"
 )
 
 // Action represents an operation performed on a module.
@@ -165,20 +164,6 @@ var permissionMatrix = map[Module]map[Action][]CanonicalRole{
 		ActionRead:   {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
 		ActionUpdate: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
 		ActionDelete: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-	},
-	// No role currently grants Security Admin.
-	//
-	// It was previously held by super_admin alone, but no such role exists:
-	// nothing in entity-service, ServiceNow or the Postgres role table ever
-	// emits it, so the grant was unreachable and Security Admin was already
-	// closed to every user. Removing the role makes that explicit rather than
-	// changing it. Whoever should hold this needs a product decision; until
-	// then the empty lists are the honest description.
-	ModuleSecurityAdmin: {
-		ActionCreate: {},
-		ActionRead:   {},
-		ActionUpdate: {},
-		ActionDelete: {},
 	},
 }
 

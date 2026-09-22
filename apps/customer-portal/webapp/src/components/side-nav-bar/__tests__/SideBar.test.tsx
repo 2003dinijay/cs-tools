@@ -221,16 +221,22 @@ describe("SideBar", () => {
       acceptedSeverityValues: [],
     };
     mockUseCustomerPermissions.mockReturnValue({
-      canAccessSecurityAdmin: true,
       can: vi.fn().mockReturnValue(true),
     });
   });
 
-  it("should hide Security Center when canAccessSecurityAdmin is false", () => {
+  // Security Center is governed by the project's feature flags, not by RBAC.
+  // It was briefly gated on a security_admin permission that no role held,
+  // which hid it from everyone.
+  it("should hide Security Center when the project has neither SRA nor component analysis", () => {
     mockUseCustomerPermissions.mockReturnValue({
-      canAccessSecurityAdmin: false,
       can: vi.fn().mockReturnValue(false),
     });
+    mockProjectFeatures = {
+      ...mockProjectFeatures,
+      hasSraReadAccess: false,
+      hasComponentAnalysisReadAccess: false,
+    };
     mockProjectTypeLabel = PROJECT_TYPE_LABELS.MANAGED_CLOUD_SUBSCRIPTION;
     render(<SideBar collapsed={false} />);
 

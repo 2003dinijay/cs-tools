@@ -37,7 +37,7 @@ describe("CustomerRoleGuard", () => {
 
     const { container } = render(
       <MemoryRouter>
-        <CustomerRoleGuard module="security_admin" action="read">
+        <CustomerRoleGuard module="cases" action="read">
           <div data-testid="protected-content">Secret Content</div>
         </CustomerRoleGuard>
       </MemoryRouter>,
@@ -57,7 +57,7 @@ describe("CustomerRoleGuard", () => {
 
     render(
       <MemoryRouter>
-        <CustomerRoleGuard module="security_admin" action="read">
+        <CustomerRoleGuard module="cases" action="read">
           <div data-testid="protected-content">Secret Content</div>
         </CustomerRoleGuard>
       </MemoryRouter>,
@@ -79,7 +79,7 @@ describe("CustomerRoleGuard", () => {
 
     render(
       <MemoryRouter>
-        <CustomerRoleGuard module="security_admin" action="read">
+        <CustomerRoleGuard module="cases" action="read">
           <div data-testid="protected-content">Secret Content</div>
         </CustomerRoleGuard>
       </MemoryRouter>,
@@ -101,7 +101,7 @@ describe("CustomerRoleGuard", () => {
 
     render(
       <MemoryRouter>
-        <CustomerRoleGuard module="security_admin" action="read">
+        <CustomerRoleGuard module="cases" action="read">
           <div data-testid="protected-content">Secret Content</div>
         </CustomerRoleGuard>
       </MemoryRouter>,

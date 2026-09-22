@@ -282,15 +282,13 @@ export default function App(): JSX.Element {
                     </Route>
                   </Route>
                   {/* SecurityCenter */}
-                  <Route
-                    path="security-center"
-                    element={
-                      <CustomerRoleGuard
-                        module="security_admin"
-                        action="read"
-                      />
-                    }
-                  >
+                  {/* Not RBAC gated: Security Center access comes from the
+                      project's own feature flags (hasSraReadAccess /
+                      hasComponentAnalysisReadAccess), as it did before RBAC.
+                      The security_admin module had only super_admin, which no
+                      data source emits, so gating here closed the section to
+                      every user. */}
+                  <Route path="security-center">
                     <Route index element={<SecurityPage />} />
                     <Route
                       path="security-report-analysis/:caseId"

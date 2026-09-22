@@ -25,7 +25,6 @@ import useGetMetadata from "@api/useGetMetadata";
 import { APP_SHELL_NAV_ITEMS } from "@features/project-hub/constants/appLayoutConstants";
 import type { AppShellNavItem } from "@features/project-hub/types/appLayout";
 import { getProjectPermissions } from "@utils/permission";
-import useCustomerPermissions from "@hooks/useCustomerPermissions";
 
 // Props for the SideBar component.
 interface SideBarProps {
@@ -63,7 +62,6 @@ export default function SideBar({
   const usageMetricsEnabled =
     portalMetadata?.featureFlags?.usageMetricsEnabled === true;
 
-  const { canAccessSecurityAdmin } = useCustomerPermissions();
 
   const projectTypeLabel =
     selectedProject?.type?.label ?? projectDetails?.type?.label;
@@ -104,10 +102,11 @@ export default function SideBar({
       items = items.filter((item: AppShellNavItem) => item.id !== "updates");
     }
 
+    // Feature flags alone, as before RBAC: the security_admin permission had
+    // no holder, so including it hid Security Center from everyone.
     if (
-      !canAccessSecurityAdmin ||
-      (!permissions.hasSecurityReportAnalysis &&
-        !permissions.hasComponentAnalysis)
+      !permissions.hasSecurityReportAnalysis &&
+      !permissions.hasComponentAnalysis
     ) {
       items = items.filter(
         (item: AppShellNavItem) => item.id !== "security-center",
@@ -117,7 +116,6 @@ export default function SideBar({
     return items;
   }, [
     isProjectTypeResolved,
-    canAccessSecurityAdmin,
     permissions.hasOperations,
     permissions.hasSR,
     permissions.hasCR,

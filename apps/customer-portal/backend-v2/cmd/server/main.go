@@ -305,9 +305,15 @@ func main() {
 	mux.Handle("POST /cases/{caseId}/call-requests/search", middleware.RequirePermission(roleResolver, middleware.ModuleCases, middleware.ActionRead)(http.HandlerFunc(callRequestHandler.SearchCallRequests)))
 	mux.Handle("PATCH /cases/{caseId}/call-requests/{id}", middleware.RequirePermission(roleResolver, middleware.ModuleCases, middleware.ActionUpdate)(http.HandlerFunc(callRequestHandler.PatchCallRequest)))
 
-	mux.Handle("POST /products/vulnerabilities/search", middleware.RequirePermission(roleResolver, middleware.ModuleSecurityAdmin, middleware.ActionRead)(http.HandlerFunc(productVulnerabilityHandler.SearchProductVulnerabilities)))
-	mux.Handle("GET /products/vulnerabilities/{id}", middleware.RequirePermission(roleResolver, middleware.ModuleSecurityAdmin, middleware.ActionRead)(http.HandlerFunc(productVulnerabilityHandler.GetProductVulnerability)))
-	mux.Handle("GET /products/vulnerabilities/meta", middleware.RequirePermission(roleResolver, middleware.ModuleSecurityAdmin, middleware.ActionRead)(http.HandlerFunc(globalHandler.GetVulnerabilityMeta)))
+	// Security Center is governed by the project's own feature flags, not by
+	// RBAC. The security_admin module had exactly one holder, super_admin,
+	// which no data source emits, so gating these on it closed Security Center
+	// to every user. Restored to the pre-RBAC registration. Who should hold
+	// Security Admin is a product decision; until it has one, there is no
+	// persona to gate on.
+	mux.HandleFunc("POST /products/vulnerabilities/search", productVulnerabilityHandler.SearchProductVulnerabilities)
+	mux.HandleFunc("GET /products/vulnerabilities/{id}", productVulnerabilityHandler.GetProductVulnerability)
+	mux.HandleFunc("GET /products/vulnerabilities/meta", globalHandler.GetVulnerabilityMeta)
 
 	mux.HandleFunc("GET /metadata", globalHandler.GetMetadata)
 	mux.HandleFunc("POST /search", globalHandler.GlobalSearch)

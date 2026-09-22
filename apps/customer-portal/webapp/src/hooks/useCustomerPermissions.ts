@@ -40,7 +40,7 @@ export type CustomerModule =
   | "deployments"
   | "deployment_products"
   | "deployment_resources"
-  | "security_admin";
+;
 
 /**
  * CRUD actions applicable to portal modules.
@@ -299,12 +299,6 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
       "partner_user",
     ],
   },
-  security_admin: {
-    create: [],
-    read: [],
-    update: [],
-    delete: [],
-  },
 };
 
 /**
@@ -366,7 +360,6 @@ export function useCustomerPermissions() {
       canDeleteCase: can("cases", "delete"),
       canAccessTimeCards: can("time_cards", "read"),
       canAccessChangeRequests: can("change_requests", "read"),
-      canAccessSecurityAdmin: can("security_admin", "read"),
       canManageContacts: hasAnyRole([
         "admin",
         "customer_admin",
