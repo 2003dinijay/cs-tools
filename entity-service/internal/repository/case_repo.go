@@ -116,7 +116,7 @@ type CaseRepository interface {
 	// CreateCase inserts a new case row (both work_item and "case").
 	CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
 	// CreateCaseFromServiceNow inserts a new case row (both work_item and
-	// "case"), the same as CreateCase, but for DATA_SOURCE=postgres-primary-sn-fallback's
+	// "case"), the same as CreateCase, but for DATA_SOURCE=postgres-servicenow-dual-write's
 	// SN-first case creation (see caseService.CreateCase's own doc comment):
 	// req.Type must already be "case" (validated by the caller). Unlike
 	// CreateCase, identity is NOT generated here -- id/number/wso2ID/createdBy
