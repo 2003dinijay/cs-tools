@@ -497,6 +497,34 @@ describe("AnnouncementRequestDialog — approved", () => {
     fireEvent.click(publishBtn);
     expect(handlePublish).not.toHaveBeenCalled();
   });
+
+  // useIdTokenClaims genuinely returns undefined for a moment after mount
+  // while it decodes the ID token asynchronously — even for the real
+  // creator, who is signed in the whole time. Without distinguishing that
+  // from "loaded, and it's someone else," this would flash the wrong
+  // "only X can publish" denial at the very user it's meant to allow.
+  it("disables Publish without the non-creator message while claims are still loading", () => {
+    mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
+    mockedIdTokenClaims.mockReturnValue(undefined);
+    const handlePublish = vi.fn();
+    mockedPublish.mockReturnValue({
+      publishing: false,
+      progress: null,
+      succeededProjectIds: [],
+      failedProjectIds: [],
+      failedTagProjectIds: [],
+      published: null,
+      handlePublish,
+    });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    const publishBtn = screen.getByRole("button", { name: /^publish$/i });
+    expect(publishBtn).toBeDisabled();
+    expect(screen.queryByText(/can publish this request/i)).not.toBeInTheDocument();
+
+    fireEvent.click(publishBtn);
+    expect(handlePublish).not.toHaveBeenCalled();
+  });
 });
 
 describe("AnnouncementRequestDialog — published", () => {

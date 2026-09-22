@@ -128,6 +128,13 @@ export default function AnnouncementRequestDialog({
   // request.createdBy) is sourced from — see IdTokenClaims's own doc
   // comment for why not `sub`, which is per-session.
   const claims = useIdTokenClaims();
+  // useIdTokenClaims briefly returns undefined while it decodes the token
+  // asynchronously after mount, even for an already-signed-in user (this
+  // dialog is only ever reached signed-in, behind AuthGuard) — without
+  // distinguishing that from "loaded, and it's someone else," the Publish
+  // button would flash disabled with an incorrect "only X can publish" for
+  // the real creator on every open, until the token finishes decoding.
+  const claimsReady = claims !== undefined;
   const isRequestCreator = !!request && !!claims?.userid && claims.userid === request.createdBy;
   const [confirmPublishOpen, setConfirmPublishOpen] = useState(false);
 
@@ -515,24 +522,28 @@ export default function AnnouncementRequestDialog({
                     variant="contained"
                     color="primary"
                     size="small"
-                    onClick={() => !hasUnsavedChanges && isRequestCreator && setConfirmPublishOpen(true)}
-                    disabled={publish.publishing || hasUnsavedChanges || !isRequestCreator}
+                    onClick={() =>
+                      !hasUnsavedChanges && claimsReady && isRequestCreator && setConfirmPublishOpen(true)
+                    }
+                    disabled={publish.publishing || hasUnsavedChanges || !claimsReady || !isRequestCreator}
                   >
-                    {publish.publishing
-                      ? "Publishing…"
-                      : publish.failedProjectIds.length > 0
-                        ? "Retry failed projects"
-                        : publish.failedTagProjectIds.length > 0
-                          ? "Retry security label"
-                          : "Publish"}
+                    {!claimsReady
+                      ? "Publish"
+                      : publish.publishing
+                        ? "Publishing…"
+                        : publish.failedProjectIds.length > 0
+                          ? "Retry failed projects"
+                          : publish.failedTagProjectIds.length > 0
+                            ? "Retry security label"
+                            : "Publish"}
                   </Button>
                 </Box>
-                {!isRequestCreator && (
+                {claimsReady && !isRequestCreator && (
                   <Typography variant="caption" color="text.secondary">
                     Only {request.createdBy} can publish this request — approving it doesn't grant that.
                   </Typography>
                 )}
-                {isRequestCreator && hasUnsavedChanges && (
+                {claimsReady && isRequestCreator && hasUnsavedChanges && (
                   <Typography variant="caption" color="text.secondary">
                     Save your changes first — Publish sends whatever's currently saved, not what's still
                     unsaved here.
