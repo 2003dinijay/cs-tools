@@ -1013,7 +1013,7 @@ func (r *caseRepo) SearchCaseAttachments(ctx context.Context, caseID string, pag
 	const countQuery = `SELECT COUNT(*) FROM case_attachment WHERE case_id = $1 AND status = 'complete'`
 	const dataQuery = `
 		SELECT ca.id, ca.case_id, ca.filename, ca.mime_type, ca.size_bytes, ca.description,
-		       u.id, u.email, TRIM(u.first_name || ' ' || u.last_name) AS full_name,
+		       u.id, u.email, COALESCE(u.name, NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS full_name,
 		       ca.created_on, ca.storage_key, ca.status
 		FROM case_attachment ca
 		JOIN "user" u ON u.id = ca.uploaded_by
@@ -1082,7 +1082,7 @@ func (r *caseRepo) SearchCaseAttachments(ctx context.Context, caseID string, pag
 func (r *caseRepo) GetCaseAttachmentByID(ctx context.Context, id string) (domain.Attachment, error) {
 	const query = `
 		SELECT ca.id, ca.case_id, ca.filename, ca.mime_type, ca.size_bytes, ca.description,
-		       u.id, u.email, TRIM(u.first_name || ' ' || u.last_name) AS full_name,
+		       u.id, u.email, COALESCE(u.name, NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS full_name,
 		       ca.created_on, ca.storage_key, ca.status
 		FROM case_attachment ca
 		JOIN "user" u ON u.id = ca.uploaded_by
