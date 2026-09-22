@@ -42,6 +42,8 @@ type entityAnnouncementRequestClient interface {
 	SubmitAnnouncementRequest(ctx context.Context, id string, body []byte) ([]byte, error)
 	ApproveAnnouncementRequest(ctx context.Context, id string, body []byte) ([]byte, error)
 	PublishAnnouncementRequest(ctx context.Context, id string, body []byte) ([]byte, error)
+	CreateAnnouncementRequestUpdate(ctx context.Context, id string, body []byte) ([]byte, error)
+	ListAnnouncementRequestUpdates(ctx context.Context, id string) ([]byte, error)
 }
 
 // AnnouncementRequestHandler handles HTTP requests for the Phase 2
@@ -330,12 +332,138 @@ func (h *AnnouncementRequestHandler) ApproveAnnouncementRequest(w http.ResponseW
 }
 
 // PublishAnnouncementRequest handles
-// POST /announcement-requests/{id}/publish. Same shape as Approve — no
-// request body, actor-only. Does not itself create any cases; the webapp's
-// own fan-out (unchanged from today) is what actually sends the
-// announcement, separately, after this call succeeds.
+// POST /announcement-requests/{id}/publish. Unlike Approve, this does take
+// a body: caseIds, the real case id created for each project in the
+// request's own resolvedProjectIds, from the webapp's own fan-out
+// (unchanged from today, and still what actually sends the announcement —
+// this call only records that it happened and which cases resulted, so a
+// later update can target them). actorId is still always the authenticated
+// caller, never read from the request body.
 func (h *AnnouncementRequestHandler) PublishAnnouncementRequest(w http.ResponseWriter, r *http.Request) {
-	h.actorOnlyTransition(w, r, "publish", h.entity.PublishAnnouncementRequest, "Failed to publish the announcement request.")
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	body, ok := readJSONBody(w, r)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		CaseIDs []string `json:"caseIds"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+	if len(req.CaseIDs) == 0 {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	upstreamBody, err := json.Marshal(struct {
+		ActorID string   `json:"actorId"`
+		CaseIDs []string `json:"caseIds"`
+	}{ActorID: user.UserID, CaseIDs: req.CaseIDs})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+
+	result, err := h.entity.PublishAnnouncementRequest(r.Context(), id, upstreamBody)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity PublishAnnouncementRequest failed", "userID", user.UserID, "id", id, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to publish the announcement request.")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// CreateAnnouncementRequestUpdate handles
+// POST /announcement-requests/{id}/updates. content is the follow-up text;
+// actorId is always the authenticated caller. Does not itself apply content
+// as a comment anywhere — the webapp's own fan-out (POST
+// /cases/{id}/comments per id in publishedCaseIds) does that, separately,
+// after this call succeeds.
+func (h *AnnouncementRequestHandler) CreateAnnouncementRequestUpdate(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	body, ok := readJSONBody(w, r)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+	if req.Content == "" {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	upstreamBody, err := json.Marshal(struct {
+		Content string `json:"content"`
+		ActorID string `json:"actorId"`
+	}{Content: req.Content, ActorID: user.UserID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+
+	result, err := h.entity.CreateAnnouncementRequestUpdate(r.Context(), id, upstreamBody)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity CreateAnnouncementRequestUpdate failed", "userID", user.UserID, "id", id, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to post the update.")
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// ListAnnouncementRequestUpdates handles
+// GET /announcement-requests/{id}/updates — a plain passthrough, no actor
+// injection needed for a read.
+func (h *AnnouncementRequestHandler) ListAnnouncementRequestUpdates(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	result, err := h.entity.ListAnnouncementRequestUpdates(r.Context(), id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity ListAnnouncementRequestUpdates failed", "userID", user.UserID, "id", id, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to list updates for the announcement request.")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *AnnouncementRequestHandler) actorOnlyTransition(

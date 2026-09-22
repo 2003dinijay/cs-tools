@@ -58,6 +58,13 @@ const (
 	// real and live, only the actual Publish call is inert, so there's
 	// nothing for that consumer to receive yet either.
 	TypeCaseBillableStatusChanged Type = "case.billable_status_changed"
+	// TypeProjectContactInvited is Postgres-data-source-only. Published by
+	// the Salesforce membership ingest (salesforceEventService) after a
+	// Project_Contact__c in state INVITED / RE-INVITED has been written to the
+	// database. csm-notification-service consumes it to create the Asgardeo
+	// identity (via scim-operations-service) and send the invitation email —
+	// see ProjectContactInvitedPayload. Keyed by the Salesforce membership Id.
+	TypeProjectContactInvited Type = "project_contact.invited"
 )
 
 // Envelope is the wire shape of every record on the case-events topic.
@@ -273,4 +280,26 @@ type CaseCreatedPayload struct {
 type IncidentCreatedPayload struct {
 	Title            string `json:"title"`
 	ShortDescription string `json:"shortDescription"`
+}
+
+// ProjectContactInvitedPayload is the payload of TypeProjectContactInvited:
+// everything csm-notification-service needs to provision the invited person
+// and address the invitation, so it never has to re-read Salesforce. Roles
+// are the raw Salesforce Project_Role__c values (e.g. "Admin",
+// "Portal user"). IsIntegrationUser=true means: record the identity and email
+// steps as SKIPPED — integration users never sign in and get no email. Type is
+// the Salesforce Contact_Type__c ("OWN CONTACT" / "PARTNER CONTACT" /
+// "RELATED CONTACT"). Mirror any change here in csm-notification-service's
+// own copy of this struct.
+type ProjectContactInvitedPayload struct {
+	MembershipSfID    string   `json:"membershipSfId"`
+	ContactSfID       string   `json:"contactSfId"`
+	Email             string   `json:"email"`
+	GivenName         string   `json:"givenName"`
+	FamilyName        string   `json:"familyName"`
+	ProjectName       string   `json:"projectName"`
+	ProjectKey        string   `json:"projectKey"`
+	Roles             []string `json:"roles"`
+	IsIntegrationUser bool     `json:"isIntegrationUser"`
+	Type              string   `json:"type"`
 }

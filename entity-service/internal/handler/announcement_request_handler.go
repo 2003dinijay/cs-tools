@@ -143,11 +143,37 @@ func (h *AnnouncementRequestHandler) ApproveAnnouncementRequest(w http.ResponseW
 // PublishAnnouncementRequest handles
 // POST /announcement-requests/{id}/publish.
 func (h *AnnouncementRequestHandler) PublishAnnouncementRequest(w http.ResponseWriter, r *http.Request) {
-	var req domain.AnnouncementRequestActorRequest
+	var req domain.PublishAnnouncementRequestRequest
 	if !decodeRequest(w, r, &req) {
 		return
 	}
-	resp, err := h.svc.MarkPublished(r.Context(), r.PathValue("id"), req.ActorID)
+	resp, err := h.svc.MarkPublished(r.Context(), r.PathValue("id"), req.ActorID, req.CaseIDs)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeAnnouncementRequestJSON(w, http.StatusOK, resp)
+}
+
+// CreateAnnouncementRequestUpdate handles
+// POST /announcement-requests/{id}/updates.
+func (h *AnnouncementRequestHandler) CreateAnnouncementRequestUpdate(w http.ResponseWriter, r *http.Request) {
+	var req domain.CreateAnnouncementRequestUpdateRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.AddUpdate(r.Context(), r.PathValue("id"), req.ActorID, req.Content)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeAnnouncementRequestJSON(w, http.StatusCreated, resp)
+}
+
+// ListAnnouncementRequestUpdates handles
+// GET /announcement-requests/{id}/updates.
+func (h *AnnouncementRequestHandler) ListAnnouncementRequestUpdates(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.ListUpdates(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

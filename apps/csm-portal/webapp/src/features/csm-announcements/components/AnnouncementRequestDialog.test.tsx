@@ -15,7 +15,7 @@
 // under the License.
 
 import type { ReactElement } from "react";
-import { fireEvent, render as rtlRender, screen } from "@testing-library/react";
+import { act, fireEvent, render as rtlRender, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import "@testing-library/jest-dom/vitest";
@@ -26,6 +26,9 @@ import { useRecordAnnouncementRequestDryRun } from "@features/csm-announcements/
 import { useSubmitAnnouncementRequest } from "@features/csm-announcements/api/useSubmitAnnouncementRequest";
 import { useApproveAnnouncementRequest } from "@features/csm-announcements/api/useApproveAnnouncementRequest";
 import { usePublishAnnouncementRequest } from "@features/csm-announcements/api/usePublishAnnouncementRequest";
+import { useCreateAnnouncementRequestUpdate } from "@features/csm-announcements/api/useCreateAnnouncementRequestUpdate";
+import { useListAnnouncementRequestUpdates } from "@features/csm-announcements/api/useListAnnouncementRequestUpdates";
+import { usePostAnnouncementUpdateComments } from "@features/csm-announcements/api/usePostAnnouncementUpdateComments";
 import { useAnnouncementDryRun } from "@features/csm-announcements/api/useAnnouncementDryRun";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import type { AnnouncementRequest } from "@features/csm-announcements/types/announcementRequests";
@@ -52,6 +55,15 @@ vi.mock("@features/csm-announcements/api/useApproveAnnouncementRequest", () => (
 }));
 vi.mock("@features/csm-announcements/api/usePublishAnnouncementRequest", () => ({
   usePublishAnnouncementRequest: vi.fn(),
+}));
+vi.mock("@features/csm-announcements/api/useCreateAnnouncementRequestUpdate", () => ({
+  useCreateAnnouncementRequestUpdate: vi.fn(),
+}));
+vi.mock("@features/csm-announcements/api/useListAnnouncementRequestUpdates", () => ({
+  useListAnnouncementRequestUpdates: vi.fn(),
+}));
+vi.mock("@features/csm-announcements/api/usePostAnnouncementUpdateComments", () => ({
+  usePostAnnouncementUpdateComments: vi.fn(),
 }));
 vi.mock("@features/csm-announcements/api/useAnnouncementDryRun", () => ({
   DRY_RUN_TAG_LABEL: "Dry Run",
@@ -93,6 +105,9 @@ const mockedRecordDryRun = vi.mocked(useRecordAnnouncementRequestDryRun);
 const mockedSubmit = vi.mocked(useSubmitAnnouncementRequest);
 const mockedApprove = vi.mocked(useApproveAnnouncementRequest);
 const mockedPublish = vi.mocked(usePublishAnnouncementRequest);
+const mockedCreateUpdate = vi.mocked(useCreateAnnouncementRequestUpdate);
+const mockedListUpdates = vi.mocked(useListAnnouncementRequestUpdates);
+const mockedPostUpdateComments = vi.mocked(usePostAnnouncementUpdateComments);
 const mockedDryRun = vi.mocked(useAnnouncementDryRun);
 const mockedIdTokenClaims = vi.mocked(useIdTokenClaims);
 
@@ -134,6 +149,9 @@ beforeEach(() => {
   mockedSubmit.mockReset();
   mockedApprove.mockReset();
   mockedPublish.mockReset();
+  mockedCreateUpdate.mockReset();
+  mockedListUpdates.mockReset();
+  mockedPostUpdateComments.mockReset();
   mockedDryRun.mockReset();
   mockedIdTokenClaims.mockReset();
 
@@ -160,6 +178,21 @@ beforeEach(() => {
     failedTagProjectIds: [],
     published: null,
     handlePublish: vi.fn(),
+  });
+  mockedCreateUpdate.mockReturnValue(noopMutation() as ReturnType<typeof useCreateAnnouncementRequestUpdate>);
+  mockedListUpdates.mockReturnValue({
+    data: { updates: [] },
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useListAnnouncementRequestUpdates>);
+  mockedPostUpdateComments.mockReturnValue({
+    posting: false,
+    progress: null,
+    succeededCaseIds: [],
+    failedCaseIds: [],
+    done: false,
+    handlePost: vi.fn(),
+    reset: vi.fn(),
   });
 });
 
@@ -542,5 +575,68 @@ describe("AnnouncementRequestDialog — published", () => {
     expect(screen.queryByRole("button", { name: /submit for approval/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /mark as approved/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^publish$/i })).not.toBeInTheDocument();
+  });
+
+  it("posting an update records it, then fans out a comment to every published case, via a confirmation popup", async () => {
+    mockGet({
+      state: "published",
+      resolvedProjectIds: ["p-1", "p-2"],
+      resolvedProjectCount: 2,
+      publishedBy: "jane@example.com",
+      publishedAt: "2026-07-03T10:00:00Z",
+      publishedCaseIds: ["case-1", "case-2"],
+    });
+    const createUpdateMutateAsync = vi.fn().mockResolvedValue({ id: "u-1", content: "A correction." });
+    mockedCreateUpdate.mockReturnValue({
+      mutate: vi.fn(),
+      mutateAsync: createUpdateMutateAsync,
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useCreateAnnouncementRequestUpdate>);
+    const handlePost = vi.fn().mockResolvedValue(undefined);
+    mockedPostUpdateComments.mockReturnValue({
+      posting: false,
+      progress: null,
+      succeededCaseIds: [],
+      failedCaseIds: [],
+      done: false,
+      handlePost,
+      reset: vi.fn(),
+    });
+
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "A correction." } });
+    fireEvent.click(screen.getByRole("button", { name: /^post update$/i }));
+
+    expect(await screen.findByText("Confirm update")).toBeInTheDocument();
+    expect(createUpdateMutateAsync).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^post to 2 cases$/i }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(createUpdateMutateAsync).toHaveBeenCalledWith({
+      id: "req-1",
+      payload: { content: "A correction." },
+    });
+    expect(handlePost).toHaveBeenCalledWith(["case-1", "case-2"], "A correction.", "jane@example.com");
+  });
+
+  it("disables Post update and explains why for a request published before case tracking existed", () => {
+    mockGet({
+      state: "published",
+      resolvedProjectIds: ["p-1"],
+      resolvedProjectCount: 1,
+      publishedBy: "jane@example.com",
+      publishedAt: "2026-07-03T10:00:00Z",
+    });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: /^post update$/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/published before case tracking existed/i)).toBeInTheDocument();
   });
 });

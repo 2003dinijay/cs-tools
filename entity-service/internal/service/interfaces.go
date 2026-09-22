@@ -134,6 +134,23 @@ type SLAStatusService interface {
 	SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination) (domain.SearchSLAStatusResponse, error)
 }
 
+// OnboardingStepService records and reads the per-membership status ledger
+// of the customer onboarding flow (onboarding_step). The DATABASE step is
+// written in-process by the Salesforce membership ingest; IDENTITY, EMAIL
+// and REGISTRATION are written over HTTP by csm-notification-service and
+// the customer portal backend.
+type OnboardingStepService interface {
+	// Upsert writes the latest outcome of one step. MembershipSfID and Step
+	// come from the path; a repeat for the same pair updates the row and
+	// increments attemptCount.
+	Upsert(ctx context.Context, req domain.UpsertOnboardingStepRequest) (domain.OnboardingStep, error)
+	// GetByMembership returns every recorded step for a membership (an empty
+	// list for an unknown membership, never a 404).
+	GetByMembership(ctx context.Context, membershipSfID string) (domain.GetOnboardingStepsResponse, error)
+	// Search returns a filtered, paginated list of steps, newest first.
+	Search(ctx context.Context, req domain.SearchOnboardingStepsRequest) (domain.SearchOnboardingStepsResponse, error)
+}
+
 // ScheduledTaskRunService defines the operations available on the
 // scheduled_task_run entity — see domain.ScheduledTaskRun's doc comment for
 // what it's for.
@@ -214,13 +231,26 @@ type AnnouncementRequestService interface {
 	// returned unless the current state is pending_approval. There is no
 	// approver-role check — see the interface's own doc comment.
 	Approve(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error)
-	// MarkPublished moves approved -> published. Does not itself create any
-	// cases. A ConflictError is returned unless the current state is
-	// approved. Unlike Approve, this IS restricted: a ForbiddenError is
-	// returned unless actorID matches the request's own CreatedBy -- an
-	// approver's job is only to approve, not to also trigger the real send
-	// to customers.
-	MarkPublished(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error)
+	// MarkPublished moves approved -> published, storing caseIDs (the real
+	// case created for each resolved project, from the caller's own
+	// fan-out) as PublishedCaseIDs. Does not itself create any cases. A
+	// ConflictError is returned unless the current state is approved; a
+	// ValidationError if caseIDs is empty. Unlike Approve, this IS
+	// restricted: a ForbiddenError is returned unless actorID matches the
+	// request's own CreatedBy -- an approver's job is only to approve, not
+	// to also trigger the real send to customers.
+	MarkPublished(ctx context.Context, id, actorID string, caseIDs []string) (domain.AnnouncementRequest, error)
+	// AddUpdate posts a new AnnouncementRequestUpdate for a published
+	// request. Does not itself apply Content as a comment anywhere -- the
+	// caller's own fan-out does that, separately, after this call succeeds
+	// (same separation as MarkPublished). A ConflictError is returned
+	// unless the current state is published; a ForbiddenError unless
+	// actorID matches the request's own CreatedBy (same creator-only
+	// restriction as MarkPublished, for the same reason).
+	AddUpdate(ctx context.Context, id, actorID, content string) (domain.AnnouncementRequestUpdate, error)
+	// ListUpdates returns every update posted for id, newest first. A
+	// NotFoundError is returned if the request itself doesn't exist.
+	ListUpdates(ctx context.Context, id string) (domain.SearchAnnouncementRequestUpdatesResponse, error)
 }
 
 // SNAccountService defines the account operations backed by the ServiceNow data source.

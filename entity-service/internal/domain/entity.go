@@ -416,7 +416,13 @@ const (
 	SalesforceEventRestored  = "RESTORED"
 	SalesforceEventUndefined = "UNDEFINED"
 	SalesforceEntityAccount  = "Account"
-	SalesforceSyncActor      = "salesforce-sync"
+	// SalesforceEntityProjectContact is the Project_Contact__c custom object
+	// (a contact's membership of a project). SalesforceEntityProjectContactAlt
+	// is accepted too in case the publisher drops the __c suffix.
+	SalesforceEntityProjectContact    = "Project_Contact__c"
+	SalesforceEntityProjectContactAlt = "Project_Contact"
+	SalesforceEntityContact           = "Contact"
+	SalesforceSyncActor               = "salesforce-sync"
 )
 
 // SalesforceEventRequest is the ASB envelope POSTed to /salesforce/events.
@@ -445,6 +451,159 @@ type SalesforceAccountUpsert struct {
 	Classification            *string
 	TechnicalOwnerID          *string
 	SecondaryTechnicalOwnerID *string
+}
+
+// Salesforce Project_Contact__c states, as stored in Salesforce State__c and
+// in project_contact.state (project_contact_state_enum).
+const (
+	MembershipStateInvited     = "INVITED"
+	MembershipStateRegistered  = "REGISTERED"
+	MembershipStateReInvited   = "RE-INVITED"
+	MembershipStateDeactivated = "DEACTIVATED"
+)
+
+// Salesforce Contact_Type__c values on Project_Contact__c.
+const (
+	MembershipTypeOwnContact     = "OWN CONTACT"
+	MembershipTypePartnerContact = "PARTNER CONTACT"
+)
+
+// SalesforceMembershipUpsert is one Salesforce Project_Contact__c, mapped and
+// resolved by the ingest service, ready to be written by
+// repository.ProjectMembershipRepository.Upsert. The repository resolves the
+// existing rows by natural keys (project key / sf_id, account sf_id, contact
+// email) and stamps every Salesforce id it touches, so a replay of the same
+// membership is idempotent. GlobalRoles / ProjectGroups / ManagedAdminRoles
+// are already mapped from the Salesforce roles by the service (see
+// mapGlobalRoles / mapProjectGroups) — the repository only resolves names to
+// rows.
+type SalesforceMembershipUpsert struct {
+	MembershipSfID string
+	State          string
+	Type           string
+	// Email is the invited address stored on project_contact.email.
+	Email string
+
+	ContactSfID         string
+	ContactEmail        string
+	ContactName         string
+	ContactFirstName    string
+	ContactLastName     string
+	ContactAccountSfID  string
+	IsCsAdmin           bool
+	IsCsIntegrationUser bool
+
+	ProjectSfID string
+	ProjectKey  string
+
+	// GlobalRoles are the role.name values the user must hold after the upsert
+	// (e.g. external, customer, customer_admin). Roles not listed here and not
+	// in ManagedAdminRoles are left untouched.
+	GlobalRoles []string
+	// ManagedAdminRoles are the role.name values the ingest owns exclusively
+	// (customer_admin, partner_admin): any of these the user holds but which
+	// are absent from GlobalRoles are revoked.
+	ManagedAdminRoles []string
+	// ProjectGroups are the project_group."group" names the membership must be
+	// in after the upsert; every other group membership of this project
+	// contact is removed.
+	ProjectGroups []string
+}
+
+// SalesforceMembershipUpsertResult reports what the upsert resolved or created.
+type SalesforceMembershipUpsertResult struct {
+	ProjectID             string
+	AccountID             string
+	UserID                string
+	AccountContactID      string
+	ProjectContactID      string
+	CreatedUser           bool
+	CreatedAccountContact bool
+	CreatedProjectContact bool
+}
+
+// OnboardingStepName is the onboarding_step.step enum: one row per membership
+// per step, the latest outcome of that step.
+type OnboardingStepName string
+
+const (
+	OnboardingStepIdentity     OnboardingStepName = "IDENTITY"
+	OnboardingStepDatabase     OnboardingStepName = "DATABASE"
+	OnboardingStepEmail        OnboardingStepName = "EMAIL"
+	OnboardingStepRegistration OnboardingStepName = "REGISTRATION"
+)
+
+// OnboardingStepStatus is the onboarding_step.status enum.
+type OnboardingStepStatus string
+
+const (
+	OnboardingStepSucceeded OnboardingStepStatus = "SUCCEEDED"
+	OnboardingStepFailed    OnboardingStepStatus = "FAILED"
+	OnboardingStepSkipped   OnboardingStepStatus = "SKIPPED"
+)
+
+// OnboardingStep is one row of onboarding_step — see migration
+// 000075_onboarding_step_table for the column semantics.
+type OnboardingStep struct {
+	ID               string               `json:"id"`
+	MembershipSfID   string               `json:"membershipSfId"`
+	ContactSfID      *string              `json:"contactSfId"`
+	Email            string               `json:"email"`
+	ProjectID        *string              `json:"projectId"`
+	ProjectContactID *string              `json:"projectContactId"`
+	Step             OnboardingStepName   `json:"step"`
+	Status           OnboardingStepStatus `json:"status"`
+	AttemptCount     int                  `json:"attemptCount"`
+	LastError        *string              `json:"lastError"`
+	EventType        string               `json:"eventType"`
+	EventModifiedOn  time.Time            `json:"eventModifiedOn"`
+	CreatedOn        time.Time            `json:"createdOn"`
+	UpdatedOn        time.Time            `json:"updatedOn"`
+}
+
+// UpsertOnboardingStepRequest is the body of
+// PUT /onboarding-steps/{membershipSfId}/{step}. The membership id and the
+// step come from the path (json:"-"). Repeating the call for the same
+// membership + step updates the row and increments attemptCount.
+type UpsertOnboardingStepRequest struct {
+	MembershipSfID   string               `json:"-"`
+	Step             OnboardingStepName   `json:"-"`
+	Status           OnboardingStepStatus `json:"status"`
+	LastError        *string              `json:"lastError"`
+	EventType        string               `json:"eventType"`
+	EventModifiedOn  time.Time            `json:"eventModifiedOn"`
+	Email            string               `json:"email"`
+	ContactSfID      *string              `json:"contactSfId"`
+	ProjectID        *string              `json:"projectId"`
+	ProjectContactID *string              `json:"projectContactId"`
+	// UpdatedBy is set by the service, not the caller.
+	UpdatedBy string `json:"-"`
+}
+
+// OnboardingStepFilters narrows POST /onboarding-steps/search.
+type OnboardingStepFilters struct {
+	ProjectID       *string                `json:"projectId"`
+	MembershipSfIDs []string               `json:"membershipSfIds"`
+	Statuses        []OnboardingStepStatus `json:"statuses"`
+}
+
+// SearchOnboardingStepsRequest is the body of POST /onboarding-steps/search.
+type SearchOnboardingStepsRequest struct {
+	Filters    OnboardingStepFilters `json:"filters"`
+	Pagination Pagination            `json:"pagination"`
+}
+
+// SearchOnboardingStepsResponse is the paginated result of a step search.
+type SearchOnboardingStepsResponse struct {
+	Steps  []OnboardingStep `json:"steps"`
+	Total  int              `json:"total"`
+	Limit  int              `json:"limit"`
+	Offset int              `json:"offset"`
+}
+
+// GetOnboardingStepsResponse is the body of GET /onboarding-steps/{membershipSfId}.
+type GetOnboardingStepsResponse struct {
+	Steps []OnboardingStep `json:"steps"`
 }
 
 // SubscriptionType classifies the subscription type of a project.
@@ -6518,6 +6677,13 @@ type AnnouncementRequest struct {
 	ApprovedAt           *time.Time `json:"approvedAt,omitempty"`
 	PublishedBy          *string    `json:"publishedBy,omitempty"`
 	PublishedAt          *time.Time `json:"publishedAt,omitempty"`
+	// PublishedCaseIDs is nil/unset until MarkPublished — the real case id
+	// created for each project in ResolvedProjectIDs, self-reported by the
+	// same creator-only caller MarkPublished restricts this transition to
+	// (see that method's own doc comment). This is what lets a later update
+	// (see AnnouncementRequestUpdate) target the exact cases this
+	// announcement actually created, instead of re-deriving them.
+	PublishedCaseIDs []string `json:"publishedCaseIds,omitempty"`
 }
 
 // CreateAnnouncementRequestRequest creates a new announcement_requests row
@@ -6578,10 +6744,65 @@ type SubmitAnnouncementRequestRequest struct {
 }
 
 // AnnouncementRequestActorRequest is the minimal request shape for a
-// transition that needs nothing but who's performing it — Approve and
-// MarkPublished both use this.
+// transition that needs nothing but who's performing it — Approve uses
+// this. MarkPublished does not (see PublishAnnouncementRequestRequest):
+// it needs the created case ids too.
 type AnnouncementRequestActorRequest struct {
 	ActorID string `json:"actorId"`
+}
+
+// PublishAnnouncementRequestRequest moves approved -> published.
+// CaseIDs is the real case id created for each project in the request's own
+// ResolvedProjectIDs, from the caller's own fan-out (see
+// domain.AnnouncementRequest.PublishedCaseIDs's own doc comment for the
+// trust model). A ValidationError is returned if it's empty — a "published"
+// request this service can't later target with an update is not a useful
+// state to be in.
+type PublishAnnouncementRequestRequest struct {
+	ActorID string   `json:"actorId"`
+	CaseIDs []string `json:"caseIds"`
+}
+
+// AnnouncementRequestUpdate is one dated follow-up comment applied, after
+// the fact, to every case a published announcement request created — e.g.
+// a correction the CS/Security team asks to have appended. Mirrors
+// ServiceNow's own "Announcement Update with Comments" flow (see that
+// flow's own doc reference), except targeting AnnouncementRequest's real,
+// stored PublishedCaseIDs instead of a fragile short-description/
+// created-date-range match. Append-only — there is no edit/delete for one
+// of these once posted, the same audit-log shape comment/work_item_activity
+// already use elsewhere in this schema.
+type AnnouncementRequestUpdate struct {
+	ID                    string `json:"id"`
+	AnnouncementRequestID string `json:"announcementRequestId"`
+	Content               string `json:"content"`
+	CreatedBy             string `json:"createdBy"`
+	// CreatedOn (not CreatedAt) -- this is a new type, added after this
+	// codebase's timestamp fields were standardized on the "On" suffix for
+	// both the DB column and the JSON wire field (see CLAUDE.md's "Domain
+	// types" section) -- unlike AnnouncementRequest's own older CreatedAt
+	// etc., which only got the DB-column half of that fix to avoid an
+	// unrelated wire-contract break.
+	CreatedOn time.Time `json:"createdOn"`
+}
+
+// CreateAnnouncementRequestUpdateRequest posts a new AnnouncementRequestUpdate.
+// This only records that the update happened, by whom and when, and what it
+// said — same "does not itself create any cases/comments" separation of
+// concerns as MarkPublished; the caller's own fan-out is what actually
+// applies Content as a comment on every PublishedCaseIDs case, separately,
+// after this call succeeds.
+type CreateAnnouncementRequestUpdateRequest struct {
+	Content string `json:"content"`
+	ActorID string `json:"actorId"`
+}
+
+// SearchAnnouncementRequestUpdatesResponse lists every update posted for one
+// announcement request, newest first. No pagination: an announcement
+// realistically receives at most a handful of these over its lifetime, not
+// a volume that needs paging through.
+type SearchAnnouncementRequestUpdatesResponse struct {
+	Updates []AnnouncementRequestUpdate `json:"updates"`
 }
 
 // SearchAnnouncementRequestsRequest filters announcement_requests. State and

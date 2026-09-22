@@ -19,13 +19,13 @@ import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const postEmptyMock = vi.fn();
+const postMock = vi.fn();
 const showErrorMock = vi.fn();
 const postCaseMutateAsyncMock = vi.fn();
 const addTagMutateAsyncMock = vi.fn();
 
 vi.mock("@api/backend/client", () => ({
-  useBackendApi: () => ({ postEmpty: postEmptyMock }),
+  useBackendApi: () => ({ post: postMock }),
 }));
 vi.mock("@context/error-banner/ErrorBannerContext", () => ({
   useErrorBanner: () => ({ showError: showErrorMock }),
@@ -62,7 +62,7 @@ const APPROVED_REQUEST: AnnouncementRequest = {
 };
 
 beforeEach(() => {
-  postEmptyMock.mockReset();
+  postMock.mockReset();
   showErrorMock.mockReset();
   postCaseMutateAsyncMock.mockReset();
   addTagMutateAsyncMock.mockReset();
@@ -98,7 +98,7 @@ describe("usePublishAnnouncementRequest — full success", () => {
     postCaseMutateAsyncMock.mockImplementation(({ projectId }: { projectId: string }) =>
       Promise.resolve({ id: `case-${projectId}`, internalId: "X-1", number: "N-1" }),
     );
-    postEmptyMock.mockResolvedValue({ ...APPROVED_REQUEST, state: "published" });
+    postMock.mockResolvedValue({ ...APPROVED_REQUEST, state: "published" });
 
     const { result } = renderHook(() => usePublishAnnouncementRequest(APPROVED_REQUEST), { wrapper });
     await act(async () => {
@@ -109,7 +109,11 @@ describe("usePublishAnnouncementRequest — full success", () => {
     expect(postCaseMutateAsyncMock).toHaveBeenCalledWith(
       expect.objectContaining({ type: "announcement", projectId: "p-1", subject: "Scheduled maintenance" }),
     );
-    expect(postEmptyMock).toHaveBeenCalledWith("/announcement-requests/req-1/publish");
+    expect(postMock).toHaveBeenCalledWith(
+      "/announcement-requests/req-1/publish",
+      { caseIds: expect.arrayContaining(["case-p-1", "case-p-2"]) },
+    );
+    expect((postMock.mock.calls[0][1] as { caseIds: string[] }).caseIds).toHaveLength(2);
     expect(result.current.published?.state).toBe("published");
     expect(result.current.failedProjectIds).toEqual([]);
     expect(result.current.succeededProjectIds.sort()).toEqual(["p-1", "p-2"]);
@@ -117,7 +121,7 @@ describe("usePublishAnnouncementRequest — full success", () => {
 
   it("attaches the security tag per case when isSecurityAnnouncement is set", async () => {
     postCaseMutateAsyncMock.mockResolvedValue({ id: "case-1", internalId: "X-1", number: "N-1" });
-    postEmptyMock.mockResolvedValue({ ...APPROVED_REQUEST, state: "published" });
+    postMock.mockResolvedValue({ ...APPROVED_REQUEST, state: "published" });
     addTagMutateAsyncMock.mockResolvedValue({});
 
     const { result } = renderHook(
@@ -154,7 +158,7 @@ describe("usePublishAnnouncementRequest — partial failure and retry", () => {
     expect(result.current.succeededProjectIds).toEqual(["p-1"]);
     expect(result.current.failedProjectIds).toEqual(["p-2"]);
     expect(result.current.published).toBeNull();
-    expect(postEmptyMock).not.toHaveBeenCalled();
+    expect(postMock).not.toHaveBeenCalled();
     expect(showErrorMock).toHaveBeenCalledWith(expect.stringMatching(/failed for project p-2/i));
   });
 
@@ -174,7 +178,7 @@ describe("usePublishAnnouncementRequest — partial failure and retry", () => {
 
     // Fix the failing project and retry.
     postCaseMutateAsyncMock.mockResolvedValue({ id: "case-p-2", internalId: "X-2", number: "N-2" });
-    postEmptyMock.mockResolvedValue({ ...APPROVED_REQUEST, state: "published" });
+    postMock.mockResolvedValue({ ...APPROVED_REQUEST, state: "published" });
 
     await act(async () => {
       await result.current.handlePublish();
@@ -185,12 +189,12 @@ describe("usePublishAnnouncementRequest — partial failure and retry", () => {
     expect(postCaseMutateAsyncMock).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p-2" }));
     expect(result.current.failedProjectIds).toEqual([]);
     expect(result.current.succeededProjectIds.sort()).toEqual(["p-1", "p-2"]);
-    expect(postEmptyMock).toHaveBeenCalledTimes(1);
+    expect(postMock).toHaveBeenCalledTimes(1);
   });
 
   it("retries the publish call (without resending any case) when every project already succeeded but marking published failed last time", async () => {
     postCaseMutateAsyncMock.mockResolvedValue({ id: "case-1", internalId: "X-1", number: "N-1" });
-    postEmptyMock.mockRejectedValueOnce(new Error("db down"));
+    postMock.mockRejectedValueOnce(new Error("db down"));
 
     const { result } = renderHook(() => usePublishAnnouncementRequest(APPROVED_REQUEST), { wrapper });
     await act(async () => {
@@ -202,14 +206,14 @@ describe("usePublishAnnouncementRequest — partial failure and retry", () => {
     expect(result.current.published).toBeNull();
     postCaseMutateAsyncMock.mockClear();
 
-    postEmptyMock.mockResolvedValueOnce({ ...APPROVED_REQUEST, state: "published" });
+    postMock.mockResolvedValueOnce({ ...APPROVED_REQUEST, state: "published" });
     await act(async () => {
       await result.current.handlePublish();
     });
 
     // No case is ever recreated — only the publish call itself is retried.
     expect(postCaseMutateAsyncMock).not.toHaveBeenCalled();
-    expect(postEmptyMock).toHaveBeenCalledTimes(2);
+    expect(postMock).toHaveBeenCalledTimes(2);
     expect(result.current.published?.state).toBe("published");
   });
 });
@@ -238,7 +242,7 @@ describe("usePublishAnnouncementRequest — security-tag failure blocks publish"
     // request must not reach the terminal published state with its
     // security tag missing and no way to fix it afterward.
     expect(postCaseMutateAsyncMock).toHaveBeenCalledTimes(1);
-    expect(postEmptyMock).not.toHaveBeenCalled();
+    expect(postMock).not.toHaveBeenCalled();
   });
 
   it("retrying a tag-only failure re-attaches the tag to the existing case, without creating another one", async () => {
@@ -262,7 +266,7 @@ describe("usePublishAnnouncementRequest — security-tag failure blocks publish"
     addTagMutateAsyncMock.mockClear();
 
     addTagMutateAsyncMock.mockResolvedValue({});
-    postEmptyMock.mockResolvedValueOnce({ ...APPROVED_REQUEST, state: "published" });
+    postMock.mockResolvedValueOnce({ ...APPROVED_REQUEST, state: "published" });
 
     await act(async () => {
       await result.current.handlePublish();

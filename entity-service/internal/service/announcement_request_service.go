@@ -192,10 +192,13 @@ func (s *announcementRequestService) Approve(ctx context.Context, id, actorID st
 // current state is approved. This never creates the real per-project cases
 // itself — the caller (the webapp's own publish flow) does that fan-out
 // exactly as it already does today; this call only records that it
-// happened, by whom, and when.
-func (s *announcementRequestService) MarkPublished(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error) {
+// happened, by whom, when, and which case ids resulted.
+func (s *announcementRequestService) MarkPublished(ctx context.Context, id, actorID string, caseIDs []string) (domain.AnnouncementRequest, error) {
 	if strings.TrimSpace(actorID) == "" {
 		return domain.AnnouncementRequest{}, &apierror.ValidationError{Msg: "actorId is required"}
+	}
+	if len(caseIDs) == 0 {
+		return domain.AnnouncementRequest{}, &apierror.ValidationError{Msg: "caseIds must not be empty"}
 	}
 
 	current, err := s.repo.Get(ctx, id)
@@ -217,7 +220,51 @@ func (s *announcementRequestService) MarkPublished(ctx context.Context, id, acto
 	if current.CreatedBy != actorID {
 		return domain.AnnouncementRequest{}, &apierror.ForbiddenError{Msg: "only the request's creator can publish it"}
 	}
-	return s.repo.MarkPublished(ctx, id, actorID)
+	return s.repo.MarkPublished(ctx, id, actorID, caseIDs)
+}
+
+// AddUpdate implements AnnouncementRequestService. Rejects unless the
+// current state is published and actorID matches the request's own
+// CreatedBy -- same creator-only restriction as MarkPublished, and for the
+// same reason: this is what gates who can post a follow-up that will be
+// applied as a real comment on every one of PublishedCaseIDs.
+func (s *announcementRequestService) AddUpdate(ctx context.Context, id, actorID, content string) (domain.AnnouncementRequestUpdate, error) {
+	if strings.TrimSpace(actorID) == "" {
+		return domain.AnnouncementRequestUpdate{}, &apierror.ValidationError{Msg: "actorId is required"}
+	}
+	if strings.TrimSpace(content) == "" {
+		return domain.AnnouncementRequestUpdate{}, &apierror.ValidationError{Msg: "content is required"}
+	}
+
+	current, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return domain.AnnouncementRequestUpdate{}, err
+	}
+	if current.State != domain.AnnouncementRequestStatePublished {
+		return domain.AnnouncementRequestUpdate{}, &apierror.ConflictError{Msg: "an update can only be posted for a published request, not " + string(current.State)}
+	}
+	if current.CreatedBy != actorID {
+		return domain.AnnouncementRequestUpdate{}, &apierror.ForbiddenError{Msg: "only the request's creator can post an update"}
+	}
+	return s.repo.CreateUpdate(ctx, id, content, actorID)
+}
+
+// ListUpdates implements AnnouncementRequestService.
+func (s *announcementRequestService) ListUpdates(ctx context.Context, id string) (domain.SearchAnnouncementRequestUpdatesResponse, error) {
+	if strings.TrimSpace(id) == "" {
+		return domain.SearchAnnouncementRequestUpdatesResponse{}, &apierror.ValidationError{Msg: "id is required"}
+	}
+	// Confirms the request itself exists (a NotFoundError, not an empty
+	// list, for a bad id) before listing what may legitimately be zero
+	// updates for a real one.
+	if _, err := s.repo.Get(ctx, id); err != nil {
+		return domain.SearchAnnouncementRequestUpdatesResponse{}, err
+	}
+	updates, err := s.repo.ListUpdates(ctx, id)
+	if err != nil {
+		return domain.SearchAnnouncementRequestUpdatesResponse{}, err
+	}
+	return domain.SearchAnnouncementRequestUpdatesResponse{Updates: updates}, nil
 }
 
 func isValidAnnouncementRequestState(s domain.AnnouncementRequestState) bool {

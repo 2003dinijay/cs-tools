@@ -192,7 +192,28 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 			ClientSecret: cfg.SalesEntityClientSecret,
 			Scopes:       cfg.SalesEntityScopes,
 		})
-		salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventService(accountRepo, salesEntityClient))
+		if cfg.SalesforceMembershipIngestEnabled {
+			// The membership branch (Project_Contact__c / Contact envelopes)
+			// writes user/account_contact/project_contact rows and the
+			// DATABASE onboarding step, and publishes project_contact.invited
+			// when eventPublisher is configured (nil is a no-op there).
+			salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventServiceWithMembershipIngest(
+				accountRepo, salesEntityClient, service.MembershipIngest{
+					Memberships: repository.NewProjectMembershipRepository(db),
+					Steps:       repository.NewOnboardingStepRepository(db),
+					SalesEntity: salesEntityClient,
+					Publisher:   eventPublisher,
+				}))
+		} else {
+			salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventService(accountRepo, salesEntityClient))
+		}
+	}
+
+	// onboarding_step has no ServiceNow equivalent; Postgres-only, like
+	// scheduled_task_run above.
+	var onboardingStepHandler *handler.OnboardingStepHandler
+	if db != nil {
+		onboardingStepHandler = handler.NewOnboardingStepHandler(service.NewOnboardingStepService(repository.NewOnboardingStepRepository(db), accessSvc))
 	}
 
 	// Also constructed for DataSourcePostgresPrimarySNFallback: that mode's
@@ -664,6 +685,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	if salesforceEventHandler != nil {
 		mux.HandleFunc("POST /salesforce/events", salesforceEventHandler.HandleEvent)
 	}
+	if onboardingStepHandler != nil {
+		mux.HandleFunc("PUT /onboarding-steps/{membershipSfId}/{step}", onboardingStepHandler.UpsertOnboardingStep)
+		mux.HandleFunc("GET /onboarding-steps/{membershipSfId}", onboardingStepHandler.GetOnboardingSteps)
+		mux.HandleFunc("POST /onboarding-steps/search", onboardingStepHandler.SearchOnboardingSteps)
+	}
 
 	// event_publish_failures, sla_clocks, scheduled_task_run and
 	// alert_incident_mapping are not data-source specific, but all four are
@@ -702,6 +728,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("POST /announcement-requests/{id}/submit", announcementRequestHandler.SubmitAnnouncementRequest)
 		mux.HandleFunc("POST /announcement-requests/{id}/approve", announcementRequestHandler.ApproveAnnouncementRequest)
 		mux.HandleFunc("POST /announcement-requests/{id}/publish", announcementRequestHandler.PublishAnnouncementRequest)
+		mux.HandleFunc("POST /announcement-requests/{id}/updates", announcementRequestHandler.CreateAnnouncementRequestUpdate)
+		mux.HandleFunc("GET /announcement-requests/{id}/updates", announcementRequestHandler.ListAnnouncementRequestUpdates)
 	}
 
 	if snUserHandler != nil {

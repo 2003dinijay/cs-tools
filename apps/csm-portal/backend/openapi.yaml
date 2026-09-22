@@ -2405,9 +2405,139 @@ paths:
       description: >-
         Does not itself create any cases — the webapp's own fan-out
         (unchanged from today) is what actually sends the announcement,
-        separately, after this call succeeds. Takes no body — actorId is
-        always the authenticated caller.
+        separately, before this call. caseIds (the real case id created for
+        each project) must be supplied so a later update can target them.
+        actorId is always the authenticated caller, never read from the
+        body. Restricted to the request's own creator — an approver cannot
+        also publish.
       operationId: publishAnnouncementRequest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishAnnouncementRequestPayload'
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementRequest'
+        "400":
+          description: BadRequest — invalid id format or empty caseIds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden — the caller did not create this request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: Conflict — the request is not approved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /announcement-requests/{id}/updates:
+    post:
+      summary: Post a dated follow-up comment for a published request (Phase 2 draft/approval workflow).
+      description: >-
+        Only records the update, by whom, when and what it said — does not
+        itself apply content as a comment anywhere; the webapp's own
+        fan-out (POST /cases/{id}/comments per id in publishedCaseIds) does
+        that, separately, after this call succeeds. actorId is always the
+        authenticated caller. Restricted to the request's own creator, same
+        as publish.
+      operationId: createAnnouncementRequestUpdate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAnnouncementRequestUpdatePayload'
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementRequestUpdate'
+        "400":
+          description: BadRequest — invalid id format or empty content.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden — the caller did not create this request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: Conflict — the request is not published.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    get:
+      summary: List every update posted for this announcement request, newest first.
+      operationId: listAnnouncementRequestUpdates
       parameters:
         - name: id
           in: path
@@ -2421,7 +2551,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AnnouncementRequest'
+                $ref: '#/components/schemas/SearchAnnouncementRequestUpdatesResponse'
         "400":
           description: BadRequest — invalid id format.
           content:
@@ -2434,20 +2564,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
-        "403":
-          description: Forbidden
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
         "404":
           description: NotFound
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorPayload'
-        "409":
-          description: Conflict — the request is not approved.
           content:
             application/json:
               schema:
@@ -12789,6 +12907,12 @@ components:
           type: string
           format: date-time
           nullable: true
+        publishedCaseIds:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: The real case id created for each project in resolvedProjectIds. Null until published.
 
     CreateAnnouncementRequestPayload:
       type: object
@@ -12828,6 +12952,52 @@ components:
       properties:
         caseId:
           type: string
+
+    PublishAnnouncementRequestPayload:
+      type: object
+      required: [caseIds]
+      additionalProperties: false
+      properties:
+        caseIds:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: The real case id created for each project in the request's own resolvedProjectIds, from the webapp's own fan-out.
+
+    CreateAnnouncementRequestUpdatePayload:
+      type: object
+      required: [content]
+      additionalProperties: false
+      properties:
+        content:
+          type: string
+
+    AnnouncementRequestUpdate:
+      description: One dated follow-up comment applied, after the fact, to every case a published announcement request created.
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        announcementRequestId:
+          type: string
+          format: uuid
+        content:
+          type: string
+        createdBy:
+          type: string
+        createdOn:
+          type: string
+          format: date-time
+
+    SearchAnnouncementRequestUpdatesResponse:
+      type: object
+      properties:
+        updates:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnnouncementRequestUpdate'
 
     SearchAnnouncementRequestsPayload:
       type: object
