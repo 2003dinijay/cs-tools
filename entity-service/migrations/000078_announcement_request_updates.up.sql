@@ -39,8 +39,8 @@ CREATE TABLE IF NOT EXISTS announcement_request_updates (
   announcement_request_id UUID NOT NULL REFERENCES announcement_requests(id) ON DELETE CASCADE,
   content                 TEXT NOT NULL,
   created_by              TEXT NOT NULL,
-  created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_on              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_announcement_request_updates_request_id
-  ON announcement_request_updates (announcement_request_id, created_at DESC);
+  ON announcement_request_updates (announcement_request_id, created_on DESC);

@@ -6669,11 +6669,17 @@ type PublishAnnouncementRequestRequest struct {
 // of these once posted, the same audit-log shape comment/work_item_activity
 // already use elsewhere in this schema.
 type AnnouncementRequestUpdate struct {
-	ID                    string    `json:"id"`
-	AnnouncementRequestID string    `json:"announcementRequestId"`
-	Content               string    `json:"content"`
-	CreatedBy             string    `json:"createdBy"`
-	CreatedAt             time.Time `json:"createdAt"`
+	ID                    string `json:"id"`
+	AnnouncementRequestID string `json:"announcementRequestId"`
+	Content               string `json:"content"`
+	CreatedBy             string `json:"createdBy"`
+	// CreatedOn (not CreatedAt) -- this is a new type, added after this
+	// codebase's timestamp fields were standardized on the "On" suffix for
+	// both the DB column and the JSON wire field (see CLAUDE.md's "Domain
+	// types" section) -- unlike AnnouncementRequest's own older CreatedAt
+	// etc., which only got the DB-column half of that fix to avoid an
+	// unrelated wire-contract break.
+	CreatedOn time.Time `json:"createdOn"`
 }
 
 // CreateAnnouncementRequestUpdateRequest posts a new AnnouncementRequestUpdate.
@@ -6893,7 +6899,7 @@ type LookupAlertIncidentMappingsRequest struct {
 
 // LookupAlertIncidentMappingsResponse is the response body for
 // POST /alert-incident-mappings/lookup. Mappings is most-recent-first
-// (ORDER BY created_at DESC) and empty (never null) when nothing matches —
+// (ORDER BY created_on DESC) and empty (never null) when nothing matches —
 // absence is a valid result for a lookup, not a 404.
 type LookupAlertIncidentMappingsResponse struct {
 	Mappings []AlertIncidentMappingView `json:"mappings"`

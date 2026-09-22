@@ -57,7 +57,7 @@ func TestCaseAttachmentRoutes_UsePostgresUnderPlainPostgres(t *testing.T) {
 // regression guard for the routing fix: under
 // DataSource=postgres-primary-sn-fallback, case attachment routes must reach
 // ServiceNow (via the same snCaseService already used for case CREATE/
-// UPDATE's mirror), never the Postgres-backed case_attachments path -- the
+// UPDATE's mirror), never the Postgres-backed case_attachment path -- the
 // sftpgo-backed Postgres attachment implementation is not production-ready,
 // so this mode must never route a request to it, regardless of how case
 // metadata itself is wired in this mode.

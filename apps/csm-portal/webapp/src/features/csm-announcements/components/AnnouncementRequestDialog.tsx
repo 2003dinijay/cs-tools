@@ -665,7 +665,7 @@ export default function AnnouncementRequestDialog({
                     {updatesQuery.data.updates.map((u) => (
                       <Box key={u.id} sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.5 }}>
                         <Typography variant="caption" color="text.secondary">
-                          {whoWhen(u.createdBy, u.createdAt)}
+                          {whoWhen(u.createdBy, u.createdOn)}
                         </Typography>
                         <Box
                           sx={{ fontSize: "0.875rem", lineHeight: 1.5, wordBreak: "break-word", mt: 0.5 }}

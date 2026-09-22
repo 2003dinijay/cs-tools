@@ -32,14 +32,14 @@ import (
 // table — see domain.SLAClock's doc comment for what it's for.
 type SLAClockRepository interface {
 	// Register (re)creates the clock for (caseId, clockType): inserts a new
-	// row, or if one already exists, overwrites started_at/due_at and clears
-	// paused_at/reached_50_at/reached_75_at/reached_100_at — a full reset,
+	// row, or if one already exists, overwrites started_on/due_on and clears
+	// paused_on/reached_50_on/reached_75_on/reached_100_on — a full reset,
 	// not an in-place adjustment.
 	Register(ctx context.Context, req domain.RegisterSLAClockRequest) (domain.SLAClock, error)
 	// Get returns the clock for (caseId, clockType). Returns a
 	// *apierror.NotFoundError if no such clock has been registered.
 	Get(ctx context.Context, caseID, clockType string) (domain.SLAClock, error)
-	// SetTierReachedIfUnset writes reached_<tier>_at only if it is still
+	// SetTierReachedIfUnset writes reached_<tier>_on only if it is still
 	// null, and returns the timestamp that ends up stored either way —
 	// idempotent, so retrying a call whose response was lost (e.g. after a
 	// network blip) doesn't clobber the original reached time. alreadySet
@@ -65,23 +65,23 @@ type SLAClockRepository interface {
 	// completion instead of relying on this field for it. Returns a
 	// *apierror.NotFoundError if no such clock has been registered.
 	SetTierReachedIfUnset(ctx context.Context, caseID, clockType, tier string) (reachedAt time.Time, alreadySet bool, err error)
-	// SetPaused sets or clears paused_at for (caseId, clockType) — idempotent
+	// SetPaused sets or clears paused_on for (caseId, clockType) — idempotent
 	// either direction (pausing an already-paused clock, or resuming an
 	// already-running one, is a no-op that still returns the current row).
 	// Called directly, in-process, from snCaseService's case-state handling
 	// — see that file's applyCaseStateSLAEffects — not from any HTTP path;
-	// csm-notification-service's slaengine only ever reads paused_at (via
+	// csm-notification-service's slaengine only ever reads paused_on (via
 	// Get, before firing a tier), never writes it. Returns a
 	// *apierror.NotFoundError if no such clock has been registered.
 	//
-	// KNOWN GAP: due_at is never adjusted here. A clock paused for any
-	// stretch of time resumes with the same due_at it had before, so the
+	// KNOWN GAP: due_on is never adjusted here. A clock paused for any
+	// stretch of time resumes with the same due_on it had before, so the
 	// time spent paused is not added back — combined with
 	// csm-notification-service's slaengine dropping (not rescheduling) a
 	// wake entry that comes due while paused (see that package's own
 	// processDueMember), a clock paused past one of its tier times can
 	// permanently lose that tier's alert even after resuming. Fixing this
-	// properly needs entity-service to extend due_at by the paused duration
+	// properly needs entity-service to extend due_on by the paused duration
 	// AND a way to tell csm-notification-service to requeue wake entries on
 	// resume (no such signal exists today — pause/resume are deliberately
 	// in-process-only, see snCaseService.applyCaseStateSLAEffects) — a real
@@ -104,7 +104,7 @@ func NewSLAClockRepository(db *pgxpool.Pool) SLAClockRepository {
 // full row, kept in one place so Register/Get can't drift out of sync with
 // scanSLAClock's field order. The last eight are display-only — see
 // domain.SLAClock's own doc comment.
-const slaClockColumns = `case_id, clock_type, started_at, due_at, paused_at, reached_50_at, reached_75_at, reached_100_at, case_number, wso2_case_id, case_title, case_type, product, team, priority, state`
+const slaClockColumns = `case_id, clock_type, started_on, due_on, paused_on, reached_50_on, reached_75_on, reached_100_on, case_number, wso2_case_id, case_title, case_type, product, team, priority, state`
 
 func scanSLAClock(row pgx.Row) (domain.SLAClock, error) {
 	var c domain.SLAClock
@@ -139,15 +139,15 @@ func stringOrEmpty(s *string) string {
 // Register implements SLAClockRepository.
 func (r *slaClockRepo) Register(ctx context.Context, req domain.RegisterSLAClockRequest) (domain.SLAClock, error) {
 	query := `
-		INSERT INTO sla_clocks (case_id, clock_type, started_at, due_at, case_number, wso2_case_id, case_title, case_type, product, team, priority, state)
+		INSERT INTO sla_clocks (case_id, clock_type, started_on, due_on, case_number, wso2_case_id, case_title, case_type, product, team, priority, state)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (case_id, clock_type) DO UPDATE SET
-			started_at = EXCLUDED.started_at,
-			due_at = EXCLUDED.due_at,
-			paused_at = NULL,
-			reached_50_at = NULL,
-			reached_75_at = NULL,
-			reached_100_at = NULL,
+			started_on = EXCLUDED.started_on,
+			due_on = EXCLUDED.due_on,
+			paused_on = NULL,
+			reached_50_on = NULL,
+			reached_75_on = NULL,
+			reached_100_on = NULL,
 			case_number = EXCLUDED.case_number,
 			wso2_case_id = EXCLUDED.wso2_case_id,
 			case_title = EXCLUDED.case_title,
@@ -156,7 +156,7 @@ func (r *slaClockRepo) Register(ctx context.Context, req domain.RegisterSLAClock
 			team = EXCLUDED.team,
 			priority = EXCLUDED.priority,
 			state = EXCLUDED.state,
-			updated_at = NOW()
+			updated_on = NOW()
 		RETURNING ` + slaClockColumns
 
 	c, err := scanSLAClock(r.db.QueryRow(ctx, query, req.CaseID, req.ClockType, req.StartedAt, req.DueAt,
@@ -198,11 +198,11 @@ func (r *slaClockRepo) Get(ctx context.Context, caseID, clockType string) (domai
 func tierColumn(tier string) (string, error) {
 	switch tier {
 	case "50":
-		return "reached_50_at", nil
+		return "reached_50_on", nil
 	case "75":
-		return "reached_75_at", nil
+		return "reached_75_on", nil
 	case "100":
-		return "reached_100_at", nil
+		return "reached_100_on", nil
 	default:
 		return "", fmt.Errorf("invalid sla_clock tier: %q", tier)
 	}
@@ -216,7 +216,7 @@ func (r *slaClockRepo) SetTierReachedIfUnset(ctx context.Context, caseID, clockT
 	}
 
 	var reached time.Time
-	updateQuery := `UPDATE sla_clocks SET ` + col + ` = NOW(), updated_at = NOW() WHERE case_id = $1 AND clock_type = $2 AND ` + col + ` IS NULL RETURNING ` + col
+	updateQuery := `UPDATE sla_clocks SET ` + col + ` = NOW(), updated_on = NOW() WHERE case_id = $1 AND clock_type = $2 AND ` + col + ` IS NULL RETURNING ` + col
 	err = r.db.QueryRow(ctx, updateQuery, caseID, clockType).Scan(&reached)
 	if err == nil {
 		// This call's own UPDATE matched a row — it just wrote the value.
@@ -253,8 +253,8 @@ func (r *slaClockRepo) SetTierReachedIfUnset(ctx context.Context, caseID, clockT
 func (r *slaClockRepo) SetPaused(ctx context.Context, caseID, clockType string, paused bool) (domain.SLAClock, error) {
 	query := `
 		UPDATE sla_clocks SET
-			paused_at = CASE WHEN $3 THEN COALESCE(paused_at, NOW()) ELSE NULL END,
-			updated_at = NOW()
+			paused_on = CASE WHEN $3 THEN COALESCE(paused_on, NOW()) ELSE NULL END,
+			updated_on = NOW()
 		WHERE case_id = $1 AND clock_type = $2
 		RETURNING ` + slaClockColumns
 

@@ -122,7 +122,7 @@ export interface AnnouncementRequestUpdate {
   announcementRequestId: string;
   content: string;
   createdBy: string;
-  createdAt: string;
+  createdOn: string;
 }
 
 export interface CreateAnnouncementRequestUpdatePayload {

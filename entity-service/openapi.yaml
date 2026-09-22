@@ -17181,7 +17181,7 @@ components:
           type: string
         createdBy:
           type: string
-        createdAt:
+        createdOn:
           type: string
           format: date-time
 

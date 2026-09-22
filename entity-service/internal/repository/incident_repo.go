@@ -483,7 +483,7 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 // scanCaseActivity's exact query/column shape (case_repo.go) -- an activity
 // feed entry (comment or field change) is not inherently case-specific, and
 // work_item_activity/comment are both keyed by the generic work_item_id.
-// There are no incident attachments table equivalent to case_attachments
+// There are no incident attachments table equivalent to case_attachment
 // (that table is case-specific by name and FK), so this feed never has an
 // "attachment" kind entry, unlike SearchCaseActivities.
 func (r *incidentRepo) SearchIncidentActivities(ctx context.Context, req domain.SearchIncidentActivitiesRequest) ([]domain.CaseActivity, int, error) {
