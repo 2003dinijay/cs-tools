@@ -1001,6 +1001,46 @@ func TestCaseService_CreateCaseComment_RecordsSNWritebackFailureOnMirrorError(t 
 	}
 }
 
+// TestCaseService_CreateCaseComment_SkipsMirrorForActivityType confirms
+// "activity" comments -- which CreateBareCaseComment always rejects, since
+// ServiceNow has no concept of that type -- never even reach Dispatch. A
+// permanent, 100%-guaranteed incompatibility must not be recorded to
+// sn_writeback_failures as if it were a transient, backfillable failure.
+func TestCaseService_CreateCaseComment_SkipsMirrorForActivityType(t *testing.T) {
+	mirror := &stubMirrorCaseService{
+		createBareCaseComment: func(context.Context, string, domain.CommentType, string) (domain.CaseCommentDetail, error) {
+			t.Fatal("CreateBareCaseComment must never be called for an activity-type comment")
+			return domain.CaseCommentDetail{}, nil
+		},
+	}
+	failures := &recordingSNWritebackFailures{}
+	dispatcher := NewSNWritebackDispatcher(failures)
+
+	repo := &stubCaseRepo{
+		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+			return domain.CaseComment{ID: "comment-1", CaseID: req.CaseID, Type: req.Type, Content: req.Content}, nil
+		},
+	}
+	userRepo := stubUserRepo{getUserByEmail: func(context.Context, string) (domain.User, error) {
+		return domain.User{ID: "user-1", Email: "jane.doe@example.com"}, nil
+	}}
+	svc := NewCaseServiceWithSNWriteback(repo, userRepo, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	req := domain.CreateCaseCommentRequest{CaseID: testDeploymentUUID, Type: domain.CommentTypeActivity, Content: "system note"}
+	if _, err := svc.CreateCaseComment(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Give any wrongly-dispatched goroutine a moment to run before asserting
+	// zero failures were recorded -- a skip means no dispatch at all, not a
+	// dispatch that happens to succeed or fail silently.
+	time.Sleep(100 * time.Millisecond)
+	if got := failures.count(); got != 0 {
+		t.Errorf("expected 0 sn_writeback_failures records for a skipped activity-type mirror, got %d", got)
+	}
+}
+
 // TestCaseService_CreateCaseComment_DoesNotMirrorWithoutSNWriteback confirms
 // the mirror only ever applies under
 // DATA_SOURCE=postgres-primary-sn-fallback (snWriteback/snMirror set) --

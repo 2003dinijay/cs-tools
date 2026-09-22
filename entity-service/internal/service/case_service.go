@@ -534,7 +534,13 @@ func (s *caseService) CreateCaseComment(ctx context.Context, req domain.CreateCa
 	// specifically (not the full CreateCaseComment) so neither side effect
 	// ever fires twice, or fires against ServiceNow for an outcome only
 	// Postgres actually decided.
-	if s.snWriteback != nil {
+	// "activity" comments have no ServiceNow counterpart at all
+	// (CreateBareCaseComment rejects the type outright -- see its own doc
+	// comment) -- this is a permanent, 100%-guaranteed incompatibility, not
+	// a transient failure worth recording for backfill, so skip dispatch
+	// entirely rather than filling sn_writeback_failures with noise nobody
+	// can ever act on.
+	if s.snWriteback != nil && req.Type != domain.CommentTypeActivity {
 		if m, ok := s.snMirror.(snCommentMirror); ok {
 			mirrorCaseID, mirrorType, mirrorContent := req.CaseID, req.Type, req.Content
 			s.snWriteback.Dispatch(ctx, "case_comment", req.CaseID, "create",
