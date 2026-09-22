@@ -34,7 +34,7 @@ const (
 	DataSourcePostgres DataSource = "postgres"
 	// DataSourceServiceNow uses the Choreo ServiceNow API.
 	DataSourceServiceNow DataSource = "servicenow"
-	// DataSourcePostgresPrimarySNFallback serves every read and write from
+	// DataSourcePostgresServiceNowDualWrite serves every read and write from
 	// PostgreSQL (authoritative, same as DataSourcePostgres) and additionally
 	// best-effort mirrors writes to ServiceNow afterward, so that ServiceNow
 	// stays a genuine rollback target rather than going silently stale ahead
@@ -43,7 +43,7 @@ const (
 	// authoritative, and a failed mirror write is recorded (see
 	// SNWritebackFailureRepository) rather than retried or surfaced to the
 	// caller. Piloted on the account entity only — see routes.go.
-	DataSourcePostgresPrimarySNFallback DataSource = "postgres-primary-sn-fallback"
+	DataSourcePostgresServiceNowDualWrite DataSource = "postgres-servicenow-dual-write"
 )
 
 // Config holds all environment-driven settings for the service.
@@ -361,13 +361,13 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.DataSource {
-	case DataSourcePostgres, DataSourceServiceNow, DataSourcePostgresPrimarySNFallback:
+	case DataSourcePostgres, DataSourceServiceNow, DataSourcePostgresServiceNowDualWrite:
 		// valid
 	default:
-		return fmt.Errorf("invalid DATA_SOURCE %q: must be %q, %q, or %q", c.DataSource, DataSourcePostgres, DataSourceServiceNow, DataSourcePostgresPrimarySNFallback)
+		return fmt.Errorf("invalid DATA_SOURCE %q: must be %q, %q, or %q", c.DataSource, DataSourcePostgres, DataSourceServiceNow, DataSourcePostgresServiceNowDualWrite)
 	}
 	// Postgres credentials are required for DATA_SOURCE=postgres and
-	// DATA_SOURCE=postgres-primary-sn-fallback — both serve every entity read
+	// DATA_SOURCE=postgres-servicenow-dual-write — both serve every entity read
 	// and write from the pool (the fallback mode's ServiceNow leg is a
 	// best-effort mirror on top, never a read source). servicenow mode skips
 	// the pool (db.NewPoolIfNeeded) so a local customer-portal can start
@@ -384,7 +384,7 @@ func (c *Config) Validate() error {
 	// with "DB_USER is required", which is what this branch exists to prevent.
 	dbSet := c.DBUser != "" || c.DBPassword != "" || c.DBName != ""
 	dbComplete := c.DBUser != "" && c.DBPassword != "" && c.DBName != ""
-	dbRequired := c.DataSource == DataSourcePostgres || c.DataSource == DataSourcePostgresPrimarySNFallback
+	dbRequired := c.DataSource == DataSourcePostgres || c.DataSource == DataSourcePostgresServiceNowDualWrite
 
 	if dbRequired && !dbComplete {
 		if c.DBUser == "" {
@@ -405,9 +405,9 @@ func (c *Config) Validate() error {
 	}
 	// ServiceNow integration service credentials are required for
 	// DATA_SOURCE=servicenow (reads go there) and also for
-	// DATA_SOURCE=postgres-primary-sn-fallback (the best-effort mirror write
+	// DATA_SOURCE=postgres-servicenow-dual-write (the best-effort mirror write
 	// goes there, via the same client — see SNWritebackDispatcher).
-	snRequired := c.DataSource == DataSourceServiceNow || c.DataSource == DataSourcePostgresPrimarySNFallback
+	snRequired := c.DataSource == DataSourceServiceNow || c.DataSource == DataSourcePostgresServiceNowDualWrite
 	if snRequired {
 		if c.ServiceNowIntegrationServiceBaseURL == "" {
 			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_BASE_URL is required when DATA_SOURCE=%s", c.DataSource)

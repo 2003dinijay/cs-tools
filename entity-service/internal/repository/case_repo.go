@@ -119,7 +119,7 @@ type CaseRepository interface {
 	// either "case" or "announcement", branching on req.Type -- see
 	// createAnnouncementFromServiceNowQuery's own doc comment for why
 	// announcement needs a genuinely different insert, not just a different
-	// type literal), for DATA_SOURCE=postgres-primary-sn-fallback's SN-first
+	// type literal), for DATA_SOURCE=postgres-servicenow-dual-write's SN-first
 	// creation (see caseService.CreateCase's own doc comment): req.Type must
 	// already be "case" or "announcement" (validated by the caller). Unlike
 	// CreateCase, identity is NOT generated here -- id/number/wso2ID/createdBy
