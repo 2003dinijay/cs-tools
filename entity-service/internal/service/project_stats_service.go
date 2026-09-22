@@ -156,16 +156,9 @@ func (s *projectStatsService) GetProjectStats(ctx context.Context, projectID str
 	}
 
 	return domain.ProjectStatsResponse{
-		// ServiceNow returns raw seconds in these two fields despite their
-		// names (getProjectCaseTimeLogged sums time_card.total and assigns
-		// it straight to totalHours/billableHours). That is not reproduced:
-		// this schema stores per-activity MINUTES, and emitting minutes
-		// under a field called hours would be a second, differently-wrong
-		// number rather than parity. Real hours are returned; expect this
-		// figure to differ from the ServiceNow data source until the units
-		// there are confirmed.
-		TotalHours:           minutesToHours(billableMinutes + nonBillableMinutes),
-		BillableHours:        minutesToHours(billableMinutes),
+		// MINUTES, despite the field names -- see loggedMinutes.
+		TotalHours:           loggedMinutes(billableMinutes + nonBillableMinutes),
+		BillableHours:        loggedMinutes(billableMinutes),
 		SLAStatus:            projectSLAStatus(slaInputs),
 		DeploymentCount:      deployments,
 		DeployedProductCount: deployedProducts,
@@ -192,9 +185,24 @@ func projectSLAStatus(in repository.ProjectSLAStatusInputs) string {
 	return projectSLAStatusAllGood
 }
 
-// minutesToHours converts logged minutes to hours, rounded to two decimals.
-func minutesToHours(minutes int) float64 {
-	return roundToTwoDecimals(float64(minutes) / 60)
+// loggedMinutes returns logged time in MINUTES, which is what every
+// totalHours/billableHours/nonBillableHours field on these responses actually
+// carries -- the names are wrong, and deliberately preserved.
+//
+// ServiceNow sums time_card.total, which TimeCardUtils populates from
+// _sumMinutes (the five per-activity minute fields) and its own response
+// mapper annotates as minutes; getProjectTotalsOnly and
+// getProjectCaseTimeLogged then assign that sum straight to fields named
+// *Hours. The customer portal compensates on the way out --
+// useGetTimeCardsStats divides by 60 under the comment "Convert minutes to
+// hours" -- so minutes is the real wire contract on both sides.
+//
+// Returning true hours here would be arithmetically correct and render every
+// figure in the portal 60x too small. Renaming the fields is the actual fix,
+// and it belongs in a coordinated change across ServiceNow, this service and
+// the portal -- not silently in one data source.
+func loggedMinutes(minutes int) float64 {
+	return float64(minutes)
 }
 
 // GetProjectConversationStats implements ProjectStatsService -- ServiceNow's
@@ -277,10 +285,11 @@ func (s *projectStatsService) GetProjectTimeCardStats(ctx context.Context, proje
 		return domain.ProjectTimeCardStatsResponse{}, err
 	}
 
+	// MINUTES, despite the field names -- see loggedMinutes.
 	return domain.ProjectTimeCardStatsResponse{
-		TotalHours:       minutesToHours(billable + nonBillable),
-		BillableHours:    minutesToHours(billable),
-		NonBillableHours: minutesToHours(nonBillable),
+		TotalHours:       loggedMinutes(billable + nonBillable),
+		BillableHours:    loggedMinutes(billable),
+		NonBillableHours: loggedMinutes(nonBillable),
 	}, nil
 }
 

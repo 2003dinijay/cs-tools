@@ -2046,8 +2046,8 @@ paths:
       summary: Get a project's overall statistics.
       description: >-
         Available on both data sources. On Postgres, totalHours/billableHours
-        are real hours derived from the per-activity minute columns, which may
-        differ from the ServiceNow figure (see the schema notes); instanceCount
+        are in MINUTES despite their names, matching ServiceNow (the portal
+        divides by 60 itself); instanceCount
         falls back to 0 where deployment_node is unavailable; and slaStatus
         applies the same four conditions except the project-type-derived
         allowed-severity narrowing, which has no Postgres equivalent.
@@ -2251,10 +2251,12 @@ paths:
     get:
       summary: Get a project's time-card statistics, optionally filtered by a date range.
       description: >-
-        Available on both data sources. On Postgres the figures are real hours
-        summed from the five per-activity minute columns of APPROVED time
-        cards, scoped by the time card's case rather than its
-        customer_project_id.
+        Available on both data sources. NOTE the figures are in MINUTES
+        despite the field names: ServiceNow sums time_card.total, which holds
+        minutes, into fields called *Hours, and the customer portal divides by
+        60 itself. Summed from the five per-activity minute columns of
+        APPROVED time cards, scoped by the time card's case rather than its
+        customer_project_id, and bounded by the work date.
       operationId: getProjectTimeCardStats
       parameters:
         - name: id

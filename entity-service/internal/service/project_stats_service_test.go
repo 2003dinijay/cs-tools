@@ -141,8 +141,10 @@ func TestGetProjectStats_MapsOutstandingCountsAndHours(t *testing.T) {
 		t.Fatalf("GetProjectStats: %v", err)
 	}
 
-	if resp.TotalHours != 10 || resp.BillableHours != 7.5 {
-		t.Errorf("totalHours/billableHours = %v/%v, want 10/7.5", resp.TotalHours, resp.BillableHours)
+	// MINUTES, not hours -- the field names are wrong on the wire and the
+	// portal divides by 60 itself. 450 + 150 logged minutes.
+	if resp.TotalHours != 600 || resp.BillableHours != 450 {
+		t.Errorf("totalHours/billableHours = %v/%v, want 600/450 minutes", resp.TotalHours, resp.BillableHours)
 	}
 	if resp.SLAStatus != projectSLAStatusAllGood {
 		t.Errorf("slaStatus = %q, want %q", resp.SLAStatus, projectSLAStatusAllGood)
@@ -284,8 +286,9 @@ func TestGetProjectTimeCardStats_PassesDateRangeAndSplitsHours(t *testing.T) {
 	if repo.timeLoggedStart != "2026-01-01" || repo.timeLoggedEnd != "2026-01-31" {
 		t.Errorf("date range = %q..%q, want it forwarded to the repository", repo.timeLoggedStart, repo.timeLoggedEnd)
 	}
-	if resp.TotalHours != 2.25 || resp.BillableHours != 1.5 || resp.NonBillableHours != 0.75 {
-		t.Errorf("hours = %v/%v/%v, want 2.25/1.5/0.75", resp.TotalHours, resp.BillableHours, resp.NonBillableHours)
+	// MINUTES on the wire; the portal converts. 90 billable + 45 non-billable.
+	if resp.TotalHours != 135 || resp.BillableHours != 90 || resp.NonBillableHours != 45 {
+		t.Errorf("minutes = %v/%v/%v, want 135/90/45", resp.TotalHours, resp.BillableHours, resp.NonBillableHours)
 	}
 }
 
