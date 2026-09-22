@@ -14,17 +14,4 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- old_value/new_value are VARCHAR since each row can hold one of several
--- enum label sets depending on field_name.
-CREATE TABLE IF NOT EXISTS work_item_activity (
-    id UUID PRIMARY KEY,
-    created_on TIMESTAMPTZ NOT NULL,
-    created_by VARCHAR(255) NOT NULL,
-    work_item_id UUID NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
-    field_name VARCHAR(255),
-    old_value VARCHAR(255),
-    new_value VARCHAR(255),
-    user_email VARCHAR(255)
-);
-
-CREATE INDEX IF NOT EXISTS idx_work_item_activity_work_item_id ON work_item_activity (work_item_id);
+ALTER TABLE project DROP COLUMN IF EXISTS number;
