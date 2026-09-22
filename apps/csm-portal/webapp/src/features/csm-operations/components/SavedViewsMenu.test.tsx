@@ -30,14 +30,14 @@ type View = BeSavedFilterView;
 
 let views: View[] = [];
 const getMock = vi.fn();
-const putMock = vi.fn();
+const patchMock = vi.fn();
 const delMock = vi.fn();
 const postMock = vi.fn();
 
 vi.mock("@api/backend/client", () => ({
   useBackendApi: () => ({
     get: getMock,
-    put: putMock,
+    patch: patchMock,
     del: delMock,
     post: postMock,
   }),
@@ -45,7 +45,7 @@ vi.mock("@api/backend/client", () => ({
 
 function wireApi(): void {
   getMock.mockImplementation(async () => ({ views: [...views] }));
-  putMock.mockImplementation(async (_path: string, body: BeSaveSavedFilterViewPayload) => {
+  patchMock.mockImplementation(async (_path: string, body: BeSaveSavedFilterViewPayload) => {
     const name = body.name.trim();
     views = [{ name, qs: body.qs }, ...views.filter((v) => v.name.toLowerCase() !== name.toLowerCase())];
     return { views: [...views] };
@@ -91,7 +91,7 @@ describe("SavedViewsMenu", () => {
   beforeEach(() => {
     views = [];
     getMock.mockReset();
-    putMock.mockReset();
+    patchMock.mockReset();
     delMock.mockReset();
     postMock.mockReset();
     wireApi();
@@ -108,7 +108,7 @@ describe("SavedViewsMenu", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() =>
-      expect(putMock).toHaveBeenCalledWith("/users/me/saved-filter-views", {
+      expect(patchMock).toHaveBeenCalledWith("/users/me/saved-filter-views", {
         listKey: "incidents",
         name: "My open S1s",
         qs: "q=hello",
@@ -116,8 +116,8 @@ describe("SavedViewsMenu", () => {
     );
   });
 
-  it("keeps the save dialog open when PUT fails", async () => {
-    putMock.mockRejectedValueOnce(new Error("save failed"));
+  it("keeps the save dialog open when PATCH fails", async () => {
+    patchMock.mockRejectedValueOnce(new Error("save failed"));
     renderMenu();
 
     fireEvent.click(screen.getByRole("button", { name: /saved views/i }));

@@ -30,14 +30,14 @@ import { useSavedFilterViews } from "@features/saved-filter-views/useSavedFilter
 type View = BeSavedFilterView;
 
 const getMock = vi.fn();
-const putMock = vi.fn();
+const patchMock = vi.fn();
 const delMock = vi.fn();
 const postMock = vi.fn();
 
 vi.mock("@api/backend/client", () => ({
   useBackendApi: () => ({
     get: getMock,
-    put: putMock,
+    patch: patchMock,
     del: delMock,
     post: postMock,
   }),
@@ -53,7 +53,7 @@ function wrapper() {
 function inMemory(initial: View[] = []) {
   let views = [...initial];
   getMock.mockImplementation(async () => ({ views: [...views] }));
-  putMock.mockImplementation(async (_path: string, body: BeSaveSavedFilterViewPayload) => {
+  patchMock.mockImplementation(async (_path: string, body: BeSaveSavedFilterViewPayload) => {
     const name = body.name.trim();
     views = [{ name, qs: body.qs }, ...views.filter((v) => v.name.toLowerCase() !== name.toLowerCase())];
     return { views: [...views] };
@@ -98,7 +98,7 @@ beforeEach(() => {
   }
   localStorage.clear();
   getMock.mockReset();
-  putMock.mockReset();
+  patchMock.mockReset();
   delMock.mockReset();
   postMock.mockReset();
 });
@@ -110,7 +110,7 @@ describe("useSavedFilterViews", () => {
     await waitFor(() => expect(result.current.views).toEqual([{ name: "Open", qs: "states=open" }]));
   });
 
-  it("saves a view via PUT and updates the list", async () => {
+  it("saves a view via PATCH and updates the list", async () => {
     inMemory([]);
     const { result } = renderHook(() => useSavedFilterViews("cases"), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -120,7 +120,7 @@ describe("useSavedFilterViews", () => {
     await waitFor(() =>
       expect(result.current.views).toEqual([{ name: "Spaced", qs: "states=open" }]),
     );
-    expect(putMock).toHaveBeenCalledWith("/users/me/saved-filter-views", {
+    expect(patchMock).toHaveBeenCalledWith("/users/me/saved-filter-views", {
       listKey: "cases",
       name: "Spaced",
       qs: "states=open",
@@ -134,7 +134,7 @@ describe("useSavedFilterViews", () => {
     await act(async () => {
       await result.current.saveFilterView("   ", "q=1");
     });
-    expect(putMock).not.toHaveBeenCalled();
+    expect(patchMock).not.toHaveBeenCalled();
   });
 
   it("deletes via DELETE", async () => {
@@ -179,7 +179,7 @@ describe("useSavedFilterViews", () => {
     await waitFor(() =>
       expect(result.current.views.map((v) => v.name)).toEqual(["First", "Second"]),
     );
-    expect(putMock).toHaveBeenCalledTimes(2);
+    expect(patchMock).toHaveBeenCalledTimes(2);
     expect(localStorage.getItem(LEGACY_SAVED_FILTER_STORAGE_KEYS.cases)).toBeNull();
   });
 
@@ -193,11 +193,11 @@ describe("useSavedFilterViews", () => {
     await waitFor(() =>
       expect(result.current.views.map((v) => v.name)).toEqual(["Legacy", "Server"]),
     );
-    expect(putMock).toHaveBeenCalledTimes(1);
+    expect(patchMock).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem(LEGACY_SAVED_FILTER_STORAGE_KEYS.cases)).toBeNull();
   });
 
-  it("keeps unuploaded localStorage entries when a migrate PUT fails", async () => {
+  it("keeps unuploaded localStorage entries when a migrate PATCH fails", async () => {
     localStorage.setItem(
       LEGACY_SAVED_FILTER_STORAGE_KEYS.cases,
       JSON.stringify([
@@ -207,10 +207,10 @@ describe("useSavedFilterViews", () => {
     );
     let server: View[] = [];
     getMock.mockImplementation(async () => ({ views: [...server] }));
-    putMock.mockImplementation(async () => {
+    patchMock.mockImplementation(async () => {
       throw new Error("upload failed");
     });
-    putMock.mockImplementationOnce(async (_path: string, body: BeSaveSavedFilterViewPayload) => {
+    patchMock.mockImplementationOnce(async (_path: string, body: BeSaveSavedFilterViewPayload) => {
       server = [{ name: body.name, qs: body.qs }, ...server];
       return { views: [...server] };
     });
@@ -226,7 +226,7 @@ describe("useSavedFilterViews", () => {
 
   it("clears saveError when resetSaveError is called", async () => {
     inMemory([]);
-    putMock.mockRejectedValue(new Error("save failed"));
+    patchMock.mockRejectedValue(new Error("save failed"));
     const { result } = renderHook(() => useSavedFilterViews("cases"), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     await act(async () => {
@@ -237,9 +237,9 @@ describe("useSavedFilterViews", () => {
     await waitFor(() => expect(result.current.saveError).toBeNull());
   });
 
-  it("exposes saveError when PUT fails and does not drop the name", async () => {
+  it("exposes saveError when PATCH fails and does not drop the name", async () => {
     inMemory([]);
-    putMock.mockRejectedValue(new Error("save failed"));
+    patchMock.mockRejectedValue(new Error("save failed"));
     const { result } = renderHook(() => useSavedFilterViews("cases"), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     await act(async () => {

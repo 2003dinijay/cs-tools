@@ -47,8 +47,8 @@ function listPath(listKey: SavedFilterListKey): string {
  * Named list-filter bookmarks for one CSM list, persisted in Postgres via
  * the BFF. `qs` stays the opaque query string the list already serializes.
  * Leftover localStorage views are uploaded last-to-first so display order
- * is preserved. The legacy key is cleared only after every remaining PUT
- * succeeds; a failed PUT keeps the unuploaded entries for a later retry.
+ * is preserved. The legacy key is cleared only after every remaining PATCH
+ * succeeds; a failed PATCH keeps the unuploaded entries for a later retry.
  */
 export function useSavedFilterViews(listKey: SavedFilterListKey): {
   views: SavedFilterView[];
@@ -90,7 +90,7 @@ export function useSavedFilterViews(listKey: SavedFilterListKey): {
       const remaining = [...pending];
       try {
         for (let i = remaining.length - 1; i >= 0; i -= 1) {
-          await api.put<BeSaveSavedFilterViewPayload, BeSavedFilterViewList>(
+          await api.patch<BeSaveSavedFilterViewPayload, BeSavedFilterViewList>(
             "/users/me/saved-filter-views",
             { listKey, name: remaining[i].name, qs: remaining[i].qs },
           );
@@ -111,7 +111,7 @@ export function useSavedFilterViews(listKey: SavedFilterListKey): {
 
   const saveMutation = useMutation({
     mutationFn: (input: { name: string; qs: string }) =>
-      api.put<BeSaveSavedFilterViewPayload, BeSavedFilterViewList>(
+      api.patch<BeSaveSavedFilterViewPayload, BeSavedFilterViewList>(
         "/users/me/saved-filter-views",
         { listKey, name: input.name, qs: input.qs },
       ),

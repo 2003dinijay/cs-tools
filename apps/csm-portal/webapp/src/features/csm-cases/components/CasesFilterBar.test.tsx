@@ -34,7 +34,7 @@ const getMock = vi.fn(async (path: string) => {
   }
   return null;
 });
-const putMock = vi.fn(async (_path: string, body: { name: string; qs: string }) => {
+const patchMock = vi.fn(async (_path: string, body: { name: string; qs: string }) => {
   const name = body.name.trim();
   seededSavedViews = [
     { name, qs: body.qs },
@@ -66,7 +66,7 @@ vi.mock("@api/backend/client", () => ({
       return postMock(path, body);
     },
     get: getMock,
-    put: putMock,
+    patch: patchMock,
     del: delMock,
   }),
 }));
