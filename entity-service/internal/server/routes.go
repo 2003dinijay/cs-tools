@@ -318,6 +318,22 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	projectMetadataHandler := handler.NewProjectMetadataHandler(projectMetadataSvc)
 
+	// GET /projects/{id}/cases/stats is wired independently for the same
+	// reason as /metadata above: it is the other ProjectStatsService method
+	// with a Postgres-backed implementation, so it is available regardless of
+	// cfg.DataSource while the remaining project-stats routes stay
+	// ServiceNow-only. In ServiceNow mode snProjectStatsSvc already satisfies
+	// ProjectCaseStatsService structurally, so the same client-backed value is
+	// reused rather than built twice.
+	var projectCaseStatsSvc service.ProjectCaseStatsService
+	if cfg.DataSource == config.DataSourceServiceNow {
+		projectCaseStatsSvc = snProjectStatsSvc
+	} else {
+		projectCaseStatsSvc = service.NewProjectCaseStatsService(
+			repository.NewProjectCaseStatsRepository(db), referenceDataRepo)
+	}
+	projectCaseStatsHandler := handler.NewProjectCaseStatsHandler(projectCaseStatsSvc)
+
 	productRepo := repository.NewProductRepository(db)
 	productSvc := service.NewProductService(productRepo)
 	productHandler := handler.NewProductHandler(productSvc)
@@ -783,9 +799,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("PATCH /projects/{id}", projectUpdateHandler.UpdateProject)
 	}
 	mux.HandleFunc("GET /projects/{id}/metadata", projectMetadataHandler.GetProjectMetadata)
+	mux.HandleFunc("GET /projects/{id}/cases/stats", projectCaseStatsHandler.GetProjectCaseStats)
 	if projectStatsHandler != nil {
 		mux.HandleFunc("GET /projects/{id}/stats", projectStatsHandler.GetProjectStats)
-		mux.HandleFunc("GET /projects/{id}/cases/stats", projectStatsHandler.GetProjectCaseStats)
 		mux.HandleFunc("GET /projects/{id}/conversations/stats", projectStatsHandler.GetProjectConversationStats)
 		mux.HandleFunc("GET /projects/{id}/deployments/stats", projectStatsHandler.GetProjectDeploymentStats)
 		mux.HandleFunc("GET /projects/{id}/time-cards/stats", projectStatsHandler.GetProjectTimeCardStats)

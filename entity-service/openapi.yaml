@@ -2082,7 +2082,14 @@ paths:
   /projects/{id}/cases/stats:
     get:
       summary: Get a project's case statistics, optionally filtered by case type and/or creator.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: >-
+        Available on both data sources. On Postgres, severityCount and
+        outstandingSeverityCount cover only the "case" type (it is the one
+        case-like table with a severity column), the project-type-derived
+        allowed-severity and allowed-case-type narrowing is not applied (no
+        feature-entitlement table exists), and choice ids are the raw enum
+        labels GET /projects/{id}/metadata also returns rather than ServiceNow
+        choice keys. casesTrend is a fixed placeholder on both.
       operationId: getProjectCaseStats
       parameters:
         - name: id

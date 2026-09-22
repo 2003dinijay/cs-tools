@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
 
@@ -41,21 +40,6 @@ func NewProjectStatsHandler(svc service.ProjectStatsService) *ProjectStatsHandle
 // GetProjectStats handles GET /projects/{id}/stats.
 func (h *ProjectStatsHandler) GetProjectStats(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.svc.GetProjectStats(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeServiceError(w, r, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
-}
-
-// GetProjectCaseStats handles GET /projects/{id}/cases/stats.
-func (h *ProjectStatsHandler) GetProjectCaseStats(w http.ResponseWriter, r *http.Request) {
-	req := domain.ProjectCaseStatsRequest{
-		CaseTypes: r.URL.Query()["caseTypes"],
-		CreatedBy: r.URL.Query().Get("createdBy"),
-	}
-	resp, err := h.svc.GetProjectCaseStats(r.Context(), r.PathValue("id"), req)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
