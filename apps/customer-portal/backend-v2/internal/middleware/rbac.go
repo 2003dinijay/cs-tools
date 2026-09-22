@@ -50,17 +50,26 @@ func NormalizeRole(roleStr string) CanonicalRole {
 	switch trimmed {
 	case "sn_customerservice.admin", "admin":
 		return RoleAdmin
-	case "wso2_agent", "snc_internal", "agent":
+	case "wso2_agent", "agent":
 		return RoleAgent
 	case "sn_customerservice.customer_admin", "customer_admin":
 		return RoleCustomerAdmin
-	case "sn_customerservice.customer", "customer", "customer_user":
+	// snc_external is ServiceNow's marker for a customer-side user (the CSM
+	// backend calls it "a customer-facing role"), so it resolves to the same
+	// persona as the customer role rather than granting nothing.
+	case "sn_customerservice.customer", "customer", "customer_user", "snc_external", "external":
 		return RoleCustomerUser
 	case "sn_customerservice.partner_admin", "partner_admin":
 		return RolePartnerAdmin
 	case "sn_customerservice.partner", "partner", "partner_user":
 		return RolePartnerUser
-	case "internal":
+	// snc_internal is the ServiceNow wire form of internal, so both land on the
+	// same persona. They used to diverge: snc_internal became agent and got
+	// agent's grants, while the Postgres form became internal and got none, so
+	// the same person's access depended on which data source entity-service was
+	// running. RoleInternal now carries agent's grants, which is what
+	// snc_internal holders already had.
+	case "snc_internal", "internal":
 		return RoleInternal
 	default:
 		return CanonicalRole(trimmed)
@@ -114,48 +123,48 @@ const (
 // permissionMatrix maps each module and action to the set of canonical roles permitted.
 var permissionMatrix = map[Module]map[Action][]CanonicalRole{
 	ModuleCases: {
-		ActionCreate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionUpdate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionCreate: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
 		ActionDelete: {RoleAdmin},
 	},
 	ModuleTimeCards: {
-		ActionCreate: {RoleAdmin, RoleAgent},
-		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionUpdate: {RoleAdmin, RoleAgent},
+		ActionCreate: {RoleAdmin, RoleAgent, RoleInternal},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent, RoleInternal},
 		ActionDelete: {RoleAdmin},
 		// Stakeholder has no access to Time Cards.
 	},
 	ModuleProjects: {
 		ActionCreate: {RoleAdmin},
-		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionUpdate: {RoleAdmin, RoleAgent},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent, RoleInternal},
 		ActionDelete: {RoleAdmin},
 	},
 	ModuleChangeRequests: {
-		ActionCreate: {RoleAdmin, RoleAgent},
-		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionUpdate: {RoleAdmin, RoleAgent},
+		ActionCreate: {RoleAdmin, RoleAgent, RoleInternal},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent, RoleInternal},
 		ActionDelete: {RoleAdmin},
 		// Stakeholder has no access to Change Requests.
 	},
 	ModuleDeployments: {
-		ActionCreate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionUpdate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionDelete: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionCreate: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionDelete: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
 	},
 	ModuleDeploymentProducts: {
-		ActionCreate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionUpdate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionDelete: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionCreate: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionDelete: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
 	},
 	ModuleDeploymentResources: {
-		ActionCreate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionUpdate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionDelete: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionCreate: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionDelete: {RoleAdmin, RoleAgent, RoleInternal, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
 	},
 	// No role currently grants Security Admin.
 	//

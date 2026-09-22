@@ -57,15 +57,18 @@ export function normalizeCustomerRole(roleStr: string): CanonicalRole {
     case "admin":
       return "admin";
     case "wso2_agent":
-    case "snc_internal":
     case "agent":
       return "agent";
     case "sn_customerservice.customer_admin":
     case "customer_admin":
       return "customer_admin";
+    // snc_external is ServiceNow's customer-side marker, so it resolves to the
+    // customer persona rather than granting nothing.
     case "sn_customerservice.customer":
     case "customer":
     case "customer_user":
+    case "snc_external":
+    case "external":
       return "customer_user";
     case "sn_customerservice.partner_admin":
     case "partner_admin":
@@ -74,6 +77,11 @@ export function normalizeCustomerRole(roleStr: string): CanonicalRole {
     case "partner":
     case "partner_user":
       return "partner_user";
+    // snc_internal is the ServiceNow wire form of internal; both resolve to the
+    // same persona so access no longer depends on which data source
+    // entity-service runs. "internal" carries the grants snc_internal already
+    // had via agent.
+    case "snc_internal":
     case "internal":
       return "internal";
     default:
@@ -104,6 +112,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     create: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -112,6 +121,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     read: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -120,6 +130,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     update: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -128,16 +139,17 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     delete: ["admin"],
   },
   time_cards: {
-    create: ["admin", "agent"],
+    create: ["admin", "agent", "internal"],
     read: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
       "partner_user",
     ],
-    update: ["admin", "agent"],
+    update: ["admin", "agent", "internal"],
     delete: ["admin"],
   },
   projects: {
@@ -145,31 +157,34 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     read: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
       "partner_user",
     ],
-    update: ["admin", "agent"],
+    update: ["admin", "agent", "internal"],
     delete: ["admin"],
   },
   change_requests: {
-    create: ["admin", "agent"],
+    create: ["admin", "agent", "internal"],
     read: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
       "partner_user",
     ],
-    update: ["admin", "agent"],
+    update: ["admin", "agent", "internal"],
     delete: ["admin"],
   },
   deployments: {
     create: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -178,6 +193,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     read: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -186,6 +202,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     update: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -194,6 +211,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     delete: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -204,6 +222,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     create: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -212,6 +231,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     read: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -220,6 +240,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     update: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -228,6 +249,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     delete: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -238,6 +260,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     create: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -246,6 +269,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     read: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -254,6 +278,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     update: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",
@@ -262,6 +287,7 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     delete: [
       "admin",
       "agent",
+      "internal",
       "customer_admin",
       "customer_user",
       "partner_admin",

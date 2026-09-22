@@ -118,6 +118,37 @@ func TestHasPermissionMatrix(t *testing.T) {
 	}
 	allActions := []Action{ActionCreate, ActionRead, ActionUpdate, ActionDelete}
 
+	// snc_external / external is a customer-facing role. It used to normalise to
+	// itself, match no matrix entry and grant nothing, so a user carrying only
+	// it was locked out of the whole portal.
+	t.Run("external resolves to the customer persona", func(t *testing.T) {
+		for _, raw := range []string{"snc_external", "external"} {
+			if got := NormalizeRole(raw); got != RoleCustomerUser {
+				t.Errorf("%s normalised to %q, want %q", raw, got, RoleCustomerUser)
+			}
+		}
+	})
+
+	// snc_internal used to become agent while the Postgres form became internal
+	// and held nothing, so the same person's access depended on which data
+	// source entity-service was running.
+	t.Run("both internal wire forms agree and hold what agent holds", func(t *testing.T) {
+		for _, raw := range []string{"snc_internal", "internal"} {
+			if got := NormalizeRole(raw); got != RoleInternal {
+				t.Errorf("%s normalised to %q, want %q", raw, got, RoleInternal)
+			}
+		}
+		for _, mod := range allModules {
+			for _, act := range allActions {
+				internal := HasPermission([]CanonicalRole{RoleInternal}, mod, act)
+				agent := HasPermission([]CanonicalRole{RoleAgent}, mod, act)
+				if internal != agent {
+					t.Errorf("%s on %s: internal=%v agent=%v, want equal", act, mod, internal, agent)
+				}
+			}
+		}
+	})
+
 	// super_admin and stakeholder were removed: nothing in entity-service,
 	// ServiceNow or the Postgres role table ever emits either name, so neither
 	// could be produced by NormalizeRole and their grants were unreachable.
@@ -379,8 +410,8 @@ func TestRequirePermissionMiddleware(t *testing.T) {
 	})
 
 	t.Run("forbidden action returns 403", func(t *testing.T) {
-		// RoleInternal holds no grants in the matrix at all.
-		resolver := &mockRoleResolver{roles: []CanonicalRole{RoleInternal}}
+		// An unrecognised role normalises to itself and matches no matrix entry.
+		resolver := &mockRoleResolver{roles: NormalizeRoles([]string{"sn_customerservice.stakeholder"})}
 		ts := RequirePermission(resolver, ModuleCases, ActionCreate)(handler)
 
 		req := httptest.NewRequest(http.MethodPost, "/cases", nil)

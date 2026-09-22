@@ -77,6 +77,27 @@ describe("useCustomerPermissions & Permission Matrix", () => {
   });
 
   describe("Permission Matrix Rules", () => {
+    // snc_external / external is a customer-facing role that used to normalise
+    // to itself and grant nothing, locking such a user out of the portal.
+    it("external resolves to the customer persona", () => {
+      expect(normalizeCustomerRoles(["snc_external"])[0]).toBe("customer_user");
+      expect(normalizeCustomerRoles(["external"])[0]).toBe("customer_user");
+    });
+
+    // snc_internal used to become agent while the Postgres form became internal
+    // and held nothing, so access depended on the data source.
+    it("both internal wire forms agree and hold what agent holds", () => {
+      expect(normalizeCustomerRoles(["snc_internal"])[0]).toBe("internal");
+      expect(normalizeCustomerRoles(["internal"])[0]).toBe("internal");
+      for (const mod of ALL_MODULES) {
+        for (const act of ALL_ACTIONS) {
+          expect(hasCustomerPermission(["internal"], mod, act)).toBe(
+            hasCustomerPermission(["agent"], mod, act),
+          );
+        }
+      }
+    });
+
     // super_admin and stakeholder were removed: no real role emits either
     // name, so their grants were unreachable.
     it("no role grants security_admin", () => {
