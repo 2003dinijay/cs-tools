@@ -470,7 +470,27 @@ func (r *deployedProductRepo) SearchProjectsByProductVersion(ctx context.Context
 	filterArgs := []any{req.ProductID, req.ProductVersionID}
 	argIdx := 3
 
-	where := "WHERE dp.product_id = $1 AND dp.version_id = $2"
+	// Mandatory, unconditional (not gated on a caller-supplied slice, unlike
+	// the two exclusions below): a project whose subscription contract has
+	// ended (end_date in the past) is treated as inaccessible by the
+	// customer portal itself (isProjectSuspended in
+	// apps/customer-portal/webapp/src/utils/permission.ts, which checks
+	// end_date independently of wso2_closure_state — a project's closure
+	// state is frequently left NULL when its subscription simply expired
+	// rather than being explicitly marked Restricted/Suspended). An EOL
+	// announcement audience must not include a project the customer portal
+	// itself already blocks the customer from viewing. end_date is a plain
+	// DATE column (no time-of-day), so this compares dates directly against
+	// today's UTC date rather than casting to a timestamp — end_date is
+	// still "current" through the entirety of that day and only excluded
+	// starting the next UTC day, mirroring
+	// apps/customer-portal/webapp/src/utils/permission.ts's own
+	// isProjectContractEnded (end-of-day UTC, strictly after). Mirrors the
+	// same fixed exclusion added to sn_deployed_product_service.go's
+	// fetchEligibleProjectIDs for the ServiceNow-backed cohort, for parity
+	// between data sources.
+	where := "WHERE dp.product_id = $1 AND dp.version_id = $2" +
+		" AND (proj.end_date IS NULL OR proj.end_date >= (NOW() AT TIME ZONE 'UTC')::date)"
 
 	// Same NULL-permissive, upper-cased-vocabulary matching as
 	// ProjectRepository.SearchProjects' ExcludeClosureStates clause -- see

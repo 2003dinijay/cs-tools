@@ -469,6 +469,18 @@ const maxProjectsByProductVersionDeployedProductPages = 200
 // Project Type is not Cloud Support, WSO2 Closure State is not Restricted,
 // WSO2 Closure State is not Suspended. That flow gives whoever triggers it no
 // way to opt out; this endpoint doesn't either.
+//
+// fetchEligibleProjectIDs additionally excludes any project whose contract
+// has ended (EndDate in the past) — a fifth, unconditional exclusion beyond
+// the four the SN flow above checks. WSO2 Closure State is frequently left
+// unset (nil) for a project whose subscription simply expired rather than
+// being explicitly marked "Suspended"/"Restricted", so closure-state alone
+// misses it. The customer portal itself already treats an expired end date
+// as equivalent to "Suspended" for access purposes (isProjectSuspended in
+// apps/customer-portal/webapp/src/utils/permission.ts) and blocks the
+// customer from even viewing the project — an EOL announcement audience
+// must not include a project the customer portal itself considers
+// inaccessible.
 var mandatoryExcludeClosureStates = []string{"Restricted", "Suspended"}
 var mandatoryExcludeSubscriptionTypes = []domain.SubscriptionType{
 	domain.SubscriptionTypeCloudSupport,
@@ -656,6 +668,9 @@ func (s *snDeployedProductService) fetchEligibleProjectIDs(ctx context.Context, 
 			return nil, err
 		}
 		for _, p := range resp.Projects {
+			if isProjectContractEnded(p.EndDate, time.Now()) {
+				continue
+			}
 			result[p.ID] = struct{}{}
 		}
 		offset += len(resp.Projects)
