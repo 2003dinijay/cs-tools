@@ -205,6 +205,18 @@ func (s *announcementRequestService) MarkPublished(ctx context.Context, id, acto
 	if current.State != domain.AnnouncementRequestStateApproved {
 		return domain.AnnouncementRequest{}, &apierror.ConflictError{Msg: "only an approved request can be published, not " + string(current.State)}
 	}
+	// Publish sends real cases to real customers, so it's restricted to the
+	// request's own creator -- an approver's job is only to approve; per
+	// Danidu's explicit instruction, they must not also be able to trigger
+	// the send themselves. Self-approval (a creator approving their own
+	// request) is deliberately still allowed for now, unlike this -- there's
+	// no approver-role concept yet to enforce a "different person" rule at
+	// that step, and that's an intentional, temporary gap to revisit once
+	// one exists. This check has no such excuse: CreatedBy is always known
+	// and unambiguous.
+	if current.CreatedBy != actorID {
+		return domain.AnnouncementRequest{}, &apierror.ForbiddenError{Msg: "only the request's creator can publish it"}
+	}
 	return s.repo.MarkPublished(ctx, id, actorID)
 }
 

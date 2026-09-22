@@ -32,6 +32,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { RefreshCw, X } from "@wso2/oxygen-ui-icons-react";
 import { Link } from "react-router";
+import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import EditorWithSourceToggle from "@components/rich-text-editor/EditorWithSourceToggle";
 import { formatAbsoluteForUser } from "@utils/dateTime";
 import { sanitizeRichTextHtml } from "@utils/sanitizeHtml";
@@ -118,6 +119,15 @@ export default function AnnouncementRequestDialog({
   const submit = useSubmitAnnouncementRequest();
   const approve = useApproveAnnouncementRequest();
   const publish = usePublishAnnouncementRequest(request);
+  // Publish is restricted to the request's own creator server-side (an
+  // approver's job is only to approve, not to also trigger the real send) —
+  // this mirrors that here so the button reflects reality instead of
+  // failing with a 403 only after being clicked. claims.userid is the same
+  // stable per-account identifier the backend's JWT "userid" claim (and so
+  // request.createdBy) is sourced from — see IdTokenClaims's own doc
+  // comment for why not `sub`, which is per-session.
+  const claims = useIdTokenClaims();
+  const isRequestCreator = !!request && !!claims?.userid && claims.userid === request.createdBy;
 
   const [subject, setSubject] = useState("");
   const [description, setDescription] = useState("");
@@ -503,8 +513,8 @@ export default function AnnouncementRequestDialog({
                     variant="contained"
                     color="primary"
                     size="small"
-                    onClick={() => !hasUnsavedChanges && void publish.handlePublish()}
-                    disabled={publish.publishing || hasUnsavedChanges}
+                    onClick={() => !hasUnsavedChanges && isRequestCreator && void publish.handlePublish()}
+                    disabled={publish.publishing || hasUnsavedChanges || !isRequestCreator}
                   >
                     {publish.publishing
                       ? "Publishing…"
@@ -515,7 +525,12 @@ export default function AnnouncementRequestDialog({
                           : "Publish"}
                   </Button>
                 </Box>
-                {hasUnsavedChanges && (
+                {!isRequestCreator && (
+                  <Typography variant="caption" color="text.secondary">
+                    Only {request.createdBy} can publish this request — approving it doesn't grant that.
+                  </Typography>
+                )}
+                {isRequestCreator && hasUnsavedChanges && (
                   <Typography variant="caption" color="text.secondary">
                     Save your changes first — Publish sends whatever's currently saved, not what's still
                     unsaved here.
