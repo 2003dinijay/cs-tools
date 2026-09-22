@@ -586,7 +586,7 @@ export default function CsmAnnouncementsPage(): JSX.Element {
                           </Typography>
                         </TableCell>
                         <TableCell>{r.kind === "eol" ? "EOL" : "Customer"}</TableCell>
-                        <TableCell>{r.createdBy || "—"}</TableCell>
+                        <TableCell>{r.createdByEmail || r.createdBy || "—"}</TableCell>
                         <TableCell sx={{ whiteSpace: "nowrap" }}>{formatDate(r.createdAt)}</TableCell>
                         <TableCell sx={{ whiteSpace: "nowrap" }}>{formatDate(r.updatedAt)}</TableCell>
                       </TableRow>

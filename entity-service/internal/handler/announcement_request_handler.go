@@ -132,7 +132,7 @@ func (h *AnnouncementRequestHandler) ApproveAnnouncementRequest(w http.ResponseW
 	if !decodeRequest(w, r, &req) {
 		return
 	}
-	resp, err := h.svc.Approve(r.Context(), r.PathValue("id"), req.ActorID)
+	resp, err := h.svc.Approve(r.Context(), r.PathValue("id"), req.ActorID, req.ActorEmail)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
@@ -147,7 +147,7 @@ func (h *AnnouncementRequestHandler) PublishAnnouncementRequest(w http.ResponseW
 	if !decodeRequest(w, r, &req) {
 		return
 	}
-	resp, err := h.svc.MarkPublished(r.Context(), r.PathValue("id"), req.ActorID, req.CaseIDs)
+	resp, err := h.svc.MarkPublished(r.Context(), r.PathValue("id"), req.ActorID, req.ActorEmail, req.CaseIDs)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
@@ -162,7 +162,7 @@ func (h *AnnouncementRequestHandler) CreateAnnouncementRequestUpdate(w http.Resp
 	if !decodeRequest(w, r, &req) {
 		return
 	}
-	resp, err := h.svc.AddUpdate(r.Context(), r.PathValue("id"), req.ActorID, req.Content)
+	resp, err := h.svc.AddUpdate(r.Context(), r.PathValue("id"), req.ActorID, req.ActorEmail, req.Content)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

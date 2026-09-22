@@ -192,14 +192,18 @@ func TestCreateAnnouncementRequest(t *testing.T) {
 
 		assertStatus(t, w, http.StatusCreated)
 		var got struct {
-			CreatedBy string `json:"createdBy"`
-			Subject   string `json:"subject"`
+			CreatedBy      string `json:"createdBy"`
+			CreatedByEmail string `json:"createdByEmail"`
+			Subject        string `json:"subject"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 			t.Fatalf("decode response: %v; raw: %s", err, w.Body.String())
 		}
 		if got.CreatedBy != testUser.UserID {
 			t.Fatalf("createdBy = %q, want the authenticated caller %q — a client-supplied value must never be trusted", got.CreatedBy, testUser.UserID)
+		}
+		if got.CreatedByEmail != testUser.Email {
+			t.Fatalf("createdByEmail = %q, want the authenticated caller's email %q", got.CreatedByEmail, testUser.Email)
 		}
 		if got.Subject != "Hi" {
 			t.Fatalf("expected subject forwarded unchanged, got %q", got.Subject)
@@ -370,13 +374,17 @@ func TestApproveAnnouncementRequest_IgnoresRequestBodyEntirely(t *testing.T) {
 	assertStatus(t, w, http.StatusOK)
 
 	var got struct {
-		ActorID string `json:"actorId"`
+		ActorID    string `json:"actorId"`
+		ActorEmail string `json:"actorEmail"`
 	}
 	if err := json.Unmarshal(client.gotApproveBody, &got); err != nil {
 		t.Fatalf("decode forwarded body: %v", err)
 	}
 	if got.ActorID != testUser.UserID {
 		t.Fatalf("actorId = %q, want %q", got.ActorID, testUser.UserID)
+	}
+	if got.ActorEmail != testUser.Email {
+		t.Fatalf("actorEmail = %q, want %q", got.ActorEmail, testUser.Email)
 	}
 }
 
@@ -397,14 +405,18 @@ func TestPublishAnnouncementRequest_ForwardsCaseIDsAndForcesActorID(t *testing.T
 	assertStatus(t, w, http.StatusOK)
 
 	var got struct {
-		ActorID string   `json:"actorId"`
-		CaseIDs []string `json:"caseIds"`
+		ActorID    string   `json:"actorId"`
+		ActorEmail string   `json:"actorEmail"`
+		CaseIDs    []string `json:"caseIds"`
 	}
 	if err := json.Unmarshal(client.gotPublishBody, &got); err != nil {
 		t.Fatalf("decode forwarded body: %v", err)
 	}
 	if got.ActorID != testUser.UserID {
 		t.Fatalf("actorId = %q, want the authenticated caller %q, not the client-supplied value", got.ActorID, testUser.UserID)
+	}
+	if got.ActorEmail != testUser.Email {
+		t.Fatalf("actorEmail = %q, want the authenticated caller's email %q", got.ActorEmail, testUser.Email)
 	}
 	if len(got.CaseIDs) != 2 || got.CaseIDs[0] != "case-1" || got.CaseIDs[1] != "case-2" {
 		t.Fatalf("expected caseIds forwarded, got %v", got.CaseIDs)
@@ -444,14 +456,18 @@ func TestCreateAnnouncementRequestUpdate_ForwardsContentAndForcesActorID(t *test
 	assertStatus(t, w, http.StatusCreated)
 
 	var got struct {
-		Content string `json:"content"`
-		ActorID string `json:"actorId"`
+		Content    string `json:"content"`
+		ActorID    string `json:"actorId"`
+		ActorEmail string `json:"actorEmail"`
 	}
 	if err := json.Unmarshal(client.gotCreateUpdateBody, &got); err != nil {
 		t.Fatalf("decode forwarded body: %v", err)
 	}
 	if got.Content != "A correction." {
 		t.Fatalf("content = %q, want forwarded", got.Content)
+	}
+	if got.ActorEmail != testUser.Email {
+		t.Fatalf("actorEmail = %q, want the authenticated caller's email %q", got.ActorEmail, testUser.Email)
 	}
 	if got.ActorID != testUser.UserID {
 		t.Fatalf("actorId = %q, want the authenticated caller %q, not the client-supplied value", got.ActorID, testUser.UserID)
@@ -513,6 +529,7 @@ func TestSubmitAnnouncementRequest(t *testing.T) {
 		var got struct {
 			ResolvedProjectIDs []string `json:"resolvedProjectIds"`
 			ActorID            string   `json:"actorId"`
+			ActorEmail         string   `json:"actorEmail"`
 		}
 		if err := json.Unmarshal(client.gotSubmitBody, &got); err != nil {
 			t.Fatalf("decode forwarded submit body: %v", err)
@@ -522,6 +539,9 @@ func TestSubmitAnnouncementRequest(t *testing.T) {
 		}
 		if got.ActorID != testUser.UserID {
 			t.Fatalf("actorId = %q, want %q", got.ActorID, testUser.UserID)
+		}
+		if got.ActorEmail != testUser.Email {
+			t.Fatalf("actorEmail = %q, want %q", got.ActorEmail, testUser.Email)
 		}
 	})
 
