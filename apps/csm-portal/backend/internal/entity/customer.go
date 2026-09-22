@@ -131,9 +131,9 @@ func (c *CustomerEntityClient) ListSavedFilterViews(ctx context.Context, listKey
 	return c.do(ctx, http.MethodGet, "/users/me/saved-filter-views?"+q.Encode(), nil)
 }
 
-// SaveSavedFilterView calls PUT /users/me/saved-filter-views on the entity service.
+// SaveSavedFilterView calls PATCH /users/me/saved-filter-views on the entity service.
 func (c *CustomerEntityClient) SaveSavedFilterView(ctx context.Context, body []byte) ([]byte, error) {
-	return c.do(ctx, http.MethodPut, "/users/me/saved-filter-views", body)
+	return c.do(ctx, http.MethodPatch, "/users/me/saved-filter-views", body)
 }
 
 // DeleteSavedFilterView calls DELETE /users/me/saved-filter-views on the entity service.

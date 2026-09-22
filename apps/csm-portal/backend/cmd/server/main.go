@@ -245,7 +245,7 @@ func main() {
 	route("GET /users/me", handler.PermAuthenticated, usersHandler.GetMe)
 	route("PATCH /users/me", handler.PermAuthenticated, usersHandler.PatchMe)
 	route("GET /users/me/saved-filter-views", handler.PermAuthenticated, usersHandler.ListSavedFilterViews)
-	route("PUT /users/me/saved-filter-views", handler.PermAuthenticated, usersHandler.SaveSavedFilterView)
+	route("PATCH /users/me/saved-filter-views", handler.PermAuthenticated, usersHandler.SaveSavedFilterView)
 	route("DELETE /users/me/saved-filter-views", handler.PermAuthenticated, usersHandler.DeleteSavedFilterView)
 	route("POST /users/me/saved-filter-views/reorder", handler.PermAuthenticated, usersHandler.ReorderSavedFilterView)
 	route("POST /users/search", handler.PermView, usersHandler.SearchUsers)

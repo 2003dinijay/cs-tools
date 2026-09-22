@@ -1383,7 +1383,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
-    put:
+    patch:
       summary: Save or overwrite a saved filter view.
       operationId: saveSavedFilterView
       requestBody:

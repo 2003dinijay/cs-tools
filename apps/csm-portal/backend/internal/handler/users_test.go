@@ -521,7 +521,7 @@ func TestSearchUsers(t *testing.T) {
 
 func TestListSavedFilterViews(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false, nil)
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false)
 		r := httptest.NewRequest(http.MethodGet, "/users/me/saved-filter-views?listKey=cases", nil)
 		w := httptest.NewRecorder()
 		h.ListSavedFilterViews(w, r)
@@ -530,7 +530,7 @@ func TestListSavedFilterViews(t *testing.T) {
 	})
 
 	t.Run("requires listKey", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false, nil)
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/users/me/saved-filter-views", nil))
 		w := httptest.NewRecorder()
 		h.ListSavedFilterViews(w, r)
@@ -546,7 +546,7 @@ func TestListSavedFilterViews(t *testing.T) {
 				return []byte(`{"views":[{"name":"Open","qs":"states=open"}]}`), nil
 			},
 		}
-		h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t), false, nil)
+		h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t), false)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/users/me/saved-filter-views?listKey=cases", nil))
 		w := httptest.NewRecorder()
 		h.ListSavedFilterViews(w, r)
@@ -565,7 +565,7 @@ func TestListSavedFilterViews(t *testing.T) {
 						return nil, tc.err
 					},
 				}
-				h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t), false, nil)
+				h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t), false)
 				r := withUser(httptest.NewRequest(http.MethodGet, "/users/me/saved-filter-views?listKey=cases", nil))
 				w := httptest.NewRecorder()
 				h.ListSavedFilterViews(w, r)
@@ -578,16 +578,16 @@ func TestListSavedFilterViews(t *testing.T) {
 
 func TestSaveSavedFilterView(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false, nil)
-		r := httptest.NewRequest(http.MethodPut, "/users/me/saved-filter-views", strings.NewReader(`{}`))
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false)
+		r := httptest.NewRequest(http.MethodPatch, "/users/me/saved-filter-views", strings.NewReader(`{}`))
 		w := httptest.NewRecorder()
 		h.SaveSavedFilterView(w, r)
 		assertStatus(t, w, http.StatusUnauthorized)
 	})
 
 	t.Run("rejects invalid JSON", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false, nil)
-		r := withUser(httptest.NewRequest(http.MethodPut, "/users/me/saved-filter-views", strings.NewReader(`not-json`)))
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/users/me/saved-filter-views", strings.NewReader(`not-json`)))
 		w := httptest.NewRecorder()
 		h.SaveSavedFilterView(w, r)
 		assertStatus(t, w, http.StatusBadRequest)
@@ -603,8 +603,8 @@ func TestSaveSavedFilterView(t *testing.T) {
 				return []byte(`{"views":[{"name":"Open","qs":"states=open"}]}`), nil
 			},
 		}
-		h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t), false, nil)
-		r := withUser(httptest.NewRequest(http.MethodPut, "/users/me/saved-filter-views", strings.NewReader(payload)))
+		h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t), false)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/users/me/saved-filter-views", strings.NewReader(payload)))
 		w := httptest.NewRecorder()
 		h.SaveSavedFilterView(w, r)
 		assertStatus(t, w, http.StatusOK)
@@ -616,7 +616,7 @@ func TestSaveSavedFilterView(t *testing.T) {
 
 func TestDeleteSavedFilterView(t *testing.T) {
 	t.Run("requires listKey and name", func(t *testing.T) {
-		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false, nil)
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false)
 		r := withUser(httptest.NewRequest(http.MethodDelete, "/users/me/saved-filter-views?listKey=cases", nil))
 		w := httptest.NewRecorder()
 		h.DeleteSavedFilterView(w, r)
@@ -632,7 +632,7 @@ func TestDeleteSavedFilterView(t *testing.T) {
 				return []byte(`{"views":[]}`), nil
 			},
 		}
-		h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t), false, nil)
+		h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t), false)
 		r := withUser(httptest.NewRequest(http.MethodDelete, "/users/me/saved-filter-views?listKey=incidents&name=Mine", nil))
 		w := httptest.NewRecorder()
 		h.DeleteSavedFilterView(w, r)
@@ -653,7 +653,7 @@ func TestReorderSavedFilterView(t *testing.T) {
 				return []byte(`{"views":[]}`), nil
 			},
 		}
-		h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t), false, nil)
+		h := NewUsersHandler(&mockSCIMClient{}, entityClient, testDirectory(t), false)
 		r := withUser(httptest.NewRequest(http.MethodPost, "/users/me/saved-filter-views/reorder", strings.NewReader(payload)))
 		w := httptest.NewRecorder()
 		h.ReorderSavedFilterView(w, r)

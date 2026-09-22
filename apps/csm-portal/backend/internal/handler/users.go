@@ -387,7 +387,7 @@ func (h *UsersHandler) ListSavedFilterViews(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, result)
 }
 
-// SaveSavedFilterView handles PUT /users/me/saved-filter-views.
+// SaveSavedFilterView handles PATCH /users/me/saved-filter-views.
 func (h *UsersHandler) SaveSavedFilterView(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -457,22 +457,4 @@ func (h *UsersHandler) ReorderSavedFilterView(w http.ResponseWriter, r *http.Req
 	}
 
 	writeJSON(w, http.StatusOK, result)
-}
-
-func readJSONBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		if _, ok := err.(*http.MaxBytesError); ok {
-			writeError(w, http.StatusRequestEntityTooLarge, ErrMsgTooLarge)
-			return nil, false
-		}
-		writeError(w, http.StatusBadRequest, errMsgReadBody)
-		return nil, false
-	}
-	if !json.Valid(body) {
-		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-		return nil, false
-	}
-	return body, true
 }
