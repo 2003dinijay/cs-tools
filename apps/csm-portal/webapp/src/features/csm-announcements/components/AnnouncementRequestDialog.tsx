@@ -50,6 +50,7 @@ import { SECURITY_ANNOUNCEMENT_TAG_LABEL } from "@features/csm-announcements/com
 import AnnouncementSendProgress, {
   type AnnouncementSendProgressState,
 } from "@features/csm-announcements/components/AnnouncementSendProgress";
+import PublishConfirmationDialog from "@features/csm-announcements/components/PublishConfirmationDialog";
 
 interface AnnouncementRequestDialogProps {
   requestId: string;
@@ -128,6 +129,7 @@ export default function AnnouncementRequestDialog({
   // comment for why not `sub`, which is per-session.
   const claims = useIdTokenClaims();
   const isRequestCreator = !!request && !!claims?.userid && claims.userid === request.createdBy;
+  const [confirmPublishOpen, setConfirmPublishOpen] = useState(false);
 
   const [subject, setSubject] = useState("");
   const [description, setDescription] = useState("");
@@ -513,7 +515,7 @@ export default function AnnouncementRequestDialog({
                     variant="contained"
                     color="primary"
                     size="small"
-                    onClick={() => !hasUnsavedChanges && isRequestCreator && void publish.handlePublish()}
+                    onClick={() => !hasUnsavedChanges && isRequestCreator && setConfirmPublishOpen(true)}
                     disabled={publish.publishing || hasUnsavedChanges || !isRequestCreator}
                   >
                     {publish.publishing
@@ -578,6 +580,20 @@ export default function AnnouncementRequestDialog({
             </Button>
           </DialogActions>
         </Dialog>
+      )}
+
+      {request && (
+        <PublishConfirmationDialog
+          open={confirmPublishOpen}
+          request={request}
+          isRetry={publish.failedProjectIds.length > 0 || publish.failedTagProjectIds.length > 0}
+          confirming={publish.publishing}
+          onCancel={() => setConfirmPublishOpen(false)}
+          onConfirm={() => {
+            setConfirmPublishOpen(false);
+            void publish.handlePublish();
+          }}
+        />
       )}
     </Dialog>
   );

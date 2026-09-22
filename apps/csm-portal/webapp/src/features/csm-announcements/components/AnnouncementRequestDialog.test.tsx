@@ -60,6 +60,22 @@ vi.mock("@features/csm-announcements/api/useAnnouncementDryRun", () => ({
 vi.mock("@hooks/useIdTokenClaims", () => ({
   useIdTokenClaims: vi.fn(),
 }));
+// PublishConfirmationDialog's useResolvedAudiencePreview needs both of
+// these — see DirectoryMembersList.test.tsx for the same pattern.
+vi.mock("@config/apiConfig", () => ({
+  apiConfig: { backendUrl: "https://example.test" },
+}));
+vi.mock("@hooks/useAuthApiClient", () => ({
+  useAuthApiClient: () =>
+    vi.fn((url: string) => {
+      const id = decodeURIComponent(String(url).split("/").pop() ?? "");
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ id, name: `Project ${id}`, key: id.toUpperCase(), account: { name: "Acme" } }),
+      });
+    }),
+}));
 vi.mock("@features/csm-announcements/components/CreateCustomerAnnouncementForm", () => ({
   SECURITY_ANNOUNCEMENT_TAG_LABEL: "Security Announcement",
 }));
@@ -317,7 +333,7 @@ describe("AnnouncementRequestDialog — approved", () => {
     expect(screen.getByRole("button", { name: /^publish$/i })).toBeInTheDocument();
   });
 
-  it("calls handlePublish when Publish is clicked", () => {
+  it("opens a confirmation popup before calling handlePublish, showing what's about to be sent", async () => {
     mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
     const handlePublish = vi.fn();
     mockedPublish.mockReturnValue({
@@ -332,6 +348,14 @@ describe("AnnouncementRequestDialog — approved", () => {
 
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /^publish$/i }));
+
+    // The popup shows the same subject before anything is actually sent —
+    // handlePublish must not fire just from opening it.
+    expect(await screen.findByText("Confirm before sending")).toBeInTheDocument();
+    expect(screen.getAllByText("Scheduled maintenance").length).toBeGreaterThan(0);
+    expect(handlePublish).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /^send to 1 project$/i }));
     expect(handlePublish).toHaveBeenCalled();
   });
 
