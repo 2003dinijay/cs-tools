@@ -2217,21 +2217,23 @@ export default function CsmCaseDetailPage(): JSX.Element {
         >
           Back
         </Button>
-        <ExportPdfButton
-          onExport={handleExportCasePdf}
-          disabled={
-            isCommentsLoading ||
-            isActivityLoading ||
-            isAttachmentsLoading ||
-            isFeedbackLoading ||
-            isChatLoading ||
-            isCommentsError ||
-            isActivityError ||
-            isAttachmentsError ||
-            isFeedbackError ||
-            isChatError
-          }
-        />
+        {canWrite && (
+          <ExportPdfButton
+            onExport={handleExportCasePdf}
+            disabled={
+              isCommentsLoading ||
+              isActivityLoading ||
+              isAttachmentsLoading ||
+              isFeedbackLoading ||
+              isChatLoading ||
+              isCommentsError ||
+              isActivityError ||
+              isAttachmentsError ||
+              isFeedbackError ||
+              isChatError
+            }
+          />
+        )}
       </Box>
 
       <Box
@@ -2870,7 +2872,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             <LinkedServiceRequestsWidget
               caseId={c.id}
               linkedServiceRequests={c.linkedServiceRequests}
-              createDisabled={isClosed}
+              createDisabled={isClosed || !canWrite}
               onCreateServiceRequest={() => {
                 const navState: CreateServiceRequestFromCaseNavState = {
                   projectId: c.projectId,
