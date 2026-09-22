@@ -162,6 +162,21 @@ func parseSNDateTime(ctx context.Context, callSite, field, value string) (time.T
 	return time.Time{}, err
 }
 
+// isProjectContractEnded reports whether endDate's day has fully elapsed as
+// of now — mirroring apps/customer-portal/webapp/src/utils/permission.ts's
+// isProjectContractEnded exactly (end-of-day UTC comparison, strictly after),
+// so a project the customer portal itself treats as contract-ended is
+// treated the same way here. endDate is nil when the backing data source has
+// no end date recorded, in which case the contract is never considered
+// ended.
+func isProjectContractEnded(endDate *time.Time, now time.Time) bool {
+	if endDate == nil {
+		return false
+	}
+	endOfDay := time.Date(endDate.Year(), endDate.Month(), endDate.Day(), 23, 59, 59, 999000000, time.UTC)
+	return now.After(endOfDay)
+}
+
 type snProjectService struct {
 	client     *integrationservice.Client
 	pgFallback ProjectService

@@ -470,7 +470,32 @@ func (r *deployedProductRepo) SearchProjectsByProductVersion(ctx context.Context
 	filterArgs := []any{req.ProductID, req.ProductVersionID}
 	argIdx := 3
 
-	where := "WHERE dp.product_id = $1 AND dp.version_id = $2"
+	// Mandatory, unconditional (not gated on a caller-supplied slice, unlike
+	// the two exclusions below): a project whose subscription contract has
+	// ended (end_date in the past) is treated as inaccessible by the
+	// customer portal itself (isProjectSuspended in
+	// apps/customer-portal/webapp/src/utils/permission.ts, which checks
+	// end_date independently of wso2_closure_state — a project's closure
+	// state is frequently left NULL when its subscription simply expired
+	// rather than being explicitly marked Restricted/Suspended). An EOL
+	// announcement audience must not include a project the customer portal
+	// itself already blocks the customer from viewing. end_date is a plain
+	// DATE column (no time-of-day); the cutoff is the last millisecond of
+	// that day (end_date + 1 day - 1ms), not simply "the next UTC day",
+	// so this matches apps/customer-portal/webapp/src/utils/permission.ts's
+	// own isProjectContractEnded (end-of-day UTC, strictly after) and
+	// isProjectContractEnded in sn_project_service.go to the millisecond —
+	// a plain date-vs-date comparison here would exclude the project one
+	// millisecond later than both of those (only at the next day's exact
+	// midnight instead of 23:59:59.999 on end_date's own day), a real,
+	// if practically negligible, inconsistency between the ServiceNow and
+	// Postgres cohorts a reviewer flagged. Both sides of the comparison are
+	// plain "timestamp without time zone" (NOW() AT TIME ZONE 'UTC' yields
+	// the current UTC wall-clock reading in that type), so this needs no
+	// timezone-conversion assumption the way comparing a timestamptz
+	// directly against a bare "date + interval" would.
+	where := "WHERE dp.product_id = $1 AND dp.version_id = $2" +
+		" AND (proj.end_date IS NULL OR proj.end_date + INTERVAL '1 day' - INTERVAL '1 millisecond' >= (NOW() AT TIME ZONE 'UTC'))"
 
 	// Same NULL-permissive, upper-cased-vocabulary matching as
 	// ProjectRepository.SearchProjects' ExcludeClosureStates clause -- see
