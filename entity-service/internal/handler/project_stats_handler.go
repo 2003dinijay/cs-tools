@@ -24,10 +24,13 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
 
-// ProjectStatsHandler handles HTTP requests for project-scoped statistics,
-// backed by the ServiceNow data source only. GET /projects/{id}/metadata
-// (also a ProjectStatsService method) is handled separately by
-// ProjectMetadataHandler, which does have a Postgres-backed implementation.
+// ProjectStatsHandler handles HTTP requests for project-scoped statistics.
+// Both data sources back it: ServiceNow through snProjectStatsService,
+// Postgres through projectStatsService. GET /projects/{id}/metadata and
+// GET /projects/{id}/cases/stats are also ProjectStatsService methods but
+// are handled separately, by ProjectMetadataHandler and
+// ProjectCaseStatsHandler -- each was portable to Postgres before the rest of
+// the bundle was, and kept its own handler.
 type ProjectStatsHandler struct {
 	svc service.ProjectStatsService
 }

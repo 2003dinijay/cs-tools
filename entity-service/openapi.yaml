@@ -2044,7 +2044,13 @@ paths:
   /projects/{id}/stats:
     get:
       summary: Get a project's overall statistics.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: >-
+        Available on both data sources. On Postgres, totalHours/billableHours
+        are real hours derived from the per-activity minute columns, which may
+        differ from the ServiceNow figure (see the schema notes); instanceCount
+        falls back to 0 where deployment_node is unavailable; and slaStatus
+        applies the same four conditions except the project-type-derived
+        allowed-severity narrowing, which has no Postgres equivalent.
       operationId: getProjectStats
       parameters:
         - name: id
@@ -2151,7 +2157,9 @@ paths:
   /projects/{id}/conversations/stats:
     get:
       summary: Get a project's conversation statistics, optionally filtered by creator.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: >-
+        Available on both data sources. On Postgres, stateCount ids are the
+        raw conversation_state_enum labels rather than ServiceNow choice keys.
       operationId: getProjectConversationStats
       parameters:
         - name: id
@@ -2195,7 +2203,10 @@ paths:
   /projects/{id}/deployments/stats:
     get:
       summary: Get a project's deployment statistics.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: >-
+        Available on both data sources. On Postgres, lastDeploymentOn is the
+        newest deployment row's creation time -- this schema has no separate
+        customer-project-deployment table.
       operationId: getProjectDeploymentStats
       parameters:
         - name: id
@@ -2233,7 +2244,11 @@ paths:
   /projects/{id}/time-cards/stats:
     get:
       summary: Get a project's time-card statistics, optionally filtered by a date range.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: >-
+        Available on both data sources. On Postgres the figures are real hours
+        summed from the five per-activity minute columns of APPROVED time
+        cards, scoped by the time card's case rather than its
+        customer_project_id.
       operationId: getProjectTimeCardStats
       parameters:
         - name: id
@@ -2285,7 +2300,10 @@ paths:
   /projects/{id}/change-requests/stats:
     get:
       summary: Get a project's change-request statistics.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: >-
+        Available on both data sources. On Postgres, stateCount ids are the raw
+        change_request_state_enum labels, whose vocabulary matches ServiceNow's
+        own change-request states one for one.
       operationId: getProjectChangeRequestStats
       parameters:
         - name: id
