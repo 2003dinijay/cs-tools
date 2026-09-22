@@ -280,6 +280,10 @@ func (h *AnnouncementRegistryHandler) SearchAnnouncementRegistry(w http.Response
 	if req.Pagination.Limit <= 0 {
 		req.Pagination.Limit = 20
 	}
+	if req.Pagination.Offset < 0 {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
 
 	cases, err := h.fetchAllMatchingCases(r.Context(), req)
 	if err != nil {

@@ -108,6 +108,17 @@ func TestSearchAnnouncementRegistry_RequiresAuth(t *testing.T) {
 	assertStatus(t, w, http.StatusUnauthorized)
 }
 
+// A negative offset used to reach rows[start:end] unvalidated — slicing a Go
+// slice with a negative start index panics, so this must be rejected as a
+// 400 before any fetch happens rather than crashing the request.
+func TestSearchAnnouncementRegistry_RejectsNegativeOffset(t *testing.T) {
+	h := NewAnnouncementRegistryHandler(&mockEntityAnnouncementRegistryClient{})
+	r := withUser(httptest.NewRequest(http.MethodPost, "/announcements/registry/search", strings.NewReader(`{"pagination":{"limit":20,"offset":-1}}`)))
+	w := httptest.NewRecorder()
+	h.SearchAnnouncementRegistry(w, r)
+	assertStatus(t, w, http.StatusBadRequest)
+}
+
 func TestSearchAnnouncementRegistry_GroupsCasesBelongingToTheSameRequest(t *testing.T) {
 	client := &mockEntityAnnouncementRegistryClient{
 		searchCasesFn: singlePageCases(`[

@@ -2125,6 +2125,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError — including when the underlying case or announcement-request set is too large to group safely.
           content:
@@ -13128,14 +13140,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AnnouncementRegistryRow'
-        total:
-          type: integer
-        limit:
-          type: integer
-        offset:
-          type: integer
-        hasMore:
-          type: boolean
         total:
           type: integer
         limit:
