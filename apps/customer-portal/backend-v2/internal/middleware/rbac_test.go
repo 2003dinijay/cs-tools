@@ -59,24 +59,20 @@ func TestNormalizeRoles(t *testing.T) {
 		{
 			name: "normalizes known ServiceNow wire roles",
 			input: []string{
-				"sn_customerservice.super_admin",
 				"sn_customerservice.admin",
 				"wso2_agent",
 				"sn_customerservice.customer_admin",
 				"sn_customerservice.customer",
 				"sn_customerservice.partner_admin",
 				"sn_customerservice.partner",
-				"sn_customerservice.stakeholder",
 			},
 			expected: []CanonicalRole{
-				RoleSuperAdmin,
 				RoleAdmin,
 				RoleAgent,
 				RoleCustomerAdmin,
 				RoleCustomerUser,
 				RolePartnerAdmin,
 				RolePartnerUser,
-				RoleStakeholder,
 			},
 		},
 		{
@@ -122,12 +118,18 @@ func TestHasPermissionMatrix(t *testing.T) {
 	}
 	allActions := []Action{ActionCreate, ActionRead, ActionUpdate, ActionDelete}
 
-	t.Run("SuperAdmin has full CRUD on all 8 modules", func(t *testing.T) {
-		superAdmin := []CanonicalRole{RoleSuperAdmin}
-		for _, mod := range allModules {
+	// super_admin and stakeholder were removed: nothing in entity-service,
+	// ServiceNow or the Postgres role table ever emits either name, so neither
+	// could be produced by NormalizeRole and their grants were unreachable.
+	t.Run("no role grants Security Admin", func(t *testing.T) {
+		everyRole := []CanonicalRole{
+			RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser,
+			RolePartnerAdmin, RolePartnerUser, RoleInternal,
+		}
+		for _, role := range everyRole {
 			for _, act := range allActions {
-				if !HasPermission(superAdmin, mod, act) {
-					t.Errorf("SuperAdmin must have %s on %s", act, mod)
+				if HasPermission([]CanonicalRole{role}, ModuleSecurityAdmin, act) {
+					t.Errorf("%s must NOT have %s on %s", role, act, ModuleSecurityAdmin)
 				}
 			}
 		}
@@ -265,42 +267,6 @@ func TestHasPermissionMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("Stakeholder permissions", func(t *testing.T) {
-		stakeholder := []CanonicalRole{RoleStakeholder}
-
-		// Strictly read-only on Cases, Projects, Deployments, Products, Resources
-		readOnlyModules := []Module{
-			ModuleCases,
-			ModuleProjects,
-			ModuleDeployments,
-			ModuleDeploymentProducts,
-			ModuleDeploymentResources,
-		}
-		for _, mod := range readOnlyModules {
-			if !HasPermission(stakeholder, mod, ActionRead) {
-				t.Errorf("Stakeholder must have Read on %s", mod)
-			}
-			for _, act := range []Action{ActionCreate, ActionUpdate, ActionDelete} {
-				if HasPermission(stakeholder, mod, act) {
-					t.Errorf("Stakeholder must NOT have %s on %s", act, mod)
-				}
-			}
-		}
-
-		// No access to Time Cards, Change Requests, Security Admin
-		noAccessModules := []Module{
-			ModuleTimeCards,
-			ModuleChangeRequests,
-			ModuleSecurityAdmin,
-		}
-		for _, mod := range noAccessModules {
-			for _, act := range allActions {
-				if HasPermission(stakeholder, mod, act) {
-					t.Errorf("Stakeholder must NOT have %s on %s", act, mod)
-				}
-			}
-		}
-	})
 }
 
 func TestCachedRoleResolver(t *testing.T) {
@@ -413,8 +379,8 @@ func TestRequirePermissionMiddleware(t *testing.T) {
 	})
 
 	t.Run("forbidden action returns 403", func(t *testing.T) {
-		// Stakeholder attempting to Create a Case
-		resolver := &mockRoleResolver{roles: []CanonicalRole{RoleStakeholder}}
+		// RoleInternal holds no grants in the matrix at all.
+		resolver := &mockRoleResolver{roles: []CanonicalRole{RoleInternal}}
 		ts := RequirePermission(resolver, ModuleCases, ActionCreate)(handler)
 
 		req := httptest.NewRequest(http.MethodPost, "/cases", nil)
@@ -474,18 +440,20 @@ func TestRequireRolesMiddleware(t *testing.T) {
 		}
 	})
 
-	t.Run("super admin always passes", func(t *testing.T) {
-		resolver := &mockRoleResolver{roles: []CanonicalRole{RoleSuperAdmin}}
+	// There is no blanket-grant role any more: a caller whose roles are not in
+	// the call site's allow-list is refused, full stop.
+	t.Run("role outside the allow list is refused", func(t *testing.T) {
+		resolver := &mockRoleResolver{roles: []CanonicalRole{RoleCustomerUser}}
 		ts := RequireRoles(resolver, RoleCustomerAdmin)(handler)
 
-		req := httptest.NewRequest(http.MethodPost, "/projects/1/contacts", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/projects/1/contacts", nil)
 		req = req.WithContext(WithUserInfo(req.Context(), &UserInfo{UserID: "usr-1"}))
 		rr := httptest.NewRecorder()
 
 		ts.ServeHTTP(rr, req)
 
-		if rr.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d", rr.Code)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", rr.Code)
 		}
 	})
 

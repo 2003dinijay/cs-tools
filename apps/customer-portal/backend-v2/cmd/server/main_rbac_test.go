@@ -74,13 +74,6 @@ func TestServerRBACRouteGating(t *testing.T) {
 			wantHTTPCode: http.StatusOK,
 		},
 		{
-			name:         "SuperAdmin can delete cases",
-			module:       middleware.ModuleCases,
-			action:       middleware.ActionDelete,
-			roles:        []string{"super_admin"},
-			wantHTTPCode: http.StatusOK,
-		},
-		{
 			name:         "Agent cannot delete cases",
 			module:       middleware.ModuleCases,
 			action:       middleware.ActionDelete,
@@ -181,11 +174,13 @@ func TestServerRBACRouteGating(t *testing.T) {
 			wantHTTPCode: http.StatusForbidden,
 		},
 		{
-			name:         "Stakeholder can still read a project",
+			// stakeholder was removed alongside super_admin: no real role emits
+			// it either, so it now normalises to nothing and grants nothing.
+			name:         "an unrecognised role grants nothing",
 			module:       middleware.ModuleProjects,
 			action:       middleware.ActionRead,
 			roles:        []string{"sn_customerservice.stakeholder"},
-			wantHTTPCode: http.StatusOK,
+			wantHTTPCode: http.StatusForbidden,
 		},
 		{
 			name:         "Agent cannot access Security Admin",
@@ -207,13 +202,6 @@ func TestServerRBACRouteGating(t *testing.T) {
 			action:       middleware.ActionRead,
 			roles:        []string{"sn_customerservice.stakeholder"},
 			wantHTTPCode: http.StatusForbidden,
-		},
-		{
-			name:         "SuperAdmin can access Security Admin",
-			module:       middleware.ModuleSecurityAdmin,
-			action:       middleware.ActionRead,
-			roles:        []string{"sn_customerservice.super_admin"},
-			wantHTTPCode: http.StatusOK,
 		},
 	}
 
@@ -267,9 +255,11 @@ func TestContactManagementRoleGating(t *testing.T) {
 			wantHTTPCode: http.StatusOK,
 		},
 		{
-			name:         "SuperAdmin can manage contacts",
-			roles:        []string{"super_admin"},
-			wantHTTPCode: http.StatusOK,
+			// A role outside the allow-list no longer slips through: the
+			// blanket super_admin grant in RequireRoles is gone.
+			name:         "CustomerUser cannot manage contacts",
+			roles:        []string{"sn_customerservice.customer"},
+			wantHTTPCode: http.StatusForbidden,
 		},
 	}
 
@@ -278,7 +268,6 @@ func TestContactManagementRoleGating(t *testing.T) {
 			resolver := middleware.NewCachedRoleResolver(&mockEntityClient{roles: tt.roles}, time.Minute)
 			handler := middleware.RequireRoles(
 				resolver,
-				middleware.RoleSuperAdmin,
 				middleware.RoleAdmin,
 				middleware.RoleCustomerAdmin,
 				middleware.RolePartnerAdmin,

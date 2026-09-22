@@ -21,14 +21,12 @@ import useGetUserDetails from "@features/settings/api/useGetUserDetails";
  * Canonical customer portal roles.
  */
 export type CanonicalRole =
-  | "super_admin"
   | "admin"
   | "agent"
   | "customer_admin"
   | "customer_user"
   | "partner_admin"
   | "partner_user"
-  | "stakeholder"
   | "internal";
 
 /**
@@ -55,9 +53,6 @@ export type CustomerAction = "create" | "read" | "update" | "delete";
 export function normalizeCustomerRole(roleStr: string): CanonicalRole {
   const trimmed = roleStr.trim();
   switch (trimmed) {
-    case "sn_customerservice.super_admin":
-    case "super_admin":
-      return "super_admin";
     case "sn_customerservice.admin":
     case "admin":
       return "admin";
@@ -79,9 +74,6 @@ export function normalizeCustomerRole(roleStr: string): CanonicalRole {
     case "partner":
     case "partner_user":
       return "partner_user";
-    case "sn_customerservice.stakeholder":
-    case "stakeholder":
-      return "stakeholder";
     case "internal":
       return "internal";
     default:
@@ -110,7 +102,6 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
 > = {
   cases: {
     create: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -119,17 +110,14 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
       "partner_user",
     ],
     read: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
       "customer_user",
       "partner_admin",
       "partner_user",
-      "stakeholder",
     ],
     update: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -137,12 +125,11 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
       "partner_admin",
       "partner_user",
     ],
-    delete: ["super_admin", "admin"],
+    delete: ["admin"],
   },
   time_cards: {
-    create: ["super_admin", "admin", "agent"],
+    create: ["admin", "agent"],
     read: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -150,28 +137,25 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
       "partner_admin",
       "partner_user",
     ],
-    update: ["super_admin", "admin", "agent"],
-    delete: ["super_admin", "admin"],
+    update: ["admin", "agent"],
+    delete: ["admin"],
   },
   projects: {
-    create: ["super_admin", "admin"],
+    create: ["admin"],
     read: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
       "customer_user",
       "partner_admin",
       "partner_user",
-      "stakeholder",
     ],
-    update: ["super_admin", "admin", "agent"],
-    delete: ["super_admin", "admin"],
+    update: ["admin", "agent"],
+    delete: ["admin"],
   },
   change_requests: {
-    create: ["super_admin", "admin", "agent"],
+    create: ["admin", "agent"],
     read: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -179,12 +163,11 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
       "partner_admin",
       "partner_user",
     ],
-    update: ["super_admin", "admin", "agent"],
-    delete: ["super_admin", "admin"],
+    update: ["admin", "agent"],
+    delete: ["admin"],
   },
   deployments: {
     create: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -193,17 +176,14 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
       "partner_user",
     ],
     read: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
       "customer_user",
       "partner_admin",
       "partner_user",
-      "stakeholder",
     ],
     update: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -212,7 +192,6 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
       "partner_user",
     ],
     delete: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -223,7 +202,6 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
   },
   deployment_products: {
     create: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -232,17 +210,14 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
       "partner_user",
     ],
     read: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
       "customer_user",
       "partner_admin",
       "partner_user",
-      "stakeholder",
     ],
     update: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -251,7 +226,6 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
       "partner_user",
     ],
     delete: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -262,7 +236,6 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
   },
   deployment_resources: {
     create: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -271,17 +244,14 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
       "partner_user",
     ],
     read: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
       "customer_user",
       "partner_admin",
       "partner_user",
-      "stakeholder",
     ],
     update: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -290,7 +260,6 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
       "partner_user",
     ],
     delete: [
-      "super_admin",
       "admin",
       "agent",
       "customer_admin",
@@ -300,10 +269,10 @@ export const CUSTOMER_PERMISSION_MATRIX: Record<
     ],
   },
   security_admin: {
-    create: ["super_admin"],
-    read: ["super_admin"],
-    update: ["super_admin"],
-    delete: ["super_admin"],
+    create: [],
+    read: [],
+    update: [],
+    delete: [],
   },
 };
 
@@ -315,7 +284,8 @@ export function hasCustomerPermission(
   module: CustomerModule,
   action: CustomerAction,
 ): boolean {
-  if (roles.includes("super_admin")) return true;
+  // No blanket-grant role: every decision comes from the matrix, mirroring
+  // middleware.HasPermission on the backend.
   const allowed = CUSTOMER_PERMISSION_MATRIX[module]?.[action];
   if (!allowed) return false;
   return roles.some((r) => allowed.includes(r));
@@ -330,14 +300,12 @@ export function useCustomerPermissions() {
 
   return useMemo(() => {
     const roles = normalizeCustomerRoles(rawRoles);
-    const isSuperAdmin = roles.includes("super_admin");
-    const isAdmin = isSuperAdmin || roles.includes("admin");
+    const isAdmin = roles.includes("admin");
     const isAgent = roles.includes("agent");
     const isCustomerAdmin = roles.includes("customer_admin");
     const isCustomerUser = roles.includes("customer_user");
     const isPartnerAdmin = roles.includes("partner_admin");
     const isPartnerUser = roles.includes("partner_user");
-    const isStakeholder = roles.includes("stakeholder");
     const isExternalUser =
       isCustomerAdmin || isCustomerUser || isPartnerAdmin || isPartnerUser;
 
@@ -346,20 +314,18 @@ export function useCustomerPermissions() {
 
     const hasRole = (role: CanonicalRole): boolean => roles.includes(role);
     const hasAnyRole = (checkRoles: CanonicalRole[]): boolean =>
-      isSuperAdmin || checkRoles.some((r) => roles.includes(r));
+      checkRoles.some((r) => roles.includes(r));
 
     return {
       roles,
       isLoading,
       isError,
-      isSuperAdmin,
       isAdmin,
       isAgent,
       isCustomerAdmin,
       isCustomerUser,
       isPartnerAdmin,
       isPartnerUser,
-      isStakeholder,
       isExternalUser,
       can,
       hasRole,
@@ -371,8 +337,7 @@ export function useCustomerPermissions() {
       canAccessChangeRequests: can("change_requests", "read"),
       canAccessSecurityAdmin: can("security_admin", "read"),
       canManageContacts: hasAnyRole([
-        "super_admin",
-        "admin",
+          "admin",
         "customer_admin",
         "partner_admin",
       ]),

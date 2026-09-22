@@ -63,7 +63,7 @@ export default function SideBar({
   const usageMetricsEnabled =
     portalMetadata?.featureFlags?.usageMetricsEnabled === true;
 
-  const { canAccessSecurityAdmin, isStakeholder } = useCustomerPermissions();
+  const { canAccessSecurityAdmin } = useCustomerPermissions();
 
   const projectTypeLabel =
     selectedProject?.type?.label ?? projectDetails?.type?.label;
@@ -87,7 +87,6 @@ export default function SideBar({
     }
 
     if (
-      isStakeholder ||
       !isProjectTypeResolved ||
       !permissions.hasOperations ||
       (!permissions.hasSR && !permissions.hasCR)
@@ -118,7 +117,6 @@ export default function SideBar({
     return items;
   }, [
     isProjectTypeResolved,
-    isStakeholder,
     canAccessSecurityAdmin,
     permissions.hasOperations,
     permissions.hasSR,

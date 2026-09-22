@@ -222,7 +222,6 @@ describe("SideBar", () => {
     };
     mockUseCustomerPermissions.mockReturnValue({
       canAccessSecurityAdmin: true,
-      isStakeholder: false,
       can: vi.fn().mockReturnValue(true),
     });
   });
@@ -230,7 +229,6 @@ describe("SideBar", () => {
   it("should hide Security Center when canAccessSecurityAdmin is false", () => {
     mockUseCustomerPermissions.mockReturnValue({
       canAccessSecurityAdmin: false,
-      isStakeholder: false,
       can: vi.fn().mockReturnValue(false),
     });
     mockProjectTypeLabel = PROJECT_TYPE_LABELS.MANAGED_CLOUD_SUBSCRIPTION;
@@ -239,12 +237,18 @@ describe("SideBar", () => {
     expect(screen.queryByText("Security Center")).not.toBeInTheDocument();
   });
 
-  it("should hide Operations when user is stakeholder", () => {
+  // The stakeholder role was removed, so Operations is no longer hidden by
+  // persona. It is still hidden when the project's own features withhold it.
+  it("should hide Operations when the project has no SR or CR access", () => {
     mockUseCustomerPermissions.mockReturnValue({
       canAccessSecurityAdmin: false,
-      isStakeholder: true,
       can: vi.fn().mockReturnValue(false),
     });
+    mockProjectFeatures = {
+      ...mockProjectFeatures,
+      hasServiceRequestReadAccess: false,
+      hasChangeRequestReadAccess: false,
+    };
     mockProjectTypeLabel = PROJECT_TYPE_LABELS.MANAGED_CLOUD_SUBSCRIPTION;
     render(<SideBar collapsed={false} />);
 

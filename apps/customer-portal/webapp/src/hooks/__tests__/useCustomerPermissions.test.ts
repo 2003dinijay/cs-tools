@@ -49,25 +49,21 @@ describe("useCustomerPermissions & Permission Matrix", () => {
   describe("Role Normalization", () => {
     it("normalizes ServiceNow role strings to canonical names", () => {
       const roles = normalizeCustomerRoles([
-        "sn_customerservice.super_admin",
         "sn_customerservice.admin",
         "wso2_agent",
         "sn_customerservice.customer_admin",
         "sn_customerservice.customer",
         "sn_customerservice.partner_admin",
         "sn_customerservice.partner",
-        "sn_customerservice.stakeholder",
       ]);
 
       expect(roles).toEqual([
-        "super_admin",
         "admin",
         "agent",
         "customer_admin",
         "customer_user",
         "partner_admin",
         "partner_user",
-        "stakeholder",
       ]);
     });
 
@@ -81,11 +77,21 @@ describe("useCustomerPermissions & Permission Matrix", () => {
   });
 
   describe("Permission Matrix Rules", () => {
-    it("Super Admin has full CRUD across all 8 modules", () => {
-      const roles: CanonicalRole[] = ["super_admin"];
-      for (const mod of ALL_MODULES) {
+    // super_admin and stakeholder were removed: no real role emits either
+    // name, so their grants were unreachable.
+    it("no role grants security_admin", () => {
+      const everyRole: CanonicalRole[] = [
+        "admin",
+        "agent",
+        "customer_admin",
+        "customer_user",
+        "partner_admin",
+        "partner_user",
+        "internal",
+      ];
+      for (const role of everyRole) {
         for (const act of ALL_ACTIONS) {
-          expect(hasCustomerPermission(roles, mod, act)).toBe(true);
+          expect(hasCustomerPermission([role], "security_admin", act)).toBe(false);
         }
       }
     });
@@ -216,38 +222,12 @@ describe("useCustomerPermissions & Permission Matrix", () => {
       }
     });
 
-    it("Stakeholder has strictly Read on Cases/Projects/Deployments/Products/Resources, zero on others", () => {
-      const roles: CanonicalRole[] = ["stakeholder"];
-
-      // Read only on Cases, Projects, Deployments, Products, Resources
-      for (const mod of [
-        "cases",
-        "projects",
-        "deployments",
-        "deployment_products",
-        "deployment_resources",
-      ] as const) {
-        expect(hasCustomerPermission(roles, mod, "read")).toBe(true);
-        expect(hasCustomerPermission(roles, mod, "create")).toBe(false);
-        expect(hasCustomerPermission(roles, mod, "update")).toBe(false);
-        expect(hasCustomerPermission(roles, mod, "delete")).toBe(false);
-      }
-
-      // Zero access on Timecards, Change Requests, Security Admin
-      for (const mod of [
-        "time_cards",
-        "change_requests",
-        "security_admin",
-      ] as const) {
-        for (const act of ALL_ACTIONS) {
-          expect(hasCustomerPermission(roles, mod, act)).toBe(false);
-        }
-      }
-    });
   });
 
   describe("Hook Functionality", () => {
-    it("returns correct flags and getters for SuperAdmin", () => {
+    // A role name nothing emits normalises to itself and matches no matrix
+    // entry, so it grants nothing. super_admin is now such a name.
+    it("an unrecognised role grants nothing", () => {
       vi.mocked(useGetUserDetails).mockReturnValue({
         data: {
           id: "usr-1",
@@ -263,40 +243,11 @@ describe("useCustomerPermissions & Permission Matrix", () => {
 
       const { result } = renderHook(() => useCustomerPermissions());
 
-      expect(result.current.isSuperAdmin).toBe(true);
-      expect(result.current.isAdmin).toBe(true);
-      expect(result.current.isAgent).toBe(false);
-      expect(result.current.isStakeholder).toBe(false);
-      expect(result.current.canAccessSecurityAdmin).toBe(true);
-      expect(result.current.canCreateCase).toBe(true);
-      expect(result.current.canDeleteCase).toBe(true);
-      expect(result.current.canManageContacts).toBe(true);
-    });
-
-    it("returns correct flags and getters for Stakeholder", () => {
-      vi.mocked(useGetUserDetails).mockReturnValue({
-        data: {
-          id: "usr-2",
-          email: "stakeholder@example.com",
-          firstName: "Stake",
-          lastName: "Holder",
-          timeZone: "UTC",
-          roles: ["sn_customerservice.stakeholder"],
-        },
-        isLoading: false,
-        isError: false,
-      } as ReturnType<typeof useGetUserDetails>);
-
-      const { result } = renderHook(() => useCustomerPermissions());
-
-      expect(result.current.isStakeholder).toBe(true);
       expect(result.current.isAdmin).toBe(false);
       expect(result.current.canAccessSecurityAdmin).toBe(false);
-      expect(result.current.canAccessTimeCards).toBe(false);
-      expect(result.current.canAccessChangeRequests).toBe(false);
       expect(result.current.canCreateCase).toBe(false);
-      expect(result.current.canDeleteCase).toBe(false);
       expect(result.current.canManageContacts).toBe(false);
     });
+
   });
 });

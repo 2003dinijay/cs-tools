@@ -34,14 +34,12 @@ import (
 type CanonicalRole string
 
 const (
-	RoleSuperAdmin    CanonicalRole = "super_admin"
 	RoleAdmin         CanonicalRole = "admin"
 	RoleAgent         CanonicalRole = "agent"
 	RoleCustomerAdmin CanonicalRole = "customer_admin"
 	RoleCustomerUser  CanonicalRole = "customer_user"
 	RolePartnerAdmin  CanonicalRole = "partner_admin"
 	RolePartnerUser   CanonicalRole = "partner_user"
-	RoleStakeholder   CanonicalRole = "stakeholder"
 	RoleInternal      CanonicalRole = "internal"
 )
 
@@ -50,8 +48,6 @@ const (
 func NormalizeRole(roleStr string) CanonicalRole {
 	trimmed := strings.TrimSpace(roleStr)
 	switch trimmed {
-	case "sn_customerservice.super_admin", "super_admin":
-		return RoleSuperAdmin
 	case "sn_customerservice.admin", "admin":
 		return RoleAdmin
 	case "wso2_agent", "snc_internal", "agent":
@@ -64,8 +60,6 @@ func NormalizeRole(roleStr string) CanonicalRole {
 		return RolePartnerAdmin
 	case "sn_customerservice.partner", "partner", "partner_user":
 		return RolePartnerUser
-	case "sn_customerservice.stakeholder", "stakeholder":
-		return RoleStakeholder
 	case "internal":
 		return RoleInternal
 	default:
@@ -120,66 +114,71 @@ const (
 // permissionMatrix maps each module and action to the set of canonical roles permitted.
 var permissionMatrix = map[Module]map[Action][]CanonicalRole{
 	ModuleCases: {
-		ActionCreate: {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionRead:   {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser, RoleStakeholder},
-		ActionUpdate: {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionDelete: {RoleSuperAdmin, RoleAdmin},
+		ActionCreate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionDelete: {RoleAdmin},
 	},
 	ModuleTimeCards: {
-		ActionCreate: {RoleSuperAdmin, RoleAdmin, RoleAgent},
-		ActionRead:   {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionUpdate: {RoleSuperAdmin, RoleAdmin, RoleAgent},
-		ActionDelete: {RoleSuperAdmin, RoleAdmin},
+		ActionCreate: {RoleAdmin, RoleAgent},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent},
+		ActionDelete: {RoleAdmin},
 		// Stakeholder has no access to Time Cards.
 	},
 	ModuleProjects: {
-		ActionCreate: {RoleSuperAdmin, RoleAdmin},
-		ActionRead:   {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser, RoleStakeholder},
-		ActionUpdate: {RoleSuperAdmin, RoleAdmin, RoleAgent},
-		ActionDelete: {RoleSuperAdmin, RoleAdmin},
+		ActionCreate: {RoleAdmin},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent},
+		ActionDelete: {RoleAdmin},
 	},
 	ModuleChangeRequests: {
-		ActionCreate: {RoleSuperAdmin, RoleAdmin, RoleAgent},
-		ActionRead:   {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionUpdate: {RoleSuperAdmin, RoleAdmin, RoleAgent},
-		ActionDelete: {RoleSuperAdmin, RoleAdmin},
+		ActionCreate: {RoleAdmin, RoleAgent},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent},
+		ActionDelete: {RoleAdmin},
 		// Stakeholder has no access to Change Requests.
 	},
 	ModuleDeployments: {
-		ActionCreate: {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionRead:   {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser, RoleStakeholder},
-		ActionUpdate: {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionDelete: {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionCreate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionDelete: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
 	},
 	ModuleDeploymentProducts: {
-		ActionCreate: {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionRead:   {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser, RoleStakeholder},
-		ActionUpdate: {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionDelete: {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionCreate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionDelete: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
 	},
 	ModuleDeploymentResources: {
-		ActionCreate: {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionRead:   {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser, RoleStakeholder},
-		ActionUpdate: {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
-		ActionDelete: {RoleSuperAdmin, RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionCreate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionRead:   {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionUpdate: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
+		ActionDelete: {RoleAdmin, RoleAgent, RoleCustomerAdmin, RoleCustomerUser, RolePartnerAdmin, RolePartnerUser},
 	},
+	// No role currently grants Security Admin.
+	//
+	// It was previously held by super_admin alone, but no such role exists:
+	// nothing in entity-service, ServiceNow or the Postgres role table ever
+	// emits it, so the grant was unreachable and Security Admin was already
+	// closed to every user. Removing the role makes that explicit rather than
+	// changing it. Whoever should hold this needs a product decision; until
+	// then the empty lists are the honest description.
 	ModuleSecurityAdmin: {
-		ActionCreate: {RoleSuperAdmin},
-		ActionRead:   {RoleSuperAdmin},
-		ActionUpdate: {RoleSuperAdmin},
-		ActionDelete: {RoleSuperAdmin},
-		// Admin, Agent, External Roles, Stakeholder have no access to Security Admin.
+		ActionCreate: {},
+		ActionRead:   {},
+		ActionUpdate: {},
+		ActionDelete: {},
 	},
 }
 
 // HasPermission checks whether any of the user's roles grant the requested action on the module.
+//
+// Every decision comes from permissionMatrix. There is deliberately no role
+// that short-circuits it: a blanket grant above the matrix makes the matrix
+// stop describing what the portal actually allows.
 func HasPermission(userRoles []CanonicalRole, module Module, action Action) bool {
-	for _, r := range userRoles {
-		if r == RoleSuperAdmin {
-			return true
-		}
-	}
-
 	actions, moduleExists := permissionMatrix[module]
 	if !moduleExists {
 		return false
@@ -332,11 +331,9 @@ func RequireRoles(resolver RoleResolver, allowedRoles ...CanonicalRole) func(htt
 				return
 			}
 
+			// No blanket-grant role here either, for the same reason as
+			// HasPermission: the allow-list at the call site is the whole rule.
 			for _, role := range roles {
-				if role == RoleSuperAdmin {
-					next.ServeHTTP(w, r)
-					return
-				}
 				if _, ok := allowed[role]; ok {
 					next.ServeHTTP(w, r)
 					return
