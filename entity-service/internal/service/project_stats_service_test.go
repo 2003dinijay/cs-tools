@@ -305,3 +305,28 @@ func TestGetProjectConversationStats_CreatedByResolvesCaller(t *testing.T) {
 		t.Fatalf("error = %v, want a ValidationError for a non-\"me\" createdBy", err)
 	}
 }
+
+// A malformed date must be a 400 naming the parameter, not an opaque 500 from
+// the repository's ::date cast.
+func TestGetProjectTimeCardStats_RejectsMalformedDates(t *testing.T) {
+	svc := newStatsService(&fakeProjectStatsRepo{})
+
+	for _, tt := range []struct{ name, start, end string }{
+		{"bad start", "not-a-date", ""},
+		{"bad end", "", "2026-13-45"},
+		{"wrong layout", "01/02/2026", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.GetProjectTimeCardStats(context.Background(), testUUID, tt.start, tt.end)
+			var validationErr *apierror.ValidationError
+			if !errors.As(err, &validationErr) {
+				t.Fatalf("error = %v, want a ValidationError", err)
+			}
+		})
+	}
+
+	// Both bounds absent is valid -- the range filter is optional.
+	if _, err := svc.GetProjectTimeCardStats(context.Background(), testUUID, "", ""); err != nil {
+		t.Errorf("no date bounds: %v", err)
+	}
+}

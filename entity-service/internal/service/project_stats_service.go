@@ -262,6 +262,12 @@ func (s *projectStatsService) GetProjectDeploymentStats(ctx context.Context, pro
 // GetProjectTimeCardStats implements ProjectStatsService. startDate/endDate
 // are optional inclusive bounds on the time card's work date.
 func (s *projectStatsService) GetProjectTimeCardStats(ctx context.Context, projectID, startDate, endDate string) (domain.ProjectTimeCardStatsResponse, error) {
+	if err := validateStatsDate("startDate", startDate); err != nil {
+		return domain.ProjectTimeCardStatsResponse{}, err
+	}
+	if err := validateStatsDate("endDate", endDate); err != nil {
+		return domain.ProjectTimeCardStatsResponse{}, err
+	}
 	if err := s.requireProject(ctx, projectID); err != nil {
 		return domain.ProjectTimeCardStatsResponse{}, err
 	}
@@ -276,6 +282,20 @@ func (s *projectStatsService) GetProjectTimeCardStats(ctx context.Context, proje
 		BillableHours:    minutesToHours(billable),
 		NonBillableHours: minutesToHours(nonBillable),
 	}, nil
+}
+
+// validateStatsDate rejects a malformed date before it reaches the
+// repository's ::date cast, which would otherwise surface as an opaque 500
+// rather than telling the caller which parameter was wrong. An empty value
+// means "no bound" and is always accepted.
+func validateStatsDate(name, value string) error {
+	if value == "" {
+		return nil
+	}
+	if _, err := time.Parse("2006-01-02", value); err != nil {
+		return &apierror.ValidationError{Msg: name + " must be a date in YYYY-MM-DD format"}
+	}
+	return nil
 }
 
 // GetProjectChangeRequestStats implements ProjectStatsService -- ServiceNow's
