@@ -40,18 +40,43 @@ type caseService struct {
 	// case.billable_status_changed detection.
 	publisher EventPublisherService
 	access    AccessService
-	// snWriteback/snMirror back CreateCase and UpdateCase's ServiceNow-facing
-	// paths under DATA_SOURCE=postgres-primary-sn-fallback — both nil in
-	// every other mode. Set only via NewCaseServiceWithSNWriteback (see that
-	// constructor's own doc comment for why not here). snMirror serves two
-	// distinct purposes, both documented at their own call sites:
-	//   - UpdateCase dispatches a best-effort, asynchronous WorkState-only
-	//     mirror write onto it via snWriteback.
+	// snWriteback/snMirror back CreateCase, UpdateCase, and CreateCaseComment's
+	// ServiceNow-facing paths under DATA_SOURCE=postgres-primary-sn-fallback —
+	// both nil in every other mode. Set only via NewCaseServiceWithSNWriteback
+	// (see that constructor's own doc comment for why not here). snMirror
+	// serves three distinct purposes, all documented at their own call sites:
+	//   - UpdateCase dispatches a best-effort, asynchronous State/Severity/
+	//     WorkState mirror write onto it via snWriteback, through the
+	//     snFieldPatcher interface below (patchCaseFields, a bare PATCH with
+	//     none of UpdateCase's own read/no-op-detection/event-publish side
+	//     effects).
+	//   - CreateCaseComment dispatches a best-effort, asynchronous comment
+	//     mirror write onto it via snWriteback, through the snCommentMirror
+	//     interface below (CreateBareCaseComment, a bare POST with none of
+	//     CreateCaseComment's own state-transition/event side effects).
 	//   - CreateCase calls it directly, synchronously, BEFORE writing to
 	//     Postgres at all — see CreateCase's own doc comment for why create
-	//     is SN-first while update is Postgres-first.
+	//     is SN-first while update/comment are Postgres-first.
 	snWriteback *SNWritebackDispatcher
 	snMirror    CaseService
+}
+
+// snFieldPatcher is implemented by *snCaseService (see patchCaseFields's own
+// doc comment). A narrow interface — rather than adding patchCaseFields to
+// the full CaseService interface, which every implementer (including the
+// plain, Postgres-backed caseService itself) would then have to satisfy —
+// named exactly for what UpdateCase's mirror needs: a bare PATCH with none of
+// snCaseService.UpdateCase's own read-before-write behavior.
+type snFieldPatcher interface {
+	patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState) (domain.UpdatedCase, error)
+}
+
+// snCommentMirror is implemented by *snCaseService (see
+// CreateBareCaseComment's own doc comment). A narrow interface for the same
+// reason snFieldPatcher is one: CreateCaseComment's mirror needs a bare
+// POST, not the full CommentService/CaseService surface.
+type snCommentMirror interface {
+	CreateBareCaseComment(ctx context.Context, caseID string, commentType domain.CommentType, content string) (domain.CaseCommentDetail, error)
 }
 
 // NewCaseService constructs a CaseService backed by the given repositories.
@@ -492,6 +517,36 @@ func (s *caseService) CreateCaseComment(ctx context.Context, req domain.CreateCa
 	if err != nil {
 		return domain.CreateCaseCommentResponse{}, err
 	}
+
+	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-primary-sn-fallback
+	// only (snWriteback/snMirror are both nil otherwise — see
+	// NewCaseServiceWithSNWriteback's own doc comment). Postgres has already
+	// committed by this point and is fully authoritative for the comment —
+	// this mirror's ONLY job is making sure ServiceNow's copy of the comment
+	// text exists too. It deliberately does NOT replicate
+	// snCaseService.CreateCaseComment's auto state-transition-on-reply
+	// (applyCustomerReplyStateTransition) or event publishing
+	// (publishCommentAdded) — Postgres already owns the real outcome for
+	// both (note: this Postgres-native CreateCaseComment does not currently
+	// implement state-transition-on-reply at all; that is a separate,
+	// larger feature-parity gap, out of scope here — see
+	// CreateBareCaseComment's own doc comment). Uses CreateBareCaseComment
+	// specifically (not the full CreateCaseComment) so neither side effect
+	// ever fires twice, or fires against ServiceNow for an outcome only
+	// Postgres actually decided.
+	if s.snWriteback != nil {
+		if m, ok := s.snMirror.(snCommentMirror); ok {
+			mirrorCaseID, mirrorType, mirrorContent := req.CaseID, req.Type, req.Content
+			s.snWriteback.Dispatch(ctx, "case_comment", req.CaseID, "create",
+				map[string]any{"caseId": mirrorCaseID, "type": mirrorType, "content": mirrorContent},
+				func(writeCtx context.Context) error {
+					_, err := m.CreateBareCaseComment(writeCtx, mirrorCaseID, mirrorType, mirrorContent)
+					return err
+				},
+			)
+		}
+	}
+
 	return domain.CreateCaseCommentResponse{
 		Message: "Comment created successfully",
 		Comment: domain.CaseCommentDetail{
@@ -607,29 +662,51 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// on one field until retried by hand, not a permanent orphan the way a
 	// failed async case CREATE would be.
 	//
-	// WorkState ONLY, deliberately: fieldCount above guarantees at most one of
-	// State/Severity/WorkState is set on req, so req.WorkState != nil here
-	// means req.State and req.Severity are both nil. That matters because
-	// snCaseService.UpdateCase — the ServiceNow-mode method this mirrors —
-	// performs a live GetCaseByID read against ServiceNow before its PATCH
-	// whenever State or Severity is set (to detect a no-op change before
-	// deciding whether to publish an event), and this mode's whole point is
-	// that ServiceNow is NEVER read from. WorkState's branch has no such read.
-	// Mirroring State/Severity too needs snCaseService.UpdateCase refactored
-	// into a read-free PATCH-only helper first — deliberately deferred as its
-	// own separate, reviewed change against that live, ServiceNow-mode-serving
-	// code, not folded into this pilot. Built the same narrow request rather
-	// than forwarding req itself, so this can never accidentally carry State/
-	// Severity into the mirror call even if that invariant above changes later.
-	if req.WorkState != nil && s.snWriteback != nil && s.snMirror != nil {
-		mirrorReq := domain.UpdateCaseRequest{ID: req.ID, WorkState: req.WorkState}
-		s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
-			map[string]any{"id": req.ID, "workState": *req.WorkState},
-			func(writeCtx context.Context) error {
-				_, err := s.snMirror.UpdateCase(writeCtx, mirrorReq)
-				return err
-			},
-		)
+	// Covers State/Severity/WorkState — fieldCount above guarantees at most
+	// one of the three is set on req, so exactly one of these three branches
+	// ever fires per call. State/Severity joined this mirror later than
+	// WorkState did: snCaseService.UpdateCase (the ServiceNow-mode method
+	// WorkState originally mirrored through) performs a live GetCaseByID
+	// read against ServiceNow before its PATCH whenever State or Severity is
+	// set, which this mode must never do. patchCaseFields (sn_case_service.go)
+	// is the fix — a bare PATCH with none of UpdateCase's read/no-op-detection/
+	// event-publish behavior — reached here through the snFieldPatcher
+	// interface rather than the full snMirror.UpdateCase this method used to
+	// call for WorkState. Each branch builds its own single-field mirror
+	// request/payload rather than forwarding req itself, so this can never
+	// accidentally carry a second field into the mirror call.
+	if s.snWriteback != nil {
+		if patcher, ok := s.snMirror.(snFieldPatcher); ok {
+			switch {
+			case req.State != nil:
+				state := *req.State
+				s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
+					map[string]any{"id": req.ID, "state": state},
+					func(writeCtx context.Context) error {
+						_, err := patcher.patchCaseFields(writeCtx, req.ID, &state, nil, nil)
+						return err
+					},
+				)
+			case req.Severity != nil:
+				severity := *req.Severity
+				s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
+					map[string]any{"id": req.ID, "severity": severity},
+					func(writeCtx context.Context) error {
+						_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, &severity, nil)
+						return err
+					},
+				)
+			case req.WorkState != nil:
+				workState := *req.WorkState
+				s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
+					map[string]any{"id": req.ID, "workState": workState},
+					func(writeCtx context.Context) error {
+						_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, nil, &workState)
+						return err
+					},
+				)
+			}
+		}
 	}
 
 	return domain.UpdateCaseResponse{
