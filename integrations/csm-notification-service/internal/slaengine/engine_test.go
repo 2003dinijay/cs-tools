@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -37,23 +38,40 @@ func (f *fakeStatusLister) FetchAllActiveSLAStatuses(context.Context) ([]SLAStat
 	return f.statuses, f.err
 }
 
-// fakeTierStore is a hand-written in-memory fake for tierStore.
-type fakeTierStore struct {
-	tiers map[string]int
+type tierCall struct {
+	caseID, clockType string
+	tier              int
+}
 
-	getErr error
-	setErr error
-	sets   []struct {
-		caseID, clockType string
-		tier              int
-	}
+// fakeTierStore is a hand-written in-memory fake for tierStore, including a
+// fake claim/release ledger for ClaimTier/ReleaseTier — forceClaimLoss lets
+// a test simulate a concurrent replica (or an earlier attempt) already
+// holding a given tier's claim, without needing a real Redis.
+type fakeTierStore struct {
+	tiers  map[string]int
+	claims map[string]bool
+
+	getErr     error
+	setErr     error
+	claimErr   error
+	releaseErr error
+
+	forceClaimLoss map[string]bool
+
+	sets         []tierCall
+	claimCalls   []tierCall
+	releaseCalls []tierCall
 }
 
 func newFakeTierStore() *fakeTierStore {
-	return &fakeTierStore{tiers: map[string]int{}}
+	return &fakeTierStore{tiers: map[string]int{}, claims: map[string]bool{}, forceClaimLoss: map[string]bool{}}
 }
 
 func (f *fakeTierStore) key(caseID, clockType string) string { return caseID + "|" + clockType }
+
+func (f *fakeTierStore) claimKey(caseID, clockType string, tier int) string {
+	return f.key(caseID, clockType) + "|" + strconv.Itoa(tier)
+}
 
 func (f *fakeTierStore) GetTier(_ context.Context, caseID, clockType string) (int, bool, error) {
 	if f.getErr != nil {
@@ -68,10 +86,29 @@ func (f *fakeTierStore) SetTier(_ context.Context, caseID, clockType string, tie
 		return f.setErr
 	}
 	f.tiers[f.key(caseID, clockType)] = tier
-	f.sets = append(f.sets, struct {
-		caseID, clockType string
-		tier              int
-	}{caseID, clockType, tier})
+	f.sets = append(f.sets, tierCall{caseID, clockType, tier})
+	return nil
+}
+
+func (f *fakeTierStore) ClaimTier(_ context.Context, caseID, clockType string, tier int) (bool, error) {
+	if f.claimErr != nil {
+		return false, f.claimErr
+	}
+	f.claimCalls = append(f.claimCalls, tierCall{caseID, clockType, tier})
+	key := f.claimKey(caseID, clockType, tier)
+	if f.forceClaimLoss[key] || f.claims[key] {
+		return false, nil
+	}
+	f.claims[key] = true
+	return true, nil
+}
+
+func (f *fakeTierStore) ReleaseTier(_ context.Context, caseID, clockType string, tier int) error {
+	if f.releaseErr != nil {
+		return f.releaseErr
+	}
+	f.releaseCalls = append(f.releaseCalls, tierCall{caseID, clockType, tier})
+	delete(f.claims, f.claimKey(caseID, clockType, tier))
 	return nil
 }
 
@@ -375,5 +412,85 @@ func TestEngine_Tick_PropagatesListError(t *testing.T) {
 	e := newTestEngine(&fakeStatusLister{err: errors.New("entity-service unreachable")}, newFakeTierStore(), &fakePublisher{})
 	if err := e.Tick(context.Background(), time.Now()); err == nil {
 		t.Fatal("Tick() error = nil, want the list failure propagated")
+	}
+}
+
+// TestEngine_Tick_LosingClaimRaceDoesNotAlert simulates the exact race a
+// second concurrent replica would hit: both replicas read the same stale
+// cursor and both decide tier 75 needs alerting, but only one wins the
+// Redis SETNX claim. The losing call must not alert, must not error, and
+// must not advance the cursor itself — the winner's own SetTier call is
+// what advances it.
+func TestEngine_Tick_LosingClaimRaceDoesNotAlert(t *testing.T) {
+	entity := &fakeStatusLister{statuses: []SLAStatus{{CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 80}}}
+	store := newFakeTierStore()
+	store.tiers["CASE-1|response"] = 50
+	store.forceClaimLoss["CASE-1|response|75"] = true
+	pub := &fakePublisher{}
+	e := newTestEngine(entity, store, pub)
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(pub.calls) != 0 {
+		t.Errorf("expected no publish for a tier this call lost the claim race for, got %d", len(pub.calls))
+	}
+	if chat := e.chat.(*fakeChatSender); len(chat.calls) != 0 {
+		t.Errorf("expected no chat alert for a tier this call lost the claim race for, got %+v", chat.calls)
+	}
+	if store.tiers["CASE-1|response"] != 50 {
+		t.Errorf("cursor = %d, want left at 50 (this call never won a claim to advance past)", store.tiers["CASE-1|response"])
+	}
+}
+
+// TestEngine_Tick_FailedAlertReleasesClaimForRetry verifies that a tier
+// this call DID win the claim for, but then failed to alert, gives the
+// claim back — unlike the pre-redesign engine's own equivalent failure
+// case (which permanently lost the alert), a Redis claim is cheap to
+// release, so there's no reason to accept that loss here.
+func TestEngine_Tick_FailedAlertReleasesClaimForRetry(t *testing.T) {
+	entity := &fakeStatusLister{statuses: []SLAStatus{{CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 60}}}
+	store := newFakeTierStore()
+	store.tiers["CASE-1|response"] = 0
+	pub := &fakePublisher{err: errors.New("event hub unreachable")}
+	e := newTestEngine(entity, store, pub)
+
+	if err := e.Tick(context.Background(), time.Now()); err == nil {
+		t.Fatal("Tick() error = nil, want the publish failure propagated")
+	}
+	if len(store.claimCalls) != 1 || store.claimCalls[0] != (tierCall{"CASE-1", "response", 50}) {
+		t.Fatalf("claimCalls = %+v, want one claim attempt for tier 50", store.claimCalls)
+	}
+	if len(store.releaseCalls) != 1 || store.releaseCalls[0] != (tierCall{"CASE-1", "response", 50}) {
+		t.Errorf("releaseCalls = %+v, want the failed tier's claim released", store.releaseCalls)
+	}
+	if store.claims[store.claimKey("CASE-1", "response", 50)] {
+		t.Error("expected the claim to no longer be held after release, so a later tick can retry it")
+	}
+}
+
+// TestEngine_Tick_RegressionReleasesClaimsAboveNewTier verifies the fix for
+// the edge case a plain cursor alone can't handle: an SLA policy reset (or
+// a fresh tracking cycle) drops the percentage back down after a clock
+// already reached a high tier. Without releasing the old cycle's claims,
+// the new cycle's own genuine re-crossing of the same tier numbers would
+// silently find them already claimed and never alert.
+func TestEngine_Tick_RegressionReleasesClaimsAboveNewTier(t *testing.T) {
+	entity := &fakeStatusLister{statuses: []SLAStatus{{CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 5}}}
+	store := newFakeTierStore()
+	store.tiers["CASE-1|response"] = 100
+	store.claims[store.claimKey("CASE-1", "response", 50)] = true
+	store.claims[store.claimKey("CASE-1", "response", 75)] = true
+	store.claims[store.claimKey("CASE-1", "response", 100)] = true
+	pub := &fakePublisher{}
+	e := newTestEngine(entity, store, pub)
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	for _, tier := range []int{50, 75, 100} {
+		if store.claims[store.claimKey("CASE-1", "response", tier)] {
+			t.Errorf("expected tier %d's claim released after the regression, still held", tier)
+		}
 	}
 }
