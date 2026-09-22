@@ -2127,7 +2127,10 @@ paths:
           required: false
           schema:
             type: string
-          description: Restrict to cases created by this user.
+          description: >-
+            Restrict to cases created by the calling user. The only accepted
+            value is the literal "me" -- it is not an email address; anything
+            else is rejected with a 400 on both data sources.
       responses:
         "200":
           description: The project's case statistics.
@@ -2173,7 +2176,10 @@ paths:
           required: false
           schema:
             type: string
-          description: Restrict to conversations created by this user.
+          description: >-
+            Restrict to conversations created by the calling user. The only
+            accepted value is the literal "me" -- it is not an email address;
+            anything else is rejected with a 400 on both data sources.
       responses:
         "200":
           description: The project's conversation statistics.

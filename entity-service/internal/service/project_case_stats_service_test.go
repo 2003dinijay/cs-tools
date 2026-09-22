@@ -229,24 +229,59 @@ func TestPercentChange(t *testing.T) {
 // numbers for the same query.
 func TestGetProjectCaseStats_FilterPropagationMatchesServiceNow(t *testing.T) {
 	repo := &fakeCaseStatsRepo{}
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "caller@wso2.com"))
 
 	_, err := NewProjectCaseStatsService(repo, caseStatsEnums()).
-		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{
+		GetProjectCaseStats(ctx, testUUID, domain.ProjectCaseStatsRequest{
 			CaseTypes: []string{"engagement"},
-			CreatedBy: "someone@wso2.com",
+			CreatedBy: createdBySelf,
 		})
 	if err != nil {
 		t.Fatalf("GetProjectCaseStats: %v", err)
 	}
 
-	if repo.stateSeverityFilter.CreatedBy != "someone@wso2.com" {
-		t.Errorf("main aggregate createdBy = %q, want it applied", repo.stateSeverityFilter.CreatedBy)
+	if repo.stateSeverityFilter.CreatedBy != "caller@wso2.com" {
+		t.Errorf("main aggregate createdBy = %q, want the caller's resolved email", repo.stateSeverityFilter.CreatedBy)
 	}
 	if len(repo.stateSeverityFilter.Types) != 1 || repo.stateSeverityFilter.Types[0] != "engagement" {
 		t.Errorf("main aggregate types = %v, want [engagement]", repo.stateSeverityFilter.Types)
 	}
-	if repo.caseTypesFilter.CreatedBy != "someone@wso2.com" {
-		t.Errorf("case-type aggregate createdBy = %q, want it applied", repo.caseTypesFilter.CreatedBy)
+	if repo.caseTypesFilter.CreatedBy != "caller@wso2.com" {
+		t.Errorf("case-type aggregate createdBy = %q, want the caller's resolved email", repo.caseTypesFilter.CreatedBy)
+	}
+	// ServiceNow's engagement-type aggregate omits the createdBy filter. The
+	// service hands every aggregation the same filter struct, so that
+	// omission lives in the repository's own SQL -- asserted by
+	// TestCaseStatsIntegration_Aggregations/EngagementCountsIgnoreCreatedBy,
+	// not here.
+}
+
+// createdBy is not an email: ServiceNow accepts only the literal "me" and
+// substitutes the caller's own address. Treating a supplied email as a filter
+// value would return a successful response full of zeros rather than an
+// error, so anything else is rejected outright.
+func TestGetProjectCaseStats_CreatedByOnlyAcceptsMe(t *testing.T) {
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "caller@wso2.com"))
+
+	_, err := NewProjectCaseStatsService(&fakeCaseStatsRepo{}, caseStatsEnums()).
+		GetProjectCaseStats(ctx, testUUID, domain.ProjectCaseStatsRequest{CreatedBy: "someone@wso2.com"})
+
+	var validationErr *apierror.ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error = %v, want a ValidationError for a non-\"me\" createdBy", err)
+	}
+}
+
+// An absent createdBy must not need a token at all -- the filter is optional.
+func TestGetProjectCaseStats_NoCreatedByNeedsNoCaller(t *testing.T) {
+	repo := &fakeCaseStatsRepo{}
+
+	if _, err := NewProjectCaseStatsService(repo, caseStatsEnums()).
+		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{}); err != nil {
+		t.Fatalf("GetProjectCaseStats without createdBy: %v", err)
+	}
+	if repo.stateSeverityFilter.CreatedBy != "" {
+		t.Errorf("createdBy = %q, want empty", repo.stateSeverityFilter.CreatedBy)
 	}
 }
 

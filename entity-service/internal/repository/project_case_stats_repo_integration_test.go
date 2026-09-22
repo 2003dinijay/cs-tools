@@ -196,6 +196,23 @@ func TestCaseStatsIntegration_Aggregations(t *testing.T) {
 		}
 	})
 
+	// ServiceNow's engagement-type aggregate (engAgg) never applies the
+	// createdBy filter its sibling aggregations do, so neither does this --
+	// the omission lives in the SQL, not in the caller.
+	t.Run("EngagementCountsIgnoreCreatedBy", func(t *testing.T) {
+		rows, err := repo.StateEngagementTypeCounts(ctx, repository.ProjectCaseStatsFilter{
+			ProjectID: caseStatsProjectID, CreatedBy: "nobody@example.com",
+		})
+		if err != nil {
+			t.Fatalf("StateEngagementTypeCounts(createdBy): %v", err)
+		}
+		// The seeded engagement was created by other@wso2.com, so a filter
+		// would exclude it. It must still be counted.
+		if len(rows) != 1 || rows[0].Count != 1 {
+			t.Errorf("rows = %+v, want the engagement still counted despite an unmatched createdBy", rows)
+		}
+	})
+
 	t.Run("ResolvedBuckets", func(t *testing.T) {
 		_, pastThirty, err := repo.ResolvedBuckets(ctx, all, []string{"CLOSED", "SOLUTION_PROPOSED"})
 		if err != nil {

@@ -108,10 +108,15 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 		return domain.ProjectCaseStatsResponse{}, &apierror.NotFoundError{Msg: "project not found"}
 	}
 
+	createdBy, err := resolveCreatedByFilter(ctx, req.CreatedBy)
+	if err != nil {
+		return domain.ProjectCaseStatsResponse{}, err
+	}
+
 	filter := repository.ProjectCaseStatsFilter{
 		ProjectID: projectID,
 		Types:     types,
-		CreatedBy: req.CreatedBy,
+		CreatedBy: createdBy,
 	}
 
 	labels, err := s.refRepo.EnumLabels(ctx, []string{
@@ -210,6 +215,29 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 	}
 
 	return resp, nil
+}
+
+// createdBySelf is the only value the createdBy filter accepts. It is not an
+// email: ServiceNow's scripted APIs reject anything else with a 400 and then
+// substitute the authenticated caller's own address, and the ServiceNow-backed
+// service here forwards the caller's value to them untouched -- so "me" is
+// the whole vocabulary of this parameter on both data sources.
+const createdBySelf = "me"
+
+// resolveCreatedByFilter turns the createdBy query value into the email the
+// repositories actually filter on (work_item.created_by holds an email).
+//
+// Treating the raw value as an email would be silently wrong rather than
+// loudly wrong: filtering for a literal "me" matches no rows, so the caller
+// would get a successful response full of zeros instead of their own items.
+func resolveCreatedByFilter(ctx context.Context, createdBy string) (string, error) {
+	if createdBy == "" {
+		return "", nil
+	}
+	if createdBy != createdBySelf {
+		return "", &apierror.ValidationError{Msg: `createdBy: the only allowed value is "me"`}
+	}
+	return resolveCallerEmail(ctx)
 }
 
 // zeroedCounts builds a choice list of the given labels, each with a count of

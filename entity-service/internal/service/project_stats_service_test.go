@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
@@ -285,5 +286,22 @@ func TestGetProjectTimeCardStats_PassesDateRangeAndSplitsHours(t *testing.T) {
 	}
 	if resp.TotalHours != 2.25 || resp.BillableHours != 1.5 || resp.NonBillableHours != 0.75 {
 		t.Errorf("hours = %v/%v/%v, want 2.25/1.5/0.75", resp.TotalHours, resp.BillableHours, resp.NonBillableHours)
+	}
+}
+
+// The conversation stats endpoint takes the same createdBy parameter as case
+// stats, with the same "me"-only vocabulary, resolved to the caller's email.
+func TestGetProjectConversationStats_CreatedByResolvesCaller(t *testing.T) {
+	repo := &fakeProjectStatsRepo{}
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "caller@wso2.com"))
+
+	if _, err := newStatsService(repo).GetProjectConversationStats(ctx, testUUID, createdBySelf); err != nil {
+		t.Fatalf("GetProjectConversationStats: %v", err)
+	}
+
+	_, err := newStatsService(repo).GetProjectConversationStats(ctx, testUUID, "someone@wso2.com")
+	var validationErr *apierror.ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error = %v, want a ValidationError for a non-\"me\" createdBy", err)
 	}
 }

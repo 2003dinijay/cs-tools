@@ -204,6 +204,11 @@ func (s *projectStatsService) GetProjectConversationStats(ctx context.Context, p
 		return domain.ProjectConversationStatsResponse{}, err
 	}
 
+	createdByEmail, err := resolveCreatedByFilter(ctx, createdBy)
+	if err != nil {
+		return domain.ProjectConversationStatsResponse{}, err
+	}
+
 	labels, err := s.refRepo.EnumLabels(ctx, []string{conversationStateEnumType})
 	if err != nil {
 		return domain.ProjectConversationStatsResponse{}, fmt.Errorf("project conversation stats: %w", err)
@@ -213,7 +218,7 @@ func (s *projectStatsService) GetProjectConversationStats(ctx context.Context, p
 		StateCount: zeroedCounts(labels[conversationStateEnumType]),
 	}
 
-	rows, err := s.repo.ConversationStateCounts(ctx, projectID, createdBy)
+	rows, err := s.repo.ConversationStateCounts(ctx, projectID, createdByEmail)
 	if err != nil {
 		return domain.ProjectConversationStatsResponse{}, err
 	}
