@@ -138,6 +138,7 @@ func (h *AnnouncementRequestHandler) CreateAnnouncementRequest(w http.ResponseWr
 		IsSecurityAnnouncement bool            `json:"isSecurityAnnouncement"`
 		AudienceDefinition     json.RawMessage `json:"audienceDefinition,omitempty"`
 		CreatedBy              string          `json:"createdBy"`
+		CreatedByEmail         string          `json:"createdByEmail,omitempty"`
 	}{
 		Kind:                   req.Kind,
 		Subject:                req.Subject,
@@ -145,6 +146,7 @@ func (h *AnnouncementRequestHandler) CreateAnnouncementRequest(w http.ResponseWr
 		IsSecurityAnnouncement: req.IsSecurityAnnouncement,
 		AudienceDefinition:     req.AudienceDefinition,
 		CreatedBy:              user.UserID,
+		CreatedByEmail:         user.Email,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
@@ -370,9 +372,10 @@ func (h *AnnouncementRequestHandler) PublishAnnouncementRequest(w http.ResponseW
 	}
 
 	upstreamBody, err := json.Marshal(struct {
-		ActorID string   `json:"actorId"`
-		CaseIDs []string `json:"caseIds"`
-	}{ActorID: user.UserID, CaseIDs: req.CaseIDs})
+		ActorID    string   `json:"actorId"`
+		CaseIDs    []string `json:"caseIds"`
+		ActorEmail string   `json:"actorEmail,omitempty"`
+	}{ActorID: user.UserID, CaseIDs: req.CaseIDs, ActorEmail: user.Email})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
 		return
@@ -424,9 +427,10 @@ func (h *AnnouncementRequestHandler) CreateAnnouncementRequestUpdate(w http.Resp
 	}
 
 	upstreamBody, err := json.Marshal(struct {
-		Content string `json:"content"`
-		ActorID string `json:"actorId"`
-	}{Content: req.Content, ActorID: user.UserID})
+		Content    string `json:"content"`
+		ActorID    string `json:"actorId"`
+		ActorEmail string `json:"actorEmail,omitempty"`
+	}{Content: req.Content, ActorID: user.UserID, ActorEmail: user.Email})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
 		return
@@ -486,8 +490,9 @@ func (h *AnnouncementRequestHandler) actorOnlyTransition(
 	}
 
 	body, err := json.Marshal(struct {
-		ActorID string `json:"actorId"`
-	}{ActorID: user.UserID})
+		ActorID    string `json:"actorId"`
+		ActorEmail string `json:"actorEmail,omitempty"`
+	}{ActorID: user.UserID, ActorEmail: user.Email})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
 		return
@@ -732,7 +737,8 @@ func (h *AnnouncementRequestHandler) SubmitAnnouncementRequest(w http.ResponseWr
 	body, err := json.Marshal(struct {
 		ResolvedProjectIDs []string `json:"resolvedProjectIds"`
 		ActorID            string   `json:"actorId"`
-	}{ResolvedProjectIDs: projectIDs, ActorID: user.UserID})
+		ActorEmail         string   `json:"actorEmail,omitempty"`
+	}{ResolvedProjectIDs: projectIDs, ActorID: user.UserID, ActorEmail: user.Email})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
 		return

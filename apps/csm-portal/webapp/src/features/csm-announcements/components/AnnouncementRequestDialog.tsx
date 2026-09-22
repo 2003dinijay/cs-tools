@@ -480,21 +480,29 @@ export default function AnnouncementRequestDialog({
                 </Typography>
               </DetailField>
               <DetailField label="Created">
-                <Typography variant="body2">{whoWhen(request.createdBy, request.createdAt)}</Typography>
+                <Typography variant="body2">
+                  {whoWhen(request.createdByEmail ?? request.createdBy, request.createdAt)}
+                </Typography>
               </DetailField>
               {request.submittedAt && (
                 <DetailField label="Submitted">
-                  <Typography variant="body2">{whoWhen(request.submittedBy, request.submittedAt)}</Typography>
+                  <Typography variant="body2">
+                    {whoWhen(request.submittedByEmail ?? request.submittedBy, request.submittedAt)}
+                  </Typography>
                 </DetailField>
               )}
               {request.approvedAt && (
                 <DetailField label="Approved">
-                  <Typography variant="body2">{whoWhen(request.approvedBy, request.approvedAt)}</Typography>
+                  <Typography variant="body2">
+                    {whoWhen(request.approvedByEmail ?? request.approvedBy, request.approvedAt)}
+                  </Typography>
                 </DetailField>
               )}
               {request.publishedAt && (
                 <DetailField label="Published">
-                  <Typography variant="body2">{whoWhen(request.publishedBy, request.publishedAt)}</Typography>
+                  <Typography variant="body2">
+                    {whoWhen(request.publishedByEmail ?? request.publishedBy, request.publishedAt)}
+                  </Typography>
                 </DetailField>
               )}
             </Box>
@@ -615,7 +623,8 @@ export default function AnnouncementRequestDialog({
                 </Box>
                 {claimsReady && !isRequestCreator && (
                   <Typography variant="caption" color="text.secondary">
-                    Only {request.createdBy} can publish this request — approving it doesn't grant that.
+                    Only {request.createdByEmail ?? request.createdBy} can publish this request — approving it
+                    doesn't grant that.
                   </Typography>
                 )}
                 {claimsReady && isRequestCreator && hasUnsavedChanges && (
@@ -647,7 +656,7 @@ export default function AnnouncementRequestDialog({
 
                 {claimsReady && !isRequestCreator && (
                   <Typography variant="caption" color="text.secondary">
-                    Only {request.createdBy} can post an update to this request.
+                    Only {request.createdByEmail ?? request.createdBy} can post an update to this request.
                   </Typography>
                 )}
                 {claimsReady && isRequestCreator && (request.publishedCaseIds ?? []).length === 0 && (
@@ -699,7 +708,7 @@ export default function AnnouncementRequestDialog({
                     {updatesQuery.data.updates.map((u) => (
                       <Box key={u.id} sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.5 }}>
                         <Typography variant="caption" color="text.secondary">
-                          {whoWhen(u.createdBy, u.createdOn)}
+                          {whoWhen(u.createdByEmail ?? u.createdBy, u.createdOn)}
                         </Typography>
                         <Box
                           sx={{ fontSize: "0.875rem", lineHeight: 1.5, wordBreak: "break-word", mt: 0.5 }}

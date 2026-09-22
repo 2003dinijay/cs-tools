@@ -12880,6 +12880,13 @@ components:
           nullable: true
         createdBy:
           type: string
+        createdByEmail:
+          type: string
+          nullable: true
+          description: >-
+            Display-only companion to createdBy (an opaque IdP account id) —
+            the actor's resolved email at creation time. Null for any row
+            written before this field existed.
         createdAt:
           type: string
           format: date-time
@@ -12889,6 +12896,9 @@ components:
         submittedBy:
           type: string
           nullable: true
+        submittedByEmail:
+          type: string
+          nullable: true
         submittedAt:
           type: string
           format: date-time
@@ -12896,11 +12906,17 @@ components:
         approvedBy:
           type: string
           nullable: true
+        approvedByEmail:
+          type: string
+          nullable: true
         approvedAt:
           type: string
           format: date-time
           nullable: true
         publishedBy:
+          type: string
+          nullable: true
+        publishedByEmail:
           type: string
           nullable: true
         publishedAt:
@@ -12987,6 +13003,10 @@ components:
           type: string
         createdBy:
           type: string
+        createdByEmail:
+          type: string
+          nullable: true
+          description: Display-only companion to createdBy — see AnnouncementRequest.createdByEmail.
         createdOn:
           type: string
           format: date-time
