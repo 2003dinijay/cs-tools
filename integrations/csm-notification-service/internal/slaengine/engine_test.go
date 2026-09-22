@@ -22,7 +22,6 @@ import (
 	"errors"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
 )
@@ -187,7 +186,7 @@ func TestEngine_Tick_SeedsBaselineWithoutAlerting(t *testing.T) {
 	pub := &fakePublisher{}
 	e := newTestEngine(entity, store, pub)
 
-	if err := e.Tick(context.Background(), time.Now()); err != nil {
+	if err := e.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v, want nil", err)
 	}
 	if len(pub.calls) != 0 {
@@ -211,7 +210,7 @@ func TestEngine_Tick_AlertsOnlyNewlyCrossedTier(t *testing.T) {
 	pub := &fakePublisher{}
 	e := newTestEngine(entity, store, pub)
 
-	if err := e.Tick(context.Background(), time.Now()); err != nil {
+	if err := e.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v, want nil", err)
 	}
 
@@ -257,7 +256,7 @@ func TestEngine_Tick_AlertsEveryTierCrossedSinceLastPoll(t *testing.T) {
 	pub := &fakePublisher{}
 	e := newTestEngine(entity, store, pub)
 
-	if err := e.Tick(context.Background(), time.Now()); err != nil {
+	if err := e.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v, want nil", err)
 	}
 
@@ -283,7 +282,7 @@ func TestEngine_Tick_NoOpWhenTierUnchanged(t *testing.T) {
 	pub := &fakePublisher{}
 	e := newTestEngine(entity, store, pub)
 
-	if err := e.Tick(context.Background(), time.Now()); err != nil {
+	if err := e.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v, want nil", err)
 	}
 	if len(pub.calls) != 0 {
@@ -307,7 +306,7 @@ func TestEngine_Tick_RebaselinesOnRegressionWithoutAlerting(t *testing.T) {
 	pub := &fakePublisher{}
 	e := newTestEngine(entity, store, pub)
 
-	if err := e.Tick(context.Background(), time.Now()); err != nil {
+	if err := e.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v, want nil", err)
 	}
 	if len(pub.calls) != 0 {
@@ -327,7 +326,7 @@ func TestEngine_Tick_SkipsPausedClockEntirely(t *testing.T) {
 	pub := &fakePublisher{}
 	e := newTestEngine(entity, store, pub)
 
-	if err := e.Tick(context.Background(), time.Now()); err != nil {
+	if err := e.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v, want nil", err)
 	}
 	if len(store.sets) != 0 {
@@ -350,7 +349,7 @@ func TestEngine_Tick_StopsAtFirstFailedTierAndKeepsCursor(t *testing.T) {
 	pub := &fakePublisher{err: errors.New("event hub unreachable")}
 	e := newTestEngine(entity, store, pub)
 
-	if err := e.Tick(context.Background(), time.Now()); err == nil {
+	if err := e.Tick(context.Background()); err == nil {
 		t.Fatal("Tick() error = nil, want the publish failure propagated")
 	}
 	if len(pub.calls) != 1 {
@@ -369,7 +368,7 @@ func TestEngine_Tick_ChatFailurePropagatesAndKeepsCursor(t *testing.T) {
 	e := newTestEngine(entity, store, pub)
 	e.chat = &fakeChatSender{err: errors.New("chat webhook unreachable")}
 
-	if err := e.Tick(context.Background(), time.Now()); err == nil {
+	if err := e.Tick(context.Background()); err == nil {
 		t.Fatal("Tick() error = nil, want the chat send failure propagated")
 	}
 	if store.tiers["CASE-1|response"] != 0 {
@@ -392,7 +391,7 @@ func TestEngine_Tick_JoinsErrorsAcrossStatusesButProcessesBoth(t *testing.T) {
 	e := newTestEngine(entity, store, pub)
 	e.chat = &fakeChatSender{err: errors.New("chat webhook unreachable")}
 
-	err := e.Tick(context.Background(), time.Now())
+	err := e.Tick(context.Background())
 	if err == nil {
 		t.Fatal("Tick() error = nil, want both failures joined")
 	}
@@ -403,14 +402,14 @@ func TestEngine_Tick_JoinsErrorsAcrossStatusesButProcessesBoth(t *testing.T) {
 
 func TestEngine_Tick_NoStatusesIsANoOp(t *testing.T) {
 	e := newTestEngine(&fakeStatusLister{}, newFakeTierStore(), &fakePublisher{})
-	if err := e.Tick(context.Background(), time.Now()); err != nil {
+	if err := e.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v, want nil", err)
 	}
 }
 
 func TestEngine_Tick_PropagatesListError(t *testing.T) {
 	e := newTestEngine(&fakeStatusLister{err: errors.New("entity-service unreachable")}, newFakeTierStore(), &fakePublisher{})
-	if err := e.Tick(context.Background(), time.Now()); err == nil {
+	if err := e.Tick(context.Background()); err == nil {
 		t.Fatal("Tick() error = nil, want the list failure propagated")
 	}
 }
@@ -429,7 +428,7 @@ func TestEngine_Tick_LosingClaimRaceDoesNotAlert(t *testing.T) {
 	pub := &fakePublisher{}
 	e := newTestEngine(entity, store, pub)
 
-	if err := e.Tick(context.Background(), time.Now()); err != nil {
+	if err := e.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v, want nil", err)
 	}
 	if len(pub.calls) != 0 {
@@ -455,7 +454,7 @@ func TestEngine_Tick_FailedAlertReleasesClaimForRetry(t *testing.T) {
 	pub := &fakePublisher{err: errors.New("event hub unreachable")}
 	e := newTestEngine(entity, store, pub)
 
-	if err := e.Tick(context.Background(), time.Now()); err == nil {
+	if err := e.Tick(context.Background()); err == nil {
 		t.Fatal("Tick() error = nil, want the publish failure propagated")
 	}
 	if len(store.claimCalls) != 1 || store.claimCalls[0] != (tierCall{"CASE-1", "response", 50}) {
@@ -485,12 +484,113 @@ func TestEngine_Tick_RegressionReleasesClaimsAboveNewTier(t *testing.T) {
 	pub := &fakePublisher{}
 	e := newTestEngine(entity, store, pub)
 
-	if err := e.Tick(context.Background(), time.Now()); err != nil {
+	if err := e.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v, want nil", err)
 	}
 	for _, tier := range []int{50, 75, 100} {
 		if store.claims[store.claimKey("CASE-1", "response", tier)] {
 			t.Errorf("expected tier %d's claim released after the regression, still held", tier)
 		}
+	}
+}
+
+// TestEngine_Tick_PropagatesEachTierStoreError pins the behavior of every
+// TierStore failure path processStatus has: a failed cursor read must skip
+// the clock (not reseed it and silently swallow a genuine crossing), and
+// every other store failure must likewise stop that clock's processing and
+// surface an error from Tick, rather than being absorbed.
+func TestEngine_Tick_PropagatesEachTierStoreError(t *testing.T) {
+	someErr := errors.New("redis unreachable")
+
+	tests := []struct {
+		name       string
+		percent    float64 // -> tier via tierForStatus
+		seedCursor bool
+		cursor     int
+		setErrFn   func(*fakeTierStore)
+	}{
+		{
+			name:     "GetTier fails",
+			percent:  60,
+			setErrFn: func(s *fakeTierStore) { s.getErr = someErr },
+		},
+		{
+			name:     "SetTier fails seeding the first-sight baseline",
+			percent:  60,
+			setErrFn: func(s *fakeTierStore) { s.setErr = someErr },
+		},
+		{
+			name:       "ReleaseTier fails cleaning up a regression",
+			percent:    5,
+			seedCursor: true,
+			cursor:     100,
+			setErrFn:   func(s *fakeTierStore) { s.releaseErr = someErr },
+		},
+		{
+			name:       "ClaimTier fails on a genuine crossing",
+			percent:    80,
+			seedCursor: true,
+			cursor:     50,
+			setErrFn:   func(s *fakeTierStore) { s.claimErr = someErr },
+		},
+		{
+			name:       "SetTier fails advancing the cursor after a successful alert",
+			percent:    80,
+			seedCursor: true,
+			cursor:     50,
+			setErrFn: func(s *fakeTierStore) {
+				// Only the *second* SetTier call in this flow (the
+				// post-alert cursor advance) should fail — the store has
+				// no earlier SetTier call to conflict with in this
+				// particular scenario, so a plain unconditional setErr is
+				// enough here.
+				s.setErr = someErr
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entity := &fakeStatusLister{statuses: []SLAStatus{{CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: tt.percent}}}
+			store := newFakeTierStore()
+			if tt.seedCursor {
+				store.tiers["CASE-1|response"] = tt.cursor
+			}
+			tt.setErrFn(store)
+			e := newTestEngine(entity, store, &fakePublisher{})
+
+			if err := e.Tick(context.Background()); err == nil {
+				t.Fatal("Tick() error = nil, want the store failure propagated")
+			}
+		})
+	}
+}
+
+// TestEngine_Tick_GetTierFailureSkipsRatherThanReseeding is the specific
+// regression guard TestEngine_Tick_PropagatesEachTierStoreError's first case
+// only pins loosely: a Redis GetTier failure must be treated as "this clock
+// couldn't be checked this poll," not conflated with GetTier's own found=false
+// result (no error, just no cursor yet). Conflating the two would silently
+// reseed the baseline on every transient Redis error and swallow whatever
+// genuine crossing that poll should have caught.
+func TestEngine_Tick_GetTierFailureSkipsRatherThanReseeding(t *testing.T) {
+	entity := &fakeStatusLister{statuses: []SLAStatus{{CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 80}}}
+	store := newFakeTierStore()
+	store.tiers["CASE-1|response"] = 50 // a real, already-established cursor
+	store.getErr = errors.New("redis unreachable")
+	pub := &fakePublisher{}
+	e := newTestEngine(entity, store, pub)
+
+	if err := e.Tick(context.Background()); err == nil {
+		t.Fatal("Tick() error = nil, want the GetTier failure propagated")
+	}
+	if len(pub.calls) != 0 {
+		t.Errorf("expected no publish when the cursor couldn't be read, got %d", len(pub.calls))
+	}
+	if chat := e.chat.(*fakeChatSender); len(chat.calls) != 0 {
+		t.Errorf("expected no chat alert when the cursor couldn't be read, got %+v", chat.calls)
+	}
+	if store.tiers["CASE-1|response"] != 50 {
+		t.Errorf("cursor = %d, want left untouched at 50, not reseeded to the clock's current tier", store.tiers["CASE-1|response"])
 	}
 }

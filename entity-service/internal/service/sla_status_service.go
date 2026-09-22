@@ -53,16 +53,43 @@ func normalizeSLAStatusPagination(p *domain.Pagination) error {
 }
 
 type slaStatusService struct {
-	repo repository.SLAStatusRepository
+	repo   repository.SLAStatusRepository
+	access AccessService
 }
 
-// NewSLAStatusService constructs an SLAStatusService backed by the given repository.
-func NewSLAStatusService(repo repository.SLAStatusRepository) SLAStatusService {
-	return &slaStatusService{repo: repo}
+// NewSLAStatusService constructs an SLAStatusService backed by the given
+// repository. access gates every call to internal callers
+// (AUTH_INTERNAL_CLIENT_IDS) -- see requireInternalCaller's own doc comment
+// for why: unlike every other Postgres-backed read, this endpoint has no
+// per-project/per-case filtering of its own to scope by (it returns every
+// currently-active clock across every case in one bulk list, for its one
+// real caller, integrations/csm-notification-service's poller), so there is
+// no scope short of "internal service" that would be safe to hand this out
+// under.
+func NewSLAStatusService(repo repository.SLAStatusRepository, access AccessService) SLAStatusService {
+	return &slaStatusService{repo: repo, access: access}
+}
+
+// requireInternalCaller rejects anyone whose AccessScope is not Unrestricted
+// -- mirrors onboarding_step_service.go's own helper of the same name and
+// same reasoning; kept as its own unexported copy rather than a shared one
+// since AccessService itself has no natural home for a helper this small.
+func (s *slaStatusService) requireInternalCaller(ctx context.Context) error {
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return err
+	}
+	if !scope.Unrestricted {
+		return &apierror.ForbiddenError{Msg: "sla status is only available to internal services"}
+	}
+	return nil
 }
 
 // SearchActiveSLAStatuses implements SLAStatusService.
 func (s *slaStatusService) SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination) (domain.SearchSLAStatusResponse, error) {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return domain.SearchSLAStatusResponse{}, err
+	}
 	if err := normalizeSLAStatusPagination(&req); err != nil {
 		return domain.SearchSLAStatusResponse{}, err
 	}

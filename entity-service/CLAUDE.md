@@ -610,6 +610,21 @@ generic `20`/`50` `normalizePagination` uses everywhere else; a low cap here
 would only turn one intended round trip into over a hundred for no one's
 benefit.
 
+**`GET /sla-status` is internal-caller-only** (`slaStatusService.
+requireInternalCaller`, mirroring `onboarding_step_service.go`'s own helper
+of the same name/reasoning) — `AccessService.ResolveScope`'s scope must be
+`Unrestricted` (an `AUTH_INTERNAL_CLIENT_IDS` client), refused with
+`ForbiddenError` otherwise. This is the one Postgres-backed read in this
+file that genuinely has no narrower scope to fall back to instead: it
+returns every active case's clock — case number, title, product, severity —
+in one bulk list with no per-project/per-case filtering of its own, unlike
+every other endpoint `AccessService` scopes by project membership. `auth.
+Middleware` itself lets an unauthenticated request through by design (see
+its own doc comment — enforcement is each endpoint's own job), so without
+this check this endpoint would have handed out every active case's SLA data
+to any caller able to reach the service at all, token or not — a real gap
+this closed, not a hypothetical one.
+
 **`sla` can carry more than one row per `(work_item, target)`** (a policy
 reset re-applies the SLA — 662 of ~124,600 pairs, checked live), so the
 repository picks the most recently started one per pair (`DISTINCT ON`,

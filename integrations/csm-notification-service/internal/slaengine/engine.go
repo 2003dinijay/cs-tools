@@ -119,8 +119,11 @@ func NewEngine(entity *EntityClient, store *TierStore, pub *eventbus.Producer, c
 
 // Tick polls every currently-active SLA clock and processes each — a failed
 // clock doesn't stop the others; every error is joined and returned so
-// RunTicker can log the whole batch's outcome in one line.
-func (e *Engine) Tick(ctx context.Context, now time.Time) error {
+// RunTicker can log the whole batch's outcome in one line. Takes no explicit
+// "now": every tier decision comes from each clock's own live
+// businessElapsedPercent (see processStatus), not a comparison against a
+// point in time the way the wake-index design this replaced needed.
+func (e *Engine) Tick(ctx context.Context) error {
 	statuses, err := e.entity.FetchAllActiveSLAStatuses(ctx)
 	if err != nil {
 		return fmt.Errorf("slaengine: fetch active sla statuses: %w", err)
@@ -317,7 +320,7 @@ func (e *Engine) RunTicker(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := e.Tick(ctx, time.Now()); err != nil {
+			if err := e.Tick(ctx); err != nil {
 				slog.ErrorContext(ctx, "slaengine: tick failed", "err", err)
 			}
 		}
