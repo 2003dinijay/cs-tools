@@ -830,7 +830,7 @@ changed.
   empty — nothing has asked for it on that path, this only wires up the
   search filter.
 - **Case activities** (`CaseRepository.SearchCaseActivities`): merges
-  `comment` and complete `case_attachments` rows into one newest-first feed
+  `comment` and complete `case_attachment` rows into one newest-first feed
   via a `UNION ALL` CTE — was previously an unconditional
   `ServiceUnavailableError` stub. There is no field-change audit table in
   this schema, so `req.IncludeFieldChanges` has no effect on this data
@@ -1206,7 +1206,7 @@ column by column (a local database built from every migration here vs staging,
 68 shared tables) when checked:
 
 - **Tables only in `migrations/`, absent from staging:** `alert_incident_mapping`
-  (000014), `case_attachments` (000043/000044), `announcement_requests` (000040),
+  (000014), `case_attachment` (000043/000044), `announcement_requests` (000040),
   `onboarding_step` (000075). Queries on them fail in staging with "relation does
   not exist"; none of it is a naming problem, the tables were simply never created.
 - **Columns renamed in staging** (the code used the old names and failed with
@@ -1379,7 +1379,7 @@ whichever `EscalationService` it's given -- no changes needed there at all.
 **Not yet verifiable against real data**: `case_escalation`/
 `case_escalation_notification_list`'s migration hasn't actually been
 applied to the staging database this was checked against (same gap as
-`case_attachments`/`alert_incident_mapping`/`work_item_tag` -- see the
+`case_attachment`/`alert_incident_mapping`/`work_item_tag` -- see the
 "Fixing wso2_id" section's own note on checking directly against the
 database rather than trusting a migration file's presence in this repo).
 The code matches the migration's schema definition exactly; it just
@@ -1534,7 +1534,7 @@ real, direct column. `madeSla`/`slaViolated` on Incident map to
 (`case_repo.go`) -- an activity feed entry (comment or field change) is not
 inherently case-specific, and `comment`/`work_item_activity` are both keyed
 by the generic `work_item_id`. Unlike `SearchCaseActivities`, there is no
-`case_attachments`-equivalent table for incidents, so this feed can never
+`case_attachment`-equivalent table for incidents, so this feed can never
 have an `"attachment"` kind entry.
 
 **`UpdateConversation` is implemented** (a plain `conversation.state` enum
@@ -1573,7 +1573,7 @@ change, not because either is infeasible.
 actually an incident/case-like work item before reading its activity
 feed** (`EXISTS (SELECT 1 FROM incident WHERE id = $1)` and the
 `caseLikeWorkItemTypes`-filtered equivalent respectively) -- found as a
-real IDOR during review: `comment`/`case_attachments`/`work_item_activity`
+real IDOR during review: `comment`/`case_attachment`/`work_item_activity`
 are all keyed by the generic `work_item_id` with no type filter of their
 own, so without this check a caller could pass any other work item's UUID
 (a change request, a different case, ...) through either endpoint and read
