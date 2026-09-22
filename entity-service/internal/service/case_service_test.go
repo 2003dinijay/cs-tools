@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1007,9 +1008,14 @@ func TestCaseService_CreateCaseComment_RecordsSNWritebackFailureOnMirrorError(t 
 // permanent, 100%-guaranteed incompatibility must not be recorded to
 // sn_writeback_failures as if it were a transient, backfillable failure.
 func TestCaseService_CreateCaseComment_SkipsMirrorForActivityType(t *testing.T) {
+	// Dispatch runs this callback on the dispatcher's own worker goroutine,
+	// not the test goroutine -- t.Fatal/FailNow is only safe to call from
+	// the goroutine running the test itself, so a wrongly-invoked call is
+	// recorded here and asserted on the main goroutine below instead.
+	var calledWrongly atomic.Bool
 	mirror := &stubMirrorCaseService{
 		createBareCaseComment: func(context.Context, string, domain.CommentType, string) (domain.CaseCommentDetail, error) {
-			t.Fatal("CreateBareCaseComment must never be called for an activity-type comment")
+			calledWrongly.Store(true)
 			return domain.CaseCommentDetail{}, nil
 		},
 	}
@@ -1036,6 +1042,9 @@ func TestCaseService_CreateCaseComment_SkipsMirrorForActivityType(t *testing.T) 
 	// zero failures were recorded -- a skip means no dispatch at all, not a
 	// dispatch that happens to succeed or fail silently.
 	time.Sleep(100 * time.Millisecond)
+	if calledWrongly.Load() {
+		t.Error("CreateBareCaseComment must never be called for an activity-type comment")
+	}
 	if got := failures.count(); got != 0 {
 		t.Errorf("expected 0 sn_writeback_failures records for a skipped activity-type mirror, got %d", got)
 	}
