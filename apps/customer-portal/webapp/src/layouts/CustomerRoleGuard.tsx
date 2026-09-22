@@ -79,6 +79,26 @@ export default function CustomerRoleGuard({
     );
   }
 
+  // The guard defaults to authorized and is only narrowed by the constraints
+  // below, so a callsite that supplies none of them, or only half of a
+  // module/action pair, renders its children unchecked while looking guarded.
+  // Vite strips this block from production builds.
+  if (import.meta.env.DEV) {
+    const hasPermissionCheck = Boolean(module && action);
+    const hasRoleCheck = Boolean(requiredRoles && requiredRoles.length > 0);
+    if (!hasPermissionCheck && !hasRoleCheck) {
+      console.warn(
+        "CustomerRoleGuard: no constraints supplied (module+action or requiredRoles), so every child renders unchecked.",
+        { module, action, requiredRoles },
+      );
+    } else if (Boolean(module) !== Boolean(action)) {
+      console.warn(
+        "CustomerRoleGuard: module and action must be supplied together; only one was, so the permission check is skipped.",
+        { module, action },
+      );
+    }
+  }
+
   let isAuthorized = true;
 
   if (module && action) {

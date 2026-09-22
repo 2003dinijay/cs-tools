@@ -235,6 +235,9 @@ func TestContactManagementRoleGating(t *testing.T) {
 		wantHTTPCode int
 	}{
 		{
+			// Also covers the removal of the blanket super_admin grant in
+			// RequireRoles: a role outside the allow-list is simply refused,
+			// with nothing short-circuiting the check.
 			name:         "CustomerUser cannot manage contacts",
 			roles:        []string{"sn_customerservice.customer"},
 			wantHTTPCode: http.StatusForbidden,
@@ -253,13 +256,6 @@ func TestContactManagementRoleGating(t *testing.T) {
 			name:         "PartnerAdmin can manage contacts",
 			roles:        []string{"sn_customerservice.partner_admin"},
 			wantHTTPCode: http.StatusOK,
-		},
-		{
-			// A role outside the allow-list no longer slips through: the
-			// blanket super_admin grant in RequireRoles is gone.
-			name:         "CustomerUser cannot manage contacts",
-			roles:        []string{"sn_customerservice.customer"},
-			wantHTTPCode: http.StatusForbidden,
 		},
 	}
 

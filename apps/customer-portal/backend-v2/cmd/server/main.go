@@ -226,7 +226,12 @@ func main() {
 	mux.Handle("PATCH /projects/{id}/contacts/{email}", middleware.RequireRoles(roleResolver, middleware.RoleAdmin, middleware.RoleCustomerAdmin, middleware.RolePartnerAdmin)(http.HandlerFunc(contactHandler.UpdateProjectContactRole)))
 	mux.Handle("POST /projects/{id}/contacts/validate", middleware.RequireRoles(roleResolver, middleware.RoleAdmin, middleware.RoleCustomerAdmin, middleware.RolePartnerAdmin)(http.HandlerFunc(contactHandler.ValidateProjectContact)))
 	mux.Handle("DELETE /registry-tokens/{id}", middleware.RequirePermission(roleResolver, middleware.ModuleDeploymentResources, middleware.ActionDelete)(http.HandlerFunc(registryHandler.DeleteRegistryToken)))
-	mux.Handle("POST /registry-tokens/{id}/regenerate", middleware.RequirePermission(roleResolver, middleware.ModuleDeploymentResources, middleware.ActionDelete)(http.HandlerFunc(registryHandler.RegenerateRegistryToken)))
+	// Regeneration is an update, not a delete: the token resource survives and
+	// only its secret changes (RegenerateToken returns a TokenCreationResponse).
+	// It was gated on ActionDelete, which tied it to deletion access; that makes
+	// no difference while DeploymentResources grants the same roles for every
+	// action, but would enforce the wrong check the moment they are split.
+	mux.Handle("POST /registry-tokens/{id}/regenerate", middleware.RequirePermission(roleResolver, middleware.ModuleDeploymentResources, middleware.ActionUpdate)(http.HandlerFunc(registryHandler.RegenerateRegistryToken)))
 
 	mux.Handle("POST /projects/{id}/cases/search", middleware.RequirePermission(roleResolver, middleware.ModuleCases, middleware.ActionRead)(http.HandlerFunc(caseHandler.SearchCases)))
 	mux.Handle("GET /cases/{id}", middleware.RequirePermission(roleResolver, middleware.ModuleCases, middleware.ActionRead)(http.HandlerFunc(caseHandler.GetCase)))

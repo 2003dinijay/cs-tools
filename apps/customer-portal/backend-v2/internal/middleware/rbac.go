@@ -265,6 +265,18 @@ func (r *CachedRoleResolver) GetRoles(ctx context.Context) ([]CanonicalRole, err
 
 	roles := NormalizeRoles(resp.Roles)
 
+	// Sweeping the whole map under the write lock is O(n), but it runs only on
+	// a cache miss, never on a hit: a hit returns above without ever taking
+	// this lock. Misses are bounded by the TTL, so the work is roughly one
+	// sweep per user per TTL rather than one per request, which is negligible
+	// at this portal's scale (hundreds of concurrent users, not hundreds of
+	// thousands).
+	//
+	// The alternative of never evicting is what this replaced: entries are
+	// keyed by user id and the resolver outlives every request, so a long
+	// running instance accumulated one entry per user who ever authenticated.
+	// If the user population ever grows enough for this sweep to show up in
+	// latency, move it to a background ticker rather than dropping eviction.
 	r.mu.Lock()
 	now := time.Now()
 	for uid, e := range r.cache {

@@ -85,6 +85,11 @@ export function normalizeCustomerRole(roleStr: string): CanonicalRole {
     case "internal":
       return "internal";
     default:
+      // Deliberate passthrough: an unrecognised role keeps its raw name, which
+      // matches no entry in CUSTOMER_PERMISSION_MATRIX and therefore grants
+      // nothing. Failing closed is the point, but note the cast means adding a
+      // new CanonicalRole to the union does NOT make the compiler flag a
+      // missing case here, so a new role must be added to this switch by hand.
       return trimmed as CanonicalRole;
   }
 }
@@ -363,7 +368,7 @@ export function useCustomerPermissions() {
       canAccessChangeRequests: can("change_requests", "read"),
       canAccessSecurityAdmin: can("security_admin", "read"),
       canManageContacts: hasAnyRole([
-          "admin",
+        "admin",
         "customer_admin",
         "partner_admin",
       ]),

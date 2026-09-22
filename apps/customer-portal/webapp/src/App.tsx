@@ -145,18 +145,22 @@ export default function App(): JSX.Element {
                     element={<ProjectDetailsPage />}
                   />
                   {/* Operations */}
-                  <Route path="operations">
-                    <Route
-                      index
-                      element={
-                        <CustomerRoleGuard
-                          module="change_requests"
-                          action="read"
-                        >
-                          <OperationsPage />
-                        </CustomerRoleGuard>
-                      }
-                    />
+                  {/* Guarded on the wrapper, not the index: the index alone
+                      left operations/service-requests reachable by direct URL
+                      for a role the landing page refused, so the section was
+                      only half gated. There is no service_requests module in
+                      the permission matrix, so change_requests:read is what
+                      governs the whole section. */}
+                  <Route
+                    path="operations"
+                    element={
+                      <CustomerRoleGuard
+                        module="change_requests"
+                        action="read"
+                      />
+                    }
+                  >
+                    <Route index element={<OperationsPage />} />
                     <Route path="service-requests">
                       <Route index element={<ServiceRequestsPage />} />
                       <Route
