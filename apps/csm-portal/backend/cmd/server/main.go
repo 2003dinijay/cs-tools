@@ -264,6 +264,8 @@ func main() {
 	route("POST /announcement-requests/{id}/submit", handler.PermWrite, announcementRequestHandler.SubmitAnnouncementRequest)
 	route("POST /announcement-requests/{id}/approve", handler.PermWrite, announcementRequestHandler.ApproveAnnouncementRequest)
 	route("POST /announcement-requests/{id}/publish", handler.PermWrite, announcementRequestHandler.PublishAnnouncementRequest)
+	route("POST /announcement-requests/{id}/updates", handler.PermWrite, announcementRequestHandler.CreateAnnouncementRequestUpdate)
+	route("GET /announcement-requests/{id}/updates", handler.PermView, announcementRequestHandler.ListAnnouncementRequestUpdates)
 	route("POST /projects/{id}/contacts/search", handler.PermView, projectHandler.SearchProjectContacts)
 	route("GET /projects/{id}/contacts/{contactId}", handler.PermView, projectHandler.GetProjectContact)
 	route("PATCH /projects/{id}", handler.PermWrite, projectHandler.UpdateProject)

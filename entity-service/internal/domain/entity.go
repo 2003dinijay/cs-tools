@@ -6573,6 +6573,13 @@ type AnnouncementRequest struct {
 	ApprovedAt           *time.Time `json:"approvedAt,omitempty"`
 	PublishedBy          *string    `json:"publishedBy,omitempty"`
 	PublishedAt          *time.Time `json:"publishedAt,omitempty"`
+	// PublishedCaseIDs is nil/unset until MarkPublished — the real case id
+	// created for each project in ResolvedProjectIDs, self-reported by the
+	// same creator-only caller MarkPublished restricts this transition to
+	// (see that method's own doc comment). This is what lets a later update
+	// (see AnnouncementRequestUpdate) target the exact cases this
+	// announcement actually created, instead of re-deriving them.
+	PublishedCaseIDs []string `json:"publishedCaseIds,omitempty"`
 }
 
 // CreateAnnouncementRequestRequest creates a new announcement_requests row
@@ -6633,10 +6640,65 @@ type SubmitAnnouncementRequestRequest struct {
 }
 
 // AnnouncementRequestActorRequest is the minimal request shape for a
-// transition that needs nothing but who's performing it — Approve and
-// MarkPublished both use this.
+// transition that needs nothing but who's performing it — Approve uses
+// this. MarkPublished does not (see PublishAnnouncementRequestRequest):
+// it needs the created case ids too.
 type AnnouncementRequestActorRequest struct {
 	ActorID string `json:"actorId"`
+}
+
+// PublishAnnouncementRequestRequest moves approved -> published.
+// CaseIDs is the real case id created for each project in the request's own
+// ResolvedProjectIDs, from the caller's own fan-out (see
+// domain.AnnouncementRequest.PublishedCaseIDs's own doc comment for the
+// trust model). A ValidationError is returned if it's empty — a "published"
+// request this service can't later target with an update is not a useful
+// state to be in.
+type PublishAnnouncementRequestRequest struct {
+	ActorID string   `json:"actorId"`
+	CaseIDs []string `json:"caseIds"`
+}
+
+// AnnouncementRequestUpdate is one dated follow-up comment applied, after
+// the fact, to every case a published announcement request created — e.g.
+// a correction the CS/Security team asks to have appended. Mirrors
+// ServiceNow's own "Announcement Update with Comments" flow (see that
+// flow's own doc reference), except targeting AnnouncementRequest's real,
+// stored PublishedCaseIDs instead of a fragile short-description/
+// created-date-range match. Append-only — there is no edit/delete for one
+// of these once posted, the same audit-log shape comment/work_item_activity
+// already use elsewhere in this schema.
+type AnnouncementRequestUpdate struct {
+	ID                    string `json:"id"`
+	AnnouncementRequestID string `json:"announcementRequestId"`
+	Content               string `json:"content"`
+	CreatedBy             string `json:"createdBy"`
+	// CreatedOn (not CreatedAt) -- this is a new type, added after this
+	// codebase's timestamp fields were standardized on the "On" suffix for
+	// both the DB column and the JSON wire field (see CLAUDE.md's "Domain
+	// types" section) -- unlike AnnouncementRequest's own older CreatedAt
+	// etc., which only got the DB-column half of that fix to avoid an
+	// unrelated wire-contract break.
+	CreatedOn time.Time `json:"createdOn"`
+}
+
+// CreateAnnouncementRequestUpdateRequest posts a new AnnouncementRequestUpdate.
+// This only records that the update happened, by whom and when, and what it
+// said — same "does not itself create any cases/comments" separation of
+// concerns as MarkPublished; the caller's own fan-out is what actually
+// applies Content as a comment on every PublishedCaseIDs case, separately,
+// after this call succeeds.
+type CreateAnnouncementRequestUpdateRequest struct {
+	Content string `json:"content"`
+	ActorID string `json:"actorId"`
+}
+
+// SearchAnnouncementRequestUpdatesResponse lists every update posted for one
+// announcement request, newest first. No pagination: an announcement
+// realistically receives at most a handful of these over its lifetime, not
+// a volume that needs paging through.
+type SearchAnnouncementRequestUpdatesResponse struct {
+	Updates []AnnouncementRequestUpdate `json:"updates"`
 }
 
 // SearchAnnouncementRequestsRequest filters announcement_requests. State and

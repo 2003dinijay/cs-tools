@@ -51,6 +51,10 @@ import AnnouncementSendProgress, {
   type AnnouncementSendProgressState,
 } from "@features/csm-announcements/components/AnnouncementSendProgress";
 import PublishConfirmationDialog from "@features/csm-announcements/components/PublishConfirmationDialog";
+import AddUpdateConfirmationDialog from "@features/csm-announcements/components/AddUpdateConfirmationDialog";
+import { useCreateAnnouncementRequestUpdate } from "@features/csm-announcements/api/useCreateAnnouncementRequestUpdate";
+import { useListAnnouncementRequestUpdates } from "@features/csm-announcements/api/useListAnnouncementRequestUpdates";
+import { usePostAnnouncementUpdateComments } from "@features/csm-announcements/api/usePostAnnouncementUpdateComments";
 
 interface AnnouncementRequestDialogProps {
   requestId: string;
@@ -137,6 +141,58 @@ export default function AnnouncementRequestDialog({
   const claimsReady = claims !== undefined;
   const isRequestCreator = !!request && !!claims?.userid && claims.userid === request.createdBy;
   const [confirmPublishOpen, setConfirmPublishOpen] = useState(false);
+
+  // Add-update: composing and posting a follow-up comment to every case a
+  // published request created. Restricted to the creator, same as Publish
+  // and for the same reason.
+  const createUpdate = useCreateAnnouncementRequestUpdate();
+  const postUpdateComments = usePostAnnouncementUpdateComments();
+  const updatesQuery = useListAnnouncementRequestUpdates(request?.id, request?.state === "published");
+  const [updateContent, setUpdateContent] = useState("");
+  const [confirmUpdateOpen, setConfirmUpdateOpen] = useState(false);
+  // Set once createUpdate has recorded the current updateContent, so a
+  // retry after a partial comment-fan-out failure only retries the
+  // outstanding comments (postUpdateComments already tracks that itself)
+  // without creating a second, duplicate AnnouncementRequestUpdate row for
+  // the same text. This is plain component state, not persisted anywhere —
+  // closing and reopening this dialog mid-retry loses it, the same
+  // accepted trade-off usePublishAnnouncementRequest's own doc comment
+  // already documents for Publish ("if the dialog is closed mid-retry,
+  // progress made so far is lost"). A closed-then-reopened retry here
+  // would re-record a second AnnouncementRequestUpdate row for the same
+  // text rather than resuming the first one — a duplicate history entry
+  // (visible in "Past updates", not silent data loss), not a persistence
+  // layer this slice builds for.
+  const [recordedUpdateContent, setRecordedUpdateContent] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (postUpdateComments.done && recordedUpdateContent !== null) {
+      setUpdateContent("");
+      setRecordedUpdateContent(null);
+    }
+    // Only reacts to the fan-out actually finishing, not every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [postUpdateComments.done]);
+
+  const handleConfirmUpdate = async (): Promise<void> => {
+    if (!request) return;
+    setConfirmUpdateOpen(false);
+    if (recordedUpdateContent === null) {
+      // A genuinely new update, not a retry of one already recorded —
+      // postUpdateComments' own per-case tracking must be cleared first, or
+      // it would see every case already "succeeded" from whichever earlier
+      // update this same dialog instance already posted and silently skip
+      // this one's fan-out entirely (see that hook's own reset() doc comment).
+      postUpdateComments.reset();
+      try {
+        await createUpdate.mutateAsync({ id: request.id, payload: { content: updateContent } });
+        setRecordedUpdateContent(updateContent);
+      } catch {
+        return;
+      }
+    }
+    await postUpdateComments.handlePost(request.publishedCaseIds ?? [], updateContent, request.createdBy);
+  };
 
   const [subject, setSubject] = useState("");
   const [description, setDescription] = useState("");
@@ -560,6 +616,81 @@ export default function AnnouncementRequestDialog({
                 )}
               </Box>
             )}
+
+            {request.state === "published" && (
+              <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                <Divider />
+                <Typography variant="subtitle2">Post an update</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Appends a dated follow-up as a real comment on every case this announcement created —
+                  not a replacement for the original content.
+                </Typography>
+
+                {claimsReady && !isRequestCreator && (
+                  <Typography variant="caption" color="text.secondary">
+                    Only {request.createdBy} can post an update to this request.
+                  </Typography>
+                )}
+                {claimsReady && isRequestCreator && (request.publishedCaseIds ?? []).length === 0 && (
+                  <Typography variant="caption" color="text.secondary">
+                    This request was published before case tracking existed — there's nothing to post an
+                    update to.
+                  </Typography>
+                )}
+                {(!claimsReady ||
+                  (isRequestCreator && (request.publishedCaseIds ?? []).length > 0)) && (
+                  <>
+                    <EditorWithSourceToggle value={updateContent} onChange={setUpdateContent} />
+                    <Box>
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        disabled={
+                          !claimsReady ||
+                          !isRequestCreator ||
+                          updateContent.trim().length === 0 ||
+                          createUpdate.isPending ||
+                          postUpdateComments.posting ||
+                          (request.publishedCaseIds ?? []).length === 0
+                        }
+                        onClick={() => setConfirmUpdateOpen(true)}
+                      >
+                        {createUpdate.isPending || postUpdateComments.posting ? "Posting…" : "Post update"}
+                      </Button>
+                    </Box>
+                    {createUpdate.isError && (
+                      <Typography variant="caption" color="error">
+                        Could not record the update. Try again.
+                      </Typography>
+                    )}
+                    {postUpdateComments.failedCaseIds.length > 0 && (
+                      <Typography variant="caption" color="warning.main">
+                        Couldn&apos;t post to {postUpdateComments.failedCaseIds.length} case
+                        {postUpdateComments.failedCaseIds.length === 1 ? "" : "s"} — retry to resend just
+                        those.
+                      </Typography>
+                    )}
+                  </>
+                )}
+
+                {updatesQuery.data && updatesQuery.data.updates.length > 0 && (
+                  <Box sx={{ display: "flex", flexDirection: "column", gap: 1, mt: 1 }}>
+                    <Typography variant="subtitle2">Past updates</Typography>
+                    {updatesQuery.data.updates.map((u) => (
+                      <Box key={u.id} sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.5 }}>
+                        <Typography variant="caption" color="text.secondary">
+                          {whoWhen(u.createdBy, u.createdOn)}
+                        </Typography>
+                        <Box
+                          sx={{ fontSize: "0.875rem", lineHeight: 1.5, wordBreak: "break-word", mt: 0.5 }}
+                          dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(u.content) }}
+                        />
+                      </Box>
+                    ))}
+                  </Box>
+                )}
+              </Box>
+            )}
           </>
         )}
       </DialogContent>
@@ -604,6 +735,17 @@ export default function AnnouncementRequestDialog({
             setConfirmPublishOpen(false);
             void publish.handlePublish();
           }}
+        />
+      )}
+
+      {request && (
+        <AddUpdateConfirmationDialog
+          open={confirmUpdateOpen}
+          content={updateContent}
+          caseCount={(request.publishedCaseIds ?? []).length}
+          confirming={createUpdate.isPending || postUpdateComments.posting}
+          onCancel={() => setConfirmUpdateOpen(false)}
+          onConfirm={() => void handleConfirmUpdate()}
         />
       )}
     </Dialog>

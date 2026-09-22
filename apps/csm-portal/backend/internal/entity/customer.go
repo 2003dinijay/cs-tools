@@ -730,3 +730,15 @@ func (c *CustomerEntityClient) ApproveAnnouncementRequest(ctx context.Context, i
 func (c *CustomerEntityClient) PublishAnnouncementRequest(ctx context.Context, id string, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/announcement-requests/%s/publish", url.PathEscape(id)), body)
 }
+
+// CreateAnnouncementRequestUpdate calls POST /announcement-requests/{id}/updates on the entity service.
+// Response is returned as raw JSON; typed response structs are deferred.
+func (c *CustomerEntityClient) CreateAnnouncementRequestUpdate(ctx context.Context, id string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, fmt.Sprintf("/announcement-requests/%s/updates", url.PathEscape(id)), body)
+}
+
+// ListAnnouncementRequestUpdates calls GET /announcement-requests/{id}/updates on the entity service.
+// Response is returned as raw JSON; typed response structs are deferred.
+func (c *CustomerEntityClient) ListAnnouncementRequestUpdates(ctx context.Context, id string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, fmt.Sprintf("/announcement-requests/%s/updates", url.PathEscape(id)), nil)
+}

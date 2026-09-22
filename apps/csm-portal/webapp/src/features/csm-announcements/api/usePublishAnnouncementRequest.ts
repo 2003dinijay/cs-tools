@@ -93,6 +93,11 @@ export function usePublishAnnouncementRequest(
   const [publishing, setPublishing] = useState(false);
   const [progress, setProgress] = useState<PublishProgress | null>(null);
   const [succeededProjectIds, setSucceededProjectIds] = useState<string[]>([]);
+  // The real case id created for each succeeded project, across every
+  // attempt — this is what gets sent to /publish's caseIds so a later
+  // "add update" fan-out (usePostAnnouncementUpdateComments) knows exactly
+  // which cases to target, without re-deriving them.
+  const [caseIdByProjectId, setCaseIdByProjectId] = useState<Record<string, string>>({});
   const [failedProjectIds, setFailedProjectIds] = useState<string[]>([]);
   const [failedTagProjectIds, setFailedTagProjectIds] = useState<string[]>([]);
   // The case id created for each project in failedTagProjectIds, so a retry
@@ -154,6 +159,14 @@ export function usePublishAnnouncementRequest(
     // instead (as this used to) left that state permanently stuck: nothing
     // was ever outstanding to retry, yet the request was never marked
     // published either.
+    // Case ids for THIS call's /publish body: whatever succeeded in earlier
+    // attempts (the closure's own caseIdByProjectId, read once at call
+    // start same as succeededProjectIds above) plus whatever the fan-out
+    // below adds — never read back from state after setting it, since
+    // React state updates aren't visible synchronously within this same
+    // function body.
+    const caseIdsForPublish: Record<string, string> = { ...caseIdByProjectId };
+
     if (pendingProjectIds.length > 0) {
       setProgress({ completed: 0, total: pendingProjectIds.length });
       const newlyFailedTagIds: string[] = [];
@@ -169,6 +182,11 @@ export function usePublishAnnouncementRequest(
             subject: request.subject,
             description: request.description,
           });
+          // The case genuinely exists the moment postCase succeeds,
+          // independent of whether the security tag below then fails —
+          // tracked unconditionally so a later tag-only retry (which
+          // reuses this same case rather than recreating it) still has it.
+          caseIdsForPublish[projectId] = created.id;
           if (request.isSecurityAnnouncement) {
             try {
               await addTag.mutateAsync({ caseId: created.id, label: SECURITY_ANNOUNCEMENT_TAG_LABEL });
@@ -186,6 +204,7 @@ export function usePublishAnnouncementRequest(
       const stillFailing = pendingProjectIds.filter((_, i) => results[i].status === "rejected");
 
       setSucceededProjectIds((prev) => [...prev, ...newlySucceeded]);
+      setCaseIdByProjectId((prev) => ({ ...prev, ...caseIdsForPublish }));
       setFailedProjectIds(stillFailing);
       // failedTagProjectIds is empty at this point (either there was nothing
       // to retry above, or the retry pass fully succeeded), so this is a
@@ -227,8 +246,9 @@ export function usePublishAnnouncementRequest(
     }
 
     try {
-      const result = await api.postEmpty<AnnouncementRequest>(
+      const result = await api.post<{ caseIds: string[] }, AnnouncementRequest>(
         `/announcement-requests/${encodeURIComponent(request.id)}/publish`,
+        { caseIds: Object.values(caseIdsForPublish) },
       );
       setPublished(result);
       queryClient.invalidateQueries({
