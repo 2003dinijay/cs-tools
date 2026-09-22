@@ -43,14 +43,18 @@ const (
 // User represents a single user entity as stored in the database.
 // Phone and Timezone are optional and omitted from JSON when absent.
 type User struct {
-	ID        string    `json:"id"`
-	UserName  string    `json:"userName"`
-	FirstName string    `json:"firstName"`
-	LastName  string    `json:"lastName"`
-	Email     string    `json:"email"`
-	Phone     *string   `json:"phone"`
-	Timezone  *string   `json:"timezone"`
-	UserType  UserType  `json:"userType"`
+	ID        string   `json:"id"`
+	UserName  string   `json:"userName"`
+	FirstName string   `json:"firstName"`
+	LastName  string   `json:"lastName"`
+	Email     string   `json:"email"`
+	Phone     *string  `json:"phone"`
+	Timezone  *string  `json:"timezone"`
+	UserType  UserType `json:"userType"`
+	// Roles are the names of the roles assigned through user_role, sorted, and
+	// always non-nil ([] when none) in a user search result. Only user search
+	// fills it in; other lookups leave it nil.
+	Roles     []string  `json:"roles"`
 	CreatedOn time.Time `json:"createdOn"`
 	UpdatedOn time.Time `json:"updatedOn"`
 }
@@ -204,6 +208,57 @@ type UserProjectAccess struct {
 	NotificationsEnabled bool     `json:"notificationsEnabled"`
 	Roles                []string `json:"roles"`
 	GrantsCaseAccess     bool     `json:"grantsCaseAccess"`
+}
+
+// UserDetail is a single user's profile on the Postgres data source: the user row
+// plus role, group and (for customers) project-contact information.
+//
+// It is deliberately not SNUserDetail. That type always sends lockedOut, timeZone
+// and per-project notificationsEnabled, which this schema has no column for, and
+// the CSM page shows "Locked out: No" whenever lockedOut is present, so reusing it
+// would state something this data source cannot know. Those fields are omitted
+// here instead.
+type UserDetail struct {
+	ID       string   `json:"id"`
+	UserName string   `json:"userName"`
+	Name     string   `json:"name"`
+	Email    string   `json:"email"`
+	UserType UserType `json:"userType,omitempty"`
+	// Active is false only when user.is_active is explicitly FALSE (a NULL counts
+	// as active, matching how the rest of this schema treats an unset flag).
+	Active    bool      `json:"active"`
+	CreatedOn time.Time `json:"createdOn"`
+	UpdatedOn time.Time `json:"updatedOn"`
+	Roles     []string  `json:"roles"`
+	// Groups are the teams the user belongs to (team_member). Which of them are
+	// registry teams is the caller's determination.
+	Groups []UserGroupRef `json:"groups"`
+	// ProjectAccess is populated for customers (user_type EXTERNAL) only.
+	ProjectAccess []UserContactAccess `json:"projectAccess,omitempty"`
+}
+
+// UserContactAccess is one project_contact row for a customer, reported as stored
+// rather than as filtered, so a caller can see why a contact does or does not
+// reach a project's cases.
+type UserContactAccess struct {
+	ProjectID   string `json:"projectId"`
+	ProjectName string `json:"projectName"`
+	ProjectKey  string `json:"projectKey"`
+	// ContactEmail is the email the row was invited under.
+	ContactEmail string `json:"contactEmail"`
+	// ContactRecordPresent is false when the row has no account_contact linked.
+	ContactRecordPresent bool `json:"contactRecordPresent"`
+	// ContactRecordEmail is the linked account_contact's own user name (its
+	// login email), which can differ from ContactEmail (20 of 357 rows in staging).
+	ContactRecordEmail string `json:"contactRecordEmail,omitempty"`
+	// RegistrationState is project_contact.state (INVITED, REGISTERED, ...).
+	RegistrationState string `json:"registrationState"`
+	// Roles are the contact's project roles (PORTAL_USER, SECURITY_CONTACT, ...),
+	// through project_contact_group -> project_group_role -> project_role.
+	Roles []string `json:"roles"`
+	// GrantsCaseAccess is the rule this service actually enforces when it scopes a
+	// customer's projects and cases: the contact is REGISTERED.
+	GrantsCaseAccess bool `json:"grantsCaseAccess"`
 }
 
 // SearchSNUsersResponse is the paginated result of a ServiceNow user search.
@@ -766,6 +821,37 @@ type SearchProjectsRequest struct {
 	// SubRegion filters to projects whose linked account is in this sub-region
 	// (ServiceNow data source only).
 	SubRegion string `json:"subRegion"`
+	// ExcludeClosureStates filters out projects whose closure state (see
+	// ProjectClosureFields.ClosureState — "Open"/"Suspended"/"Restricted") is
+	// any of the given values, e.g. ["Restricted", "Suspended"]. Unlike
+	// ClosureStatus above, there is no upstream ServiceNow filter parameter for
+	// excluding a set of states, so the ServiceNow data source applies this by
+	// paging through every match and filtering in Go, not by passing it through
+	// as a request filter. The Postgres data source applies it as a real SQL
+	// filter instead, against the project.wso2_closure_state column (case-
+	// insensitive — see project_repo.go's SearchProjects).
+	ExcludeClosureStates []string `json:"excludeClosureStates,omitempty"`
+	// ExcludeSubscriptionTypes filters out projects whose subscription type is
+	// any of the given values, e.g. ["cloud_support", "cloud_evaluation_support"].
+	// Same "no upstream filter, applied in Go" caveat as ExcludeClosureStates
+	// for the ServiceNow data source. The Postgres data source applies it as a
+	// real SQL filter against project_type.name (migrations 000026/000027,
+	// joined via project.project_type_id -- the same ServiceNow project
+	// "type" reference field, normalized the same way
+	// snTypeNameToSubscriptionType normalizes it) -- a project with no
+	// project_type_id set is never excluded, same NULL-permissive
+	// semantics as ExcludeClosureStates (see project_repo.go's
+	// SearchProjects).
+	ExcludeSubscriptionTypes []SubscriptionType `json:"excludeSubscriptionTypes,omitempty"`
+	// ExcludeProjectKeys filters out projects whose Key (see ProjectView.Key)
+	// is any of the given values, e.g. ["APEXIA", "VERIDIAN"] — a caller-
+	// supplied denylist by project key, unrelated to closure state or
+	// subscription type. Same "no upstream filter, applied in Go" caveat as
+	// ExcludeClosureStates for the ServiceNow data source; the Postgres data
+	// source applies it as a real SQL filter against project.key instead.
+	// Matching is exact and case-sensitive (project keys are opaque
+	// identifiers, not display text).
+	ExcludeProjectKeys []string `json:"excludeProjectKeys,omitempty"`
 }
 
 // ProjectSearchAccountRef is the account reference embedded in a project
@@ -1433,6 +1519,44 @@ type SearchDeployedProductsResponse struct {
 	Limit            int                   `json:"limit"`
 	Offset           int                   `json:"offset"`
 	HasMore          bool                  `json:"hasMore"`
+}
+
+// SearchProjectsByProductVersionRequest resolves which projects are running a
+// given product version — the reverse of SearchDeployedProductsRequest's own
+// DeploymentIDs filter, which starts from already-known deployments rather
+// than a product/version. Needed for EOL/product-version-targeted
+// announcements: there is no existing query path from "product X, version Y"
+// back to the projects running it. Supported on both data sources: Postgres
+// resolves it directly via deployed_product.project_id (migration 000014's
+// FK straight to project), ServiceNow via a platform-wide deployment scan
+// (see that data source's own implementation).
+//
+// The result is always restricted to projects eligible for an announcement
+// at all (excluding Restricted/Suspended closure states and Cloud Support/
+// Cloud Evaluation Support subscriptions) — this is not a caller-supplied
+// filter. It mirrors the real ServiceNow flow this replaces ("DRY RUN -
+// Create [EOL] Product Announcements"), whose own first step applies this
+// exact same exclusion unconditionally, with no way for whoever triggers
+// the flow to opt out of it. See SearchProjectsByProductVersion's own doc
+// comment in the service layer for how it's applied.
+type SearchProjectsByProductVersionRequest struct {
+	Pagination       Pagination `json:"pagination"`
+	ProductID        string     `json:"productId"`
+	ProductVersionID string     `json:"productVersionId"`
+}
+
+// SearchProjectsByProductVersionResponse is the paginated result. Each
+// project is only {id, name} — the deployment-to-project join this resolves
+// from only ever carries that much. A caller needing key/account/tier for
+// display can resolve those separately per project id via
+// SearchProjectsRequest/GetProjectByID; enriching them here would require a
+// second, more expensive call per result.
+type SearchProjectsByProductVersionResponse struct {
+	Projects []EntityRef `json:"projects"`
+	Total    int         `json:"total"`
+	Limit    int         `json:"limit"`
+	Offset   int         `json:"offset"`
+	HasMore  bool        `json:"hasMore"`
 }
 
 // CreateDeployedProductRequest is the input for POST /deployed-products.
@@ -6375,6 +6499,41 @@ type SearchEventPublishFailuresResponse struct {
 	HasMore  bool                  `json:"hasMore"`
 }
 
+// SNWritebackFailure is the durable record of one failed best-effort
+// ServiceNow mirror write under DATA_SOURCE=postgres-primary-sn-fallback
+// (see config.DataSourcePostgresPrimarySNFallback and
+// service.SNWritebackDispatcher). Postgres has already committed by the
+// time this is written — this table exists purely so an operator can see,
+// and manually replay, exactly what ServiceNow is missing before treating
+// it as a live rollback target. No retry logic reads this table today; it
+// is triage bookkeeping, the same role EventPublishFailure plays for Event
+// Hub.
+//
+// Like EventPublishFailure, this has no ServiceNow equivalent and is always
+// backed by Postgres regardless of DATA_SOURCE (see internal/db/postgres.go).
+type SNWritebackFailure struct {
+	ID         string          `json:"id"`
+	EntityType string          `json:"entityType"`
+	EntityID   string          `json:"entityId"`
+	Operation  string          `json:"operation"`
+	Payload    json.RawMessage `json:"payload"`
+	// Error is the writeFn-returned reason the ServiceNow mirror write
+	// failed (e.g. a timeout or a downstream error message) — for a human
+	// triaging this table, not machine-parsed by anything.
+	Error     string    `json:"error"`
+	CreatedOn time.Time `json:"createdOn"`
+}
+
+// CreateSNWritebackFailureRequest is the input to
+// SNWritebackFailureRepository.Create.
+type CreateSNWritebackFailureRequest struct {
+	EntityType string          `json:"entityType"`
+	EntityID   string          `json:"entityId"`
+	Operation  string          `json:"operation"`
+	Payload    json.RawMessage `json:"payload"`
+	Error      string          `json:"error"`
+}
+
 // SLAClock is the durable record of one SLA timer running against a case —
 // e.g. a "response" or "resolution" clock started when the case was created
 // (or last had its severity change reset it), due at a fixed point, with up
@@ -6837,7 +6996,7 @@ type LookupAlertIncidentMappingsRequest struct {
 
 // LookupAlertIncidentMappingsResponse is the response body for
 // POST /alert-incident-mappings/lookup. Mappings is most-recent-first
-// (ORDER BY created_at DESC) and empty (never null) when nothing matches —
+// (ORDER BY created_on DESC) and empty (never null) when nothing matches —
 // absence is a valid result for a lookup, not a 404.
 type LookupAlertIncidentMappingsResponse struct {
 	Mappings []AlertIncidentMappingView `json:"mappings"`

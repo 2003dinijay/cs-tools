@@ -942,7 +942,7 @@ changed.
   empty — nothing has asked for it on that path, this only wires up the
   search filter.
 - **Case activities** (`CaseRepository.SearchCaseActivities`): merges
-  `comment` and complete `case_attachments` rows into one newest-first feed
+  `comment` and complete `case_attachment` rows into one newest-first feed
   via a `UNION ALL` CTE — was previously an unconditional
   `ServiceUnavailableError` stub. There is no field-change audit table in
   this schema, so `req.IncludeFieldChanges` has no effect on this data
@@ -1277,19 +1277,100 @@ unchanged -- that one's already documented as "(ServiceNow data source
 only)", a deliberate scope boundary, not a bug. Verified by paging through
 all 1956 projects (every NULL row included) with no error afterward.
 
-## CreateCase is still completely broken for the Postgres data source (deliberately, pending a product decision)
+## CreateCase and case numbers (Postgres data source)
 
-Re-confirmed still true, verified live (`ERROR: relation "cases" does not
-exist (SQLSTATE 42P01)`) -- see `case_repo.go`'s own doc comment on
-`CreateCase` and "Fixing the plural/singular table-name mismatch" above for
-the full history. Restated here because it's easy to mistake for "just needs
-a table rename" (the same class of bug every other method in this file had):
-fixing the table/column names alone would only trade this error for a `NOT
-NULL`/unique-constraint failure, because `work_item.number`/`wso2_id` have no
-DB default, no backing sequence anywhere in `migrations/`, and no confirmed
-intended format. **Do not guess a fix here** -- the product decision (DB
-sequence + column default vs. Go-side generation with retry-on-conflict, and
-the actual number format) has been deferred twice now, not overlooked.
+**Table names are fixed.** `caseRepo.CreateCase` used to `INSERT INTO cases`, a
+table that does not exist (staging has no plural entity tables: it is `work_item`
+plus the `"case"` extension). It now writes a `work_item` row (type `CASE`) and a
+`"case"` row in one transaction; a failure on the second insert leaves no
+`work_item` row. Following the synced data, `work_item.created_by` holds the
+creator's **email** (6,995 of 8,066 staging cases), so it is taken from the
+`"user"` row of `req.CreatedBy` (a user id, also stored as `opened_by_user_id`);
+an unknown creator is a validation error. Verified against the real schema with
+`PREPARE` on staging and end to end on a local database built from all
+migrations.
+
+**Still not usable, deliberately:** nothing generates `work_item.number`
+(NOT NULL, unique) or `wso2_id`, so the insert is refused and the repository
+returns `ServiceUnavailableError` ("case numbers are not generated") rather than
+an opaque 500. Do not guess these -- the decision (a DB sequence + default vs
+Go-side generation) is still open. What the data says, for whoever decides:
+- `number` is `CS` + 7 digits in **one series shared by every work-item type**
+  (cases, service requests, engagements, security reports, announcements), max
+  `CS0442200` when checked. ServiceNow allocated them and the sync is still
+  running, so a locally generated number can collide with a synced one. The
+  leftover `cases_number_seq`/`cases_wso2_id_seq` sequences (both 63) are not
+  attached to any column.
+- `wso2_id` is `<project key>-<per-project counter>` (prefix equals
+  `project.key` for 1,101 of 1,233 linked cases; the rest are renamed or
+  malformed keys) and the counters have gaps.
+- The migrations define a `work_item_wso2_id_required_by_type` CHECK (a case-like
+  type needs a `wso2_id`) that **staging does not have** -- staging's schema is
+  built by the sync service's own migration list, which differs from this
+  directory (see "Staging schema drift" below).
+
+## Staging schema drift
+
+Staging's schema is not built from this directory. The sync service records its
+own list in `csm_sync_applied_migration` (`0001_control_plane.sql` ..
+`0076_add_sf_id_columns.sql`), numbered differently from `migrations/`. Diffed
+column by column (a local database built from every migration here vs staging,
+68 shared tables) when checked:
+
+- **Tables only in `migrations/`, absent from staging:** `alert_incident_mapping`
+  (000014), `case_attachment` (000043/000044), `announcement_requests` (000077),
+  `onboarding_step` (000075). Queries on them fail in staging with "relation does
+  not exist"; none of it is a naming problem, the tables were simply never created.
+- **Columns renamed in staging** (the code used the old names and failed with
+  "column does not exist"): `deployment_node.subscription_key` -> `project_key`,
+  `deployment_node.deployment_ref` -> `deployment_number`,
+  `deployment_information.number_of_cores` -> `core_count`,
+  `deployment_information.reported_created_on/reported_updated_on` ->
+  `payload_created_on/payload_updated_on`, `daily_usage_summary.deployment_ref` ->
+  `deployment_number`. The `deployment_*` rename is a change of meaning, not just
+  of spelling: the value is a deployment **number** (`DEP000002442`), never a UUID.
+- **Constraints:** the `work_item_wso2_id_required_by_type` CHECK exists in the
+  migrations but not in staging.
+
+Check the live schema, not just the migrations, before assuming a table, column or
+constraint exists. `sf_id` on `user`/`account_contact`/`project_contact` and
+`project.number`/`license_secrets`/`primary_secret_key`/`secondary_secret_key`
+used to be on the "only in staging" list above; migrations 000075-000077 added
+them here too (schema only -- see the next section for why no Go code changed).
+
+## project.number, the three sf_id columns, and project's secret fields have no Go code yet, deliberately
+
+Migrations 000075-000077 add `project.primary_secret_key`/`secondary_secret_key`/
+`license_secrets`, `sf_id` on `account_contact`/`project_contact`/`"user"`, and
+`project.number` -- schema only, no repository/service/handler/route wiring, and
+that gap was checked deliberately rather than left as an oversight:
+
+- **`project.number` mirrors `account.number`'s own precedent, including the
+  "never read back" part.** `account.number` is written by `UpsertFromSalesforce`
+  (`account_repo.go`) but not selected by any query, not on `AccountRow`, and not
+  on `AccountView`/`AccountDetail` -- it exists purely so the Salesforce upsert has
+  somewhere to put the value. `project.number`'s own migration comment says it
+  follows that exact precedent, so it stays unexposed the same way until something
+  needs it.
+- **No code in this repo writes `project`, `account_contact`, `project_contact` or
+  `"user"` rows at all** (confirmed: no `INSERT`/`UPDATE` against any of the four
+  outside `UpsertFromSalesforce`, which only touches `account`). The real-time
+  Salesforce sync only handles `Customer`/`account` events
+  (`salesforce_event_service.go`, `internal/salesentity`) -- there is no
+  project/contact/user event handler to extend, so the three new `sf_id` columns
+  have no producer yet. The migration's own comment says as much for `"user"`: "has
+  no mapping populating it yet."
+- **`AccountContact`/`ProjectContact` expose no row-level identifier at all today**
+  (`ProjectContact.ID` is the linked *user's* id, not `project_contact.id`) --
+  contacts are always nested search results, never fetched by their own id, so
+  there is no existing shape to add `sfId` to without inventing one.
+- **The three secret columns hold credential material.** Nothing in this API
+  exposes a secret today, and adding one without being asked would be a real
+  security decision, not a schema follow-up -- left alone entirely.
+- **The `work_item_activity.updated_on`/`updated_by` columns these migrations also
+  drop are not selected anywhere** (`case_repo.go`/`incident_repo.go` only read
+  `id`/`created_on`/`user_email`/`field_name`/`old_value`/`new_value`), so removing
+  them needed no code change either.
 
 ## GetCaseByID's CloseNotes was silently swapped with ResolutionNotes
 
@@ -1444,7 +1525,7 @@ whichever `EscalationService` it's given -- no changes needed there at all.
 **Not yet verifiable against real data**: `case_escalation`/
 `case_escalation_notification_list`'s migration hasn't actually been
 applied to the staging database this was checked against (same gap as
-`case_attachments`/`alert_incident_mapping`/`work_item_tag` -- see the
+`case_attachment`/`alert_incident_mapping`/`work_item_tag` -- see the
 "Fixing wso2_id" section's own note on checking directly against the
 database rather than trusting a migration file's presence in this repo).
 The code matches the migration's schema definition exactly; it just
@@ -1599,7 +1680,7 @@ real, direct column. `madeSla`/`slaViolated` on Incident map to
 (`case_repo.go`) -- an activity feed entry (comment or field change) is not
 inherently case-specific, and `comment`/`work_item_activity` are both keyed
 by the generic `work_item_id`. Unlike `SearchCaseActivities`, there is no
-`case_attachments`-equivalent table for incidents, so this feed can never
+`case_attachment`-equivalent table for incidents, so this feed can never
 have an `"attachment"` kind entry.
 
 **`UpdateConversation` is implemented** (a plain `conversation.state` enum
@@ -1638,7 +1719,7 @@ change, not because either is infeasible.
 actually an incident/case-like work item before reading its activity
 feed** (`EXISTS (SELECT 1 FROM incident WHERE id = $1)` and the
 `caseLikeWorkItemTypes`-filtered equivalent respectively) -- found as a
-real IDOR during review: `comment`/`case_attachments`/`work_item_activity`
+real IDOR during review: `comment`/`case_attachment`/`work_item_activity`
 are all keyed by the generic `work_item_id` with no type filter of their
 own, so without this check a caller could pass any other work item's UUID
 (a change request, a different case, ...) through either endpoint and read
@@ -1706,37 +1787,48 @@ unconditional `ServiceUnavailableError` stubs).
 
 **"Instance" is `deployment_node`.** `Instance.Key` is `node_id`;
 `Instance.Metadata` comes from that node's latest `deployment_information`
-row (by `reported_updated_on`). `CoreCount` is parsed from
-`number_of_cores`, a free-text `VARCHAR` upstream (e.g. `"8 (4 physical)"`)
--- `parseCoreCount` only accepts a clean integer and returns `nil` otherwise,
-rather than guessing at a partial number. `Updates` has no backing column on
-`deployment_information` at all (`deployed_product.update_level_info` is a
-different, per-deployed-product concept, not per-node) and is always `nil`.
+row (by `payload_updated_on`). `CoreCount` is `deployment_information.core_count`,
+a real integer column (an earlier revision parsed a free-text `number_of_cores`).
+`Updates` has no backing column on `deployment_information` at all
+(`deployed_product.update_level_info` is a different, per-deployed-product
+concept, not per-node) and is always `nil`.
 
-**Project/Deployment/DeployedProduct references are a best-effort join,
-UNVERIFIED against real data.** `deployment_node.product_version_id` is a
-real foreign key, so the `Product` reference is always reliable. But
-`deployment_node` has **no** foreign key to `deployment` or
-`deployed_product` at all -- only a free-text `deployment_ref VARCHAR(128)`,
-and the migration's own comment admits "node identity is not consistent
-upstream." `instanceRefJoins` (`instance_repo.go`) casts `deployment_ref` to
-`uuid` and matches it against `deployment.id`, guarded by a regex so a
-non-UUID value degrades to "no match" instead of a cast error; `DeployedProduct`
-additionally requires `deployed_product.version_id` to match the same
-product_version, since `deployment_id` alone doesn't uniquely identify one.
-**This assumption could not be checked against live data**: migration 000054
-has not actually been applied to the staging database this was developed
-against (same gap as `case_attachments`/`case_escalation` before it -- every
-one of these 7 tables returns "relation does not exist" there today). If
-`deployment_ref` turns out to hold something other than a deployment UUID
-(a ServiceNow sys_id, a deployment number, ...) once real rows exist, every
-project/deployment/deployed-product-filtered instance query will simply
-return empty results rather than wrong ones (the regex guard prevents a
-cast error), but the join itself needs re-deriving from real data before
-trusting it. The same resolution (product_version_id + deployment_ref) is
-reused by `deployed_product_repo.go`'s `resolveDeployedProductNodes` to
-answer "which instances belong to this deployed product" for the two
-`/deployed-products/{id}/metrics*` endpoints.
+**Column names follow staging, not `migrations/`.** Staging's schema is built by
+the sync service, and it renamed columns this code was written against:
+`deployment_node.subscription_key` -> `project_key`, `deployment_node.deployment_ref`
+-> `deployment_number`, `deployment_information.number_of_cores` -> `core_count`
+and `reported_created_on/reported_updated_on` -> `payload_created_on/
+payload_updated_on`, `daily_usage_summary.deployment_ref` -> `deployment_number`.
+Migration 000054 still uses the old names. With the old names `SearchInstances`,
+`SearchInstanceMetrics` and `SearchInstanceUsage` failed on staging with "column
+does not exist". Check the live schema before trusting the migrations.
+
+**Project/Deployment/DeployedProduct references, verified against staging.**
+`deployment_node.product_version_id` is a real foreign key, so `Product` is
+always reliable. `deployment_node` has no foreign key to project, deployment or
+deployed_product, only two free-text columns copied from the reported payload,
+and `instanceRefJoins` (`instance_repo.go`) uses them like this:
+- `project_key` -> `project.key` (unique, present on every node), so a node's
+  Project never depends on its deployment resolving.
+- `deployment_number` -> `deployment.number` (unique) **only if that deployment
+  belongs to the node's own project.** The reported value is not always a
+  deployment number: staging has a sys_id-like hex string and a bare `"320"` that
+  equals the number of a deployment in a *different* project, so matching the
+  number alone would attach those nodes to the wrong project. Requiring the
+  project to agree leaves them unresolved (Deployment/DeployedProduct nil, Project
+  still set). The old code cast `deployment_ref` to a UUID, but the value is a
+  deployment number, never a UUID, so that join could not match anything.
+- `DeployedProduct` additionally requires `deployed_product.version_id` to match
+  the node's product_version, since `deployment_id` alone doesn't uniquely
+  identify one.
+
+Checked against staging's 16 nodes: 14 resolve to a project, 11 to a deployment,
+none to a deployment of another project, and filtering by project or deployment
+matches independent SQL counts. The same resolution is reused by
+`deployed_product_repo.go`'s `resolveDeployedProductNodes` for the two
+`/deployed-products/{id}/metrics*` endpoints. **Data gap:** no
+`deployment_information.node_id` matches any `deployment_node.node_id` in staging
+(the former are sys_ids and `TEST2`/`TEST3`), so no instance has `Metadata` there.
 
 **Metrics vs. usage vs. usage-stats read three different tables, not one,
 because only one of them carries what each endpoint needs:**
@@ -2100,9 +2192,18 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   nullable); `assignee` <- the `"user"` display name (falling back to email);
   `notes` <- `all_notes`; `meetingLink` <- `call_link`;
   `scheduleTime` <- `scheduled_on`; `durationMin` <- `duration` (INTERVAL).
-- **ASSUMPTION**: `preferredTimes` <- `final_times` (JSONB), read only if it is
-  a JSON array of strings, otherwise `[]` -- the column name doesn't say which
-  side's times it holds and its real contents weren't seen.
+- `preferredTimes` <- `final_times` (JSONB). Checked against 393 synced staging
+  rows: the shape is an array of **objects**, `{"time": "...", "index": 0}`
+  (sometimes with extra `state`/`datetime`/`user` keys), not strings, and the
+  times come in two spellings (`MM/DD/YYYY HH:MM:SS` 324, `YYYY-MM-DD
+  HH:MM:SS` 168), both UTC (`scheduled_on` equals the first time as a UTC
+  instant). `decodeFinalTimes` reads objects ordered by `index` and, for rows
+  this service wrote, plain strings; it returns RFC3339 UTC and **skips** any
+  element that is not a time -- six synced "times" are actually ServiceNow
+  script error text (`Error: Missing parameters (localTime or timezone).`).
+  Note this service *writes* a plain string array, so one column holds two
+  shapes; the reader handles both, but whether the sync reads written rows back
+  is unknown.
 - **ASSUMPTION**: `actualDurationMin` <- `actual_call_duration` (free VARCHAR),
   parsed as a whole number of minutes (what this service writes); any other
   format reads as `nil`.
@@ -2151,11 +2252,37 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
 
 ## Case search filters on the Postgres data source
 
-`caseRepo.SearchCases` implements `projectOnboardingStatus` (in/notIn) and
-`taskSLABusinessElapsedPercent` (gte/lte). The rest of the ServiceNow-shaped
-filters are still rejected with a 400 by `caseService.SearchCases` (`tag`,
-`escalationLevel`, `anyOf`, `product`, `projectType`, `creTeam`/`sreTeam`, ...)
-because dropping one would silently widen the result set.
+`caseRepo.SearchCases` implements `tag`, `projectOnboardingStatus` (in/notIn),
+`taskSLABusinessElapsedPercent` (gte/lte), `escalationLevel`, `escalation`
+(isEmpty/isNotEmpty) and `anyOf`. The rest of the ServiceNow-shaped filters are
+still rejected with a 400 by `caseService.SearchCases` (`product`, `projectType`,
+`creTeam`/`sreTeam`, `slaBreached`, `accountEscalationActive`, ...) because
+dropping one would silently widen the result set. `creTeam`/`sreTeam` and
+call-request `assignmentTeamIds` are blocked on data, not schema: the group
+columns exist but staging's `group` table was empty (the sync has no job for the
+full group source) so every group FK is NULL.
+
+- **One builder for top-level fields and `anyOf` branches.** `caseFieldPredicates`
+  (`case_field_predicates.go`) turns a `caseFieldSet` into SQL for type, project,
+  deployment, assignee, state, severity, issue type, engagement type, work state,
+  escalation level and tags. The top-level search and each `anyOf` branch both use
+  it, so a fix in one cannot miss the other (the state bug below is what happens
+  otherwise). Only the ServiceNow adapter used to parse `anyOf` into
+  `Parsed.OrGroups`; `caseService.SearchCases` now does too and runs the same value
+  validation (`validateCaseFieldValues`) on each branch. A branch is the AND of its
+  fields, branches are OR'd, and the whole is ANDed with the top-level filters.
+- **escalationLevel** matches `"case".current_escalation_level` ("0".."5" ->
+  `EL0`..`EL5`; anything else is a 400), the value the case detail already shows.
+  **escalation** matches `"case".is_escalated`. The `case_escalation` table is an
+  event *history* (several rows per case) and often disagrees with the case's
+  current level, so it is deliberately not used.
+- **projectId notIn** filtered on `c.project_id`, but `"case"` has no such column
+  (it is `work_item.project_id`), so every such search failed with "column
+  c.project_id does not exist". Fixed, and a case with no project now satisfies
+  notIn.
+- **tag**: `EXISTS`/`NOT EXISTS` over `work_item_tag` joined to `tag`, names
+  compared case-insensitively (as `AddCaseTag` looks tags up). `in` = carries any
+  of the names; `notIn` = carries none (an untagged case satisfies it).
 
 - **onboarding status**: matched against `project.onboarding_status` through the
   existing LEFT JOIN. The wire vocabulary is ServiceNow's ("Not-Applicable",
@@ -2168,12 +2295,21 @@ because dropping one would silently widen the result set.
   (the `domain.TaskSLAFilter` contract). Checked against staging: restricting to
   in-progress SLAs changed a 1,652-case result to 1,634, so the choice barely
   matters on real data.
-- **Data caveats (staging, when checked)**: 6,833 of 8,055 `CASE` work items
+- **Data caveats (staging, when checked)**: one case has `current_escalation_level`
+  EL4 but `is_escalated` false, so "escalated at level 4" returns 0 although a
+  level-4 case exists. Also 6,833 of 8,055 `CASE` work items
   have a NULL `project_id` (mostly 2023-2024 cases; `deployment` doesn't carry
   the project either), so project-based filters only ever see the remaining
-  ~15% -- a sync gap, not a query bug. The `work_item_tag` table from migration
-  000021 did not exist in staging (the `tag` table did), which is why `tag`
-  filtering is not implemented here and why add/remove-case-tag would fail there.
+  ~15% -- a sync gap, not a query bug. `work_item_tag` now exists in staging but
+  held only 107 links (30 on cases) against 2,624 tags, so tag results are sparse
+  until the label sync catches up.
+- **`work_item.type` disagrees with the extension row** for some staging rows:
+  41 `CASE` work items carry an `announcement` row (all `OPEN`) and 1 carries a
+  `service_request` row; 156 `CASE` and 39 `SERVICE_REQUEST` work items have no
+  extension row at all, so they have no state and never match a state filter.
+  Search selects by `work_item.type` and reads the state from whichever extension
+  row exists, so those 41 count as `case` + `open`.
+
 ## Announcement requests
 
 `announcement_requests` (migration `000040`, `internal/domain/entity.go`'s
@@ -2246,6 +2382,64 @@ only records that publishing happened, by whom, and when. The actual fan-out
 from before this entity existed; there is deliberately no persisted
 per-project delivery ledger here either — that belongs to a future batch
 entity, not this one.
+
+## POST /users/search sortBy on the Postgres data source
+
+`userService.SearchUsers` used to reject any `sortBy` on Postgres ("only supported
+for the ServiceNow data source") even though the OpenAPI contract advertises
+`name`/`createdOn`/`updatedOn` and the CSM users page always sends `name`/`asc`,
+so that page's search 400'd. It now validates the field/order the same way the
+ServiceNow adapter does (`validUserSortField`/`validUserSortOrder`) and
+`userOrderBy` maps them to fixed SQL expressions (never request text). `name`
+orders on `LOWER(COALESCE(NULLIF(name,''), first + last, user_name))` because
+`"user".name` is empty for a few synced rows (5 of 2,937 in staging); `u.id` is
+always the last tie-break so pages are stable. No `sortBy` keeps newest-first.
+
+## POST /users/search returns each user's roles (Postgres data source)
+
+The Postgres `User` had no roles, so the CSM users page showed none even though
+`user_role` holds them (2,803 of 2,937 staging users have at least one).
+`userRepo.SearchUsers` now calls `attachRoles`, which reads the roles for the
+whole page in **one** query (`user_role` joined to `role`), not one per user, and
+`domain.User.Roles` is always non-nil (`[]` when none) in a search result. Other
+lookups (`GetUserByEmail`) leave it nil. Two things worth knowing:
+- `user_role` has **no unique constraint** on `(user_id, role_id)` and staging holds
+  113 duplicated pairs (111 users), so the queries use `DISTINCT`; without it a
+  user would show `["admin", "admin"]`. `GetUserRoles` (used by `GET /users/me`)
+  got the same `DISTINCT`.
+- The CSM webapp used to decide "ServiceNow user or not" by whether `roles` was
+  present, so adding it here flips a postgres user into the ServiceNow branch and
+  blanks the name unless the webapp is updated. Ship the webapp change first or
+  together (`csmUsers.ts`'s `isSnUser` no longer looks at `roles`).
+- `GET /users/{id}` (the profile page) is registered only for the ServiceNow data
+  source; it is not available on Postgres at all.
+
+## GET /users/{id} on the Postgres data source
+
+The route was registered only for ServiceNow, so opening a user in the CSM portal
+on Postgres said "The requested resource was not found." It now returns
+`domain.UserDetail`: the user (display name, `active`, type), `roles` (DISTINCT, see
+above), `groups` (the teams from `team_member`, from which the BFF derives the
+profile's team block) and, for customers only (`user_type` EXTERNAL, emitted as
+`customer`), `projectAccess`.
+
+- **It is a dedicated type, not `SNUserDetail`.** That type always sends `lockedOut`,
+  `timeZone` and per-project `notificationsEnabled`, none of which this schema stores,
+  and the page shows a "Locked out: No" chip whenever `lockedOut` is present, so
+  reusing it would assert something unknowable. Those fields are omitted.
+- **`projectAccess`** is one row per `project_contact` invited under the user's email:
+  `contactEmail` is the row's email, `contactRecordPresent` is `account_contact_id IS NOT
+  NULL`, `contactRecordEmail` is the linked `account_contact.user_name` (it differs from
+  the invited email on 20 of 357 staging rows), `registrationState` is the row's state, and
+  `roles` come through `project_contact_group -> project_group_role -> project_role`
+  (PORTAL_USER, SECURITY_CONTACT, LEAD_USER, BUSINESS_CONTACT).
+- **`grantsCaseAccess` is exactly the rule `AccessService` enforces**: the contact is
+  `REGISTERED` (`registeredContactState` in `access_repo.go`, shared by both). The
+  ServiceNow version also required the linked contact's email to match; this data source
+  does not, so reporting that here would describe a rule that is not applied.
+- Enrichment failures are errors, not silently partial profiles (the ServiceNow adapter
+  degrades to empty blocks; a database error here is a real fault).
+- Like the other user routes this does no per-caller scoping; the BFF gates it.
 
 ## Adding a new entity
 
@@ -2342,6 +2536,8 @@ Key conventions enforced at the DB level:
 - Human-readable IDs (e.g. `CASE-001`, `WSO2-001`) are generated from dedicated sequences via column defaults
 - Enum types (e.g. `case_state_enum`, `case_priority_enum`) enforce valid values at the DB level; Go enum validation in the service layer is an additional guard
 - Triggers enforce relational constraints that foreign keys alone cannot express (e.g. deployment must belong to the same project as the case)
+- **Table names are always singular** (`case`, `user`, `comment`, `product_vulnerability`, `case_attachment`, ...), never plural (`cases`, `users`, `case_attachments`). A plural name (`case_attachments`) has been introduced by mistake before and had to be renamed later — check this before adding a new `CREATE TABLE`.
+- **Timestamp columns always use the `_on` suffix** (`created_on`, `updated_on`, `resolved_on`, `started_on`, `due_on`, ...), never `_at` (`created_at`, `updated_at`). This mirrors the JSON `On`-suffix convention under "Domain types" below — the DB column and the wire field should read the same way. Several migrations (`alert_incident_mapping`, `event_publish_failures`, `sla_clocks`, `case_attachment`, `scheduled_task_run`, `sn_writeback_failures`, `announcement_requests`) used `_at` before being fixed — check this before adding a new `TIMESTAMPTZ` column.
 
 ## OpenAPI spec
 

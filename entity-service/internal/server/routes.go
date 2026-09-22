@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/eventbus"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/github"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/handler"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -109,9 +111,61 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// reasoning as sla_clocks/event_publish_failures above. Backs
 	// operations/csm-scheduled-tasks; see that component's own CLAUDE.md
 	// and this service's CLAUDE.md ("Scheduled task runs").
+	// The GitHub change-request sync needs a pool (the repository mapping and
+	// the delivery log are tables) and its own switch. Gated on both, so the
+	// webhook endpoint is not registered merely because a database exists --
+	// it authenticates by HMAC rather than by bearer token, and an endpoint
+	// that mutates change requests should appear only when asked for.
+	var githubWebhookHandler *handler.GithubWebhookHandler
+
+	// Assigned inside the GitHub-integration block below and read further down,
+	// where activeCaseSvc finally exists, to build the native issue-filing
+	// service. Both halves of the sync then share one client and one mapping
+	// table.
+	var (
+		githubSyncRepo repository.GithubSyncRepository
+		githubClient   *github.Client
+		githubLabelSet service.GithubLabels
+	)
 	var scheduledTaskRunHandler *handler.ScheduledTaskRunHandler
 	if db != nil {
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
+		if cfg.HasGithubIntegration() {
+			githubLabels, labelErr := service.NewGithubLabels(service.GithubLabelOverrides{
+				ChangeRequest:    cfg.GithubLabelChangeRequest,
+				TypePrefix:       cfg.GithubLabelTypePrefix,
+				ScopePrefix:      cfg.GithubLabelScopePrefix,
+				ScopeToType:      cfg.GithubLabelsScope,
+				Impact:           cfg.GithubLabelsImpact,
+				Likelihood:       cfg.GithubLabelsLikelihood,
+				State:            cfg.GithubLabelsState,
+				StrippedOnCreate: cfg.GithubLabelsStrippedOnCreate,
+			})
+			if labelErr != nil {
+				// A label override that does not parse would leave the sync
+				// silently recognising nothing -- the exact failure that took
+				// ServiceNow's integration down. Refuse to start instead.
+				log.Fatalf("invalid GitHub label configuration: %v", labelErr)
+			}
+			// The outbound worker is started by cmd/api, which owns process
+			// lifetime; routes.go only builds what the HTTP surface needs.
+			githubSyncRepo = repository.NewGithubSyncRepository(db)
+			githubClient = github.NewClient(github.Config{
+				BaseURL: cfg.GithubBaseURL,
+				Token:   cfg.GithubToken,
+			})
+			githubLabelSet = githubLabels
+			githubWebhookHandler = handler.NewGithubWebhookHandler(
+				service.NewGithubSyncServiceWriting(
+					githubSyncRepo,
+					repository.NewGithubMutationRepository(db),
+					githubClient,
+					cfg.GithubIntegrationLogin,
+					githubLabels,
+				),
+				cfg.GithubWebhookSecret,
+			)
+		}
 	}
 
 	// alert_incident_mapping has no ServiceNow equivalent either — same
@@ -168,8 +222,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		onboardingStepHandler = handler.NewOnboardingStepHandler(service.NewOnboardingStepService(repository.NewOnboardingStepRepository(db)))
 	}
 
+	// Also constructed for DataSourcePostgresPrimarySNFallback: that mode's
+	// active services stay Postgres-backed (see the case wiring below), but
+	// its best-effort ServiceNow mirror writes still need this client.
+	// config.Validate requires the same four credentials for both modes.
 	var serviceNowIntegrationServiceClient *integrationservice.Client
-	if cfg.DataSource == config.DataSourceServiceNow {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresPrimarySNFallback {
 		serviceNowIntegrationServiceClient = integrationservice.New(cfg.ServiceNowIntegrationServiceBaseURL, integrationservice.ClientCredentialsConfig{
 			TokenURL:     cfg.ServiceNowIntegrationServiceTokenURL,
 			ClientID:     cfg.ServiceNowIntegrationServiceClientID,
@@ -289,7 +347,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	deployedProductRepo := repository.NewDeployedProductRepository(db)
 	var activeDeployedProductSvc service.DeployedProductService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		activeDeployedProductSvc = service.NewServiceNowDeployedProductService(serviceNowIntegrationServiceClient)
+		activeDeployedProductSvc = service.NewServiceNowDeployedProductService(serviceNowIntegrationServiceClient, activeDeploymentSvc, activeProjectSvc)
 	} else {
 		activeDeployedProductSvc = service.NewDeployedProductService(deployedProductRepo)
 	}
@@ -299,20 +357,96 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// NewServiceNowCaseService can also take it — see that constructor's
 	// own doc comment for what it uses it for (a direct, in-process role
 	// lookup backing applyResponseSLAOnComment, not routed through HTTP).
+	// Also constructed for DataSourcePostgresPrimarySNFallback, for the same
+	// reason serviceNowIntegrationServiceClient above is: the case pilot's
+	// SN-mirror snCaseService instance below needs it too.
 	var snUserService service.SNUserService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresPrimarySNFallback {
 		snUserService = service.NewServiceNowUserService(serviceNowIntegrationServiceClient)
 	}
 
 	caseRepo := repository.NewCaseRepository(db)
-	pgCaseSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
 	var activeCaseSvc service.CaseService
-	if cfg.DataSource == config.DataSourceServiceNow {
-		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseSvc, eventPublisher, slaClockService, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
-	} else {
-		activeCaseSvc = pgCaseSvc
+	// caseAttachmentOverrideSvc, when non-nil, is the CaseService case
+	// attachment routes (registered further below) use INSTEAD of
+	// activeCaseSvc -- see its assignment in the DataSourcePostgresPrimarySNFallback
+	// case for why. nil in every other mode: attachments follow activeCaseSvc
+	// exactly as before this override existed.
+	var caseAttachmentOverrideSvc service.CaseService
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
+		pgCaseFallbackSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
+		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseFallbackSvc, eventPublisher, slaClockService, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
+	case config.DataSourcePostgresPrimarySNFallback:
+		// Pilot: case CREATE, and UPDATE's WorkState field only.
+		//
+		// CREATE is ServiceNow-first and synchronous — see
+		// caseService.createCaseSNFirst's own doc comment for the full
+		// reasoning (a Postgres-first async create could leave a permanent
+		// orphan: a Postgres row with no ServiceNow counterpart). This is
+		// also what finally makes case creation work on Postgres in this
+		// mode at all: CaseRepository.CreateCase's own doc comment explains
+		// why Postgres can't generate work_item.number/wso2_id itself (no
+		// sequence was ever added); CreateCaseFromServiceNow sidesteps that
+		// by using the identity ServiceNow already generated, rather than
+		// answering the still-unresolved question of what a Postgres-native
+		// case number would even look like. The plain (non-fallback)
+		// CreateCase path above (DataSourceServiceNow's pgCaseFallbackSvc,
+		// and DataSourcePostgres/default below) is UNCHANGED and still
+		// deliberately non-functional — this only unblocks the fallback
+		// mode's own path.
+		//
+		// UPDATE mirrors WorkState only, asynchronously, after Postgres —
+		// see caseService.UpdateCase's own doc comment for exactly what
+		// this mirrors and why (State/Severity mirroring needs
+		// snCaseService.UpdateCase refactored into a read-free PATCH-only
+		// helper first; deferred as separate, reviewed work against that
+		// live ServiceNow-mode-serving code).
+		//
+		// snCaseMirrorSvc is a full snCaseService, exactly as constructed
+		// for DataSourceServiceNow above, but it is never made the active
+		// CaseService — reads always stay on Postgres in this mode. It
+		// serves three purposes: CreateCase calls its CreateCase directly and
+		// synchronously; UpdateCase dispatches to its UpdateCase via
+		// caseWriteback, asynchronously; and it is caseAttachmentOverrideSvc
+		// below, for case attachments specifically.
+		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, nil, snUserService, cfg.SupportEngineerRole, cfg.CustomerRoles)
+		caseWriteback := service.NewSNWritebackDispatcher(repository.NewSNWritebackFailureRepository(db))
+		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, caseWriteback, snCaseMirrorSvc)
+		// Case ATTACHMENTS are ServiceNow-only in this mode, permanently —
+		// unlike case metadata (CREATE/UPDATE above), not a pilot scope
+		// decision but a hard requirement: the sftpgo-backed Postgres
+		// attachment implementation (case_attachment table,
+		// CaseRepository.CreateCaseAttachment et al. — real, working SQL,
+		// unlike the old CreateCase bug) is not production-ready for the
+		// Oct 4 go-live, so attachment routes must never reach it while this
+		// mode is active, regardless of how case metadata itself is wired.
+		// snCaseMirrorSvc (above) is reused as-is: every one of its
+		// attachment methods (CreateCaseAttachment/SearchCaseAttachments/
+		// GetCaseAttachmentContent/DeleteCaseAttachment/GetAttachmentByID/
+		// UpdateAttachment) already converts the platform case UUID to a
+		// ServiceNow sys_id via uuidToSysid internally, and that round-trips
+		// correctly because CreateCaseFromServiceNow (createCaseSNFirst)
+		// stores id = sysidToUUID(the real sys_id) for every case created in
+		// this mode — the same identity convention DataSource=servicenow
+		// itself relies on. ConfirmCaseAttachment correctly 503s here too,
+		// same as it already does in plain DataSource=servicenow — a
+		// pre-existing, expected gap (Postgres-only concept: ServiceNow's
+		// /attachments API has no pending/in-progress upload state to
+		// confirm), not something this override introduces.
+		caseAttachmentOverrideSvc = snCaseMirrorSvc
+	default:
+		activeCaseSvc = service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc)
+	// activeAttachmentSvc backs the case-attachment routes registered below
+	// (POST/GET/PATCH/DELETE /attachments...) — see caseAttachmentOverrideSvc's
+	// own doc comment above for when and why it differs from activeCaseSvc.
+	activeAttachmentSvc := activeCaseSvc
+	if caseAttachmentOverrideSvc != nil {
+		activeAttachmentSvc = caseAttachmentOverrideSvc
+	}
+	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc)
 
 	// customer_call (migration 000072) backs call requests on the Postgres
 	// data source, so these routes are registered for both data sources.
@@ -325,8 +459,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	callRequestHandler := handler.NewCallRequestHandler(activeCallRequestSvc)
 
+	// The native implementation when the GitHub integration is enabled,
+	// otherwise the ServiceNow proxy. Both are kept: cutover is per account,
+	// and an account still on ServiceNow must keep filing issues the old way.
 	var caseGithubIssueHandler *handler.CaseGithubIssueHandler
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch {
+	case githubClient != nil:
+		// Native: files the issue against GitHub and writes the issue number
+		// onto the case, which is what opens the outbound gate for it.
+		caseGithubIssueHandler = handler.NewCaseGithubIssueHandler(
+			service.NewCaseGithubIssueService(githubClient, githubSyncRepo, activeCaseSvc, githubLabelSet))
+	case cfg.DataSource == config.DataSourceServiceNow:
 		caseGithubIssueHandler = handler.NewCaseGithubIssueHandler(service.NewServiceNowCaseGithubIssueService(serviceNowIntegrationServiceClient, activeCaseSvc))
 	}
 
@@ -570,6 +713,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("GET /cases/{caseId}/sla-clocks/{clockType}", slaClockHandler.GetSLAClock)
 		mux.HandleFunc("PATCH /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}", slaClockHandler.SetSLAClockTierReached)
 	}
+	if githubWebhookHandler != nil {
+		mux.HandleFunc("POST /webhooks/github", githubWebhookHandler.Handle)
+	}
+
 	if scheduledTaskRunHandler != nil {
 		mux.HandleFunc("POST /scheduled-tasks/attempts", scheduledTaskRunHandler.AttemptScheduledTaskRun)
 		mux.HandleFunc("PATCH /scheduled-tasks/attempts/{id}", scheduledTaskRunHandler.UpdateScheduledTaskRunAttempt)
@@ -597,6 +744,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("PATCH /users/me", snUserHandler.PatchMe)
 		mux.HandleFunc("POST /users/search", snUserHandler.SearchUsers)
 	} else {
+		mux.HandleFunc("GET /users/{id}", userHandler.GetUser)
 		mux.HandleFunc("GET /users/me", userHandler.GetMe)
 		mux.HandleFunc("POST /users/search", userHandler.SearchUsers)
 	}
@@ -650,6 +798,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("PATCH /deployments/{id}", deploymentHandler.PatchDeployment)
 	mux.HandleFunc("POST /deployed-products", deployedProductHandler.CreateDeployedProduct)
 	mux.HandleFunc("POST /deployed-products/search", deployedProductHandler.SearchDeployedProducts)
+	mux.HandleFunc("POST /deployed-products/projects/search", deployedProductHandler.SearchProjectsByProductVersion)
 	mux.HandleFunc("PATCH /deployed-products/{id}", deployedProductHandler.PatchDeployedProduct)
 	mux.HandleFunc("POST /deployed-products/{id}/metrics/search", deployedProductHandler.SearchDeployedProductMetrics)
 	mux.HandleFunc("POST /deployed-products/{id}/metrics/usage-counts/search", deployedProductHandler.SearchDeployedProductUsageCounts)
@@ -665,13 +814,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("POST /cases/{id}/comments", caseHandler.CreateCaseComment)
 	mux.HandleFunc("POST /cases/{id}/comments/search", caseHandler.SearchCaseComments)
 	mux.HandleFunc("POST /cases/{id}/activities/search", caseHandler.SearchCaseActivities)
-	mux.HandleFunc("POST /attachments", caseHandler.CreateCaseAttachment)
-	mux.HandleFunc("POST /attachments/{id}/confirm", caseHandler.ConfirmCaseAttachment)
-	mux.HandleFunc("POST /attachments/search", caseHandler.SearchCaseAttachments)
-	mux.HandleFunc("GET /attachments/{id}/content", caseHandler.GetCaseAttachmentContent)
-	mux.HandleFunc("GET /attachments/{id}", caseHandler.GetAttachmentByID)
-	mux.HandleFunc("PATCH /attachments/{id}", caseHandler.UpdateAttachment)
-	mux.HandleFunc("DELETE /attachments/{id}", caseHandler.DeleteCaseAttachment)
+	mux.HandleFunc("POST /attachments", attachmentHandler.CreateCaseAttachment)
+	mux.HandleFunc("POST /attachments/{id}/confirm", attachmentHandler.ConfirmCaseAttachment)
+	mux.HandleFunc("POST /attachments/search", attachmentHandler.SearchCaseAttachments)
+	mux.HandleFunc("GET /attachments/{id}/content", attachmentHandler.GetCaseAttachmentContent)
+	mux.HandleFunc("GET /attachments/{id}", attachmentHandler.GetAttachmentByID)
+	mux.HandleFunc("PATCH /attachments/{id}", attachmentHandler.UpdateAttachment)
+	mux.HandleFunc("DELETE /attachments/{id}", attachmentHandler.DeleteCaseAttachment)
 	mux.HandleFunc("GET /cases/{id}/feedback", caseHandler.GetCaseFeedback)
 	mux.HandleFunc("POST /cases/{id}/feedback", caseHandler.SubmitCaseFeedback)
 	mux.HandleFunc("POST /cases/{id}/tags", caseHandler.AddCaseTag)

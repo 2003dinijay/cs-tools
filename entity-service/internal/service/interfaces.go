@@ -41,6 +41,11 @@ type UserService interface {
 	// is missing; a ValidationError when the token cannot be decoded; a
 	// NotFoundError when no user row matches the email.
 	GetMe(ctx context.Context) (domain.GetUserMeResponse, error)
+	// GetUser returns one user's profile: the user row, roles, groups, and for a
+	// customer the project-contact rows with whether each grants access. A
+	// ValidationError is returned for a malformed id and a NotFoundError when no
+	// user has it.
+	GetUser(ctx context.Context, id string) (domain.UserDetail, error)
 }
 
 // SNUserService defines the user operations backed by the ServiceNow data source.
@@ -246,7 +251,10 @@ type AnnouncementRequestService interface {
 	Approve(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error)
 	// MarkPublished moves approved -> published. Does not itself create any
 	// cases. A ConflictError is returned unless the current state is
-	// approved.
+	// approved. Unlike Approve, this IS restricted: a ForbiddenError is
+	// returned unless actorID matches the request's own CreatedBy -- an
+	// approver's job is only to approve, not to also trigger the real send
+	// to customers.
 	MarkPublished(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error)
 }
 
@@ -428,6 +436,12 @@ type DeployedProductService interface {
 	// optional deployment IDs. A ValidationError is returned for invalid input; any other
 	// error indicates an infrastructure failure.
 	SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) (domain.SearchDeployedProductsResponse, error)
+	// SearchProjectsByProductVersion returns the paginated, deduplicated set
+	// of projects running the given product version — the reverse of
+	// SearchDeployedProducts' own DeploymentIDs-scoped lookup. A
+	// ValidationError is returned for invalid input. Supported by the
+	// ServiceNow data source only.
+	SearchProjectsByProductVersion(ctx context.Context, req domain.SearchProjectsByProductVersionRequest) (domain.SearchProjectsByProductVersionResponse, error)
 	// CreateDeployedProduct creates a new deployed product in ServiceNow.
 	// Supported by the ServiceNow data source only.
 	CreateDeployedProduct(ctx context.Context, req domain.CreateDeployedProductRequest) (domain.CreateDeployedProductResponse, error)

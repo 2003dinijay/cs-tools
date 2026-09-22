@@ -34,6 +34,16 @@ const (
 	DataSourcePostgres DataSource = "postgres"
 	// DataSourceServiceNow uses the Choreo ServiceNow API.
 	DataSourceServiceNow DataSource = "servicenow"
+	// DataSourcePostgresPrimarySNFallback serves every read and write from
+	// PostgreSQL (authoritative, same as DataSourcePostgres) and additionally
+	// best-effort mirrors writes to ServiceNow afterward, so that ServiceNow
+	// stays a genuine rollback target rather than going silently stale ahead
+	// of the Postgres cutover. One-way (Postgres -> ServiceNow) and
+	// asynchronous: ServiceNow is never read from in this mode, never
+	// authoritative, and a failed mirror write is recorded (see
+	// SNWritebackFailureRepository) rather than retried or surfaced to the
+	// caller. Piloted on the account entity only — see routes.go.
+	DataSourcePostgresPrimarySNFallback DataSource = "postgres-primary-sn-fallback"
 )
 
 // Config holds all environment-driven settings for the service.
@@ -88,6 +98,42 @@ type Config struct {
 	// acknowledged and ignored, as before the branch existed. The Account
 	// branch is unaffected by this flag.
 	SalesforceMembershipIngestEnabled bool
+	// GithubIntegrationEnabled gates the GitHub change-request sync: the
+	// webhook endpoint and the client that answers it.
+	//
+	// OFF BY DEFAULT. The endpoint is reachable without a bearer token -- the
+	// HMAC signature is its authentication -- so it must not appear merely
+	// because a database happens to be configured.
+	GithubIntegrationEnabled bool
+	// GithubBaseURL is the API root: api.github.com, or an Enterprise host.
+	GithubBaseURL string
+	// GithubToken authenticates our calls out to GitHub.
+	GithubToken string
+	// GithubWebhookSecret is the HMAC key GitHub signs deliveries with. This
+	// IS the authentication on the webhook endpoint, so an empty value makes
+	// VerifySignature refuse everything rather than accept everything.
+	GithubWebhookSecret string
+	// GithubIntegrationLogin is our own GitHub account. Events it sent are our
+	// own writes coming back, and are dropped by identity rather than by
+	// pattern-matching the comment body.
+	GithubIntegrationLogin string
+	// GithubOutboundInterval is how often to drain the outbound queue when the
+	// last pass came back short. A backlog drains at full speed regardless.
+	GithubOutboundInterval time.Duration
+
+	// CSMPortalBaseURL builds the link back to a change request in comments
+	// posted to GitHub. Empty omits the link rather than rendering a broken one.
+	CSMPortalBaseURL string
+	// GitHub label vocabulary overrides. Empty keeps ServiceNow's value.
+	GithubLabelChangeRequest     string
+	GithubLabelTypePrefix        string
+	GithubLabelScopePrefix       string
+	GithubLabelsScope            string
+	GithubLabelsImpact           string
+	GithubLabelsLikelihood       string
+	GithubLabelsState            string
+	GithubLabelsStrippedOnCreate string
+
 	// CRNoticesEnabled turns on the change-request notice drainer: the poller
 	// that reads event_outbox and asks csm-notification-service to send the
 	// approval and plan-start-date mails.
@@ -203,6 +249,21 @@ func Load() *Config {
 		EventHubConnectionString:                 os.Getenv("EVENT_HUB_CONNECTION_STRING"),
 		EventHubTopic:                            os.Getenv("EVENT_HUB_TOPIC"),
 		EventPublishingEnabled:                   os.Getenv("EVENT_PUBLISHING_ENABLED") == "true",
+		GithubIntegrationEnabled:                 os.Getenv("GITHUB_INTEGRATION_ENABLED") == "true",
+		GithubBaseURL:                            getEnvOrDefault("GITHUB_API_BASE_URL", "https://api.github.com"),
+		GithubToken:                              os.Getenv("GITHUB_TOKEN"),
+		GithubWebhookSecret:                      os.Getenv("GITHUB_WEBHOOK_SECRET"),
+		GithubIntegrationLogin:                   os.Getenv("GITHUB_INTEGRATION_LOGIN"),
+		GithubOutboundInterval:                   envDuration("GITHUB_OUTBOUND_INTERVAL", 15*time.Second),
+		CSMPortalBaseURL:                         os.Getenv("CSM_PORTAL_BASE_URL"),
+		GithubLabelChangeRequest:                 os.Getenv("GITHUB_LABEL_CHANGE_REQUEST"),
+		GithubLabelTypePrefix:                    os.Getenv("GITHUB_LABEL_TYPE_PREFIX"),
+		GithubLabelScopePrefix:                   os.Getenv("GITHUB_LABEL_SCOPE_PREFIX"),
+		GithubLabelsScope:                        os.Getenv("GITHUB_LABELS_SCOPE"),
+		GithubLabelsImpact:                       os.Getenv("GITHUB_LABELS_IMPACT"),
+		GithubLabelsLikelihood:                   os.Getenv("GITHUB_LABELS_LIKELIHOOD"),
+		GithubLabelsState:                        os.Getenv("GITHUB_LABELS_STATE"),
+		GithubLabelsStrippedOnCreate:             os.Getenv("GITHUB_LABELS_STRIPPED_ON_CREATE"),
 		CRNoticesEnabled:                         os.Getenv("CR_NOTICES_ENABLED") == "true",
 		SalesforceMembershipIngestEnabled:        os.Getenv("SALESFORCE_MEMBERSHIP_INGEST_ENABLED") == "true",
 		CREventHubTopic:                          getEnvOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
@@ -246,6 +307,7 @@ func getEnvOrDefault(key, defaultVal string) string {
 // splitComma parses a comma-separated env var into a trimmed, non-empty
 // slice ("" for an unset/empty var, matching integrations/csm-notification-service's
 // own copy of this exact helper).
+
 func splitComma(s string) []string {
 	if s == "" {
 		return nil
@@ -310,19 +372,19 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.DataSource {
-	case DataSourcePostgres, DataSourceServiceNow:
+	case DataSourcePostgres, DataSourceServiceNow, DataSourcePostgresPrimarySNFallback:
 		// valid
 	default:
-		return fmt.Errorf("invalid DATA_SOURCE %q: must be %q or %q", c.DataSource, DataSourcePostgres, DataSourceServiceNow)
+		return fmt.Errorf("invalid DATA_SOURCE %q: must be %q, %q, or %q", c.DataSource, DataSourcePostgres, DataSourceServiceNow, DataSourcePostgresPrimarySNFallback)
 	}
-	// Postgres credentials are required only for DATA_SOURCE=postgres.
-	// servicenow mode skips the pool (db.NewPoolIfNeeded) so a local
-	// customer-portal can start without a reachable database. Side tables
-	// that have no ServiceNow equivalent are registered only when a pool
-	// is available — see routes.go.
-	//
-	// DB_USER/DB_PASSWORD/DB_NAME are required only when DATA_SOURCE=postgres,
-	// which serves every entity read and write from this pool.
+	// Postgres credentials are required for DATA_SOURCE=postgres and
+	// DATA_SOURCE=postgres-primary-sn-fallback — both serve every entity read
+	// and write from the pool (the fallback mode's ServiceNow leg is a
+	// best-effort mirror on top, never a read source). servicenow mode skips
+	// the pool (db.NewPoolIfNeeded) so a local customer-portal can start
+	// without a reachable database. Side tables that have no ServiceNow
+	// equivalent are registered only when a pool is available — see
+	// routes.go.
 	//
 	// When DATA_SOURCE=servicenow they are OPTIONAL. Entity traffic goes to
 	// the SN integration service instead, and the two Postgres-only features
@@ -333,15 +395,16 @@ func (c *Config) Validate() error {
 	// with "DB_USER is required", which is what this branch exists to prevent.
 	dbSet := c.DBUser != "" || c.DBPassword != "" || c.DBName != ""
 	dbComplete := c.DBUser != "" && c.DBPassword != "" && c.DBName != ""
+	dbRequired := c.DataSource == DataSourcePostgres || c.DataSource == DataSourcePostgresPrimarySNFallback
 
-	if c.DataSource == DataSourcePostgres && !dbComplete {
+	if dbRequired && !dbComplete {
 		if c.DBUser == "" {
-			return fmt.Errorf("DB_USER is required when DATA_SOURCE=%s", DataSourcePostgres)
+			return fmt.Errorf("DB_USER is required when DATA_SOURCE=%s", c.DataSource)
 		}
 		if c.DBPassword == "" {
-			return fmt.Errorf("DB_PASSWORD is required when DATA_SOURCE=%s", DataSourcePostgres)
+			return fmt.Errorf("DB_PASSWORD is required when DATA_SOURCE=%s", c.DataSource)
 		}
-		return fmt.Errorf("DB_NAME is required when DATA_SOURCE=%s", DataSourcePostgres)
+		return fmt.Errorf("DB_NAME is required when DATA_SOURCE=%s", c.DataSource)
 	}
 
 	// A partial set is always a misconfiguration, in either mode — the same
@@ -351,18 +414,23 @@ func (c *Config) Validate() error {
 	if dbSet && !dbComplete {
 		return fmt.Errorf("DB_USER, DB_PASSWORD, and DB_NAME must be set together or not at all")
 	}
-	if c.DataSource == DataSourceServiceNow {
+	// ServiceNow integration service credentials are required for
+	// DATA_SOURCE=servicenow (reads go there) and also for
+	// DATA_SOURCE=postgres-primary-sn-fallback (the best-effort mirror write
+	// goes there, via the same client — see SNWritebackDispatcher).
+	snRequired := c.DataSource == DataSourceServiceNow || c.DataSource == DataSourcePostgresPrimarySNFallback
+	if snRequired {
 		if c.ServiceNowIntegrationServiceBaseURL == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_BASE_URL is required when DATA_SOURCE=servicenow")
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_BASE_URL is required when DATA_SOURCE=%s", c.DataSource)
 		}
 		if c.ServiceNowIntegrationServiceTokenURL == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL is required when DATA_SOURCE=servicenow")
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL is required when DATA_SOURCE=%s", c.DataSource)
 		}
 		if c.ServiceNowIntegrationServiceClientID == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID is required when DATA_SOURCE=servicenow")
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID is required when DATA_SOURCE=%s", c.DataSource)
 		}
 		if c.ServiceNowIntegrationServiceClientSecret == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET is required when DATA_SOURCE=servicenow")
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET is required when DATA_SOURCE=%s", c.DataSource)
 		}
 	}
 	// EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/EVENT_HUB_TOPIC are
@@ -415,6 +483,17 @@ func (c *Config) DSN() string {
 	q.Set("sslmode", c.DBSSLMode)
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// HasGithubIntegration reports whether the GitHub sync is both switched on and
+// configured well enough to run. The webhook secret is required rather than
+// optional: without it the endpoint could not authenticate a caller, and an
+// endpoint that mutates change requests must never be reachable unverified.
+func (c *Config) HasGithubIntegration() bool {
+	return c.GithubIntegrationEnabled &&
+		c.GithubWebhookSecret != "" &&
+		c.GithubToken != "" &&
+		c.GithubIntegrationLogin != ""
 }
 
 // envDuration reads a Go duration string (e.g. "5s", "500ms"), falling back to
