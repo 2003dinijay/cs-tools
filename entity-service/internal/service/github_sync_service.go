@@ -18,8 +18,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/github"
@@ -36,6 +40,11 @@ type GithubSyncService interface {
 	// an error -- most webhooks from a watched repository are not about a
 	// change request at all.
 	HandleWebhook(ctx context.Context, d Delivery) (Outcome, error)
+	// CreateServiceRequestFromIssue is the same work HandleWebhook does for an
+	// issues event, reachable directly. A repository that would rather call us
+	// than wait for a webhook -- as servicenow_create_case.yml calls
+	// ServiceNow today -- uses this.
+	CreateServiceRequestFromIssue(ctx context.Context, req domain.CreateServiceRequestFromIssueRequest) (domain.CreateServiceRequestFromIssueResponse, error)
 }
 
 // Delivery is one webhook, already authenticated.
@@ -49,6 +58,9 @@ type Delivery struct {
 type Outcome struct {
 	Action          string
 	ChangeRequestID string
+	// Number is the created record's human-readable number, empty unless this
+	// outcome created one.
+	Number string
 	// Skipped is why nothing happened, empty when something did.
 	Skipped string
 }
@@ -283,73 +295,123 @@ func (s *githubSyncService) handleClaimed(ctx context.Context, d Delivery) (Outc
 			p.Repository.Owner.Login, p.Repository.Name))
 	}
 
-	cr, err := s.repo.ChangeRequestByGitReference(ctx, p.Issue.HTMLURL)
+	// What this issue already produced, if anything. Looked up by issue number
+	// within the account rather than by git_reference: the record is a service
+	// request now, and service_request has no git_reference column.
+	existing, err := s.repo.CaseByIssueNumber(ctx, mapping.AccountID, p.Issue.Number)
 	if err != nil {
 		return Outcome{}, err
 	}
 
 	if d.Event == "issue_comment" {
-		return s.handleComment(ctx, p, mapping, cr)
+		return s.handleComment(ctx, p, mapping, existing)
 	}
-	return s.handleIssue(ctx, p, cr)
+	return s.handleIssue(ctx, p, mapping, existing)
 }
 
-// handleIssue creates or updates the change request an issue represents.
+// handleIssue creates or updates the record an issue represents.
 //
-// RECOGNITION IS BY TITLE, NOT BY LABEL. issue_servicenow.yml says it plainly:
-// "Change requests carry no template label -- the [CR]:/[ECR]: title is the
-// only signal." An earlier version of this file gated on a Type/ChangeRequest
-// label that nothing in any product repository applies.
-func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, cr *repository.GithubChangeRequest) (Outcome, error) {
-	if !IsChangeRequestTitle(p.Issue.Title) {
-		return skip("issue title is not prefixed [CR]: or [ECR]:, so it is not a change request")
+// A GITHUB ISSUE BECOMES A SERVICE REQUEST, NOT A CHANGE REQUEST.
+// issue_servicenow.yml maps a [CR]:/[ECR]: title onto case_type
+// "Service Request" with catalog "Generic Requests", carrying the CR/*Change
+// label as sr_type; a Type/ServiceRequest label onto "General Requests". The
+// change request proper is raised later, by a person, with the approval path
+// and planned window an issue cannot supply -- which is why 759 change
+// requests hang off a service request in the data and only 301 off a case.
+//
+// An earlier version of this created a change request directly. Those records
+// had no parent and no account, because there was nothing to parent them to.
+func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, mapping *repository.RepoMapping, existing string) (Outcome, error) {
+	if !s.validated(p) {
+		return skip("issue has not passed template validation yet")
 	}
 
-	labels := p.LabelNames()
-
-	// The class label is applied by the repository's validation workflow. Its
-	// absence means validation has not passed yet, and acting early would
-	// create a record from a half-filled template.
-	class, ok := s.labels.ClassOf(labels)
+	catalog, srType, ok := s.classify(p)
 	if !ok {
-		return skip("exactly one CR class label is required; found none or several")
+		return skip("issue is neither a [CR]: change request nor labelled as a service request")
 	}
 
 	if s.mutate == nil {
 		return Outcome{Action: "creation_prepared"}, nil
 	}
-
-	if cr == nil {
-		id, number, err := s.mutate.CreateFromIssue(ctx, repository.NewChangeRequestFromIssue{
+	if existing != "" {
+		// The issue already produced a record. Its text is the source of
+		// truth, so an edit overwrites -- servicenow_update_case.yml re-sends
+		// the whole body rather than a diff for the same reason.
+		if err := s.mutate.UpdateFromIssue(ctx, existing, repository.NewChangeRequestFromIssue{
 			Subject:      p.Issue.Title,
 			Description:  p.Issue.Body,
 			GitReference: p.Issue.HTMLURL,
-			Type:         class,
-		})
-		if err != nil {
+		}); err != nil {
 			return Outcome{}, err
 		}
-		slog.InfoContext(ctx, "github: change request created from issue",
-			"changeRequestId", id, "number", number, "issue", p.Issue.Number)
-		return Outcome{Action: "created", ChangeRequestID: id}, nil
+		return Outcome{Action: "updated", ChangeRequestID: existing}, nil
 	}
 
-	// An edited issue overwrites the record's subject, description and class.
-	// servicenow_update_case.yml does the same: the issue is the source of
-	// truth for the text, which is why it re-sends all of it rather than a diff.
-	if err := s.mutate.UpdateFromIssue(ctx, cr.ID, repository.NewChangeRequestFromIssue{
+	id, number, err := s.mutate.CreateServiceRequestFromIssue(ctx, repository.NewServiceRequestFromIssue{
 		Subject:      p.Issue.Title,
 		Description:  p.Issue.Body,
 		GitReference: p.Issue.HTMLURL,
-		Type:         class,
-	}); err != nil {
+		IssueNumber:  p.Issue.Number,
+		AccountID:    mapping.AccountID,
+		Catalog:      catalog,
+		SRType:       srType,
+		Fields:       ExtractTemplateFields(p.Issue.Body),
+		CreatedBy:    p.Issue.User.Login,
+	})
+	if err != nil {
+		// A concurrent delivery for the same issue won the insert. Nothing to
+		// do, and not a failure -- the record the caller wanted exists.
+		if errors.Is(err, repository.ErrAlreadyExists()) {
+			slog.InfoContext(ctx, "github: issue already had a service request",
+				"serviceRequestId", id, "issue", p.Issue.Number)
+			return Outcome{Action: "exists", ChangeRequestID: id}, nil
+		}
 		return Outcome{}, err
 	}
-	return Outcome{Action: "updated", ChangeRequestID: cr.ID}, nil
+	slog.InfoContext(ctx, "github: service request created from issue",
+		"serviceRequestId", id, "number", number, "issue", p.Issue.Number, "catalog", catalog)
+	return Outcome{Action: "created", ChangeRequestID: id, Number: number}, nil
+}
+
+// classify decides what an issue is, in the order issue_servicenow.yml does.
+// The title is checked first because a change request carries no type label.
+// validated reports whether the repository's own validation workflow has
+// passed this issue. Nothing is created before it has: the template decides
+// which catalog and fields a record gets, and an unchecked template produces a
+// record nobody can act on. The workflow applies the label on open and on every
+// edit, so an issue fixed after a failure arrives here as a labeled event.
+func (s *githubSyncService) validated(p IssuePayload) bool {
+	for _, l := range p.LabelNames() {
+		if l == s.labels.ValidationPassed {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *githubSyncService) classify(p IssuePayload) (catalog, srType string, ok bool) {
+	labels := p.LabelNames()
+	if IsChangeRequestTitle(p.Issue.Title) {
+		class, found := s.labels.ClassOf(labels)
+		if !found {
+			// The class label is applied by the repository's validation
+			// workflow. Acting before it lands would make a record from a
+			// template nobody has checked.
+			return "", "", false
+		}
+		return CatalogGenericRequests, class, true
+	}
+	for _, l := range labels {
+		if l == s.labels.TypeServiceRequest {
+			return CatalogGeneralRequests, "", true
+		}
+	}
+	return "", "", false
 }
 
 // handleComment mirrors a GitHub comment onto the change request.
-func (s *githubSyncService) handleComment(ctx context.Context, p IssuePayload, mapping *repository.RepoMapping, cr *repository.GithubChangeRequest) (Outcome, error) {
+func (s *githubSyncService) handleComment(ctx context.Context, p IssuePayload, mapping *repository.RepoMapping, caseID string) (Outcome, error) {
 	if p.Action != "created" && p.Action != "edited" {
 		return skip("comment action " + p.Action + " is not handled")
 	}
@@ -366,10 +428,6 @@ func (s *githubSyncService) handleComment(ctx context.Context, p IssuePayload, m
 	// to the change request instead produced a conversation that could not be
 	// answered: a reply on the change request synced nowhere, and a reply on
 	// the case reached GitHub detached from the thread that started it.
-	caseID, err := s.repo.CaseByIssueNumber(ctx, mapping.AccountID, p.Issue.Number)
-	if err != nil {
-		return Outcome{}, err
-	}
 	if caseID == "" {
 		return skip("no case is linked to this issue")
 	}
@@ -397,12 +455,7 @@ func (s *githubSyncService) handleComment(ctx context.Context, p IssuePayload, m
 	if err := s.mutate.AddComment(ctx, caseID, text, author); err != nil {
 		return Outcome{}, err
 	}
-	// The change request id, when there is one, is only for the delivery log.
-	var crID string
-	if cr != nil {
-		crID = cr.ID
-	}
-	return Outcome{Action: "comment_relayed", ChangeRequestID: crID}, nil
+	return Outcome{Action: "comment_relayed", ChangeRequestID: caseID}, nil
 }
 
 // isOwnEvent reports whether this delivery is an echo of something we caused.
@@ -431,4 +484,73 @@ func integrationLoginSet(configured string) []string {
 		out = append(out, c)
 	}
 	return out
+}
+
+// CreateServiceRequestFromIssue implements GithubSyncService.
+//
+// Built on the same handleIssue the webhook uses, so the two entry points
+// cannot drift: one recognition rule, one catalog mapping, one field parser.
+// The only difference is what carries the issue in.
+func (s *githubSyncService) CreateServiceRequestFromIssue(ctx context.Context, req domain.CreateServiceRequestFromIssueRequest) (domain.CreateServiceRequestFromIssueResponse, error) {
+	if strings.TrimSpace(req.Owner) == "" || strings.TrimSpace(req.Repository) == "" {
+		return domain.CreateServiceRequestFromIssueResponse{}, &apierror.ValidationError{Msg: "owner and repository are required"}
+	}
+	if req.IssueNumber <= 0 {
+		return domain.CreateServiceRequestFromIssueResponse{}, &apierror.ValidationError{Msg: "issueNumber is required"}
+	}
+	if strings.TrimSpace(req.Title) == "" {
+		return domain.CreateServiceRequestFromIssueResponse{}, &apierror.ValidationError{Msg: "title is required"}
+	}
+
+	mapping, err := s.repo.RepoMapping(ctx, req.Owner, req.Repository)
+	if err != nil {
+		return domain.CreateServiceRequestFromIssueResponse{}, err
+	}
+	if mapping == nil {
+		return domain.CreateServiceRequestFromIssueResponse{}, &apierror.ConflictError{
+			Msg: "repository " + req.Owner + "/" + req.Repository + " is not mapped to an account",
+		}
+	}
+
+	// Already created is success, not a conflict: the caller's retry after a
+	// timeout must not produce a second record, and servicenow_create_case.yml
+	// answers its own repeat with "Case Already Exists" for the same reason.
+	existing, err := s.repo.CaseByIssueNumber(ctx, mapping.AccountID, req.IssueNumber)
+	if err != nil {
+		return domain.CreateServiceRequestFromIssueResponse{}, err
+	}
+	if existing != "" {
+		return domain.CreateServiceRequestFromIssueResponse{
+			Message: "a service request already exists for this issue", ID: existing,
+		}, nil
+	}
+
+	p := IssuePayload{}
+	p.Issue.Number = req.IssueNumber
+	p.Issue.Title = req.Title
+	p.Issue.Body = req.Body
+	p.Issue.HTMLURL = "https://github.com/" + req.Owner + "/" + req.Repository + "/issues/" + strconv.Itoa(req.IssueNumber)
+	p.Issue.User.Login = req.Author
+	for _, l := range req.Labels {
+		p.Issue.Labels = append(p.Issue.Labels, struct {
+			Name string `json:"name"`
+		}{Name: l})
+	}
+
+	out, err := s.handleIssue(ctx, p, mapping, "")
+	if err != nil {
+		return domain.CreateServiceRequestFromIssueResponse{}, err
+	}
+	if out.Skipped != "" {
+		return domain.CreateServiceRequestFromIssueResponse{}, &apierror.ValidationError{Msg: out.Skipped}
+	}
+	if out.Action == "exists" {
+		return domain.CreateServiceRequestFromIssueResponse{
+			Message: "a service request already exists for this issue", ID: out.ChangeRequestID,
+		}, nil
+	}
+	return domain.CreateServiceRequestFromIssueResponse{
+		Message: "service request created", ID: out.ChangeRequestID,
+		Number: out.Number, Created: true,
+	}, nil
 }

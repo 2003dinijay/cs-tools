@@ -169,3 +169,71 @@ func (l GithubLabels) ClassOf(labels []string) (string, bool) {
 	}
 	return found, found != ""
 }
+
+// The two catalogs issue_servicenow.yml routes to.
+const (
+	CatalogGenericRequests = "Generic Requests"
+	CatalogGeneralRequests = "General Requests"
+)
+
+// ExtractTemplateFields reads a template-filled issue body into the u_-prefixed
+// keys the service request stores in json_data.
+//
+// A SCAN, NOT THE REGEX extractFields.js USES. That one ends each section with
+// a lookahead for the next "###", and Go's RE2 has no lookahead -- copying it
+// across compiles at init and panics the process on startup. Walking the lines
+// says the same thing and is easier to follow besides.
+//
+// The naming follows extractFields.js: lower-cased, punctuation to
+// underscores, u_ in front. CS0441366 holds {"u_request_details": ...}, so
+// matching it keeps a record raised from GitHub indistinguishable from one
+// raised any other way.
+//
+// A body with no "###" sections yields nothing rather than guessing -- an
+// issue written free-hand has no fields to capture.
+func ExtractTemplateFields(body string) map[string]string {
+	out := map[string]string{}
+	var label string
+	var value []string
+
+	flush := func() {
+		if label == "" {
+			return
+		}
+		v := strings.TrimSpace(strings.Join(value, "\n"))
+		// GitHub writes this for a field the author left blank.
+		if v != "" && v != "_No response_" {
+			out["u_"+templateKey(label)] = v
+		}
+		label, value = "", nil
+	}
+
+	for _, line := range strings.Split(body, "\n") {
+		if h := strings.TrimSpace(line); strings.HasPrefix(h, "### ") {
+			flush()
+			label = strings.TrimSpace(strings.TrimPrefix(h, "### "))
+			continue
+		}
+		if label != "" {
+			value = append(value, line)
+		}
+	}
+	flush()
+	return out
+}
+
+func templateKey(label string) string {
+	var b strings.Builder
+	lastUnderscore := true
+	for _, r := range strings.ToLower(label) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastUnderscore = false
+		case !lastUnderscore:
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	return strings.Trim(b.String(), "_")
+}

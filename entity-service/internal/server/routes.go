@@ -117,6 +117,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// it authenticates by HMAC rather than by bearer token, and an endpoint
 	// that mutates change requests should appear only when asked for.
 	var githubWebhookHandler *handler.GithubWebhookHandler
+	var githubServiceRequestHandler *handler.GithubServiceRequestHandler
 
 	// Assigned inside the GitHub-integration block below and read further down,
 	// where activeCaseSvc finally exists, to build the native issue-filing
@@ -151,16 +152,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 				Token:   cfg.GithubToken,
 			})
 			githubLabelSet = githubLabels
-			githubWebhookHandler = handler.NewGithubWebhookHandler(
-				service.NewGithubSyncServiceWriting(
-					githubSyncRepo,
-					repository.NewGithubMutationRepository(db),
-					githubClient,
-					cfg.GithubIntegrationLogin,
-					githubLabels,
-				),
-				cfg.GithubWebhookSecret,
+			githubSyncSvc := service.NewGithubSyncServiceWriting(
+				githubSyncRepo,
+				repository.NewGithubMutationRepository(db),
+				githubClient,
+				cfg.GithubIntegrationLogin,
+				githubLabels,
 			)
+			githubWebhookHandler = handler.NewGithubWebhookHandler(githubSyncSvc, cfg.GithubWebhookSecret)
+			githubServiceRequestHandler = handler.NewGithubServiceRequestHandler(githubSyncSvc)
 		}
 	}
 
@@ -605,6 +605,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	if githubWebhookHandler != nil {
 		mux.HandleFunc("POST /webhooks/github", githubWebhookHandler.Handle)
+		mux.HandleFunc("POST /github/service-requests", githubServiceRequestHandler.Create)
 	}
 
 	if scheduledTaskRunHandler != nil {

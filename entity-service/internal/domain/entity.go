@@ -6751,3 +6751,33 @@ type LookupAlertIncidentMappingsRequest struct {
 type LookupAlertIncidentMappingsResponse struct {
 	Mappings []AlertIncidentMappingView `json:"mappings"`
 }
+
+// CreateServiceRequestFromIssueRequest is the body of
+// POST /github/service-requests.
+//
+// The same information servicenow_create_case.yml puts in its payload, minus
+// everything the server can work out for itself: the account comes from the
+// repository mapping, the catalog and sr_type from the title and labels. A
+// caller sends what only it knows -- which issue, in which repository.
+type CreateServiceRequestFromIssueRequest struct {
+	Owner       string   `json:"owner"`
+	Repository  string   `json:"repository"`
+	IssueNumber int      `json:"issueNumber"`
+	Title       string   `json:"title"`
+	Body        string   `json:"body"`
+	Labels      []string `json:"labels,omitempty"`
+	// Author is the GitHub login that raised it, recorded as created_by.
+	Author string `json:"author,omitempty"`
+}
+
+// CreateServiceRequestFromIssueResponse names the record that was created.
+type CreateServiceRequestFromIssueResponse struct {
+	Message string `json:"message"`
+	ID      string `json:"id"`
+	// Number is absent when the request matched a record that already existed:
+	// this endpoint looks that up by issue number, which does not read it.
+	Number string `json:"number,omitempty"`
+	// Created distinguishes a new record from one that already existed, so a
+	// caller retrying after a timeout can tell without parsing Message.
+	Created bool `json:"created"`
+}
