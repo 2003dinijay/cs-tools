@@ -432,6 +432,21 @@ func TestMembershipIngest_DuplicateEventSkipped(t *testing.T) {
 		t.Errorf("newer version not ingested: %+v", h.repo.upserts)
 	}
 
+	// A DATABASE row last written by a DELETED event never blocks the same
+	// version: an undelete (RESTORED) keeps the Salesforce LastModifiedDate
+	// and the membership must leave DEACTIVATED.
+	h3 := newIngestHarness(sampleProjectContact("INVITED", "Portal user"), sampleContact(), false)
+	h3.steps.existing = []domain.OnboardingStep{{
+		MembershipSfID: testMembershipID, Step: domain.OnboardingStepDatabase, Status: domain.OnboardingStepSucceeded,
+		EventType: string(domain.SalesforceEventDeleted), EventModifiedOn: recorded,
+	}}
+	if err := h3.svc.HandleEvent(context.Background(), membershipEvent("RESTORED", "Project_Contact__c")); err != nil {
+		t.Fatal(err)
+	}
+	if len(h3.repo.upserts) != 1 || h3.repo.upserts[0].State != "INVITED" {
+		t.Errorf("a DELETED-typed step must not suppress the restore: %+v", h3.repo.upserts)
+	}
+
 	// A FAILED DATABASE row never blocks a retry of the same version.
 	h2 := newIngestHarness(sampleProjectContact("INVITED", "Portal user"), sampleContact(), false)
 	h2.steps.existing = []domain.OnboardingStep{{

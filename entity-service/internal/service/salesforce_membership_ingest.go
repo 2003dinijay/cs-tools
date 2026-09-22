@@ -122,7 +122,9 @@ func (s *salesforceEventService) ingestMembership(ctx context.Context, membershi
 	// and the portal replays the envelope after its own write, so the same
 	// membership version arrives more than once. eventModifiedOn is the
 	// record's LastModifiedDate; when unparseable the guard is skipped and
-	// the (idempotent) upsert simply runs again.
+	// the (idempotent) upsert simply runs again. A step last touched by a
+	// DELETED event never counts: an undelete (RESTORED) keeps the record's
+	// LastModifiedDate, and the row must leave DEACTIVATED.
 	eventModifiedOn, hasModified := parseSalesforceLastModified(pc.LastModifiedDate)
 	if !hasModified {
 		slog.WarnContext(ctx, "salesforce: project contact has no parseable lastModifiedDate, skipping duplicate guard",
@@ -134,7 +136,8 @@ func (s *salesforceEventService) ingestMembership(ctx context.Context, membershi
 			return err
 		}
 		for _, st := range steps {
-			if st.Step == domain.OnboardingStepDatabase && st.Status == domain.OnboardingStepSucceeded && !st.EventModifiedOn.Before(eventModifiedOn) {
+			if st.Step == domain.OnboardingStepDatabase && st.Status == domain.OnboardingStepSucceeded &&
+				st.EventType != string(domain.SalesforceEventDeleted) && !st.EventModifiedOn.Before(eventModifiedOn) {
 				slog.InfoContext(ctx, "salesforce: project contact version already ingested, skipping",
 					"membershipSfId", membershipSfID, "eventModifiedOn", eventModifiedOn, "recordedOn", st.EventModifiedOn)
 				return nil

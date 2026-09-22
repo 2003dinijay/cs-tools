@@ -47,7 +47,10 @@ type ProjectMembershipRepository interface {
 	// mapping relies on is missing (the ServiceNow sync seeds them).
 	Upsert(ctx context.Context, in domain.SalesforceMembershipUpsert, step domain.UpsertOnboardingStepRequest) (domain.SalesforceMembershipUpsertResult, error)
 	// DeactivateBySfID sets project_contact.state = DEACTIVATED for the
-	// membership with that Salesforce id. An unknown id is a no-op (the
+	// membership with that Salesforce id and marks its DATABASE onboarding
+	// step as applied by a DELETED event, so the ingest's duplicate guard does
+	// not treat a later RESTORED/replayed event carrying the same Salesforce
+	// LastModifiedDate as already ingested. An unknown id is a no-op (the
 	// membership was never ingested), so a DELETED event is idempotent.
 	DeactivateBySfID(ctx context.Context, membershipSfID string) (bool, error)
 }
@@ -62,7 +65,13 @@ func NewProjectMembershipRepository(db *pgxpool.Pool) ProjectMembershipRepositor
 }
 
 func (r *projectMembershipRepo) DeactivateBySfID(ctx context.Context, membershipSfID string) (bool, error) {
-	tag, err := r.db.Exec(ctx, `
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("deactivate project contact: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, `
 		UPDATE project_contact
 		SET state = $2::project_contact_state_enum, updated_on = NOW(), updated_by = $3
 		WHERE sf_id = $1`,
@@ -70,7 +79,25 @@ func (r *projectMembershipRepo) DeactivateBySfID(ctx context.Context, membership
 	if err != nil {
 		return false, fmt.Errorf("deactivate project contact by sf_id: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+
+	// Salesforce has no LastModifiedDate to offer for a deleted record, so
+	// the step keeps its recorded version and only its event_type changes;
+	// the guard in the ingest ignores DELETED-typed steps.
+	if _, err := tx.Exec(ctx, `
+		UPDATE onboarding_step
+		SET event_type = $2, updated_on = NOW(), updated_by = $3
+		WHERE membership_sf_id = $1 AND step = 'DATABASE'::onboarding_step_enum`,
+		membershipSfID, string(domain.SalesforceEventDeleted), domain.SalesforceSyncActor); err != nil {
+		return false, fmt.Errorf("mark DATABASE step deleted: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("deactivate project contact: commit: %w", err)
+	}
+	return true, nil
 }
 
 func (r *projectMembershipRepo) Upsert(ctx context.Context, in domain.SalesforceMembershipUpsert, step domain.UpsertOnboardingStepRequest) (domain.SalesforceMembershipUpsertResult, error) {
