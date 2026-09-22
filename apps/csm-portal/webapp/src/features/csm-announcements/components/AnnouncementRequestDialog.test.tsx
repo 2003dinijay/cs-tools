@@ -192,6 +192,7 @@ beforeEach(() => {
     failedCaseIds: [],
     done: false,
     handlePost: vi.fn(),
+    reset: vi.fn(),
   });
 });
 
@@ -601,6 +602,7 @@ describe("AnnouncementRequestDialog — published", () => {
       failedCaseIds: [],
       done: false,
       handlePost,
+      reset: vi.fn(),
     });
 
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);

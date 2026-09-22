@@ -154,7 +154,15 @@ export default function AnnouncementRequestDialog({
   // retry after a partial comment-fan-out failure only retries the
   // outstanding comments (postUpdateComments already tracks that itself)
   // without creating a second, duplicate AnnouncementRequestUpdate row for
-  // the same text.
+  // the same text. This is plain component state, not persisted anywhere —
+  // closing and reopening this dialog mid-retry loses it, the same
+  // accepted trade-off usePublishAnnouncementRequest's own doc comment
+  // already documents for Publish ("if the dialog is closed mid-retry,
+  // progress made so far is lost"). A closed-then-reopened retry here
+  // would re-record a second AnnouncementRequestUpdate row for the same
+  // text rather than resuming the first one — a duplicate history entry
+  // (visible in "Past updates", not silent data loss), not a persistence
+  // layer this slice builds for.
   const [recordedUpdateContent, setRecordedUpdateContent] = useState<string | null>(null);
 
   useEffect(() => {
@@ -170,6 +178,12 @@ export default function AnnouncementRequestDialog({
     if (!request) return;
     setConfirmUpdateOpen(false);
     if (recordedUpdateContent === null) {
+      // A genuinely new update, not a retry of one already recorded —
+      // postUpdateComments' own per-case tracking must be cleared first, or
+      // it would see every case already "succeeded" from whichever earlier
+      // update this same dialog instance already posted and silently skip
+      // this one's fan-out entirely (see that hook's own reset() doc comment).
+      postUpdateComments.reset();
       try {
         await createUpdate.mutateAsync({ id: request.id, payload: { content: updateContent } });
         setRecordedUpdateContent(updateContent);

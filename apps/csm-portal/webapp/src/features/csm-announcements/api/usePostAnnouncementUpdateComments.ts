@@ -29,7 +29,8 @@ export interface UpdateCommentsProgress {
 export interface UsePostAnnouncementUpdateCommentsResult {
   posting: boolean;
   progress: UpdateCommentsProgress | null;
-  /** Case ids that got the comment so far, across every attempt. */
+  /** Case ids that got the comment so far, across every attempt — for the
+   * *current* update only (see reset()). */
   succeededCaseIds: string[];
   /** Only the case ids still outstanding after the most recent attempt. */
   failedCaseIds: string[];
@@ -38,6 +39,18 @@ export interface UsePostAnnouncementUpdateCommentsResult {
    * comment — it's never sent upstream), so any caller-supplied string is
    * fine here. */
   handlePost: (caseIds: string[], contentHtml: string, authorName: string) => Promise<void>;
+  /**
+   * Clears succeededCaseIds/failedCaseIds/done. The caller (see
+   * AnnouncementRequestDialog) must call this before starting a genuinely
+   * *new* update — this hook instance is reused for the dialog's whole
+   * lifetime, so without a reset, posting a second update after the first
+   * one fully succeeded would see every case already in succeededCaseIds
+   * from the *previous* update and silently skip the fan-out entirely
+   * (`done` would flip true having never actually posted the new content).
+   * Never call this mid-retry of the *same* update — that would defeat the
+   * "only resend to cases still outstanding" tracking this hook exists for.
+   */
+  reset: () => void;
 }
 
 /**
@@ -87,5 +100,11 @@ export function usePostAnnouncementUpdateComments(): UsePostAnnouncementUpdateCo
     setDone(stillFailing.length === 0);
   };
 
-  return { posting, progress, succeededCaseIds, failedCaseIds, done, handlePost };
+  const reset = (): void => {
+    setSucceededCaseIds([]);
+    setFailedCaseIds([]);
+    setDone(false);
+  };
+
+  return { posting, progress, succeededCaseIds, failedCaseIds, done, handlePost, reset };
 }
