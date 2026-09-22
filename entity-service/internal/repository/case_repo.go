@@ -933,7 +933,7 @@ func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAt
 	const query = `
 		INSERT INTO case_attachments (case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, status)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_at, status`
+		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_on, status`
 
 	var (
 		a            domain.Attachment
@@ -970,9 +970,9 @@ func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAt
 func (r *caseRepo) ConfirmCaseAttachment(ctx context.Context, id string) (domain.Attachment, error) {
 	const query = `
 		UPDATE case_attachments
-		SET status = 'complete', updated_at = NOW()
+		SET status = 'complete', updated_on = NOW()
 		WHERE id = $1 AND status = 'pending'
-		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_at, status`
+		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_on, status`
 
 	var (
 		a            domain.Attachment
@@ -1006,11 +1006,11 @@ func (r *caseRepo) SearchCaseAttachments(ctx context.Context, caseID string, pag
 	const dataQuery = `
 		SELECT ca.id, ca.case_id, ca.filename, ca.mime_type, ca.size_bytes, ca.description,
 		       u.id, u.email, TRIM(u.first_name || ' ' || u.last_name) AS full_name,
-		       ca.created_at, ca.storage_key, ca.status
+		       ca.created_on, ca.storage_key, ca.status
 		FROM case_attachments ca
 		JOIN "user" u ON u.id = ca.uploaded_by
 		WHERE ca.case_id = $1 AND ca.status = 'complete'
-		ORDER BY ca.created_at DESC, ca.id
+		ORDER BY ca.created_on DESC, ca.id
 		LIMIT $2 OFFSET $3`
 
 	var total int
@@ -1075,7 +1075,7 @@ func (r *caseRepo) GetCaseAttachmentByID(ctx context.Context, id string) (domain
 	const query = `
 		SELECT ca.id, ca.case_id, ca.filename, ca.mime_type, ca.size_bytes, ca.description,
 		       u.id, u.email, TRIM(u.first_name || ' ' || u.last_name) AS full_name,
-		       ca.created_at, ca.storage_key, ca.status
+		       ca.created_on, ca.storage_key, ca.status
 		FROM case_attachments ca
 		JOIN "user" u ON u.id = ca.uploaded_by
 		WHERE ca.id = $1`
@@ -1117,9 +1117,9 @@ func (r *caseRepo) DeleteCaseAttachment(ctx context.Context, id string) error {
 func (r *caseRepo) UpdateCaseAttachmentName(ctx context.Context, id, name, updatedBy string) (time.Time, error) {
 	const query = `
 		UPDATE case_attachments
-		SET filename = $2, updated_at = NOW(), updated_by = $3
+		SET filename = $2, updated_on = NOW(), updated_by = $3
 		WHERE id = $1
-		RETURNING updated_at`
+		RETURNING updated_on`
 
 	var updatedOn time.Time
 	err := r.db.QueryRow(ctx, query, id, name, updatedBy).Scan(&updatedOn)
@@ -1884,7 +1884,7 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 			UNION ALL
 
 			SELECT
-				a.id, 'attachment' AS kind, COALESCE(a.description, '') AS content, a.created_at AS created_on,
+				a.id, 'attachment' AS kind, COALESCE(a.description, '') AS content, a.created_on AS created_on,
 				u2.email, u2.first_name, u2.last_name,
 				COALESCE(u2.name, NULLIF(TRIM(CONCAT_WS(' ', u2.first_name, u2.last_name)), '')) AS name,
 				NULL::text AS comment_type,

@@ -48,7 +48,7 @@ func NewSNWritebackFailureRepository(db *pgxpool.Pool) SNWritebackFailureReposit
 // snWritebackFailureColumns is the column list shared by every query that
 // returns a full row, kept in one place so it can't drift out of sync with
 // scanSNWritebackFailure's field order.
-const snWritebackFailureColumns = `id, entity_type, entity_id, operation, payload, error, created_at`
+const snWritebackFailureColumns = `id, entity_type, entity_id, operation, payload, error, created_on`
 
 func scanSNWritebackFailure(row interface{ Scan(...any) error }) (domain.SNWritebackFailure, error) {
 	var f domain.SNWritebackFailure

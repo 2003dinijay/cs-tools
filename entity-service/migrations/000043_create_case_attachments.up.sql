@@ -28,8 +28,8 @@ CREATE TABLE IF NOT EXISTS case_attachments (
   size_bytes  BIGINT NOT NULL CHECK (size_bytes > 0),
   description TEXT,
   uploaded_by UUID NOT NULL REFERENCES "user"(id),
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_on  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_on  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_by  UUID REFERENCES "user"(id)
 );
 
@@ -38,6 +38,6 @@ CREATE INDEX IF NOT EXISTS idx_case_attachments_case_id     ON case_attachments(
 CREATE INDEX IF NOT EXISTS idx_case_attachments_uploaded_by ON case_attachments(uploaded_by);
 
 -- Composite index for the paginated per-case feed (most recent first).
-CREATE INDEX IF NOT EXISTS idx_case_attachments_case_created ON case_attachments(case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_case_attachments_case_created ON case_attachments(case_id, created_on DESC);
 
 COMMIT;

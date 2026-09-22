@@ -29,9 +29,9 @@ ALTER TABLE case_attachments
   ADD COLUMN status TEXT NOT NULL DEFAULT 'complete' CHECK (status IN ('pending', 'complete'));
 
 -- Supports a future reconciliation job that scans for pending rows whose
--- upload never completed (e.g. "status = 'pending' AND created_at < now() -
+-- upload never completed (e.g. "status = 'pending' AND created_on < now() -
 -- interval '1 hour'"). Not built in this change -- see the status column
 -- comment above.
-CREATE INDEX IF NOT EXISTS idx_case_attachments_status_created ON case_attachments(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_case_attachments_status_created ON case_attachments(status, created_on);
 
 COMMIT;
