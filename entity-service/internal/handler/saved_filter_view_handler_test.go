@@ -101,7 +101,7 @@ func TestSavedFilterViewHandler_Save_Success(t *testing.T) {
 		saveResp: domain.SavedFilterViewList{Views: []domain.SavedFilterView{{Name: "Mine", Qs: "q=1"}}},
 	})
 	body, _ := json.Marshal(domain.SaveSavedFilterViewRequest{ListKey: domain.SavedFilterListKeyCases, Name: "Mine", Qs: "q=1"})
-	req := httptest.NewRequest(http.MethodPut, "/users/me/saved-filter-views", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPatch, "/users/me/saved-filter-views", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 
 	h.Save(rec, req)
