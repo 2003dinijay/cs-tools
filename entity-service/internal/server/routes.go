@@ -555,9 +555,27 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// needing work_item.number generation or undiscoverable business rules).
 	incidentRepo := repository.NewIncidentRepository(db)
 	var activeIncidentSvc service.IncidentService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeIncidentSvc = service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, eventPublisher)
-	} else {
+	case config.DataSourcePostgresPrimarySNFallback:
+		// Pilot extension: incident CREATE only, same ServiceNow-first,
+		// synchronous shape as the case pilot above -- see
+		// incidentService.createIncidentSNFirst's own doc comment. Reads
+		// stay on Postgres in this mode; snIncidentMirrorSvc's CreateIncident
+		// is the only method of it this mode ever calls.
+		//
+		// eventPublisher is passed through here (unlike snCaseMirrorSvc's nil
+		// publisher/access args above, which are inert for case because
+		// caseService's own CreateCase response building doesn't need them)
+		// because snIncidentService.CreateIncident's real side effects
+		// include publishIncidentCreated -- the same event a plain
+		// DataSourceServiceNow incident creation publishes. Suppressing it
+		// here would silently drop incident.created notifications for every
+		// incident created in this mode.
+		snIncidentMirrorSvc := service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, eventPublisher)
+		activeIncidentSvc = service.NewIncidentServiceWithSNMirror(incidentRepo, snIncidentMirrorSvc)
+	default:
 		activeIncidentSvc = service.NewIncidentService(incidentRepo)
 	}
 	incidentHandler := handler.NewIncidentHandler(activeIncidentSvc)
