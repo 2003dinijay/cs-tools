@@ -498,7 +498,15 @@ vi.mock("@features/csm-cases/components/LinkedIncidentsListWidget", () => ({
   LinkedIncidentsListWidget: () => null,
 }));
 vi.mock("@features/csm-cases/components/LinkedServiceRequestsWidget", () => ({
-  LinkedServiceRequestsWidget: () => null,
+  // A probe, not a stub: whether createDisabled reflects canWrite (alongside
+  // isClosed) is exactly what a CodeRabbit review caught missing once before
+  // — see "gates the service-request create control on canWrite" below.
+  LinkedServiceRequestsWidget: ({ createDisabled }: { createDisabled?: boolean }) => (
+    <div
+      data-testid="linked-service-requests-widget-probe"
+      data-create-disabled={createDisabled ? "true" : "false"}
+    />
+  ),
 }));
 vi.mock("@features/csm-cases/components/LinkedChangeRequestsWidget", () => ({
   LinkedChangeRequestsWidget: () => (
@@ -1563,6 +1571,27 @@ describe("CsmCaseDetailPage — role-based controls", () => {
     expect(
       screen.queryByRole("button", { name: /compose a reply|add an internal work note/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("gates Export as PDF on canWrite", () => {
+    currentUserRoles.value = ["support_engineer"];
+    const { unmount } = renderPage();
+    expect(screen.getByRole("button", { name: /export as pdf/i })).toBeInTheDocument();
+    unmount();
+
+    currentUserRoles.value = ["viewer"];
+    renderPage();
+    expect(screen.queryByRole("button", { name: /export as pdf/i })).not.toBeInTheDocument();
+  });
+
+  it("gates the service-request create control on canWrite, not just isClosed", () => {
+    currentUserRoles.value = ["viewer"];
+    renderPage();
+    fireEvent.click(screen.getByRole("tab", { name: /linked items/i }));
+    expect(screen.getByTestId("linked-service-requests-widget-probe")).toHaveAttribute(
+      "data-create-disabled",
+      "true",
+    );
   });
 });
 
