@@ -480,17 +480,22 @@ func (r *deployedProductRepo) SearchProjectsByProductVersion(ctx context.Context
 	// rather than being explicitly marked Restricted/Suspended). An EOL
 	// announcement audience must not include a project the customer portal
 	// itself already blocks the customer from viewing. end_date is a plain
-	// DATE column (no time-of-day), so this compares dates directly against
-	// today's UTC date rather than casting to a timestamp — end_date is
-	// still "current" through the entirety of that day and only excluded
-	// starting the next UTC day, mirroring
-	// apps/customer-portal/webapp/src/utils/permission.ts's own
-	// isProjectContractEnded (end-of-day UTC, strictly after). Mirrors the
-	// same fixed exclusion added to sn_deployed_product_service.go's
-	// fetchEligibleProjectIDs for the ServiceNow-backed cohort, for parity
-	// between data sources.
+	// DATE column (no time-of-day); the cutoff is the last millisecond of
+	// that day (end_date + 1 day - 1ms), not simply "the next UTC day",
+	// so this matches apps/customer-portal/webapp/src/utils/permission.ts's
+	// own isProjectContractEnded (end-of-day UTC, strictly after) and
+	// isProjectContractEnded in sn_project_service.go to the millisecond —
+	// a plain date-vs-date comparison here would exclude the project one
+	// millisecond later than both of those (only at the next day's exact
+	// midnight instead of 23:59:59.999 on end_date's own day), a real,
+	// if practically negligible, inconsistency between the ServiceNow and
+	// Postgres cohorts a reviewer flagged. Both sides of the comparison are
+	// plain "timestamp without time zone" (NOW() AT TIME ZONE 'UTC' yields
+	// the current UTC wall-clock reading in that type), so this needs no
+	// timezone-conversion assumption the way comparing a timestamptz
+	// directly against a bare "date + interval" would.
 	where := "WHERE dp.product_id = $1 AND dp.version_id = $2" +
-		" AND (proj.end_date IS NULL OR proj.end_date >= (NOW() AT TIME ZONE 'UTC')::date)"
+		" AND (proj.end_date IS NULL OR proj.end_date + INTERVAL '1 day' - INTERVAL '1 millisecond' >= (NOW() AT TIME ZONE 'UTC'))"
 
 	// Same NULL-permissive, upper-cased-vocabulary matching as
 	// ProjectRepository.SearchProjects' ExcludeClosureStates clause -- see
