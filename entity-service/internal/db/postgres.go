@@ -63,7 +63,7 @@ func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 // NewPoolIfNeeded creates a Postgres connection pool when one is needed.
 // When DATA_SOURCE=servicenow, case/account/etc. reads go through the SN
 // integration service, so no pool is opened and (nil, nil) is returned.
-// Side tables (event_publish_failures, sla_clocks, scheduled_task_run) have
+// Side tables (event_publish_failures, sla-status, scheduled_task_run) have
 // no ServiceNow equivalent and are registered in routes.go only when a pool
 // is available — they must not block SN-mode startup (local customer-portal).
 func NewPoolIfNeeded(cfg *config.Config) (*pgxpool.Pool, error) {

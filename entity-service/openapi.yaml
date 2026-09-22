@@ -235,132 +235,34 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /cases/{caseId}/sla-clocks:
-    post:
-      summary: >-
-        Register (or reset) an SLA clock for a case. Registering a clock that
-        already exists for this case/clockType resets it from scratch —
-        startedAt/dueAt are overwritten and any paused/reached-tier state is
-        cleared. Has no ServiceNow equivalent — always backed by Postgres.
-      operationId: registerSLAClock
-      parameters:
-        - name: caseId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterSLAClockRequest'
-      responses:
-        "201":
-          description: Clock registered successfully.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SLAClock'
-        "400":
-          description: Bad request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "500":
-          description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /cases/{caseId}/sla-clocks/{clockType}:
+  /sla-status:
     get:
-      summary: Get one SLA clock for a case.
-      operationId: getSLAClock
-      parameters:
-        - name: caseId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: clockType
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: The requested clock.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SLAClock'
-        "400":
-          description: Bad request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "404":
-          description: No such clock has been registered.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "500":
-          description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}:
-    patch:
       summary: >-
-        Mark a tier (50, 75, or 100) reached for a clock, if it isn't
-        already. Idempotent — returns the pre-existing reached timestamp if
-        the tier was already marked.
-      operationId: setSLAClockTierReached
+        List every currently-active SLA clock (one entry per case-like work
+        item and SLA policy target: response/workaround/resolution), read
+        live from the "sla" table ServiceNow's own SLA engine populates via
+        sync. Replaces the old sla-clocks endpoints — see
+        SLAStatus's own doc comment for what changed and why. Has no
+        ServiceNow equivalent of its own — always backed by Postgres.
+      operationId: searchActiveSLAStatuses
       parameters:
-        - name: caseId
-          in: path
-          required: true
+        - name: limit
+          in: query
           schema:
-            type: string
-        - name: clockType
-          in: path
-          required: true
+            type: integer
+        - name: offset
+          in: query
           schema:
-            type: string
-        - name: tier
-          in: path
-          required: true
-          schema:
-            type: string
-            enum: ["50", "75", "100"]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SetSLAClockTierRequest'
+            type: integer
       responses:
         "200":
-          description: Tier marked reached (or already was).
+          description: Every currently-active SLA clock, paginated.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SetSLAClockTierReachedResponse'
+                $ref: '#/components/schemas/SearchSLAStatusResponse'
         "400":
           description: Bad request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "404":
-          description: No such clock has been registered.
           content:
             application/json:
               schema:
@@ -16776,42 +16678,38 @@ components:
         filters:
           $ref: '#/components/schemas/SearchEventPublishFailuresFilters'
 
-    SLAClock:
+    SLAStatus:
       description: >
-        A durable SLA timer running against a case. clockType is
-        caller-defined, not a fixed enum, though only "response"/
-        "workaround"/"resolution" are actually used — see
-        internal/service/sla_policy.go for the duration policy. Has no
-        ServiceNow equivalent — always backed by Postgres. The eight
-        display fields (caseNumber through state) are populated once at
-        registration and are a point-in-time snapshot, not kept live.
+        One case-like work item's current standing against one SLA policy
+        target (response/workaround/resolution), read live from the "sla"
+        table ServiceNow's own SLA engine populates via sync — not computed
+        or scheduled by this service. Replaces the old SLAClock (a
+        hand-registered clock using a hardcoded severity->duration guess,
+        built before real SLA data existed in Postgres). The eight display
+        fields (caseNumber through state) are read live alongside the SLA
+        data itself, not a point-in-time snapshot the way the old design's
+        were.
       type: object
       properties:
         caseId:
           type: string
         clockType:
           type: string
+          description: One of response, workaround, resolution.
+        businessElapsedPercent:
+          type: number
+          description: >-
+            Percentage of the SLA's business duration elapsed, as ServiceNow
+            computed it. Not capped at 100 — a long-overdue SLA keeps
+            climbing well past it.
+        hasBreached:
+          type: boolean
+          description: ServiceNow's own breach verdict for this clock.
+        isPaused:
+          type: boolean
         startedOn:
           type: string
           format: date-time
-        dueOn:
-          type: string
-          format: date-time
-        pausedOn:
-          type: string
-          format: date-time
-          nullable: true
-        reached50On:
-          type: string
-          format: date-time
-          nullable: true
-        reached75On:
-          type: string
-          format: date-time
-          nullable: true
-        reached100On:
-          type: string
-          format: date-time
           nullable: true
         caseNumber:
           type: string
@@ -16830,67 +16728,19 @@ components:
         state:
           type: string
 
-    RegisterSLAClockRequest:
-      type: object
-      required: [clockType, startedAt, dueAt]
-      additionalProperties: false
-      properties:
-        clockType:
-          type: string
-        startedAt:
-          type: string
-          format: date-time
-        dueAt:
-          type: string
-          format: date-time
-        caseNumber:
-          type: string
-        wso2CaseId:
-          type: string
-        caseTitle:
-          type: string
-        caseType:
-          type: string
-        product:
-          type: string
-        team:
-          type: string
-        priority:
-          type: string
-        state:
-          type: string
-
-    SetSLAClockTierRequest:
-      type: object
-      required: [status]
-      additionalProperties: false
-      properties:
-        status:
-          type: string
-          enum: ["reached"]
-          description: The only valid value today — a placeholder for a future status without a breaking change to this request's shape.
-
-    SetSLAClockTierReachedResponse:
+    SearchSLAStatusResponse:
       type: object
       properties:
-        reachedOn:
-          type: string
-          format: date-time
-        alreadyReached:
-          type: boolean
-          description: >-
-            False if this call is the one that just recorded the tier as
-            reached; true if it was already recorded by an earlier call.
-            Reflects only the database claim, not whether any caller's
-            reaction to winning that claim (e.g. publishing a notification)
-            ever actually succeeded. Gating such a reaction on this being
-            false is a valid choice when duplicate-free behavior matters
-            more than guaranteed delivery, but it is a trade-off: a caller
-            whose reaction failed after winning the claim will see this as
-            true on retry and skip the reaction forever, having never
-            completed it once. Only rely on this field to gate a reaction
-            if that risk is acceptable, or if the reaction's own completion
-            is tracked separately and durably instead.
+        statuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/SLAStatus'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
 
     AnnouncementRequest:
       description: >
