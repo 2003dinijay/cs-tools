@@ -132,14 +132,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		scheduledTaskRunHandler = handler.NewScheduledTaskRunHandler(service.NewScheduledTaskRunService(repository.NewScheduledTaskRunRepository(db)))
 		if cfg.HasGithubIntegration() {
 			githubLabels, labelErr := service.NewGithubLabels(service.GithubLabelOverrides{
-				ChangeRequest:    cfg.GithubLabelChangeRequest,
-				TypePrefix:       cfg.GithubLabelTypePrefix,
-				ScopePrefix:      cfg.GithubLabelScopePrefix,
-				ScopeToType:      cfg.GithubLabelsScope,
-				Impact:           cfg.GithubLabelsImpact,
-				Likelihood:       cfg.GithubLabelsLikelihood,
-				State:            cfg.GithubLabelsState,
-				StrippedOnCreate: cfg.GithubLabelsStrippedOnCreate,
+				TypeIncident:       cfg.GithubLabelTypeIncident,
+				TypeServiceRequest: cfg.GithubLabelTypeServiceRequest,
+				Class:              cfg.GithubLabelsClass,
+				StatusAssigned:     cfg.GithubLabelStatusAssigned,
 			})
 			if labelErr != nil {
 				// A label override that does not parse would leave the sync
