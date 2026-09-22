@@ -6553,8 +6553,8 @@ type SearchEventPublishFailuresResponse struct {
 }
 
 // SNWritebackFailure is the durable record of one failed best-effort
-// ServiceNow mirror write under DATA_SOURCE=postgres-primary-sn-fallback
-// (see config.DataSourcePostgresPrimarySNFallback and
+// ServiceNow mirror write under DATA_SOURCE=postgres-servicenow-dual-write
+// (see config.DataSourcePostgresServiceNowDualWrite and
 // service.SNWritebackDispatcher). Postgres has already committed by the
 // time this is written — this table exists purely so an operator can see,
 // and manually replay, exactly what ServiceNow is missing before treating

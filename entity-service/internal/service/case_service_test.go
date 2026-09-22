@@ -1052,7 +1052,7 @@ func TestCaseService_CreateCaseComment_SkipsMirrorForActivityType(t *testing.T) 
 
 // TestCaseService_CreateCaseComment_DoesNotMirrorWithoutSNWriteback confirms
 // the mirror only ever applies under
-// DATA_SOURCE=postgres-primary-sn-fallback (snWriteback/snMirror set) --
+// DATA_SOURCE=postgres-servicenow-dual-write (snWriteback/snMirror set) --
 // NewCaseService's plain construction (every other DataSource) must behave
 // exactly as it did before this feature existed.
 func TestCaseService_CreateCaseComment_DoesNotMirrorWithoutSNWriteback(t *testing.T) {

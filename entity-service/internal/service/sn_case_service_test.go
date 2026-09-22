@@ -2805,7 +2805,7 @@ func TestSNCaseService_AggregateCases_StateGroupByRemapsKeyToDomainEnum(t *testi
 	}
 }
 
-// --- patchCaseFields (DATA_SOURCE=postgres-primary-sn-fallback mirror only) ---
+// --- patchCaseFields (DATA_SOURCE=postgres-servicenow-dual-write mirror only) ---
 
 // TestSNCaseService_PatchCaseFields_NoGetCaseByIDOrEventPublish is the
 // regression guard patchCaseFields exists for: unlike UpdateCase, it must

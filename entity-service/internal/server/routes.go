@@ -224,12 +224,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		onboardingStepHandler = handler.NewOnboardingStepHandler(service.NewOnboardingStepService(repository.NewOnboardingStepRepository(db), accessSvc))
 	}
 
-	// Also constructed for DataSourcePostgresPrimarySNFallback: that mode's
+	// Also constructed for DataSourcePostgresServiceNowDualWrite: that mode's
 	// active services stay Postgres-backed (see the case wiring below), but
 	// its best-effort ServiceNow mirror writes still need this client.
 	// config.Validate requires the same four credentials for both modes.
 	var serviceNowIntegrationServiceClient *integrationservice.Client
-	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresPrimarySNFallback {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
 		serviceNowIntegrationServiceClient = integrationservice.New(cfg.ServiceNowIntegrationServiceBaseURL, integrationservice.ClientCredentialsConfig{
 			TokenURL:     cfg.ServiceNowIntegrationServiceTokenURL,
 			ClientID:     cfg.ServiceNowIntegrationServiceClientID,
@@ -359,11 +359,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// NewServiceNowCaseService can also take it — see that constructor's
 	// own doc comment for what it uses it for (a direct, in-process role
 	// lookup backing applyResponseSLAOnComment, not routed through HTTP).
-	// Also constructed for DataSourcePostgresPrimarySNFallback, for the same
+	// Also constructed for DataSourcePostgresServiceNowDualWrite, for the same
 	// reason serviceNowIntegrationServiceClient above is: the case pilot's
 	// SN-mirror snCaseService instance below needs it too.
 	var snUserService service.SNUserService
-	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresPrimarySNFallback {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
 		snUserService = service.NewServiceNowUserService(serviceNowIntegrationServiceClient)
 	}
 
@@ -371,7 +371,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	var activeCaseSvc service.CaseService
 	// caseAttachmentOverrideSvc, when non-nil, is the CaseService case
 	// attachment routes (registered further below) use INSTEAD of
-	// activeCaseSvc -- see its assignment in the DataSourcePostgresPrimarySNFallback
+	// activeCaseSvc -- see its assignment in the DataSourcePostgresServiceNowDualWrite
 	// case for why. nil in every other mode: attachments follow activeCaseSvc
 	// exactly as before this override existed.
 	var caseAttachmentOverrideSvc service.CaseService
@@ -379,7 +379,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	case config.DataSourceServiceNow:
 		pgCaseFallbackSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
 		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseFallbackSvc, eventPublisher, snUserService, cfg.CustomerRoles)
-	case config.DataSourcePostgresPrimarySNFallback:
+	case config.DataSourcePostgresServiceNowDualWrite:
 		// Pilot: case CREATE, and UPDATE's WorkState field only.
 		//
 		// CREATE is ServiceNow-first and synchronous — see

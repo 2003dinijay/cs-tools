@@ -41,7 +41,7 @@ type caseService struct {
 	publisher EventPublisherService
 	access    AccessService
 	// snWriteback/snMirror back CreateCase, UpdateCase, and CreateCaseComment's
-	// ServiceNow-facing paths under DATA_SOURCE=postgres-primary-sn-fallback —
+	// ServiceNow-facing paths under DATA_SOURCE=postgres-servicenow-dual-write —
 	// both nil in every other mode. Set only via NewCaseServiceWithSNWriteback
 	// (see that constructor's own doc comment for why not here). snMirror
 	// serves three distinct purposes, all documented at their own call sites:
@@ -87,8 +87,8 @@ func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepo
 }
 
 // NewCaseServiceWithSNWriteback is NewCaseService plus the wiring
-// DATA_SOURCE=postgres-primary-sn-fallback needs for its case pilot (see
-// config.DataSourcePostgresPrimarySNFallback): UpdateCase's best-effort,
+// DATA_SOURCE=postgres-servicenow-dual-write needs for its case pilot (see
+// config.DataSourcePostgresServiceNowDualWrite): UpdateCase's best-effort,
 // asynchronous ServiceNow mirror write (WorkState only — see UpdateCase's
 // own doc comment for why), and CreateCase's synchronous, SN-first creation
 // (see CreateCase's own doc comment). A separate constructor rather than
@@ -309,7 +309,7 @@ func validateCreateCaseRequest(req *domain.CreateCaseRequest) error {
 
 // CreateCase implements CaseService.
 //
-// Under DATA_SOURCE=postgres-primary-sn-fallback (snMirror != nil), this
+// Under DATA_SOURCE=postgres-servicenow-dual-write (snMirror != nil), this
 // delegates to createCaseSNFirst instead of writing to Postgres directly —
 // see that method's own doc comment for why CREATE is ServiceNow-first and
 // synchronous, unlike UpdateCase's Postgres-first/async WorkState mirror.
@@ -379,7 +379,7 @@ const (
 	snCaseCreateRetryDelay = 300 * time.Millisecond
 )
 
-// createCaseSNFirst implements CreateCase's DATA_SOURCE=postgres-primary-sn-fallback
+// createCaseSNFirst implements CreateCase's DATA_SOURCE=postgres-servicenow-dual-write
 // path: ServiceNow-FIRST and SYNCHRONOUS — the opposite order from
 // UpdateCase's WorkState mirror (Postgres-first, ServiceNow best-effort and
 // async afterward). That asymmetry is deliberate, not an inconsistency: an
@@ -518,7 +518,7 @@ func (s *caseService) CreateCaseComment(ctx context.Context, req domain.CreateCa
 		return domain.CreateCaseCommentResponse{}, err
 	}
 
-	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-primary-sn-fallback
+	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write
 	// only (snWriteback/snMirror are both nil otherwise — see
 	// NewCaseServiceWithSNWriteback's own doc comment). Postgres has already
 	// committed by this point and is fully authoritative for the comment —
@@ -657,7 +657,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 		s.detectBillableStatusChange(ctx, req.ID, oldSeverity, c.Severity)
 	}
 
-	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-primary-sn-fallback
+	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write
 	// only (snWriteback/snMirror are both nil otherwise — see
 	// NewCaseServiceWithSNWriteback's own doc comment). Postgres has already
 	// committed by this point; this fires after, asynchronously, and never

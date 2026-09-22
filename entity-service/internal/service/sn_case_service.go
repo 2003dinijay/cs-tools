@@ -1900,7 +1900,7 @@ func (s *snCaseService) CreateCaseComment(ctx context.Context, req domain.Create
 // only the POST, as this does, genuinely has no side effects on either
 // side.
 //
-// This exists purely for DATA_SOURCE=postgres-primary-sn-fallback's async
+// This exists purely for DATA_SOURCE=postgres-servicenow-dual-write's async
 // comment mirror (see caseService.CreateCaseComment's own doc comment):
 // Postgres already IS authoritative for the comment and has already decided
 // the real outcome (including any state effects a future Postgres-native
@@ -2914,7 +2914,7 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 // UpdateCase's enrichment reads, no-op detection, or event publishing: no
 // GetCaseByID, no publishStatusChanged/publishSeverityChanged.
 //
-// This exists purely for DATA_SOURCE=postgres-primary-sn-fallback's async
+// This exists purely for DATA_SOURCE=postgres-servicenow-dual-write's async
 // State/Severity/WorkState mirror (see caseService.UpdateCase's own doc
 // comment): Postgres has already decided the real outcome by the time this
 // runs, so re-running ServiceNow's own no-op-detection/event logic would be
